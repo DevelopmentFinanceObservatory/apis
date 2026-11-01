@@ -1131,9 +1131,7 @@ class WarningBackfillSettings(BaseSettings):
 
 def _backfill_warnings(dry_run: bool) -> int:
     """Run `warning_backfill.run_backfill_warnings` over the rows it rewrites, and with
-    `dry_run` the rows in the new format. With none it opens no release and builds no client.
-    It refuses to start without a graph token, since every read would then answer 401 or 403,
-    which a later run can get past, and leave every row."""
+    `dry_run` the rows in the new format. With none it opens no release and builds no client."""
     deadline = utc_now() + BACKFILL_DESCRIPTIONS_BUDGET
     try:
         backfill = WarningBackfillSettings()
@@ -1143,14 +1141,6 @@ def _backfill_warnings(dry_run: bool) -> int:
             severity="ERROR",
             task="backfill-warnings",
             error=str(exc),
-        )
-        return 1
-    if not backfill.graph_token:
-        emit(
-            "datasets_maintenance_failed",
-            severity="ERROR",
-            task="backfill-warnings",
-            error="DATASETS_GRAPH_TOKEN is empty, so no graph or SDMX read can authenticate",
         )
         return 1
     store = LiveDatasetStore(connections=shared_pool())
