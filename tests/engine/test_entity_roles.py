@@ -85,6 +85,74 @@ class TestRawTextDoorCarriesEveryOccurrence:
         }
 
     @pytest.mark.parametrize(
+        ("query", "measures", "mentions", "expected"),
+        [
+            pytest.param(
+                "aid from African countries to Africa",
+                ["aid"],
+                [("unspecified", True), ("destination", False)],
+                [("origin", True), ("destination", False)],
+                id="one-part-other-reading-takes-the-other-end",
+            ),
+            pytest.param(
+                "ODA to Africa and GDP growth of African countries",
+                ["ODA", "GDP growth"],
+                [("destination", False), ("unspecified", True)],
+                [("destination", False)],
+                id="two-parts-flow-first",
+            ),
+            pytest.param(
+                "GDP growth of African countries and ODA to Africa",
+                ["GDP growth", "ODA"],
+                [("unspecified", True), ("destination", False)],
+                [("destination", False)],
+                id="two-parts-flow-second",
+            ),
+            pytest.param(
+                "aid from Africa to Africa, African countries",
+                ["aid"],
+                [("origin", False), ("destination", False), ("unspecified", True)],
+                [("origin", False), ("destination", False)],
+                id="directed-on-both-ends",
+            ),
+            pytest.param(
+                "aid to African countries, Africa",
+                ["aid"],
+                [("destination", True), ("unspecified", True)],
+                [("destination", True)],
+                id="shared-reading",
+            ),
+        ],
+    )
+    def test_an_undirected_other_reading_takes_the_end_one_part_leaves(
+        self,
+        query: str,
+        measures: list[str],
+        mentions: list[tuple[RoleAxis | Literal["unspecified"], bool]],
+        expected: list[tuple[RoleAxis, bool]],
+    ):
+        """Within one part, an undirected mention of Africa whose reading no directed
+        mention shares takes the end the directed ones leave.
+        Every part of a request reads the same roles, so with two measures the mention may
+        be another part's and adds none, and a name directed on both ends or a mention
+        sharing a directed reading adds none either."""
+        cues = {"origin": "from", "destination": "to"}
+        entities = [
+            ExtractedEntity(
+                text="Africa",
+                span="African countries" if members else "Africa",
+                flow_role=axis,
+                role_span=cues.get(axis),
+                members=members,
+            )
+            for axis, members in mentions
+        ]
+
+        roles = _prepared_roles(entities, query=query, measures=measures)
+
+        assert [(r.axis, r.members) for r in roles["Africa"]] == expected
+
+    @pytest.mark.parametrize(
         ("query", "entities", "stated"),
         [
             # A cue before the span, or a verb after it, states the direction.
