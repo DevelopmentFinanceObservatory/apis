@@ -186,10 +186,10 @@ def check_role_kinds(
         kind = (
             None
             if dcid in types and node_types is None
-            else _kind(dcid, node_types or (), code_index=code_index)
+            else entity_kind_of(dcid, node_types or (), code_index=code_index)
         )
-        allowed = allowed_by_axis[axis]
-        if kind not in allowed:
+        if not role_takes(dcid, kind, axis, code_index=code_index):
+            allowed = allowed_by_axis[axis]
             raise RoleKindRefused(
                 role=role,
                 axis=axis,
@@ -200,21 +200,19 @@ def check_role_kinds(
             )
 
 
-def role_takes(dcid: str, types: Sequence[str], axis: RoleAxis, *, code_index: CodeIndex) -> bool:
-    """Whether the flow role on `axis` takes the entity `dcid` whose graph types are `types`,
-    by the rule `check_role_kinds` refuses by: the index lists it as a party on `axis`, the
-    axis has no kinds to judge by, or the entity's kind is one the axis takes."""
+def role_takes(dcid: str, kind: Kind | None, axis: RoleAxis, *, code_index: CodeIndex) -> bool:
+    """Whether the flow role on `axis` takes the entity `dcid` of kind `kind`
+    (`entity_kind_of`, `None` for an entity neither the graph nor the membership policy
+    holds): the index lists it as a party on `axis`, the axis has no kinds to judge by, or
+    `kind` is one the axis takes. `check_role_kinds` refuses by it, and a first answer binds
+    a place's node by it (`place_roles.set_choices`)."""
     allowed = role_kinds(code_index)[axis]
-    return (
-        not allowed
-        or _listed_on(code_index, dcid, axis)
-        or _kind(dcid, types, code_index=code_index) in allowed
-    )
+    return not allowed or _listed_on(code_index, dcid, axis) or kind in allowed
 
 
-def _kind(dcid: str, types: Sequence[str], *, code_index: CodeIndex) -> Kind:
-    """The kind of the entity `dcid` whose graph types are `types` (`classify`), under the
-    shared membership policy."""
+def entity_kind_of(dcid: str, types: Sequence[str], *, code_index: CodeIndex) -> Kind:
+    """The kind of the entity `dcid` over all its graph types `types` (`classify`), under the
+    shared membership policy, as the resolver classes a confirmed node (`Entity.kind`)."""
     from entity_resolution.kinds import classify
     from entity_resolution.shared import shared_membership_policy
 

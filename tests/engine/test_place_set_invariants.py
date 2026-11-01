@@ -479,7 +479,7 @@ def test_a_set_named_by_two_texts_on_two_roles_takes_one_reading(
 @pytest.mark.parametrize(
     "whole_text", [LABEL[SUB_SAHARAN], SUB_SAHARAN_ALIAS], ids=["one-text", "two-texts"]
 )
-def test_a_set_asked_for_its_members_on_one_end_reads_whole_on_the_other(
+def test_a_set_asked_for_its_members_on_one_end_reads_whole_where_the_other_role_takes_it(
     doors: Doors, members_end: str, whole_text: str
 ) -> None:
     """Sub-Saharan Africa asked for as its members on one end and named whole on the other,

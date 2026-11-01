@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Final, Literal, cast
 
 import dc_graph
+from code_index.shared import get_index
 from dfo_platform.executor import submit_with_context
 from dfo_platform.trace import get_trace_id
 from materialise.roles import RoleAxis, axis_for_role
@@ -907,10 +908,12 @@ async def _unsettled_places(
     has not answered is asked at once.
     """
     await _read_taker_stat_vars(state, shapes)
+    index = get_index()
     places = [
         UnsettledPlace(
             shape,
             roles,
+            index,
             stat_vars=_stat_vars_of(state, (shape, bindings, roles)).served
             if takes_default_scope(shape, roles)
             else (),

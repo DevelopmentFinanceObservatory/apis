@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from code_index.shared import get_index
 from search.engine.bind import SlotBindingDraft
 from search.engine.region.candidates import _Candidate, _materialise_alt_shapes, elect_alternate
 from search.engine.region.place_context import PlaceContext
@@ -224,6 +225,7 @@ def settled_place_roles(shape: ShapeDraft, assignment: PlaceAssignment) -> Place
     places = settle_place_sets(
         assignment,
         admits=lambda _key, _graph_type: True,
+        index=get_index(),
         has_data=lambda _places: False,
         bound=None,
     )

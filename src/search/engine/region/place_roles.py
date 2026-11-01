@@ -77,7 +77,7 @@ from search.engine.shape import (
 )
 from search.engine.spec_build import NamedGroup
 from search.models import EntityRoleKey, Entry, RoleAxis
-from search.role_kinds import role_takes
+from search.role_kinds import entity_kind_of, role_takes
 from search.scope.region import (
     REGION_RULE,
     counts_oecd_region,
@@ -88,6 +88,8 @@ from search.scope.state import AxisRecord
 from search.scope.vocabulary import REGION_MEMBERS_AND_RESIDUALS, REGION_MEMBERS_ONLY
 
 if TYPE_CHECKING:
+    from code_index.query import CodeIndex
+
     # `ResolveState` holds a `PlaceContext`, which holds `PlaceRoles`.
     from search.engine.region.state import ResolveState
 
@@ -634,6 +636,7 @@ def place_set_kinds(
     roles: Sequence[EntityRoleKey],
     *,
     admits: Callable[[EntityRoleKey, str], bool],
+    index: CodeIndex,
 ) -> frozenset[Kind | None]:
     """The entity kinds (`entity_resolution.types.Entity.kind`) of every reading
     `place_set` can settle to on `roles` (`choice`, from `set_choices`), `None` for one
@@ -653,7 +656,7 @@ def place_set_kinds(
     if choice == "node":
         return frozenset({_node_kind(state, place_set)})
     node = place_set.node
-    if node is not None and _node_admitted(node, roles, admits=admits):
+    if node is not None and _node_admitted(node, roles, admits=admits, index=index):
         return frozenset({members, _node_kind(state, place_set)})
     return frozenset({members})
 
@@ -683,7 +686,8 @@ def _fills_with_kind(
         role = "observationAbout" if key == "observationAbout" else names[key]
         return state.node_admissions.get((role, graph_type), True)
 
-    choices = set_choices(assignment, admits=admits)
+    index = get_index()
+    choices = set_choices(assignment, admits=admits, index=index)
     return all(
         bool(sets := assignment.sets.get(axis))
         and all(
@@ -693,6 +697,7 @@ def _fills_with_kind(
                 choices[place_key(place_set)],
                 assignment.roles_of(place_set),
                 admits=admits,
+                index=index,
             )
             == {kind}
             for place_set in sets
@@ -1305,45 +1310,61 @@ def _wholes(
     roles: Sequence[EntityRoleKey],
     *,
     admits: Callable[[EntityRoleKey, str], bool],
+    index: CodeIndex,
 ) -> tuple[str, ...]:
     """The places that can read `place_set` whole on `roles`, in the order a Spec tries them:
     its node when every role admits it (`_node_admitted`), then its total (`PlaceSet.total`) when
     every role is a flow axis. A total is admitted by no type: the Spec's read decides whether
     its dataset publishes the total on the role."""
     wholes: list[str] = []
-    if place_set.node is not None and _node_admitted(place_set.node, roles, admits=admits):
-        wholes.append(place_set.node.dcid)
+    node = place_set.node
+    if node is not None and _node_admitted(node, roles, admits=admits, index=index):
+        wholes.append(node.dcid)
     if place_set.total is not None and roles and "observationAbout" not in roles:
         wholes.append(place_set.total)
     return tuple(wholes)
 
 
-def _roles_take(node: PlaceNode, roles: Sequence[EntityRoleKey]) -> bool:
-    """Whether every flow role of `roles` takes `node` by its kind (`role_kinds.role_takes`),
-    the rule a resubmit and the Datasets mint refuse a bound entity by, so no answer binds a
-    node its own resubmit refuses: no DAC or CRS series lists a continent or subregion as a
-    provider. The subject role takes any node."""
-    index = get_index()
+def _roles_take(node: PlaceNode, roles: Sequence[EntityRoleKey], *, index: CodeIndex) -> bool:
+    """Whether every flow role of `roles` takes `node` by its kind under the code index
+    `index` (`role_kinds.role_takes`), the rule a resubmit and the Datasets mint refuse a
+    bound entity by, so no answer binds a node its own resubmit refuses: no DAC or CRS series
+    lists a continent or subregion as a provider. The kind is the resolver's
+    (`PlaceNode.kind`), else the one its graph type gives. The subject role takes any node."""
+    kind = node.kind
+    if kind is None:
+        types = (node.graph_type,) if node.graph_type else ()
+        kind = entity_kind_of(node.dcid, types, code_index=index)
     return all(
-        role_takes(node.dcid, (node.graph_type,), role, code_index=index)
+        role_takes(node.dcid, kind, role, code_index=index)
         for role in roles
         if role != "observationAbout"
     )
 
 
 def _node_admitted(
-    node: PlaceNode, roles: Sequence[EntityRoleKey], *, admits: Callable[[EntityRoleKey, str], bool]
+    node: PlaceNode,
+    roles: Sequence[EntityRoleKey],
+    *,
+    admits: Callable[[EntityRoleKey, str], bool],
+    index: CodeIndex,
 ) -> bool:
     """Whether every role of `roles` admits `node`: its range admits the node's type
     (`admits`), and a flow role takes the node's kind (`_roles_take`)."""
-    return all(admits(role, node.graph_type) for role in roles) and _roles_take(node, roles)
+    return all(admits(role, node.graph_type) for role in roles) and _roles_take(
+        node, roles, index=index
+    )
 
 
 def set_choices(
-    assignment: PlaceAssignment, *, admits: Callable[[EntityRoleKey, str], bool]
+    assignment: PlaceAssignment,
+    *,
+    admits: Callable[[EntityRoleKey, str], bool],
+    index: CodeIndex,
 ) -> dict[str, SetChoice | None]:
     """The readings one Spec can give each set of `assignment`, by place key, where
-    `admits(role key, graph type)` says whether a role admits a type.
+    `admits(role key, graph type)` says whether a role admits a type and `index` is the code
+    index whose parties say which kinds each flow role takes (`_roles_take`).
 
     A reading is used only on roles that admit its type. A set the request asks the members
     of reads its members when every role it fills admits their type, and has no reading
@@ -1362,14 +1383,14 @@ def set_choices(
         roles = assignment.roles_of(place_set)
         node = place_set.node
         if not place_set.members:
-            choices[key] = "node" if node is None or _roles_take(node, roles) else None
+            choices[key] = "node" if node is None or _roles_take(node, roles, index=index) else None
             continue
-        node_ok = node is not None and _node_admitted(node, roles, admits=admits)
+        node_ok = node is not None and _node_admitted(node, roles, admits=admits, index=index)
         member_type = place_set.member_type
         members_ok = member_type is not None and all(admits(role, member_type) for role in roles)
         if key in assignment.members_asked:
             choices[key] = "members" if members_ok else None
-        elif members_ok and _wholes(place_set, roles, admits=admits):
+        elif members_ok and _wholes(place_set, roles, admits=admits, index=index):
             choices[key] = "either"
         elif node_ok:
             choices[key] = "node"
@@ -1379,11 +1400,14 @@ def set_choices(
 
 
 def undecided_sets(
-    assignment: PlaceAssignment, *, admits: Callable[[EntityRoleKey, str], bool]
+    assignment: PlaceAssignment,
+    *,
+    admits: Callable[[EntityRoleKey, str], bool],
+    index: CodeIndex,
 ) -> tuple[PlaceSet, ...]:
     """The sets of `assignment` whose reading a Spec's own read decides, those that can
     read either whole or as their members (`set_choices`)."""
-    choices = set_choices(assignment, admits=admits)
+    choices = set_choices(assignment, admits=admits, index=index)
     return tuple(s for s in assignment.distinct_sets if choices[place_key(s)] == "either")
 
 
@@ -1391,6 +1415,7 @@ def settle_place_sets(
     assignment: PlaceAssignment,
     *,
     admits: Callable[[EntityRoleKey, str], bool],
+    index: CodeIndex,
     has_data: Callable[[PlaceLists], bool],
     bound: int | None,
 ) -> PlaceLists:
@@ -1423,7 +1448,7 @@ def settle_place_sets(
     so a set with more members than `bound` binds a node or total that holds data. `None`
     checks no bound.
     """
-    choices = set_choices(assignment, admits=admits)
+    choices = set_choices(assignment, admits=admits, index=index)
     if refused := tuple(s for s in assignment.distinct_sets if choices[place_key(s)] is None):
         raise PlaceSetNotAdmittedError(refused)
     nodes = {
@@ -1445,7 +1470,10 @@ def settle_place_sets(
 
     members = places(readings)
     undecided = [s for s in assignment.distinct_sets if choices[place_key(s)] == "either"]
-    wholes = {place_key(s): _wholes(s, assignment.roles_of(s), admits=admits) for s in undecided}
+    wholes = {
+        place_key(s): _wholes(s, assignment.roles_of(s), admits=admits, index=index)
+        for s in undecided
+    }
     filled = [role for s in undecided for role in assignment.roles_of(s)]
     if len(undecided) > 1 and len(filled) == len(set(filled)):
         keys = [place_key(s) for s in undecided]
