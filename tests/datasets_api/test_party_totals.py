@@ -10,7 +10,7 @@ from dfo_frame_grammar import Frame, frame_sha256
 from pydantic import TypeAdapter
 
 from code_index.types import PartyRow, WholeMarker
-from datasets_api.manifest_models import TraceModel
+from datasets_api.manifest_models import Trace, TraceModel
 from datasets_api.party_totals import (
     TRACE_KEY,
     PartyTotalsCut,
@@ -336,3 +336,14 @@ def test_a_cut_rebuilt_from_a_trace_leaves_out_the_rows_it_recorded(
     assert cut.trace_entries() == entries
     trace = {TRACE_KEY: cut.trace_entries()}
     assert TypeAdapter(TraceModel).validate_python(trace, strict=True) == trace
+
+
+def test_a_trace_keeps_its_null_provenance_through_a_response_dump():
+    """The doors dump responses with `exclude_none`, and an entry with a null `provenance`
+    names rows with no provenance where an absent one names every dataset's rows."""
+    trace = {TRACE_KEY: [{"role": _PROVIDER, "provenance": None, "entities": [_TRUST_FUNDS]}]}
+    adapter = TypeAdapter(Trace)
+
+    assert adapter.dump_python(adapter.validate_python(trace), mode="json", exclude_none=True) == (
+        trace
+    )

@@ -104,7 +104,7 @@ def download_facts(
         if isinstance(plan, PairPlan) and plan.roles is None
         else _coverage_extent(plan, coverage_index, years, kept)
     )
-    licence = _licence(provenance) if provenance is not None else None
+    licence = provenance_licence(provenance) if provenance is not None else None
     if extent is None:
         return DownloadFacts(rows=None, rows_exact=False, series=None, window=None, licence=licence)
     return DownloadFacts(
@@ -336,7 +336,7 @@ def coverage_kept_years(
     return kept
 
 
-def _licence(provenance: str) -> DownloadLicence | None:
+def provenance_licence(provenance: str) -> DownloadLicence | None:
     """The licence of `provenance`'s source-index entry (`origin_catalogue.entry_ref`), or
     None when the catalogue does not list the provenance or its entry's provenances name no
     single licence."""

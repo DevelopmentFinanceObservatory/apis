@@ -99,6 +99,7 @@ from search.engine.qualifier_match import (
     recall_text,
 )
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
+from search.engine.region.composite_answer import ComponentReads
 from search.engine.region.phase_rank_bind import holds_words, names_value
 from search.engine.region.place_options import PlaceOptionsPool, replayed_place_options
 from search.engine.region.result import (
@@ -520,8 +521,9 @@ def _entity_roles(
     (`role_text.receipt_axes`). A query that is one place's possessive and its debt alone
     makes that place the debtor (`role_text.debtor_possessive`). Every other place keeps
     its extracted axis. Preserve distinct mentions in order, including self-flows on
-    opposite axes. Collapse duplicate mentions with the same axis and span. Store
-    directional roles only, each recording whether the query's words give its direction. A
+    opposite axes. Collapse duplicate mentions with the same axis, span and reading. Store
+    directional roles only, each recording whether the query's words give its direction and
+    whether the mention asks for the place's members (`DoorRole.members`). A
     debt or receipt axis does by construction, a possessive debtor does not, since it
     reads the measure, and an extracted axis does when its cue does
     (`_cue_states_direction`). Fall back to entity text for the overlap anchor when
@@ -550,7 +552,7 @@ def _entity_roles(
         occurrences = roles.setdefault(name, [])
         span = entity.span or entity.text
         stated = name in worded or _cue_states_direction(entity, entities=entities, query=query)
-        role = DoorRole(axis=axis, span=span, stated=stated)
+        role = DoorRole(axis=axis, span=span, stated=stated, members=entity.members)
         if role not in occurrences:
             occurrences.append(role)
     return roles
@@ -1245,7 +1247,7 @@ def _prepare_extraction(
         for words in narrowing
     ]
     dropped = [phrase for phrase in dropped if not _held_by_one(phrase, narrowing)]
-    naming_sources = source_phrases(dropped, [m for ms in per_variable_sources for m in ms])
+    naming_sources = source_phrases(dropped, query=query, hits=scan.hits)
     unit_text, dropped_qualifier_phrases = _split_unit_phrases(
         [phrase for phrase in dropped if phrase not in naming_sources]
     )
@@ -1330,7 +1332,8 @@ def _prepare_extraction(
         unique=unique,
         entities=entities,
         entity_roles=entity_roles,
-        # One text holds one reading: a mention that asks for the members decides it.
+        # A text any mention asks the members of. A directed mention asks on its own end
+        # (`DoorRole.members`).
         member_entities=frozenset(_entity_key(e) for e in extracted_entities if e.members),
         per_variable_qualifiers=per_variable_qualifiers,
         per_variable_operations=per_variable_operations,
@@ -1635,6 +1638,18 @@ async def _handle_multi_variable(
             graph=graph,
             start_ms=start_ms,
             params=params,
+            # Built once every part's own source scope has exited, so the reads run
+            # through the request's own catalogue.
+            preview_reads=ComponentReads(
+                graph=graph,
+                sdmx=sdmx,
+                coverage=params.coverage,
+                materialise_graph=materialise_graph,
+                materialise_sdmx=materialise_sdmx,
+                rate_cache=rate_cache,
+                deadline=params.deadline,
+                catalogue=current_catalogue(),
+            ),
             scope=scope,
         )
     ) as events:

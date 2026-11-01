@@ -24,7 +24,7 @@ from code_index.shared import get_index
 from entity_resolution.shared import shared_membership_policy
 from search.engine.departures import spec_departure_facts
 from search.engine.entry import dataset_resubmit
-from search.engine.region import pipeline
+from search.engine.region import scope_decision
 from search.models import (
     ChoiceOrigin,
     DatasetResubmitInput,
@@ -398,7 +398,7 @@ def test_the_scope_builds_off_the_event_loop(monkeypatch: pytest.MonkeyPatch) ->
 
         return wrapper
 
-    for module in (pipeline, dataset_resubmit):
+    for module in (scope_decision, dataset_resubmit):
         monkeypatch.setattr(module, "build_part_scope", recording(module.build_part_scope))
 
     first = _ask({}).spec

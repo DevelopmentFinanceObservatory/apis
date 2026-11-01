@@ -26,6 +26,7 @@ from datasets_api.doors.publish import build_publish_door
 from datasets_api.version import DATASETS_CAPABILITY_VERSION
 from datasets_api.version_store import LiveVersionRecordWriter
 from dfo_platform.app import Surface, create_app
+from dfo_platform.doors import endpoint_exemplars
 from presentation_api.app import presentation_surface
 from presentation_store.frame_store import LiveFrameStore
 from tests.artifact_store.conftest import FakeGCSClient
@@ -102,7 +103,7 @@ def deployment(release: CatalogueRelease) -> Iterator[_Deployment]:
         codes=DATASETS_CODE_CATALOGUE,
         classify=publish_door.classify,
         exception_types=publish_door.exception_types,
-        exception_exemplars=publish_door.exception_exemplars,
+        exception_exemplars=endpoint_exemplars((publish_door,)),
         middleware=publish_door.middleware,
     )
     presentation = presentation_surface(

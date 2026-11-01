@@ -8,7 +8,6 @@ version hashes policy data and representative rendered responses. This module st
 from __future__ import annotations
 
 import asyncio
-import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -22,7 +21,6 @@ from dfo_platform.validation import validation_problem
 if TYPE_CHECKING:
     from fastapi.responses import JSONResponse
 
-_logger = logging.getLogger(__name__)
 
 # Routing-generated 404s and 405s have dedicated codes.
 STATUS_CODE_MAP: dict[int, str] = {
@@ -128,7 +126,8 @@ def render_timeout_refusal() -> ProblemSpec:
 
 
 def render_unhandled_refusal() -> ProblemSpec:
-    """Return the catch-all refusal. `classify_default` logs exception details."""
+    """Return the catch-all refusal. `classify_default` names the line that logs the
+    exception."""
     return ProblemSpec(
         status=UNHANDLED_DEFAULT.status,
         code=UNHANDLED_DEFAULT.code,
@@ -186,14 +185,16 @@ def default_problem(exc: BaseException) -> ProblemSpec:
 
 
 def classify_default(exc: BaseException) -> ProblemSpec:
-    """`default_problem`, logging a timeout and any exception the catch-all takes.
+    """`default_problem`, naming the line a timeout logs and the line, with its traceback, any
+    exception the catch-all takes logs (`problem.log_problem`). It logs nothing itself.
 
-    Surface classifiers use this when they return `None`."""
+    The platform answers with this when a surface classifier returns `None`."""
+    problem = default_problem(exc)
     if isinstance(exc, asyncio.TimeoutError):
-        _logger.error("Request timed out")
-    elif not isinstance(exc, _DEFAULT_EXCEPTION_TYPES):
-        _logger.error("Unhandled platform error: %s", exc, exc_info=exc)
-    return default_problem(exc)
+        return problem._replace(log="Request timed out")
+    if not isinstance(exc, _DEFAULT_EXCEPTION_TYPES):
+        return problem._replace(log=f"Unhandled platform error: {exc}", log_traceback=True)
+    return problem
 
 
 _DEFAULT_EXCEPTION_TYPES: tuple[type[BaseException], ...] = (

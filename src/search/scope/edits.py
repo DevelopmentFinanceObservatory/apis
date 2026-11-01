@@ -14,7 +14,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
-from code_index.composites import DECLARED_COMPOSITES
+from code_index.composites import DECLARED_COMPOSITES, provenance_datasets
 from code_index.declarations import COMPOSITES
 from code_index.measure_basis import edit_basis
 from code_index.types import CompositeKind
@@ -164,8 +164,10 @@ def _with_source(
     identity: BaseIdentity, provenance: str | None, *, kind: CompositeKind
 ) -> BaseIdentity:
     """`identity` binding `provenance` as its source, or, when it is None, without a source
-    that binds a declared composite of `kind`. Raises `ScopeTableError` where the identity's
-    source binds anything else, which no option replaces."""
+    that binds a declared composite of `kind`. A source binding the one table every component
+    of `provenance` reads gives way to it, as DAC1 gives way to the OECD headline that splices
+    DAC1's series (`provenance_datasets`). Raises `ScopeTableError` where the identity's source
+    binds anything else, which no option replaces."""
     facets = dict(identity.facets or {})
     held = facets.get(_PROVENANCE)
     held_ref = held.ref if isinstance(held, IdentityBindingValue) else None
@@ -173,7 +175,8 @@ def _with_source(
     if held is not None and (held_composite is None or held_composite.kind != kind):
         if provenance is None:
             return identity
-        raise ScopeTableError(f"the identity's source binds {held_ref or 'a set'}")
+        if held_composite is not None or provenance_datasets(provenance) != (held_ref,):
+            raise ScopeTableError(f"the identity's source binds {held_ref or 'a set'}")
     if provenance is None:
         facets.pop(_PROVENANCE, None)
     else:

@@ -12,6 +12,7 @@ import asyncio
 import re
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from unittest.mock import patch
 
 import httpx
@@ -20,7 +21,7 @@ import pytest
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from materialise.rate_tables import RateTableCache
 from search.engine.concurrency import scoped_concurrency
-from search.engine.region import promote_finalize, promote_ground, resolve_spec_resubmit
+from search.engine.region import promote_ground, resolve_spec_resubmit
 from search.engine.region.codes import (
     DATE_COVERAGE_PARTIAL,
     ENTITY_LABEL_UNRESOLVED,
@@ -29,6 +30,9 @@ from search.engine.region.codes import (
     OBSERVATIONS_PROBE_FAILED,
 )
 from search.engine.region.convertibility import elected_unit_refs
+from search.engine.region.observations import dispatch as preview_dispatch
+from search.engine.region.promote_relaunch import bind_relaunches, without_relaunches
+from search.engine.region.result import RegionResult
 from search.engine.region.state import EngineOptions
 from search.engine.unit.conversion_catalogue import (
     ConversionCatalogue,
@@ -44,6 +48,7 @@ from search.models import (
     Warning,
 )
 from search.observations import OBSERVATIONS_PREVIEW_TOO_LARGE
+from series_coverage.shared import CoverageSnapshot
 from tests.engine._base_identity import make_identity, subject_entity
 from tests.engine._builders import binding_set_slot as _binding_set_slot
 from tests.engine._builders import value_slot
@@ -189,6 +194,26 @@ def _recipe_arcs() -> dict[str, dict[str, tuple[str, ...]]]:
     return arcs
 
 
+@dataclass(frozen=True)
+class _Request:
+    """One resubmit of the fixture and the clients it reads through."""
+
+    inp: ResubmitIdentityPayload
+    graph: FakeGraph
+    sdmx: FakeSdmxClient
+    coverage: CoverageSnapshot
+    options: EngineOptions
+
+    def resolve(self) -> RegionResult:
+        return resolve_spec_resubmit(
+            inp=self.inp,
+            graph=self.graph,
+            sdmx=self.sdmx,
+            coverage=self.coverage,
+            options=self.options,
+        )
+
+
 def _run(
     *,
     stream_observations: bool = False,
@@ -197,7 +222,26 @@ def _run(
     years: tuple[str, ...] = (_YEAR,),
     currency: str = "USD",
     places: tuple[str, ...] = (_ENTITY,),
-):
+) -> RegionResult:
+    return _request(
+        stream_observations=stream_observations,
+        include_observations=include_observations,
+        rates=rates,
+        years=years,
+        currency=currency,
+        places=places,
+    ).resolve()
+
+
+def _request(
+    *,
+    stream_observations: bool = False,
+    include_observations: bool | None = None,
+    rates: dict[str, dict[int, float]] = _RATES,
+    years: tuple[str, ...] = (_YEAR,),
+    currency: str = "USD",
+    places: tuple[str, ...] = (_ENTITY,),
+) -> _Request:
     graph = FakeGraph(nodes=_NODES, obs=_obs(years, places))
     materialise_graph = FakeGraphReader(
         arcs={
@@ -248,7 +292,7 @@ def _run(
             update={"facets": {"unit": IdentityFacetValueRequest(request=request)}}
         ),
     )
-    return resolve_spec_resubmit(
+    return _Request(
         inp=inp,
         graph=graph,
         sdmx=FakeSdmxClient(observations={}, availability={}),
@@ -348,13 +392,13 @@ def test_a_dollar_request_serves_the_dollar_member_and_leaves_the_euro_one():
     which holds only euros, is unserved: it has no elected unit and no series, and the part
     names it as left out of SourceA's provenance, on the set binding naming the members."""
     captured: list[object] = []
-    real_build_observations = promote_finalize._build_observations
+    real_build_observations = preview_dispatch._build_observations
 
     def _spy(*args, **kwargs):
         captured.append(kwargs.get("elected"))
         return real_build_observations(*args, **kwargs)
 
-    with patch.object(promote_finalize, "_build_observations", _spy):
+    with patch.object(preview_dispatch, "_build_observations", _spy):
         region = _run()
 
     assert region.status == "definite", f"expected definite, got {region.status!r}"
@@ -392,6 +436,42 @@ def test_streamed_relaunch_with_a_bound_request_unit_carries_converted_points():
     assert series.stat_var.ref == _SV_A
     assert series.conversion is not None
     assert [p.value for p in series.points] == [pytest.approx(100.0 * 0.8)]
+
+
+def test_a_resubmit_previews_the_same_streamed_and_buffered():
+    """One resubmit previews equal observations streamed and buffered, series `axes`
+    included: both read the answer's one `PreviewRead`, whose member facts give each series
+    its StatVar's constraints."""
+    buffered = _run(currency="GBP", rates=_GBP_RATES)
+    streamed = _run(stream_observations=True, currency="GBP", rates=_GBP_RATES)
+    assert buffered.status == streamed.status == "definite"
+    assert buffered.specs[0].spec_id == streamed.specs[0].spec_id
+
+    events, _warns = _run_relaunch(streamed)
+    (event,) = events
+    embedded = buffered.specs[0].resolved.observations
+    assert embedded is not None
+    assert [axis.property for axis in embedded.series[0].axes] == [_PROP]
+    assert event.observations == embedded
+
+
+def test_a_part_memo_hit_previews_as_the_miss_does():
+    """A region the part memo stores holds its `PreviewRead` and no closure, and a hit
+    rebinds it over the request it serves (`bind_relaunches`), so its streamed preview
+    equals the miss's."""
+    request = _request(stream_observations=True, currency="GBP", rates=_GBP_RATES)
+    miss = request.resolve()
+    stored = without_relaunches(miss)
+    assert stored.observations_relaunch is None
+    assert stored.preview_read == miss.preview_read is not None
+    hit = bind_relaunches(
+        stored,
+        graph=request.graph,
+        sdmx=request.sdmx,
+        coverage=request.coverage,
+        options=request.options,
+    )
+    assert _run_relaunch(hit) == _run_relaunch(miss)
 
 
 def test_facet_refusal_receives_the_served_members_elected_units():
@@ -501,13 +581,13 @@ def test_a_null_method_pin_decides_the_unit_among_the_facets_with_no_method():
         ),
     )
     captured: list[object] = []
-    real_build_observations = promote_finalize._build_observations
+    real_build_observations = preview_dispatch._build_observations
 
     def _spy(*args, **kwargs):
         captured.append(kwargs.get("elected"))
         return real_build_observations(*args, **kwargs)
 
-    with patch.object(promote_finalize, "_build_observations", _spy):
+    with patch.object(preview_dispatch, "_build_observations", _spy):
         region = resolve_spec_resubmit(
             inp=inp,
             graph=graph,
@@ -618,14 +698,14 @@ def test_statvar_whose_conversion_fails_refuses_rate_coverage_gap(include_observ
 def test_the_resubmit_gate_fetches_nothing(include_observations, fetches):
     """The bound-unit gate decides from the narrowed plan, so a resubmit fetches the preview
     once when it is requested and not at all otherwise."""
-    real = promote_finalize._build_observations
+    real = preview_dispatch._build_observations
     calls: list[object] = []
 
     def _spy(*args, **kwargs):
         calls.append(args)
         return real(*args, **kwargs)
 
-    with patch.object(promote_finalize, "_build_observations", _spy):
+    with patch.object(preview_dispatch, "_build_observations", _spy):
         region = _run(include_observations=include_observations)
 
     assert region.status == "definite", f"expected definite, got {region.status!r}"

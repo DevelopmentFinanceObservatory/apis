@@ -55,6 +55,7 @@ from search.engine.fanout import (
 )
 from search.engine.interpret import PinnedResolved
 from search.engine.options.population_memo import OptionsPopulationMemo
+from search.engine.region.composite_answer import ComponentReads
 from search.engine.region.place_options import PlaceOptionsPool, replayed_place_options
 from search.engine.region.refs import confirm_dcids_present
 from search.engine.region.result import RegionResult, any_degraded, with_entity_words
@@ -120,7 +121,8 @@ def _role_query_for_part(part: ParsedPart) -> tuple[str, list[Warning]]:
 
 def _entity_roles_for_part(part: ParsedPart) -> dict[str, list[DoorRole]]:
     """Map each entity's identity (`ParsedEntity.identity`) to its declared axes, each with
-    the entity's text as its verbatim span, for one part.
+    the entity's text as its verbatim span and whether the row asks for its members
+    (`DoorRole.members`), for one part.
 
     Preserve distinct mentions in order, including a repeated name on opposite
     axes. Missing or unrecognised role text leaves the entity undirected.
@@ -131,7 +133,7 @@ def _entity_roles_for_part(part: ParsedPart) -> dict[str, list[DoorRole]]:
         if axis is None:
             continue
         occurrences = roles.setdefault(entity.identity, [])
-        role = DoorRole(axis=axis, span=entity.text)
+        role = DoorRole(axis=axis, span=entity.text, members=bool(entity.members))
         if role not in occurrences:
             occurrences.append(role)
     return roles
@@ -810,6 +812,18 @@ async def handle(
             graph=graph,
             start_ms=start_ms,
             params=params,
+            # Built once every part's own source scope has exited, so the reads run
+            # through the request's own catalogue.
+            preview_reads=ComponentReads(
+                graph=graph,
+                sdmx=sdmx,
+                coverage=params.coverage,
+                materialise_graph=materialise_graph,
+                materialise_sdmx=materialise_sdmx,
+                rate_cache=rate_cache,
+                deadline=params.deadline,
+                catalogue=current_catalogue(),
+            ),
             scope=scope,
         )
     ) as events:

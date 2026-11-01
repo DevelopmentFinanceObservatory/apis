@@ -594,7 +594,14 @@ def test_a_latest_window_elects_the_latest_year_both_tables_cover_and_switches_b
         "when_slot": (2023, 2023),
         "sentence_when": "in 2023",
     }
-    assert spec.resolved.download is None
+    # The snapshot holds two of the bilateral component's members, so the file's rows may be
+    # more than the count can see and the facts state none, as a single table's do.
+    crs, _imputed = scope.compiled.components
+    assert isinstance(crs.stat_vars, int)
+    assert crs.stat_vars > len(_CRS_MEMBERS)
+    download = spec.resolved.download
+    assert download is not None
+    assert (download.rows, download.series, download.window) == (None, None, None)
 
     to_bilateral = _resubmit(scope.base.identity, [_switch("provider:bilateral", choice)])
     assert _source(to_bilateral) is None

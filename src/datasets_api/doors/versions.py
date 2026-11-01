@@ -320,12 +320,14 @@ def build_versions_door(*, deps: DepsCell) -> DoorContribution:
             IdentityQuarantined,
             VersionsBackpressure,
         ),
-        exception_exemplars=(
-            VersionsRequestInvalid("/cursor", "exemplar"),
-            SpecNotFound(id="spec_exemplar"),
-            IdentityQuarantined(subject_id="spec_exemplar", id_kind="spec"),
-            VersionsBackpressure(),
-        ),
+        endpoint_exemplars={
+            "datasets.snapshot": (
+                VersionsRequestInvalid("/cursor", "exemplar"),
+                SpecNotFound(id="spec_exemplar"),
+                IdentityQuarantined(subject_id="spec_exemplar", id_kind="spec"),
+                VersionsBackpressure(),
+            )
+        },
     )
 
 

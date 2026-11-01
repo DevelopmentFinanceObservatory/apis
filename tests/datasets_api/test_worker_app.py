@@ -35,6 +35,7 @@ from datasets_api.publish_models import MAX_ROWS as _MATERIALISE_RAW_FETCH_GUARD
 from datasets_api.version import DATASETS_CAPABILITY_VERSION
 from dc_sdmx import SdmxClient
 from materialise.graph import GraphReader
+from materialise.trace import UNKNOWN_FAMILY
 from origin_catalogue import Catalogue, current_catalogue
 from origin_catalogue.service import CatalogueService
 from series_coverage.index import Estimate
@@ -42,6 +43,7 @@ from series_coverage.shared import ServedCoverage
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue
 
 from ._operation_store import FakeOperationDatasetStore
+from ._version_record_store import TEST_BASIS
 
 _CONFIRMED_AT = datetime(2026, 1, 1, tzinfo=UTC)
 _WORKER_URL = "https://worker.example.org"
@@ -81,6 +83,8 @@ def _complete_run(
         subject_id=_SUBJECT_ID,
         content_version="cv_1",
         confirmed_at=_CONFIRMED_AT,
+        family=UNKNOWN_FAMILY,
+        basis=TEST_BASIS,
     )
 
 
@@ -280,6 +284,8 @@ class TestLeaseSemantics:
                 subject_id=_SUBJECT_ID,
                 content_version="cv_1",
                 confirmed_at=_CONFIRMED_AT,
+                family=UNKNOWN_FAMILY,
+                basis=TEST_BASIS,
             )
 
         client = _client(operation_store=operation_store, run_in_thread=run)
@@ -322,6 +328,8 @@ class TestLeaseSemantics:
             subject_id=_SUBJECT_ID,
             content_version="cv_1",
             confirmed_at=_CONFIRMED_AT,
+            family=UNKNOWN_FAMILY,
+            basis=TEST_BASIS,
         )
         ran: list[int] = []
         client = _client(operation_store=operation_store, run_in_thread=lambda **kw: ran.append(1))
@@ -555,6 +563,8 @@ class TestFinalAttempt:
                 subject_id=_SUBJECT_ID,
                 content_version="cv_1",
                 confirmed_at=_CONFIRMED_AT,
+                family=UNKNOWN_FAMILY,
+                basis=TEST_BASIS,
             )
 
         client = _client(operation_store=operation_store, run_in_thread=run, max_attempts=5)
@@ -612,6 +622,7 @@ class TestFinalAttempt:
                 now=lambda: now_box["t"],
                 settings=DatasetsBuildSettings(),
                 enrichment_digest="digest",
+                serving_basis=lambda: TEST_BASIS,
             )
             polled.append(resource.operation.status)
             _complete_run(operation=operation, deps=deps, operation_store=operation_store)
@@ -638,6 +649,8 @@ class TestFinalAttempt:
                 subject_id=_SUBJECT_ID,
                 content_version="cv_1",
                 confirmed_at=_CONFIRMED_AT,
+                family=UNKNOWN_FAMILY,
+                basis=TEST_BASIS,
             )
 
         client = _client(operation_store=operation_store, run_in_thread=run, max_attempts=5)
@@ -665,6 +678,8 @@ class TestFinalAttempt:
                 subject_id=_SUBJECT_ID,
                 content_version="cv_1",
                 confirmed_at=_CONFIRMED_AT,
+                family=UNKNOWN_FAMILY,
+                basis=TEST_BASIS,
             )
 
         client = _client(operation_store=operation_store, run_in_thread=run, max_attempts=5)
@@ -695,6 +710,8 @@ class TestFinalAttempt:
                 subject_id=_SUBJECT_ID,
                 content_version="cv_1",
                 confirmed_at=_CONFIRMED_AT,
+                family=UNKNOWN_FAMILY,
+                basis=TEST_BASIS,
             )
 
         client = _client(operation_store=operation_store, run_in_thread=run, max_attempts=5)
@@ -721,6 +738,8 @@ class TestFinalAttempt:
                 subject_id=_SUBJECT_ID,
                 content_version="cv_1",
                 confirmed_at=_CONFIRMED_AT,
+                family=UNKNOWN_FAMILY,
+                basis=TEST_BASIS,
             )
 
         client = _client(operation_store=operation_store, run_in_thread=run, max_attempts=5)

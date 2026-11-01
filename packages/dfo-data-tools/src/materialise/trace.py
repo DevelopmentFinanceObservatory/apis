@@ -7,7 +7,13 @@ through their `as_trace_entry()` methods.
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
+from typing import cast
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -43,6 +49,127 @@ class MemberFamily:
 
     digest: str
     count: int
+
+
+@dataclass(frozen=True)
+class StatedFamily:
+    """What a trace states of the family an identity admits. `members` is the family, `None`
+    when member resolution could not state the whole of it, and `stub_candidates` the `dcid:`
+    refs the member walk left out of it as stubs (`MemberGroup.stub_candidates`)."""
+
+    members: MemberFamily | None
+    stub_candidates: tuple[str, ...] = ()
+
+
+UNKNOWN_FAMILY = StatedFamily(members=None)
+"""The family stated unknown, with a null digest and count and no stub candidates."""
+
+
+def family_fields(family: StatedFamily) -> dict[str, object]:
+    """The trace fields that state `family`: `family_member_digest` and `family_member_count`,
+    both null without members, and `stub_candidates`, omitted when there are none."""
+    members = family.members
+    fields: dict[str, object] = {
+        "family_member_digest": members.digest if members is not None else None,
+        "family_member_count": members.count if members is not None else None,
+    }
+    if family.stub_candidates:
+        fields["stub_candidates"] = list(family.stub_candidates)
+    return fields
+
+
+def with_family(trace: Mapping[str, object], family: StatedFamily) -> dict[str, object]:
+    """`trace` with its family fields (`family_fields`) stating `family` in place of its own."""
+    kept = {key: value for key, value in trace.items() if key != "stub_candidates"}
+    return {**kept, **family_fields(family)}
+
+
+def trace_family(trace: Mapping[str, object]) -> StatedFamily:
+    """The family a trace's family fields (`family_fields`) state, with no members when the
+    digest or count is null or absent, as on a version stored before the fields existed."""
+    digest = trace.get("family_member_digest")
+    count = trace.get("family_member_count")
+    members = (
+        MemberFamily(digest=cast(str, digest), count=cast(int, count))
+        if digest is not None and count is not None
+        else None
+    )
+    stubs = cast("list[str]", trace.get("stub_candidates", []))
+    return StatedFamily(members=members, stub_candidates=tuple(stubs))
+
+
+@dataclass(frozen=True)
+class RecordedFamily:
+    """A `StatedFamily` as a store records it: `stated` at the head confirmation
+    `confirmed_at`, resolved under `basis` (`datasets_api.adapter.family_basis`)."""
+
+    stated: StatedFamily
+    confirmed_at: datetime
+    basis: str
+
+
+def family_stated_at(
+    recorded: RecordedFamily | None, *, confirmed_at: datetime | None, basis: str
+) -> StatedFamily:
+    """The family a response confirmed at `confirmed_at` under the serving `basis` states: the
+    `recorded` family when it was recorded at that confirmation under that basis, and
+    `UNKNOWN_FAMILY` otherwise, including when none was recorded, since a later confirmation
+    or another basis may admit another family."""
+    if recorded is None or recorded.confirmed_at != confirmed_at or recorded.basis != basis:
+        return UNKNOWN_FAMILY
+    return recorded.stated
+
+
+def recorded_family_json(recorded: RecordedFamily) -> dict[str, object]:
+    """The JSON object a store keeps for `recorded`: its `family_fields`, `confirmed_at` and
+    `basis`. `parse_recorded_family` reads it back."""
+    return {
+        **family_fields(recorded.stated),
+        "confirmed_at": recorded.confirmed_at.isoformat(),
+        "basis": recorded.basis,
+    }
+
+
+def parse_recorded_family(value: object) -> RecordedFamily | None:
+    """The `RecordedFamily` a `recorded_family_json` object holds. `None` for a NULL column and
+    for a value this code cannot read, such as one a newer image wrote with other types, so a
+    reader states the family unknown and logs the value."""
+    if value is None:
+        return None
+    stored = cast("Mapping[str, object]", value) if isinstance(value, Mapping) else {}
+    confirmed_at = _recorded_instant(stored)
+    if confirmed_at is None or not _readable_family(stored):
+        logger.warning("Stored member family is unreadable; stating it unknown: %r", value)
+        return None
+    return RecordedFamily(
+        stated=trace_family(stored),
+        confirmed_at=confirmed_at,
+        basis=cast(str, stored["basis"]),
+    )
+
+
+def _recorded_instant(stored: Mapping[str, object]) -> datetime | None:
+    """The timezone-aware `confirmed_at` of a stored family, `None` when it holds none."""
+    text = stored.get("confirmed_at")
+    try:
+        instant = datetime.fromisoformat(text) if isinstance(text, str) else None
+    except ValueError:
+        return None
+    return instant if instant is not None and instant.tzinfo is not None else None
+
+
+def _readable_family(value: Mapping[str, object]) -> bool:
+    """Whether every field of a stored family has the type `recorded_family_json` writes."""
+    digest = value.get("family_member_digest")
+    count = value.get("family_member_count")
+    stubs = value.get("stub_candidates", [])
+    return (
+        (digest is None or isinstance(digest, str))
+        and (count is None or (isinstance(count, int) and not isinstance(count, bool)))
+        and isinstance(stubs, list)
+        and all(isinstance(stub, str) for stub in stubs)
+        and isinstance(value.get("basis"), str)
+    )
 
 
 @dataclass(frozen=True)
@@ -116,6 +243,11 @@ class ManifestTrace:
     # (`materialise.composite.ComponentSummary.as_trace_entry`), in declaration order. Empty
     # for a plain definition, and omitted from `to_dict()` then.
 
+    @property
+    def family_statement(self) -> StatedFamily:
+        """The family this trace states (`family` and `stub_candidates`)."""
+        return StatedFamily(members=self.family, stub_candidates=self.stub_candidates)
+
     def to_dict(self) -> dict[str, object]:
         """Returns the wire shape. Optional fields are omitted when `None`.
         `graph_revision` is always present, null when unknown, `normalisations` is always present,
@@ -133,10 +265,7 @@ class ManifestTrace:
             result["origin_catalogue_build_id"] = self.origin_catalogue_build_id
         result["source_revisions"] = list(self.source_revisions)
         result["resolved_stat_vars"] = list(self.resolved_stat_vars)
-        result["family_member_digest"] = self.family.digest if self.family is not None else None
-        result["family_member_count"] = self.family.count if self.family is not None else None
-        if self.stub_candidates:
-            result["stub_candidates"] = list(self.stub_candidates)
+        result.update(family_fields(self.family_statement))
         result["facets"] = list(self.facets)
         result["normalisations"] = list(self.normalisations)
         if self.conversion is not None:

@@ -588,16 +588,22 @@ def build_observations_door(*, deps: DepsCell) -> DoorContribution:
             # refuses before its frame is read.
             OverCeilingError,
         ),
-        exception_exemplars=(
-            IdentityQuarantined(subject_id="spec_exemplar", id_kind="spec"),
-            ObservationsUnavailable(
-                id="spec_exemplar", content_version="cv_exemplar", reason="holds no frame1"
-            ),
-            ObservationsBackpressure(),
-            ObservationsGraphUnavailable(),
-            StoredFrameCorrupt(
-                id="spec_exemplar", content_version="cv_exemplar", key=("Count_Person", ())
-            ),
-            OverCeilingError("exemplar", ceiling_kind="bytes", count=1, cap=1),
-        ),
+        endpoint_exemplars={
+            "datasets.observations": (
+                SpecNotFound(id="spec_exemplar"),
+                IdentityQuarantined(subject_id="spec_exemplar", id_kind="spec"),
+                SnapshotNotFound(id="spec_exemplar", content_version="cv_exemplar"),
+                SnapshotRevoked(id="spec_exemplar", content_version="cv_exemplar", reason=None),
+                ArtifactExpired(id="spec_exemplar", content_version="cv_exemplar"),
+                ObservationsUnavailable(
+                    id="spec_exemplar", content_version="cv_exemplar", reason="holds no frame1"
+                ),
+                ObservationsBackpressure(),
+                ObservationsGraphUnavailable(),
+                StoredFrameCorrupt(
+                    id="spec_exemplar", content_version="cv_exemplar", key=("Count_Person", ())
+                ),
+                OverCeilingError("exemplar", ceiling_kind="bytes", count=1, cap=1),
+            )
+        },
     )

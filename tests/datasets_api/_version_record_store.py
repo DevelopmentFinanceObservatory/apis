@@ -172,7 +172,8 @@ CREATE TABLE datasets.subject_head (
     materialised_at TEXT NOT NULL,
     signal TEXT NOT NULL DEFAULT '{"members": []}',
     materialisation_id INTEGER,
-    dependencies TEXT
+    dependencies TEXT,
+    family TEXT
 );
 """
 
@@ -229,6 +230,7 @@ _JSON_COLUMNS = frozenset(
         "options",
         "refusal",
         "spends",
+        "family",
     }
 )
 _TIMESTAMP_COLUMNS = frozenset(
@@ -325,6 +327,10 @@ class FakeVersionRecordDatasetStore:
 
     def close(self) -> None:
         self._conn.close()
+
+
+# The member-resolution inputs head-store tests state a family under (`adapter.family_basis`).
+TEST_BASIS = "test-basis"
 
 
 def materialisation_record(

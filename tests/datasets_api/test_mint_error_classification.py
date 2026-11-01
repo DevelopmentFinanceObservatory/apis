@@ -922,7 +922,7 @@ class TestColumnNotDroppableCarriesOneIssuePerColumn:
         assert "unit" in spec.detail
 
 
-def test_artifact_record_conflict_stays_non_retryable_and_logs_a_reconciliation_warning(caplog):
+def test_artifact_record_conflict_stays_non_retryable_and_names_a_reconciliation_warning():
     exc = ArtifactRecordConflictError(
         digest="sha256:deadbeef",
         tier=Tier.working,
@@ -936,19 +936,15 @@ def test_artifact_record_conflict_stays_non_retryable_and_logs_a_reconciliation_
     exc.subject_id = "spec_abc123"
     exc.content_version = "cv_deadbeef"
 
-    with caplog.at_level(logging.WARNING):
-        spec = classify_mint_exception(exc)
+    spec = classify_mint_exception(exc)
 
     assert spec is not None
     assert spec.status == 500
     assert spec.retryable is False
-    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-    assert any(
-        "spec_abc123" in r.getMessage()
-        and "cv_deadbeef" in r.getMessage()
-        and "sha256:deadbeef" in r.getMessage()
-        for r in warnings
-    )
+    # The request path logs the line the problem names (`dfo_platform.problem.log_problem`).
+    assert spec.log is not None
+    assert spec.log_level == logging.WARNING
+    assert all(part in spec.log for part in ("spec_abc123", "cv_deadbeef", "sha256:deadbeef"))
 
 
 class _ConflictingArtifactStore(FakeArtifactStore):
@@ -1000,7 +996,39 @@ def test_mint_time_artifact_record_conflict_names_the_subject_through_the_real_d
     )
 
 
-def test_artifact_inventory_write_failure_logs_the_reconciliation_marker(caplog):
+class _InventoryFailingArtifactStore(FakeArtifactStore):
+    """Raises `ArtifactInventoryError` on every `put()`, as an inventory write that fails after
+    the object landed does."""
+
+    def put(self, data: bytes, *, tier: Tier):
+        digest = "sha256:" + hashlib.sha256(data).hexdigest()
+        raise ArtifactInventoryError(
+            digest=digest,
+            tier=tier,
+            bucket="dev-fin-observatory-datasets-working",
+            object_name=digest,
+        )
+
+
+def test_a_mint_whose_inventory_write_fails_logs_the_reconciliation_marker_once(caplog):
+    """The classifier names the marker line and the request path logs it, once."""
+    body = {
+        "schema_version": 1,
+        "input": {"kind": "statvar_set", "statvars": [_STAT_VAR_REF], "scope": _SCOPE},
+        "options": {"bundle": False},
+    }
+    client = _client(artifact_store=_InventoryFailingArtifactStore(), store=FakeDatasetStore())
+
+    with caplog.at_level(logging.ERROR):
+        resp = client.post("/api/datasets", json=body)
+
+    assert resp.status_code == 503, resp.text
+    marked = [r for r in caplog.records if ARTIFACT_INVENTORY_WRITE_FAILED_MARKER in r.getMessage()]
+    assert len(marked) == 1
+    assert marked[0].levelno == logging.ERROR
+
+
+def test_artifact_inventory_write_failure_names_the_reconciliation_marker():
     """A failed inventory write after object storage logs the orphan marker."""
     exc = ArtifactInventoryError(
         digest="sha256:deadbeef",
@@ -1009,44 +1037,37 @@ def test_artifact_inventory_write_failure_logs_the_reconciliation_marker(caplog)
         object_name="sha256:deadbeef",
     )
 
-    with caplog.at_level(logging.ERROR):
-        spec = classify_mint_exception(exc)
+    spec = classify_mint_exception(exc)
 
     assert spec is not None
     assert spec.status == 503
     assert spec.retryable is True
-    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
-    assert any(
-        ARTIFACT_INVENTORY_WRITE_FAILED_MARKER in r.getMessage()
-        and "sha256:deadbeef" in r.getMessage()
-        for r in errors
-    )
+    assert spec.log is not None
+    assert spec.log_level == logging.ERROR
+    assert spec.log.startswith(ARTIFACT_INVENTORY_WRITE_FAILED_MARKER)
+    assert "sha256:deadbeef" in spec.log
 
 
-def test_artifact_inventory_lookup_failure_does_not_log_the_reconciliation_marker(caplog):
+def test_artifact_inventory_lookup_failure_does_not_name_the_reconciliation_marker():
     """A failed lookup leaves the object intact. The orphan marker applies to inventory writes."""
     exc = ArtifactInventoryError(digest="sha256:deadbeef", tier=Tier.working)
 
-    with caplog.at_level(logging.ERROR):
-        spec = classify_mint_exception(exc)
+    spec = classify_mint_exception(exc)
 
     assert spec is not None
     assert spec.status == 503
-    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
-    assert not any(ARTIFACT_INVENTORY_WRITE_FAILED_MARKER in r.getMessage() for r in errors)
+    assert ARTIFACT_INVENTORY_WRITE_FAILED_MARKER not in (spec.log or "")
 
 
-def test_artifact_write_failure_does_not_log_the_reconciliation_marker(caplog):
+def test_artifact_write_failure_does_not_name_the_reconciliation_marker():
     """A failed object write leaves no orphan to reconcile."""
     exc = ArtifactWriteError(object_name="sha256:deadbeef", digest="sha256:deadbeef")
 
-    with caplog.at_level(logging.ERROR):
-        spec = classify_mint_exception(exc)
+    spec = classify_mint_exception(exc)
 
     assert spec is not None
     assert spec.status == 503
-    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
-    assert not any(ARTIFACT_INVENTORY_WRITE_FAILED_MARKER in r.getMessage() for r in errors)
+    assert ARTIFACT_INVENTORY_WRITE_FAILED_MARKER not in (spec.log or "")
 
 
 def test_no_bound_entity_mints_instead_of_refusing_ahead_of_the_facet_axes():

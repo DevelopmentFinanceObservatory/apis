@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING, cast
 from code_index import LevelOption
 from code_index.members import offers_slot
 from code_index.shared import get_index
-from dc_graph import GraphReadError
 from dfo_platform.executor import submit_with_context
 from materialise import GraphReader
 from materialise.enrichment import party_count
@@ -25,10 +24,9 @@ from search.engine.bind import SlotBindingDraft, sole_option_properties
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.config import settings
-from search.engine.degraded_reads import note_degraded_read
+from search.engine.degraded_reads import fail_open_reads
 from search.engine.errors import (
     EngineInputError,
-    GraphInfraError,
     GroundingMiss,
     RoleEntityUnplaced,
 )
@@ -44,7 +42,7 @@ from search.engine.region.codes import (
     ROLE_DECLARATION_UNVERIFIED,
     ROLE_SCOPE_DEFAULTED,
 )
-from search.engine.region.decisions import PlaceSetRefusedError, detect_set_ref
+from search.engine.region.decisions import detect_set_ref
 from search.engine.region.facets import answer_facet_dcids, answer_facets, cited_facets
 from search.engine.region.refs import (
     _ref_or_miss,
@@ -1097,25 +1095,24 @@ def _walked_relaxations(
 
     def walked(relaxed: list[SlotBindingDraft]) -> _WalkedRelaxation | None:
         try:
-            resolution = elected_role_class_shape(
-                shape,
-                shape_query(shape, relaxed, role_keys.bound, open_role_keys=role_keys.open),
-                walks=walks,
-                arcs_graph=ctx.graph,
-                deadline=ctx.deadline,
-            )
-        except (GraphReadError, GraphInfraError, TimeoutError):
-            logger.debug("nearest-real relaxation walk's read failed", exc_info=True)
-            note_degraded_read("nearest-real relaxation walk")
-            return None
+            with fail_open_reads(
+                "nearest-real relaxation walk", budget_s=settings().nearest_real_budget_s
+            ):
+                resolution = elected_role_class_shape(
+                    shape,
+                    shape_query(shape, relaxed, role_keys.bound, open_role_keys=role_keys.open),
+                    walks=walks,
+                    arcs_graph=ctx.graph,
+                    deadline=ctx.deadline,
+                )
+                return _WalkedRelaxation(
+                    resolution.value,
+                    unverified=not resolution.authority.settled,
+                    walked=resolution.walked,
+                )
         except Exception:
             logger.debug("nearest-real relaxation walk failed", exc_info=True)
-            return None
-        return _WalkedRelaxation(
-            resolution.value,
-            unverified=not resolution.authority.settled,
-            walked=resolution.walked,
-        )
+        return None
 
     with ThreadPoolExecutor(
         max_workers=len(relaxations), thread_name_prefix="nearest-real-walk"
@@ -1134,8 +1131,8 @@ def _relaxations_presence(
     `ctx.presence` lacks (`presence_stat_vars`). A walk can widen a relaxation's family past
     the members the request's read covered, and a relaxed binding can widen a held family's
     served members. Off a default scope, or with every member covered, `ctx.presence`
-    itself. A read that fails leaves `ctx.presence`, and a relaxation whose members it
-    lacks yields no suggestion."""
+    itself. A read lost to `degraded_reads.LOST_READ_ERRORS` leaves `ctx.presence`, and a
+    relaxation whose members it lacks yields no suggestion. Any other error propagates."""
     from search.engine.place import read_default_presence
     from search.engine.region.state import presence_stat_vars
 
@@ -1156,14 +1153,11 @@ def _relaxations_presence(
     )
     if not missing:
         return presence
-    try:
+    with fail_open_reads("nearest-real presence", budget_s=settings().nearest_real_budget_s):
         return read_default_presence(
             graph=ctx.graph, sdmx=ctx.sdmx, stat_vars=missing, known=presence, deadline=ctx.deadline
         )
-    except Exception:
-        logger.warning("nearest-real relaxations' presence read failed", exc_info=True)
-        note_degraded_read("nearest-real presence")
-        return presence
+    return presence
 
 
 def _relaxed_binding_suggestion(
@@ -1220,213 +1214,212 @@ def _relaxed_binding_suggestion(
         )
 
     try:
-        bound, mat = settle_sets(_relaxation_place(ctx, shape), read)
-        if not isinstance(mat, Materialised):
-            return None, None, None, None
-        # A flagged-unavailable carrier represents the original binding.
-        if not mat.has_data:
-            return None, None, None, None
-        roles = bound.roles
-        if bound.where != ctx.place.where:
-            relaxed = with_where(relaxed, bound)
-        place = bound.settled(mat)
-        shape = settled_shape(shape, mat)
+        with fail_open_reads("nearest-real suggestion", budget_s=settings().nearest_real_budget_s):
+            bound, mat = settle_sets(_relaxation_place(ctx, shape), read)
+            if not isinstance(mat, Materialised):
+                return None, None, None, None
+            # A flagged-unavailable carrier represents the original binding.
+            if not mat.has_data:
+                return None, None, None, None
+            roles = bound.roles
+            if bound.where != ctx.place.where:
+                relaxed = with_where(relaxed, bound)
+            place = bound.settled(mat)
+            shape = settled_shape(shape, mat)
 
-        ground = _ground_answer(
-            shape,
-            relaxed,
-            mat.sv_dcids,
-            roles.roles,
-            ctx.graph,
-            mat.read_plan,
-            ctx.query_entity_text_by_dcid,
-            member_facts=mat.member_facts,
-            open_axes=place.roles.open_axes,
-        )
-
-        (
-            ft_refs,
-            role_refs,
-            slots,
-            slot_key_models,
-            sv_refs,
-            entity_data,
-            source_refs,
-            slot_opts,
-            _draft_inapplicable_slots,  # unused: draft-kind-derived, see below
-            ground_warnings,
-            labels,
-        ) = ground
-        if not sv_refs:
-            return None, None, ground_warnings, None
-
-        # Use the probe's resolved facts. Index-backed shape arcs may cover another population.
-        inapplicable_slots = inapplicable_slots_from_member_facts(
-            slots=slots,
-            sv_dcids=mat.sv_dcids,
-            member_facts=mat.member_facts or {},
-        )
-        unresolved_slots = unresolved_slots_from_member_facts(
-            slots=slots,
-            sv_dcids=mat.sv_dcids,
-            member_facts=mat.member_facts or {},
-        )
-
-        # Count the admitted population, not only the elected StatVars.
-        shape_model = build_shape_model(
-            shape,
-            slot_key_models,
-            ft_refs,
-            member_count=(mat.population.admitted if mat.population is not None else len(sv_refs)),
-            members=mat.served_members,
-        )
-        stat_vars_list = build_stat_vars(
-            sv_refs,
-            shape.shape_id,
-            slots,
-            plan=mat.read_plan,
-            destination_confirmed=mat.destination_confirmed,
-            member_facts=mat.member_facts or {},
-        )
-        entities_list = [_build_entity(rd, er, etr, role_refs) for rd, er, etr in entity_data]
-        slots = bind_when_slot(slots, window=mat.coverage.window)
-        slots = apply_slot_expansions(slots, slot_expansions(relaxed))
-
-        available_at_place, confidence = _place_confidence(
-            destination_dcid=roles.obs_destination_dcid,
-            available_at_place=mat.available_at_place,
-            representative_score=shape.representative_score,
-            retrieved=shape.retrieved,
-        )
-        if ctx.include_option_coverage and slot_opts:
-            # Keep the leaf dependency direction. Enrichment failure leaves options uncovered.
-            #
-            # Use the shape's declared roles, matching the primary resolve boundary.
-            # An unplaced entity skips optional enrichment rather than the suggestion. The
-            # probe reads every place the suggestion is read over, so no one named place
-            # decides it.
-            _probe_entities: dict[str, list[str]] | None
-            _probe_places = _relaxation_places(place)
-            try:
-                if is_role_bearing(shape):
-                    _probe_entities = entities_by_role(
-                        shape=shape,
-                        by_axis={"destination": _probe_places, "origin": roles.origin_dcids},
-                    )
-                else:
-                    _probe_entities = entities_by_role(shape=shape, subject=_probe_places)
-            except RoleEntityUnplaced:
-                logger.warning(
-                    "option coverage probe skipped for a nearest_real suggestion, "
-                    "shape_id=%r: the resolved entity has no role to bind under",
-                    shape.shape_id,
-                )
-                _probe_entities = None
-            if _probe_entities is not None:
-                try:
-                    probe_role_keys = entity_role_keys(
-                        _probe_entities, open_axes=place.roles.open_axes
-                    )
-                    slot_opts = standard_option_coverage(
-                        shape=shape,
-                        slot_options=slot_opts,
-                        entities=_probe_entities,
-                        materialise_graph=ctx.materialise_graph,
-                        date_request=ctx.date_request,
-                        place_dcids=_probe_places,
-                        datasets=elected_datasets(mat.member_facts),
-                        query=shape_query(
-                            shape,
-                            relaxed,
-                            probe_role_keys.bound,
-                            open_role_keys=probe_role_keys.open,
-                        ),
-                    )
-                except Exception:
-                    logger.warning(
-                        "option_coverage probe failed for a nearest_real suggestion, "
-                        "shape_id=%r; returning uncovered slot_options",
-                        shape.shape_id,
-                        exc_info=True,
-                    )
-                    probe_warning = Warning(
-                        code=OPTION_COVERAGE_PROBE_FAILED,
-                        severity="warn",
-                        message=(
-                            "option coverage probe failed for a nearest_real suggestion "
-                            f"on shape {shape.shape_id!r}; slot options returned "
-                            "without coverage."
-                        ),
-                    )
-
-        spec = build_spec(
-            shape=shape_model,
-            slots=slots,
-            stat_vars=stat_vars_list,
-            entities=entities_list,
-            coverage=mat.coverage,
-            plan=mat.read_plan,
-            # The relaxed query's own answer states this headline and these axes.
-            headline=mat.headline,
-            open_axis_facts=served_open_axes(
+            ground = _ground_answer(
+                shape,
                 relaxed,
                 mat.sv_dcids,
-                mat.member_facts or {},
-                value_labels=shape.value_labels or {},
-            ),
-            coverage_index=ctx.coverage.index,
-            pin_served_provenance=ctx.pin_served_provenance,
-            resolved_sources=source_refs,
-            facets=answer_facets(
+                roles.roles,
+                ctx.graph,
                 mat.read_plan,
-                labels,
-                bound_axes={},
-                request_basis=None,
-                unit_request=None,
-                currency_of=functools.partial(unit_currency, ctx.graph, deadline=ctx.deadline),
-            ),
-            slot_options=slot_opts,
-            available_at_place=available_at_place,
-            confidence=confidence,
-            requested_window=requested_window_from_date_request(ctx.date_request),
-            open_roles=mat.open_axes,
-            inapplicable_slots=inapplicable_slots,
-            unresolved_slots=unresolved_slots,
-            text_recognized_properties=ctx.text_recognized_properties,
-            grouped_properties=ctx.grouped_properties,
-            measure_elected_properties=ctx.measure_elected_properties,
-            defaulted_properties=ctx.defaulted_properties,
-            named_groups=ctx.named_groups,
-            # These counts describe the confirmed half of the same population record.
-            stat_vars_member_count=(
-                mat.population.confirmed if mat.population is not None else None
-            ),
-            stat_vars_member_count_exact=(
-                mat.population.member_count_exact if mat.population is not None else True
-            ),
-            walked=walked,
-        )
-        spec = apply_declaration_version(spec, relaxed)
-    except PlaceSetRefusedError:
-        # A relaxation that cannot bind its places is not suggested.
-        return None, None, ground_warnings, probe_warning
-    except (GraphReadError, GraphInfraError, TimeoutError):
-        note_degraded_read("nearest-real suggestion")
-        return None, None, ground_warnings, probe_warning
-    except Exception:
-        return None, None, ground_warnings, probe_warning
+                ctx.query_entity_text_by_dcid,
+                member_facts=mat.member_facts,
+                open_axes=place.roles.open_axes,
+            )
 
-    return (
-        NearestRealSpec(
-            spec_id=spec.spec_id,
-            definition=spec.definition,
-            resolved=spec.resolved,
-            relaxation=relaxation,
-        ),
-        SuggestionRead(plan=mat.read_plan, place=place, member_facts=mat.member_facts),
-        ground_warnings,
-        probe_warning,
-    )
+            (
+                ft_refs,
+                role_refs,
+                slots,
+                slot_key_models,
+                sv_refs,
+                entity_data,
+                source_refs,
+                slot_opts,
+                _draft_inapplicable_slots,  # unused: draft-kind-derived, see below
+                ground_warnings,
+                labels,
+            ) = ground
+            if not sv_refs:
+                return None, None, ground_warnings, None
+
+            # Use the probe's resolved facts. Index-backed shape arcs may cover another population.
+            inapplicable_slots = inapplicable_slots_from_member_facts(
+                slots=slots,
+                sv_dcids=mat.sv_dcids,
+                member_facts=mat.member_facts or {},
+            )
+            unresolved_slots = unresolved_slots_from_member_facts(
+                slots=slots,
+                sv_dcids=mat.sv_dcids,
+                member_facts=mat.member_facts or {},
+            )
+
+            # Count the admitted population, not only the elected StatVars.
+            shape_model = build_shape_model(
+                shape,
+                slot_key_models,
+                ft_refs,
+                member_count=(
+                    mat.population.admitted if mat.population is not None else len(sv_refs)
+                ),
+                members=mat.served_members,
+            )
+            stat_vars_list = build_stat_vars(
+                sv_refs,
+                shape.shape_id,
+                slots,
+                plan=mat.read_plan,
+                destination_confirmed=mat.destination_confirmed,
+                member_facts=mat.member_facts or {},
+            )
+            entities_list = [_build_entity(rd, er, etr, role_refs) for rd, er, etr in entity_data]
+            slots = bind_when_slot(slots, window=mat.coverage.window)
+            slots = apply_slot_expansions(slots, slot_expansions(relaxed))
+
+            available_at_place, confidence = _place_confidence(
+                destination_dcid=roles.obs_destination_dcid,
+                available_at_place=mat.available_at_place,
+                representative_score=shape.representative_score,
+                retrieved=shape.retrieved,
+            )
+            if ctx.include_option_coverage and slot_opts:
+                # Keep the leaf dependency direction. Enrichment failure leaves options uncovered.
+                #
+                # Use the shape's declared roles, matching the primary resolve boundary.
+                # An unplaced entity skips optional enrichment rather than the suggestion. The
+                # probe reads every place the suggestion is read over, so no one named place
+                # decides it.
+                _probe_entities: dict[str, list[str]] | None
+                _probe_places = _relaxation_places(place)
+                try:
+                    if is_role_bearing(shape):
+                        _probe_entities = entities_by_role(
+                            shape=shape,
+                            by_axis={"destination": _probe_places, "origin": roles.origin_dcids},
+                        )
+                    else:
+                        _probe_entities = entities_by_role(shape=shape, subject=_probe_places)
+                except RoleEntityUnplaced:
+                    logger.warning(
+                        "option coverage probe skipped for a nearest_real suggestion, "
+                        "shape_id=%r: the resolved entity has no role to bind under",
+                        shape.shape_id,
+                    )
+                    _probe_entities = None
+                if _probe_entities is not None:
+                    try:
+                        probe_role_keys = entity_role_keys(
+                            _probe_entities, open_axes=place.roles.open_axes
+                        )
+                        slot_opts = standard_option_coverage(
+                            shape=shape,
+                            slot_options=slot_opts,
+                            entities=_probe_entities,
+                            materialise_graph=ctx.materialise_graph,
+                            date_request=ctx.date_request,
+                            place_dcids=_probe_places,
+                            datasets=elected_datasets(mat.member_facts),
+                            query=shape_query(
+                                shape,
+                                relaxed,
+                                probe_role_keys.bound,
+                                open_role_keys=probe_role_keys.open,
+                            ),
+                        )
+                    except Exception:
+                        logger.warning(
+                            "option_coverage probe failed for a nearest_real suggestion, "
+                            "shape_id=%r; returning uncovered slot_options",
+                            shape.shape_id,
+                            exc_info=True,
+                        )
+                        probe_warning = Warning(
+                            code=OPTION_COVERAGE_PROBE_FAILED,
+                            severity="warn",
+                            message=(
+                                "option coverage probe failed for a nearest_real suggestion "
+                                f"on shape {shape.shape_id!r}; slot options returned "
+                                "without coverage."
+                            ),
+                        )
+
+            spec = build_spec(
+                shape=shape_model,
+                slots=slots,
+                stat_vars=stat_vars_list,
+                entities=entities_list,
+                coverage=mat.coverage,
+                plan=mat.read_plan,
+                # The relaxed query's own answer states this headline and these axes.
+                headline=mat.headline,
+                open_axis_facts=served_open_axes(
+                    relaxed,
+                    mat.sv_dcids,
+                    mat.member_facts or {},
+                    value_labels=shape.value_labels or {},
+                ),
+                coverage_index=ctx.coverage.index,
+                pin_served_provenance=ctx.pin_served_provenance,
+                resolved_sources=source_refs,
+                facets=answer_facets(
+                    mat.read_plan,
+                    labels,
+                    bound_axes={},
+                    request_basis=None,
+                    unit_request=None,
+                    currency_of=functools.partial(unit_currency, ctx.graph, deadline=ctx.deadline),
+                ),
+                slot_options=slot_opts,
+                available_at_place=available_at_place,
+                confidence=confidence,
+                requested_window=requested_window_from_date_request(ctx.date_request),
+                open_roles=mat.open_axes,
+                inapplicable_slots=inapplicable_slots,
+                unresolved_slots=unresolved_slots,
+                text_recognized_properties=ctx.text_recognized_properties,
+                grouped_properties=ctx.grouped_properties,
+                measure_elected_properties=ctx.measure_elected_properties,
+                defaulted_properties=ctx.defaulted_properties,
+                named_groups=ctx.named_groups,
+                # These counts describe the confirmed half of the same population record.
+                stat_vars_member_count=(
+                    mat.population.confirmed if mat.population is not None else None
+                ),
+                stat_vars_member_count_exact=(
+                    mat.population.member_count_exact if mat.population is not None else True
+                ),
+                walked=walked,
+            )
+            spec = apply_declaration_version(spec, relaxed)
+            return (
+                NearestRealSpec(
+                    spec_id=spec.spec_id,
+                    definition=spec.definition,
+                    resolved=spec.resolved,
+                    relaxation=relaxation,
+                ),
+                SuggestionRead(plan=mat.read_plan, place=place, member_facts=mat.member_facts),
+                ground_warnings,
+                probe_warning,
+            )
+    except Exception:
+        # A relaxation that cannot bind its places (`PlaceSetRefusedError`), or whose probe
+        # fails otherwise, is not suggested.
+        logger.debug("nearest-real suggestion failed", exc_info=True)
+    return None, None, ground_warnings, probe_warning
 
 
 def _suggest_nearest_real(
@@ -1478,7 +1471,14 @@ def _suggest_nearest_real(
     it admits and settled on the StatVars it serves, as a resubmit of the suggestion is.
     Each suggestion is read over its own settled context (`SuggestionRead.place`). A
     suggestion whose walk settled nothing adds `membership_unverified`, as that first answer
-    warns it. Each probe uses `deadline`, and any error yields no suggestion.
+    warns it. Each probe uses `deadline`. The walks, the presence read and the suggestions
+    run under the nearest-real budget (`nearest_real_budget_s`,
+    `degraded_reads.fail_open_reads`), one budget from the start of the caller's scope
+    (`phase_place_materialise._nearest_real_for`), and each notes the read it loses
+    (`degraded_reads.LOST_READ_ERRORS`) unless that budget ran out first. A walk or a
+    suggestion's probe that raises any other error yields no suggestion for its relaxation.
+    The presence read swallows only a lost read, which leaves `presence`. Any other error
+    propagates and fails the part.
     Option-coverage failures add warnings. Callers fetch observations separately, from each
     suggestion's plan and places.
     A value bound as its slot's sole option (`bind.sole_option_properties`) is not relaxed:

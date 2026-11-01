@@ -514,12 +514,14 @@ def build_description_door(*, deps: DepsCell) -> DoorContribution:
             SnapshotRevoked,
             DescriptionBackpressure,
         ),
-        exception_exemplars=(
-            DescriptionRequestInvalid("/property", "exemplar"),
-            SpecNotFound(id="spec_exemplar"),
-            IdentityQuarantined(subject_id="spec_exemplar", id_kind="spec"),
-            SnapshotNotFound(id="spec_exemplar", content_version="cv_exemplar"),
-            SnapshotRevoked(id="spec_exemplar", content_version="cv_exemplar", reason=None),
-            DescriptionBackpressure(),
-        ),
+        endpoint_exemplars={
+            "datasets.description": (
+                DescriptionRequestInvalid("/property", "exemplar"),
+                SpecNotFound(id="spec_exemplar"),
+                IdentityQuarantined(subject_id="spec_exemplar", id_kind="spec"),
+                SnapshotNotFound(id="spec_exemplar", content_version="cv_exemplar"),
+                SnapshotRevoked(id="spec_exemplar", content_version="cv_exemplar", reason=None),
+                DescriptionBackpressure(),
+            )
+        },
     )

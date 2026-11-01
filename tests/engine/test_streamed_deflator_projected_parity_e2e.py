@@ -192,7 +192,7 @@ def test_streamed_and_buffered_answers_carry_the_same_deflator_projected_warning
     """A `{EUR, current}` request-form binding whose exchange rate at the
     observation year has no actual row for the target currency, only a
     projected (IMFProjection) one: the buffered path (_attach_observations,
-    via region/pipeline.py's eager _resolve_spec_observations call) and the
+    over the answer's `PreviewReader.observations` read) and the
     streamed path (_observations_events, via result.observations_task) must
     carry the same deflator_projected warning -- both derive it from the
     same _deflator_projected_warning helper in region/observations/

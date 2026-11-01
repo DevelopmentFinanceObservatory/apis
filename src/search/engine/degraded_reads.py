@@ -27,18 +27,31 @@ re-election stand-in hands on both when the choice compared it, the winner and t
 ahead of it (`phase_place_materialise._reelect_zero_observation_sibling`), and every
 alternate admission reads hands on both (`candidate_admission`).
 
-Only a read an answer depends on is noted. A fact left unknown because no read was asked for
-is not: a one-shape bind menu skips the availability read over a named set's places
+A read on the request's critical path whose loss the answer survives runs inside
+`fail_open_reads`, which bounds it by a budget and notes it when it is lost. A read that ran
+out its budget is not noted. It was healthy but slow, so the answer without it can be cached.
+
+Only a read that was made and lost is noted. A fact left unknown because no read was made for
+it is not: a one-shape bind menu skips the availability read over a named set's places
 (`phase_rank_bind._phase_prune_and_rank`), so that shape's availability there is unknown,
 and its region is not degraded.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+import logging
+import time
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from typing import Final
+
+from dc_graph import GraphCapExceededError, GraphDeadlineExceededError
+from dfo_platform.request_deadline import bounded_deadline, request_deadline
+from search.engine.errors import UPSTREAM_READ_ERRORS, EngineInfraError
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -112,3 +125,134 @@ def carry(record: DegradedReads, *, consulted: bool = True) -> None:
         record.merge_into(outer)
     else:
         outer.reads.extend(record.reads)
+
+
+LOST_READ_ERRORS: Final = (
+    EngineInfraError,
+    TimeoutError,
+    GraphCapExceededError,
+    *UPSTREAM_READ_ERRORS,
+)
+"""What a read that fails open loses to: an infrastructure failure of the graph or LLM client
+(`EngineInfraError`, `GraphInfraError` among them), a deadline it crossed (a graph
+`GraphDeadlineExceededError`, or a `TimeoutError` such as a single-flight `WaitTimeout`), a
+response past its byte cap (`dc_graph.GraphCapExceededError`, which the engine's own cap error
+extends), an SDMX failure, or an upstream answer the read could not use. A fault in the code,
+such as a `ValueError`, `TypeError` or pydantic `ValidationError`, is none of these and
+raises."""
+
+
+@dataclass(frozen=True)
+class ReadBudget:
+    """A read's own time limit: `deadline`, set no later than `request_deadline`, the
+    request's own (`None` when the request has none). A `fail_open_reads` block holds one,
+    and a read that bounds itself by a budget of its own outside such a block, as
+    `related_read` does, carries its own."""
+
+    deadline: float
+    request_deadline: float | None
+
+    @classmethod
+    def from_now(cls, budget_s: float, *, request_deadline: float | None) -> ReadBudget:
+        """`budget_s` from now, or `request_deadline` when that comes first."""
+        deadline = time.monotonic() + budget_s
+        if request_deadline is not None:
+            deadline = min(deadline, request_deadline)
+        return cls(deadline=deadline, request_deadline=request_deadline)
+
+    def ran_out(self, exc: BaseException) -> bool:
+        """Whether `exc` is a deadline error (`TimeoutError`, `GraphDeadlineExceededError`)
+        raised once this budget's deadline passed and before the request's own did, so the
+        deadline that fired is the budget, earlier than the request's. The clock tells which
+        deadline fired, and no message is read. A deadline error after the request's own
+        deadline passed is no budget running out."""
+        if not isinstance(exc, TimeoutError | GraphDeadlineExceededError):
+            return False
+        now = time.monotonic()
+        return now >= self.deadline and (
+            self.request_deadline is None or now < self.request_deadline
+        )
+
+
+_SCOPE: ContextVar[ReadBudget | None] = ContextVar("search_fail_open_scope", default=None)
+"""The budget of the innermost `fail_open_reads` block, whose `request_deadline` is the one
+bound outside every such block."""
+
+
+def scope_budget_ran_out(exc: BaseException) -> bool:
+    """Whether `exc` is the innermost `fail_open_reads` block's own budget running out
+    (`ReadBudget.ran_out`). Outside a block it is not."""
+    scope = _SCOPE.get()
+    return scope is not None and scope.ran_out(exc)
+
+
+def note_lost_read(read: str, exc: BaseException, *, budget: ReadBudget | None = None) -> None:
+    """Note `read`, lost to `exc`, unless `exc` is `budget` running out, or with no `budget`
+    the innermost `fail_open_reads` block's (`ReadBudget.ran_out`). A read that is healthy
+    but slower than its budget leaves an answer that can be stored, while a failed read, or
+    one past the request's own deadline, leaves one that cannot. Every site that notes a read
+    lost to an exception notes it here, so the rule holds wherever the read ran."""
+    budget = budget if budget is not None else _SCOPE.get()
+    if budget is None or not budget.ran_out(exc):
+        note_degraded_read(read)
+
+
+@contextmanager
+def fail_open_reads(
+    name: str, *, budget_s: float, about: Mapping[str, object] | None = None
+) -> Iterator[float]:
+    """Bound every read made in the block, and swallow the one it loses.
+
+    The block's reads run under `budget_s` from entry, or the bound request deadline when
+    that comes first (`dfo_platform.request_deadline`), so a stalled read on the request's
+    critical path holds it for the budget at most. The bound is the ambient deadline the
+    graph and SDMX clients narrow each read with (`bounded_deadline`), so it reaches reads
+    whose method takes no deadline, the waits that narrow by it, and the reads of worker
+    threads that copy the context (`asyncio.to_thread`, `submit_with_context`) once the
+    block has started them. It only narrows: a scope inside another, or under a nearer
+    request deadline, keeps the nearer bound. Yields the bound.
+
+    A read lost to one of `LOST_READ_ERRORS` ends the block, and the code after the block
+    runs, so a site sets its fallback before the block. The lost read is noted as `name`
+    (`note_lost_read`) unless the block's own budget ran out first (`scope_budget_ran_out`):
+    a deadline error raised once the block's deadline passed, while that deadline is earlier
+    than the request's own and the request's has not passed. Such a result is dropped and
+    logged, and the answer without it can be stored. The warning logged for a lost read
+    names what the read covered, `about` (the variables, places or groups it was to read),
+    and carries the traceback unless the read ran past a deadline, whose exception says
+    nothing more. Every other exception propagates. A read whose failure fails the request
+    keeps the request's deadline and stays outside such a block, as
+    `convertibility._dated_plan` does."""
+    bound = time.monotonic() + budget_s
+    ambient = bounded_deadline(None)
+    deadline = bound if ambient is None else min(bound, ambient)
+    outer = _SCOPE.get()
+    scope = ReadBudget(
+        deadline=deadline, request_deadline=ambient if outer is None else outer.request_deadline
+    )
+    token = _SCOPE.set(scope)
+    try:
+        with request_deadline(deadline):
+            yield deadline
+    except LOST_READ_ERRORS as exc:
+        if scope.ran_out(exc):
+            logger.info(
+                "%s dropped for %s: its %.1f s budget ran out: %s: %s",
+                name,
+                dict(about or {}),
+                budget_s,
+                type(exc).__name__,
+                exc,
+            )
+            return
+        logger.warning(
+            "%s lost for %s: %s: %s",
+            name,
+            dict(about or {}),
+            type(exc).__name__,
+            exc,
+            exc_info=not isinstance(exc, TimeoutError | GraphDeadlineExceededError),
+        )
+        note_degraded_read(name)
+    finally:
+        _SCOPE.reset(token)

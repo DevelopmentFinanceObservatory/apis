@@ -1665,7 +1665,7 @@
     ["FakeGraph.node_labels_batch",{"dcids":["Country"]}],
     ["FakeGraph.observation_facets_batch",{"stat_vars":["FertilityRate_Person_Female"],"entities":["country/ETH"],"needs_dates":true}]
   ],
-  "test_parsed_entry_dcid_pins[one_text_both_members_values_refuses_request_invalid]": [],
+  "test_parsed_entry_dcid_pins[one_text_both_members_values_on_one_end_refuses_request_invalid]": [],
   "test_parsed_entry_dcid_pins[one_text_two_dcids_refuses_request_invalid]": [],
   "test_parsed_entry_dcid_pins[per_part_pins_resolve_to_different_places]": [
     ["FakeGraph.node_types_batch",{"dcids":["country/COD","country/COG"]}],

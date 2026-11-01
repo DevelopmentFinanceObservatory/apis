@@ -26,6 +26,7 @@ from dataset_store.snapshot import StoredVersion, VersionFacts, VersionState
 from description.facts import Basis, DescriptionRecord
 from description.stored import FieldPath
 from materialise.enrichment import PARTY_FIELDS, is_party_role
+from materialise.trace import RecordedFamily, StatedFamily
 
 logger = logging.getLogger(__name__)
 
@@ -418,6 +419,14 @@ class SubjectHead:
     the head's version, and `dependencies` is that run's fingerprint as stored, which
     freshness compares. Both are `None` on a head written before runs were recorded, and
     `dependencies` is `None` on a head whose run produced another version.
+
+    `family` is the member family the head's latest admission stated, a run's or a freshness
+    check's, with the head confirmation it was stated at and the member-resolution inputs it
+    was resolved under (`adapter.family_basis`). A head serve states it only while its
+    `confirmed_at` equals the head's own and its `basis` the serving one. A write that moves
+    the head without stating a family leaves it behind, and a moved basis resolves families
+    afresh.
+    `None` on a head no write has reached since the column was added.
     """
 
     subject_id: str
@@ -426,6 +435,7 @@ class SubjectHead:
     materialised_at: datetime
     materialisation_id: int | None
     dependencies: Mapping[str, object] | None
+    family: RecordedFamily | None = None
 
 
 @dataclass(frozen=True)
@@ -453,6 +463,8 @@ class HeadWriter(Protocol):
         self,
         *,
         materialisation: MaterialisationRecord,
+        family: StatedFamily,
+        basis: str,
         expected_materialisation_id: int | None,
         fence: HeadFence | None = None,
     ) -> SubjectHead | None:
@@ -463,9 +475,10 @@ class HeadWriter(Protocol):
         `None` for no head. `None` matches an empty row or a head that names no run, so of two
         writers with one expectation only the first applies, whatever versions they produce.
         An applied write sets both timestamps to the run's `materialised_at`, names the run, stores
-        its dependencies, and returns the stored head. A mismatch keeps the run's row, leaves the
-        head unchanged, and returns `None`. The caller rereads the head to find the winner. A
-        failure writes neither.
+        its dependencies and the `family` its trace states, resolved under `basis`, as a
+        `RecordedFamily` stated at the run's `materialised_at`, and returns the stored head. A
+        mismatch keeps the run's row, leaves the head unchanged, and returns `None`. The caller
+        rereads the head to find the winner. A failure writes neither.
 
         A `fence` makes the same transaction first lock the fence's operation row and check it
         is still `running` at the fence's attempt. When it is not, the call raises
@@ -479,9 +492,13 @@ class HeadWriter(Protocol):
         *,
         subject_id: str,
         content_version: str,
+        family: StatedFamily,
+        basis: str,
     ) -> SubjectHead | None:
-        """Advance `confirmed_at` only if the stored version matches. Leave the version,
-        `materialised_at`, and dependencies unchanged. Return `None` on a mismatch or missing row.
+        """Advance `confirmed_at` and store `family`, the family the confirming check resolved
+        under `basis`, as a `RecordedFamily` stated at that confirmation, only if the stored
+        version matches. Leave the version, `materialised_at`, and dependencies unchanged. Return
+        `None` on a mismatch or missing row.
         """
         ...
 
@@ -500,14 +517,16 @@ class HeadStore(HeadReader, HeadWriter, Protocol):
 
 class NullHeadWriter:
     """No-op `HeadStore` for surfaces without persistence. `advance_head` accepts any expected
-    run and any fence, and returns a head stamped with the current time that names no run.
-    `confirm_head` and `read_head` return `None`.
+    run and any fence, and returns a head stamped with the current time that names no run and
+    states the run's family. `confirm_head` and `read_head` return `None`.
     """
 
     def advance_head(
         self,
         *,
         materialisation: MaterialisationRecord,
+        family: StatedFamily,
+        basis: str,
         expected_materialisation_id: int | None,
         fence: HeadFence | None = None,
     ) -> SubjectHead:
@@ -519,9 +538,12 @@ class NullHeadWriter:
             materialised_at=now,
             materialisation_id=None,
             dependencies=materialisation.dependencies,
+            family=RecordedFamily(stated=family, confirmed_at=now, basis=basis),
         )
 
-    def confirm_head(self, *, subject_id: str, content_version: str) -> SubjectHead | None:
+    def confirm_head(
+        self, *, subject_id: str, content_version: str, family: StatedFamily, basis: str
+    ) -> SubjectHead | None:
         return None
 
     def read_head(self, subject_id: str) -> SubjectHead | None:

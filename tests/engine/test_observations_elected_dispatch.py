@@ -20,7 +20,7 @@ from materialise.rate_tables import RateTableCache
 from materialise.recipe_bodies import RECIPE_BODIES
 from search.engine.concurrency import scoped_concurrency
 from search.engine.region.codes import OBSERVATIONS_NO_MATCHING_SOURCE
-from search.engine.region.observations.dispatch import _observations_relaunch_closure
+from search.engine.region.observations.dispatch import PreviewRead, PreviewReader
 from search.engine.region.result import FacetAxisFilter
 from search.engine.region.un_system import NO_LABELS
 from search.models import (
@@ -638,19 +638,25 @@ def test_relaunch_closure_forwards_unit_request_and_elected_to_conversion():
             },
         )
         async with scoped_concurrency():
-            relaunch = _observations_relaunch_closure(
-                [_BARE_STAT_VAR],
-                {"observationAbout": [entity]},
+            relaunch = PreviewReader(
+                read=PreviewRead(
+                    sv_dcids=(_BARE_STAT_VAR,),
+                    obs_entities={"observationAbout": [entity]},
+                    plan=pair_plan([_BARE_STAT_VAR], {"observationAbout": [entity]}, reader=graph),
+                    facet_filter=None,
+                    bulk_places=None,
+                    member_facts=None,
+                    unit_request=unit_request,
+                    elected=elected,
+                ),
                 graph=FakeGraph(),
+                sdmx=None,
                 materialise_graph=graph,
                 materialise_sdmx=sdmx,
                 rate_cache=RateTableCache(),
-                unit_request=unit_request,
-                elected=elected,
+                deadline=None,
                 coverage=empty_coverage_snapshot(),
-                plan=pair_plan([_BARE_STAT_VAR], {"observationAbout": [entity]}, reader=graph),
-                variable_labels=NO_LABELS,
-            )
+            ).relaunch(NO_LABELS)
             events, warns = await relaunch("spec-1")
         assert not warns
         assert len(events) == 1

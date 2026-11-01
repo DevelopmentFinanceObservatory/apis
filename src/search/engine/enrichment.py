@@ -124,7 +124,8 @@ async def _stream_slot_options(
     only the primary fan-out.
 
     Every slot-options or observations task whose result did not reach the stream in full,
-    through a timeout or a graph failure, appends its kind to `incomplete_out`. The caller
+    through a timeout or a graph failure, or whose preview swallowed a read
+    (`ObservationsEvent.degraded`), appends its kind to `incomplete_out`. The caller
     reports it to the response cache, which then stores no bundle. A place-options task
     appends nothing, since the bundle holds no place options. The list stays inside the
     process.
@@ -236,6 +237,9 @@ async def _stream_slot_options(
                     logger.warning("trailing enrichment probe task failed", exc_info=True)
                     incomplete_out.append(task_kind[t])
                     continue
+                if any(isinstance(ev, ObservationsEvent) and ev.degraded for ev in events):
+                    # The preview stands on a read it swallowed, so no bundle stores it.
+                    incomplete_out.append(task_kind[t])
                 warnings_out.extend(warns)
                 late_departures_out.extend(
                     late
@@ -406,9 +410,10 @@ def _reconcile_after_collapse(
 
     Untouched regions retain identity. Merges create a new `RegionResult`. The
     combiner clears slot- and place-options tasks on merged regions, so their
-    surviving relaunch closures signal a merge. It copies observation tasks
-    without clearing them, so object identity signals when to relaunch those.
-    Return effective regions with fresh tasks and old tasks the caller must cancel.
+    surviving relaunch closures signal a merge. Object identity signals when to
+    relaunch observation tasks: a merged region previews by a resubmit of its identity
+    (`same_shape._with_merged_preview`), launched here, and its members' preview tasks are
+    stale. Return effective regions with fresh tasks and old tasks the caller must cancel.
     """
     original_ids = {id(r) for r in original}
     kept = {id(r) for r in effective}

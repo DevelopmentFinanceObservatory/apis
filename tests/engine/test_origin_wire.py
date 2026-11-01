@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-import logging
 import threading
 import time
 from collections.abc import Callable
@@ -15,7 +14,9 @@ from typing import get_args
 import httpx
 import pytest
 
-from dc_graph import ArcTarget
+from dc_graph import ArcTarget, GraphDeadlineExceededError, GraphReadError
+from dfo_platform.request_deadline import bounded_deadline
+from dfo_platform.single_flight_cache import WaitTimeout
 from materialise.provenance_doc import read_source_citations
 from origin_catalogue import (
     BASE,
@@ -75,6 +76,11 @@ from search.models import (
 from search.models import SourceRef as WireSourceRef
 from tests.engine._base_identity import make_identity, subject_entity
 from tests.engine._builders import conjoin_spec, gref, shape_five_tuple
+from tests.engine._fail_open_deadline import (
+    FAIL_OPEN_REQUESTS,
+    assert_fail_open_deadline,
+    request_deadline,
+)
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import walk_options
@@ -245,7 +251,9 @@ def test_resolved_facet_refuses_source_without_ref():
 
 
 class _WithheldGraph:
-    """Answers `withheld` and labels it from `labels`, or fails. With `stall` set, each
+    """Answers `withheld` and labels it from `labels`, or raises `fail` from the re-read and
+    `label_fail` from the label read. It records the deadline each re-read is bound by
+    (`bounded_deadline`), as the graph client narrows it. With `stall` set, each
     re-read first waits up to 5 s for it, and with `label_stall` set, each label read. Each
     stall first calls `on_stall`, from the reading thread. `finished` is set once a stall's
     wait returns, so it reads False for an answer that did not wait for the stalled read."""
@@ -253,7 +261,8 @@ class _WithheldGraph:
     def __init__(
         self,
         withheld: tuple[str, ...] = ("dc/base/Excluded",),
-        fail: bool = False,
+        fail: Exception | None = None,
+        label_fail: Exception | None = None,
         stall: threading.Event | None = None,
         labels: dict[str, str] | None = None,
         label_stall: threading.Event | None = None,
@@ -264,6 +273,7 @@ class _WithheldGraph:
         self.deadlines: list[float | None] = []
         self._withheld = withheld
         self._fail = fail
+        self._label_fail = label_fail
         self._stall = stall
         self._label_stall = label_stall
         self._on_stall = on_stall
@@ -271,13 +281,13 @@ class _WithheldGraph:
 
     def withheld_provenances(self, variables, entities, *, deadline=None):
         self.calls.append((list(variables), list(entities)))
-        self.deadlines.append(deadline)
+        self.deadlines.append(bounded_deadline(deadline))
         if self._stall is not None:
             self._announce_stall()
             self._stall.wait(5)
             self.finished.set()
-        if self._fail:
-            raise GraphInfraError("read failed")
+        if self._fail is not None:
+            raise self._fail
         return self._withheld
 
     def _announce_stall(self) -> None:
@@ -289,6 +299,8 @@ class _WithheldGraph:
             self._announce_stall()
             self._label_stall.wait(5)
             self.finished.set()
+        if self._label_fail is not None:
+            raise self._label_fail
         return {
             dcid: {"name": (ArcTarget(value=self._labels[dcid]),)} if dcid in self._labels else None
             for dcid in dcids
@@ -387,7 +399,7 @@ def test_a_withheld_source_no_label_names_is_left_out_of_the_departure():
 
 def test_an_unlisted_withheld_source_is_named_as_its_citation_names_it():
     """A base provenance node is named for its import, so the departure names it by its parent
-    Dataset, the name its citation carries, read under the re-read's deadline."""
+    Dataset, the name its citation carries, read under the re-read's fail-open bound."""
     who = "dc/base/WHO_GHO"
     graph = _WithheldGraph(withheld=(who,), labels={})
     arcs = {
@@ -406,13 +418,17 @@ def test_an_unlisted_withheld_source_is_named_as_its_citation_names_it():
     graph.node_arcs_many = node_arcs_many
     graph.node_arc_targets_many = node_arc_targets_many
     deadline = time.monotonic() + 60
+    started = time.monotonic()
 
     first, _ = asyncio.run(
         _with_warning_twice(*[_no_data([_subject("country/KEN")])] * 2, graph, deadline=deadline)
     )
 
     (fact,) = first.departure_facts.values()
-    assert deadlines == [deadline - withheld._HANDOFF_RESERVE_S]
+    (read_deadline,) = deadlines
+    assert_fail_open_deadline(
+        read_deadline, requested=deadline - withheld._HANDOFF_RESERVE_S, started=started
+    )
     cited = read_source_citations(graph, [who], catalogue=current_catalogue())[who]
     assert fact.sources == (cited.name,) == ("WHO Global Health Observatory",)
 
@@ -448,7 +464,17 @@ def test_withheld_warning_skips_no_data_answers_with_another_reason():
     assert graph.calls == []
 
 
-@pytest.mark.parametrize("fail", [False, True], ids=["nothing-withheld", "read-fails"])
+_LOST_READS = {
+    "graph": GraphInfraError("read failed"),
+    "deadline": GraphDeadlineExceededError("read ran past its deadline"),
+    "timeout": TimeoutError("await ran past its deadline"),
+    "wait": WaitTimeout("wait on a shared flight ran past its deadline"),
+}
+
+
+@pytest.mark.parametrize(
+    "fail", [None, *_LOST_READS.values()], ids=["nothing-withheld", *_LOST_READS]
+)
 def test_withheld_warning_absent_when_nothing_is_withheld_or_the_read_fails(fail):
     """A failed re-read leaves the answer unwarned and notes the lost read, so no cache
     stores an answer that may have been withheld."""
@@ -458,7 +484,27 @@ def test_withheld_warning_absent_when_nothing_is_withheld_or_the_read_fails(fail
             _with_warning_twice(_no_data([_subject("country/KEN")]), _no_data([]), graph)
         )
     assert out.warnings == ()
-    assert lost.degraded is fail
+    assert lost.reads == ([] if fail is None else ["withheld re-read"])
+
+
+@pytest.mark.parametrize("label_fail", list(_LOST_READS.values()), ids=list(_LOST_READS))
+def test_a_lost_source_label_read_keeps_the_warning_without_its_sources(label_fail):
+    """A label read lost to a graph read error is noted by `refs.provenance_labels`, which
+    names the sources the catalogue lists alone; any other lost read ends the fail-open
+    scope, which notes it."""
+    graph = _WithheldGraph(label_fail=label_fail)
+    with recording_degraded_reads() as lost:
+        (out, _) = asyncio.run(
+            _with_warning_twice(_no_data([_subject("country/KEN")]), _no_data([]), graph)
+        )
+    (warning,) = out.warnings
+    assert warning.code == WITHHELD_BY_REGISTRY
+    (fact,) = out.departure_facts.values()
+    assert fact.sources == ()
+    noted = (
+        "provenance names" if isinstance(label_fail, GraphReadError) else "withheld source labels"
+    )
+    assert lost.reads == [noted]
 
 
 def test_withheld_warning_reads_nothing_without_the_re_read():
@@ -466,15 +512,13 @@ def test_withheld_warning_reads_nothing_without_the_re_read():
     assert asyncio.run(with_withheld_warning(result, object(), deadline=None)) is result
 
 
-def test_a_stalled_withheld_re_read_leaves_the_answer_unwarned_before_the_deadline(
-    caplog, monkeypatch
-):
+def test_a_stalled_withheld_re_read_leaves_the_answer_unwarned_before_the_deadline(monkeypatch):
     cut = _CutWhenStalled()
     monkeypatch.setattr(withheld, "_await_bounded", cut)
     stall = threading.Event()
     graph = _WithheldGraph(stall=stall, on_stall=cut.stalled)
     result = _no_data([_subject("country/KEN")])
-    deadline = time.monotonic() + 60.0
+    deadline = time.monotonic() + 1.0
 
     async def run() -> tuple[RegionResult, bool]:
         # Released here, since `asyncio.run` waits for the stalled read's thread on exit.
@@ -484,10 +528,7 @@ def test_a_stalled_withheld_re_read_leaves_the_answer_unwarned_before_the_deadli
         finally:
             stall.set()
 
-    with (
-        caplog.at_level(logging.INFO, logger="search.engine.region.withheld"),
-        recording_degraded_reads() as lost,
-    ):
+    with recording_degraded_reads() as lost:
         out, read_finished = asyncio.run(run())
 
     assert not read_finished, "the answer waited for the stalled re-read"
@@ -496,16 +537,51 @@ def test_a_stalled_withheld_re_read_leaves_the_answer_unwarned_before_the_deadli
     bound = deadline - withheld._HANDOFF_RESERVE_S
     assert graph.deadlines == [bound]
     assert cut.deadlines == [bound]
-    assert any("re-read skipped" in r.getMessage() for r in caplog.records)
 
 
-def test_a_stalled_source_label_read_keeps_the_warning_without_its_sources(caplog, monkeypatch):
+class _RecordingAwait:
+    """Wraps `withheld._await_bounded`, keeping the deadline each await was given."""
+
+    def __init__(self) -> None:
+        self.deadlines: list[float] = []
+        self._await_bounded = withheld._await_bounded
+
+    async def __call__(self, coro, *, deadline: float):
+        self.deadlines.append(deadline)
+        return await self._await_bounded(coro, deadline=deadline)
+
+
+@FAIL_OPEN_REQUESTS
+def test_the_re_read_and_the_label_read_each_run_under_the_fail_open_budget(
+    request_in_s, monkeypatch
+):
+    """Both reads fail open, so each gets the budget from its own start, or the request
+    deadline less the handoff reserve when that ends first."""
+    awaited = _RecordingAwait()
+    monkeypatch.setattr(withheld, "_await_bounded", awaited)
+    graph = _WithheldGraph()
+    result = _no_data([_subject("country/KEN")])
+    requested = request_deadline(request_in_s)
+    bound = None if requested is None else requested - withheld._HANDOFF_RESERVE_S
+    started = time.monotonic()
+
+    out, _ = asyncio.run(_with_warning_twice(result, result, graph, deadline=requested))
+
+    assert out.warnings, "the re-read found the withheld provenances"
+    (re_read,) = graph.deadlines
+    assert_fail_open_deadline(re_read, requested=bound, started=started)
+    assert len(awaited.deadlines) == 2
+    for await_deadline in awaited.deadlines:
+        assert_fail_open_deadline(await_deadline, requested=bound, started=started)
+
+
+def test_a_stalled_source_label_read_keeps_the_warning_without_its_sources(monkeypatch):
     cut = _CutWhenStalled()
     monkeypatch.setattr(withheld, "_await_bounded", cut)
     label_stall = threading.Event()
     graph = _WithheldGraph(label_stall=label_stall, on_stall=cut.stalled)
     result = _no_data([_subject("country/KEN")])
-    deadline = time.monotonic() + 60.0
+    deadline = time.monotonic() + 1.0
 
     async def run() -> tuple[RegionResult, bool]:
         try:
@@ -514,10 +590,7 @@ def test_a_stalled_source_label_read_keeps_the_warning_without_its_sources(caplo
         finally:
             label_stall.set()
 
-    with (
-        caplog.at_level(logging.INFO, logger="search.engine.region.withheld"),
-        recording_degraded_reads() as lost,
-    ):
+    with recording_degraded_reads() as lost:
         out, read_finished = asyncio.run(run())
 
     assert not read_finished, "the answer waited for the stalled label read"
@@ -528,7 +601,6 @@ def test_a_stalled_source_label_read_keeps_the_warning_without_its_sources(caplo
     assert (fact.code, fact.sources) == ("entity_unavailable", ())
     # The re-read and the label read each ran under the request deadline less the reserve.
     assert cut.deadlines == [deadline - withheld._HANDOFF_RESERVE_S] * 2
-    assert any("source labels skipped" in r.getMessage() for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------

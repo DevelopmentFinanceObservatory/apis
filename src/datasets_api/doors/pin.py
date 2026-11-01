@@ -432,25 +432,29 @@ def build_pin_door(
             # Surface-level classification handles errors reference writes can raise.
             DatasetsStoreUnavailable,
         ),
-        exception_exemplars=(
-            SpecNotFound(id="spec_exemplar"),
-            IdentityQuarantined(subject_id="spec_exemplar", id_kind="spec"),
-            SnapshotNotFound(id="spec_exemplar", content_version="cv_exemplar"),
-            SnapshotRevoked(id="spec_exemplar", content_version="cv_exemplar", reason=None),
-            ArtifactExpired(id="spec_exemplar", content_version="cv_exemplar"),
-            ArtifactNotFound(
-                id="spec_exemplar", content_version="cv_exemplar", artifact_digest="sha256:exemplar"
-            ),
-            CallerHeaderInvalid(),
-            CallerUnresolved("exemplar"),
-            PinBackpressure(),
-            PinBudgetExhausted(limit=0, now=datetime(2026, 1, 1, tzinfo=UTC)),
-            OpenPinBudgetExhausted(limit=0, now=datetime(2026, 1, 1, tzinfo=UTC)),
-            PinUnitHeld(retry_after=1),
-            CopyClaimUnsettled(),
-            AllowanceExhausted(
-                kind=AllowanceKind.pin, limit=0, now=datetime(2026, 1, 1, tzinfo=UTC)
-            ),
-            DatasetsStoreUnavailable("exemplar"),
-        ),
+        endpoint_exemplars={
+            "datasets.pin": (
+                SpecNotFound(id="spec_exemplar"),
+                IdentityQuarantined(subject_id="spec_exemplar", id_kind="spec"),
+                SnapshotNotFound(id="spec_exemplar", content_version="cv_exemplar"),
+                SnapshotRevoked(id="spec_exemplar", content_version="cv_exemplar", reason=None),
+                ArtifactExpired(id="spec_exemplar", content_version="cv_exemplar"),
+                ArtifactNotFound(
+                    id="spec_exemplar",
+                    content_version="cv_exemplar",
+                    artifact_digest="sha256:exemplar",
+                ),
+                CallerHeaderInvalid(),
+                CallerUnresolved("exemplar"),
+                PinBackpressure(),
+                PinBudgetExhausted(limit=0, now=datetime(2026, 1, 1, tzinfo=UTC)),
+                OpenPinBudgetExhausted(limit=0, now=datetime(2026, 1, 1, tzinfo=UTC)),
+                PinUnitHeld(retry_after=1),
+                CopyClaimUnsettled(),
+                AllowanceExhausted(
+                    kind=AllowanceKind.pin, limit=0, now=datetime(2026, 1, 1, tzinfo=UTC)
+                ),
+                DatasetsStoreUnavailable("exemplar"),
+            )
+        },
     )

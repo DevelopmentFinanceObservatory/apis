@@ -352,10 +352,10 @@ def test_from_canonical_data_inverts_to_canonical_data_through_json(spec: Proble
 
 def test_every_problem_spec_field_survives_the_round_trip():
     # A field added to `ProblemSpec` and left out of `to_canonical_data` fails here. The log line
-    # is the one exception: it stays out of the wire body and the canonical form.
+    # fields are the one exception: they stay out of the wire body and the canonical form.
     data = _EVERY_FIELD_SPEC.to_canonical_data()
 
-    wire_fields = set(ProblemSpec._fields) - {"log", "log_level"}
+    wire_fields = set(ProblemSpec._fields) - {"log", "log_level", "log_traceback"}
     assert set(data) == wire_fields
     assert all(
         getattr(_EVERY_FIELD_SPEC, field) != ProblemSpec._field_defaults[field]
@@ -372,7 +372,7 @@ def test_from_canonical_data_defaults_a_key_dumped_before_the_field_existed():
 
 @pytest.mark.parametrize(
     ("key", "value"),
-    [("severity", "high"), ("log", "exemplar"), ("log_level", 40)],
+    [("severity", "high"), ("log", "exemplar"), ("log_level", 40), ("log_traceback", True)],
 )
 def test_from_canonical_data_refuses_a_key_to_canonical_data_never_writes(key, value):
     data = {**_EVERY_FIELD_SPEC.to_canonical_data(), key: value}

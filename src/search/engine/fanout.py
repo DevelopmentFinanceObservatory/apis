@@ -47,7 +47,7 @@ from search.engine.region.result import (
     with_runnable_operations,
 )
 from search.engine.region.state import EngineOptions
-from search.engine.role_text import DoorRole, role_text_for_axis
+from search.engine.role_text import DoorRole, asks_members, role_text_for_axis
 from search.engine.source_code import (
     PartCode,
     SeriesCodeMembers,
@@ -215,7 +215,8 @@ def _leg_parsed_form(
 
     Each entity appears once per distinct axis the door gave it, with that axis as
     `role_text`, as the parsed door reads a name repeated on opposite axes. An entity
-    without an axis appears bare. An entity of `member_entities` states `members`.
+    without an axis appears bare. An entity of `member_entities` states `members` on each
+    end it asks for them on (`role_text.asks_members`).
     `sources` are the mentions it echoes (`restated_sources`), so a reposted part answers
     from the same sources, and `source_code` is the series code it names. The leg's own
     open roles appear as their axes in `open_roles`, and the axes its operations open ride
@@ -230,7 +231,7 @@ def _leg_parsed_form(
                 ParsedEntity(
                     text=e,
                     role_text=role_text_for_axis(axis) if axis is not None else None,
-                    members=e in member_entities,
+                    members=asks_members(roles.get(e) or (), axis, asked=e in member_entities),
                 )
                 for e in entities
                 for axis in (dict.fromkeys(role.axis for role in roles.get(e) or ()) or [None])

@@ -50,7 +50,7 @@ from origin_catalogue.families import FamilyKey, FamilySummary
 from origin_catalogue.graph import arcs_mirrored
 from search.engine.clients.graph import EngineGraphClient, force_full_facets, stand_in
 from search.engine.config import settings
-from search.engine.degraded_reads import note_degraded_read
+from search.engine.degraded_reads import fail_open_reads, note_lost_read
 from search.engine.errors import GraphCapExceededError, RoleSignatureError
 from search.engine.reading_coverage import ReadingCoverage, observed_years
 from search.engine.retrieval.bound_values import (
@@ -384,7 +384,7 @@ def _probe_place_availability(
     raw-count check; above the bound, `force_full_facets(False)` keeps this
     probe from fetching full history. Within the bound, the widened read shares
     the dated observation request's cache key. Graph errors and a read past `deadline` fail
-    open, and a failed probe is noted as a lost read (`degraded_reads.note_degraded_read`).
+    open, and a failed probe is noted as a lost read (`degraded_reads.note_lost_read`).
     """
     if not place_dcids:
         return None
@@ -397,7 +397,10 @@ def _probe_place_availability(
                 "derive_shapes: the deadline passed before the place-availability probe; "
                 "place availability stays unknown"
             )
-            note_degraded_read("place-availability probe")
+            note_lost_read(
+                "place-availability probe",
+                TimeoutError("the deadline passed before the place-availability probe"),
+            )
             return None
         with phase("shape_probe_coverage"):
             probe = role_bearing_facet_candidates_by_donor(
@@ -469,7 +472,10 @@ def _graph_facets_at(
     deadline: float | None,
 ) -> dict[str, dict[str, list[Facet]]] | None:
     """`svs`' facets at `places` in one graph batch, or None when the read fails
-    (`_probe_place_availability`)."""
+    (`_probe_place_availability`). The read fails open, so it runs under `deadline` or the
+    fail-open budget (`fail_open_reads`), whichever ends first. A read past its byte cap
+    leaves availability unknown without noting a lost read, since the same read would hit
+    the cap again."""
     narrow_scope: contextlib.AbstractContextManager[None] = contextlib.nullcontext()
     if full_facets_max_candidates is not None and len(svs) > full_facets_max_candidates:
         logger.info(
@@ -480,31 +486,26 @@ def _graph_facets_at(
             full_facets_max_candidates,
         )
         narrow_scope = force_full_facets(False)
-    try:
-        with narrow_scope:
-            return graph.observation_facets_batch(svs, places, False, deadline=deadline)
-    except GraphCapExceededError as exc:
-        logger.warning(
-            "derive_shapes: place-availability probe for %d candidates against "
-            "place_dcids=%r hit its %s cap (cap=%d, observed=%d); place availability "
-            "stays unknown",
-            len(svs),
-            places,
-            exc.cap_kind,
-            exc.cap,
-            exc.observed,
-        )
-        return None
-    except Exception:
-        logger.warning(
-            "derive_shapes: place-availability probe failed for %d candidates "
-            "against place_dcids=%r; place availability stays unknown",
-            len(svs),
-            places,
-            exc_info=True,
-        )
-        note_degraded_read("place-availability probe")
-        return None
+    with fail_open_reads(
+        "place-availability probe",
+        budget_s=settings().fail_open_read_budget_s,
+        about={"candidates": len(svs), "place_dcids": places},
+    ):
+        try:
+            with narrow_scope:
+                return graph.observation_facets_batch(svs, places, False, deadline=deadline)
+        except GraphCapExceededError as exc:
+            logger.warning(
+                "derive_shapes: place-availability probe for %d candidates against "
+                "place_dcids=%r hit its %s cap (cap=%d, observed=%d); place availability "
+                "stays unknown",
+                len(svs),
+                places,
+                exc.cap_kind,
+                exc.cap,
+                exc.observed,
+            )
+    return None
 
 
 def _fetch_constraint_labels(

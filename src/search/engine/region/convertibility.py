@@ -45,7 +45,7 @@ from materialise.recipes import (
     resolve_entity_currencies,
 )
 from search.engine.clients.graph import Facet
-from search.engine.degraded_reads import note_degraded_read
+from search.engine.degraded_reads import note_lost_read
 from search.engine.departures import (
     conversion_period_fact,
     deflator_omission_fact,
@@ -715,7 +715,7 @@ def _dated_plan(
     date, where that read returns them all. The read runs under `deadline`. None when no
     such series is served, the deadline has passed, or the read fails, and the gate then
     keeps the span's result. The last two log why and note a degraded read
-    (`degraded_reads.note_degraded_read`), so no cache stores an answer a later request
+    (`degraded_reads.note_lost_read`), so no cache stores an answer a later request
     with time to read the dates could decide otherwise."""
     sparse = [
         s for s in plan.served if len(s.role_tuple) == 1 and dated_without_complete_dates(s.group)
@@ -731,20 +731,25 @@ def _dated_plan(
             stat_vars,
             entities,
         )
-        note_degraded_read("unit coverage dates")
+        note_lost_read(
+            "unit coverage dates", TimeoutError("the deadline passed before the dated read")
+        )
         return None
+    # The read keeps the request deadline. Its failure leaves the span's refusal or omitted
+    # entities standing, so a healthy read slower than the fail-open budget would turn a
+    # served answer into a gap, and the aborted read is never cached.
     try:
         dated = reader.observation_facets_batch(
             stat_vars, entities, needs_dates=True, deadline=deadline
         )
-    except GraphInfraError:
+    except GraphInfraError as exc:
         logger.warning(
             "unit coverage dated read failed for stat_vars=%r entities=%r; keeping the span's result",
             stat_vars,
             entities,
             exc_info=True,
         )
-        note_degraded_read("unit coverage dates")
+        note_lost_read("unit coverage dates", exc)
         return None
 
     def with_dates(series: PlanSeries) -> PlanSeries:

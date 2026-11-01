@@ -475,6 +475,48 @@ def test_a_set_named_by_two_texts_on_two_roles_takes_one_reading(
     check_three_doors(doors, AID, twice)
 
 
+@pytest.mark.parametrize("members_end", ["origin", "destination"])
+@pytest.mark.parametrize(
+    "whole_text", [LABEL[SUB_SAHARAN], SUB_SAHARAN_ALIAS], ids=["one-text", "two-texts"]
+)
+def test_a_set_asked_for_its_members_on_one_end_reads_whole_on_the_other(
+    doors: Doors, members_end: str, whole_text: str
+) -> None:
+    """Sub-Saharan Africa asked for as its members on one end and named whole on the other,
+    under one text or two, binds its members on the first end. Named whole as the recipient
+    it binds its node, which holds rows with a member. Named whole as the provider it binds
+    its members too, though its node holds rows there, since the provider role takes no
+    subregion (`role_kinds.role_takes`). The restatement asks for the members on the first
+    end alone, and posted back answers with the same Spec."""
+    members = sorted(EXPANSION[SUB_SAHARAN])
+    assert flow_reading(AID, SUB_SAHARAN, PROVIDER, members) == [SUB_SAHARAN]
+    assert flow_reading(AID, SUB_SAHARAN, RECIPIENT, members) == [SUB_SAHARAN]
+    whole_end = "destination" if members_end == "origin" else "origin"
+    named = {"origin": origin, "destination": destination}
+    words = {"origin": "from", "destination": "to"}
+
+    response = doors.first_answer(
+        AID,
+        named[members_end](LABEL[SUB_SAHARAN], members=True),
+        named[whole_end](whole_text),
+    )
+
+    spec = the_spec(response)
+    whole = [SUB_SAHARAN] if whole_end == "destination" else members
+    assert bound(spec) == {members_end: members, whole_end: whole}
+    (part,) = response.parts
+    assert part.restatement is not None
+    assert [
+        entity.model_dump(mode="json", exclude_none=True)
+        for entity in part.restatement.entities or []
+    ] == [
+        {"text": LABEL[SUB_SAHARAN], "role_text": words[members_end], "members": True},
+        {"text": whole_text, "role_text": words[whole_end]},
+    ]
+    assert the_spec(doors.post(part.restatement)).spec_id == spec.spec_id
+    check_three_doors(doors, AID, spec)
+
+
 @pytest.mark.parametrize("directed_first", [True, False], ids=["directed-first", "directed-last"])
 @pytest.mark.parametrize("stat_var", [AID, DEBT])
 @pytest.mark.parametrize(

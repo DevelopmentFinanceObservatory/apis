@@ -32,6 +32,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
+from dfo_platform.request_deadline import bounded_deadline
 from search.engine.region.related_read import RELATED_THREAD_PREFIX
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.fixtures import FakeGraph
@@ -88,9 +89,11 @@ class _RequestLog:
             depth = getattr(self._depth, "value", 0)
             if depth == 0:
                 bound = signature.bind(double, *args, **kwargs).arguments
-                # A deadline is a `time.monotonic()` instant, so only whether one is set is kept.
+                # A deadline is a `time.monotonic()` instant, so only whether one is set is kept:
+                # the read's own, or the ambient one the clients narrow it with
+                # (`bounded_deadline`), as a fail-open scope binds it.
                 arguments = {
-                    key: ("set" if value is not None else None)
+                    key: ("set" if bounded_deadline(value) is not None else None)
                     if key == "deadline"
                     else _plain(value)
                     for key, value in list(bound.items())[1:]

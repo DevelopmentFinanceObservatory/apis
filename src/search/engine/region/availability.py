@@ -29,13 +29,12 @@ stamps nothing on the shape, and a part naming no place makes none.
 from __future__ import annotations
 
 import dataclasses
-import logging
 from collections.abc import Collection, Mapping, Sequence
 from typing import Protocol
 
 from search.engine.clients.graph import EngineGraphClient, Facet
 from search.engine.config import settings
-from search.engine.degraded_reads import note_degraded_read
+from search.engine.degraded_reads import fail_open_reads
 from search.engine.extract import DateRequest
 from search.engine.place import ConsultedPresence
 from search.engine.reading_coverage import ReadingCoverage, holds_in, observed_years
@@ -47,8 +46,6 @@ from search.engine.retrieval.bound_values import index_carries_shape
 from search.engine.retrieval.standard import _facet_reads
 from search.engine.shape import ShapeDraft, is_role_bearing
 from search.models import TimeWindow
-
-logger = logging.getLogger(__name__)
 
 type _ShapeGroupKey = tuple[str, str, str, str, str | None, str | None, bool, frozenset[str]]
 
@@ -99,8 +96,9 @@ def read_menu_availability(
     (`ShapeDraft.named_place_coverage`) and those places (`ShapeDraft.availability_places`),
     from one batched facet read over their StatVars, and whether that read failed.
 
-    The read is bounded by `deadline`, the request's monotonic deadline, and by the
-    response byte cap (`sdmx_max_bytes`). A failed read, a slow or oversized one among
+    The read is bounded by `deadline`, the request's monotonic deadline, by the
+    fail-open budget (`read_coverage`) and by the response byte cap
+    (`sdmx_max_bytes`). A failed read, a slow or oversized one among
     them, is noted as lost (`degraded_reads.note_degraded_read`) and leaves every shape as
     it was. Derive's read covers fewer places than `places`, so an absence it found settles
     nothing there (`_subject_has_data`) and D stays unknown. Role-bearing shapes are left as
@@ -141,13 +139,19 @@ def read_coverage(
     """The places among `places` at which each of `stat_vars` has observations, each with
     the years its facets there hold (`reading_coverage.observed_years`), from batched facet
     reads in the chunks standard retrieval reads (`standard._facet_reads`), each bounded by
-    `deadline` and the response byte cap (`sdmx_max_bytes`). `None` when a read fails, a
-    slow or oversized one among them, noted as the lost `read`
-    (`degraded_reads.note_degraded_read`)."""
-    probe: dict[str, dict[str, list[Facet]]] = {}
-    try:
+    `deadline`, the fail-open budget from the first read on, shared by every chunk
+    (`degraded_reads.fail_open_reads`), and the response byte
+    cap (`sdmx_max_bytes`). `None` when a read fails, a slow or oversized one among them,
+    noted as the lost `read` (`degraded_reads.note_degraded_read`)."""
+    probe: dict[str, dict[str, list[Facet]]] | None = None
+    with fail_open_reads(
+        read,
+        budget_s=settings().fail_open_read_budget_s,
+        about={"stat_vars": len(stat_vars), "places": len(places)},
+    ):
+        read_facets: dict[str, dict[str, list[Facet]]] = {}
         for chunk in _facet_reads(stat_vars, places):
-            probe.update(
+            read_facets.update(
                 graph.observation_facets_batch(
                     chunk,
                     list(places),
@@ -156,15 +160,8 @@ def read_coverage(
                     deadline=deadline,
                 )
             )
-    except Exception:
-        logger.warning(
-            "%s read failed for %d StatVar(s) at %d place(s); their availability stays unknown",
-            read,
-            len(stat_vars),
-            len(places),
-            exc_info=True,
-        )
-        note_degraded_read(read)
+        probe = read_facets
+    if probe is None:
         return None
     return {
         sv: {
