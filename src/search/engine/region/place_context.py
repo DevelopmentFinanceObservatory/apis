@@ -46,6 +46,7 @@ from search.heading.departure_fact import DepartureFact
 from search.models import EntityRoleKey, Warning
 
 if TYPE_CHECKING:
+    from code_index.query import CodeIndex
     from search.engine.bind import SlotBindingDraft
 
 # Where a context's probe places come from: the shape's bound places, the members a
@@ -357,6 +358,9 @@ class UnsettledPlace:
 
     shape: ShapeDraft
     assignment: PlaceAssignment
+    # The code index whose parties say which kinds each flow role takes
+    # (`place_roles.set_choices`).
+    index: CodeIndex
     # The role name and graph type pairs role admission admits, among
     # `admission_questions`.
     admitted: frozenset[tuple[str, str]] = frozenset()
@@ -393,7 +397,7 @@ class UnsettledPlace:
     def decided(self) -> bool:
         """Whether every set has one reading before the Spec is read
         (`place_roles.undecided_sets`)."""
-        return not undecided_sets(self.assignment, admits=self._admits)
+        return not undecided_sets(self.assignment, admits=self._admits, index=self.index)
 
     def context(self, places: PlaceLists) -> PlaceContext:
         """The context of the shape bound to `places`."""
@@ -412,6 +416,7 @@ class UnsettledPlace:
             settle_place_sets(
                 self.assignment,
                 admits=self._admits,
+                index=self.index,
                 has_data=lambda _places: False,
                 bound=settings().max_child_places if self.decided else None,
             )
@@ -431,7 +436,7 @@ class UnsettledPlace:
             return ()
         nodes = [
             cast(PlaceNode, place_set.node).dcid
-            for place_set in undecided_sets(self.assignment, admits=self._admits)
+            for place_set in undecided_sets(self.assignment, admits=self._admits, index=self.index)
         ]
         return tuple(place_order([*nodes, *members]))
 
@@ -460,6 +465,7 @@ class UnsettledPlace:
         places = settle_place_sets(
             self.assignment,
             admits=self._admits,
+            index=self.index,
             has_data=lambda places: holds_data(read_at(places)[1]),
             bound=settings().max_child_places,
         )

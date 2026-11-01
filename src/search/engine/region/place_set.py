@@ -12,9 +12,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import TYPE_CHECKING, Literal, Self
 
 from dfo_platform import RoleAxis
+
+if TYPE_CHECKING:
+    from entity_resolution.types import Entity, Kind
 
 # What the request's text named: one place, a continent or UN subregion, or a resolver group.
 PlaceSetKind = Literal["place", "region", "group"]
@@ -30,6 +33,16 @@ class PlaceNode:
 
     dcid: str
     graph_type: str
+    # The node's kind as the resolver classes it over all its graph types (`Entity.kind`),
+    # the kind a resubmit of it judges (`role_kinds.check_role_kinds`). `None` for the node
+    # of a party the code index declares (a party word's, a whole total's), which a flow role
+    # takes by its listing.
+    kind: Kind | None = None
+
+    @classmethod
+    def of_entity(cls, entity: Entity) -> Self:
+        """The node of the resolved `entity`, with the kind the resolver classed it by."""
+        return cls(dcid=entity.dcid, graph_type=entity.graph_type, kind=entity.kind)
 
 
 @dataclass(frozen=True, slots=True)
