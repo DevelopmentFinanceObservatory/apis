@@ -1391,6 +1391,7 @@ def test_operation_store_create_or_get_decides_again_when_its_reset_matches_noth
                 content_version="cv1",
                 confirmed_at=now_box["t"],
                 family=UNKNOWN_FAMILY,
+                basis=TEST_BASIS,
             )
 
         interleaving.pending_hooks = (_redelivery_claims, _redelivery_completes)
@@ -1586,6 +1587,7 @@ def test_operation_store_stale_attempt_complete_is_refused_after_a_reclaim(live_
                 content_version="cv-never-written",
                 confirmed_at=_CONFIRMED_AT,
                 family=UNKNOWN_FAMILY,
+                basis=TEST_BASIS,
             )
         )
         _wait_until_an_operation_update_is_blocked(live_store)
@@ -1627,13 +1629,16 @@ def test_operation_store_complete_keeps_the_runs_confirmed_instant(live_store):
         content_version="cv1",
         confirmed_at=confirmed_at,
         family=_STATED,
+        basis=TEST_BASIS,
     )
 
     assert done is not None
     assert (done.confirmed_at, done.updated_at) == (confirmed_at, t0)
     stored = operations.get(op.id)
     assert stored is not None and stored.confirmed_at == confirmed_at
-    assert stored.family == RecordedFamily(stated=_STATED, confirmed_at=stored.confirmed_at)
+    assert stored.family == RecordedFamily(
+        stated=_STATED, confirmed_at=stored.confirmed_at, basis=TEST_BASIS
+    )
 
 
 def test_operation_store_create_or_get_resets_a_done_row(live_store):
@@ -1654,6 +1659,7 @@ def test_operation_store_create_or_get_resets_a_done_row(live_store):
         content_version="cv1",
         confirmed_at=t0,
         family=UNKNOWN_FAMILY,
+        basis=TEST_BASIS,
     )
 
     resubmitted = operations.create_or_get(

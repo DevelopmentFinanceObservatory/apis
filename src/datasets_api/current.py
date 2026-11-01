@@ -364,10 +364,9 @@ def _head_family(head: SubjectHead, *, basis: str) -> StatedFamily:
     `UNKNOWN_FAMILY` otherwise, as on a head written before families were recorded, one an
     image recording no family moved, or one whose family another basis resolved. Freshness does
     not read it, so such a head states unknown until its next recheck or run."""
-    family = head.family
-    if family is None or family.confirmed_at != head.confirmed_at or family.basis != basis:
+    if head.family is None:
         return UNKNOWN_FAMILY
-    return family.stated
+    return head.family.stated_at(head.confirmed_at, basis)
 
 
 def trace_confirmed_at(trace: Mapping[str, object]) -> datetime:

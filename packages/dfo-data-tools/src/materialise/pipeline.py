@@ -127,22 +127,17 @@ class MaterialisationRequest:
                     f"not {axis!r}"
                 )
 
-    @property
-    def family_statement(self) -> StatedFamily:
-        """The family this request's definition, or composite component, admits, as a run over
-        its requests states it in its trace."""
-        return StatedFamily(members=self.family, stub_candidates=self.stub_candidates)
-
 
 def definition_family(requests: Sequence[MaterialisationRequest]) -> StatedFamily:
     """The family a run over every request of one definition states in its trace. A plain
-    definition states the family its requests share (`family_statement`). A composite's requests
+    definition states the family its requests share (`MaterialisationRequest.family` and
+    `stub_candidates`). A composite's requests
     each read a component (`MaterialisationRequest.component`), so it states no one family, and
     the stub candidates of every component in their order (`materialise.composite`)."""
     if not requests:
         return UNKNOWN_FAMILY
     if requests[0].component is None:
-        return requests[0].family_statement
+        return StatedFamily(members=requests[0].family, stub_candidates=requests[0].stub_candidates)
     stubs = dict.fromkeys(ref for request in requests for ref in request.stub_candidates)
     return StatedFamily(members=None, stub_candidates=tuple(stubs))
 

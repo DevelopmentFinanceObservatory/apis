@@ -101,24 +101,30 @@ def trace_family(trace: Mapping[str, object]) -> StatedFamily:
 @dataclass(frozen=True)
 class RecordedFamily:
     """A `StatedFamily` as a store records it: `stated` at the head confirmation
-    `confirmed_at`, and resolved under `basis` (`datasets_api.adapter.family_basis`) where the
-    store records one."""
+    `confirmed_at`, resolved under `basis` (`datasets_api.adapter.family_basis`)."""
 
     stated: StatedFamily
     confirmed_at: datetime
-    basis: str | None = None
+    basis: str
+
+    def stated_at(self, confirmed_at: datetime | None, basis: str) -> StatedFamily:
+        """The family a response confirmed at `confirmed_at` under the serving `basis` states:
+        `stated` when it was recorded at that confirmation under that basis, and
+        `UNKNOWN_FAMILY` otherwise, since a later confirmation or another basis may admit
+        another family."""
+        if self.confirmed_at != confirmed_at or self.basis != basis:
+            return UNKNOWN_FAMILY
+        return self.stated
 
 
 def recorded_family_json(recorded: RecordedFamily) -> dict[str, object]:
-    """The JSON object a store keeps for `recorded`: its `family_fields`, `confirmed_at` and,
-    when set, `basis`. `parse_recorded_family` reads it back."""
-    value: dict[str, object] = {
+    """The JSON object a store keeps for `recorded`: its `family_fields`, `confirmed_at` and
+    `basis`. `parse_recorded_family` reads it back."""
+    return {
         **family_fields(recorded.stated),
         "confirmed_at": recorded.confirmed_at.isoformat(),
+        "basis": recorded.basis,
     }
-    if recorded.basis is not None:
-        value["basis"] = recorded.basis
-    return value
 
 
 def parse_recorded_family(value: object) -> RecordedFamily | None:
@@ -135,7 +141,7 @@ def parse_recorded_family(value: object) -> RecordedFamily | None:
     return RecordedFamily(
         stated=trace_family(stored),
         confirmed_at=confirmed_at,
-        basis=cast("str | None", stored.get("basis")),
+        basis=cast(str, stored["basis"]),
     )
 
 
@@ -154,13 +160,12 @@ def _readable_family(value: Mapping[str, object]) -> bool:
     digest = value.get("family_member_digest")
     count = value.get("family_member_count")
     stubs = value.get("stub_candidates", [])
-    basis = value.get("basis")
     return (
         (digest is None or isinstance(digest, str))
         and (count is None or (isinstance(count, int) and not isinstance(count, bool)))
         and isinstance(stubs, list)
         and all(isinstance(stub, str) for stub in stubs)
-        and (basis is None or isinstance(basis, str))
+        and isinstance(value.get("basis"), str)
     )
 
 

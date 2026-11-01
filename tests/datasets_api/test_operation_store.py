@@ -27,6 +27,7 @@ from materialise.trace import UNKNOWN_FAMILY, MemberFamily, RecordedFamily, Stat
 from series_coverage.index import Estimate
 
 from ._operation_store import FakeOperationDatasetStore
+from ._version_record_store import TEST_BASIS
 
 _CONFIRMED_AT = datetime(2026, 1, 1, tzinfo=UTC)
 _IDENTITY = {"input": {"spec_id": "spec_abc"}}
@@ -116,6 +117,7 @@ def test_a_coverage_build_leaves_the_operation_and_its_admitted_stamp_in_place(
         content_version="cv_1",
         confirmed_at=_CONFIRMED_AT,
         family=UNKNOWN_FAMILY,
+        basis=TEST_BASIS,
     )
 
     after_build = store.create_or_get(
@@ -182,6 +184,7 @@ def test_a_completed_operation_is_not_reused_under_a_new_catalogue_build(
         content_version="cv_1",
         confirmed_at=_CONFIRMED_AT,
         family=UNKNOWN_FAMILY,
+        basis=TEST_BASIS,
     )
 
     rebuilt = store.create_or_get(
@@ -339,6 +342,7 @@ def test_create_or_get_backlog_count_excludes_terminal_operations() -> None:
             content_version="cv_1",
             confirmed_at=_CONFIRMED_AT,
             family=UNKNOWN_FAMILY,
+            basis=TEST_BASIS,
         )
 
         second = store.create_or_get(
@@ -719,6 +723,7 @@ def test_claim_refuses_a_terminal_operation(store: LiveOperationStore) -> None:
         content_version="cv_deadbeef",
         confirmed_at=_CONFIRMED_AT,
         family=UNKNOWN_FAMILY,
+        basis=TEST_BASIS,
     )
 
     assert store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False) is None
@@ -761,6 +766,7 @@ def test_complete_sets_the_manifest_reference_and_is_running_only(
             content_version="cv_deadbeef",
             confirmed_at=_CONFIRMED_AT,
             family=UNKNOWN_FAMILY,
+            basis=TEST_BASIS,
         )
         is None
     )
@@ -773,6 +779,7 @@ def test_complete_sets_the_manifest_reference_and_is_running_only(
         content_version="cv_deadbeef",
         confirmed_at=_CONFIRMED_AT,
         family=StatedFamily(members=MemberFamily(digest="b" * 64, count=4)),
+        basis=TEST_BASIS,
     )
 
     assert done is not None
@@ -783,6 +790,7 @@ def test_complete_sets_the_manifest_reference_and_is_running_only(
     assert done.family == RecordedFamily(
         stated=StatedFamily(members=MemberFamily(digest="b" * 64, count=4)),
         confirmed_at=_CONFIRMED_AT,
+        basis=TEST_BASIS,
     )
 
     assert (
@@ -793,6 +801,7 @@ def test_complete_sets_the_manifest_reference_and_is_running_only(
             content_version="cv_deadbeef",
             confirmed_at=_CONFIRMED_AT,
             family=UNKNOWN_FAMILY,
+            basis=TEST_BASIS,
         )
         is None
     )
@@ -1007,6 +1016,7 @@ def test_release_is_a_no_op_once_terminal(store: LiveOperationStore) -> None:
         content_version="cv_deadbeef",
         confirmed_at=_CONFIRMED_AT,
         family=UNKNOWN_FAMILY,
+        basis=TEST_BASIS,
     )
 
     assert store.release(op.id, attempt=1) is None
@@ -1040,6 +1050,7 @@ def test_fail_unservable_done_fails_only_a_done_row_at_the_polled_attempt(
         content_version="cv_1",
         confirmed_at=_CONFIRMED_AT,
         family=UNKNOWN_FAMILY,
+        basis=TEST_BASIS,
     )
 
     first = store.fail_unservable_done(op.id, attempt=1)
@@ -1059,6 +1070,7 @@ def test_fail_unservable_done_fails_only_a_done_row_at_the_polled_attempt(
         content_version="cv_1",
         confirmed_at=_CONFIRMED_AT,
         family=UNKNOWN_FAMILY,
+        basis=TEST_BASIS,
     )
 
     assert store.fail_unservable_done(op.id, attempt=1) is None
@@ -1127,6 +1139,7 @@ def test_stale_attempt_complete_is_refused_after_a_reclaim() -> None:
                 content_version="cv_1",
                 confirmed_at=_CONFIRMED_AT,
                 family=UNKNOWN_FAMILY,
+                basis=TEST_BASIS,
             )
             is None
         )
@@ -1139,6 +1152,7 @@ def test_stale_attempt_complete_is_refused_after_a_reclaim() -> None:
             content_version="cv_2",
             confirmed_at=_CONFIRMED_AT,
             family=UNKNOWN_FAMILY,
+            basis=TEST_BASIS,
         )
         assert done is not None and done.content_version == "cv_2"
     finally:
@@ -1320,6 +1334,7 @@ def test_create_or_get_resets_a_done_row(store: LiveOperationStore) -> None:
         content_version="cv_1",
         confirmed_at=_CONFIRMED_AT,
         family=StatedFamily(members=MemberFamily(digest="b" * 64, count=4)),
+        basis=TEST_BASIS,
     )
 
     resubmitted = store.create_or_get(

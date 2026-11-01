@@ -30,6 +30,7 @@ from materialise.trace import UNKNOWN_FAMILY
 from series_coverage.index import Estimate
 
 from ._operation_store import FakeOperationDatasetStore
+from ._version_record_store import TEST_BASIS
 from .test_worker import _deps
 from .test_worker_app import _client, _run_path, _submit, _task_body
 
@@ -89,6 +90,7 @@ def test_a_late_fail_from_a_superseded_attempt_leaves_the_resubmission_unchanged
             content_version="cv_x",
             confirmed_at=_CONFIRMED_AT,
             family=UNKNOWN_FAMILY,
+            basis=TEST_BASIS,
         )
         is None
     )
@@ -115,6 +117,7 @@ def test_a_second_delivery_inside_the_claim_answers_409_and_one_after_it_claims(
             content_version="cv",
             confirmed_at=_CONFIRMED_AT,
             family=UNKNOWN_FAMILY,
+            basis=TEST_BASIS,
         )
 
     client = _client(operation_store=store, run_in_thread=run)
@@ -154,6 +157,7 @@ def _poll(store: LiveOperationStore, operation_id: str, task_client, clock: _Clo
         now=clock,
         settings=_SETTINGS,
         enrichment_digest="digest",
+        serving_basis=TEST_BASIS,
     )
 
 
@@ -254,6 +258,7 @@ def _crash_once_then_complete(ran: list[int]):
             content_version="cv",
             confirmed_at=_CONFIRMED_AT,
             family=UNKNOWN_FAMILY,
+            basis=TEST_BASIS,
         )
 
     return run
@@ -343,6 +348,7 @@ def test_a_delivery_at_the_deadline_still_claims_and_runs() -> None:
             content_version="cv",
             confirmed_at=_CONFIRMED_AT,
             family=UNKNOWN_FAMILY,
+            basis=TEST_BASIS,
         )
 
     client = _client(operation_store=store, run_in_thread=run)

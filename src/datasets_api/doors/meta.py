@@ -20,8 +20,9 @@ Its `trace` carries `served_from: materialise` and the `confirmed_at` the row
 recorded at completion, the currency pair a synchronous mint that materialised
 reports, and the family fields the run served (`Operation.family`) in place of the
 stored version's, or the family stated unknown when the row recorded none at its
-`confirmed_at`. A row an image recording no `confirmed_at` completed carries neither
-currency field and states the family unknown.
+`confirmed_at` under the serving basis (`adapter.family_basis`). A row an image
+recording no `confirmed_at` completed carries neither currency field and states the
+family unknown.
 When the snapshot lists no artifact under that key (a bundle the worker could not
 link, a bundle of a superseded rendition, an expired working-tier artifact), the
 poll calls `OperationStore.fail_unservable_done` and answers retryable
@@ -71,6 +72,7 @@ from code_index.query import CodeIndex
 from code_index.shared import get_index, per_index
 from dataset_store.clock import Clock
 from dataset_store.snapshot import SnapshotNotFound, SnapshotReader, SnapshotRevoked
+from datasets_api.adapter import family_basis
 from datasets_api.backpressure import Backpressure
 from datasets_api.capabilities import Capabilities, build_capabilities
 from datasets_api.codes_snapshot import (
@@ -216,14 +218,16 @@ def _load_done_manifest(
     now: Clock,
     settings: DatasetsBuildSettings,
     enrichment_digest: str,
+    serving_basis: str,
 ) -> Manifest | None:
     """The done operation's manifest, narrowed to the rendering its request posted.
 
     Its `trace` carries the currency pair a synchronous mint that materialised reports:
     `served_from: materialise` and the `confirmed_at` the row recorded, with the member family
-    the row recorded in place of the stored version's. A row completed before families were
-    recorded keeps the stored version's. It carries the version's `retention`
-    (`datasets_api.retention`).
+    the row recorded in place of the stored version's while it was recorded at that
+    `confirmed_at` under `serving_basis` (`adapter.family_basis`), and the
+    family stated unknown otherwise (`RecordedFamily.stated_at`). It carries the version's
+    `retention` (`datasets_api.retention`).
 
     The rendering keys are `resolved_rendering_keys` of the row's `options` under this
     service's `settings.site` and the serving code index's `enrichment_digest`, the keys the
@@ -288,9 +292,9 @@ def _load_done_manifest(
     )
     family = operation.family
     stated = (
-        family.stated
-        if family is not None and family.confirmed_at == operation.confirmed_at
-        else UNKNOWN_FAMILY
+        UNKNOWN_FAMILY
+        if family is None
+        else family.stated_at(operation.confirmed_at, serving_basis)
     )
     trace = with_family(manifest.trace, stated)
     if operation.confirmed_at is not None:
@@ -332,6 +336,7 @@ def _resolve_operation(
     now: Clock,
     settings: DatasetsBuildSettings,
     enrichment_digest: str,
+    serving_basis: str,
 ) -> OperationResource:
     if operation_store is None:
         # Requests before lifespan setup follow the unknown-id path.
@@ -374,6 +379,7 @@ def _resolve_operation(
         now=now,
         settings=settings,
         enrichment_digest=enrichment_digest,
+        serving_basis=serving_basis,
     )
     if manifest is not None:
         return OperationResource(
@@ -474,6 +480,7 @@ def build_meta_door(*, deps: DepsCell, settings: DatasetsBuildSettings) -> DoorC
                     now=current.now,
                     settings=current.settings,
                     enrichment_digest=current.code_index.enrichment_digest,
+                    serving_basis=family_basis(current),
                 ),
                 refuse=OperationBackpressure,
             )

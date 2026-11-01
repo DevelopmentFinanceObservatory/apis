@@ -35,6 +35,7 @@ from ._app_factories import make_client
 from ._artifact_doubles import FakeArtifactStore
 from ._operation_store import FakeOperationDatasetStore
 from ._snapshot_doubles import FakeSnapshotReader
+from ._version_record_store import TEST_BASIS
 from .conftest import FakeDatasetStore
 from .test_mint_statvar_set import (
     _CSV_BODY,
@@ -195,6 +196,7 @@ def test_a_submit_under_a_new_catalogue_build_starts_a_new_operation(
         content_version="cv_1",
         confirmed_at=datetime(2026, 1, 1, tzinfo=UTC),
         family=UNKNOWN_FAMILY,
+        basis=TEST_BASIS,
     )
     rebuilt = FakeCatalogue(build_id="20261006T000000Z-ef567890")
     monkeypatch.setattr(get_catalogue_service(), "snapshot", lambda: rebuilt)

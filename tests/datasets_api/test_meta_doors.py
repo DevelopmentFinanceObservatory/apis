@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import jsonschema
 import pytest
@@ -14,6 +15,7 @@ from fastapi.responses import JSONResponse
 from artifact_store import Tier
 from code_index.shared import get_index
 from dataset_store.snapshot import Revocation, StoredArtifactLocation
+from datasets_api.adapter import family_basis
 from datasets_api.capabilities import build_capabilities
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors.meta import (
@@ -52,6 +54,7 @@ from dfo_platform import Alternative, ProblemIssue, ProblemSpec
 from dfo_platform.build import build_commit
 from dfo_platform.config import PublicSiteSettings
 from dfo_platform.problem import Cause
+from graph_release.context import bound_release
 from materialise.trace import UNKNOWN_FAMILY, parse_recorded_family
 from series_coverage.index import Estimate
 from spec_registry import IdentityQuarantined, LiveSpecRegistry
@@ -68,7 +71,9 @@ from ._snapshot_doubles import (
     version_body,
 )
 from ._version_facts import facts_from_body
+from ._version_record_store import TEST_BASIS
 from .conftest import FakeDatasetStore
+from .test_head_freshness import _redeployed
 from .test_pin_door import FakeArtifactReferenceWriter
 
 _CONFIRMED_AT = datetime(2026, 1, 1, tzinfo=UTC)
@@ -108,6 +113,7 @@ class _FixedOperationStore:
         content_version: str,
         confirmed_at,
         family,
+        basis,
     ):
         return None
 
@@ -340,6 +346,7 @@ def test_an_unfinished_poll_paces_by_the_age_of_the_operation(state: str) -> Non
         now=lambda: now_box["t"],
         settings=DatasetsBuildSettings(),
         enrichment_digest=get_index().enrichment_digest,
+        serving_basis=TEST_BASIS,
     )
 
     assert resource.operation.retry_after_ms == 5_000
@@ -651,10 +658,25 @@ _FIRST_MINT_VERSION = _version(
     facts=facts_from_body(
         {
             **version_body("cv1"),
-            "trace": {"family_member_digest": "f" * 64, "family_member_count": 9},
+            "trace": {
+                "family_member_digest": "f" * 64,
+                "family_member_count": 9,
+                "stub_candidates": ["dcid:Stub_A"],
+            },
         }
     )
 )
+
+
+def _serving_basis() -> str:
+    """The basis the poll serves under (`adapter.family_basis` of the test app's deps)."""
+    return family_basis(SimpleNamespace(code_index=get_index(), materialiser_build=build_commit()))
+
+
+def _basis_before_a_redeploy() -> str:
+    """The basis a run resolved its family under before the graph release moved."""
+    with bound_release(_redeployed()):
+        return _serving_basis()
 
 
 @pytest.mark.parametrize(
@@ -666,6 +688,7 @@ _FIRST_MINT_VERSION = _version(
                 "family_member_digest": "b" * 64,
                 "family_member_count": 4,
                 "confirmed_at": _CONFIRMED_CURRENCY["confirmed_at"],
+                "basis": _serving_basis,
             },
             {
                 **_CONFIRMED_CURRENCY,
@@ -674,12 +697,25 @@ _FIRST_MINT_VERSION = _version(
             },
             id="confirmed",
         ),
+        # The graph release moved after the run completed, so its family may not hold now.
+        pytest.param(
+            _CONFIRMED_AT,
+            {
+                "family_member_digest": "b" * 64,
+                "family_member_count": 4,
+                "confirmed_at": _CONFIRMED_CURRENCY["confirmed_at"],
+                "basis": _basis_before_a_redeploy,
+            },
+            {**_CONFIRMED_CURRENCY, **_UNKNOWN_FAMILY_FIELDS},
+            id="release-moved-since-completion",
+        ),
         pytest.param(
             _CONFIRMED_AT,
             {
                 "family_member_digest": None,
                 "family_member_count": None,
                 "confirmed_at": _CONFIRMED_CURRENCY["confirmed_at"],
+                "basis": _serving_basis,
             },
             {**_CONFIRMED_CURRENCY, "family_member_digest": None, "family_member_count": None},
             id="run-stating-no-family",
@@ -692,6 +728,7 @@ _FIRST_MINT_VERSION = _version(
                 "family_member_digest": "b" * 64,
                 "family_member_count": 4,
                 "confirmed_at": _EARLIER_COMPLETION,
+                "basis": _serving_basis,
             },
             {**_CONFIRMED_CURRENCY, **_UNKNOWN_FAMILY_FIELDS},
             id="family-of-an-earlier-completion",
@@ -712,7 +749,10 @@ def test_done_operation_serves_the_manifest_with_a_freshly_signed_url_without_a_
 ) -> None:
     """A row the run completed states the run's currency and the family it served in place of
     the stored version's first-mint family (`Operation.family`). A row that recorded no family
-    at its `confirmed_at` states the family unknown."""
+    at its `confirmed_at` under the serving basis states the family unknown, with no stub
+    candidates. A row family's `basis` is a function, called under the test's bound release."""
+    if family is not None:
+        family = {key: value() if callable(value) else value for key, value in family.items()}
     artifact_store = FakeArtifactStore()
     location = _stored_rendering(artifact_store, _PARQUET_BUNDLE, data=b"a,b\n1,2\n")
     client = make_client(
@@ -746,7 +786,13 @@ def test_done_operation_serves_the_manifest_with_a_freshly_signed_url_without_a_
     assert body["operation"] == {"operation_id": "op_1", "status": "done"}
     assert "retry-after" not in resp.headers
     trace = body["manifest"]["trace"]
-    stated = ("served_from", "confirmed_at", "family_member_digest", "family_member_count")
+    stated = (
+        "served_from",
+        "confirmed_at",
+        "family_member_digest",
+        "family_member_count",
+        "stub_candidates",
+    )
     assert {key: trace[key] for key in stated if key in trace} == currency
     assert body["manifest"]["content_version"] == "cv1"
     assert body["manifest"]["definition"]["spec_id"] == "spec_a"
@@ -977,6 +1023,7 @@ def test_a_done_operation_whose_rendering_is_gone_fails_retryable_and_a_resubmit
         content_version="cv1",
         confirmed_at=_CONFIRMED_AT,
         family=UNKNOWN_FAMILY,
+        basis=TEST_BASIS,
     )
     client = make_client(
         registry=LiveSpecRegistry(store=FakeDatasetStore()),
@@ -1066,6 +1113,7 @@ def test_a_poll_that_loses_the_demotion_race_answers_from_the_rows_current_state
             now=lambda: _OP_NOW,
             settings=_SITE_SETTINGS,
             enrichment_digest=get_index().enrichment_digest,
+            serving_basis=TEST_BASIS,
         )
 
     if current is None:
@@ -1103,6 +1151,7 @@ def _poll_at(operation_store: LiveOperationStore, operation_id: str, at: datetim
         now=lambda: at,
         settings=DatasetsBuildSettings(),
         enrichment_digest=get_index().enrichment_digest,
+        serving_basis=TEST_BASIS,
     )
 
 
@@ -1380,6 +1429,7 @@ def _poll(
         now=lambda: now_box["t"],
         settings=DatasetsBuildSettings(),
         enrichment_digest=get_index().enrichment_digest,
+        serving_basis=TEST_BASIS,
     )
 
 

@@ -775,6 +775,7 @@ def test_options_route_currency_confirms_and_advances_the_head_as_a_get_does():
     within = client.get(f"/api/datasets/{spec_id}/options")
     assert within.status_code == 200, within.text
     assert within.json()["trace"]["served_from"] == "head"
+    assert within.json()["trace"]["family_member_digest"] is not None
     assert head_store.advance_head_calls == writes_after_definition_get
     # A head with no recorded family states it unknown, as null keys on the wire.
     head_store.drop_family(spec_id)

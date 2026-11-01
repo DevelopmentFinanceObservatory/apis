@@ -206,11 +206,8 @@ _RECORDED = RecordedFamily(
 )
 
 
-@pytest.mark.parametrize("basis", ["basis", None])
-def test_a_recorded_family_reads_back_as_written(basis):
-    recorded = replace(_RECORDED, basis=basis)
-
-    assert parse_recorded_family(recorded_family_json(recorded)) == recorded
+def test_a_recorded_family_reads_back_as_written():
+    assert parse_recorded_family(recorded_family_json(_RECORDED)) == _RECORDED
 
 
 @pytest.mark.parametrize(
@@ -223,6 +220,7 @@ def test_a_recorded_family_reads_back_as_written(basis):
         pytest.param({"family_member_digest": 7}, id="digest-as-number"),
         pytest.param({"stub_candidates": "dcid:Stub_A"}, id="stubs-as-text"),
         pytest.param({"basis": ["basis"]}, id="basis-as-list"),
+        pytest.param({"basis": None}, id="no-basis"),
     ],
 )
 def test_a_stored_family_this_code_cannot_read_states_none(edit):

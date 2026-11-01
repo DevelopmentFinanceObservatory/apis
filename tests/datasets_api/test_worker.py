@@ -17,7 +17,7 @@ from code_index.shared import get_index
 from dataset_store.snapshot import SnapshotRevoked, StoredArtifactLocation
 from datasets_api import current as current_module
 from datasets_api import serve as serve_module
-from datasets_api.adapter import MemberReadBounds
+from datasets_api.adapter import MemberReadBounds, family_basis
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors.definition import (
     DefinitionDeps,
@@ -1062,6 +1062,7 @@ def test_run_completes_only_when_the_requests_rendering_is_servable(
         RecordedFamily(
             stated=StatedFamily(members=MemberFamily(digest="b" * 64, count=4)),
             confirmed_at=_CONFIRMED_AT,
+            basis=family_basis(_deps(linked)),
         )
         if done
         else None

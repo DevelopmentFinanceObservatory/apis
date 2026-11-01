@@ -252,12 +252,14 @@ class Operation:
     The poll uses them to rebuild a done row's manifest. `confirmed_at` is the instant the run
     confirmed the subject head, `None` on a row completed by an image that records no such
     instant. `family` is the member family the run served, recorded with the head confirmation
-    it completed at. The poll states it in place of the stored version's only while that
-    confirmation equals `confirmed_at`, and states the family unknown otherwise. It is `None`
-    on a row completed before families were recorded or reset by this image since its last
-    completion. An older image's reset leaves it in place. When that image completes the row
-    at another confirmation the poll states the family unknown, and when it writes the
-    confirmation the family was recorded at, the poll states that family. Failed rows carry `refusal_code` and `retryable` to mark
+    it completed at and the basis it was resolved under (`adapter.family_basis`). The poll
+    states it in place of the stored version's only while that confirmation equals
+    `confirmed_at` and that basis the serving one (`RecordedFamily.stated_at`), and states the
+    family unknown otherwise. It is `None` on a row completed before families were recorded or
+    reset by this image since its last completion. An older image's reset leaves it in place.
+    When that image completes the row at another confirmation the poll states the family
+    unknown, and when it writes the confirmation the family was recorded at, the poll states
+    that family while the basis holds. Failed rows carry `refusal_code` and `retryable` to mark
     transient failures. `refusal` is the classified refusal a deterministic failure ended on,
     and `None` on every other row, including one whose stored refusal this image cannot parse.
     `submission_count` starts at 0 and increments on each reset. Monotonic `attempt_count`
@@ -372,11 +374,13 @@ class OperationStore(Protocol):
         content_version: str,
         confirmed_at: datetime,
         family: StatedFamily,
+        basis: str,
     ) -> Operation | None:
         """Marks a running row `done` with the version its run served, the instant that run
         confirmed the subject head, and the member `family` it served, `UNKNOWN_FAMILY` when
-        the run could not state the whole family. Returns `None` when this attempt token does
-        not match a running row."""
+        the run could not state the whole family, resolved under `basis`
+        (`adapter.family_basis`). Returns `None` when this attempt token does not match a
+        running row."""
         ...
 
     def fail(
@@ -457,6 +461,7 @@ class NullOperationStore:
         content_version: str,
         confirmed_at: datetime,
         family: StatedFamily,
+        basis: str,
     ) -> Operation | None:
         return None
 
@@ -793,6 +798,7 @@ class LiveOperationStore:
         content_version: str,
         confirmed_at: datetime,
         family: StatedFamily,
+        basis: str,
     ) -> Operation | None:
         now = self._now()
         return self._update_one(
@@ -805,7 +811,9 @@ class LiveOperationStore:
                 subject_id,
                 content_version,
                 confirmed_at,
-                recorded_family_json(RecordedFamily(stated=family, confirmed_at=confirmed_at)),
+                recorded_family_json(
+                    RecordedFamily(stated=family, confirmed_at=confirmed_at, basis=basis)
+                ),
                 now,
                 id,
                 attempt,

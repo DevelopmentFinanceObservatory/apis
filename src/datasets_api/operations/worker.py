@@ -41,7 +41,7 @@ import dataclasses
 import logging
 import threading
 
-from datasets_api.adapter import identity_composite
+from datasets_api.adapter import family_basis, identity_composite
 from datasets_api.admission import (
     refuse_async_over_ceiling,
     sync_estimate,
@@ -322,6 +322,7 @@ def run_operation(
         content_version=manifest.content_version,
         confirmed_at=trace_confirmed_at(manifest.trace),
         family=trace_family(manifest.trace),
+        basis=family_basis(deps),
     )
     if completed is None:
         # The operation row has moved on. Its durable artifact has no operation reference.
