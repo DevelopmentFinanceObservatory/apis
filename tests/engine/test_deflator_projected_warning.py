@@ -136,9 +136,9 @@ def test_two_projected_series_total_counts_and_cap_examples():
     }
 
 
-def test_rows_beyond_the_examples_leave_the_examples_complete():
+def test_five_rows_at_one_entity_and_year_carry_one_example():
     """`count` counts rows and `examples` distinct keys, so five rows at one entity and year
-    carry one example and say the list is complete."""
+    count five and carry one example."""
     observations = _observations(
         [
             _series(
