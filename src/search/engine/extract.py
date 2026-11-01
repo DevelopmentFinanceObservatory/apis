@@ -700,11 +700,14 @@ class RoleCuePairing:
 
     `cue_first` holds when the cue precedes the span. `adjacent` holds when nothing but
     an article, list separators and coordinated entity spans stands between them
-    ("from the United States", "from Norway and Sweden").
+    ("from the United States", "from Norway and Sweden"). `coordinated` holds when another
+    entity's span stands between them, as Norway's does for Sweden in "from Norway and
+    Sweden".
     """
 
     cue_first: bool
     adjacent: bool
+    coordinated: bool
 
 
 def _role_cue_check(
@@ -758,7 +761,7 @@ def _role_cue_check(
     if crossers and not _coordination_exempt(between, entity, crossers):
         return "role_span crosses another entity's span", None
     adjacent = all(t in _ADJACENT_FILLER_WORDS for t in _residue_words(between, crossers))
-    return None, RoleCuePairing(cue_first=cue_first, adjacent=adjacent)
+    return None, RoleCuePairing(cue_first=cue_first, adjacent=adjacent, coordinated=bool(crossers))
 
 
 def role_cue_pairing(
@@ -779,7 +782,8 @@ def _validate_role_spans(
     query: str, entities: list[ExtractedEntity], variables: list[str]
 ) -> list[ExtractedEntity]:
     """Downgrade invalid roles to `unspecified`, then read a lender named before the measure
-    as the origin.
+    as the origin, then give each later conjunct of a coordinated list the role of the cue
+    that opens it (`_carry_coordinated_roles`).
 
     A missing or blank `role_span` fails. Other cues are checked against the query.
     `variables` supports the national-adjective measure check and the lender rule
@@ -821,7 +825,47 @@ def _validate_role_spans(
             entity.span,
         )
         validated.append(entity.model_copy(update={"flow_role": "unspecified", "role_span": None}))
-    return validated
+    return _carry_coordinated_roles(normalized_query, validated, variables)
+
+
+def _carry_coordinated_roles(
+    normalized_query: str, entities: list[ExtractedEntity], variables: list[str]
+) -> list[ExtractedEntity]:
+    """`entities` with each unspecified one that closes a coordinated list given the role
+    of the cue that opens the list.
+
+    A cue before a list governs every place in it: in "ODA to Kenya and Uganda" the "to"
+    makes Uganda a recipient as well as Kenya. An unspecified entity takes a directed
+    entity's flow role and role span when role-span validation would accept that cue for
+    it (`_role_cue_check`) with the cue first, adjacent and with at least one entity's span
+    between them, every such span on the same role. Entities are read in order, so each
+    conjunct a cue reaches counts as coordinated for the next. An entity two such cues on
+    opposite axes reach keeps no role.
+    """
+    carried = list(entities)
+    for i, entity in enumerate(carried):
+        if entity.flow_role != "unspecified" or not entity.span:
+            continue
+        readings: dict[str, ExtractedEntity] = {}
+        for source in carried:
+            if source.flow_role == "unspecified" or source.flow_role in readings:
+                continue
+            reading = entity.model_copy(
+                update={"flow_role": source.flow_role, "role_span": source.role_span}
+            )
+            peers = [reading if j == i else other for j, other in enumerate(carried)]
+            reason, pairing = _role_cue_check(normalized_query, reading, peers, variables)
+            if (
+                reason is None
+                and pairing is not None
+                and pairing.cue_first
+                and pairing.adjacent
+                and pairing.coordinated
+            ):
+                readings[source.flow_role] = reading
+        if len(readings) == 1:
+            carried[i] = next(iter(readings.values()))
+    return carried
 
 
 def _lends_the_measure(

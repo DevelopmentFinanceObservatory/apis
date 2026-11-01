@@ -393,16 +393,78 @@ def test_validate_role_spans_coordination_exemption_keeps_a_shared_preposition()
     assert [e.flow_role for e in validated] == ["destination", "origin", "origin"]
 
 
-def test_validate_role_spans_flags_a_crossing_entity_on_a_different_axis():
-    """The shared-cue exemption rejects Uganda because its destination axis differs from Norway's origin."""
+def test_validate_role_spans_flags_a_crossing_entity_on_a_different_axis(caplog):
+    """The shared-cue exemption rejects Uganda's destination because it differs from
+    Norway's origin; the "from" before the list then makes Uganda an origin."""
     query = "aid to Kenya from Norway and Uganda"
     entities = [
         _entity("Kenya", span="Kenya", flow_role="destination", role_span="to"),
         _entity("Norway", span="Norway", flow_role="origin", role_span="from"),
         _entity("Uganda", span="Uganda", flow_role="destination", role_span="from"),
     ]
+    with caplog.at_level(logging.WARNING, logger="search.engine.extract"):
+        validated = _validate_role_spans(query, entities, [])
+    assert "role_span crosses another entity's span" in caplog.records[0].getMessage()
+    assert [e.flow_role for e in validated] == ["destination", "origin", "origin"]
+
+
+_KENYA_TO = _entity("Kenya", span="Kenya", flow_role="destination", role_span="to")
+
+
+@pytest.mark.parametrize(
+    ("query", "entities", "expected"),
+    [
+        pytest.param(
+            "ODA to Kenya and Uganda",
+            [_KENYA_TO, _entity("Uganda", span="Uganda")],
+            [("destination", "to"), ("destination", "to")],
+            id="second-conjunct",
+        ),
+        pytest.param(
+            "oda to kenya, uganda and rwanda.",
+            [
+                _entity("Kenya", span="kenya", flow_role="destination", role_span="to"),
+                _entity("Uganda", span="uganda"),
+                _entity("Rwanda", span="rwanda"),
+            ],
+            [("destination", "to")] * 3,
+            id="three-conjuncts",
+        ),
+        pytest.param(
+            "aid from Norway to Kenya and Uganda",
+            [
+                _entity("Norway", span="Norway", flow_role="origin", role_span="from"),
+                _KENYA_TO,
+                _entity("Uganda", span="Uganda"),
+            ],
+            [("origin", "from"), ("destination", "to"), ("destination", "to")],
+            id="nearest-cue-governs",
+        ),
+        pytest.param(
+            "aid to Kenya and the population of Uganda",
+            [_KENYA_TO, _entity("Uganda", span="Uganda")],
+            [("destination", "to"), ("unspecified", None)],
+            id="not-a-list",
+        ),
+        pytest.param(
+            "aid to Kenya and debt owed to China",
+            [_KENYA_TO, _entity("China", span="China")],
+            [("destination", "to"), ("unspecified", None)],
+            id="cue-of-its-own-phrase",
+        ),
+        pytest.param(
+            "aid to Kenya and Uganda",
+            [_KENYA_TO, _entity("Uganda")],
+            [("destination", "to"), ("unspecified", None)],
+            id="no-span",
+        ),
+    ],
+)
+def test_validate_role_spans_carries_a_cue_to_every_place_of_its_list(query, entities, expected):
+    """A cue before a coordinated list governs every place in it, so an entity the model
+    left unspecified takes the role of the conjunct before it."""
     validated = _validate_role_spans(query, entities, [])
-    assert [e.flow_role for e in validated] == ["destination", "origin", "unspecified"]
+    assert [(e.flow_role, e.role_span) for e in validated] == expected
 
 
 # _validate_role_spans: a script-agnostic genuine-cue rule for role_span
@@ -605,10 +667,11 @@ def test_validate_role_spans_downgrades_a_directional_claim_with_a_blank_role_sp
     assert validated[0].flow_role == "unspecified"
 
 
-def test_validate_role_spans_uses_normalized_offsets_on_a_query_with_leading_space():
+def test_validate_role_spans_uses_normalized_offsets_on_a_query_with_leading_space(caplog):
     """Ranges use stripped, case-folded query text.
 
-    Six leading spaces preserve the crossing check from Norway to Uganda's cue.
+    Six leading spaces preserve the crossing check from Norway to Uganda's cue, and the
+    "from" before the list then makes Uganda an origin.
     """
     query = "      aid to Kenya from Norway and Uganda"
     entities = [
@@ -616,8 +679,10 @@ def test_validate_role_spans_uses_normalized_offsets_on_a_query_with_leading_spa
         _entity("Norway", span="Norway", flow_role="origin", role_span="from"),
         _entity("Uganda", span="Uganda", flow_role="destination", role_span="from"),
     ]
-    validated = _validate_role_spans(query, entities, [])
-    assert [e.flow_role for e in validated] == ["destination", "origin", "unspecified"]
+    with caplog.at_level(logging.WARNING, logger="search.engine.extract"):
+        validated = _validate_role_spans(query, entities, [])
+    assert "role_span crosses another entity's span" in caplog.records[0].getMessage()
+    assert [e.flow_role for e in validated] == ["destination", "origin", "origin"]
 
 
 def test_validate_role_spans_never_refuses_only_downgrades():
