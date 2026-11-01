@@ -431,6 +431,16 @@ _KENYA_TO = _entity("Kenya", span="Kenya", flow_role="destination", role_span="t
             id="three-conjuncts",
         ),
         pytest.param(
+            "oda to kenya, uganda and rwanda",
+            [
+                _entity("Kenya", span="kenya", flow_role="destination", role_span="to"),
+                _entity("Rwanda", span="rwanda"),
+                _entity("Uganda", span="uganda"),
+            ],
+            [("destination", "to")] * 3,
+            id="out-of-query-order",
+        ),
+        pytest.param(
             "aid from Norway to Kenya and Uganda",
             [
                 _entity("Norway", span="Norway", flow_role="origin", role_span="from"),
@@ -453,6 +463,18 @@ _KENYA_TO = _entity("Kenya", span="Kenya", flow_role="destination", role_span="t
             id="cue-of-its-own-phrase",
         ),
         pytest.param(
+            "aid to Kenya and Uganda's GDP",
+            [_KENYA_TO, _entity("Uganda", span="Uganda")],
+            [("destination", "to"), ("unspecified", None)],
+            id="possessor-of-its-own-measure",
+        ),
+        pytest.param(
+            "aid to Kenya and Uganda GDP",
+            [_KENYA_TO, _entity("Uganda", span="Uganda")],
+            [("destination", "to"), ("unspecified", None)],
+            id="place-before-its-own-measure",
+        ),
+        pytest.param(
             "aid to Kenya and Uganda",
             [_KENYA_TO, _entity("Uganda")],
             [("destination", "to"), ("unspecified", None)],
@@ -463,7 +485,7 @@ _KENYA_TO = _entity("Kenya", span="Kenya", flow_role="destination", role_span="t
 def test_validate_role_spans_carries_a_cue_to_every_place_of_its_list(query, entities, expected):
     """A cue before a coordinated list governs every place in it, so an entity the model
     left unspecified takes the role of the conjunct before it."""
-    validated = _validate_role_spans(query, entities, [])
+    validated = _validate_role_spans(query, entities, ["aid", "oda", "GDP"])
     assert [(e.flow_role, e.role_span) for e in validated] == expected
 
 

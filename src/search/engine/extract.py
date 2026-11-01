@@ -838,13 +838,19 @@ def _carry_coordinated_roles(
     makes Uganda a recipient as well as Kenya. An unspecified entity takes a directed
     entity's flow role and role span when role-span validation would accept that cue for
     it (`_role_cue_check`) with the cue first, adjacent and with at least one entity's span
-    between them, every such span on the same role. Entities are read in order, so each
+    between them, every such span on the same role. A place that heads its own noun phrase
+    (`_heads_own_phrase`) takes none, so Uganda in "aid to Kenya and Uganda's GDP" keeps no
+    role. Entities are read in the order their spans first occur in the query, so each
     conjunct a cue reaches counts as coordinated for the next. An entity two such cues on
     opposite axes reach keeps no role.
     """
     carried = list(entities)
-    for i, entity in enumerate(carried):
+    for i in sorted(range(len(carried)), key=lambda k: _first_offset(normalized_query, carried[k])):
+        entity = carried[i]
         if entity.flow_role != "unspecified" or not entity.span:
+            continue
+        own_ranges = _all_normalized_text_ranges(entity.span, normalized_query)
+        if _heads_own_phrase(own_ranges, normalized_query, variables):
             continue
         readings: dict[str, ExtractedEntity] = {}
         for source in carried:
@@ -866,6 +872,22 @@ def _carry_coordinated_roles(
         if len(readings) == 1:
             carried[i] = next(iter(readings.values()))
     return carried
+
+
+def _first_offset(normalized_query: str, entity: ExtractedEntity) -> int:
+    """Where `entity`'s span first occurs in `normalized_query`; past its end when the span
+    is missing or absent."""
+    ranges = _all_normalized_text_ranges(entity.span or "", normalized_query)
+    return min((start for start, _end in ranges), default=len(normalized_query))
+
+
+def _heads_own_phrase(
+    own_ranges: list[tuple[int, int]], normalized_query: str, variables: list[str]
+) -> bool:
+    """Whether a span occurrence is followed by a possessive ("Uganda's GDP") or straight
+    by a measure word ("Uganda GDP"), so the place heads a noun phrase of its own."""
+    possessed = any(normalized_query.startswith(("'", "\u2019"), end) for _start, end in own_ranges)
+    return possessed or _modifies_measure_word(own_ranges, normalized_query, variables)
 
 
 def _lends_the_measure(
