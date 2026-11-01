@@ -227,7 +227,7 @@ def _finish_member(
     output_profile_seconds = time.perf_counter() - profile_start
     method_periods: dict[str, tuple[str, str]] = {}
     fold_method_periods(method_periods, outcome.frame)
-    family = pipeline.shared_family((request,))
+    family = request.family_statement
 
     trace = ManifestTrace(
         applied_window=(
@@ -358,7 +358,7 @@ def _finish_group(
 
     # Every request of a group is a member of one definition, or one composite component,
     # and carries its family.
-    family = pipeline.shared_family(requests)
+    family = requests[0].family_statement
     trace = ManifestTrace(
         applied_window=(
             outcome.applied_window.as_trace_entry() if outcome.applied_window is not None else None

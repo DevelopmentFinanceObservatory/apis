@@ -60,7 +60,14 @@ from ._app_factories import make_client
 from ._artifact_doubles import FakeArtifactStore
 from ._deps_doubles import fake_deps_cell
 from ._operation_store import FakeOperationDatasetStore
-from ._snapshot_doubles import FakeSnapshotReader, FakeSpecReader, _store_and_locate, _version
+from ._snapshot_doubles import (
+    FakeSnapshotReader,
+    FakeSpecReader,
+    _store_and_locate,
+    _version,
+    version_body,
+)
+from ._version_facts import facts_from_body
 from .conftest import FakeDatasetStore
 from .test_pin_door import FakeArtifactReferenceWriter
 
@@ -638,6 +645,16 @@ def test_failed_operation_poll_keeps_its_own_detail_when_the_stored_refusal_has_
 
 _CONFIRMED_CURRENCY = {"served_from": "materialise", "confirmed_at": "2026-01-01T00:00:00+00:00"}
 _EARLIER_COMPLETION = "2025-12-31T00:00:00+00:00"
+_UNKNOWN_FAMILY_FIELDS = {"family_member_digest": None, "family_member_count": None}
+# The stored version keeps its first mint's family, which a poll never states.
+_FIRST_MINT_VERSION = _version(
+    facts=facts_from_body(
+        {
+            **version_body("cv1"),
+            "trace": {"family_member_digest": "f" * 64, "family_member_count": 9},
+        }
+    )
+)
 
 
 @pytest.mark.parametrize(
@@ -668,8 +685,7 @@ _EARLIER_COMPLETION = "2025-12-31T00:00:00+00:00"
             id="run-stating-no-family",
         ),
         # An older image reset the row and completed it again without writing the column, so
-        # the family recorded at the earlier completion is left behind and the stored
-        # version's, which states none, is served.
+        # the family recorded at the earlier completion is left behind and stated unknown.
         pytest.param(
             _CONFIRMED_AT,
             {
@@ -677,22 +693,26 @@ _EARLIER_COMPLETION = "2025-12-31T00:00:00+00:00"
                 "family_member_count": 4,
                 "confirmed_at": _EARLIER_COMPLETION,
             },
-            _CONFIRMED_CURRENCY,
+            {**_CONFIRMED_CURRENCY, **_UNKNOWN_FAMILY_FIELDS},
             id="family-of-an-earlier-completion",
         ),
-        # The stored version, written before the family fields existed, states none.
         pytest.param(
-            _CONFIRMED_AT, None, _CONFIRMED_CURRENCY, id="completed-before-families-were-recorded"
+            _CONFIRMED_AT,
+            None,
+            {**_CONFIRMED_CURRENCY, **_UNKNOWN_FAMILY_FIELDS},
+            id="completed-before-families-were-recorded",
         ),
-        pytest.param(None, None, {}, id="completed-by-an-image-recording-no-instant"),
+        pytest.param(
+            None, None, _UNKNOWN_FAMILY_FIELDS, id="completed-by-an-image-recording-no-instant"
+        ),
     ],
 )
 def test_done_operation_serves_the_manifest_with_a_freshly_signed_url_without_a_principal(
     confirmed_at: datetime | None, family: dict[str, object] | None, currency: dict[str, object]
 ) -> None:
     """A row the run completed states the run's currency and the family it served in place of
-    the stored version's (`Operation.family`). A row completed before families were recorded,
-    or whose family was recorded at another completion, keeps the stored version's."""
+    the stored version's first-mint family (`Operation.family`). A row that recorded no family
+    at its `confirmed_at` states the family unknown."""
     artifact_store = FakeArtifactStore()
     location = _stored_rendering(artifact_store, _PARQUET_BUNDLE, data=b"a,b\n1,2\n")
     client = make_client(
@@ -700,7 +720,7 @@ def test_done_operation_serves_the_manifest_with_a_freshly_signed_url_without_a_
         settings=_SITE_SETTINGS,
         spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
         snapshot_reader=FakeSnapshotReader(
-            versions={("spec_a", "cv1"): _version()},
+            versions={("spec_a", "cv1"): _FIRST_MINT_VERSION},
             locations={("spec_a", "cv1"): [location]},
         ),
         artifact_store=artifact_store,

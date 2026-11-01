@@ -31,17 +31,15 @@ it, and the rebuild stores that coverage on the version when it makes the same o
 moves on every graph restart, and neither is the member family the definition admits, since the
 run's bytes depend only on the members it serves. A confirmation stores the family the check
 resolved on the head, and a run stores its own, each with the confirmation it was stated at and the
-basis it was resolved under (`adapter.family_basis`, made of the code index content hash, the bound
-graph release id, the bound origin catalogue build id and the materialiser image build). The family
-decides no freshness. A head serve states the head's family only while it was stated at the head's
-own `confirmed_at` under the serving basis, and states it unknown otherwise, as on a head written
-before families were recorded, one an image recording no family moved, or one whose family another
-code index, graph release, catalogue build or image resolved. The head's next recheck or run
-states it afresh. A rebuild states its run's family (`ServedDefinition.family`), derived
-renderings included. Both replace the version record's, which keeps the first mint's. A rebuild
-materialises the definition (`serve.serve_definition`), sharing one rebuild per subject in this
-process (`admission.RebuildFlights`), and breaks a single-place facet tie on the process's
-whole-variable breadth (`DefinitionDeps.variable_breadth`).
+basis it was resolved under (`adapter.family_basis`). The family decides no freshness. A head
+serve states the head's family only while it was stated at the head's own `confirmed_at` under the
+serving basis, and states it unknown otherwise, as on a head written before families were
+recorded, one an image recording no family moved, or one whose family another basis resolved. The
+head's next recheck or run states it afresh. A rebuild states its run's family
+(`ServedDefinition.family`), derived renderings included. Both replace the version record's, which
+keeps the first mint's. A rebuild materialises the definition (`serve.serve_definition`), sharing
+one rebuild per subject in this process (`admission.RebuildFlights`), and breaks a single-place
+facet tie on the process's whole-variable breadth (`DefinitionDeps.variable_breadth`).
 
 A call with no rendering (`options` `None`, the `/options` route) loads the head's version
 without its artifacts, and a rebuild records the version, its canonical frame and statistics, and
@@ -364,9 +362,8 @@ def _head_family(head: SubjectHead, *, basis: str) -> StatedFamily:
     """The family a serve of `head` states: its latest admission's when that was stated at the
     head's own `confirmed_at` under `basis`, the serving one (`adapter.family_basis`), and
     `UNKNOWN_FAMILY` otherwise, as on a head written before families were recorded, one an
-    image recording no family moved, or one whose family another code index, graph release,
-    catalogue build or image resolved. Freshness does not read it, so such a head states unknown
-    until its next recheck or run."""
+    image recording no family moved, or one whose family another basis resolved. Freshness does
+    not read it, so such a head states unknown until its next recheck or run."""
     family = head.family
     if family is None or family.confirmed_at != head.confirmed_at or family.basis != basis:
         return UNKNOWN_FAMILY

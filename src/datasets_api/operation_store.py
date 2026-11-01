@@ -253,11 +253,11 @@ class Operation:
     confirmed the subject head, `None` on a row completed by an image that records no such
     instant. `family` is the member family the run served, recorded with the head confirmation
     it completed at. The poll states it in place of the stored version's only while that
-    confirmation equals `confirmed_at`. It is `None` on a row completed before families were
-    recorded or reset by this image since its last completion. An older image's reset leaves
-    it in place. When that image completes the row at another confirmation the poll states the
-    stored version's family, and when it writes the confirmation the family was recorded at,
-    the poll states that family. Failed rows carry `refusal_code` and `retryable` to mark
+    confirmation equals `confirmed_at`, and states the family unknown otherwise. It is `None`
+    on a row completed before families were recorded or reset by this image since its last
+    completion. An older image's reset leaves it in place. When that image completes the row
+    at another confirmation the poll states the family unknown, and when it writes the
+    confirmation the family was recorded at, the poll states that family. Failed rows carry `refusal_code` and `retryable` to mark
     transient failures. `refusal` is the classified refusal a deterministic failure ended on,
     and `None` on every other row, including one whose stored refusal this image cannot parse.
     `submission_count` starts at 0 and increments on each reset. Monotonic `attempt_count`

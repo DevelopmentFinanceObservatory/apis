@@ -312,6 +312,10 @@ class _FakeHeadStore:
     def head_for(self, subject_id: str) -> SubjectHead:
         return self._heads[subject_id]
 
+    def drop_family(self, subject_id: str) -> None:
+        """Leave the head as an image recording no family wrote it."""
+        self._heads[subject_id] = dataclasses.replace(self._heads[subject_id], family=None)
+
     def age_head(
         self, subject_id: str, *, age: timedelta, materialised_age: timedelta | None = None
     ) -> None:
@@ -772,6 +776,10 @@ def test_options_route_currency_confirms_and_advances_the_head_as_a_get_does():
     assert within.status_code == 200, within.text
     assert within.json()["trace"]["served_from"] == "head"
     assert head_store.advance_head_calls == writes_after_definition_get
+    # A head with no recorded family states it unknown, as null keys on the wire.
+    head_store.drop_family(spec_id)
+    unknown = client.get(f"/api/datasets/{spec_id}/options").json()["trace"]
+    assert (unknown["family_member_digest"], unknown["family_member_count"]) == (None, None)
 
     # `/options` confirms the head when the fingerprint matches, as a GET does.
     head_store.age_head(spec_id, age=_PAST_INTERVAL)

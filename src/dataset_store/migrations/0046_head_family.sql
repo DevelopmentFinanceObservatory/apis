@@ -22,11 +22,11 @@
 --
 -- `operation.family` is the same JSON object without `basis`: the trace fields the run that
 -- completed the row served, and the `confirmed_at` it completed with. A `done` poll states them
--- only while that equals the row's `confirmed_at` (`0032_operation_confirmed_at.sql`), and the
--- stored version's family otherwise. `LiveOperationStore.complete` sets it and a resubmit's reset
+-- only while that equals the row's `confirmed_at` (`0032_operation_confirmed_at.sql`), and states
+-- the family unknown otherwise. `LiveOperationStore.complete` sets it and a resubmit's reset
 -- clears it, so it is NULL on a row completed before this migration and on one this image reset
 -- since. An older image's reset leaves the column as it was. When that image completes the row
--- again at another confirmation, the poll states the stored version's family. When its completion
+-- again at another confirmation, the poll states the family unknown. When its completion
 -- writes the confirmation the stored family was recorded at, the poll states that family, the one
 -- the head was confirmed with at that instant.
 --

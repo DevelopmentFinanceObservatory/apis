@@ -422,11 +422,10 @@ class SubjectHead:
 
     `family` is the member family the head's latest admission stated, a run's or a freshness
     check's, with the head confirmation it was stated at and the member-resolution inputs it
-    was resolved under (`adapter.family_basis`, made of the code index content hash, the bound
-    graph release id, the bound origin catalogue build id and the materialiser image build). A
-    head serve states it only while its `confirmed_at` equals the head's own and its `basis` the
-    serving one. A write that moves the head without stating a family leaves it behind, and
-    another code index, graph release, catalogue build or image resolves families afresh.
+    was resolved under (`adapter.family_basis`). A head serve states it only while its
+    `confirmed_at` equals the head's own and its `basis` the serving one. A write that moves
+    the head without stating a family leaves it behind, and a moved basis resolves families
+    afresh.
     `None` on a head no write has reached since the column was added.
     """
 

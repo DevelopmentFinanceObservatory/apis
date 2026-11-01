@@ -19,8 +19,9 @@ that rendering's artifact plus statistics artifacts, as the synchronous mint doe
 Its `trace` carries `served_from: materialise` and the `confirmed_at` the row
 recorded at completion, the currency pair a synchronous mint that materialised
 reports, and the family fields the run served (`Operation.family`) in place of the
-stored version's. A row an image recording no `confirmed_at` completed carries neither
-currency field.
+stored version's, or the family stated unknown when the row recorded none at its
+`confirmed_at`. A row an image recording no `confirmed_at` completed carries neither
+currency field and states the family unknown.
 When the snapshot lists no artifact under that key (a bundle the worker could not
 link, a bundle of a superseded rendition, an expired working-tier artifact), the
 poll calls `OperationStore.fail_unservable_done` and answers retryable
@@ -115,7 +116,7 @@ from dfo_platform.build import build_commit
 from dfo_platform.doors import DoorContribution, path_registry_endpoints
 from dfo_platform.problem import PROBLEM_JSON, Cause, Refusal
 from dfo_platform.static_response import FrozenJSON, freeze_public_json
-from materialise.trace import with_family
+from materialise.trace import UNKNOWN_FAMILY, with_family
 from spec_registry import IdentityQuarantined
 from spec_registry.reader import SpecReader
 
@@ -285,14 +286,15 @@ def _load_done_manifest(
     manifest = with_retention(
         manifest, subject_id=operation.subject_id, reader=snapshot_reader, now=now()
     )
-    if operation.confirmed_at is None:
-        return manifest
-    trace = served_trace(
-        manifest.trace, served_from="materialise", confirmed_at=operation.confirmed_at
-    )
     family = operation.family
-    if family is not None and family.confirmed_at == operation.confirmed_at:
-        trace = with_family(trace, family.stated)
+    stated = (
+        family.stated
+        if family is not None and family.confirmed_at == operation.confirmed_at
+        else UNKNOWN_FAMILY
+    )
+    trace = with_family(manifest.trace, stated)
+    if operation.confirmed_at is not None:
+        trace = served_trace(trace, served_from="materialise", confirmed_at=operation.confirmed_at)
     return manifest.model_copy(update={"trace": trace})
 
 
