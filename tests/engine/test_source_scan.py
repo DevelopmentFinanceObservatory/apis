@@ -3,6 +3,7 @@ code index."""
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -75,7 +76,8 @@ _SCANS = [
     ),
     ("ODA from DAC countries", ["ODA"], ["DAC countries"], [[]]),
     # An organisation that is an entity or lies in a measure's words is a party, unless a
-    # data word follows it or "according to" precedes it.
+    # data word follows it or a source cue ("according to", "reported to")
+    # precedes it.
     ("Ghana debt service to the World Bank", ["debt service"], ["Ghana", "World Bank"], [[]]),
     (
         "World Bank IDA concessional flows to Kenya",
@@ -92,6 +94,11 @@ _SCANS = [
         [[_in("OECD")]],
     ),
     ("GDP of Kenya according to the IMF", ["GDP"], ["Kenya", "IMF"], [[_in("IMF")]]),
+    ("Germany ODA per the DAC", ["ODA"], ["Germany", "DAC"], [[]]),
+    ("ODA per DAC member", ["ODA"], ["DAC"], [[]]),
+    ("ODA per the OECD member", ["ODA"], ["OECD"], [[]]),
+    ("ODA to Kenya reported to the DAC", ["ODA"], ["Kenya", "DAC"], [[_in("DAC")]]),
+    ("ODA from Germany as published by the DAC", ["ODA"], ["Germany", "DAC"], [[_in("DAC")]]),
     ("IMF GDP current prices Kenya", ["GDP"], ["Kenya"], [[_in("IMF")]]),
     # A whole measure, or words inside a longer code label, are the measure.
     ("adolescent birth rate in Bangladesh", ["adolescent birth rate"], ["Bangladesh"], [[]]),
@@ -404,19 +411,387 @@ def test_a_stretch_is_read_for_the_sources_it_leaves_out(
     assert (stretch in scan.source_stretches) is alone
 
 
+# Each row: a query, its extraction's variable, entity and dropped phrase, and whether a
+# source the query asks for applies the phrase.
+_SOURCE_PHRASE_ROWS = [
+    (
+        "Germany total ODA, as reported to the DAC",
+        "total ODA",
+        "Germany",
+        "as reported to the DAC",
+        True,
+    ),
+    ("Germany total ODA per the DAC", "total ODA", "Germany", "per the DAC", False),
+    (
+        "Germany total ODA, as published by the DAC",
+        "total ODA",
+        "Germany",
+        "as published by the DAC",
+        True,
+    ),
+    ("Germany total ODA including the DAC", "total ODA", "Germany", "including the DAC", True),
+    ("aide à l'éducation au Kenya selon le SNPC", "education aid", "Kenya", "selon le SNPC", True),
+    ("ODA to Kenya, the DAC2a figures", "ODA", "Kenya", "the DAC2a figures", True),
+    ("education aid to Kenya from the CRS", "education aid", "Kenya", "from the CRS", True),
+    (
+        "Germany total ODA, preliminary figures as reported to the DAC",
+        "total ODA",
+        "Germany",
+        "preliminary figures as reported to the DAC",
+        False,
+    ),
+    (
+        "Germany total ODA, preliminary data from the DAC",
+        "total ODA",
+        "Germany",
+        "preliminary data from the DAC",
+        False,
+    ),
+    (
+        "Germany total ODA, net disbursements as reported to the DAC",
+        "total ODA",
+        "Germany",
+        "net disbursements as reported to the DAC",
+        False,
+    ),
+    (
+        "Germany ODA on a grant-equivalent basis from the DAC",
+        "ODA",
+        "Germany",
+        "on a grant-equivalent basis from the DAC",
+        False,
+    ),
+    (
+        "Germany total ODA, bilateral only, as reported to the DAC",
+        "total ODA",
+        "Germany",
+        "bilateral only, as reported to the DAC",
+        False,
+    ),
+    (
+        "Germany ODA for humanitarian purposes reported to the DAC",
+        "ODA",
+        "Germany",
+        "for humanitarian purposes reported to the DAC",
+        False,
+    ),
+    (
+        "Germany total ODA, excluding debt relief as reported to the DAC",
+        "total ODA",
+        "Germany",
+        "excluding debt relief as reported to the DAC",
+        False,
+    ),
+    (
+        "Germany total ODA, revised figures from the DAC",
+        "total ODA",
+        "Germany",
+        "revised figures from the DAC",
+        False,
+    ),
+    (
+        "Germany total ODA in constant prices from the DAC",
+        "total ODA",
+        "Germany",
+        "in constant prices from the DAC",
+        False,
+    ),
+    (
+        "Germany total ODA in euros according to the DAC",
+        "total ODA",
+        "Germany",
+        "in euros according to the DAC",
+        False,
+    ),
+    (
+        "Germany total ODA, forecasts according to the DAC",
+        "total ODA",
+        "Germany",
+        "forecasts according to the DAC",
+        False,
+    ),
+    (
+        "Germany total ODA not reported to the DAC",
+        "total ODA",
+        "Germany",
+        "not reported to the DAC",
+        False,
+    ),
+    (
+        "Germany total ODA reported outside the DAC",
+        "total ODA",
+        "Germany",
+        "reported outside the DAC",
+        False,
+    ),
+    (
+        "Germany total ODA compared with the DAC",
+        "total ODA",
+        "Germany",
+        "compared with the DAC",
+        False,
+    ),
+    ("Germany total ODA relative to the DAC", "total ODA", "Germany", "relative to the DAC", False),
+    (
+        "Germany total ODA as a share of the DAC",
+        "total ODA",
+        "Germany",
+        "as a share of the DAC",
+        False,
+    ),
+    ("Germany total ODA, other than the DAC", "total ODA", "Germany", "other than the DAC", False),
+    ("Germany total ODA, DAC data for 2020", "total ODA", "Germany", "DAC data for 2020", False),
+    (
+        "education aid to Kenya, the CRS commitments",
+        "education aid",
+        "Kenya",
+        "the CRS commitments",
+        False,
+    ),
+    (
+        "education aid to Kenya from the CRS gross disbursements",
+        "education aid",
+        "Kenya",
+        "from the CRS gross disbursements",
+        False,
+    ),
+    (
+        "education aid to Kenya, preliminary figures from the CRS",
+        "education aid",
+        "Kenya",
+        "preliminary figures from the CRS",
+        False,
+    ),
+    (
+        "education aid to Kenya, commitments from the CRS",
+        "education aid",
+        "Kenya",
+        "commitments from the CRS",
+        False,
+    ),
+    (
+        "education aid to Kenya, humanitarian projects in the CRS",
+        "education aid",
+        "Kenya",
+        "humanitarian projects in the CRS",
+        False,
+    ),
+    (
+        "education aid to Kenya, private donors in the CRS",
+        "education aid",
+        "Kenya",
+        "private donors in the CRS",
+        False,
+    ),
+    (
+        "education aid to Kenya, flows not in the CRS",
+        "education aid",
+        "Kenya",
+        "flows not in the CRS",
+        False,
+    ),
+    (
+        "education aid to Kenya, flows missing from the CRS",
+        "education aid",
+        "Kenya",
+        "flows missing from the CRS",
+        False,
+    ),
+    (
+        "education aid to Kenya, 2019 edition of the CRS",
+        "education aid",
+        "Kenya",
+        "2019 edition of the CRS",
+        False,
+    ),
+    (
+        "education aid to Kenya, grants as reported to the CRS",
+        "education aid",
+        "Kenya",
+        "grants as reported to the CRS",
+        False,
+    ),
+    (
+        "education aid to Kenya, loans from the CRS",
+        "education aid",
+        "Kenya",
+        "loans from the CRS",
+        False,
+    ),
+    (
+        "education aid to Kenya, bilateral data from the CRS",
+        "education aid",
+        "Kenya",
+        "bilateral data from the CRS",
+        False,
+    ),
+    (
+        "GDP of Kenya, the 2025 edition of the World Economic Outlook",
+        "GDP",
+        "Kenya",
+        "the 2025 edition of the World Economic Outlook",
+        False,
+    ),
+    (
+        "GDP of Kenya, the latest vintage of the World Economic Outlook",
+        "GDP",
+        "Kenya",
+        "the latest vintage of the World Economic Outlook",
+        False,
+    ),
+    (
+        "GDP of Kenya, staff projections from the World Economic Outlook",
+        "GDP",
+        "Kenya",
+        "staff projections from the World Economic Outlook",
+        False,
+    ),
+    (
+        "GDP of Kenya, October update of the World Economic Outlook",
+        "GDP",
+        "Kenya",
+        "October update of the World Economic Outlook",
+        False,
+    ),
+    (
+        "GDP of Kenya, from the April 2025 World Economic Outlook",
+        "GDP",
+        "Kenya",
+        "from the April 2025 World Economic Outlook",
+        False,
+    ),
+    (
+        "aide à l'éducation au Kenya, chiffres provisoires selon le SNPC",
+        "education aid",
+        "Kenya",
+        "chiffres provisoires selon le SNPC",
+        False,
+    ),
+    (
+        "aide à l'éducation au Kenya, engagements selon le SNPC",
+        "education aid",
+        "Kenya",
+        "engagements selon le SNPC",
+        False,
+    ),
+    (
+        "ayuda a la educación en Kenia, datos preliminares según el CRS",
+        "education aid",
+        "Kenia",
+        "datos preliminares según el CRS",
+        False,
+    ),
+    (
+        "ayuda a la educación en Kenia, compromisos según el CRS",
+        "education aid",
+        "Kenia",
+        "compromisos según el CRS",
+        False,
+    ),
+    (
+        "ODA to Kenya, imputed shares from the DAC2a",
+        "ODA",
+        "Kenya",
+        "imputed shares from the DAC2a",
+        False,
+    ),
+    ("CRS education aid to Kenya", "education aid", "Kenya", "according to the CRS", False),
+    ("aid to Kenya in fragile states", "aid", "Kenya", "in fragile states", False),
+]
+
+
+@pytest.mark.parametrize(("query", "variable", "entity", "dropped", "applied"), _SOURCE_PHRASE_ROWS)
+def test_a_dropped_phrase_naming_only_a_source_is_applied_by_it(
+    catalogue: CatalogueSnapshot,
+    query: str,
+    variable: str,
+    entity: str,
+    dropped: str,
+    applied: bool,
+):
+    extraction = Extraction(
+        kind="resolution",
+        variables=[variable],
+        entities=[ExtractedEntity(text=entity, span=entity)],
+        dropped_qualifiers=[dropped],
+    )
+    with bound_catalogue(catalogue):
+        prep = raw_text._prepare_extraction(
+            extraction, ExtractionResult(extraction=extraction, qualifiers={}), query=query
+        )
+    assert bool(prep.qualifier_warnings) is not applied
+    assert bool(prep.qualifier_facts) is not applied
+
+
+def test_a_source_the_query_leaves_out_applies_no_phrase(catalogue: CatalogueSnapshot):
+    """The stretch that leaves out the CRS is the exclusion's to judge, and the source it
+    leaves out is no source the answer serves."""
+    reading = _left_out("education aid to Kenya excluding the CRS", "excluding the CRS")
+    with bound_catalogue(catalogue):
+        scan = scan_sources(
+            reading.text,
+            dictionary=source_dictionary(catalogue),
+            measures=["education aid"],
+            entity_spans=["Kenya"],
+            index=get_index(),
+            left_out=reading.left_out,
+        )
+    assert [hit.polarity for hit in scan.hits] == ["exclude"]
+    assert source_phrases(["excluding the CRS"], query=reading.text, hits=scan.hits) == set()
+    assert (
+        source_phrases(
+            ["excluding the CRS"],
+            query="education aid to Kenya excluding the CRS",
+            hits=[dataclasses.replace(scan.hits[0], start=27, end=30)],
+        )
+        == set()
+    )
+
+
 @pytest.mark.parametrize(
-    ("phrase", "covered"),
+    ("query", "variable", "dropped", "warned"),
     [
-        ("the CRS", True),
-        ("selon le SNPC", True),
-        ("IMF", True),
-        ("from the April 2025 World Economic Outlook", False),
-        ("in fragile states", False),
+        ("Germany total ODA, as reported to the DAC", "total ODA", "as reported to the DAC", False),
+        (
+            "total ODA by Germany as reported to the DAC",
+            "total official development assistance",
+            "as reported to the DAC",
+            False,
+        ),
+        ("total ODA from Germany reported to the DAC", "ODA", "reported to the DAC", False),
+        ("ODA reported to the DAC by Germany", "official development assistance", None, False),
+        # A source the dictionary does not hold is no mention, so its phrase still warns.
+        (
+            "Germany total ODA, as reported to Eurostat",
+            "total ODA",
+            "as reported to Eurostat",
+            True,
+        ),
+        # A named source the phrase narrows to one edition is not what the answer serves.
+        (
+            "GDP of Kenya from the April 2025 World Economic Outlook",
+            "GDP",
+            "from the April 2025 World Economic Outlook",
+            True,
+        ),
     ],
 )
-def test_a_dropped_phrase_naming_only_a_source_is_applied_by_it(phrase: str, covered: bool):
-    mentions = [_out("CRS"), _in("SNPC"), _in("IMF"), _in("World Economic Outlook")]
-    assert (phrase in source_phrases([phrase], mentions)) is covered
+def test_raw_door_warns_for_a_source_phrase_only_where_its_mention_does_not_apply_it(
+    catalogue: CatalogueSnapshot, query: str, variable: str, dropped: str | None, warned: bool
+):
+    """Each row carries the extraction recorded live for its query (Germany's role aside)."""
+    extraction = Extraction(
+        kind="resolution",
+        variables=[variable],
+        entities=[ExtractedEntity(text="Germany", span="Germany")],
+        dropped_qualifiers=[dropped] if dropped is not None else [],
+    )
+    with bound_catalogue(catalogue):
+        prep = raw_text._prepare_extraction(
+            extraction, ExtractionResult(extraction=extraction, qualifiers={}), query=query
+        )
+    assert bool(prep.qualifier_warnings) is warned
+    assert bool(prep.qualifier_facts) is warned
 
 
 def test_raw_door_reads_a_stretch_that_leaves_out_a_publisher(catalogue: CatalogueSnapshot):
