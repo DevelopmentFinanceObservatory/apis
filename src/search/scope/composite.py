@@ -78,10 +78,14 @@ _NO_POINTS: ObservationsOmissionReason = "observations_no_points"
 class YearCounts:
     """How many series of one identity's family hold each year it asks for, a year none
     holds counted zero, and, for a `latest` window, the year a read of it elects (None when
-    no series holds a year)."""
+    no series holds a year). `settled` when the index decides the family, the window falls
+    within the snapshot's years and the snapshot holds a row of each of the family's
+    StatVars, so a year counted zero is one no series holds; otherwise an empty count may
+    only be the snapshot not knowing."""
 
     counts: Mapping[int, int]
     latest: int | None = None
+    settled: bool = False
 
     @property
     def held(self) -> frozenset[int]:
@@ -120,7 +124,8 @@ def _component_years(identity: Mapping[str, object], *, facts: ScopeFacts) -> Ye
         last_year=last,
     )
     latest = elected_year(counts) if window.get("kind") == "latest" else None
-    return YearCounts(counts=counts, latest=latest)
+    settled = all(coverage.covers(row.dcid) for row in family.rows)
+    return YearCounts(counts=counts, latest=latest, settled=settled)
 
 
 def donor_years(
@@ -572,8 +577,10 @@ def composite_download(
     The count reads no facet: it keeps a member's rows under a source, unit or method the
     mint's facet election leaves out, and counts the zero rows of such a member, and under a
     unit request it keeps rows a conversion would drop (`unit.conversion.counted_conversion`).
-    So `rows` can overstate the file, and `rows_exact` is always false. `rows`, `series` and
-    `window` are None where some component's members are not settled in memory
+    So `rows` can overstate the file, and `rows_exact` is always false. A component the
+    snapshot settles as serving no year (`YearCounts.settled`) writes no row, so it counts
+    nothing whatever its members. `rows`, `series` and `window` are None where some other
+    component has members not settled in memory
     (`ServedComponent.members`), as for a family of `observationAbout` members, whose rows
     only facet metadata counts, and where the coverage snapshot holds no row of some member
     (`CoverageIndex.covers`) of a component that writes its members' own rows, as
@@ -585,18 +592,19 @@ def composite_download(
         return None
     licence = _shared_licence(served)
     coverage = facts.coverage.index
+    writing = [item for item in served if item.served or not item.years.settled]
     if any(
         item.members is None
         or not (
             item.component.recipe.zero_absent or all(coverage.covers(sv) for sv in item.members)
         )
-        for item in served
+        for item in writing
     ):
         return DownloadFacts(rows=None, rows_exact=False, series=None, window=None, licence=licence)
     rows = series = 0
     years: set[int] = set()
     cells: set[tuple[str, str, int]] = set()
-    for item in served:
+    for item in writing:
         for (_variable, recipient, donor), held in _served_series(item, coverage):
             cells.update((recipient, donor, year) for year in held)
             if not item.component.recipe.zero_absent:
@@ -604,7 +612,7 @@ def composite_download(
                 series += 1
                 years.update(held)
     places = {(recipient, donor) for recipient, donor, _year in cells}
-    for item in served:
+    for item in writing:
         if item.component.recipe.zero_absent and cells:
             members = len(cast("frozenset[str]", item.members))
             rows += members * len(cells)

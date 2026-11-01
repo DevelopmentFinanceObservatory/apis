@@ -234,3 +234,24 @@ def test_a_member_the_snapshot_does_not_hold_leaves_the_counts_null_and_keeps_th
         "window": None,
         "licence": full.licence,
     }
+
+
+def test_the_snapshot_settles_a_component_s_years_only_while_it_holds_every_member():
+    """A component's years are settled (`YearCounts.settled`) while the snapshot holds a row
+    of each StatVar of its family, so an empty count there is one no series holds, and not
+    once it lacks one, where an empty count may be the snapshot not knowing."""
+    populated = _stacked_crs()
+    missing = next(
+        dcid for dcid, (facet, _value, _years) in populated.items() if facet == _CRS_FACET
+    )
+    partial = {dcid: held for dcid, held in populated.items() if dcid != missing}
+
+    def settled(held: _Populated) -> dict[str, bool]:
+        facts = ScopeFacts(index=get_index(), coverage=_coverage(held).snapshot())
+        return {
+            item.component.role: item.years.settled
+            for item in served_components(_identity(), facts=facts)
+        }
+
+    assert settled(populated)["bilateral"]
+    assert not settled(partial)["bilateral"]
