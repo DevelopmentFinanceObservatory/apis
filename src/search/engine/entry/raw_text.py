@@ -528,6 +528,14 @@ def _entity_roles(
     reads the measure, and an extracted axis does when its cue does
     (`_cue_states_direction`). Fall back to entity text for the overlap anchor when
     translation leaves no span.
+
+    A name names its set once on each flow end with one reading, as the parsed door
+    requires, so a mention with no axis whose reading (`ExtractedEntity.members`) no
+    directed mention of its name shares names the set on the other end of a name directed
+    on one end alone. Its words state no direction. "aid from African countries to Africa"
+    whose "African countries" lost its cue reads Africa's members as the providers and
+    Africa as the recipient. A mention with no axis that shares a directed mention's
+    reading is that mention again and adds no role.
     """
     places: dict[str, list[str]] = {}
     for entity in entities:
@@ -541,17 +549,35 @@ def _entity_roles(
     debt = debt_axes(query, measures=measures, places=places, directed=directed)
     worded = receipt_axes(query, places=places) | debt
     read = debtor_possessive(query, measures=measures, places=places, directed=directed)
+
+    def directed_axis(entity: ExtractedEntity) -> RoleAxis | None:
+        name = _entity_key(entity)
+        axis = worded.get(name) or read.get(name)
+        if axis is None and entity.flow_role != "unspecified":
+            return entity.flow_role
+        return axis
+
+    held_axes: dict[str, set[RoleAxis]] = {}
+    held_readings: dict[str, set[bool]] = {}
+    for entity in entities:
+        if (axis := directed_axis(entity)) is not None:
+            held_axes.setdefault(_entity_key(entity), set()).add(axis)
+            held_readings.setdefault(_entity_key(entity), set()).add(entity.members)
+
     roles: dict[str, list[DoorRole]] = {}
     for entity in entities:
         name = _entity_key(entity)
-        axis = worded.get(name) or read.get(name)
-        if axis is None:
-            if entity.flow_role == "unspecified":
-                continue
-            axis = entity.flow_role
-        occurrences = roles.setdefault(name, [])
         span = entity.span or entity.text
-        stated = name in worded or _cue_states_direction(entity, entities=entities, query=query)
+        axis = directed_axis(entity)
+        if axis is None:
+            held = held_axes.get(name, set())
+            if len(held) != 1 or entity.members in held_readings[name]:
+                continue
+            axis = "origin" if held == {"destination"} else "destination"
+            stated = False
+        else:
+            stated = name in worded or _cue_states_direction(entity, entities=entities, query=query)
+        occurrences = roles.setdefault(name, [])
         role = DoorRole(axis=axis, span=span, stated=stated, members=entity.members)
         if role not in occurrences:
             occurrences.append(role)
