@@ -15,6 +15,7 @@ import dataclasses
 from collections.abc import Sequence
 from typing import Literal
 
+from code_index.composites import provenance_datasets
 from code_index.query import CodeIndex
 from code_index.shared import get_index
 from origin_catalogue import UN_SYSTEM, Catalogue, current_catalogue
@@ -115,8 +116,8 @@ def idle_exclusion_warnings(scope: SourceScope | None) -> list[Warning]:
 
 def with_idle_inclusions(scope: SourceScope, served: frozenset[str]) -> SourceScope:
     """`scope` with each including mention none of whose provenances
-    (`SourceScope.expansions`) is among `served`, the provenances the part's answer binds
-    (`answer_provenances`), marked idle (`SourceScope.idle`). Such a mention served nothing
+    (`SourceScope.expansions`) is among `served`, the provenances that serve the part's
+    answer (`answer_provenances`), marked idle (`SourceScope.idle`). Such a mention served nothing
     of the answer, so the part warns that it was not served (`idle_inclusion_warnings`)."""
     idle = frozenset(
         position
@@ -140,19 +141,21 @@ def idle_inclusion_warnings(scope: SourceScope | None) -> list[Warning]:
 
 
 def answer_provenances(specs: Sequence[Spec]) -> frozenset[str] | None:
-    """The provenances the identities of `specs` bind as their source (`facets.provenance`,
-    `spec_build.with_served_provenance`), or `None` when one binds none, so what served it
-    is unknown."""
-    served: set[str] = set()
+    """The provenances that serve `specs`: each provenance their identities bind as their
+    source (`facets.provenance`, `spec_build.with_served_provenance`), and for a declared
+    composite its component datasets too (`code_index.composites.provenance_datasets`), so
+    the OECD headline serves DAC1. `None` when one binds none, so what served it is
+    unknown."""
+    bound: set[str] = set()
     for spec in specs:
         binding = (spec.definition.identity.facets or {}).get("provenance")
         if isinstance(binding, IdentityBindingValue):
-            served.add(binding.ref)
+            bound.add(binding.ref)
         elif isinstance(binding, IdentityBindingSet):
-            served.update(binding.refs)
+            bound.update(binding.refs)
         else:
             return None
-    return frozenset(served)
+    return frozenset(bound).union(*(provenance_datasets(ref) for ref in bound))
 
 
 def _idle_words(scope: SourceScope | None, polarity: Literal["include", "exclude"]) -> list[str]:
