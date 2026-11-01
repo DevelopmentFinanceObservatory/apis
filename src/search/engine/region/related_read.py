@@ -23,7 +23,9 @@ A read qualifies when the answer serves exactly one StatVar, has no measure fami
 places with no roles. It ends at `SEARCH_RELATED_MEASURES_TIMEOUT_S` or the request
 deadline, whichever comes first. Past it, or on a failed read, the Spec states none, the
 reason is logged (`_log_unavailable`), and the answer that joins the read notes it lost
-(`degraded_reads.note_degraded_read`), so no cache stores the answer.
+(`degraded_reads.note_lost_read`), so no cache stores the answer. A read that ran past
+`SEARCH_RELATED_MEASURES_TIMEOUT_S` while the request had time left is not noted. It was
+healthy but slow, so the answer can be cached.
 """
 
 from __future__ import annotations
@@ -42,7 +44,7 @@ from code_index.shared import get_index, get_measure_index
 from dfo_platform.executor import submit_with_context
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.config import settings
-from search.engine.degraded_reads import note_degraded_read
+from search.engine.degraded_reads import ReadBudget, note_lost_read
 from search.engine.errors import GraphInfraError
 from search.engine.region.grounding import requested_window_from_date_request
 from search.engine.region.state import ResolveState
@@ -86,20 +88,22 @@ read_runner = ReadRunner()
 
 @dataclass(frozen=True, slots=True)
 class RelatedRead:
-    """The related-measures reads started in a task for `stat_var`. `task` settles to None
-    when a read failed or ran past its deadline."""
+    """The related-measures reads started in a task for `stat_var`, under `budget`. `task`
+    settles to the exception that ended them when a read failed or ran past the budget."""
 
     stat_var: str
-    task: asyncio.Task[Related | None]
+    task: asyncio.Task[Related | Exception]
+    budget: ReadBudget
 
 
 @dataclass(frozen=True, slots=True)
 class PendingRelated:
-    """The related-measures reads running on a thread for `stat_var`, ending by `deadline`."""
+    """The related-measures reads running on a thread for `stat_var`, ending by the deadline
+    of `budget`. `future` settles to the exception that ended a failed read."""
 
     stat_var: str
-    future: Future[Related | None]
-    deadline: float
+    future: Future[Related | Exception]
+    budget: ReadBudget
 
 
 def start_elected_related_read(state: ResolveState, mat_result: Materialised) -> None:
@@ -155,7 +159,8 @@ def start_related_read(
     if not _qualifies(stat_vars, measure_partition, places):
         return None
     stat_var = stat_vars[0]
-    deadline = _read_deadline(state.deadline)
+    budget = _read_budget(state.deadline)
+    deadline = budget.deadline
     read = read_runner.start(
         functools.partial(
             read_related,
@@ -170,6 +175,7 @@ def start_related_read(
     started = RelatedRead(
         stat_var=stat_var,
         task=asyncio.create_task(_within(read, stat_var=stat_var, deadline=deadline)),
+        budget=budget,
     )
     state.related_reads.append(started)
     return started
@@ -213,12 +219,14 @@ def related_read_for(
 
 async def with_related(spec: Spec, read: RelatedRead | None) -> Spec:
     """`spec` stating `read`'s group and measures, unchanged when there is no read or it
-    failed. A failed read is noted as a lost read (`note_degraded_read`)."""
+    failed. A failed read is noted as a lost read (`note_lost_read`, under the read's own
+    budget)."""
     if read is None:
         return spec
     related = await read.task
-    if related is None:
-        note_degraded_read("related measures")
+    if isinstance(related, Exception):
+        note_lost_read("related measures", related, budget=read.budget)
+        return spec
     return stating_related(spec, related)
 
 
@@ -238,7 +246,7 @@ def submit_related_read(
     if not _qualifies(stat_vars, measure_partition, places):
         return None
     stat_var = stat_vars[0]
-    deadline = _read_deadline(request_deadline)
+    budget = _read_budget(request_deadline)
     future = read_runner.submit(
         functools.partial(
             _logged_read,
@@ -247,33 +255,36 @@ def submit_related_read(
             places=[dcid for dcid, _role in places],
             window=window,
             graph=graph,
-            deadline=deadline,
+            deadline=budget.deadline,
         )
     )
-    return PendingRelated(stat_var=stat_var, future=future, deadline=deadline)
+    return PendingRelated(stat_var=stat_var, future=future, budget=budget)
 
 
 def joined_related(pending: PendingRelated | None) -> Related | None:
     """`pending`'s result once it ends, or None when there is none, a read failed or its
     deadline passed first. The thread logs a failed read (`_logged_read`), and a deadline
     that passes first is logged here. Either is noted here as a lost read
-    (`note_degraded_read`), in the caller's record."""
+    (`note_lost_read`, under the read's own budget), in the caller's record."""
     if pending is None:
         return None
     try:
-        related = pending.future.result(timeout=max(0.0, pending.deadline - time.monotonic()))
+        related = pending.future.result(
+            timeout=max(0.0, pending.budget.deadline - time.monotonic())
+        )
     except TimeoutError as exc:
         _log_unavailable(pending.stat_var, exc)
-        related = None
-    if related is None:
-        note_degraded_read("related measures")
+        related = exc
+    if isinstance(related, Exception):
+        note_lost_read("related measures", related, budget=pending.budget)
+        return None
     return related
 
 
 def settle_pending_related(pending: PendingRelated | None) -> None:
     """Wait for `pending`'s thread to end, by its deadline."""
     if pending is not None:
-        wait_futures([pending.future], timeout=max(0.0, pending.deadline - time.monotonic()))
+        wait_futures([pending.future], timeout=max(0.0, pending.budget.deadline - time.monotonic()))
 
 
 def stating_related(spec: Spec, related: Related | None) -> Spec:
@@ -302,28 +313,33 @@ def _qualifies(
     )
 
 
-def _read_deadline(request_deadline: float | None) -> float:
-    deadline = time.monotonic() + settings().related_measures_timeout_s
-    return deadline if request_deadline is None else min(deadline, request_deadline)
+def _read_budget(request_deadline: float | None) -> ReadBudget:
+    return ReadBudget.from_now(
+        settings().related_measures_timeout_s, request_deadline=request_deadline
+    )
 
 
-def _logged_read(*, stat_var: str, **kwargs: Any) -> Related | None:
-    """`read_related` on the resubmit door's thread, or None when it failed. The failure
-    is logged here, so it surfaces however the pass ends, as `_within` does for a task."""
+def _logged_read(*, stat_var: str, **kwargs: Any) -> Related | Exception:
+    """`read_related` on the resubmit door's thread, or the exception that ended it. The
+    failure is logged here, so it surfaces however the pass ends, as `_within` does for a
+    task."""
     try:
         return read_related(stat_var=stat_var, **kwargs)
     except Exception as exc:
         _log_unavailable(stat_var, exc)
-        return None
+        return exc
 
 
-async def _within(read: Awaitable[Related], *, stat_var: str, deadline: float) -> Related | None:
-    """`read`'s result, or None when a read failed or `deadline` passed first."""
+async def _within(
+    read: Awaitable[Related], *, stat_var: str, deadline: float
+) -> Related | Exception:
+    """`read`'s result, or the exception that ended it when a read failed or `deadline`
+    passed first."""
     try:
         return await asyncio.wait_for(read, timeout=max(0.0, deadline - time.monotonic()))
     except Exception as exc:
         _log_unavailable(stat_var, exc)
-        return None
+        return exc
 
 
 def _log_unavailable(stat_var: str, exc: Exception) -> None:

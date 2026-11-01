@@ -64,6 +64,7 @@ from search.render.no_data import UnlistedPopulation
 
 if TYPE_CHECKING:
     from search.engine.bind import SlotBindingDraft
+    from search.engine.region.observations.dispatch import PreviewRead
     from search.engine.region.option_coverage import RoleServedFilter
     from search.engine.region.promote_relaunch import PromoteRelaunch
     from search.engine.retrieval.read_plan import ReadPlan
@@ -343,6 +344,12 @@ class RegionResult:
     # stores the region without closures and binds them again for the request it serves.
     # None off the resubmit's definite path.
     promote_relaunch: PromoteRelaunch | None = None
+    # What the definite answer's observation preview reads, apart from the request's
+    # clients (`dispatch.PreviewRead`): the buffered read, the streamed task and the part
+    # memo's rebound relaunch all read it. Set on a fresh or resubmitted definite answer and
+    # a lone candidate survivor; None elsewhere, a same-shape merge included, whose preview
+    # is a read of its merged identity (`same_shape._with_merged_preview`).
+    preview_read: PreviewRead | None = None
     # Role-to-entity lists probed by resubmit resolution: the identity's own dcids on
     # each role. Populated on definite resubmit results.
     observation_entities: dict[str, list[str]] | None = None

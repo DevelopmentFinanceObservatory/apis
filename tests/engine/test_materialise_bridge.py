@@ -12,6 +12,7 @@ import pytest
 
 import dc_graph
 import search.engine.clients.materialise_bridge as materialise_bridge
+from dfo_platform.request_deadline import request_deadline
 from materialise.graph import Facet as MaterialiseFacet
 from materialise.graph import GraphReadError
 from search.engine.clients.graph_client import LiveGraphClient
@@ -419,14 +420,21 @@ class TestFacetProbeSemaphore:
             )
         assert exc_info.value.upstream_status is None
 
-    def test_permit_wait_bounds_on_the_caller_deadline_not_the_configured_timeout(
-        self, monkeypatch, search_settings
+    @pytest.mark.parametrize("bound", ["caller", "request"])
+    def test_permit_wait_bounds_on_the_deadline_not_the_configured_timeout(
+        self, monkeypatch, search_settings, bound
     ):
-        """A deadline 0.2 seconds away overrides the 30-second configured timeout."""
+        """A deadline 0.2 seconds away, the caller's or the bound request's, sizes the permit
+        wait in place of the 30-second configured timeout."""
         search_settings(graph_timeout_s=30.0)
-        held = threading.BoundedSemaphore(1)
-        held.acquire()  # the process-wide permit is already held elsewhere
-        monkeypatch.setattr(materialise_bridge, "_FACET_PROBE_SEMAPHORE", held)
+        waits: list[float] = []
+
+        class _HeldSemaphore:
+            def acquire(self, *, timeout: float) -> bool:
+                waits.append(timeout)
+                return False
+
+        monkeypatch.setattr(materialise_bridge, "_FACET_PROBE_SEMAPHORE", _HeldSemaphore())
 
         class _UnreachedGraphReader(FakeGraphReader):
             def observation_facets_batch_many(
@@ -437,16 +445,18 @@ class TestFacetProbeSemaphore:
                 )
 
         deadline = time.monotonic() + 0.2
-        start = time.monotonic()
-        with pytest.raises(GraphInfraError):
+        with (
+            request_deadline(deadline if bound == "request" else time.monotonic() + 60.0),
+            pytest.raises(GraphInfraError),
+        ):
             observation_facets_via_materialise(
                 stat_vars=["sv/A"],
                 entities=["country/USA"],
                 materialise_graph=_UnreachedGraphReader(),
-                deadline=deadline,
+                deadline=deadline if bound == "caller" else None,
             )
-        elapsed = time.monotonic() - start
-        assert elapsed < 2.0
+        (wait,) = waits
+        assert 0 < wait <= 0.2
 
     def test_already_expired_deadline_raises_without_attempting_the_acquire(self, search_settings):
         """An expired deadline raises `GraphInfraError` before acquiring an available permit."""

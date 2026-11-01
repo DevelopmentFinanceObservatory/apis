@@ -23,7 +23,8 @@ from fastapi.testclient import TestClient
 from code_index.shared import get_index
 from datasets_api.adapter import resolve_definition_members
 from dc_graph import GraphDeadlineExceededError, GraphReadError
-from search.engine.degraded_reads import recording_degraded_reads
+from dfo_platform.request_deadline import request_deadline
+from search.engine.degraded_reads import fail_open_reads, recording_degraded_reads
 from search.engine.errors import GraphInfraError
 from search.engine.region import promote_reread, resolve_spec_resubmit, resolve_variable
 from search.engine.region.codes import MEMBERSHIP_UNVERIFIED
@@ -292,6 +293,27 @@ def test_an_unsettled_walk_leaves_the_sample_and_says_so(walk):
     assert resolution.authority is MembershipAuthority.FAILED
     assert resolution.value is shape
     assert lost.degraded is (walk != "incomplete_enumeration")
+
+
+@pytest.mark.parametrize(("walk", "noted"), [("timeout", False), ("graph_failure", True)])
+def test_a_walk_cut_by_a_fail_open_budget_notes_nothing(walk: str, noted: bool) -> None:
+    """Inside a fail-open scope whose budget has run out, a walk past its deadline settles
+    nothing and notes no lost read, so the answer can be stored; a failed read still notes
+    one."""
+    shape = _debt_shape(_BY_CREDITOR, _BY_CREDITOR_GUARANTEED)
+    walks = RoleClassWalks(_UNSETTLED_WALKS[walk]())
+
+    with (
+        request_deadline(time.monotonic() + 60),
+        recording_degraded_reads() as lost,
+        fail_open_reads("the walk", budget_s=0.0),
+    ):
+        resolution = elected_role_class_shape(
+            shape, shape_query(shape, [], ["destination"]), walks=walks, arcs_graph=_arcs_graph()
+        )
+
+    assert resolution.authority is MembershipAuthority.FAILED
+    assert lost.degraded is noted
 
 
 def test_a_shape_with_no_walk_is_answered_from_its_sample():

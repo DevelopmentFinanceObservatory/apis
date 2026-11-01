@@ -898,11 +898,14 @@ def combine_regions(
     Returns the response and post-collapse regions. Untouched entries retain
     object identity. Merged entries are new with ``slot_options_task`` and
     ``place_options_task`` cleared. Identity lets the caller cancel and relaunch enrichment.
-    Its only graph reads are the injected ``set_ref_for`` and ``facet_options_for``
-    readers a same-shape merge calls, and ``scope_for`` builds a merged region's scope,
-    which every part it folds states. A merge of composite answers reads its components over
-    ``preview_reads``, the request's component reads, and composite answers stay apart
-    without them. It performs no task operations.
+    Its graph reads go through the injected ``set_ref_for``, ``facet_options_for`` and
+    ``preview_reads``. A same-shape merge calls the first two, and ``scope_for`` builds a
+    merged region's scope, which every part it folds states. A merge of composite answers
+    answers the composite over its merged identity, and composite answers stay apart without
+    ``preview_reads``. A merged region whose members embed their previews reads its own
+    through ``preview_reads``, the request's clients, in the calling thread
+    (`same_shape._read_merged_previews`), so the caller runs this function off the event
+    loop. It performs no task operations.
 
     ``llm_usage`` is summed by the caller. A supplied ``echo`` is used
     verbatim. Otherwise a raw-text echo is built from ``query``. Skills-index
@@ -949,9 +952,7 @@ def combine_collapsed(
     query: str = "",
 ) -> tuple[Resolution, list[RegionResult]]:
     """Combine `regions` into one response as `combine_regions` does, over `collapsed` and
-    `residual_texts`, what `collapse_same_shape` returned for their definite regions. A
-    caller that settles the merged regions between the two steps calls them apart
-    (`entry.multi._stream_combined_regions`)."""
+    `residual_texts`, what `collapse_same_shape` returned for their definite regions."""
     definite = [r for r in regions if r.status == "definite"]
     others = [r for r in regions if r.status != "definite"]
 

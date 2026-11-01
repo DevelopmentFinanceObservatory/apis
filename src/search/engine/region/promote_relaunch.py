@@ -3,7 +3,8 @@
 A resubmit resolves in a worker thread, so its definite region carries relaunch closures that
 the event loop calls once the region returns (`enrichment._launch_trailing_tasks`). The resolution
 fixes the facts those closures read. The clients, deadline, pools and memos they read belong to
-the request. `PromoteRelaunch` holds the facts, and `bind_relaunches` builds the
+the request. `PromoteRelaunch` holds the options probes' facts and the region's
+`preview_read` the preview's (`dispatch.PreviewRead`), and `bind_relaunches` builds the
 closures over one request's clients, so a part the response cache's memo stores holds no
 closure and a hit binds the closures of the request it serves (`response_cache_memo`).
 """
@@ -15,7 +16,6 @@ import dataclasses
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from materialise.facets import FacetSelection
 from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.sdmx import EngineSdmxClient
@@ -23,16 +23,13 @@ from search.engine.events import PlaceOptionsEvent
 from search.engine.extract import DateRequest
 from search.engine.region.codes import _OptionProbeResult
 from search.engine.region.facet_probe import FacetProbe
-from search.engine.region.observations.bulk_scope import BulkScope
-from search.engine.region.observations.dispatch import _observations_relaunch_closure
+from search.engine.region.observations.dispatch import PreviewReader
 from search.engine.region.option_coverage import _launch_slot_options_task
-from search.engine.region.result import FacetAxisFilter, RegionResult
+from search.engine.region.result import RegionResult
 from search.engine.region.state import EngineOptions
-from search.engine.retrieval.read_plan import ReadPlan
 from search.engine.shape import ShapeDraft
 from search.models import (
     EntityOptions,
-    IdentityUnitRequest,
     RoleAxis,
     SlotOptions,
     Spec,
@@ -42,15 +39,12 @@ from series_coverage.shared import CoverageSnapshot
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class PromoteRelaunch:
-    """What a resubmitted definite part's slot-options, place-options and observations
-    probes read, apart from the request's clients.
+    """What a resubmitted definite part's slot-options and place-options probes read, apart
+    from the request's clients. Its observations probe reads the region's `preview_read`.
 
     The slot-options probe reads the answer's shape, bindings, role entities, open flow axes,
     window, probe places, raw entity options and facet probe, and whether the identity binds a
-    facet. The
-    place-options probe reads the Spec it is launched for. The observations probe reads its
-    members, observation entities, facet filter, the bulk scope's places (None for a
-    per-pair read), the posted request-form unit, the elected unit and the narrowed plan.
+    facet. The place-options probe reads the Spec it is launched for.
     The slot-options and observations probes name the UN variables of a failed read from
     `variable_labels`, the names of the Spec's members (`un_system.member_labels`)."""
 
@@ -63,13 +57,6 @@ class PromoteRelaunch:
     entity_options: Sequence[EntityOptions] | None
     facet_probe: FacetProbe
     facets_pinned: bool
-    sv_dcids: Sequence[str]
-    obs_entities: Mapping[str, Sequence[str]]
-    facet_filter: Mapping[str, FacetAxisFilter] | None
-    bulk_places: tuple[str, ...] | None
-    unit_request: IdentityUnitRequest | None
-    elected: Mapping[str, tuple[Mapping[str, FacetSelection], ...]] | None
-    plan: ReadPlan | None
     variable_labels: Mapping[str, str]
 
 
@@ -84,7 +71,8 @@ def bind_relaunches(
     """`region` carrying the relaunch closures of its `promote_relaunch` over this request's
     clients, each where `options` streams it: slot options with `stream_slot_options`, place
     options with that flag, a materialise graph and a place-options pool, and observations
-    with `stream_observations`. A region without `promote_relaunch` returns unchanged."""
+    with `stream_observations`, reading the region's `preview_read` (`PreviewReader`). A
+    region without `promote_relaunch` returns unchanged."""
     facts = region.promote_relaunch
     if facts is None:
         return region
@@ -141,28 +129,17 @@ def bind_relaunches(
         slot_options_relaunch=_relaunch_slot_options if options.stream_slot_options else None,
         place_options_relaunch=_relaunch_place_options if stream_place_options else None,
         observations_relaunch=(
-            _observations_relaunch_closure(
-                list(facts.sv_dcids),
-                facts.obs_entities,
+            PreviewReader(
+                read=region.preview_read,
                 graph=graph,
+                sdmx=sdmx,
                 materialise_graph=options.materialise_graph,
                 materialise_sdmx=options.materialise_sdmx,
-                facet_filter=facts.facet_filter,
-                scope=(
-                    BulkScope(places=facts.bulk_places, sdmx=sdmx)
-                    if facts.bulk_places is not None
-                    else None
-                ),
-                sdmx=sdmx,
-                deadline=options.deadline,
                 rate_cache=options.rate_cache,
-                unit_request=facts.unit_request,
-                elected=facts.elected,
+                deadline=options.deadline,
                 coverage=coverage,
-                plan=facts.plan,
-                variable_labels=facts.variable_labels,
-            )
-            if options.stream_observations
+            ).relaunch(facts.variable_labels)
+            if options.stream_observations and region.preview_read is not None
             else None
         ),
     )

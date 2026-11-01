@@ -396,7 +396,6 @@ class ObservationsEvent(BaseModel):
             "the same payload shape Spec.resolved.observations carries on the buffered path"
         )
     )
-
     # Whether the read behind this preview swallowed a read (`degraded_reads`), so the answer
     # it completes stands on less than a later request may read. The stream reports such an
     # event as incomplete (`enrichment._stream_slot_options`), so no cache stores the bundle.

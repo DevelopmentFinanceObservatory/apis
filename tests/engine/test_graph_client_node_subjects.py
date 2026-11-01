@@ -1,12 +1,18 @@
 """Tests graph-client coverage mapping and FakeGraph reverse subject scans."""
 
+import time
+from typing import cast
+
 import pytest
 
 import dc_graph
-from search.engine.clients.graph import SubjectsCoverage, SubjectsPage
+from dfo_platform.request_deadline import bounded_deadline, request_deadline
+from dfo_platform.single_flight_cache import WaitTimeout
+from search.engine.clients.graph import EngineGraphClient, SubjectsCoverage, SubjectsPage
 from search.engine.clients.graph_client import LiveGraphClient
-from search.engine.degraded_reads import recording_degraded_reads
-from search.engine.errors import GraphInfraError
+from search.engine.config import settings
+from search.engine.degraded_reads import fail_open_reads, recording_degraded_reads
+from search.engine.errors import GraphDeadlineFailure, GraphInfraError
 from search.engine.region import resubmit_request
 from search.engine.region.resubmit_request import resubmit_named_groups
 from tests.engine._virtual_clock import VirtualRequests
@@ -201,10 +207,11 @@ def test_a_warm_resubmit_reads_no_group_members(monkeypatch) -> None:
 
 
 class _GroupGraph:
-    """A types, members and labels stand-in that records each labels read. The node has
+    """A types, members and labels stand-in that records each labels read, and the deadline
+    each read is bound by (`bounded_deadline`), as the graph client narrows it. The node has
     the graph type `node_type` and the `<-containedInPlace` subjects `members`. `fail` names
-    the read that raises `GraphInfraError`. A region's members come from the membership
-    policy, so reading its `Country` children fails the test."""
+    the read that raises `error`. A region's members come from the membership policy, so
+    reading its `Country` children fails the test."""
 
     def __init__(
         self,
@@ -213,19 +220,24 @@ class _GroupGraph:
         fail: str | None = None,
         node_type: str = "Thing",
         coverage: SubjectsCoverage = SubjectsCoverage.complete,
+        error: Exception | None = None,
     ) -> None:
         self.members, self.fail, self.coverage = members, fail, coverage
         self.node_type = node_type
+        self.error = error if error is not None else GraphInfraError(f"{fail} read failed")
         self.label_reads: list[list[str]] = []
+        self.bounds: dict[str, float | None] = {}
 
     def node_types_batch(self, dcids):
+        self.bounds["types"] = bounded_deadline(None)
         if self.fail == "types":
-            raise GraphInfraError("types read failed")
+            raise self.error
         return dict.fromkeys(dcids, self.node_type)
 
     def node_subjects_many(self, dcids, *, property, max_results, deadline=None):
+        self.bounds["members"] = bounded_deadline(deadline)
         if self.fail == "members":
-            raise GraphInfraError("members read failed")
+            raise self.error
         return {d: SubjectsPage(dcids=self.members, coverage=self.coverage) for d in dcids}
 
     def child_places_batch(self, parent_dcids, child_type, *, deadline=None):
@@ -233,12 +245,18 @@ class _GroupGraph:
 
     def node_labels_batch(self, dcids):
         self.label_reads.append(list(dcids))
+        self.bounds["labels"] = bounded_deadline(None)
         if self.fail == "labels":
-            raise GraphInfraError("labels read failed")
+            raise self.error
         return dict.fromkeys(dcids, "graph label")
 
 
 _CONTINENT = "Continent"
+_LOST_TO_THE_BUDGET = {
+    "deadline": dc_graph.GraphDeadlineExceededError("the read ran past its deadline"),
+    "timeout": TimeoutError("the read ran past its deadline"),
+    "wait": WaitTimeout("the wait on a shared flight ran past its deadline"),
+}
 # The graph's members read of a node of each graph type. The membership policy answers a
 # region's members with no read.
 _MEMBERS_READ = {"Thing": ["node_subjects_many"], _CONTINENT: []}
@@ -268,6 +286,11 @@ def _group_payload():
         (_GroupGraph(("a",), fail="labels"), None, [], 1),
         (_GroupGraph(("a",), fail="members"), None, [], 1),
         (_GroupGraph(("a",), fail="types"), None, [], 1),
+        *[
+            (_GroupGraph(("a",), fail=read, error=error), None, [], 1)
+            for read in ("labels", "types")
+            for error in _LOST_TO_THE_BUDGET.values()
+        ],
         (_GroupGraph(("a", "b")), None, [], 0),
         (_GroupGraph(("a",), coverage=SubjectsCoverage.capped), None, [], 0),
         (
@@ -290,6 +313,7 @@ def _group_payload():
         "labels-fail",
         "members-fail",
         "types-fail",
+        *[f"{read}-{lost}" for read in ("labels", "types") for lost in _LOST_TO_THE_BUDGET],
         "members-differ",
         "members-page-capped",
         "region-confirmed-by-the-policy",
@@ -320,6 +344,46 @@ def test_resubmit_groups_keep_only_groups_the_graph_confirms(
     assert [(g.dcid, g.label, g.entity_type) for g in result] == groups
     # A failed read is lost to the answer, so no cache stores it.
     assert lost.degraded is bool(degraded)
+
+
+def test_a_members_read_cut_by_a_spent_fail_open_budget_notes_nothing() -> None:
+    """The members read notes its loss through `degraded_reads.note_lost_read`, so a read cut
+    by an enclosing fail-open budget, with the request's deadline still ahead, drops its
+    groups and leaves an answer the cache stores."""
+    graph = _GroupGraph(
+        ("a",), fail="members", error=GraphDeadlineFailure("the members read timed out")
+    )
+    with (
+        request_deadline(time.monotonic() + 60),
+        recording_degraded_reads() as lost,
+        fail_open_reads("the enclosing read", budget_s=0.0),
+    ):
+        result = resubmit_named_groups(
+            _group_payload(), graph=cast(EngineGraphClient, graph), deadline=None
+        )
+
+    assert result == ()
+    assert lost.reads == []
+
+
+def test_resubmit_group_labels_and_types_read_under_the_fail_open_budget(declare_regions) -> None:
+    """The label and type reads take no deadline, and the label read runs in a worker thread,
+    so the fail-open budget reaches both as the ambient request deadline. The members read
+    keeps the request's: a large node's members take seconds to read when the graph is
+    healthy."""
+    graph = _GroupGraph(("a",))
+    started = time.monotonic()
+
+    (group,) = resubmit_named_groups(
+        _group_payload(), graph=cast(EngineGraphClient, graph), deadline=None
+    )
+
+    assert group.label == "graph label"
+    budget = settings().fail_open_read_budget_s
+    for read in ("labels", "types"):
+        bound = graph.bounds[read]
+        assert bound is not None and started + budget <= bound <= time.monotonic() + budget
+    assert graph.bounds["members"] is None
 
 
 @pytest.mark.parametrize(

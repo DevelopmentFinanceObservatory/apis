@@ -6,6 +6,7 @@ import time
 
 import pytest
 
+from dfo_platform.request_deadline import bounded_deadline
 from search.engine.config import settings
 from search.engine.retrieval.derive import derive_shapes
 from search.engine.shape import STANDARD_SHAPE_LABEL, ShapeDraft
@@ -196,7 +197,7 @@ class TestDeriveShapesConfirmsEveryCandidate:
         probed: list[tuple[list[str], float | None]] = []
 
         def recording(stat_vars, entities, needs_dates=False, **kwargs):
-            probed.append((list(stat_vars), kwargs.get("deadline")))
+            probed.append((list(stat_vars), bounded_deadline(kwargs.get("deadline"))))
             return probe(stat_vars, entities, needs_dates, **kwargs)
 
         graph.observation_facets_batch = recording

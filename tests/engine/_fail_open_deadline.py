@@ -1,8 +1,9 @@
-"""The deadline a graph read that fails open receives (`degraded_reads.fail_open_deadline`).
+"""The deadline a graph read that fails open is bound by (`degraded_reads.fail_open_reads`).
 
-A fake client records the deadline it is given, and `assert_fail_open_deadline` checks it
-against the request's bound. The three requests span the cases: no bound, a bound far past
-the budget, and a bound the budget outlasts.
+A fake client records the deadline it is given narrowed by the ambient one
+(`bounded_deadline`), as the graph client narrows it, and `assert_fail_open_deadline` checks
+it against the request's bound. The three requests span the cases: no bound, a bound far
+past the budget, and a bound the budget outlasts.
 """
 
 from __future__ import annotations
@@ -28,8 +29,8 @@ def assert_fail_open_deadline(
 ) -> None:
     """`deadline`, recorded at the read, is the request's `requested` bound when that ends
     within the budget of `started` (a `time.monotonic()` taken before the call), else a
-    budget from the moment of the read, so no earlier than `started` plus the budget and no
-    later than now plus it."""
+    budget from the moment the site's scope opened, so no earlier than `started` plus the
+    budget and no later than now plus it."""
     assert deadline is not None, "the read ran with no deadline"
     budget = settings().fail_open_read_budget_s
     if requested is not None and requested < started + budget:

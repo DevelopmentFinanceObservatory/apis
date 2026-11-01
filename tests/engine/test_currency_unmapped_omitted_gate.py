@@ -18,6 +18,7 @@ from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.region import phase_answer, promote_finalize
 from search.engine.region.convertibility import UnitCoverage
 from search.engine.region.facet_probe import FacetProbe
+from search.engine.region.observations.dispatch import PreviewRead
 from search.engine.region.promote_state import _PromoteState
 from search.engine.region.state import ResolveState
 from search.engine.retrieval.read_plan import BulkPlan
@@ -89,9 +90,8 @@ def _fresh() -> tuple[object, list]:
         obs_entities={},
         probe_role_entities={},
         flat_probe_entities=[],
-        bulk_scope=None,
         role_axis_facts=[],
-        obs_fetch_facet_filter=None,
+        preview=cast(PreviewRead, None),
         # The gate reads only `obs_entities` of the setup.
         entity_task=cast(asyncio.Task, None),
         slot_options_raw=[],

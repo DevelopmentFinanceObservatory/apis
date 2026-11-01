@@ -17,6 +17,13 @@ composed under the composite's rules (`scope.composite.compose_observations`).
 A streamed request reads the preview in a trailing task (`CompositeRelaunch`),
 launched once the answer is restated, so it adds nothing before the `response` event. A
 buffered request reads it inline (`with_composite_observations`).
+
+A same-shape merged answer previews the read of its merged identity
+(`same_shape._with_merged_preview`). A merge of composite answers is restated as the
+composite over that identity (`as_merged_composite`) and reads its components
+(`CompositeRelaunch`), and any other merge takes one resubmit of it (`IdentityPreview`). A
+component read and a merged read are both `_resubmit_preview`, so they elect, cap and fail
+alike.
 """
 
 from __future__ import annotations
@@ -38,9 +45,14 @@ from origin_catalogue import Catalogue, bound_catalogue
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.concurrency import bounded_semaphore, create_owned_task
-from search.engine.degraded_reads import note_degraded_read, recording_degraded_reads
+from search.engine.degraded_reads import (
+    LOST_READ_ERRORS,
+    note_degraded_read,
+    note_lost_read,
+    recording_degraded_reads,
+)
 from search.engine.envelope import now_ms
-from search.engine.errors import UPSTREAM_READ_ERRORS, EngineInfraError, EngineInputError
+from search.engine.errors import EngineInputError
 from search.engine.events import ObservationsEvent
 from search.engine.region.codes import (
     OBSERVATIONS_BULK_FETCH_FAILED,
@@ -73,6 +85,7 @@ from search.models import (
     Spec,
     SpecObservations,
     Warning,
+    omitted_observations,
 )
 from search.observations import (
     OBSERVATIONS_CONVERTED_SCOPE_UNSUPPORTED,
@@ -119,22 +132,14 @@ A component answer's other warnings describe its own resolve, which the composit
 states through its table identity's. A converted preview's `deflator_projected` warning is
 stated once over the composed preview (`dispatch._deflator_projected_warning`)."""
 
-_LOST_READ_ERRORS = (
-    EngineInfraError,
-    dc_graph.GraphCapExceededError,
-    TimeoutError,
-    *UPSTREAM_READ_ERRORS,
-)
-"""What a component read can lose to and leave the answer standing: an engine client's
-infrastructure failure (`EngineInfraError`, `GraphInfraError` among them), a response past
-its byte cap, a deadline it crossed, or an upstream materialise read. Any other error is a
-fault and propagates."""
-
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ComponentReads:
-    """The request's clients, coverage snapshot, catalogue and deadline every component read
-    of a composite runs on, and the dataset_resubmit's part memo (None on a fresh search).
+    """The request's clients, coverage snapshot, catalogue and deadline that every resubmit
+    preview runs on (`_resubmit_preview`), a composite's component read and a merged
+    answer's read alike, and the dataset_resubmit's part memo (None on a fresh search). Each
+    door builds them once for its request and passes them to `conjoin.combine_regions` for a
+    merge's read. No memoised result holds them.
 
     `catalogue` is the request's catalogue before any part narrows it to its source scope
     (`origin_catalogue.scoped_reads`). The composite's served years (`composite_served`) and
@@ -190,25 +195,21 @@ async def read_composite_preview(
     component serving no year is not read and raises nothing.
 
     The reads run together, each holding a permit of `semaphore` when one is given.
-    Cancelling the caller cancels every read still running. A component with no read, one
-    whose resolve refused its identity, answered no definite Spec, lost its read
-    (`_LOST_READ_ERRORS`) or crossed the deadline, leaves its years out
-    (`compose_observations`) and raises a warning (`_read_component`), as a single answer's
-    preview read turns a failed read into an omission (`observations.fetch`). A component
-    whose answer stands on less than a later request may read (`RegionResult.degraded`)
-    notes a degraded read. Any other error of a read propagates and cancels the others."""
+    Cancelling the caller cancels every read still running. A component whose read is lost
+    (`_resubmit_preview`) leaves its years out (`compose_observations`) and raises a warning
+    naming its role (`_read_component`), as a single answer's preview read turns a failed
+    read into an omission (`observations.fetch`). A component whose answer stands on less
+    than a later request may read (`RegionResult.degraded`) notes a degraded read. Any other
+    error of a read propagates and cancels the others."""
     # A Spec keys its groups by the role keys a resubmit posts them under.
     groups = cast("Mapping[EntityRoleKey, EntityGroup] | None", entity_groups)
     read = [index for index, item in enumerate(served) if item.served]
-    # Every read, in a thread or task that copies this context, reads through the request's
-    # catalogue.
-    with bound_catalogue(reads.catalogue):
-        tasks = [
-            asyncio.create_task(
-                _read_component(served[index], groups, reads=reads, semaphore=semaphore)
-            )
-            for index in read
-        ]
+    tasks = [
+        asyncio.create_task(
+            _read_component(served[index], groups, reads=reads, semaphore=semaphore)
+        )
+        for index in read
+    ]
     try:
         results = await asyncio.gather(*tasks)
     finally:
@@ -228,20 +229,61 @@ async def _read_component(
     reads: ComponentReads,
     semaphore: asyncio.Semaphore | None,
 ) -> tuple[SpecObservations | None, tuple[Warning, ...]]:
-    """The preview `item`'s component answer embeds and its preview warnings, or None when it
-    has none. A part memo hit reads nothing, and a miss stores the component's answer.
-
-    A read lost to `_LOST_READ_ERRORS` is logged and warns `observations_probe_failed`, or
-    `observations_timed_out` when it crossed the deadline (`TimeoutError`,
-    `GraphDeadlineExceededError`). A component whose resolve refuses its identity
-    (`EngineInputError`) or answers no definite Spec warns `observations_probe_failed`,
-    since the preview then lacks years the composite serves. Each warning names the
-    component's role. A component answer the cache would not store (`is_region_storable`
-    under the request catalogue's refused places), degraded or carrying a warning such as
-    `members_absent_from_graph`, notes a degraded read (`note_degraded_read`), so no cache
-    stores the composite answer. The preview raises only the component's warnings under
-    `PREVIEW_WARNING_CODES`."""
+    """The preview `item`'s component answer embeds and its preview warnings
+    (`_resubmit_preview`), or None and a warning naming the component's role when its read
+    was lost (`_missing`)."""
     identity = BaseIdentity.model_validate(dict(item.component.identity))
+    read = await _resubmit_preview(
+        identity, groups, reads=reads, semaphore=semaphore, about=f"component {item.component.role}"
+    )
+    if isinstance(read, _LostRead):
+        return None, (_missing(item, read),)
+    return read
+
+
+@dataclass(frozen=True, slots=True)
+class _LostRead:
+    """A resubmit preview that read nothing, `timed_out` when the read crossed its deadline,
+    with `cause` saying why."""
+
+    timed_out: bool
+    cause: str
+
+    def warning(self, message: str) -> Warning:
+        """The warning stating `message` under `observations_timed_out` for a read that
+        crossed its deadline, else `observations_probe_failed`."""
+        if self.timed_out:
+            return Warning(code=OBSERVATIONS_TIMED_OUT, severity="warn", message=message)
+        return Warning(code=OBSERVATIONS_PROBE_FAILED, severity="warn", message=message)
+
+    def omission(self, message: str) -> tuple[SpecObservations, tuple[Warning, ...]]:
+        """The preview omitted for the lost read, stating `message`, and its warning."""
+        reason = OBSERVATIONS_TIMED_OUT if self.timed_out else OBSERVATIONS_PROBE_FAILED
+        return omitted_observations(reason, message), (self.warning(message),)
+
+
+async def _resubmit_preview(
+    identity: BaseIdentity,
+    groups: Mapping[EntityRoleKey, EntityGroup] | None,
+    *,
+    reads: ComponentReads,
+    semaphore: asyncio.Semaphore | None,
+    about: str,
+) -> tuple[SpecObservations, tuple[Warning, ...]] | _LostRead:
+    """The preview a resubmit of `identity` posting `groups` embeds, read with
+    `resolve_spec_resubmit` in a worker thread through `reads.catalogue` under `reads.options`,
+    holding a permit of `semaphore` when one is given, and the answer's warnings under
+    `PREVIEW_WARNING_CODES`. A part memo hit reads nothing, and a miss stores the answer.
+
+    A read lost to `degraded_reads.LOST_READ_ERRORS` is noted (`note_lost_read`, so a read cut
+    by its enclosing budget notes nothing), logged under `about`, and is lost
+    `observations_timed_out` when it crossed the deadline (`TimeoutError`,
+    `GraphDeadlineExceededError`), else `observations_probe_failed`. A resolve that refuses
+    `identity` (`EngineInputError`) or answers no definite Spec with a preview is lost
+    `observations_probe_failed`. An answer the response cache would not store
+    (`is_region_storable` under the request catalogue's refused places), degraded or carrying
+    a warning such as `members_absent_from_graph`, notes a degraded read
+    (`note_degraded_read`), so no cache stores what it previews. Any other error propagates."""
     payload = ResubmitIdentityPayload(
         identity=identity,
         entity_groups=None
@@ -253,43 +295,47 @@ async def _read_component(
     key = memo.key(payload, options) if memo is not None else None
     async with semaphore if semaphore is not None else nullcontext():
         try:
-            region, stored = await asyncio.to_thread(
-                _resolve_component, payload, reads=reads, options=options, key=key
-            )
+            # The worker thread copies this context, so the resolve reads through the
+            # request's catalogue, which only `identity`'s own pin narrows.
+            with bound_catalogue(reads.catalogue):
+                region, stored = await asyncio.to_thread(
+                    _resolve_component, payload, reads=reads, options=options, key=key
+                )
         except EngineInputError:
-            return None, (_missing(item, "refused its identity"),)
-        except _LOST_READ_ERRORS as exc:
+            return _LostRead(timed_out=False, cause="refused its identity")
+        except LOST_READ_ERRORS as exc:
+            note_lost_read(f"resubmit preview: {about}", exc)
             timed_out = isinstance(exc, TimeoutError | dc_graph.GraphDeadlineExceededError)
-            cause = "read crossed the request deadline" if timed_out else "read failed"
             logger.warning(
-                "composite preview: component role=%s identity=%r %s",
-                item.component.role,
+                "resubmit preview: %s identity=%r %s",
+                about,
                 identity.model_dump(mode="json", exclude_none=True),
-                cause,
+                "crossed the request deadline" if timed_out else "failed",
                 exc_info=True,
             )
-            return None, (_missing(item, cause, timed_out=timed_out),)
+            if timed_out:
+                return _LostRead(timed_out=True, cause="read crossed its deadline")
+            return _LostRead(timed_out=False, cause="read failed")
     if memo is not None and key is not None and not stored:
         memo.store(key, region)
     if not is_region_storable(region, refused_at_build=reads.catalogue.un_blocked_places):
-        note_degraded_read("composite component")
+        note_degraded_read(f"resubmit preview: {about}")
     if region.status != "definite":
-        return None, (_missing(item, f"answered {region.status}"),)
+        return _LostRead(timed_out=False, cause=f"answered {region.status}")
+    observations = region.spec.resolved.observations
+    if observations is None:
+        return _LostRead(timed_out=False, cause="embedded no preview")
     raised = tuple(warning for warning in region.warnings if warning.code in PREVIEW_WARNING_CODES)
-    return region.spec.resolved.observations, raised
+    return observations, raised
 
 
-def _missing(item: ServedComponent, cause: str, *, timed_out: bool = False) -> Warning:
-    """The warning that `item`'s component, whose read `cause` states, left its years out of
-    the composite's preview: `observations_timed_out` when the read crossed the deadline,
-    else `observations_probe_failed`."""
-    message = (
-        f"the composite's {item.component.role} component {cause}; its years are missing "
+def _missing(item: ServedComponent, lost: _LostRead) -> Warning:
+    """The warning that `item`'s component, whose read was `lost`, left its years out of the
+    composite's preview, under the lost read's code."""
+    return lost.warning(
+        f"the composite's {item.component.role} component {lost.cause}; its years are missing "
         "from the preview."
     )
-    if timed_out:
-        return Warning(code=OBSERVATIONS_TIMED_OUT, severity="warn", message=message)
-    return Warning(code=OBSERVATIONS_PROBE_FAILED, severity="warn", message=message)
 
 
 def _resolve_component(
@@ -351,7 +397,52 @@ class CompositeRelaunch:
         )
 
 
-async def _preview_events(relaunch: CompositeRelaunch, spec_id: str) -> _ObsProbeResult:
+@dataclass(frozen=True, slots=True, kw_only=True)
+class IdentityPreview:
+    """The relaunch closure of single-table `spec`'s preview (`RegionResult.observations_relaunch`),
+    read as a resubmit of its identity and entity groups (`_resubmit_preview`). Called with a
+    spec_id, it launches the read as a request-owned task on the event loop, under the
+    request semaphore. The task's result is one `ObservationsEvent` under that spec_id and
+    the read's warnings, with `deflator_projected` for the preview, each keyed to it, as
+    `CompositeRelaunch` returns. A lost read previews its omission under the lost read's code
+    and warns under it."""
+
+    spec: Spec
+    reads: ComponentReads
+
+    def __call__(self, spec_id: str) -> asyncio.Task[_ObsProbeResult]:
+        return create_owned_task(_preview_events(self, spec_id))
+
+    async def read(
+        self, *, semaphore: asyncio.Semaphore | None
+    ) -> tuple[SpecObservations, tuple[Warning, ...]]:
+        """The preview a resubmit of the Spec's identity embeds and its warnings."""
+        groups = cast(
+            "Mapping[EntityRoleKey, EntityGroup] | None", self.spec.resolved.entity_groups
+        )
+        read = await _resubmit_preview(
+            self.spec.definition.identity,
+            groups,
+            reads=self.reads,
+            semaphore=semaphore,
+            about="merged answer",
+        )
+        if not isinstance(read, _LostRead):
+            return read
+        return read.omission(f"the merged answer's preview {read.cause}.")
+
+
+def cut_merged_preview() -> tuple[SpecObservations, tuple[Warning, ...]]:
+    """The preview of a merged answer whose read was cut before it ended
+    (`same_shape._read_merged_previews`): omitted `observations_timed_out`, with its warning."""
+    return _LostRead(timed_out=True, cause="ran past its budget").omission(
+        "the merged answer's preview ran past its budget."
+    )
+
+
+async def _preview_events(
+    relaunch: CompositeRelaunch | IdentityPreview, spec_id: str
+) -> _ObsProbeResult:
     """The trailing preview `relaunch` reads, as one event under `spec_id` with its warnings
     keyed to it and `deflator_projected` for the preview. The event states whether the read
     swallowed a read (`ObservationsEvent.degraded`), which the task's own record collects,
@@ -382,9 +473,8 @@ def as_merged_composite(
     to the later of their deadline and the latest any member's reads ran to
     (`RegionResult.reads_deadline`). The headline names the request's window as the members'
     do, since the gate holds every member to that window. The warnings the merge keyed to
-    the table identity's spec_id are keyed to the composite's, save those a member's own
-    preview read raised (`PREVIEW_WARNING_CODES`), which the composite's preview raises
-    afresh. The observation task the merge carried over from its first member is left to
+    the table identity's spec_id are keyed to the composite's; the caller has dropped the
+    members' own preview warnings (`same_shape._with_merged_preview`). The observation task the merge carried over from its first member is left to
     the combiner's reconciliation (`enrichment._reconcile_after_collapse`), which cancels
     the members' tasks and launches the composite's where the request streams
     observations."""
@@ -415,42 +505,17 @@ def as_merged_composite(
             served=served,
             facts=ScopeFacts(index=get_index(), coverage=reads.coverage),
         )
-    # A member's own preview read is not the composite's, which raises its own warnings.
     warnings = tuple(
         warning.model_copy(update={"spec_id": spec_id})
         if warning.spec_id == merged.spec_id
         else warning
         for warning in region.warnings
-        if warning.code not in PREVIEW_WARNING_CODES
     )
     return with_composite_answer(
         dataclasses.replace(region, warnings=warnings, observations_task=None),
         spec,
         observations_relaunch=CompositeRelaunch(spec=spec, reads=reads, served=served),
     )
-
-
-async def settled_merged_composites(
-    regions: Sequence[RegionResult], *, include_observations: bool, stream_observations: bool
-) -> list[RegionResult]:
-    """`regions`, a same-shape collapse's, with each composite a merge restated
-    (`as_merged_composite`) settled as `pipeline._with_composite_preview` settles a composite
-    answer: its relaunch closure kept where the request streams observations, for the
-    combiner's reconciliation to launch; its preview read inline
-    (`with_composite_observations`), under the request semaphore, where the request embeds
-    observations; and its closure dropped otherwise. Off a streamed request, a part's own
-    composite answer has settled its closure already, so only a merge's carries one."""
-    if stream_observations:
-        return list(regions)
-    settled: list[RegionResult] = []
-    for region in regions:
-        if not isinstance(region.observations_relaunch, CompositeRelaunch):
-            settled.append(region)
-        elif include_observations:
-            settled.append(await with_composite_observations(region, semaphore=bounded_semaphore()))
-        else:
-            settled.append(dataclasses.replace(region, observations_relaunch=None))
-    return settled
 
 
 async def with_composite_observations(
