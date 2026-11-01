@@ -851,7 +851,8 @@ class _ExtractionPrep:
     it. `per_variable_exclusions` runs parallel to `unique`: the stretches qualifying each
     part and the requirements judging its answers on them (`state.exclusion_requirements`),
     read once for the request. A warning stands on a part whose answer does not leave its
-    phrase out, and on the envelope while one such part stands (`surviving`).
+    phrase out, and on the envelope while one such part stands (`surviving`). Its departure
+    stands on that part alone (`onto`).
     `per_variable_unit_texts` runs parallel to `unique`: each part's unit request, as the
     parsed door's `ParsedPart.unit_text` is (`_part_unit_text`).
     `per_variable_measure_qualifiers` runs parallel to `unique` too: the words that narrow
@@ -916,14 +917,14 @@ class _ExtractionPrep:
     per_variable_exclusions: list[PartExclusions] | None = None
     name_corrections: tuple[NameCorrection, ...] = ()
 
-    def _unmet_exclusion_warnings(
+    def _unmet_exclusions(
         self, regions: Sequence[RegionResult], *, parts: Sequence[int]
-    ) -> list[Warning]:
-        """The `exclusion_warnings` whose phrase qualifies one of `parts`, the positions in
-        `unique` of `regions`, whose region does not leave it out. One that refuses shows
-        nothing that leaves it out, whatever it judged before refusing."""
+    ) -> list[tuple[Warning, LeftOut]]:
+        """Each of `exclusions` with its warning whose phrase qualifies one of `parts`, the
+        positions in `unique` of `regions`, whose region does not leave it out. One that
+        refuses shows nothing that leaves it out, whatever it judged before refusing."""
         return [
-            warning
+            (warning, exclusion)
             for warning, exclusion, targets in zip(
                 self.exclusion_warnings, self.exclusions, self.exclusion_targets, strict=True
             )
@@ -941,7 +942,7 @@ class _ExtractionPrep:
         region of some part it qualifies does not leave out."""
         return _surviving_qualifier_warnings(
             self.qualifier_warnings, self.dropped_qualifier_phrases, regions
-        ) + self._unmet_exclusion_warnings(regions, parts=range(len(regions)))
+        ) + [warning for warning, _ in self._unmet_exclusions(regions, parts=range(len(regions)))]
 
     def dropped_phrases_of(self, i: int) -> list[str]:
         """The dropped phrases the part of `unique[i]` reads: the request's, then its own."""
@@ -956,7 +957,9 @@ class _ExtractionPrep:
         query's words for each entity and those its resolution read
         (`RegionResult.entity_surfaces`), the names read in place of the query's words
         (`RegionResult.name_corrections`), and that its door asks for members in the
-        question's words (`RegionResult.members_in_words`).
+        question's words (`RegionResult.members_in_words`). A stretch the query asks to leave
+        out raises its departure only on a part it qualifies whose answer does not leave it
+        out, so the envelope's warning shows it on no other part.
 
         The answer applies a narrowing word when the region admitted it as a qualifier
         phrase, or when every Spec it answers with binds a value or a party named by it
@@ -977,7 +980,10 @@ class _ExtractionPrep:
             and not (region.specs and all(_binds_value_named(phrase, s) for s in region.specs))
         ]
         warnings = [qualifier_dropped_warning(phrase) for phrase in unapplied]
-        facts = dict(self.qualifier_facts)
+        unmet = self._unmet_exclusions([region], parts=[i])
+        facts = self.qualifier_facts | {
+            warning_key(warning): _exclusion_fact(exclusion) for warning, exclusion in unmet
+        }
         for warning, phrase in zip(warnings, unapplied, strict=True):
             if (fact := _dropped_phrase_fact(phrase)) is not None:
                 facts[warning_key(warning)] = fact
@@ -993,7 +999,7 @@ class _ExtractionPrep:
                 with_departure_facts(region, facts),
                 unapplied_qualifier_warnings=(
                     *request_unapplied,
-                    *self._unmet_exclusion_warnings([region], parts=[i]),
+                    *(warning for warning, _ in unmet),
                 ),
                 name_corrections=self.name_corrections,
                 members_in_words=True,
@@ -1001,6 +1007,11 @@ class _ExtractionPrep:
             self.entity_words,
             surfaces=self.entity_surfaces,
         )
+
+
+def _exclusion_fact(stretch: LeftOut) -> DepartureFact:
+    """The `measure_not_applied` departure of a stretch a part's answer does not leave out."""
+    return exclusion_not_applied(asked=stretch.phrase[: settings().max_dropped_qualifier_length])
 
 
 def _binds_value_named(phrase: str, spec: Spec) -> bool:
@@ -1278,11 +1289,6 @@ def _prepare_extraction(
         warning_key(warning): fact
         for warning, phrase in zip(qualifier_warnings, dropped_qualifier_phrases, strict=True)
         if (fact := _dropped_phrase_fact(phrase)) is not None
-    } | {
-        warning_key(warning): exclusion_not_applied(
-            asked=stretch.phrase[: settings().max_dropped_qualifier_length]
-        )
-        for warning, stretch in zip(exclusion_warnings, exclusions, strict=True)
     }
     request_phrases = {_normalize(phrase) for phrase in dropped}
     per_variable_measure_qualifiers = [
