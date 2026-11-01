@@ -93,6 +93,10 @@ _SOURCE_PHRASE_WORDS = frozenset(
 )
 """The words a phrase may carry beside a source's own and still only name that source."""
 
+_INTRODUCING_WORDS = _SOURCE_PHRASE_WORDS - _DATA_WORDS
+"""The words that may stand just before a source a phrase names: the cues that ask for it,
+the articles and "from"."""
+
 
 @dataclass(frozen=True, slots=True)
 class _Word:
@@ -495,14 +499,47 @@ def scan_sources(
     )
 
 
-def source_phrases(phrases: Sequence[str], mentions: Sequence[SourceMention]) -> set[str]:
-    """The `phrases` that only name one of `mentions`: their words, less cues, articles and
-    data words, lie within its words ("selon le SNPC", "IMF"). The source mention applies
-    them, so they are no qualifier left unapplied."""
-    named = [_folded(mention.text or "") for mention in mentions]
+def source_phrases(
+    phrases: Sequence[str], mentions: Sequence[SourceMention], *, index: CodeIndex
+) -> set[str]:
+    """The `phrases` whose source is one of `mentions`, which applies them, so they are no
+    qualifier left unapplied. A phrase's source is a mention whose words close it, before
+    only data words, and stand after the phrase's start or a word that introduces a source
+    (`_INTRODUCING_WORDS`), with no code label `index` reads before them: "IMF", "selon le
+    SNPC", "as reported to the DAC", "the DAC2a figures". A word before the mention's that
+    introduces no source narrows it, as "April 2025" names one edition in "from the April
+    2025 World Economic Outlook", and a code label asks for a value beside it, as "grants"
+    in "grants as reported to the DAC"; the mention applies neither."""
+    named = [words for mention in mentions if (words := _folded(mention.text or ""))]
     covered = set()
     for phrase in phrases:
-        rest = tuple(word for word in _folded(phrase) if word not in _SOURCE_PHRASE_WORDS)
-        if rest and any(_holds(words, rest) for words in named):
+        words = _words(phrase)
+        starts = [
+            start
+            for source in named
+            for start in _closing_starts(tuple(word.folded for word in words), source)
+        ]
+        if starts and not _reads_a_code(phrase[: words[min(starts)].start], index):
             covered.add(phrase)
     return covered
+
+
+def _closing_starts(phrase: Sequence[str], source: Sequence[str]) -> list[int]:
+    """The word positions at which the word run `source` closes `phrase` as `source_phrases`
+    reads it."""
+    width = len(source)
+    return [
+        i
+        for i in range(len(phrase) - width + 1)
+        if tuple(phrase[i : i + width]) == tuple(source)
+        and all(word in _DATA_WORDS for word in phrase[i + width :])
+        and (i == 0 or phrase[i - 1] in _INTRODUCING_WORDS)
+    ]
+
+
+def _reads_a_code(text: str, index: CodeIndex) -> bool:
+    """Whether `index` reads a code label in `text`."""
+    if not text.strip():
+        return False
+    (reading,) = read_by_vocabulary([text], index, vocabularies=())
+    return bool(reading.everywhere.spans)

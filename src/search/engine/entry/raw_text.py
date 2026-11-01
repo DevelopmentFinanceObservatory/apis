@@ -1246,7 +1246,9 @@ def _prepare_extraction(
         for words in narrowing
     ]
     dropped = [phrase for phrase in dropped if not _held_by_one(phrase, narrowing)]
-    naming_sources = source_phrases(dropped, [m for ms in per_variable_sources for m in ms])
+    naming_sources = source_phrases(
+        dropped, [m for ms in per_variable_sources for m in ms], index=get_index()
+    )
     unit_text, dropped_qualifier_phrases = _split_unit_phrases(
         [phrase for phrase in dropped if phrase not in naming_sources]
     )

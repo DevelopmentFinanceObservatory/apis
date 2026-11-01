@@ -410,13 +410,72 @@ def test_a_stretch_is_read_for_the_sources_it_leaves_out(
         ("the CRS", True),
         ("selon le SNPC", True),
         ("IMF", True),
+        ("as reported to the DAC", True),
+        ("reported to the DAC", True),
+        ("the DAC2a figures", True),
         ("from the April 2025 World Economic Outlook", False),
+        ("the DAC grants", False),
+        ("grants as reported to the DAC", False),
+        ("as reported to Eurostat", False),
         ("in fragile states", False),
     ],
 )
 def test_a_dropped_phrase_naming_only_a_source_is_applied_by_it(phrase: str, covered: bool):
-    mentions = [_out("CRS"), _in("SNPC"), _in("IMF"), _in("World Economic Outlook")]
-    assert (phrase in source_phrases([phrase], mentions)) is covered
+    mentions = [
+        _out("CRS"),
+        _in("SNPC"),
+        _in("IMF"),
+        _in("World Economic Outlook"),
+        _in("DAC"),
+        _in("DAC2a"),
+    ]
+    assert (phrase in source_phrases([phrase], mentions, index=get_index())) is covered
+
+
+@pytest.mark.parametrize(
+    ("query", "variable", "dropped", "warned"),
+    [
+        ("Germany total ODA, as reported to the DAC", "total ODA", "as reported to the DAC", False),
+        (
+            "total ODA by Germany as reported to the DAC",
+            "total official development assistance",
+            "as reported to the DAC",
+            False,
+        ),
+        ("total ODA from Germany reported to the DAC", "ODA", "reported to the DAC", False),
+        ("ODA reported to the DAC by Germany", "official development assistance", None, False),
+        # A source the dictionary does not hold is no mention, so its phrase still warns.
+        (
+            "Germany total ODA, as reported to Eurostat",
+            "total ODA",
+            "as reported to Eurostat",
+            True,
+        ),
+        # A named source the phrase narrows to one edition is not what the answer serves.
+        (
+            "GDP of Kenya from the April 2025 World Economic Outlook",
+            "GDP",
+            "from the April 2025 World Economic Outlook",
+            True,
+        ),
+    ],
+)
+def test_raw_door_warns_for_a_source_phrase_only_where_its_mention_does_not_apply_it(
+    catalogue: CatalogueSnapshot, query: str, variable: str, dropped: str | None, warned: bool
+):
+    """Each row carries the extraction recorded live for its query (Germany's role aside)."""
+    extraction = Extraction(
+        kind="resolution",
+        variables=[variable],
+        entities=[ExtractedEntity(text="Germany", span="Germany")],
+        dropped_qualifiers=[dropped] if dropped is not None else [],
+    )
+    with bound_catalogue(catalogue):
+        prep = raw_text._prepare_extraction(
+            extraction, ExtractionResult(extraction=extraction, qualifiers={}), query=query
+        )
+    assert bool(prep.qualifier_warnings) is warned
+    assert bool(prep.qualifier_facts) is warned
 
 
 def test_raw_door_reads_a_stretch_that_leaves_out_a_publisher(catalogue: CatalogueSnapshot):
