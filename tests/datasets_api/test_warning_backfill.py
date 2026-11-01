@@ -710,11 +710,20 @@ def test_the_versions_of_one_subject_share_one_probe(page_rows, capsys):
     assert (summary["rewritten"], summary["probes"]) == (2, 1)
 
 
-def test_the_task_with_no_row_opens_no_release(monkeypatch, capsys):
-    monkeypatch.setenv("DATASETS_GRAPH_TOKEN", "token")
+# No environment sets a graph token: the graph serves reads anonymously.
+def test_the_task_without_a_graph_token_reads_the_store_and_with_no_row_opens_no_release(
+    monkeypatch, capsys
+):
+    monkeypatch.delenv("DATASETS_GRAPH_TOKEN", raising=False)
     monkeypatch.setattr(maintenance, "shared_pool", lambda: None)
     monkeypatch.setattr(maintenance, "close_shared_pool", lambda: None)
-    monkeypatch.setattr(maintenance, "select_rows", lambda store, *, new_format: [])
+    selected: list[bool] = []
+
+    def select_rows(store, *, new_format):
+        selected.append(new_format)
+        return []
+
+    monkeypatch.setattr(maintenance, "select_rows", select_rows)
 
     def no_release():
         raise AssertionError("the release was opened")
@@ -722,21 +731,9 @@ def test_the_task_with_no_row_opens_no_release(monkeypatch, capsys):
     monkeypatch.setattr(maintenance, "get_release_service", no_release)
 
     assert maintenance.main(["backfill-warnings", "--dry-run"]) == 0
+    assert selected == [True]
     (summary,) = _lines(capsys, "datasets_warnings_backfilled")
     assert (summary["dry_run"], summary["rewritten"]) == (True, 0)
-
-
-def test_the_task_without_a_graph_token_refuses_to_start(monkeypatch, capsys):
-    monkeypatch.delenv("DATASETS_GRAPH_TOKEN", raising=False)
-
-    def no_store():
-        raise AssertionError("the store was opened")
-
-    monkeypatch.setattr(maintenance, "shared_pool", no_store)
-
-    assert maintenance.main(["backfill-warnings"]) == 1
-    (failed,) = _lines(capsys, "datasets_maintenance_failed")
-    assert (failed["task"], failed["severity"]) == ("backfill-warnings", "ERROR")
 
 
 class _OutageStore(_Store):
