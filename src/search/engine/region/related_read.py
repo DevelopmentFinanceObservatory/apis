@@ -87,22 +87,31 @@ read_runner = ReadRunner()
 
 
 @dataclass(frozen=True, slots=True)
+class LostRelated:
+    """The exception that ended a related read, and whether the read's own budget cut it,
+    decided as the read ended (`ReadBudget.ran_out`), since the answer may join the read
+    after the budget's deadline has passed."""
+
+    exc: Exception
+    cut: bool
+
+
+@dataclass(frozen=True, slots=True)
 class RelatedRead:
-    """The related-measures reads started in a task for `stat_var`, under `budget`. `task`
-    settles to the exception that ended them when a read failed or ran past the budget."""
+    """The related-measures reads started in a task for `stat_var`. `task` settles to the
+    loss that ended them when a read failed or ran past its budget."""
 
     stat_var: str
-    task: asyncio.Task[Related | Exception]
-    budget: ReadBudget
+    task: asyncio.Task[Related | LostRelated]
 
 
 @dataclass(frozen=True, slots=True)
 class PendingRelated:
     """The related-measures reads running on a thread for `stat_var`, ending by the deadline
-    of `budget`. `future` settles to the exception that ended a failed read."""
+    of `budget`. `future` settles to the loss that ended a failed read."""
 
     stat_var: str
-    future: Future[Related | Exception]
+    future: Future[Related | LostRelated]
     budget: ReadBudget
 
 
@@ -160,7 +169,6 @@ def start_related_read(
         return None
     stat_var = stat_vars[0]
     budget = _read_budget(state.deadline)
-    deadline = budget.deadline
     read = read_runner.start(
         functools.partial(
             read_related,
@@ -169,13 +177,11 @@ def start_related_read(
             places=[dcid for dcid, _role in places],
             window=requested_window_from_date_request(state.date_request),
             graph=state.graph,
-            deadline=deadline,
+            deadline=budget.deadline,
         )
     )
     started = RelatedRead(
-        stat_var=stat_var,
-        task=asyncio.create_task(_within(read, stat_var=stat_var, deadline=deadline)),
-        budget=budget,
+        stat_var=stat_var, task=asyncio.create_task(_within(read, stat_var=stat_var, budget=budget))
     )
     state.related_reads.append(started)
     return started
@@ -219,13 +225,13 @@ def related_read_for(
 
 async def with_related(spec: Spec, read: RelatedRead | None) -> Spec:
     """`spec` stating `read`'s group and measures, unchanged when there is no read or it
-    failed. A failed read is noted as a lost read (`note_lost_read`, under the read's own
-    budget)."""
+    failed. A failed read is noted as a lost read, or as cut when its own budget cut it
+    (`note_lost_read`, `LostRelated.cut`)."""
     if read is None:
         return spec
     related = await read.task
-    if isinstance(related, Exception):
-        note_lost_read("related measures", related, budget=read.budget)
+    if isinstance(related, LostRelated):
+        note_lost_read("related measures", related.exc, cut=related.cut)
         return spec
     return stating_related(spec, related)
 
@@ -255,7 +261,7 @@ def submit_related_read(
             places=[dcid for dcid, _role in places],
             window=window,
             graph=graph,
-            deadline=budget.deadline,
+            budget=budget,
         )
     )
     return PendingRelated(stat_var=stat_var, future=future, budget=budget)
@@ -264,8 +270,9 @@ def submit_related_read(
 def joined_related(pending: PendingRelated | None) -> Related | None:
     """`pending`'s result once it ends, or None when there is none, a read failed or its
     deadline passed first. The thread logs a failed read (`_logged_read`), and a deadline
-    that passes first is logged here. Either is noted here as a lost read
-    (`note_lost_read`, under the read's own budget), in the caller's record."""
+    that passes first is logged here. Either is noted here as a lost read, or as cut when
+    the read's own budget cut it (`note_lost_read`, `LostRelated.cut`), in the caller's
+    record."""
     if pending is None:
         return None
     try:
@@ -274,9 +281,9 @@ def joined_related(pending: PendingRelated | None) -> Related | None:
         )
     except TimeoutError as exc:
         _log_unavailable(pending.stat_var, exc)
-        related = exc
-    if isinstance(related, Exception):
-        note_lost_read("related measures", related, budget=pending.budget)
+        related = LostRelated(exc, cut=pending.budget.ran_out(exc))
+    if isinstance(related, LostRelated):
+        note_lost_read("related measures", related.exc, cut=related.cut)
         return None
     return related
 
@@ -319,27 +326,27 @@ def _read_budget(request_deadline: float | None) -> ReadBudget:
     )
 
 
-def _logged_read(*, stat_var: str, **kwargs: Any) -> Related | Exception:
-    """`read_related` on the resubmit door's thread, or the exception that ended it. The
-    failure is logged here, so it surfaces however the pass ends, as `_within` does for a
-    task."""
+def _logged_read(*, stat_var: str, budget: ReadBudget, **kwargs: Any) -> Related | LostRelated:
+    """`read_related` on the resubmit door's thread, bound by `budget`'s deadline, or the
+    loss that ended it. The failure is logged here, so it surfaces however the pass ends, as
+    `_within` does for a task."""
     try:
-        return read_related(stat_var=stat_var, **kwargs)
+        return read_related(stat_var=stat_var, deadline=budget.deadline, **kwargs)
     except Exception as exc:
         _log_unavailable(stat_var, exc)
-        return exc
+        return LostRelated(exc, cut=budget.ran_out(exc))
 
 
 async def _within(
-    read: Awaitable[Related], *, stat_var: str, deadline: float
-) -> Related | Exception:
-    """`read`'s result, or the exception that ended it when a read failed or `deadline`
+    read: Awaitable[Related], *, stat_var: str, budget: ReadBudget
+) -> Related | LostRelated:
+    """`read`'s result, or the loss that ended it when a read failed or `budget`'s deadline
     passed first."""
     try:
-        return await asyncio.wait_for(read, timeout=max(0.0, deadline - time.monotonic()))
+        return await asyncio.wait_for(read, timeout=max(0.0, budget.deadline - time.monotonic()))
     except Exception as exc:
         _log_unavailable(stat_var, exc)
-        return exc
+        return LostRelated(exc, cut=budget.ran_out(exc))
 
 
 def _log_unavailable(stat_var: str, exc: Exception) -> None:
