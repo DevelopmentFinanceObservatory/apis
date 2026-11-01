@@ -51,6 +51,7 @@ from search.engine.region import state as region_state
 from search.engine.region.availability import read_coverage
 from search.engine.region.codes import OBSERVATIONS_TIMED_OUT
 from search.engine.region.phase_rank_bind import _stray_requirements
+from search.engine.region.related_read import PendingRelated
 from search.engine.region.state import ResolveState
 from search.engine.retrieval import bound_values, derive
 from search.engine.retrieval.read_plan import PairPlan
@@ -532,6 +533,13 @@ def _dated_plan(monkeypatch: pytest.MonkeyPatch, *, deadline: float | None) -> N
     assert plan is None
 
 
+def _related_join_timed_out(budget: ReadBudget) -> None:
+    """A resubmit door's related read still running when its budget's deadline passes, so
+    the join itself times out (`related_read.joined_related`)."""
+    pending = PendingRelated(stat_var="X", future=Future(), budget=budget)
+    assert related_read.joined_related(pending) is None
+
+
 _BUDGETED_SITES: dict[str, tuple[Callable[[pytest.MonkeyPatch, ReadBudget], None], str]] = {
     "availability-past-deadline": (
         lambda _mp, _budget: _availability_probe_past_its_deadline(),
@@ -544,6 +552,10 @@ _BUDGETED_SITES: dict[str, tuple[Callable[[pytest.MonkeyPatch, ReadBudget], None
     "dated-read-timed-out": (
         lambda mp, _budget: _dated_plan(mp, deadline=None),
         "unit coverage dates",
+    ),
+    "related-join-timeout": (
+        lambda _mp, budget: _related_join_timed_out(budget),
+        "related measures",
     ),
 }
 
