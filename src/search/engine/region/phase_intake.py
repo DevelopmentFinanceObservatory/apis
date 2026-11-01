@@ -25,9 +25,9 @@ from search.engine.interpret import Recall, recall
 from search.engine.place import expand_places
 from search.engine.region.place_roles import (
     PlaceAssignment,
-    SetChoice,
     bind_place_roles,
     held_party_words,
+    named_place,
     part_sets,
     place_key,
     set_choices,
@@ -529,19 +529,24 @@ async def _prune_shapes_by_admission(
                     return True
         return False
 
-    def _readings(shape: ShapeDraft) -> Mapping[str, SetChoice | None]:
-        """The readings `shape` gives each set it assigns (`place_roles.set_choices`), from
-        the answers in hand; empty when the shape cannot assign the query's places."""
+    def _unread(shape: ShapeDraft) -> frozenset[str]:
+        """The places (`place_roles.named_place`) of the sets `shape` assigns and gives no
+        reading (`place_roles.set_choices`), from the answers in hand; empty when the shape
+        cannot assign the query's places. A place read on each end apart is unread when
+        either end is."""
         assignment = bind_place_roles(state, shape)
         if not isinstance(assignment, PlaceAssignment):
-            return {}
+            return frozenset()
         names = role_names_by_axis(shape)
 
         def admits(key: EntityRoleKey, graph_type: str) -> bool:
             role = "observationAbout" if key == "observationAbout" else names[key]
             return state.node_admissions[(role, graph_type)]
 
-        return set_choices(assignment, admits=admits)
+        choices = set_choices(assignment, admits=admits)
+        return frozenset(
+            named_place(s) for s in assignment.distinct_sets if choices[place_key(s)] is None
+        )
 
     survivors: list[ShapeDraft] = []
     # Every set some shape must serve, by place key, and whether one does.
@@ -549,12 +554,12 @@ async def _prune_shapes_by_admission(
     admitted_anywhere: dict[str, bool] = {}
     for shape in shapes:
         roles = shape.declared_roles or ("observationAbout",)
-        readings = _readings(shape)
+        unread = _unread(shape)
         shape_admits_all = True
         for place_set in sets_of[id(shape)]:
             key = place_key(place_set)
             judged[key] = place_set
-            served = readings.get(key, "node") is not None
+            served = key not in unread
             if served and await _admits_any(roles, place_set):
                 admitted_anywhere[key] = True
             else:

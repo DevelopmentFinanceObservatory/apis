@@ -34,6 +34,7 @@ from tests.engine._place_set_world import (
     NO_YEAR,
     PROVIDER,
     RECIPIENT,
+    SUB_SAHARAN,
     WDI,
     WHO,
     Doors,
@@ -182,6 +183,36 @@ def test_raw_text_that_asks_for_africas_members_binds_them(doors: Doors) -> None
         merged = the_spec(doors.raw_text(query, WHO, *mentions))
         assert bound(merged) == {_SUBJECT: _AFRICAS_MEMBERS}
         assert merged.spec_id == spec.spec_id
+
+
+def test_raw_text_asking_for_a_regions_members_on_one_end_reads_it_whole_on_the_other(
+    doors: Doors,
+) -> None:
+    """ "aid from Sub-Saharan African countries to Sub-Saharan Africa" names one place on
+    both ends, and the extractor states `members` on the provider's mention alone. The Spec
+    binds the region's members as the providers and its node as the recipient, the
+    restatement asks for the members on the provider's end alone, and posted back it
+    answers with the same Spec."""
+    query = "aid from Sub-Saharan African countries to Sub-Saharan Africa"
+    name = LABEL[SUB_SAHARAN]
+    providers = ExtractedEntity(
+        text=name, span="Sub-Saharan African", flow_role="origin", role_span="from", members=True
+    )
+    recipient = ExtractedEntity(
+        text=name, span="Sub-Saharan Africa", flow_role="destination", role_span="to"
+    )
+
+    response = doors.raw_text(query, AID, providers, recipient)
+
+    spec = the_spec(response)
+    assert bound(spec) == {"origin": sorted(EXPANSION[SUB_SAHARAN]), "destination": [SUB_SAHARAN]}
+    assert _restated_entities(response) == [
+        {"text": name, "role_text": "from", "members": True},
+        {"text": name, "role_text": "to"},
+    ]
+    (part,) = response.parts
+    assert part.restatement is not None
+    assert the_spec(doors.post(part.restatement)).spec_id == spec.spec_id
 
 
 @pytest.mark.parametrize("members", [True, False], ids=["members-stated", "members-unstated"])

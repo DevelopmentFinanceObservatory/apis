@@ -520,8 +520,9 @@ def _entity_roles(
     (`role_text.receipt_axes`). A query that is one place's possessive and its debt alone
     makes that place the debtor (`role_text.debtor_possessive`). Every other place keeps
     its extracted axis. Preserve distinct mentions in order, including self-flows on
-    opposite axes. Collapse duplicate mentions with the same axis and span. Store
-    directional roles only, each recording whether the query's words give its direction. A
+    opposite axes. Collapse duplicate mentions with the same axis, span and reading. Store
+    directional roles only, each recording whether the query's words give its direction and
+    whether the mention asks for the place's members (`DoorRole.members`). A
     debt or receipt axis does by construction, a possessive debtor does not, since it
     reads the measure, and an extracted axis does when its cue does
     (`_cue_states_direction`). Fall back to entity text for the overlap anchor when
@@ -550,7 +551,7 @@ def _entity_roles(
         occurrences = roles.setdefault(name, [])
         span = entity.span or entity.text
         stated = name in worded or _cue_states_direction(entity, entities=entities, query=query)
-        role = DoorRole(axis=axis, span=span, stated=stated)
+        role = DoorRole(axis=axis, span=span, stated=stated, members=entity.members)
         if role not in occurrences:
             occurrences.append(role)
     return roles
@@ -1330,7 +1331,8 @@ def _prepare_extraction(
         unique=unique,
         entities=entities,
         entity_roles=entity_roles,
-        # One text holds one reading: a mention that asks for the members decides it.
+        # A text any mention asks the members of. A directed mention asks on its own end
+        # (`DoorRole.members`).
         member_entities=frozenset(_entity_key(e) for e in extracted_entities if e.members),
         per_variable_qualifiers=per_variable_qualifiers,
         per_variable_operations=per_variable_operations,

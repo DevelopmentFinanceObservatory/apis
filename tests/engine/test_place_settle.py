@@ -29,6 +29,7 @@ from search.engine.region.place_roles import (
     PlaceAssignment,
     PlaceLists,
     bind_place_roles,
+    bound_entity_refs,
     group_request_names,
     part_sets,
     place_key,
@@ -904,6 +905,44 @@ def test_a_subject_reads_a_graph_region_as_the_graph_does() -> None:
     assert _settle(assignment, _subject_holds("SubSaharanAfrica")) == {
         "observationAbout": ("SubSaharanAfrica",)
     }
+
+
+def test_a_region_split_by_end_reads_as_the_oecds_on_the_recipient_end_alone() -> None:
+    """Aid from sub-Saharan African countries to sub-Saharan Africa, summed on the CRS. The
+    recipient end reads the OECD's region and binds its members, Sudan among them, and its
+    residuals. The provider end binds the graph region's members, and the text's ref and
+    the provider's group name the graph region, after the recipient's registry group."""
+    name = "sub-Saharan Africa"
+    region = dataclasses.replace(_SSA, oecd=_SSA_AS_OECD, reading="members")
+    state = _state([region])
+    state.entity_roles = {
+        name: [
+            DoorRole(axis="origin", span=name, members=True),
+            DoorRole(axis="destination", span=name),
+        ]
+    }
+    shape = dataclasses.replace(_shape(*_PROVIDER_RECIPIENT), datasets=(_CRS,))
+
+    assignment = bind_place_roles(state, shape)
+
+    assert isinstance(assignment, PlaceAssignment)
+    places = _settle(assignment, _flow_holds((_KEN, _SDN)))
+    graph_members = (_GHA, _KEN, _TZA)
+    assert places == {
+        "origin": graph_members,
+        "destination": tuple(sorted((_GHA, _KEN, _SDN, _TZA, *_SSA_RESIDUALS))),
+    }
+    roles = settled_roles(shape, assignment, places)
+    assert [
+        (group.dcid, group.group_id, group.member_dcids)
+        for group in request_named_groups(state, roles)
+    ] == [
+        (None, "groups/OECD.DAC.Region.SouthOfSahara", {_GHA, _KEN, _SDN, _TZA}),
+        ("SubSaharanAfrica", None, set(graph_members)),
+    ]
+    state.places_bound = True
+    state.place = SimpleNamespace(roles=roles)
+    assert bound_entity_refs(state) == {name: ("SubSaharanAfrica", _GHA, _KEN, _SDN, _TZA)}
 
 
 # Settling over a Spec's own read.

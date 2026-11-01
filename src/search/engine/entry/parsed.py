@@ -120,7 +120,8 @@ def _role_query_for_part(part: ParsedPart) -> tuple[str, list[Warning]]:
 
 def _entity_roles_for_part(part: ParsedPart) -> dict[str, list[DoorRole]]:
     """Map each entity's identity (`ParsedEntity.identity`) to its declared axes, each with
-    the entity's text as its verbatim span, for one part.
+    the entity's text as its verbatim span and whether the row asks for its members
+    (`DoorRole.members`), for one part.
 
     Preserve distinct mentions in order, including a repeated name on opposite
     axes. Missing or unrecognised role text leaves the entity undirected.
@@ -131,7 +132,7 @@ def _entity_roles_for_part(part: ParsedPart) -> dict[str, list[DoorRole]]:
         if axis is None:
             continue
         occurrences = roles.setdefault(entity.identity, [])
-        role = DoorRole(axis=axis, span=entity.text)
+        role = DoorRole(axis=axis, span=entity.text, members=bool(entity.members))
         if role not in occurrences:
             occurrences.append(role)
     return roles

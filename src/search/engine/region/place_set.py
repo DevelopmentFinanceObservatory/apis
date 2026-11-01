@@ -14,6 +14,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Literal
 
+from dfo_platform import RoleAxis
+
 # What the request's text named: one place, a continent or UN subregion, or a resolver group.
 PlaceSetKind = Literal["place", "region", "group"]
 
@@ -71,6 +73,10 @@ class PlaceSet:
     # rather than by the graph node it shares with the request's set
     # (`place_roles.request_named_groups`).
     oecd_read: bool = False
+    # The one flow end the set is read on, where a part names its place as its members on
+    # one end and whole on the other (`place_roles.assign_named_places`), so each end holds
+    # its own reading. `None` for a set read alike wherever it is placed.
+    end: RoleAxis | None = None
 
     @property
     def expands(self) -> bool:
