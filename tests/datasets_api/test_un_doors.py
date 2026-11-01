@@ -45,7 +45,8 @@ _VARIABLES = (UN_VARIABLE, UN_SECOND_VARIABLE)
 _STAT_VAR_ARCS = {"typeOf": ["StatisticalVariable"], "measuredProperty": ["value"]}
 # Kenya holds five observations and Ghana two.
 _ROWS = 7
-_UNREAD_GREECE = f"No UN data was read for {_GRC}."
+# The places a `un_system_unavailable` warning carries when only Greece went unread.
+_UNREAD_GREECE = {"count": 1, "refs": [f"dcid:{_GRC}"]}
 
 
 @pytest.fixture
@@ -125,8 +126,11 @@ def _through_the_worker(
     return api_client.get(f"/api/datasets/operations/{operation_id}")
 
 
-def _un_warnings(holder: dict) -> list[str]:
-    return [w["message"] for w in holder["warnings"] if w["code"] == "un_system_unavailable"]
+def _un_warnings(holder: dict) -> list[dict]:
+    """The `unserved_entities` of each `un_system_unavailable` warning `holder` carries."""
+    return [
+        w["unserved_entities"] for w in holder["warnings"] if w["code"] == "un_system_unavailable"
+    ]
 
 
 _NAMED = (_GRC, _KEN, _GHA)
@@ -141,7 +145,7 @@ def test_the_spec_door_warns_of_the_place_the_un_refused(graph, places):
     manifest = resp.json()
     assert manifest["coverage"]["rows"] == _ROWS
     (warning,) = _un_warnings(manifest)
-    assert warning.endswith(_UNREAD_GREECE)
+    assert warning == _UNREAD_GREECE
     # The trace names the place, which the version's description states as a coverage gap.
     assert manifest["trace"]["origin_gaps"] == [
         {"code": "un_system_unavailable", "entities": [_GRC]}
@@ -156,7 +160,7 @@ def test_the_worker_warns_of_the_place_the_un_refused(graph, monkeypatch, body, 
     assert polled.status_code == 200, polled.text
     assert polled.json()["operation"]["status"] == "done", polled.text
     (warning,) = _un_warnings(polled.json()["manifest"])
-    assert warning.endswith(_UNREAD_GREECE)
+    assert warning == _UNREAD_GREECE
 
 
 def test_a_mint_binding_no_entity_reads_the_un_availability_once(graph, deployments):
@@ -207,7 +211,7 @@ def test_an_empty_result_binding_no_entity_warns_of_the_place_the_un_refused(
     assert manifest["coverage"]["rows"] == 0
     assert "empty_result" in _warning_codes(manifest)
     (warning,) = _un_warnings(manifest)
-    assert warning.endswith(_UNREAD_GREECE)
+    assert warning == _UNREAD_GREECE
 
 
 @pytest.mark.parametrize("body", [_spec_body])
@@ -224,7 +228,7 @@ def test_the_worker_serves_a_request_binding_no_entity_with_no_un_data_as_the_em
     assert manifest["coverage"]["rows"] == 0
     assert "empty_result" in _warning_codes(manifest)
     (warning,) = _un_warnings(manifest)
-    assert warning.endswith(_UNREAD_GREECE)
+    assert warning == _UNREAD_GREECE
 
 
 @_DOORS

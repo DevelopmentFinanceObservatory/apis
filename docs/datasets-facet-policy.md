@@ -255,7 +255,7 @@ request's deadline ends it, so an empty result is stored only when the
 check completed. The UN front door refuses a few countries
 on every read, so for a request that binds no entity a place it refused
 leaves the empty result as it is, and the `un_system_unavailable` warning
-names those places, as it does on a request that served rows. A failed read
+counts those places, as it does on a request that served rows. A failed read
 of Earth's countries or of presence, in the probe or in the read that
 explains an empty probe, refuses
 the request `upstream_error` (retryable) and stores no version. A listing

@@ -10,10 +10,8 @@ its own (`finish.member_sentences`) and names them in `off_cadence_members`,
 This task rewrites each stored warning holding the old sentence that way, in the `warnings`
 column and in the `warnings` of `immutable_body`, which encodes the same facts for an image
 that reads bodies (`manifest.version_body`); this image reads the column alone
-(`manifest.stored_manifest`). It rewrites no other format. The codes that
-`warning_rewrite.sql` leaves (`dataset_store.warning_formats.CODES_LEFT_BY_SQL`) keep their
-stored messages: those in `CODES_STILL_WRITTEN`, which the serving image still writes in
-their old shape, and the rest, whose writers count them.
+(`manifest.stored_manifest`). It rewrites no other format: `warning_rewrite.sql` rewrites
+the rest.
 
 For one version row, the old sentence names the first five members it left out, in the
 trace's dcid order, and counts K in all. The members holding no observation are those the

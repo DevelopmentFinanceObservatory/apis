@@ -771,17 +771,25 @@ class _ProjectedConversion(Protocol):
 def deflator_projected_warning(
     records: Sequence[_ProjectedConversion],
 ) -> MaterialisationWarning:
-    """Reports projected row count and sorted distinct `entity@year` examples across records.
-    Examples are capped, with truncation based on distinct keys rather than row count. Search's
-    observation answers raise it; a materialisation's warnings do not."""
+    """Counts the rows of `records` whose rate or deflator came from a projection. The message
+    names no row; `deflator_projected_examples` gives the examples. Search's observation
+    answers raise it; a materialisation's warnings do not."""
     _title, detail = MATERIALISE_CODE_CATALOGUE["deflator_projected"]
     total = sum(record.projected_count for record in records)
-    examples, truncated = _capped_distinct_examples(
+    return {
+        "code": "deflator_projected",
+        "severity": "warn",
+        "message": f"{detail} It applies to {total} {'row' if total == 1 else 'rows'}.",
+    }
+
+
+def deflator_projected_examples(records: Sequence[_ProjectedConversion]) -> list[str]:
+    """The distinct `entity@year` examples of `records`' projected rows, sorted, the first
+    `_MAX_TRACE_EXAMPLES` of them."""
+    examples, _truncated = _capped_distinct_examples(
         example for record in records for example in record.projected_examples
     )
-    truncated_note = " (truncated)" if truncated else ""
-    message = f"{detail} {total} row(s), for example: {', '.join(examples)}{truncated_note}"
-    return {"code": "deflator_projected", "severity": "warn", "message": message}
+    return examples
 
 
 def currency_unmapped_omitted_warning(entities: Iterable[str]) -> MaterialisationWarning:

@@ -11,7 +11,6 @@ import pytest
 from dataset_store import DatasetStoreError, warning_formats
 from dataset_store.migrate import MIGRATIONS_DIR
 from dataset_store.warning_formats import MEMBER_SENTENCE, OLD_FORMATS, REWRITE_SQL, definitions
-from datasets_api.warnings import DATASETS_WARNING_CATALOGUE
 from materialise.finish import _coverage_below_scope_warning
 from tests.dataset_store._warning_refs import (
     COVERAGE_DETAIL,
@@ -36,8 +35,7 @@ def _formats(code: str, message: str) -> list[str]:
 
 
 def _current_shapes() -> list[tuple[str, str]]:
-    """Messages in the shapes current writers store, and counted sentences for
-    `withheld_by_registry`, `un_system_unavailable` and `deflator_projected`."""
+    """Messages in the shapes current writers store."""
     coverage = [
         cast(str, warning["message"])
         for warning in (
@@ -56,28 +54,12 @@ def _current_shapes() -> list[tuple[str, str]]:
         )
     ]
     composite = f"{coverage[0]} Of these, the donor component leaves out 3."
-    withheld, un_unread, projected = (
-        DATASETS_WARNING_CATALOGUE[code][1]
-        for code in ("withheld_by_registry", "un_system_unavailable", "deflator_projected")
-    )
     return [
         *(("coverage_below_scope", message) for message in [*coverage, composite]),
         *(
             (cast(str, warning["code"]), cast(str, warning["message"]))
             for warning in current_warnings()
         ),
-        (
-            "withheld_by_registry",
-            f"{withheld} 3 entities served no observations; "
-            "2 withheld provenances hold data there.",
-        ),
-        (
-            "withheld_by_registry",
-            f"{withheld} 1 entity served no observations; 1 withheld provenance holds data there.",
-        ),
-        ("un_system_unavailable", f"{un_unread} No UN data was read for 3 entities."),
-        ("un_system_unavailable", f"{un_unread} No UN data was read for 1 entity."),
-        ("deflator_projected", f"{projected} It applies to 4 rows."),
     ]
 
 

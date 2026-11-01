@@ -44,7 +44,7 @@ from dataset_store.snapshot import LiveSnapshotReader
 from datasets_api import maintenance
 from datasets_api.description_record import backfill_record
 from datasets_api.maintenance import run_backfill_descriptions
-from datasets_api.origin import _withheld_warning, un_unavailable_warnings
+from datasets_api.origin import un_unavailable_warnings, withheld_by_registry_warning
 from datasets_api.render import STATISTICS_MEDIA_TYPE
 from datasets_api.version_store import LiveVersionRecordWriter
 from datasets_api.versions import ArtifactRecord, VersionRecord
@@ -597,14 +597,13 @@ _NAMED_PLACES = (
 def test_stored_warning_codes_become_the_steps_and_caveats_they_route_to(
     places: tuple[str, ...], count: int | None
 ) -> None:
-    """A registry withholding and an unanswered UN read are coverage gaps naming what their
-    messages list, in the one format each producer has written, a sum is a step, and a code
-    routed to the manifest adds nothing. A message naming more than five places names five and
-    counts the rest."""
+    """A registry withholding and an unanswered UN read are coverage gaps naming the series
+    and places their fields carry, a sum is a step, and a code routed to the manifest adds
+    nothing. A field counting more than five places carries five and counts the rest."""
     blocked = UnBlockedPlaces()
     blocked.add(places)
-    withheld = _withheld_warning(
-        f"dcid:{family_fixture._MEMBER_A}", dict.fromkeys(places, ("dc/withheld",))
+    withheld = withheld_by_registry_warning(
+        family_fixture._MEMBER_A, dict.fromkeys(places, ("dc/withheld",))
     )
     body = _family_body()
     body["warnings"] = [
@@ -642,8 +641,8 @@ def test_a_withholding_and_an_unanswered_read_the_trace_records_are_stated_once_
     trace, naming every place, and its stored warnings add no second caveat."""
     blocked = UnBlockedPlaces()
     blocked.add(_NAMED_PLACES)
-    withheld = _withheld_warning(
-        f"dcid:{family_fixture._MEMBER_A}", dict.fromkeys(_NAMED_PLACES, ("dc/withheld",))
+    withheld = withheld_by_registry_warning(
+        family_fixture._MEMBER_A, dict.fromkeys(_NAMED_PLACES, ("dc/withheld",))
     )
     body = _family_body()
     body["warnings"] = [
@@ -673,8 +672,8 @@ def test_a_withholding_and_an_unanswered_read_the_trace_records_are_stated_once_
 def test_a_stored_message_naming_nothing_readable_leaves_its_caveat_out(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Old prose is no defect: the version gains its record without the caveat, the run
-    succeeds, and one warning names the version and code."""
+    """A warning carrying no counted fields is no defect: the version gains its record without
+    the caveat, the run succeeds, and one warning names the version and code."""
     store = FakeVersionRecordDatasetStore()
     content_version = "cv_" + "6f" * 16
     body = _family_body()

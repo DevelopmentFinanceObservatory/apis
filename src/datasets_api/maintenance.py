@@ -80,7 +80,8 @@ frame no tier holds gets a record whose series facts are unknown. Each record is
 run writes nothing. Versions that collapse no other come first, so a multi-contributor collapse is
 derived from its base version's record (`backfill_record`), and from none when its base holds
 no record. A stored warning code whose fact cannot be stated, a `withheld_by_registry` or
-`un_system_unavailable` message naming nothing in a format its producer wrote or a choice,
+`un_system_unavailable` warning carrying no `unserved_entities` or a `withheld_by_registry`
+one carrying no `withheld_members`, or a choice,
 conversion gap or projection the trace holds no step for, is left out of the record, which
 serves its steps as a gap when the code was a step, with one
 `datasets_description_backfill_warning_unstated` line naming the version and code. A version it

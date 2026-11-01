@@ -36,8 +36,8 @@ class Warning(StrictModel):
     """A run-health signal. Note: this name shadows the Python builtin Warning.
 
     Only `observations_series_truncated`, `elected_shape_no_data`, `un_system_unavailable`,
-    `whole_total_available`, `currency_unmapped_omitted` and `deflator_missing_omitted` set
-    `params`. A `None` `params` is left out of every dump, so other codes' warnings stay
+    `whole_total_available`, `currency_unmapped_omitted`, `deflator_missing_omitted` and
+    `deflator_projected` set `params`. A `None` `params` is left out of every dump, so other codes' warnings stay
     exactly `{code, severity, message}` plus `spec_id` where one applies.
     """
 
@@ -82,7 +82,9 @@ class Warning(StrictModel):
             "deflator_missing_omitted: the same with entity_years, the years each "
             "entity's rows were left out, as runs of consecutive years ('1990-2001, 2004'), "
             "in entities order; a warning without params says the loaded tables cannot tell "
-            "which entities. Omitted for every other code"
+            "which entities. deflator_projected: {count, examples}, how many rows took a "
+            "projected rate or deflator, and the first ten distinct entity@year examples, "
+            "sorted. Omitted for every other code"
         ),
     )
 

@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import cast
 
-from datasets_api.origin import _withheld_warning
+from datasets_api.origin import un_system_unavailable_warning, withheld_by_registry_warning
 from datasets_api.warnings import DATASETS_WARNING_CATALOGUE
 from materialise import finish as finish_module
 from materialise.codes import MATERIALISE_CODE_CATALOGUE
@@ -36,6 +36,13 @@ DEFLATED = [("country/KEN", year) for year in [*range(1990, 2002), 2004, 2007, 2
     ("country/UGA", 2010)
 ]
 COVERAGE_DETAIL = MATERIALISE_CODE_CATALOGUE["coverage_below_scope"][1]
+WITHHELD_DETAIL = DATASETS_WARNING_CATALOGUE["withheld_by_registry"][1]
+UN_DETAIL = DATASETS_WARNING_CATALOGUE["un_system_unavailable"][1]
+PROJECTED_DETAIL = MATERIALISE_CODE_CATALOGUE["deflator_projected"][1]
+# Each of seven places withholds data under a provenance of its own.
+WITHHELD = {place: (f"dc/p{index}",) for index, place in enumerate(UNSERVED)}
+ONE_WITHHELD = {"country/KEN": ("dc/p1",)}
+PROJECTED_EXAMPLES = [f"country/C{index:02}@2020" for index in range(12)]
 
 
 @dataclass(frozen=True)
@@ -61,6 +68,33 @@ def old_member_sentence(members: Sequence[str], *, range_window: bool = False) -
         "observation period the other members serve"
         f"{' in the requested years' if range_window else ''}."
     )
+
+
+def _old(new: StoredWarning, message: str) -> StoredWarning:
+    """`new`'s code and severity with `message`, as the writer stored it before it counted."""
+    return {"code": new["code"], "severity": new["severity"], "message": message}
+
+
+def old_withheld(variable: str, withheld: dict[str, tuple[str, ...]]) -> str:
+    """A `withheld_by_registry` message naming the variable, the places and every withheld
+    provenance (`datasets_api.origin` before it counted)."""
+    provenances = dict.fromkeys(provenance for held in withheld.values() for provenance in held)
+    return (
+        f"{WITHHELD_DETAIL} {variable} served no observations for {_old_names(list(withheld))}; "
+        f"withheld provenances holding data there: {', '.join(provenances)}."
+    )
+
+
+def new_withheld(variable: str, withheld: dict[str, tuple[str, ...]]) -> StoredWarning:
+    return withheld_by_registry_warning(variable, withheld).model_dump(mode="json")
+
+
+def new_un(places: Sequence[str]) -> StoredWarning:
+    return un_system_unavailable_warning(places).model_dump(mode="json")
+
+
+def new_projected(total: int, examples: Sequence[str]) -> StoredWarning:
+    return dict(deflator_projected_warning([_Projected(total, examples)]))
 
 
 def _coverage(message: str, **fields: object) -> StoredWarning:
@@ -106,6 +140,12 @@ def current_warnings() -> list[StoredWarning]:
         dict(currency_unmapped_omitted_warning(OMITTED)),
         dict(currency_unmapped_omitted_warning(["country/KEN"])),
         dict(deflator_missing_omitted_warning(DEFLATED)),
+        new_withheld("Rate", WITHHELD),
+        new_withheld("Rate", {"country/KEN": ("dc/p1",)}),
+        new_un(["country/KEN"]),
+        new_un(UNSERVED),
+        new_projected(1, PROJECTED_EXAMPLES[:1]),
+        new_projected(30, PROJECTED_EXAMPLES),
         {"code": "empty_result", "severity": "warn", "message": "No rows."},
     ]
 
@@ -132,7 +172,6 @@ def trace_for(case: str) -> dict[str, object]:
 def rewrite_cases() -> dict[str, tuple[list[StoredWarning], list[StoredWarning]]]:
     """Stored warning arrays by case, each with the array `warning_rewrite.sql` leaves."""
     deflator_detail = MATERIALISE_CODE_CATALOGUE["deflator_missing_omitted"][1]
-    un_detail = DATASETS_WARNING_CATALOGUE["un_system_unavailable"][1]
     unserved_one = cast(str, new_coverage(unserved=UNSERVED[:1])["message"])
     members_counted = new_coverage(members=MEMBERS, member_count=4)
     unchanged: dict[str, list[StoredWarning]] = {
@@ -145,19 +184,6 @@ def rewrite_cases() -> dict[str, tuple[list[StoredWarning], list[StoredWarning]]
         "name_with_comma": [
             _coverage(COVERAGE_DETAIL + old_unserved_sentence(["country/KEN", "country/A,B"]))
         ],
-        "withheld": [
-            _withheld_warning("dcid:Rate", {"country/KEN": ("dc/p1",)}).model_dump(
-                exclude_none=True
-            )
-        ],
-        "un_unread": [
-            {
-                "code": "un_system_unavailable",
-                "severity": "warn",
-                "message": f"{un_detail} No UN data was read for country/KEN, country/UGA.",
-            }
-        ],
-        "projected": [dict(deflator_projected_warning([_Projected(2, ["country/KEN@2020"])]))],
         "unlisted": [
             {
                 "code": "facet_default_selected",
@@ -250,6 +276,51 @@ def rewrite_cases() -> dict[str, tuple[list[StoredWarning], list[StoredWarning]]
                     )
                 )
             ],
+        ),
+        "withheld_one": (
+            [_old(new_withheld("Rate", ONE_WITHHELD), old_withheld("Rate", ONE_WITHHELD))],
+            [new_withheld("Rate", ONE_WITHHELD)],
+        ),
+        "withheld_capped": (
+            [_old(new_withheld("Rate", WITHHELD), old_withheld("Rate", WITHHELD))],
+            [new_withheld("Rate", WITHHELD)],
+        ),
+        "un_unread": (
+            [
+                _old(
+                    new_un(UNSERVED[:2]),
+                    f"{UN_DETAIL} No UN data was read for {_old_names(UNSERVED[:2])}.",
+                )
+            ],
+            [new_un(UNSERVED[:2])],
+        ),
+        "un_capped": (
+            [
+                _old(
+                    new_un(UNSERVED),
+                    f"{UN_DETAIL} No UN data was read for {_old_names(UNSERVED)}.",
+                )
+            ],
+            [new_un(UNSERVED)],
+        ),
+        "projected_one": (
+            [
+                _old(
+                    new_projected(1, PROJECTED_EXAMPLES[:1]),
+                    f"{PROJECTED_DETAIL} 1 row(s), for example: {PROJECTED_EXAMPLES[0]}",
+                )
+            ],
+            [new_projected(1, PROJECTED_EXAMPLES[:1])],
+        ),
+        "projected_truncated": (
+            [
+                _old(
+                    new_projected(30, PROJECTED_EXAMPLES),
+                    f"{PROJECTED_DETAIL} 30 row(s), for example: "
+                    f"{', '.join(PROJECTED_EXAMPLES[:10])} (truncated)",
+                )
+            ],
+            [new_projected(30, PROJECTED_EXAMPLES)],
         ),
         **{name: (warnings, warnings) for name, warnings in unchanged.items()},
     }
