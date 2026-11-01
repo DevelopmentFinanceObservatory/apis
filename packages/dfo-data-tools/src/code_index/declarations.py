@@ -984,7 +984,13 @@ CODE_SYNONYMS: Mapping[str, tuple[str, ...]] = {
     # reproductive health), broader than 13020 "reproductive health care".
     "CRSPurposeCode130": ("reproductive health",),
     "CRSTypeOfFlow10": ("development assistance",),
-    "CRSTypeOfFlow21": ("other official flows",),
+    # A flow type's short name (`CODE_SHORT_NAMES`) prints in the answer heading, so each is
+    # also a name a query can use. "philanthropy" is the bare noun of "private philanthropy".
+    "CRSTypeOfFlow21": ("other official flows", "OOF"),
+    "CRSTypeOfFlow22": ("export credits",),
+    "CRSTypeOfFlow30": ("private philanthropy", "philanthropy"),
+    "CRSTypeOfFlow36": ("private FDI",),
+    "CRSTypeOfFlow37": ("other private flows",),
     "DAC1AidType1820": ("refugee costs in donor countries",),
     "DAC2aAidType106": ("imputed",),
 }

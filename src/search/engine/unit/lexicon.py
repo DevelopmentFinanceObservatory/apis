@@ -7,7 +7,12 @@ the binder matches bare codes against lives in ``unit_words.currency_codes``.
 
 from __future__ import annotations
 
-LEXICON_VERSION = "unit_lexicon_v3"
+import unicodedata
+from collections import defaultdict
+
+from unit_words.currency_nouns import CURRENCY_NOUNS, CURRENCY_SINGULAR_NOUNS
+
+LEXICON_VERSION = "unit_lexicon_v4"
 
 # ---------------------------------------------------------------------------
 # ISO codes that also spell common English words refuse as bare tokens. The
@@ -34,162 +39,51 @@ AMBIGUOUS_ISO_CODES: frozenset[str] = frozenset(
 )
 
 # ---------------------------------------------------------------------------
-# Curated unambiguous currency aliases. Direct ISO codes use the set above.
-# Longest-match scan uses lowercase, space-joined phrases. Bare "real" and
-# "franc" stay ambiguous. Country-qualified forms are listed below.
+# Currency names. Each code's nouns in `unit_words.currency_nouns`, plural and
+# singular ("Malawian kwachas", "Malawian kwacha"), name it alone, and so does
+# their last word ("kwachas", "kwacha") when no other code shares it. A last word
+# that several codes share names all of them and refuses with each as an
+# alternative ("francs", "kwacha"). `_derived_names` builds both tables at import.
 # ---------------------------------------------------------------------------
 
-CURRENCY_ALIASES: dict[str, str] = {
-    # US dollar
+# Names the nouns do not give: symbols, other spellings and short names, and the
+# readings that win over a shared last word ("dollars" is the US dollar).
+_CURATED_ALIASES: dict[str, str] = {
+    # A shared last word with a conventional reading.
     "dollar": "USD",
     "dollars": "USD",
-    "us dollar": "USD",
-    "us dollars": "USD",
-    "$": "USD",
-    # Euro
-    "euro": "EUR",
-    "euros": "EUR",
-    "€": "EUR",
-    # British pound
     "pound": "GBP",
     "pounds": "GBP",
-    "british pound": "GBP",
-    "british pounds": "GBP",
-    "pound sterling": "GBP",
-    "sterling": "GBP",
-    "£": "GBP",
-    # Japanese yen
-    "yen": "JPY",
-    "japanese yen": "JPY",
-    "¥": "JPY",
-    # Chinese yuan / renminbi
-    "yuan": "CNY",
-    "renminbi": "CNY",
-    "rmb": "CNY",
-    "chinese yuan": "CNY",
-    # Indian rupee
     "rupee": "INR",
     "rupees": "INR",
-    "indian rupee": "INR",
-    "indian rupees": "INR",
-    "₹": "INR",
-    # Swiss franc
-    "swiss franc": "CHF",
-    "swiss francs": "CHF",
-    # Canadian / Australian dollar
-    "canadian dollar": "CAD",
-    "canadian dollars": "CAD",
-    "australian dollar": "AUD",
-    "australian dollars": "AUD",
-    # Brazilian real
-    "brazilian real": "BRL",
-    "brazilian reais": "BRL",
-    "brazilian reals": "BRL",
-    # Southern/East Africa
-    "rand": "ZAR",
-    "south african rand": "ZAR",
-    "kenyan shilling": "KES",
-    "kenyan shillings": "KES",
-    "naira": "NGN",
-    "nigerian naira": "NGN",
-    "birr": "ETB",
-    "ethiopian birr": "ETB",
-    # MENA
-    "egyptian pound": "EGP",
-    "egyptian pounds": "EGP",
-    "saudi riyal": "SAR",
     "riyal": "SAR",
     "riyals": "SAR",
-    "uae dirham": "AED",
     "dirham": "AED",
     "dirhams": "AED",
-    # Latin America
-    "mexican peso": "MXN",
-    "mexican pesos": "MXN",
-    "philippine peso": "PHP",
-    "philippine pesos": "PHP",
-    # Europe (non-euro)
     "ruble": "RUB",
     "rubles": "RUB",
+    "won": "KRW",
+    # Symbols.
+    "$": "USD",
+    "€": "EUR",
+    "£": "GBP",
+    "¥": "JPY",
+    "₹": "INR",
+    "₩": "KRW",
+    # Other spellings and short names.
+    "pound sterling": "GBP",
+    "sterling": "GBP",
+    "renminbi": "CNY",
+    "rmb": "CNY",
+    "brazilian reals": "BRL",
     "rouble": "RUB",
     "roubles": "RUB",
-    "russian ruble": "RUB",
-    "russian rubles": "RUB",
-    "swedish krona": "SEK",
-    "swedish kronor": "SEK",
-    "norwegian krone": "NOK",
-    "norwegian kroner": "NOK",
-    "danish krone": "DKK",
-    "danish kroner": "DKK",
-    "turkish lira": "TRY",
-    "lira": "TRY",
-    # Asia
-    "won": "KRW",
     "korean won": "KRW",
-    "south korean won": "KRW",
-    "₩": "KRW",
-    "rupiah": "IDR",
-    "indonesian rupiah": "IDR",
-    "vietnamese dong": "VND",
-    "dong": "VND",
-    "thai baht": "THB",
-    "baht": "THB",
-    "pakistani rupee": "PKR",
-    "pakistani rupees": "PKR",
-    "bangladeshi taka": "BDT",
-    "taka": "BDT",
-    # West/Central African CFA francs
     "cfa franc": "XOF",
-    "west african cfa franc": "XOF",
-    "west african cfa francs": "XOF",
-    "central african cfa franc": "XAF",
-    "central african cfa francs": "XAF",
 }
 
-# ---------------------------------------------------------------------------
-# Bare ambiguous names refuse with these candidates. Qualified aliases resolve
-# through CURRENCY_ALIASES, which the binder checks first.
-# ---------------------------------------------------------------------------
-
-AMBIGUOUS_CURRENCY_NAMES: dict[str, tuple[str, ...]] = {
-    "franc": ("CHF", "XAF", "XOF"),
-    "francs": ("CHF", "XAF", "XOF"),
+_CURATED_AMBIGUOUS: dict[str, tuple[str, ...]] = {
     "kr": ("DKK", "NOK", "SEK"),
-    "peso": ("MXN", "PHP"),
-    "pesos": ("MXN", "PHP"),
-}
-
-# ---------------------------------------------------------------------------
-# Display names for every code that can appear in an ambiguity refusal.
-# Other ISO codes fall back to the code itself. The binder also reads each name
-# as a currency name, so a refusal's alternative can be requested by its label.
-# ---------------------------------------------------------------------------
-
-CURRENCY_DISPLAY_NAMES: dict[str, str] = {
-    # AMBIGUOUS_CURRENCY_NAMES candidates.
-    "CHF": "Swiss franc",
-    "XAF": "Central African CFA franc",
-    "XOF": "West African CFA franc",
-    "DKK": "Danish krone",
-    "NOK": "Norwegian krone",
-    "SEK": "Swedish krona",
-    "MXN": "Mexican peso",
-    "PHP": "Philippine peso",
-    # AMBIGUOUS_ISO_CODES: bare collision-prone codes (see that set's own
-    # comment for the English word each collides with).
-    "ALL": "Albanian lek",
-    "BAM": "Bosnia-Herzegovina convertible mark",
-    "BOB": "Bolivian boliviano",
-    "COP": "Colombian peso",
-    "CUP": "Cuban peso",
-    "GEL": "Georgian lari",
-    "MAD": "Moroccan dirham",
-    "MOP": "Macanese pataca",
-    "PEN": "Peruvian sol",
-    "RUB": "Russian ruble",
-    "SOS": "Somali shilling",
-    "TOP": "Tongan paʻanga",
-    "TRY": "Turkish lira",
 }
 
 # ---------------------------------------------------------------------------
@@ -274,8 +168,83 @@ CONNECTIVE_WORDS: frozenset[str] = frozenset(
 MIN_YEAR = 1900
 MAX_YEAR = 2100
 
-# ---------------------------------------------------------------------------
-# Four words cover the longest phrases in these tables, including the CFA names.
-# ---------------------------------------------------------------------------
 
-MAX_PHRASE_WORDS = 4
+def fold_marks(text: str) -> str:
+    """`text` without combining marks, so "krónur" and "kronur" read alike."""
+    return "".join(
+        ch for ch in unicodedata.normalize("NFKD", text) if not unicodedata.combining(ch)
+    )
+
+
+def _name_key(name: str) -> str:
+    """A currency noun as the binder reads it: no marks, apostrophes or okina, hyphens as
+    spaces, casefolded, words space-joined."""
+    folded = fold_marks(name).casefold()
+    for mark in ("'", "’", "\u02bb", "."):
+        folded = folded.replace(mark, "")
+    return " ".join(folded.replace("-", " ").split())
+
+
+def _derived_names() -> tuple[dict[str, str], dict[str, tuple[str, ...]]]:
+    """The names `CURRENCY_NOUNS` and `CURRENCY_SINGULAR_NOUNS` give: each full noun names
+    its code, and each last word names every code whose singular last word (its lemma)
+    it shares a code with. A key another table reads ("real") is left out."""
+    taken = {*PRICE_BASIS_PHRASES, *UNSUPPORTED_PHRASES, *ROLE_CURRENCY_PHRASES, *CONNECTIVE_WORDS}
+    full: dict[str, str] = {}
+    lemma_codes: defaultdict[str, set[str]] = defaultdict(set)
+    code_heads: dict[str, set[str]] = {}
+    for code, plural in CURRENCY_NOUNS.items():
+        keys = (_name_key(plural), _name_key(CURRENCY_SINGULAR_NOUNS[code]))
+        full.update(dict.fromkeys(keys, code))
+        lemma_codes[keys[1].rsplit(" ", 1)[-1]].add(code)
+        code_heads[code] = {key.rsplit(" ", 1)[-1] for key in keys}
+    head_codes: defaultdict[str, set[str]] = defaultdict(set)
+    for code, heads in code_heads.items():
+        sharing = lemma_codes[_name_key(CURRENCY_SINGULAR_NOUNS[code]).rsplit(" ", 1)[-1]]
+        for head in heads:
+            head_codes[head] |= sharing
+    aliases = dict(full)
+    ambiguous: dict[str, tuple[str, ...]] = {}
+    for head, codes in head_codes.items():
+        if len(codes) == 1:
+            aliases.setdefault(head, *codes)
+        else:
+            ambiguous[head] = tuple(sorted(codes))
+    return (
+        {key: code for key, code in aliases.items() if key not in taken},
+        {key: codes for key, codes in ambiguous.items() if key not in taken},
+    )
+
+
+_DERIVED_ALIASES, _DERIVED_AMBIGUOUS = _derived_names()
+
+# Every name that binds one currency. A curated name wins over a shared last word.
+CURRENCY_ALIASES: dict[str, str] = {**_DERIVED_ALIASES, **_CURATED_ALIASES}
+
+# Every name that refuses with its codes as alternatives.
+AMBIGUOUS_CURRENCY_NAMES: dict[str, tuple[str, ...]] = {
+    **{key: codes for key, codes in _DERIVED_AMBIGUOUS.items() if key not in CURRENCY_ALIASES},
+    **_CURATED_AMBIGUOUS,
+}
+
+# The name `region.facets` labels a currency by when the graph gives none: each code
+# that spells an English word ("TOP"), and eight currencies a bare "franc", "kr" or
+# "peso" commonly means. Any other code is labelled by itself.
+CURRENCY_DISPLAY_NAMES: dict[str, str] = {
+    code: CURRENCY_SINGULAR_NOUNS[code]
+    for code in sorted(
+        AMBIGUOUS_ISO_CODES | {"CHF", "DKK", "MXN", "NOK", "PHP", "SEK", "XAF", "XOF"}
+    )
+}
+
+# The longest phrase in these tables bounds the binder's longest-match scan window.
+MAX_PHRASE_WORDS = max(
+    len(phrase.split())
+    for phrase in (
+        *CURRENCY_ALIASES,
+        *AMBIGUOUS_CURRENCY_NAMES,
+        *PRICE_BASIS_PHRASES,
+        *UNSUPPORTED_PHRASES,
+        *ROLE_CURRENCY_PHRASES,
+    )
+)

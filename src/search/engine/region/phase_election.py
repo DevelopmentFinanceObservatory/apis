@@ -27,6 +27,7 @@ from search.engine.binders import StatedWordsRequest
 from search.engine.binders.house_policy import slot_values
 from search.engine.config import settings
 from search.engine.degraded_reads import note_degraded_read
+from search.engine.departures import whole_total_ended_fact
 from search.engine.envelope import _sum_usage
 from search.engine.errors import LLMInfraError
 from search.engine.extract import slot_default_answers
@@ -41,7 +42,7 @@ from search.engine.region.codes import (
     SLOT_DEFAULT_NOT_APPLIED,
     SLOT_DEFAULTED,
 )
-from search.engine.region.coverage_series import holds_series
+from search.engine.region.coverage_series import holds_series, requested_window, series_reach
 from search.engine.region.named_source import with_named_source, without_dataset_drafts
 from search.engine.region.phase_rank_bind import (
     _admit_qualifier_matches_against_elected_shape,
@@ -74,7 +75,6 @@ from search.engine.region.place_roles import (
     PlaceAssignment,
     PlaceRoleRefusal,
     bind_place_roles,
-    holds_whole_total,
     whole_total_candidates,
 )
 from search.engine.region.qualifier_readings import (
@@ -131,6 +131,7 @@ from search.engine.retrieval.standard import (
 )
 from search.engine.shape import ShapeDraft
 from search.engine.written_phrase import written_phrase
+from search.heading.departure_fact import DepartureFact
 from search.models import ResolvedQualifier, Warning
 from search.scope.basis import (
     BASIS_RULE,
@@ -1457,6 +1458,9 @@ class _SettledBindings:
     # elected shape it read, with every slot key.
     breakdown: BreakdownDecision
     breakdown_shape: ShapeDraft
+    # The departures the answer states that no warning discloses: a total of a side the
+    # settling passed over for the asked years (`_settle_places`).
+    inferred_facts: tuple[DepartureFact, ...] = ()
 
 
 def _bind_query_places(
@@ -1508,25 +1512,60 @@ def _settle_places(
     The places bind as named (`assignment`). Where the shape offers whole totals on sides
     they leave unnamed (`place_roles.whole_total_candidates`), the bindings are settled under
     each total's role keys in the order offered, and the first total binds whose bindings a
-    table serves and, read without the claims, hold its series
-    (`place_roles.holds_whole_total`). Where none does, they are settled under the named
+    table serves and, read without the claims, hold its series in the requested years
+    (`coverage_series.series_reach`). Where none does, they are settled under the named
     places' role keys, where no total remains to judge. With at most one total per side,
     the part settles at most three times: once per offered total, and once without. Each
     run starts from the same `bindings`. Places that refuse to bind settle under no role
     keys, as the flagged identity of a role refusal binds no entity and leaves no axis
-    open."""
-    if isinstance(assignment, PlaceAssignment):
-        for whole in whole_total_candidates(state, shape, assignment):
-            settled = _settle_role_bindings(
-                state, shape, bindings, claims, whole.role_keys, basis=basis
-            )
-            if settled.served and holds_whole_total(
-                state, settled.shape, whole, without_sampled_claims(settled.bindings)
-            ):
-                return whole, settled
-    role_keys = assignment.role_keys if isinstance(assignment, PlaceAssignment) else RoleKeys()
-    settled = _settle_role_bindings(state, shape, bindings, claims, role_keys, basis=basis)
-    return assignment, settled
+    open.
+
+    A total whose series runs outside the requested years alone (`coverage_series.series_reach`)
+    is the side's total all the same, so the first such one stays the answer's where the
+    named places' bindings hold no series in those years either (`_coverage_rank`): the
+    answer then reads the years the total holds. Where they do hold one, the answer lists
+    the side's members and states where the total's years stop
+    (`departures.whole_total_ended_fact`)."""
+    if not isinstance(assignment, PlaceAssignment):
+        return assignment, _settle_role_bindings(
+            state, shape, bindings, claims, RoleKeys(), basis=basis
+        )
+    window = requested_window(state.date_request)
+    passed: tuple[PlaceAssignment, _SettledBindings, tuple[int, int]] | None = None
+    for whole in whole_total_candidates(state, shape, assignment):
+        settled = _settle_role_bindings(
+            state, shape, bindings, claims, whole.role_keys, basis=basis
+        )
+        if not settled.served:
+            continue
+        held, span = series_reach(
+            state,
+            settled.shape,
+            whole.sets,
+            bindings=without_sampled_claims(settled.bindings),
+            window=window,
+        )
+        if held:
+            return whole, settled
+        if passed is None and span is not None:
+            passed = whole, settled, span
+    settled = _settle_role_bindings(
+        state, shape, bindings, claims, assignment.role_keys, basis=basis
+    )
+    if passed is None or window is None:
+        return assignment, settled
+    whole, total, span = passed
+    if _coverage_rank(state, assignment, settled) == _UNHELD:
+        return whole, total
+    reading = whole.whole
+    assert reading is not None  # `whole_total_candidates` sets every candidate's reading
+    fact = whole_total_ended_fact(
+        requested=(window.start_year, window.end_year),
+        total_years=span,
+        over=reading.axis,
+        whole_of=reading.whole_of,
+    )
+    return assignment, replace(settled, inferred_facts=(*settled.inferred_facts, fact))
 
 
 # How far the coverage snapshot shows settled bindings answer at the places
@@ -1687,9 +1726,10 @@ def _settle_role_bindings(
 def _install_settled(
     state: ResolveState, settled: _SettledBindings, *, basis: BasisElection | None = None
 ) -> RegionResult | None:
-    """Install `settled` on the state, or return the refusal of a part no table serves
-    under its bindings (`_unserved_refusal`). A served part counted on `basis` records its
-    measure-basis axis (`_record_basis`)."""
+    """Install `settled` on the state, with its warnings and the departures no warning
+    discloses, or return the refusal of a part no table serves under its bindings
+    (`_unserved_refusal`). A served part counted on `basis` records its measure-basis axis
+    (`_record_basis`)."""
     state.bindings = settled.bindings
     _install_served_shape(state, settled.shape)
     state.measure_dropped_axes = settled.measure_dropped_axes
@@ -1697,6 +1737,7 @@ def _install_settled(
     if settled.measure_forced:
         state.measure_elected_properties = settled.measure_forced
     state.warnings.extend(settled.warnings)
+    state.inferred_facts.extend(settled.inferred_facts)
     state.defaulted_properties |= settled.shape_defaulted
     state.breakdown = settled.breakdown
     state.breakdown_shape = settled.breakdown_shape

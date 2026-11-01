@@ -467,14 +467,13 @@ def _table_provenance(base_years: list[str]) -> dict:
 
 class TestUnitNotResolvedCarriesUnitAlternatives:
     def test_an_ambiguous_currency_name_offers_its_iso_codes_as_resubmittable_values(self):
-        resp = _post_unit_text(_fertility_kenya_graph(), "francs")
+        resp = _post_unit_text(_fertility_kenya_graph(), "kwachas")
         assert resp.status_code == 200
         no_data = resp.json()["parts"][0]["no_data"]
         assert no_data["reason"] == "unit_not_resolved"
         assert no_data["unit_alternatives"] == [
-            {"currency": "CHF", "label": "Swiss franc"},
-            {"currency": "XAF", "label": "Central African CFA franc"},
-            {"currency": "XOF", "label": "West African CFA franc"},
+            {"currency": "MWK", "label": "Malawian kwacha"},
+            {"currency": "ZMW", "label": "Zambian kwacha"},
         ]
 
     def test_an_unparseable_phrase_carries_no_unit_alternatives(self):

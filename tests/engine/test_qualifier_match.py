@@ -697,6 +697,34 @@ def test_a_synonym_naming_a_measure_its_code_implies_reads_the_code(query: str, 
     assert ("dac1AidType", code) in {(m.code_system, m.code_dcid) for m in reading.matches}
 
 
+@pytest.mark.parametrize(
+    ("query", "provenance", "named"),
+    [
+        (
+            "private philanthropy to India",
+            "provenance/OECDCreditorReportingSystem",
+            ("crsTypeOfFlow", "CRSTypeOfFlow30"),
+        ),
+        (
+            "philanthropy to India",
+            "provenance/OECDCreditorReportingSystem",
+            ("crsTypeOfFlow", "CRSTypeOfFlow30"),
+        ),
+    ],
+)
+def test_a_name_the_answer_prints_reads_its_value(
+    query: str, provenance: str, named: tuple[str, str]
+):
+    """The heading of a flow-type answer prints the type's short name ("Gross private
+    philanthropy disbursements"), so a question can name the type by it."""
+    vocabulary = _published_vocabulary(provenance)
+    reading = read_text(
+        query, _REAL_INDEX, get_measure_index(), vocabularies=[vocabulary]
+    ).by_vocabulary[vocabulary]
+
+    assert named in {(m.code_system, m.code_dcid) for m in reading.matches}
+
+
 _SHAPE_MEASURE_FIELDS = {
     "populationType": "population_type",
     "measuredProperty": "measured_property",

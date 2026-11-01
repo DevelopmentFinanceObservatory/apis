@@ -20,7 +20,9 @@ The six policies run in order, each over the survivors of the one before:
 2. `amount_vs_ge`: among FinancialFlow shapes measuring `amount` or `grantEquivalent`, those
    measuring the basis's measured property. With no basis, grant equivalent, or `amount`
    when the window starts before grant-equivalent reporting does (`GE_STARTS`) or names no
-   start year, so the years before it stay in the answer.
+   start year, so the years before it stay in the answer. A part with no basis because a
+   place is named without a direction keeps both where its wanted dataset publishes one of
+   them, so `default_dataset` decides.
 3. `net_vs_gross`: among shapes with a `nettingBasis` slot, one that offers the basis's
    netting basis, Gross for a basis that carries none and with no basis.
 4. `commit_vs_disb`: among FinancialObligation shapes and FinancialFlow shapes with a
@@ -154,13 +156,15 @@ class Context:
     shape of it (`scope.basis.part_shape`). `wanted_dataset` is the dataset the basis
     convention reads, else the kind's declared house default. `dataset_case` and
     `wanted_dataset` are `None` when the part names no place and admits no code that
-    declares a kind.
+    declares a kind. `undirected` says a place is named without a direction, which gives
+    a part outside a sector no basis until election settles its shape.
     """
 
     pre_ge: bool
     dataset_case: HouseDefaultCase | None
     wanted_dataset: str | None
     basis: BasisElection | None = None
+    undirected: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -306,6 +310,7 @@ def context_of(
         dataset_case=case,
         wanted_dataset=wanted or (wanted_datasets.get(case) if case else None),
         basis=basis,
+        undirected="undirected" in directions,
     )
 
 
@@ -322,15 +327,18 @@ def _nominal_output(shapes: Sequence[ShapeFacts], _ctx: Context) -> list[int]:
 
 
 def _amount_or_ge(shapes: Sequence[ShapeFacts], ctx: Context) -> list[int]:
+    flows = [s for s in shapes if s.population_type == "FinancialFlow"]
     if ctx.basis is not None:
         measure = ctx.basis.measure.measured_property
+    elif ctx.undirected and any(
+        ctx.wanted_dataset in s.datasets
+        for s in flows
+        if s.measured_property in ("amount", "grantEquivalent")
+    ):
+        return []
     else:
         measure = "amount" if ctx.pre_ge else "grantEquivalent"
-    return [
-        s.index
-        for s in shapes
-        if s.population_type == "FinancialFlow" and s.measured_property == measure
-    ]
+    return [s.index for s in flows if s.measured_property == measure]
 
 
 def _netting(shapes: Sequence[ShapeFacts], ctx: Context) -> list[int]:

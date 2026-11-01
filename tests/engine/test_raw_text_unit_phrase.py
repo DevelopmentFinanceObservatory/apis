@@ -50,6 +50,7 @@ def _prep(*dropped: str, variables: tuple[str, ...] = ("aid",)) -> raw_text._Ext
         pytest.param("in constant 2024 euros", "EUR", "constant", 2024, id="constant-euros"),
         pytest.param("in euros", "EUR", "current", None, id="current-euros"),
         pytest.param("in constant euros", "EUR", "constant", 2023, id="default-base-year"),
+        pytest.param("in Malawian kwacha", "MWK", "current", None, id="singular-noun"),
     ],
 )
 def test_a_typed_currency_phrase_binds_as_the_unit_text(phrase, currency, prices, base_year):

@@ -691,8 +691,8 @@ def test_a_contradiction_over_two_source_wordings_is_refused_once_one_is_chosen(
 @pytest.mark.parametrize(
     ("unit_text", "posted"),
     [
-        ("francs", ["CHF", "XAF", "XOF"]),
-        ("constant 2015 francs", ["constant 2015 CHF", "constant 2015 XAF", "constant 2015 XOF"]),
+        ("kwachas", ["MWK", "ZMW"]),
+        ("constant 2015 kwachas", ["constant 2015 MWK", "constant 2015 ZMW"]),
     ],
     ids=["bare", "beside-a-basis"],
 )
