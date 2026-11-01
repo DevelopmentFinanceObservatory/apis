@@ -1008,6 +1008,18 @@ class TestTransferAxes:
                 ("Germany", "Kenya"),
                 {"Germany": "origin"},
             ),
+            (
+                "ODA from the UK and Kenya nominal GDP",
+                ["ODA", "GDP"],
+                ("UK", "Kenya"),
+                {"UK": "origin"},
+            ),
+            (
+                "aid from Norway, Sweden, and Denmark in 2020",
+                ["aid"],
+                ("Norway", "Sweden", "Denmark"),
+                {"Norway": "origin", "Sweden": "origin", "Denmark": "origin"},
+            ),
             # The place after a give verb's "to" must end its phrase.
             ("How much does agriculture contribute to Kenya GDP", ["GDP"], ("Kenya",), {}),
             # A debt measure's parties are debt_axes' to read.

@@ -539,6 +539,15 @@ _GIVE_VERBS: frozenset[str] = frozenset(
 # Words that may stand between a give verb and its "to" besides the measure's own:
 # "give the most aid to Kenya", "give more aid to Kenya".
 _GIVE_OBJECT_WORDS: frozenset[str] = frozenset({"the", "a", "an", "more", "most", "less"})
+# Words, with the punctuation and years `transfer_axes` reads beside them.
+_PHRASE_TOKEN_RE = re.compile(r"[a-z][a-z'\-]*[a-z]|[a-z]|\d{4}|[,.?]")
+_PUNCTUATION: frozenset[str] = frozenset({",", ".", "?"})
+# Prepositions that open the phrase after a place, so the place ends its own phrase.
+_PHRASE_OPENING_PREPS: frozenset[str] = frozenset(
+    {"in", "from", "to", "for", "since", "between", "during", "over", "by", "of", "with"}
+)
+# What may stand between two places of one list: "from Norway, Sweden, and the UK".
+_LIST_JOINERS: frozenset[str] = _CONJUNCTIONS | {",", "the"}
 
 
 def transfer_axes(
@@ -548,15 +557,15 @@ def transfer_axes(
 
     A place right after ``from`` is the origin (``ODA from Norway``), and so is each place
     listed after it that ends its own phrase (`_ends_own_phrase`: ``from France and
-    Germany``, ``from Norway, Sweden and Denmark``). A listed place that a measure word or a
-    possessive follows opens the next part: Kenya in ``ODA from the US and Kenya external
-    debt``. The subject of an active give verb (`_GIVE_VERBS`) is the origin: the place
-    right before it, unless a preposition opens that place (``aid to Kenya provided through
-    ...``). The place after the verb's ``to`` is the destination when it ends its own
-    phrase and only the measure's words and `_GIVE_OBJECT_WORDS` stand between verb and
-    ``to`` (``Norway give to the UN``, ``Germany give more aid to Kenya``, but not Kenya in
-    ``agriculture contribute to Kenya GDP``). A bare ``to`` names no destination, since
-    ``compared to France`` and ``debt to GDP`` put ``to`` before a name too.
+    Germany``, ``from Norway, Sweden and Denmark``). A listed place that any other word
+    follows opens the next part: Kenya in ``ODA from the UK and Kenya nominal GDP``. The
+    subject of an active give verb (`_GIVE_VERBS`) is the origin: the place right before it,
+    unless a preposition opens that place (``aid to Kenya provided through ...``). The place
+    after the verb's ``to`` is the destination when it ends its own phrase and only the
+    measure's words and `_GIVE_OBJECT_WORDS` stand between verb and ``to`` (``Norway give to
+    the UN``, ``Germany give more aid to Kenya``, but not Kenya in ``agriculture contribute
+    to Kenya GDP``). A bare ``to`` names no destination, since ``compared to France`` and
+    ``debt to GDP`` put ``to`` before a name too.
 
     A single debt measure gets {}: its parties run from creditor to debtor, which
     `debt_axes` reads, and a giver of debt repayments is the debtor.
@@ -567,18 +576,20 @@ def transfer_axes(
     """
     if len(measures) == 1 and _names_debt(_tokenize(measures[0])):
         return {}
-    query_tokens = _tokenize(query.replace("\u2019", "'"))
+    query_tokens = _PHRASE_TOKEN_RE.findall(query.replace("\u2019", "'").lower())
     measure_tokens = {token for measure in measures for token in _tokenize(measure)}
     object_words = measure_tokens | _GIVE_OBJECT_WORDS
     # (name, start, end) for each place named once in the query.
     occurrences: list[tuple[str, int, int]] = []
+    place_starts: set[int] = set()
     for name, spans in places.items():
         found = {
             (start, start + len(tokens))
-            for tokens in (_tokenize(span) for span in spans)
+            for tokens in (_PHRASE_TOKEN_RE.findall(span.lower()) for span in spans)
             if tokens
             for start in _span_starts(query_tokens, tokens)
         }
+        place_starts.update(start for start, _ in found)
         if len(found) == 1:
             ((start, end),) = found
             occurrences.append((name, start, end))
@@ -590,11 +601,11 @@ def transfer_axes(
         before = start - 1
         if before >= 0 and query_tokens[before] == "the":
             before -= 1
-        listed = before
-        if listed >= 0 and query_tokens[listed] in _CONJUNCTIONS:
+        listed = start - 1
+        while listed >= 0 and query_tokens[listed] in _LIST_JOINERS:
             listed -= 1
         opened = before >= 0 and query_tokens[before] in _PLACE_PHRASE_PREPS
-        ends_phrase = _ends_own_phrase(query_tokens, end, measure_tokens)
+        ends_phrase = _ends_own_phrase(query_tokens, end, place_starts)
         axes = read.setdefault(name, set())
         if (before >= 0 and query_tokens[before] == "from") or (
             listed + 1 in origin_ends and ends_phrase
@@ -608,11 +619,19 @@ def transfer_axes(
     return {name: next(iter(axes)) for name, axes in read.items() if len(axes) == 1}
 
 
-def _ends_own_phrase(query_tokens: list[str], end: int, measure_tokens: Collection[str]) -> bool:
-    """Whether the place ending at ``end`` ends its own phrase: no measure word and no
-    possessive follows it, as either would make the place modify the next noun."""
-    return end == len(query_tokens) or not (
-        query_tokens[end] in measure_tokens or query_tokens[end].endswith(_POSSESSIVE)
+def _ends_own_phrase(query_tokens: list[str], end: int, place_starts: Collection[int]) -> bool:
+    """Whether the place ending at ``end`` ends its own phrase. It does when the query ends
+    there, or when punctuation, a conjunction, a preposition that opens another phrase
+    (`_PHRASE_OPENING_PREPS`), a year or another place follows it. Any other word may be one
+    the place modifies (``Kenya nominal GDP``), so the place ends no phrase."""
+    if end == len(query_tokens) or end in place_starts:
+        return True
+    token = query_tokens[end]
+    return (
+        token in _PUNCTUATION
+        or token in _CONJUNCTIONS
+        or token in _PHRASE_OPENING_PREPS
+        or (len(token) == 4 and token.isdigit())
     )
 
 
