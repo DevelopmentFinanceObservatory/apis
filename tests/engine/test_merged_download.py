@@ -185,6 +185,35 @@ def test_a_merge_whose_parts_elect_different_facets_counts_the_one_group_it_elec
     assert merged.resolved.data_years == alone.resolved.data_years == (2019, 2021)
 
 
+@pytest.mark.parametrize("mode", ["buffered", "streamed"])
+def test_a_merge_of_a_code_and_its_child_counts_the_parent_alone(monkeypatch, mode):
+    """Sector B sits under sector A, whose rows include B's. The merge binds A alone, so its
+    download counts sector A's three rows, and none of sector B's two."""
+    grid._use_index(monkeypatch, grid._index(parents={"B": "A"}, disjoint=False))
+    patch_coverage(
+        monkeypatch,
+        [
+            ("sole_a", "usd", _DEU, _KEN, [2019, 2020, 2021]),
+            ("sole_b", "usd", _DEU, _KEN, [2020, 2021]),
+        ],
+        role_names={"sole_a": _FLOW, "sole_b": _FLOW},
+        facet_metadata={
+            "usd": FacetMetadata(provenance_id=grid._BROAD, unit="USD", observation_period="P1Y")
+        },
+    )
+
+    merged, alone = _merged_and_resubmitted(
+        [_flow_identity("A", _KEN), _flow_identity("B", _KEN)],
+        graph=_flow_graph(),
+        mode=mode,
+        materialise_graph=_flow_reader(),
+    )
+
+    assert _rows(merged) == _rows(alone) == 3
+    assert merged.resolved.download == alone.resolved.download
+    assert merged.resolved.coverage == alone.resolved.coverage
+
+
 @pytest.mark.usefixtures("index")
 @pytest.mark.parametrize("mode", ["buffered", "streamed"])
 def test_a_latest_merge_across_places_counts_the_year_each_variable_elects_over_both(

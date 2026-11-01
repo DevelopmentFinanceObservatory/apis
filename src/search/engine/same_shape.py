@@ -1005,6 +1005,42 @@ def _merge_slot_flags(
     return sorted(merged_inapplicable), sorted(merged_unresolved)
 
 
+def _slot_codes(slot: Slot) -> frozenset[str]:
+    """The codes a slot binds, a value as a set of one, and none for an unbound slot."""
+    binding = slot.binding
+    if isinstance(binding, BindingValue):
+        values = [binding.value]
+    elif isinstance(binding, BindingSet):
+        values = binding.values
+    else:
+        return frozenset()
+    return frozenset(value.ref.ref for value in values if value.ref is not None)
+
+
+def _read_members(
+    group: list[RegionResult],
+    merged_slots: list[Slot],
+    diff_key: tuple[str, str | None] | None,
+) -> list[RegionResult] | None:
+    """The members whose plans a resolve of the merged identity reads: every member, save one
+    binding the differing slot only to codes nested under another member's, which the merged
+    identity drops (`_simplify_merged_union`). None where a member binds both a code the
+    identity keeps and one it drops, since its plan reads the dropped code's series too."""
+    if diff_key is None:
+        return group
+    (merged,) = (slot for slot in merged_slots if _slot_key_t(slot) == diff_key)
+    kept = _slot_codes(merged)
+    members: list[RegionResult] = []
+    for region in group:
+        (slot,) = (s for s in region.spec.resolved.slots if _slot_key_t(s) == diff_key)
+        codes = _slot_codes(slot)
+        if codes <= kept:
+            members.append(region)
+        elif codes & kept:
+            return None
+    return members
+
+
 class _MergedCounts(NamedTuple):
     """The merged answer's read plan (`merged_plan.merged_read_plan`), and the coverage and
     headline stated from it, read from the request's coverage index."""
@@ -1023,7 +1059,8 @@ def _merged_counts(
     reads: ComponentReads | None,
 ) -> _MergedCounts | None:
     """The read plan a resolve of the merged identity builds, rebuilt in memory from the
-    members' plans, and the coverage and headline a single answer states from its plan
+    plans of `group`, the members whose codes that identity keeps (`_read_members`), and the
+    coverage and headline a single answer states from its plan
     (`coverage.answer_coverage` in the members' `RegionResult.coverage_form`,
     `coverage.answer_headline`), so `build_spec` states the merged answer's download from it
     too. A merge that differs in no slot reads one identity, whose plan every member holds,
@@ -1501,7 +1538,12 @@ def _merge_group(
     )
     merged_shape = _merge_shape(group, base_spec, is_where)
     inapplicable_slots, unresolved_slots = _merge_slot_flags(group, merged_slots)
-    counted = _merged_counts(group, base_spec, diff_key=diff_key, reads=preview_reads)
+    read_members = _read_members(group, merged_slots, diff_key)
+    counted = (
+        None
+        if read_members is None
+        else _merged_counts(read_members, base_spec, diff_key=diff_key, reads=preview_reads)
+    )
     text_recognized, grouped, measure_elected, defaulted = _merge_slot_filter_properties(group)
     measure_partition, measure_siblings = _merge_measure_partition(group)
     open_axis_facts = _union_open_axis_facts(group)
