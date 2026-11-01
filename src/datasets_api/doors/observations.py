@@ -584,7 +584,8 @@ def build_observations_door(*, deps: DepsCell) -> DoorContribution:
             ObservationsBackpressure,
             ObservationsGraphUnavailable,
             StoredFrameCorrupt,
-            # A stored frame1 document past the decode bound refuses before it is read.
+            # A frame1 document past the decode bound, or a version past the row bound,
+            # refuses before its frame is read.
             OverCeilingError,
         ),
         exception_exemplars=(
