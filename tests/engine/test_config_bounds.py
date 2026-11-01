@@ -27,6 +27,7 @@ class TestNumericBounds:
             ("SEARCH_SDMX_CHUNK_CONCURRENCY", "0"),
             ("SEARCH_GRAPH_TIMEOUT_S", "0"),
             ("SEARCH_GRAPH_TIMEOUT_S", "-5"),
+            ("SEARCH_FAIL_OPEN_READ_BUDGET_S", "0"),
             ("SEARCH_UN_RESOLVE_TIMEOUT_S", "0"),
             ("SEARCH_UN_FIRST_PASS_WAIT_S", "0"),
             ("SEARCH_UN_FIRST_PASS_WAIT_S", "3.5"),

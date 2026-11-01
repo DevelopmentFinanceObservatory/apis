@@ -35,7 +35,7 @@ from typing import Protocol
 
 from search.engine.clients.graph import EngineGraphClient, Facet
 from search.engine.config import settings
-from search.engine.degraded_reads import note_degraded_read
+from search.engine.degraded_reads import fail_open_deadline, note_degraded_read
 from search.engine.extract import DateRequest
 from search.engine.place import ConsultedPresence
 from search.engine.reading_coverage import ReadingCoverage, holds_in, observed_years
@@ -99,8 +99,9 @@ def read_menu_availability(
     (`ShapeDraft.named_place_coverage`) and those places (`ShapeDraft.availability_places`),
     from one batched facet read over their StatVars, and whether that read failed.
 
-    The read is bounded by `deadline`, the request's monotonic deadline, and by the
-    response byte cap (`sdmx_max_bytes`). A failed read, a slow or oversized one among
+    The read is bounded by `deadline`, the request's monotonic deadline, by the
+    `fail_open_deadline` budget (`read_coverage`) and by the response byte cap
+    (`sdmx_max_bytes`). A failed read, a slow or oversized one among
     them, is noted as lost (`degraded_reads.note_degraded_read`) and leaves every shape as
     it was. Derive's read covers fewer places than `places`, so an absence it found settles
     nothing there (`_subject_has_data`) and D stays unknown. Role-bearing shapes are left as
@@ -141,9 +142,9 @@ def read_coverage(
     """The places among `places` at which each of `stat_vars` has observations, each with
     the years its facets there hold (`reading_coverage.observed_years`), from batched facet
     reads in the chunks standard retrieval reads (`standard._facet_reads`), each bounded by
-    `deadline` and the response byte cap (`sdmx_max_bytes`). `None` when a read fails, a
-    slow or oversized one among them, noted as the lost `read`
-    (`degraded_reads.note_degraded_read`)."""
+    `deadline`, `fail_open_deadline`'s budget from the moment it starts, and the response byte
+    cap (`sdmx_max_bytes`). `None` when a read fails, a slow or oversized one among them,
+    noted as the lost `read` (`degraded_reads.note_degraded_read`)."""
     probe: dict[str, dict[str, list[Facet]]] = {}
     try:
         for chunk in _facet_reads(stat_vars, places):
@@ -153,7 +154,7 @@ def read_coverage(
                     list(places),
                     False,
                     max_bytes=settings().sdmx_max_bytes,
-                    deadline=deadline,
+                    deadline=fail_open_deadline(deadline),
                 )
             )
     except Exception:

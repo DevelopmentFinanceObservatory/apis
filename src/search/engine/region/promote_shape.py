@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import dataclasses
+import json
+import logging
 from collections.abc import Mapping, Sequence
 
 from materialise.graph import UNRESOLVED_NODE
@@ -33,8 +35,10 @@ from search.engine.retrieval.facts import (
     read_constraints,
     read_five_tuple,
 )
-from search.engine.shape import STANDARD_SHAPE_LABEL, shape_draft_from
+from search.engine.shape import STANDARD_SHAPE_LABEL, ShapeDraft, shape_draft_from
 from statvar_members import five_tuple_arcs_match, five_tuple_reverse_filters
+
+logger = logging.getLogger(__name__)
 
 
 def _confirm_axes_against_family(
@@ -81,18 +85,74 @@ def _confirm_axes_against_family(
     return confirmed
 
 
+def _reads_slot_taxonomy(shape: ShapeDraft) -> bool:
+    """Whether grounding builds `shape`'s slot options from its slot taxonomy. A shape the
+    code index carries (`slot_taxonomy_index_sourced`) takes level-scoped index menus
+    instead, so nothing reads its taxonomy."""
+    return not shape.slot_taxonomy_index_sourced
+
+
+def _family_axis_sample(state: _PromoteState, axes: Sequence[str]) -> dict[str, list[str]]:
+    """Sample the values of `axes` across the shape's five-tuple family with one
+    `node_subjects` and one `node_arcs_many` read, returning the confirmed non-empty ones
+    (`_confirm_axes_against_family`). The batch read follows `nextToken` and EngineGraphClient's
+    batch read does not. A failed read fails the request, so it waits up to the request
+    deadline. A missing materialise client raises `EngineInfraError`."""
+    if state.materialise_graph is None:
+        raise EngineInfraError(
+            "materialise graph client not initialised; cannot confirm "
+            f"posted identity's declared axes {list(axes)!r} against "
+            "this shape's own five-tuple family"
+        )
+    logger.info(
+        "promote family axis sample %s",
+        json.dumps(
+            {"family_lead": state.ft.meas_prop_dcid, "unconfirmed_axes": list(axes)},
+            separators=(",", ":"),
+        ),
+    )
+    family_page = state.materialise_graph.node_subjects(
+        state.ft.meas_prop_dcid,
+        property="measuredProperty",
+        filters=five_tuple_reverse_filters(
+            population_type=state.ft.pop_type_dcid,
+            stat_type=state.ft.stat_type_dcid,
+            measurement_qualifier=state.ft.meas_qual_dcid,
+            measurement_denominator=state.ft.meas_denom_dcid,
+        ),
+        max_results=settings().resubmit_axis_sample,
+        deadline=state.deadline,
+    )
+    family_arcs = state.materialise_graph.node_arcs_many(
+        family_page.dcids,
+        properties=(
+            "constraintProperties",
+            "populationType",
+            "statType",
+            "measurementQualifier",
+            "measurementDenominator",
+            *axes,
+        ),
+    )
+    confirmed = _confirm_axes_against_family(
+        axes,
+        family_arcs,
+        ft=state.ft,
+        measurement_qualifiers=state.family_measurement_qualifiers,
+    )
+    return {prop: values for prop, values in confirmed.items() if values}
+
+
 def _phase_build_shape(state: _PromoteState) -> RegionResult | None:
     """Rebuild the ShapeDraft from resolved members' arcs.
 
     Fold constraints across resolved StatVars, limited to posted slot properties. Preserve
-    every posted key; axes outside resolved declarations stay unbound and may receive sampled
-    taxonomy values. Confirm them against the five-tuple family with one `node_subjects` and
-    one `node_arcs_many` read. That batch read follows `nextToken`; EngineGraphClient's batch
-    read does not. The lookup is skipped when `measuredProperty` is absent; a missing materialise
-    client otherwise raises `EngineInfraError`. Only confirmed axes receive sampled taxonomy.
-    Role sets the election cannot order return `no_data(role_signature_incompatible)`.
-    Otherwise build the shape with observed-union taxonomy. The shape holds the family the
-    mint resolves (`elected_role_class_shape`), whose arcs join `resolved_arcs`. A family
+    every posted key; axes outside resolved declarations stay unbound. Build the shape with
+    observed-union taxonomy. For a shape whose slot taxonomy grounding reads, one the code
+    index does not carry (`_reads_slot_taxonomy`), those axes receive the values a family
+    sample confirms (`_family_axis_sample`). The sample is skipped when `measuredProperty` is
+    absent. Role sets the election cannot order return `no_data(role_signature_incompatible)`.
+    The shape holds the family the mint resolves (`elected_role_class_shape`), whose arcs join `resolved_arcs`. A family
     the mint's walk does not settle stays as elected, under a warning."""
     t0 = now_ms()
     try:
@@ -132,52 +192,8 @@ def _phase_build_shape(state: _PromoteState) -> RegionResult | None:
                 continue
             unconfirmed_axes.append(prop)
 
-        # Confirm undeclared posted axes for slot-option taxonomy. Without measuredProperty,
-        # The family query requires measuredProperty; a missing client is a wiring error.
-        axis_taxonomy_additions: dict[str, list[str]] = {}
-        if unconfirmed_axes and state.ft.meas_prop_dcid:
-            if state.materialise_graph is None:
-                raise EngineInfraError(
-                    "materialise graph client not initialised; cannot confirm "
-                    f"posted identity's declared axes {unconfirmed_axes!r} against "
-                    "this shape's own five-tuple family"
-                )
-            family_filters = five_tuple_reverse_filters(
-                population_type=state.ft.pop_type_dcid,
-                stat_type=state.ft.stat_type_dcid,
-                measurement_qualifier=state.ft.meas_qual_dcid,
-                measurement_denominator=state.ft.meas_denom_dcid,
-            )
-            family_page = state.materialise_graph.node_subjects(
-                state.ft.meas_prop_dcid,
-                property="measuredProperty",
-                filters=family_filters,
-                max_results=settings().resubmit_axis_sample,
-            )
-            family_arcs = state.materialise_graph.node_arcs_many(
-                family_page.dcids,
-                properties=(
-                    "constraintProperties",
-                    "populationType",
-                    "statType",
-                    "measurementQualifier",
-                    "measurementDenominator",
-                    *unconfirmed_axes,
-                ),
-            )
-            confirmed = _confirm_axes_against_family(
-                unconfirmed_axes,
-                family_arcs,
-                ft=state.ft,
-                measurement_qualifiers=state.family_measurement_qualifiers,
-            )
-            axis_taxonomy_additions = {
-                prop: sample_values for prop, sample_values in confirmed.items() if sample_values
-            }
-
-        # Preserve unbound slots in the identity hash. Confirmed sample values belong in
-        # Store family samples in slot taxonomy; resolved-member values stay empty for axes
-        # those members do not assert.
+        # Preserve unbound slots in the identity hash. Resolved-member values stay empty for
+        # axes those members do not assert.
         for identity_slot in identity_slots:
             prop_observed_values.setdefault(identity_slot.property, [])
 
@@ -278,6 +294,12 @@ def _phase_build_shape(state: _PromoteState) -> RegionResult | None:
                 retrieved=False,
             )
         )
+
+        # Grounding reads slot taxonomy only for a shape the code index does not carry, so
+        # only such a shape pays for the family sample of its unconfirmed axes.
+        axis_taxonomy_additions: dict[str, list[str]] = {}
+        if unconfirmed_axes and state.ft.meas_prop_dcid and _reads_slot_taxonomy(state.shape_draft):
+            axis_taxonomy_additions = _family_axis_sample(state, unconfirmed_axes)
 
         # The mint serves the antichain-minimal members of the family its walk resolves, so
         # the shape holds that family.

@@ -35,10 +35,13 @@ and its region is not degraded.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+
+from search.engine.config import settings
 
 
 @dataclass
@@ -112,3 +115,13 @@ def carry(record: DegradedReads, *, consulted: bool = True) -> None:
         record.merge_into(outer)
     else:
         outer.reads.extend(record.reads)
+
+
+def fail_open_deadline(request_deadline: float | None) -> float:
+    """The monotonic deadline for a graph read on the request's critical path whose failure
+    is swallowed, which is `SEARCH_FAIL_OPEN_READ_BUDGET_S` from now, or `request_deadline`
+    when that comes first (None for no request bound). A stalled read then holds the request
+    for the budget at most, and its expiry is a read failure the site notes
+    (`note_degraded_read`). A read whose failure fails the request keeps `request_deadline`."""
+    budgeted = time.monotonic() + settings().fail_open_read_budget_s
+    return budgeted if request_deadline is None else min(budgeted, request_deadline)
