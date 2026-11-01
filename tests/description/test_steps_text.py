@@ -729,21 +729,61 @@ def test_a_comparison_reads_in_the_order_it_subtracts(
     assert (served[-1]["text"], name_computed(steps, vocabulary)) == (text, name)
 
 
-def _narrowed(op: str, numerator: dict[str, str], denominator: dict[str, str]) -> Step:
+def _narrowed(op: str, numerator: dict[str, str], denominator: dict[str, str]) -> list[Step]:
     """A share or quotient of one retrieved version against itself, each side narrowed by
     its own `<role>_entity` binding."""
-    params = {
-        name: binding
-        for name, binding in (("numerator_entity", numerator), ("denominator_entity", denominator))
-        if binding
-    }
-    return _ratio(op, {"numerator": "s1", "denominator": "s1"}).model_copy(
-        update={"params": params}
+    return _bound(op, ("numerator", _ODA, numerator), ("denominator", _ODA, denominator))
+
+
+def _bound(
+    op: str,
+    first: tuple[str, VersionRef, dict[str, str]],
+    second: tuple[str, VersionRef, dict[str, str]],
+) -> list[Step]:
+    """Each side's version retrieved, then a two-sided step over them that narrows each side
+    by its own `<role>_entity` binding. One version on both sides is retrieved once."""
+    retrieved = {first[1].id: "s1"} | ({} if second[1] == first[1] else {second[1].id: "s2"})
+    params = {f"{role}_entity": binding for role, _, binding in (first, second) if binding}
+    step = Step(
+        id="s3",
+        op=op,
+        inputs={role: retrieved[version.id] for role, version, _ in (first, second)},
+        params=params,
     )
+    versions = {version.id: version for _, version, _ in (first, second)}
+    return [*(_retrieve(i, versions[v]) for v, i in retrieved.items()), step]
+
+
+def _labelled(digit: str, label: str) -> VersionRef:
+    """A version labelled `label` by the step that stores it alone."""
+    return VersionRef(id="spec_" + digit * 32, content_version="cv_" + digit * 32, label=label)
+
+
+_GTM = {"place": "dcid:country/GTM"}
+_DEBT_OF_GTM = _labelled("1", "Outstanding external debt of Guatemala")
+_GDP_OF_GTM = _labelled("2", "GDP in Guatemala")
+_ODA_GBR_TO_GHA = _labelled(
+    "3", "Net disbursements from United Kingdom to Ghana for official development assistance"
+)
+_ODA_TO_GHA = _labelled("4", "Net disbursements to Ghana for official development assistance")
+_ODA_FROM_FRANCE = _labelled("5", "Gross disbursements from France for ODA")
+_IMPUTED_FROM_FRANCE = _labelled("6", "Imputed multilateral ODA from France")
+_GRANT_EQUIVALENTS = _labelled("7", "Grant equivalents for official development assistance")
+_POPULATION = _labelled("8", "Total population")
+_ODA_TO_ETH = _labelled("9", "Gross disbursements to Ethiopia for official development assistance")
+_PARTY_LABELS = {
+    "country/GTM": "Guatemala",
+    "country/NGA": "Nigeria",
+    "Earth": "World",
+    "DACCountriesTotal": "DAC countries",
+    "DACNonDACCountries": "non-DAC countries (DAC)",
+    "country/DEU": "Germany",
+    "DACOfficialDonors": "official donors (DAC)",
+}
 
 
 @pytest.mark.parametrize(
-    ("step", "text", "name"),
+    ("steps", "text", "name"),
     [
         pytest.param(
             _narrowed("share", _GBR, {}),
@@ -789,13 +829,78 @@ def _narrowed(op: str, numerator: dict[str, str], denominator: dict[str, str]) -
             "gross ODA disbursements as a share of gross ODA disbursements",
             id="share-unlabelled-narrowing-names-no-entity",
         ),
+        pytest.param(
+            _bound(
+                "share",
+                ("numerator", _POPULATION, {"place": "dcid:country/NGA"}),
+                ("denominator", _POPULATION, {"place": "dcid:Earth"}),
+            ),
+            "Took total population (Nigeria) as a share of total population (World) for each "
+            "period both report.",
+            "total population (Nigeria) as a share of total population (World)",
+            id="share-of-one-variable-names-each-place",
+        ),
+        pytest.param(
+            _bound(
+                "quotient", ("numerator", _DEBT_OF_GTM, _GTM), ("denominator", _GDP_OF_GTM, _GTM)
+            ),
+            "Divided outstanding external debt of Guatemala by GDP in Guatemala for each "
+            "period both report.",
+            "outstanding external debt of Guatemala per GDP in Guatemala",
+            id="quotient-sides-that-read-apart-name-no-place",
+        ),
+        pytest.param(
+            _bound("share", ("numerator", _ODA_GBR_TO_GHA, _GBR), ("denominator", _ODA_TO_GHA, {})),
+            "Took net disbursements from United Kingdom to Ghana for official development "
+            "assistance as a share of net disbursements to Ghana for official development "
+            "assistance for each period both report.",
+            "net disbursements from United Kingdom to Ghana for official development assistance "
+            "as a share of net disbursements to Ghana for official development assistance",
+            id="share-donor-on-one-side-that-reads-apart",
+        ),
+        pytest.param(
+            _bound("sum", ("left", _ODA_FROM_FRANCE, _FRA), ("right", _IMPUTED_FROM_FRANCE, _FRA)),
+            "Added gross disbursements from France for ODA and imputed multilateral ODA from "
+            "France for each period both report.",
+            "gross disbursements from France for ODA plus imputed multilateral ODA from France",
+            id="sum-of-two-flows-from-one-donor",
+        ),
+        pytest.param(
+            _bound(
+                "sum",
+                ("left", _GRANT_EQUIVALENTS, {"donor": "dcid:DACCountriesTotal"}),
+                ("right", _GRANT_EQUIVALENTS, {"donor": "dcid:DACNonDACCountries"}),
+            ),
+            "Added grant equivalents for official development assistance (DAC countries) and "
+            "grant equivalents for official development assistance (non-DAC countries [DAC]) for "
+            "each period both report.",
+            "grant equivalents for official development assistance (DAC countries) plus grant "
+            "equivalents for official development assistance (non-DAC countries [DAC])",
+            id="sum-of-dac-and-non-dac-totals-nests-no-round-bracket",
+        ),
+        pytest.param(
+            _bound(
+                "share",
+                ("numerator", _ODA_TO_ETH, {"donor": "dcid:country/DEU"}),
+                ("denominator", _ODA_TO_ETH, {"donor": "dcid:DACOfficialDonors"}),
+            ),
+            "Took gross disbursements to Ethiopia for official development assistance (Germany) "
+            "as a share of gross disbursements to Ethiopia for official development assistance "
+            "(official donors [DAC]) for each period both report.",
+            "gross disbursements to Ethiopia for official development assistance (Germany) as a "
+            "share of gross disbursements to Ethiopia for official development assistance "
+            "(official donors [DAC])",
+            id="share-of-one-recipient-names-each-donor",
+        ),
     ],
 )
-def test_a_ratio_names_each_side_with_its_narrowing(step: Step, text: str, name: str) -> None:
-    """Two sides of one variable that the step narrows apart read apart, in the sentence and
-    in the name; sides narrowed alike are one series, a share within its own total."""
-    steps = [_retrieve("s1", _ODA), step]
-    vocabulary = _vocabulary(_COMPARED)
+def test_a_side_names_the_entities_its_words_do_not_state(
+    steps: list[Step], text: str, name: str
+) -> None:
+    """Each side is named with the entities the step narrows it to that its own words do not
+    state, in the sentence and in the name, so sides that read alike read apart and a version
+    whose label names its entity is not named twice."""
+    vocabulary = _vocabulary(_COMPARED | _PARTY_LABELS)
     served = describe_steps(steps, vocabulary).served
 
     assert served is not None
@@ -803,7 +908,7 @@ def test_a_ratio_names_each_side_with_its_narrowing(step: Step, text: str, name:
 
 
 _NAME_BY_COMPOSER_VERSION = {
-    "5": "gross ODA disbursements (United Kingdom) per gross ODA disbursements (France)",
+    "6": "gross ODA disbursements (United Kingdom) per gross ODA disbursements (France)",
 }
 """The name each composer version gives a quotient whose step narrows its sides apart."""
 
@@ -812,9 +917,10 @@ def test_a_wording_change_ships_with_its_composer_version() -> None:
     """A stored card description is revalidated by its `voc_` revision, which moves with
     `COMPOSER_VERSION` but not with the composer's code. Wording the composer changes must
     raise the version and record its wording here, else a conditional read keeps the old
-    words. Version 4 names each side a step narrows with its entities, and version 5 adds
-    the publishers' series codes."""
-    steps = [_retrieve("s1", _ODA), _narrowed("quotient", _GBR, _FRA)]
+    words. Version 4 names each side a step narrows with its entities, version 5 adds the
+    publishers' series codes, and version 6 leaves out of a side's brackets the entities its
+    own words state."""
+    steps = _narrowed("quotient", _GBR, _FRA)
 
     name = name_computed(steps, _vocabulary(_COMPARED))
 
