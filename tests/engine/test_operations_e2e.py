@@ -915,8 +915,8 @@ def test_an_ambiguous_part_carries_an_option_per_candidate_that_resolves_when_po
 
 
 def test_a_group_named_beside_an_ambiguous_wording_is_echoed_unpinned():
-    """Each option echoes a resolver group by its text alone: pinning it to one member's
-    dcid would resubmit that member for the group."""
+    """Each option echoes a resolver group by its text and the role its words state, with no
+    dcid: pinning it to one member's dcid would resubmit that member for the group."""
     g7 = ("CAN", "DEU", "FRA", "GBR", "ITA", "JPN", "USA")
     graph = FakeGraph(
         nodes={
@@ -946,7 +946,10 @@ def test_a_group_named_beside_an_ambiguous_wording_is_echoed_unpinned():
     assert part.no_data.reason == "entity_ambiguous"
     options = part.no_data.options
     assert [o.data_query.parts[0].entities for o in options] == [
-        [ParsedEntity(text="G7"), ParsedEntity(text="Congo", role_text="to", dcid=dcid)]
+        [
+            ParsedEntity(text="G7", role_text="from"),
+            ParsedEntity(text="Congo", role_text="to", dcid=dcid),
+        ]
         for dcid in ("country/COD", "country/COG")
     ]
 

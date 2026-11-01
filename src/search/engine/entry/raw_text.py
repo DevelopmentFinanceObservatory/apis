@@ -122,6 +122,7 @@ from search.engine.role_text import (
     debtor_possessive,
     every_member_breakdown_axis,
     receipt_axes,
+    transfer_axes,
 )
 from search.engine.source_code import PartCode, compile_part_code, scan_source_codes
 from search.engine.source_scan import left_out_sources, scan_sources, source_phrases
@@ -517,17 +518,29 @@ def _entity_roles(
     """Map stripped entity names to their flow axes and spans.
 
     The query's debt wording sets the axes of a two-party debt relation
-    (`role_text.debt_axes`), and its receipt wording sets each recipient's
-    (`role_text.receipt_axes`). A query that is one place's possessive and its debt alone
-    makes that place the debtor (`role_text.debtor_possessive`). Every other place keeps
-    its extracted axis. Preserve distinct mentions in order, including self-flows on
-    opposite axes. Collapse duplicate mentions with the same axis, span and reading. Store
+    (`role_text.debt_axes`), its receipt wording sets each recipient's
+    (`role_text.receipt_axes`), and its giving wording sets each giver's and receiver's
+    (`role_text.transfer_axes`). Where they disagree, debt wording outranks receipt wording,
+    which outranks giving wording. A query that is one place's possessive and its debt alone
+    makes that place the debtor (`role_text.debtor_possessive`). Every other place keeps its
+    extracted axis. Preserve distinct mentions in order, including self-flows on opposite
+    axes. Collapse duplicate mentions with the same axis, span and reading. Store
     directional roles only, each recording whether the query's words give its direction and
-    whether the mention asks for the place's members (`DoorRole.members`). A
-    debt or receipt axis does by construction, a possessive debtor does not, since it
-    reads the measure, and an extracted axis does when its cue does
-    (`_cue_states_direction`). Fall back to entity text for the overlap anchor when
-    translation leaves no span.
+    whether the mention asks for the place's members (`DoorRole.members`). A debt, receipt
+    or giving axis does by construction, a possessive debtor does not, since it reads the
+    measure, and an extracted axis does when its cue does (`_cue_states_direction`). Fall
+    back to entity text for the overlap anchor when translation leaves no span.
+
+    A name names its set once on each flow end of one part with one reading, as the parsed
+    door requires, so in a request of one measure a mention with no axis whose reading
+    (`ExtractedEntity.members`) no directed mention of its name shares names the set on the
+    other end of a name directed on one end alone. Its words state no direction. "aid from
+    African countries to Africa" whose "African countries" lost its cue reads Africa's
+    members as the providers and Africa as the recipient. A mention with no axis that
+    shares a directed mention's reading is that mention again and adds no role. The roles
+    serve every part of the request, and an extracted entity names no measure, so with
+    several `measures` a mention with no axis may belong to another part ("ODA to Africa
+    and GDP growth of African countries") and adds no role.
     """
     places: dict[str, list[str]] = {}
     for entity in entities:
@@ -539,19 +552,41 @@ def _entity_roles(
             axes_by_place.setdefault(_entity_key(entity), set()).add(entity.flow_role)
     directed = {name: next(iter(axes)) for name, axes in axes_by_place.items() if len(axes) == 1}
     debt = debt_axes(query, measures=measures, places=places, directed=directed)
-    worded = receipt_axes(query, places=places) | debt
+    worded = (
+        transfer_axes(query, measures=measures, places=places)
+        | receipt_axes(query, places=places)
+        | debt
+    )
     read = debtor_possessive(query, measures=measures, places=places, directed=directed)
+
+    def directed_axis(entity: ExtractedEntity) -> RoleAxis | None:
+        name = _entity_key(entity)
+        axis = worded.get(name) or read.get(name)
+        if axis is None and entity.flow_role != "unspecified":
+            return entity.flow_role
+        return axis
+
+    held_axes: dict[str, set[RoleAxis]] = {}
+    held_readings: dict[str, set[bool]] = {}
+    for entity in entities:
+        if (axis := directed_axis(entity)) is not None:
+            held_axes.setdefault(_entity_key(entity), set()).add(axis)
+            held_readings.setdefault(_entity_key(entity), set()).add(entity.members)
+
     roles: dict[str, list[DoorRole]] = {}
     for entity in entities:
         name = _entity_key(entity)
-        axis = worded.get(name) or read.get(name)
-        if axis is None:
-            if entity.flow_role == "unspecified":
-                continue
-            axis = entity.flow_role
-        occurrences = roles.setdefault(name, [])
         span = entity.span or entity.text
-        stated = name in worded or _cue_states_direction(entity, entities=entities, query=query)
+        axis = directed_axis(entity)
+        if axis is None:
+            held = held_axes.get(name, set())
+            if len(measures) != 1 or len(held) != 1 or entity.members in held_readings[name]:
+                continue
+            axis = "origin" if held == {"destination"} else "destination"
+            stated = False
+        else:
+            stated = name in worded or _cue_states_direction(entity, entities=entities, query=query)
+        occurrences = roles.setdefault(name, [])
         role = DoorRole(axis=axis, span=span, stated=stated, members=entity.members)
         if role not in occurrences:
             occurrences.append(role)

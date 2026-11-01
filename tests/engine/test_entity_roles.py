@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Literal
 
 import pytest
 
@@ -23,7 +24,7 @@ from search.engine.extract import (
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region.pipeline import resolve_variable
 from search.engine.role_text import DoorRole, contradicts
-from search.models import Operation, ParsedEntity, ParsedPart, RoleAxis
+from search.models import DefinitePart, Operation, ParsedEntity, ParsedPart, RoleAxis
 from series_coverage.schema import RoleNames
 from series_coverage.shared import CoverageSnapshot
 from tests.engine._binders import elected_reply
@@ -33,6 +34,7 @@ from tests.engine._fake_coverage import (
     patch_coverage,
 )
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._harness import make_request, offline_resolve
 from tests.engine._quantity import NO_QUANTITY
 from tests.engine.test_role_bearing_pipeline_e2e import _SV_DCID, _declaring_arcs
 from tests.fixtures import FakeGraph, make_resolver
@@ -81,6 +83,74 @@ class TestRawTextDoorCarriesEveryOccurrence:
                 ("destination", "to Kenya"),
             ]
         }
+
+    @pytest.mark.parametrize(
+        ("query", "measures", "mentions", "expected"),
+        [
+            pytest.param(
+                "aid from African countries to Africa",
+                ["aid"],
+                [("unspecified", True), ("destination", False)],
+                [("origin", True), ("destination", False)],
+                id="one-part-other-reading-takes-the-other-end",
+            ),
+            pytest.param(
+                "ODA to Africa and GDP growth of African countries",
+                ["ODA", "GDP growth"],
+                [("destination", False), ("unspecified", True)],
+                [("destination", False)],
+                id="two-parts-flow-first",
+            ),
+            pytest.param(
+                "GDP growth of African countries and ODA to Africa",
+                ["GDP growth", "ODA"],
+                [("unspecified", True), ("destination", False)],
+                [("destination", False)],
+                id="two-parts-flow-second",
+            ),
+            pytest.param(
+                "aid from Africa to Africa, African countries",
+                ["aid"],
+                [("origin", False), ("destination", False), ("unspecified", True)],
+                [("origin", False), ("destination", False)],
+                id="directed-on-both-ends",
+            ),
+            pytest.param(
+                "aid to African countries, Africa",
+                ["aid"],
+                [("destination", True), ("unspecified", True)],
+                [("destination", True)],
+                id="shared-reading",
+            ),
+        ],
+    )
+    def test_an_undirected_other_reading_takes_the_end_one_part_leaves(
+        self,
+        query: str,
+        measures: list[str],
+        mentions: list[tuple[RoleAxis | Literal["unspecified"], bool]],
+        expected: list[tuple[RoleAxis, bool]],
+    ):
+        """Within one part, an undirected mention of Africa whose reading no directed
+        mention shares takes the end the directed ones leave.
+        Every part of a request reads the same roles, so with two measures the mention may
+        be another part's and adds none, and a name directed on both ends or a mention
+        sharing a directed reading adds none either."""
+        cues = {"origin": "from", "destination": "to"}
+        entities = [
+            ExtractedEntity(
+                text="Africa",
+                span="African countries" if members else "Africa",
+                flow_role=axis,
+                role_span=cues.get(axis),
+                members=members,
+            )
+            for axis, members in mentions
+        ]
+
+        roles = _prepared_roles(entities, query=query, measures=measures)
+
+        assert [(r.axis, r.members) for r in roles["Africa"]] == expected
 
     @pytest.mark.parametrize(
         ("query", "entities", "stated"),
@@ -240,6 +310,56 @@ class TestRawTextDoorCarriesEveryOccurrence:
         ]
         validated = _validate_role_spans(query, extracted, [measure])
         assert {e.flow_role for e in validated} == {"unspecified"}
+        roles = _prepared_roles(validated, query=query, measures=[measure])
+        assert roles == {
+            name: [DoorRole(axis=axis, span=name, stated=True)] for name, axis in expected.items()
+        }
+
+    @pytest.mark.parametrize(
+        ("query", "measure", "entities", "expected"),
+        [
+            # Recorded readings: validation drops Norway's cue "from", which the query does
+            # not hold, and DAC's, which is its own span; the giving wording sets both.
+            (
+                "How much does Norway give to the UN?",
+                "official development assistance",
+                [("Norway", "origin", "from"), ("UN", "destination", "to")],
+                {"Norway": "origin", "UN": "destination"},
+            ),
+            (
+                "Imputed multilateral ODA from DAC donors",
+                "imputed multilateral ODA",
+                [("DAC", "origin", "DAC")],
+                {"DAC": "origin"},
+            ),
+            (
+                "Compare imputed multilateral ODA from France and Germany",
+                "imputed multilateral ODA",
+                [("France", "unspecified", None), ("Germany", "unspecified", None)],
+                {"France": "origin", "Germany": "origin"},
+            ),
+            # A "to" no give verb governs directs nothing the extraction left open.
+            (
+                "ODA to Kenya compared to France",
+                "ODA",
+                [("Kenya", "destination", "to"), ("France", "unspecified", None)],
+                {"Kenya": "destination"},
+            ),
+            ("aid to Kenya", "aid", [("Kenya", "destination", "to")], {"Kenya": "destination"}),
+        ],
+    )
+    def test_giving_wording_directs_a_place_the_extraction_left_open(
+        self,
+        query: str,
+        measure: str,
+        entities: list[tuple[str, RoleAxis, str | None]],
+        expected: dict[str, RoleAxis],
+    ):
+        extracted = [
+            ExtractedEntity(text=text, span=text, flow_role=axis, role_span=cue)
+            for text, axis, cue in entities
+        ]
+        validated = _validate_role_spans(query, extracted, [measure])
         roles = _prepared_roles(validated, query=query, measures=[measure])
         assert roles == {
             name: [DoorRole(axis=axis, span=name, stated=True)] for name, axis in expected.items()
@@ -414,8 +534,8 @@ class TestRawTextDoorReadsDebtWording:
     @pytest.mark.parametrize(
         ("query", "uncued"),
         [
-            ("Kenya debt owed to China", "Kenya"),
-            ("Kenya debt to China", "Kenya"),
+            ("debt owed to China for Kenya", "Kenya"),
+            ("debt to China for Kenya", "Kenya"),
         ],
     )
     @pytest.mark.parametrize(("kenya", "china"), _AXIS_COMBINATIONS)
@@ -434,20 +554,31 @@ class TestRawTextDoorReadsDebtWording:
         )
         assert _debt_roles(query, extracted, ["debt"]) == expected
 
-    def test_a_national_adjective_takes_the_party_the_creditor_leaves(self):
-        extracted = [("Kenya", "Kenyan", "destination"), ("China", "China", "destination")]
-        assert _debt_roles("Kenyan debt to China", extracted, ["debt"]) == {
-            "Kenya": ["destination"],
+    @pytest.mark.parametrize(
+        ("query", "measure", "debtor", "debtor_span"),
+        [
+            ("Kenyan debt to China", "debt", "Kenya", "Kenyan"),
+            ("Kenya debt owed to China", "debt", "Kenya", "Kenya"),
+            ("Kenya debt to China", "debt", "Kenya", "Kenya"),
+            ("Zambia external debt to China", "external debt", "Zambia", "Zambia"),
+            ("Kenya external debt owed to China", "external debt", "Kenya", "Kenya"),
+        ],
+    )
+    @pytest.mark.parametrize(("debtor_axis", "china"), _AXIS_COMBINATIONS)
+    def test_a_bare_place_before_the_debt_phrase_is_the_debtor(
+        self, query: str, measure: str, debtor: str, debtor_span: str, debtor_axis: str, china: str
+    ):
+        """The place modifying the debt phrase is the debtor whatever extraction says."""
+        extracted = [(debtor, debtor_span, debtor_axis), ("China", "China", china)]
+        assert _debt_roles(query, extracted, [measure]) == {
+            debtor: ["destination"],
             "China": ["origin"],
         }
 
-    def test_a_national_adjective_on_the_creditors_axis_keeps_the_extracted_axes(self):
-        """Extraction puts Kenya on origin, the axis China's cue claims, so Kenya is a
-        second creditor and nothing is set."""
-        extracted = [("Kenya", "Kenyan", "origin"), ("China", "China", "destination")]
-        assert _debt_roles("Kenyan debt to China", extracted, ["debt"]) == {
-            "Kenya": ["origin"],
-            "China": ["destination"],
+    @pytest.mark.parametrize("query", ["debt to GDP ratio of Kenya", "Kenya's debt to GDP ratio"])
+    def test_a_debt_to_gdp_ratio_keeps_the_extracted_axis(self, query: str):
+        assert _debt_roles(query, [("Kenya", "Kenya", "destination")], ["debt to GDP ratio"]) == {
+            "Kenya": ["destination"]
         }
 
     def test_a_translated_name_without_a_span_matches_by_its_text(self):
@@ -917,3 +1048,78 @@ def test_a_country_before_the_measure_takes_the_end_the_other_place_leaves(monke
     door_roles = _prepared_roles(extracted, query=query, measures=["loans"])
 
     _assert_binds_china_as_creditor(monkeypatch, query, door_roles)
+
+
+_ZMB = "country/ZMB"
+
+
+class _ZambiaDebtToChinaLLM:
+    """Extracts "external debt" with Zambia left unspecified and China on `china_axis`
+    with the cue `china_cue`, and elects the first shape with no bindings."""
+
+    def __init__(self, china_axis: RoleAxis | Literal["unspecified"], china_cue: str | None):
+        self._china = ExtractedEntity(
+            text="China", span="China", flow_role=china_axis, role_span=china_cue
+        )
+
+    async def generate_structured(self, *, prompt, system, schema):
+        if schema is Extraction:
+            return Extraction(
+                kind="resolution",
+                variables=["external debt"],
+                entities=[
+                    ExtractedEntity(text="Zambia", span="Zambia", flow_role="unspecified"),
+                    self._china,
+                ],
+            ), None
+        if schema is QuantityOutput:
+            return NO_QUANTITY
+        assert schema.__name__ == "_UniversalBindOutput"
+        return elected_reply(0, bindings=[]), None
+
+
+@pytest.mark.parametrize(
+    ("china_axis", "china_cue"),
+    [("origin", "to"), ("destination", "to"), ("unspecified", None)],
+)
+def test_a_raw_text_debt_to_a_creditor_binds_the_bare_place_before_it_as_debtor(
+    monkeypatch, china_axis: RoleAxis | Literal["unspecified"], china_cue: str | None
+):
+    """ "Zambia external debt to China" answers a series holding both directions with China
+    on origin and Zambia, which the extraction left unspecified, on destination."""
+    patch_coverage(
+        monkeypatch,
+        [
+            (_SV_DCID, "f1", _CHN, _ZMB, [2018, 2019, 2020]),
+            (_SV_DCID, "f1", _ZMB, _CHN, [2018, 2019, 2020]),
+        ],
+        role_names={_SV_DCID: _CREDITOR_DEBTOR_ROLE_NAMES},
+    )
+    graph = FakeGraph(
+        nodes={
+            _ZMB: {"label": "Zambia", "type": "Country"},
+            _CHN: {"label": "China", "type": "Country"},
+            _SV_DCID: {
+                "label": "Test debt",
+                "arcs": _declaring_arcs(observation_properties=["creditor", "debtor"]),
+            },
+        },
+        detect={"external debt": {"svs": [_SV_DCID], "cosine_scores": [0.9]}},
+        resolve={"Zambia": _ZMB, "China": _CHN},
+        obs={},
+    )
+
+    response = offline_resolve(
+        make_request("Zambia external debt to China"),
+        graph=graph,
+        llm=_ZambiaDebtToChinaLLM(china_axis, china_cue),
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+    )
+
+    (part,) = response.parts
+    assert isinstance(part, DefinitePart), part
+    assert {(entity.ref, entity.role) for entity in part.spec.resolved.entities} == {
+        (_CHN, "origin"),
+        (_ZMB, "destination"),
+    }
+    assert part.spec.definition.identity.entities == {"origin": [_CHN], "destination": [_ZMB]}
