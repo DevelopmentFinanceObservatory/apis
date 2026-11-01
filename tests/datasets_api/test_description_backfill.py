@@ -54,6 +54,7 @@ from materialise.frame_build import build_frame
 from materialise.statistics import SeriesStatisticsSink, compute_series_statistics_table
 from origin_catalogue.context import UnBlockedPlaces
 from tests.artifact_store.conftest import FakeGCSClient
+from tests.dataset_store._warning_refs import UN_DETAIL, old_withheld
 from tests.materialise._canonical_frame import (
     CANONICAL_FRAME_RENDERING,
     canonical_frame_parquet,
@@ -669,17 +670,27 @@ def test_a_withholding_and_an_unanswered_read_the_trace_records_are_stated_once_
     ]
 
 
-def test_a_stored_message_naming_nothing_readable_leaves_its_caveat_out(
+def test_a_stored_old_message_leaves_its_caveat_out(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A warning carrying no counted fields is no defect: the version gains its record without
-    the caveat, the run succeeds, and one warning names the version and code."""
+    """A `withheld_by_registry` or `un_system_unavailable` warning stored in the shape its
+    writer used before it counted, naming its places in the message and carrying no counted
+    field, is no defect: the version gains its record without the caveat, the run succeeds,
+    and one warning names the version and code. The record does not parse the message."""
     store = FakeVersionRecordDatasetStore()
     content_version = "cv_" + "6f" * 16
     body = _family_body()
     body["warnings"] = [
-        {"code": "withheld_by_registry", "severity": "warn", "message": "GrantB withheld at KEN"},
-        {"code": "un_system_unavailable", "severity": "warn", "message": "UN unavailable"},
+        {
+            "code": "withheld_by_registry",
+            "severity": "warn",
+            "message": old_withheld(family_fixture._MEMBER_A, {"country/KEN": ("dc/withheld",)}),
+        },
+        {
+            "code": "un_system_unavailable",
+            "severity": "warn",
+            "message": f"{UN_DETAIL} No UN data was read for country/KEN, country/UGA.",
+        },
     ]
     _stored_without_record(store, subject_id=_SPEC_ID, content_version=content_version, body=body)
 

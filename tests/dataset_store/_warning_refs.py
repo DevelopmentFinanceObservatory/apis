@@ -8,7 +8,6 @@ shapes come from the current writers in `materialise.finish` and `datasets_api.o
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
 from typing import cast
 
 from datasets_api.origin import un_system_unavailable_warning, withheld_by_registry_warning
@@ -43,12 +42,6 @@ PROJECTED_DETAIL = MATERIALISE_CODE_CATALOGUE["deflator_projected"][1]
 WITHHELD = {place: (f"dc/p{index}",) for index, place in enumerate(UNSERVED)}
 ONE_WITHHELD = {"country/KEN": ("dc/p1",)}
 PROJECTED_EXAMPLES = [f"country/C{index:02}@2020" for index in range(12)]
-
-
-@dataclass(frozen=True)
-class _Projected:
-    projected_count: int
-    projected_examples: Sequence[str]
 
 
 def _old_names(names: Sequence[str]) -> str:
@@ -93,8 +86,8 @@ def new_un(places: Sequence[str]) -> StoredWarning:
     return un_system_unavailable_warning(places).model_dump(mode="json")
 
 
-def new_projected(total: int, examples: Sequence[str]) -> StoredWarning:
-    return dict(deflator_projected_warning([_Projected(total, examples)]))
+def new_projected(total: int) -> StoredWarning:
+    return dict(deflator_projected_warning(total))
 
 
 def _coverage(message: str, **fields: object) -> StoredWarning:
@@ -144,8 +137,8 @@ def current_warnings() -> list[StoredWarning]:
         new_withheld("Rate", {"country/KEN": ("dc/p1",)}),
         new_un(["country/KEN"]),
         new_un(UNSERVED),
-        new_projected(1, PROJECTED_EXAMPLES[:1]),
-        new_projected(30, PROJECTED_EXAMPLES),
+        new_projected(1),
+        new_projected(30),
         {"code": "empty_result", "severity": "warn", "message": "No rows."},
     ]
 
@@ -306,21 +299,21 @@ def rewrite_cases() -> dict[str, tuple[list[StoredWarning], list[StoredWarning]]
         "projected_one": (
             [
                 _old(
-                    new_projected(1, PROJECTED_EXAMPLES[:1]),
+                    new_projected(1),
                     f"{PROJECTED_DETAIL} 1 row(s), for example: {PROJECTED_EXAMPLES[0]}",
                 )
             ],
-            [new_projected(1, PROJECTED_EXAMPLES[:1])],
+            [new_projected(1)],
         ),
         "projected_truncated": (
             [
                 _old(
-                    new_projected(30, PROJECTED_EXAMPLES),
+                    new_projected(30),
                     f"{PROJECTED_DETAIL} 30 row(s), for example: "
                     f"{', '.join(PROJECTED_EXAMPLES[:10])} (truncated)",
                 )
             ],
-            [new_projected(30, PROJECTED_EXAMPLES)],
+            [new_projected(30)],
         ),
         **{name: (warnings, warnings) for name, warnings in unchanged.items()},
     }

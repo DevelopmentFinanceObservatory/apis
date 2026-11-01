@@ -58,7 +58,7 @@ OLD_FORMATS: tuple[tuple[str, str, str], ...] = (
     (
         "coverage_below_scope, entities or members named",
         "coverage_below_scope",
-        r"No observations were served for (?![0-9]+ (?:requested )?entit)",
+        r"No observations were served for (?![0-9]+ requested entit)",
     ),
     (
         "currency_unmapped_omitted, entities named",

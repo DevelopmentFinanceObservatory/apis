@@ -70,7 +70,7 @@ def test_each_code_has_one_format():
 
 @pytest.mark.parametrize(("code", "message"), _current_shapes())
 def test_a_current_shape_matches_no_format(code, message):
-    assert [name for name, _code, pattern in OLD_FORMATS if re.search(pattern, message)] == []
+    assert _formats(code, message) == []
     assert re.search(MEMBER_SENTENCE, message) is None
 
 

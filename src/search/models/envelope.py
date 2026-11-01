@@ -83,8 +83,9 @@ class Warning(StrictModel):
             "entity's rows were left out, as runs of consecutive years ('1990-2001, 2004'), "
             "in entities order; a warning without params says the loaded tables cannot tell "
             "which entities. deflator_projected: {count, examples}, how many rows took a "
-            "projected rate or deflator, and the first ten distinct entity@year examples, "
-            "sorted. Omitted for every other code"
+            "projected rate or deflator, and at most ten distinct entity@year keys among them, "
+            "sorted; count counts rows, not keys, and examples may leave keys out. Omitted "
+            "for every other code"
         ),
     )
 

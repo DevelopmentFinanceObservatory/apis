@@ -136,6 +136,21 @@ def test_two_projected_series_total_counts_and_cap_examples():
     }
 
 
+def test_rows_beyond_the_examples_leave_the_examples_complete():
+    """`count` counts rows and `examples` distinct keys, so five rows at one entity and year
+    carry one example and say the list is complete."""
+    observations = _observations(
+        [
+            _series(
+                "country/KEN",
+                conversion=_conversion(projected_count=5, projected_examples=["country/KEN@2022"]),
+            )
+        ]
+    )
+    (warn,) = [w for w in _attach(observations) if w.code == DEFLATOR_PROJECTED]
+    assert warn.params == {"count": 5, "examples": ["country/KEN@2022"]}
+
+
 def test_include_points_false_never_warns():
     """A facets-only prefetch emits no projected-row warning."""
     observations = _observations(
