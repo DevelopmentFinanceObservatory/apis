@@ -453,6 +453,28 @@ class TestDebtAxes:
                 "China",
                 {"Kenyan": "destination", "China": "origin"},
             ),
+            # Beside another debtor cue a bare place before the debt phrase is no debtor.
+            (
+                "Kenya's Chinese debt",
+                "debt",
+                "Kenya",
+                "Chinese",
+                {"Kenya": "destination", "Chinese": "origin"},
+            ),
+            (
+                "Chinese debt owed by Zambia",
+                "debt",
+                "Zambia",
+                "Chinese",
+                {"Zambia": "destination", "Chinese": "origin"},
+            ),
+            (
+                "Zambia's IMF debt",
+                "IMF debt",
+                "Zambia",
+                "IMF",
+                {"Zambia": "destination", "IMF": "origin"},
+            ),
             # A place a preposition opens, or one before words outside the measure or a debt
             # party's noun, modifies no debt phrase.
             (
@@ -972,6 +994,28 @@ class TestTransferAxes:
                 ["ODA"],
                 ("Norway", "Ghana"),
                 {"Norway": "origin"},
+            ),
+            # A listed place that a measure word follows opens the next part.
+            (
+                "ODA from the US and Kenya external debt",
+                ["ODA", "external debt"],
+                ("US", "Kenya"),
+                {"US": "origin"},
+            ),
+            (
+                "aid from Germany, Kenya GDP growth",
+                ["aid", "GDP growth"],
+                ("Germany", "Kenya"),
+                {"Germany": "origin"},
+            ),
+            # The place after a give verb's "to" must end its phrase.
+            ("How much does agriculture contribute to Kenya GDP", ["GDP"], ("Kenya",), {}),
+            # A debt measure's parties are debt_axes' to read.
+            (
+                "How much does Zambia give to China in debt repayments",
+                ["debt repayments"],
+                ("Zambia", "China"),
+                {},
             ),
             # A place named twice may hold two parts, so the wording sets neither mention.
             ("aid from Kenya to Kenya", ["aid"], ("Kenya",), {}),

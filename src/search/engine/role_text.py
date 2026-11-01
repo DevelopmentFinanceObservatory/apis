@@ -292,12 +292,15 @@ def debt_axes(
 
     A place after a creditor ``to`` (``debt to``, ``owed to``, ``repaid to``, or ``to``
     after the debtor in ``owed by Kenya to China``) is the creditor. A possessive place over
-    its own debt (``Kenya's debt``, ``Kenya's debt service payments``), a bare place before
-    a debt phrase of the measure's words (`_heads_debt_phrase`: ``Zambia external debt to
-    China``) and a place after a debtor ``by`` (``owed by``, or ``by`` after the creditor in
-    ``owed to China by Kenya``) are the debtor. An active ``owe`` reads both parties: its
-    subject is the debtor and its object the creditor (``how much does China owe India``,
-    ``what does Zambia owe the IMF``). Each place needs its own evidence of being a party: a
+    its own debt (``Kenya's debt``, ``Kenya's debt service payments``) and a place after a
+    debtor ``by`` (``owed by``, or ``by`` after the creditor in ``owed to China by Kenya``)
+    are the debtor. An active ``owe`` reads both parties: its subject is the debtor and its
+    object the creditor (``how much does China owe India``, ``what does Zambia owe the
+    IMF``). When no place holds one of these debtor cues, a bare place before a debt phrase
+    of the measure's words is the debtor (`_heads_debt_phrase`: ``Zambia external debt to
+    China``). Beside another debtor cue it names the creditor's side of the debt, so
+    ``Chinese`` in ``Kenya's Chinese debt`` and ``IMF`` in ``Zambia's IMF debt`` are no
+    debtors. Each place needs its own evidence of being a party: a
     cue, or an extracted axis (``directed`` maps those places to their extracted axes). A
     cued place sets its axis. A place with no cue keeps an extracted axis opposite the cued
     one, so ``debt owed to China for Kenya`` sets both parties. A place with no cue whose
@@ -338,13 +341,20 @@ def debt_axes(
         or _follows_owe(query_tokens, start)
     }
     debtors = {name for name, _ in debtor_by} | possessors
-    measure_tokens = set(_tokenize(measures[0]))
     debtors.update(
         name
-        for name, start, end in occurrences
-        if (end < len(query_tokens) and query_tokens[end] in _OWE_VERBS)
-        or _heads_debt_phrase(query_tokens, start, end, measure_tokens)
+        for name, _, end in occurrences
+        if end < len(query_tokens) and query_tokens[end] in _OWE_VERBS
     )
+    if not debtors:
+        # With no other debtor cue, a bare place before the debt phrase is the debtor. Beside
+        # one, it names the creditor's side of the debt: "Kenya's Chinese debt".
+        measure_tokens = set(_tokenize(measures[0]))
+        debtors.update(
+            name
+            for name, start, end in occurrences
+            if _heads_debt_phrase(query_tokens, start, end, measure_tokens)
+        )
     if creditors & debtors or len(creditors) > 1 or len(debtors) > 1:
         return {}
     cued: dict[str, RoleAxis] = dict.fromkeys(creditors, "origin")
@@ -537,18 +547,26 @@ def transfer_axes(
     """Return the axis the query's giving wording sets for each place, by place name.
 
     A place right after ``from`` is the origin (``ODA from Norway``), and so is each place
-    listed after it (``from France and Germany``, ``from Norway, Sweden and Denmark``). The
-    subject of an active give verb (`_GIVE_VERBS`) is the origin: the place right before
-    it, unless a preposition opens that place (``aid to Kenya provided through ...``). The
-    place after the verb's ``to`` is the destination, where only the measure's words and
-    `_GIVE_OBJECT_WORDS` stand between verb and ``to`` (``Norway give to the UN``,
-    ``Germany give more aid to Kenya``). A bare ``to`` names no destination, since
+    listed after it that ends its own phrase (`_ends_own_phrase`: ``from France and
+    Germany``, ``from Norway, Sweden and Denmark``). A listed place that a measure word or a
+    possessive follows opens the next part: Kenya in ``ODA from the US and Kenya external
+    debt``. The subject of an active give verb (`_GIVE_VERBS`) is the origin: the place
+    right before it, unless a preposition opens that place (``aid to Kenya provided through
+    ...``). The place after the verb's ``to`` is the destination when it ends its own
+    phrase and only the measure's words and `_GIVE_OBJECT_WORDS` stand between verb and
+    ``to`` (``Norway give to the UN``, ``Germany give more aid to Kenya``, but not Kenya in
+    ``agriculture contribute to Kenya GDP``). A bare ``to`` names no destination, since
     ``compared to France`` and ``debt to GDP`` put ``to`` before a name too.
+
+    A single debt measure gets {}: its parties run from creditor to debtor, which
+    `debt_axes` reads, and a giver of debt repayments is the debtor.
 
     An article before a place is skipped. Spans match whole words. A place whose spans
     occur more than once in the query, as in ``aid from Kenya to Kenya`` or ``aid to South
     Sudan from Sudan``, and a place the wording reads on both axes, get no axis.
     """
+    if len(measures) == 1 and _names_debt(_tokenize(measures[0])):
+        return {}
     query_tokens = _tokenize(query.replace("\u2019", "'"))
     measure_tokens = {token for measure in measures for token in _tokenize(measure)}
     object_words = measure_tokens | _GIVE_OBJECT_WORDS
@@ -576,15 +594,26 @@ def transfer_axes(
         if listed >= 0 and query_tokens[listed] in _CONJUNCTIONS:
             listed -= 1
         opened = before >= 0 and query_tokens[before] in _PLACE_PHRASE_PREPS
+        ends_phrase = _ends_own_phrase(query_tokens, end, measure_tokens)
         axes = read.setdefault(name, set())
-        if (before >= 0 and query_tokens[before] == "from") or listed + 1 in origin_ends:
+        if (before >= 0 and query_tokens[before] == "from") or (
+            listed + 1 in origin_ends and ends_phrase
+        ):
             axes.add("origin")
             origin_ends.add(end)
         if not opened and _is_give_verb(query_tokens, end):
             axes.add("origin")
-        if _follows_give_to(query_tokens, before, object_words):
+        if ends_phrase and _follows_give_to(query_tokens, before, object_words):
             axes.add("destination")
     return {name: next(iter(axes)) for name, axes in read.items() if len(axes) == 1}
+
+
+def _ends_own_phrase(query_tokens: list[str], end: int, measure_tokens: Collection[str]) -> bool:
+    """Whether the place ending at ``end`` ends its own phrase: no measure word and no
+    possessive follows it, as either would make the place modify the next noun."""
+    return end == len(query_tokens) or not (
+        query_tokens[end] in measure_tokens or query_tokens[end].endswith(_POSSESSIVE)
+    )
 
 
 def _is_give_verb(query_tokens: list[str], at: int) -> bool:
