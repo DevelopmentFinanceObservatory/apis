@@ -8,7 +8,15 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Annotated, Literal, NotRequired
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator, with_config
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    PlainSerializer,
+    model_validator,
+    with_config,
+)
 from typing_extensions import TypedDict  # `extra_items` (PEP 728) reaches `typing` in 3.15
 
 from dfo_platform.roles import RoleAxis
@@ -719,6 +727,13 @@ class TraceModel(TypedDict, extra_items=object):
     ]
 
 
+# A trace states what is unknown as null (`family_member_digest`, a `party_totals_left_out`
+# entry's `provenance`), and the doors dump responses with `exclude_none=True`, which drops
+# null keys from a typed dict. A trace serialises as the dict it validated to, so its nulls
+# reach the wire, while validation and the JSON schema stay `TraceModel`'s.
+Trace = Annotated[TraceModel, PlainSerializer(lambda trace: trace)]
+
+
 class Manifest(BaseModel):
     """`trace` is a plain dict at run time, since `materialise.trace.ManifestTrace.to_dict()`
     is already this field's wire shape. Its type (`TraceModel`) fixes the shape of
@@ -749,7 +764,7 @@ class Manifest(BaseModel):
     prepared_at: AwareDatetime
     coverage: CoverageModel
     citation: CitationModel
-    trace: TraceModel
+    trace: Trace
     warnings: list[WarningModel] = Field(default_factory=list)
     diagnostics: list[DiagnosticModel] = Field(
         default_factory=list,
@@ -801,4 +816,4 @@ class OptionsEnvelope(BaseModel):
     coverage: CoverageModel
     output_options: OutputOptionsModel | None = None
     warnings: list[WarningModel] = Field(default_factory=list)
-    trace: TraceModel
+    trace: Trace
