@@ -185,7 +185,7 @@ def test_each_finished_chunk_writes_the_running_total_with_no_thread(
     """Progress is written from the materialiser's own `add` calls, on its own thread."""
     operation_store = _operation_store()
     operation = _claimed_operation(operation_store)
-    seen: list[tuple[int, int]] = []
+    seen: list[tuple[int, int, frozenset[int | None]]] = []
 
     def _chunked_serve(
         stored,
@@ -203,16 +203,20 @@ def test_each_finished_chunk_writes_the_running_total_with_no_thread(
             progress.add(rows)
             current = operation_store.get(operation.id)
             assert current is not None
-            seen.append((current.rows_written, threading.active_count()))
+            started = frozenset(t.ident for t in threading.enumerate()) - threads_before
+            seen.append((current.rows_written, threading.get_ident(), started))
         return _stub_manifest()
 
     monkeypatch.setattr(worker_module, "_resolve_spec_requests", _stub_resolve)
     monkeypatch.setattr(worker_module, "serve_current", _chunked_serve)
-    threads_before = threading.active_count()
+    # Thread identities, not a count: a thread an earlier test left running can
+    # end mid-test and lower the count without this code starting or ending one.
+    threads_before = frozenset(t.ident for t in threading.enumerate())
+    caller = threading.get_ident()
 
     run_operation(operation=operation, deps=_deps(), operation_store=operation_store)
 
-    assert seen == [(100, threads_before), (123, threads_before)]
+    assert seen == [(100, caller, frozenset()), (123, caller, frozenset())]
     stored = operation_store.get(operation.id)
     assert stored is not None and stored.state == "done"
 
