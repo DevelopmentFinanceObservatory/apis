@@ -125,7 +125,9 @@ class _World:
         description = cast("dict[str, Any]", record.resolved_payload["description"])
         return {"revision": record.revision, **description}
 
-    def run(self, capsys: pytest.CaptureFixture[str], *, apply: bool) -> list[dict[str, Any]]:
+    def run(
+        self, capsys: pytest.CaptureFixture[str], *, apply: bool, every: bool = False
+    ) -> list[dict[str, Any]]:
         capsys.readouterr()
         failed = run_remint_card_descriptions(
             presentation=self.presentation,
@@ -135,6 +137,7 @@ class _World:
             vocabulary_source=_vocabulary_source(_vocabulary()),
             descriptions=self.descriptions,
             apply=apply,
+            every=every,
         )
         assert failed == 0
         return [json.loads(line) for line in capsys.readouterr().out.splitlines()]
@@ -225,20 +228,32 @@ def test_a_dry_run_lists_the_stale_cards_and_writes_nothing(
     )
 
 
+@pytest.mark.parametrize(
+    ("every", "revised"),
+    [
+        pytest.param(False, {"malaria", "quotient", "cached"}, id="cards-over-filled-records"),
+        pytest.param(
+            True, {"malaria", "quotient", "cached", "setless"}, id="all-selects-every-card"
+        ),
+    ],
+)
 def test_an_apply_revises_the_stale_cards_to_todays_records_and_a_second_run_revises_none(
-    world: _World, capsys: pytest.CaptureFixture[str]
+    world: _World, capsys: pytest.CaptureFixture[str], every: bool, revised: set[str]
 ) -> None:
+    """`--all` also revises the card over a record reworded with no fill, as a composer
+    change rewords every card's record."""
     before = {name: world.head(name) for name in world.cards}
     assert _input_labels(before["quotient"])[0] == _STALE_INPUT
 
-    lines = world.run(capsys, apply=True)
+    lines = world.run(capsys, apply=True, every=every)
 
     events = {line["component_id"]: line["event"] for line in lines[:-1]}
+    selected = {name for name in world.cards if every or name != "setless"}
     assert events == {
-        world.cards["malaria"]: "presentation_card_reminted",
-        world.cards["quotient"]: "presentation_card_reminted",
-        world.cards["cached"]: "presentation_card_reminted",
-        world.cards["fresh"]: "presentation_card_remint_unchanged",
+        world.cards[name]: "presentation_card_reminted"
+        if name in revised
+        else "presentation_card_remint_unchanged"
+        for name in selected
     }
     after = {name: world.head(name) for name in world.cards}
     assert before["cached"]["title"] == before["malaria"]["title"]
@@ -248,11 +263,16 @@ def test_an_apply_revises_the_stale_cards_to_todays_records_and_a_second_run_rev
         assert not after[name]["title"].startswith(f"{_STALE_TITLE},")
     assert after["quotient"]["revision"] == 2
     assert _input_labels(after["quotient"])[0] == _FRESH_INPUT
-    assert after["setless"] == before["setless"], "no fill reached the record it is drawn from"
+    if every:
+        assert after["setless"]["revision"] == 2
+        assert after["setless"]["title"] != before["setless"]["title"]
+    else:
+        assert after["setless"] == before["setless"], "no fill reached the record it is drawn from"
     assert after["fresh"] == before["fresh"], "issued from today's record"
 
-    again = world.run(capsys, apply=True)
+    again = world.run(capsys, apply=True, every=every)
     assert {line["event"] for line in again[:-1]} == {"presentation_card_remint_unchanged"}
     counts = ("selected", "revised", "unchanged")
-    assert {key: again[-1][key] for key in counts} == {"selected": 4, "revised": 0, "unchanged": 4}
+    n = len(selected)
+    assert {key: again[-1][key] for key in counts} == {"selected": n, "revised": 0, "unchanged": n}
     assert {name: world.head(name) for name in world.cards} == after

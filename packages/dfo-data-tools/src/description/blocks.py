@@ -18,9 +18,11 @@ from urllib.parse import quote
 from dfo_frame_grammar import STAT_VAR_COLUMN
 from pydantic.experimental.missing_sentinel import MISSING
 
+from code_index.query import CodeIndex
 from description.caveats_text import caveat_text
 from description.facts import (
     CaveatFact,
+    ComposedVariable,
     DescriptionRecord,
     DimensionFacts,
     DrawnSeries,
@@ -50,6 +52,8 @@ CAVEATS_MAX = 50
 """The most caveats a description serves, the description schema's bound."""
 DRAWN_VALUES_MAX = 50
 """The most values a drawn dimension lists, the description schema's bound."""
+SOURCE_CODES_MAX = 50
+"""The most publisher codes a `source_codes` list holds, the description schema's bound."""
 DRAWN_VALUES_BUDGET_BYTES = 256 * 1024
 """The most bytes the drawn dimensions' `values` take together, as compact UTF-8 JSON. A
 card's envelope holds at most `assembler.limits.MAX_ENVELOPE_BYTES` (2 MiB). The schema lets
@@ -377,8 +381,10 @@ def drawn(record: DescriptionRecord, selection: SelectionFacts, words: Words) ->
     series first draw them, each with its definition where the vocabulary holds one, unless it
     draws more than `DRAWN_VALUES_MAX`, so a list that is served is complete. A dimension
     with a drawn code that neither the vocabulary nor the evidence labels serves no `values`,
-    with one gap naming the list, so a served list labels every code. The lists are held to
-    `DRAWN_VALUES_BUDGET_BYTES` (`_within_budget`)."""
+    with one gap naming the list, so a served list labels every code. A value the drawn
+    variables declare on their own index rows carries the publisher codes of the series
+    holding it (`source_codes`). The lists are held to `DRAWN_VALUES_BUDGET_BYTES`
+    (`_within_budget`)."""
     held = {
         dimension.property: {value.value for value in dimension.values}
         for dimension in (record.variables.dimensions or [] if record.variables else [])
@@ -389,6 +395,12 @@ def drawn(record: DescriptionRecord, selection: SelectionFacts, words: Words) ->
         for prop, code in _series_codes(series, words.vocabulary):
             if prop in held and code in held[prop]:
                 taken[prop][code] = None
+    declaring: dict[tuple[str, str], list[DrawnSeries]] = {}
+    for series in selection.series:
+        variable = _drawn_variable(series)
+        row = words.vocabulary.index.statvar_by_dcid(variable) if variable is not None else None
+        for pair in row.constraint_properties.items() if row is not None else ():
+            declaring.setdefault(pair, []).append(series)
     dimensions = [prop for prop in held if taken[prop]]
     wire: Wire = {
         "dimensions": _within_budget(
@@ -399,6 +411,12 @@ def drawn(record: DescriptionRecord, selection: SelectionFacts, words: Words) ->
                     of=len(held[prop]),
                     words=words,
                     path=f"about.drawn.dimensions.{n}",
+                    coded={
+                        code: codes
+                        for code in taken[prop]
+                        if (prop, code) in declaring
+                        and (codes := source_codes(record, declaring[prop, code], words.vocabulary))
+                    },
                 )
                 for n, prop in enumerate(dimensions)
             ],
@@ -410,7 +428,17 @@ def drawn(record: DescriptionRecord, selection: SelectionFacts, words: Words) ->
     return wire
 
 
-def _drawn_dimension(prop: str, codes: Sequence[str], *, of: int, words: Words, path: str) -> Wire:
+def _drawn_dimension(
+    prop: str,
+    codes: Sequence[str],
+    *,
+    of: int,
+    words: Words,
+    path: str,
+    coded: Mapping[str, list[Wire]],
+) -> Wire:
+    """A drawn dimension at `path`, its values each with its definition and the publisher
+    codes `coded` gives it."""
     dimension: Wire = {
         "property": words.property(prop, f"{path}.property"),
         "count": len(codes),
@@ -422,7 +450,9 @@ def _drawn_dimension(prop: str, codes: Sequence[str], *, of: int, words: Words, 
         words.gap(f"{path}.values")
         return dimension
     dimension["values"] = [
-        words.defined_ref(code, f"{path}.values.{n}") for n, code in enumerate(codes)
+        words.defined_ref(code, f"{path}.values.{n}")
+        | ({"source_codes": coded[code]} if code in coded else {})
+        for n, code in enumerate(codes)
     ]
     return dimension
 
@@ -477,6 +507,94 @@ def _series_codes(series: DrawnSeries, vocabulary: Vocabulary) -> Iterator[tuple
 def drawn_unit(selection: SelectionFacts, words: Words) -> Wire | None:
     """The unit every drawn series holds; unknown when they hold several."""
     return _one_unit([series.unit for series in selection.series], words, "about.unit")
+
+
+# Source codes
+
+type _Coded = tuple[frozenset[tuple[str, str]], str | None]
+"""The `(provenance, code)` pairs naming one series' variable, and the source it is read
+from."""
+
+
+def source_codes(
+    record: DescriptionRecord, series: Sequence[DrawnSeries], vocabulary: Vocabulary
+) -> list[Wire] | None:
+    """The publisher codes of the variables `series` hold (`served_codes`). A series of a
+    computed version whose variable the code index gives no code takes the codes of the
+    variables it was composed from (`_variable_codes`)."""
+    composed = {
+        variable.variable: variable
+        for variable in (record.computed.composed or [] if record.computed else [])
+    }
+    index = vocabulary.index
+    return served_codes(
+        [(_variable_codes(_drawn_variable(one), index, composed), one.source) for one in series],
+        index,
+        computed=record.computed is not None,
+    )
+
+
+def version_source_codes(record: DescriptionRecord, vocabulary: Vocabulary) -> list[Wire] | None:
+    """The publisher codes of the one variable a dataset version's definition resolved to,
+    read from each source its series name (`served_codes`). `None` for a version of several
+    variables, which its record does not list."""
+    variables = record.variables
+    if variables is None or variables.variable is None:
+        return None
+    codes = frozenset(vocabulary.index.source_codes_of(variables.variable))
+    counts = source_counts(record.series)
+    sources = (list(counts) if counts is not None else []) or [None]
+    return served_codes([(codes, source) for source in sources], vocabulary.index, computed=False)
+
+
+def served_codes(held: Sequence[_Coded], index: CodeIndex, *, computed: bool) -> list[Wire] | None:
+    """The `(provenance, code)` pairs `held` names, each once, sorted by provenance and then
+    code, as Search serves `stat_vars.source_codes`. `None` when there are none, or more
+    than `SOURCE_CODES_MAX`, so a list that is served is complete.
+
+    A code is `exact`, as Search's is when its Spec is the series the provenance files
+    under it (`search.engine.source_code.stands_for_code`), when every series of `held` is
+    read from its provenance and named by it, and the provenance gives none of the code's
+    variables another code. A computed version's series were made from the variables the
+    codes name, so none of their codes is exact."""
+    pairs = sorted({pair for codes, _ in held for pair in codes})
+    if not pairs or len(pairs) > SOURCE_CODES_MAX:
+        return None
+    return [
+        {"provenance": provenance, "code": code}
+        | ({"exact": True} if not computed and _names_all(provenance, code, held, index) else {})
+        for provenance, code in pairs
+    ]
+
+
+def _names_all(provenance: str, code: str, held: Sequence[_Coded], index: CodeIndex) -> bool:
+    return not index.shared_codes(provenance, code) and all(
+        source == provenance and (provenance, code) in codes for codes, source in held
+    )
+
+
+def _variable_codes(
+    variable: str | None,
+    index: CodeIndex,
+    composed: Mapping[str, ComposedVariable],
+    seen: frozenset[str] = frozenset(),
+) -> frozenset[tuple[str, str]]:
+    """The `(provenance, code)` pairs naming `variable` in the code index, else those of the
+    variables a computed version composed it from, followed back through each composed
+    variable. Empty for a variable that neither names."""
+    if variable is None:
+        return frozenset()
+    if own := index.source_codes_of(variable):
+        return frozenset(own)
+    parts = composed.get(variable)
+    if parts is None or variable in seen:
+        return frozenset()
+    return frozenset().union(
+        *(
+            _variable_codes(part, index, composed, seen | {variable})
+            for part in [*parts.first, *parts.second]
+        )
+    )
 
 
 # sources
