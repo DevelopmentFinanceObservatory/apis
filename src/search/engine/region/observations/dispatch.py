@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from materialise import GraphReader
 from materialise.facets import FacetSelection
-from materialise.finish import deflator_projected_warning
+from materialise.finish import deflator_projected_examples, deflator_projected_warning
 from materialise.rate_tables import RateTableCache
 from origin_catalogue import recording_un_blocked_places
 from search.engine.clients.graph import EngineGraphClient
@@ -232,12 +232,14 @@ def _deflator_projected_warning(spec_id: str, observations: SpecObservations) ->
     ]
     if not projected:
         return None
-    built = deflator_projected_warning(projected)
+    rows = sum(record.projected_count for record in projected)
+    built = deflator_projected_warning(rows)
     return Warning(
         code=DEFLATOR_PROJECTED,
         severity=built["severity"],
         message=built["message"],
         spec_id=spec_id,
+        params={"count": rows, "examples": deflator_projected_examples(projected)},
     )
 
 

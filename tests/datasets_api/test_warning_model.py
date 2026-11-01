@@ -15,7 +15,6 @@ from datasets_api.manifest import (
     warning_model,
 )
 from datasets_api.manifest_models import WarningModel
-from datasets_api.origin import _withheld_warning
 
 from ._version_facts import facts_from_body, golden_cases
 
@@ -189,9 +188,12 @@ def _stored_with(warning: Mapping[str, object]) -> StoredVersion:
         # A row stored before the fields existed names its places and provenances in its
         # message alone.
         pytest.param(
-            _withheld_warning("Count_Person", {"country/PSE": ("dc/base/WHO_GHO",)}).model_dump(
-                mode="json"
-            ),
+            {
+                "code": "withheld_by_registry",
+                "severity": "warn",
+                "message": "Count_Person served no observations for country/PSE; withheld "
+                "provenances holding data there: dc/base/WHO_GHO.",
+            },
             [],
             [],
             id="stored-before-the-fields",

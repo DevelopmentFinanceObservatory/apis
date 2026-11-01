@@ -32,7 +32,6 @@ from __future__ import annotations
 import datetime
 import hashlib
 import importlib.resources
-import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from functools import cache
 from typing import Literal, NamedTuple, cast
@@ -859,11 +858,6 @@ def _projected_caveat(
     )
 
 
-_WITHHELD_MESSAGE = re.compile(r"(?P<variable>\S+) served no observations for (?P<places>.+?); ")
-_UN_UNREAD_MESSAGE = re.compile(r"No UN data was read for (?P<places>.+)\.$")
-_MORE_NAMED = re.compile(r"^(?P<named>.+) and (?P<more>\d+) more$")
-
-
 def _withheld_caveat(
     warning: Mapping[str, object],
     facts: ManifestFacts,
@@ -872,18 +866,9 @@ def _withheld_caveat(
 ) -> None:
     if any(gap.get("code") == "withheld_by_registry" for gap in _origin_gaps(facts)):
         return
-    match = _WITHHELD_MESSAGE.search(cast(str, warning.get("message", "")))
-    if match is None:
-        raise _Unstated
-    entities, count = _named_places(match["places"])
-    caveats.append(
-        CaveatFact(
-            kind="coverage_gap",
-            series=[_bare(match["variable"])],
-            entities=entities,
-            count=count,
-        )
-    )
+    series, _count = _counted_refs(warning, "withheld_members")
+    entities, count = _counted_refs(warning, "unserved_entities")
+    caveats.append(CaveatFact(kind="coverage_gap", series=series, entities=entities, count=count))
 
 
 def _un_unread_caveat(
@@ -894,21 +879,20 @@ def _un_unread_caveat(
 ) -> None:
     if any(gap.get("code") == "un_system_unavailable" for gap in _origin_gaps(facts)):
         return
-    match = _UN_UNREAD_MESSAGE.search(cast(str, warning.get("message", "")))
-    if match is None:
-        raise _Unstated
-    entities, count = _named_places(match["places"])
+    entities, count = _counted_refs(warning, "unserved_entities")
     caveats.append(CaveatFact(kind="coverage_gap", entities=entities, count=count))
 
 
-def _named_places(named: str) -> tuple[list[str], int | None]:
-    """The places a message lists (`dfo_platform.named.named_capped`), and how many it
-    counts in all when it names only some."""
-    more = 0
-    if (capped := _MORE_NAMED.match(named)) is not None:
-        named, more = capped["named"], int(capped["more"])
-    places = [_bare(place) for place in named.split(", ")]
-    return places, len(places) + more if more else None
+def _counted_refs(warning: Mapping[str, object], field: str) -> tuple[list[str], int | None]:
+    """The bare dcids of the refs a warning's counted `field` carries, and how many it counts
+    in all when it carries only some (`CountedRefsModel`). Raises `_Unstated` when the warning
+    carries no such field."""
+    counted = cast("Mapping[str, object] | None", warning.get(field))
+    if not counted or not counted.get("refs"):
+        raise _Unstated
+    refs = [_bare(ref) for ref in cast("Sequence[str]", counted["refs"])]
+    total = cast(int, counted["count"])
+    return refs, total if total > len(refs) else None
 
 
 _STORED_WARNING_TRANSLATIONS: Mapping[str, _Translation] = {

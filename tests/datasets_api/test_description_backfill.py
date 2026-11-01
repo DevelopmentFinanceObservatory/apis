@@ -44,7 +44,7 @@ from dataset_store.snapshot import LiveSnapshotReader
 from datasets_api import maintenance
 from datasets_api.description_record import backfill_record
 from datasets_api.maintenance import run_backfill_descriptions
-from datasets_api.origin import _withheld_warning, un_unavailable_warnings
+from datasets_api.origin import un_unavailable_warnings, withheld_by_registry_warning
 from datasets_api.render import STATISTICS_MEDIA_TYPE
 from datasets_api.version_store import LiveVersionRecordWriter
 from datasets_api.versions import ArtifactRecord, VersionRecord
@@ -54,6 +54,7 @@ from materialise.frame_build import build_frame
 from materialise.statistics import SeriesStatisticsSink, compute_series_statistics_table
 from origin_catalogue.context import UnBlockedPlaces
 from tests.artifact_store.conftest import FakeGCSClient
+from tests.dataset_store._warning_refs import UN_DETAIL, old_withheld
 from tests.materialise._canonical_frame import (
     CANONICAL_FRAME_RENDERING,
     canonical_frame_parquet,
@@ -597,14 +598,13 @@ _NAMED_PLACES = (
 def test_stored_warning_codes_become_the_steps_and_caveats_they_route_to(
     places: tuple[str, ...], count: int | None
 ) -> None:
-    """A registry withholding and an unanswered UN read are coverage gaps naming what their
-    messages list, in the one format each producer has written, a sum is a step, and a code
-    routed to the manifest adds nothing. A message naming more than five places names five and
-    counts the rest."""
+    """A registry withholding and an unanswered UN read are coverage gaps naming the series
+    and places their fields carry, a sum is a step, and a code routed to the manifest adds
+    nothing. A field counting more than five places carries five and counts the rest."""
     blocked = UnBlockedPlaces()
     blocked.add(places)
-    withheld = _withheld_warning(
-        f"dcid:{family_fixture._MEMBER_A}", dict.fromkeys(places, ("dc/withheld",))
+    withheld = withheld_by_registry_warning(
+        family_fixture._MEMBER_A, dict.fromkeys(places, ("dc/withheld",))
     )
     body = _family_body()
     body["warnings"] = [
@@ -642,8 +642,8 @@ def test_a_withholding_and_an_unanswered_read_the_trace_records_are_stated_once_
     trace, naming every place, and its stored warnings add no second caveat."""
     blocked = UnBlockedPlaces()
     blocked.add(_NAMED_PLACES)
-    withheld = _withheld_warning(
-        f"dcid:{family_fixture._MEMBER_A}", dict.fromkeys(_NAMED_PLACES, ("dc/withheld",))
+    withheld = withheld_by_registry_warning(
+        family_fixture._MEMBER_A, dict.fromkeys(_NAMED_PLACES, ("dc/withheld",))
     )
     body = _family_body()
     body["warnings"] = [
@@ -670,17 +670,27 @@ def test_a_withholding_and_an_unanswered_read_the_trace_records_are_stated_once_
     ]
 
 
-def test_a_stored_message_naming_nothing_readable_leaves_its_caveat_out(
+def test_a_stored_old_message_leaves_its_caveat_out(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Old prose is no defect: the version gains its record without the caveat, the run
-    succeeds, and one warning names the version and code."""
+    """A `withheld_by_registry` or `un_system_unavailable` warning stored in the shape its
+    writer used before it counted, naming its places in the message and carrying no counted
+    field, is no defect: the version gains its record without the caveat, the run succeeds,
+    and one warning names the version and code. The record does not parse the message."""
     store = FakeVersionRecordDatasetStore()
     content_version = "cv_" + "6f" * 16
     body = _family_body()
     body["warnings"] = [
-        {"code": "withheld_by_registry", "severity": "warn", "message": "GrantB withheld at KEN"},
-        {"code": "un_system_unavailable", "severity": "warn", "message": "UN unavailable"},
+        {
+            "code": "withheld_by_registry",
+            "severity": "warn",
+            "message": old_withheld(family_fixture._MEMBER_A, {"country/KEN": ("dc/withheld",)}),
+        },
+        {
+            "code": "un_system_unavailable",
+            "severity": "warn",
+            "message": f"{UN_DETAIL} No UN data was read for country/KEN, country/UGA.",
+        },
     ]
     _stored_without_record(store, subject_id=_SPEC_ID, content_version=content_version, body=body)
 

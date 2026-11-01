@@ -94,8 +94,8 @@ def test_single_projected_series_warns_with_count_and_example():
     warnings = _attach(observations)
     (warn,) = [w for w in warnings if w.code == DEFLATOR_PROJECTED]
     assert warn.severity == "warn"
-    assert "1 row(s)" in warn.message
-    assert "country/KEN@2022" in warn.message
+    assert warn.message.endswith(" It applies to 1 row.")
+    assert warn.params == {"count": 1, "examples": ["country/KEN@2022"]}
 
     # Perturbation. Sets projected_count and projected_examples to zero and
     # confirms the warning is absent.
@@ -129,13 +129,26 @@ def test_two_projected_series_total_counts_and_cap_examples():
     )
     warnings = _attach(observations)
     (warn,) = [w for w in warnings if w.code == DEFLATOR_PROJECTED]
-    assert "12 row(s)" in warn.message
-    assert "(truncated)" in warn.message
-    expected_examples = sorted(set(examples_a + examples_b))[:10]
-    for example in expected_examples:
-        assert example in warn.message
-    for example in sorted(set(examples_a + examples_b))[10:]:
-        assert example not in warn.message
+    assert warn.message.endswith(" It applies to 12 rows.")
+    assert warn.params == {
+        "count": 12,
+        "examples": sorted(set(examples_a + examples_b))[:10],
+    }
+
+
+def test_five_rows_at_one_entity_and_year_carry_one_example():
+    """`count` counts rows and `examples` distinct keys, so five rows at one entity and year
+    count five and carry one example."""
+    observations = _observations(
+        [
+            _series(
+                "country/KEN",
+                conversion=_conversion(projected_count=5, projected_examples=["country/KEN@2022"]),
+            )
+        ]
+    )
+    (warn,) = [w for w in _attach(observations) if w.code == DEFLATOR_PROJECTED]
+    assert warn.params == {"count": 5, "examples": ["country/KEN@2022"]}
 
 
 def test_include_points_false_never_warns():
@@ -263,8 +276,7 @@ def test_real_conversion_projected_rate_warns_on_the_text_door():
     warnings = _fetch_and_attach(eur_projected=True)
     matches = [w for w in warnings if w.code == DEFLATOR_PROJECTED]
     assert len(matches) == 1, f"expected exactly one deflator_projected warning, got {warnings}"
-    assert "1 row(s)" in matches[0].message
-    assert f"{_EUR}@{_YEAR}" in matches[0].message
+    assert matches[0].params == {"count": 1, "examples": [f"{_EUR}@{_YEAR}"]}
 
     warnings_actual = _fetch_and_attach(eur_projected=False)
     assert not any(w.code == DEFLATOR_PROJECTED for w in warnings_actual)

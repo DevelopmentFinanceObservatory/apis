@@ -26,6 +26,7 @@ from datasets_api.origin import (
     withheld_warning,
     withheld_warnings,
 )
+from datasets_api.warnings import DATASETS_WARNING_CATALOGUE
 from dc_graph import (
     Facet,
     GraphCapExceededError,
@@ -231,7 +232,13 @@ def _served(*entities: str) -> Coverage:
     )
 
 
-def test_an_unserved_entity_with_withheld_data_names_the_provenances():
+def _places(warning) -> list[str]:
+    """The bare dcids of the places a warning's `unserved_entities` carries."""
+    return [ref.removeprefix("dcid:") for ref in warning.unserved_entities.refs]
+
+
+def test_an_unserved_entity_with_withheld_data_counts_the_places_and_the_provenances():
+    """The message counts; the fields carry the place, the series and the provenance."""
     graph = _WithheldGraph(withheld=["dc/base/UN_SDG"])
 
     found = withheld_warning(graph, [(_request(), _served(_KEN))], deadline=None)
@@ -239,10 +246,15 @@ def test_an_unserved_entity_with_withheld_data_names_the_provenances():
     assert found is not None
     index, warning = found
     assert index == 0
-    assert warning.code == "withheld_by_registry"
-    assert warning.severity == "warn"
-    assert "country/NGA" in warning.message
-    assert "dc/base/UN_SDG" in warning.message
+    assert warning.model_dump() == {
+        "code": "withheld_by_registry",
+        "severity": "warn",
+        "message": DATASETS_WARNING_CATALOGUE["withheld_by_registry"][1]
+        + " No observations were served for 1 entity, where 1 withheld provenance holds data.",
+        "unserved_entities": {"count": 1, "refs": [f"dcid:{_NGA}"]},
+        "withheld_members": {"count": 1, "refs": ["dcid:Count_Person"]},
+        "withheld_provenances": {"count": 1, "refs": ["dcid:dc/base/UN_SDG"]},
+    }
     assert graph.calls == [(("Count_Person",), (_NGA,))]
 
 
@@ -316,7 +328,7 @@ def test_a_request_binding_no_entity_is_checked_at_the_countries_it_left_unserve
     assert found is not None
     index, warning = found
     assert index == 0
-    assert f"served no observations for {_NGA}, {_UGA};" in warning.message
+    assert _places(warning) == [_NGA, _UGA]
     # Earth is the scope's fallback and no part of a country answer, so it is not re-read.
     assert graph.calls == [(("Count_Person",), (_NGA, _UGA))]
     # The countries are the ones the result carries, so the warning reads no containment.
@@ -330,7 +342,7 @@ def test_a_request_binding_no_entity_is_checked_at_each_default_place_it_did_not
         graph, [(_unbound(), _served(_UGA))], default_scope=(_KEN, _NGA, _UGA), deadline=None
     )
 
-    assert f"served no observations for {_KEN}, {_NGA};" in warning.message
+    assert _places(warning) == [_KEN, _NGA]
 
 
 def test_a_request_binding_no_entity_served_at_every_country_reads_nothing():
@@ -360,8 +372,7 @@ def test_the_warning_names_only_the_entities_the_re_read_reports():
 
     (warning,) = withheld_warnings(graph, [(request, _served(_KEN))], deadline=None)
 
-    assert f"served no observations for {_UGA};" in warning.message
-    assert _NGA not in warning.message
+    assert _places(warning) == [_UGA]
 
 
 def test_the_re_read_runs_under_the_deadline_and_the_byte_cap():
@@ -602,7 +613,7 @@ class TestEmptyProbe:
         (warning,) = _check_empty_probe(graph, _unbound(f"dcid:{_UN_VARIABLE}"), refused=[_NGA])
 
         assert warning.code == "un_system_unavailable"
-        assert warning.message.endswith(f"No UN data was read for {_NGA}.")
+        assert _places(warning) == [_NGA]
 
     def test_a_member_binding_no_place_under_withheld_provenances_refuses_excluded(self):
         graph = _ScopedWithheldGraph(withheld=["dc/base/UN_SDG"])
@@ -695,7 +706,13 @@ class TestEmptyProbe:
 
         (warning,) = un_unavailable_warnings(blocked)
         assert warning.code == "un_system_unavailable"
-        assert warning.message.endswith(f"No UN data was read for {_KEN}, {_NGA}.")
+        assert warning.model_dump() == {
+            "code": "un_system_unavailable",
+            "severity": "warn",
+            "message": DATASETS_WARNING_CATALOGUE["un_system_unavailable"][1]
+            + " No UN data was read for 2 entities.",
+            "unserved_entities": {"count": 2, "refs": [f"dcid:{_KEN}", f"dcid:{_NGA}"]},
+        }
         assert [gap.as_trace_entry() for gap in un_unavailable_gaps(blocked)] == [
             {"code": "un_system_unavailable", "entities": [_KEN, _NGA]}
         ]
@@ -713,13 +730,13 @@ class TestEmptyProbe:
 
         un_member = _request(f"dcid:{_UN_VARIABLE}", entities=(_KEN, _NGA))
         (warning,) = un_unavailable_warnings(blocked, request=un_member)
-        assert warning.message.endswith(f"No UN data was read for {_KEN}.")
+        assert _places(warning) == [_KEN]
         assert un_unavailable_warnings(blocked, request=_request()) == ()
         # A member binding no place covers every country, so every refused place is its own.
         (unbound_warning,) = un_unavailable_warnings(
             blocked, request=_unbound(f"dcid:{_UN_VARIABLE}")
         )
-        assert unbound_warning.message.endswith(f"No UN data was read for {_KEN}, {_UGA}.")
+        assert _places(unbound_warning) == [_KEN, _UGA]
 
 
 class _WithholdingGraph(FakeGraphReader):

@@ -264,7 +264,8 @@ class CountedRefsModel(BaseModel):
     `materialise.codes.CountedRefs`). A message states the count and may name none, so a
     reader labels the refs. A group's members come in request order and entities sorted;
     for `withheld_by_registry`, `unserved_entities` come in the order the request names them
-    and `withheld_provenances` in the order they first occur across those places."""
+    and `withheld_provenances` in the order they first occur across those places; for
+    `un_system_unavailable`, `unserved_entities` come in the order the UN reads recorded them."""
 
     model_config = ConfigDict(extra="forbid")
     count: int = Field(description="how many there are")
@@ -318,8 +319,8 @@ class WarningModel(BaseModel):
     group's `coverage_below_scope` its four member fields, `coverage_below_scope`
     `unserved_entities`, `requested_years` and `served_years`, `currency_unmapped_omitted`
     `omitted_entities`, `deflator_missing_omitted` `omitted_entity_years`, and
-    `withheld_by_registry` `unserved_entities`, `withheld_members` and `withheld_provenances`.
-    A stored warning can lack a field its code carries: a `withheld_by_registry` warning can
+    `withheld_by_registry` `unserved_entities`, `withheld_members` and `withheld_provenances`, and
+    `un_system_unavailable` `unserved_entities`. A stored warning can lack a field its code carries: a `withheld_by_registry` warning can
     withhold with none of its three. A `None` field is left out of every dump, so other codes'
     warnings, on the wire and in stored version bodies, stay exactly `{code, severity,
     message}`.
@@ -396,7 +397,9 @@ class WarningModel(BaseModel):
         description=(
             "coverage_below_scope: the entities the request binds that served no observation, "
             "sorted; withheld_by_registry: the places among them at which the registry "
-            "withholds data, in the order the request names them; absent when there are none"
+            "withholds data, in the order the request names them; un_system_unavailable: the "
+            "places the UN System Data Commons could not serve, in the order its reads "
+            "recorded them; absent when there are none"
         ),
     )
     requested_years: YearRangeModel | None = Field(
