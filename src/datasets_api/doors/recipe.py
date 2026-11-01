@@ -211,23 +211,25 @@ def build_recipe_door(
             ReplayKeyHeld,
             PublishNotPermitted,
         ),
-        exception_exemplars=(
-            RecipeNotFound(spec_id="ops_exemplar", content_version="ocv_exemplar"),
-            ReplayNotFound(replay_key="rpk_exemplar"),
-            RecipeBackpressure(),
-            RecipeFrameNotStored(spec_id="ops_exemplar", content_version="ocv_exemplar"),
-            RecipeDiverges(
-                spec_id="ops_exemplar", content_version="ocv_exemplar", field="normal_form_hash"
-            ),
-            ReplayKeyHeld(
-                replay_key="rpk_exemplar",
-                spec_id="ops_exemplar",
-                content_version="ocv_exemplar",
-                holder_spec_id="ops_holder",
-                holder_content_version="ocv_holder",
-            ),
-            PublishNotPermitted(),
-        ),
+        endpoint_exemplars={
+            "datasets.recipe": (
+                RecipeNotFound(spec_id="ops_exemplar", content_version="ocv_exemplar"),
+                ReplayNotFound(replay_key="rpk_exemplar"),
+                RecipeBackpressure(),
+                RecipeFrameNotStored(spec_id="ops_exemplar", content_version="ocv_exemplar"),
+                RecipeDiverges(
+                    spec_id="ops_exemplar", content_version="ocv_exemplar", field="normal_form_hash"
+                ),
+                ReplayKeyHeld(
+                    replay_key="rpk_exemplar",
+                    spec_id="ops_exemplar",
+                    content_version="ocv_exemplar",
+                    holder_spec_id="ops_holder",
+                    holder_content_version="ocv_holder",
+                ),
+                PublishNotPermitted(),
+            )
+        },
     )
 
 

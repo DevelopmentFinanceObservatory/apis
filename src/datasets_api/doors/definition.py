@@ -910,6 +910,8 @@ _RENDERING_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
 
 # The types above the mint door raises too, whose exemplars it declares.
 _SHARED_WITH_MINT_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
+    OperationBacklogFull,
+    DefaultFacetUndefinedError,
     *_RESOLUTION_EXCEPTION_TYPES,
     *_RUN_EXCEPTION_TYPES,
     *_RENDERING_EXCEPTION_TYPES,
@@ -957,6 +959,79 @@ OPERATION_SUBMITTED_RESPONSES: dict[int | str, dict[str, Any]] = {
     }
 }
 """The `202` the mint and definition routes answer when a build exceeds the inline budget."""
+
+
+_EXCEPTION_EXEMPLARS: tuple[BaseException, ...] = (
+    SpecNotFound(id="spec_exemplar"),
+    DefinitionMemberNotResolvable(members=("spec_exemplar",)),
+    StoredTraceMissingResolvedStatVars(subject_id="spec_exemplar", content_version="cv_exemplar"),
+    without_pointers(FacetNotAvailableError("exemplar", facet_pointer="/facets/exemplar")),
+    without_pointers(
+        ExcludedByRegistry(variables=("Exemplar",), provenances=("dc/base/Exemplar",))
+    ),
+    QueryOptionsInvalid(pointer="/options/exemplar", detail="exemplar"),
+    DefinitionBackpressure(),
+    MalformedSidecarIdentity(detail="exemplar", pointer=_DEFINITION_POINTER),
+    SpecIdMismatch(supplied="spec_exemplar", computed="spec_exemplar_computed"),
+    SpecRegistryUnavailable("registry write pool exhausted"),
+    DefinitionNotReproducible(spec_ids=("spec_exemplar",), detail="exemplar"),
+    SpecNotExportable(spec_id="spec_exemplar", detail="exemplar"),
+    RoleSignatureIncompatible(
+        spec_id="spec_exemplar", roles_by_stat_var={"dcid:exemplar": ("recipient",)}
+    ),
+    OverCeilingError("exemplar", ceiling_kind="rows", count=1, cap=1),
+    WindowOverCap(
+        pointer=f"{_DEFINITION_POINTER}/identity/requested_window",
+        start_year=1960,
+        end_year=2060,
+        too_long=WindowTooLong(
+            read=TimeWindow(start_year=1960, end_year=2060),
+            years=101,
+            cap=80,
+            first_year=1960,
+            last_year=2087,
+        ),
+    ),
+    EntityKindRefused(
+        pointer=f"{_DEFINITION_POINTER}/identity/entities/origin",
+        refused=RoleKindRefused(
+            role="origin",
+            axis="origin",
+            dcid="Count_Person",
+            kind="stat_var",
+            allowed=("country", "organisation"),
+            family=None,
+        ),
+    ),
+    RecipeNotDeclaredError("exemplar", cause="recipe_undeclared"),
+    RateCoverageGapError("exemplar", cause="currency_unmapped", entities=("CurrencyExemplar",)),
+    NonCurrencyUnitError("exemplar", unit="Exemplar"),
+    FacetBindingUnsupportedError("exemplar"),
+    RateTableInvalidError("exemplar"),
+    DatasetsStoreUnavailable("exemplar"),
+    SnapshotRevoked(id="spec_exemplar", content_version="cv_exemplar", reason=None),
+    IdentityCollision(subject_id="spec_exemplar"),
+    IdentityQuarantined(subject_id="spec_exemplar", id_kind="spec"),
+    # The mint's exemplars of the materialisation and rendering refusals both doors raise.
+    *(
+        exemplar
+        for exemplar in MINT_EXCEPTION_EXEMPLARS
+        if isinstance(exemplar, _SHARED_WITH_MINT_EXCEPTION_TYPES)
+    ),
+)
+"""An exemplar of every refusal the door's routes raise."""
+
+ROUTE_EXCEPTION_EXEMPLARS: Mapping[str, tuple[BaseException, ...]] = {
+    endpoint: tuple(exemplar for exemplar in _EXCEPTION_EXEMPLARS if isinstance(exemplar, declared))
+    for endpoint, declared in ROUTE_EXCEPTION_TYPES.items()
+}
+"""The exemplars of the refusals each route of this door raises (`ROUTE_EXCEPTION_TYPES`)."""
+
+SERVING_EXCEPTION_EXEMPLARS: tuple[BaseException, ...] = tuple(
+    exemplar for exemplar in _EXCEPTION_EXEMPLARS if isinstance(exemplar, SERVING_EXCEPTION_TYPES)
+)
+"""The exemplars of `SERVING_EXCEPTION_TYPES`, for a door that serves a registered id as this
+door does."""
 
 
 def build_definition_door(*, deps: DepsCell) -> DoorContribution:
@@ -1022,66 +1097,5 @@ def build_definition_door(*, deps: DepsCell) -> DoorContribution:
         ),
         classify=classify_definition_exception,
         exception_types=tuple(dict.fromkeys(chain.from_iterable(ROUTE_EXCEPTION_TYPES.values()))),
-        exception_exemplars=(
-            SpecNotFound(id="spec_exemplar"),
-            DefinitionMemberNotResolvable(members=("spec_exemplar",)),
-            StoredTraceMissingResolvedStatVars(
-                subject_id="spec_exemplar", content_version="cv_exemplar"
-            ),
-            without_pointers(FacetNotAvailableError("exemplar", facet_pointer="/facets/exemplar")),
-            without_pointers(
-                ExcludedByRegistry(variables=("Exemplar",), provenances=("dc/base/Exemplar",))
-            ),
-            QueryOptionsInvalid(pointer="/options/exemplar", detail="exemplar"),
-            DefinitionBackpressure(),
-            MalformedSidecarIdentity(detail="exemplar", pointer=_DEFINITION_POINTER),
-            SpecIdMismatch(supplied="spec_exemplar", computed="spec_exemplar_computed"),
-            SpecRegistryUnavailable("registry write pool exhausted"),
-            DefinitionNotReproducible(spec_ids=("spec_exemplar",), detail="exemplar"),
-            SpecNotExportable(spec_id="spec_exemplar", detail="exemplar"),
-            RoleSignatureIncompatible(
-                spec_id="spec_exemplar", roles_by_stat_var={"dcid:exemplar": ("recipient",)}
-            ),
-            OverCeilingError("exemplar", ceiling_kind="rows", count=1, cap=1),
-            WindowOverCap(
-                pointer=f"{_DEFINITION_POINTER}/identity/requested_window",
-                start_year=1960,
-                end_year=2060,
-                too_long=WindowTooLong(
-                    read=TimeWindow(start_year=1960, end_year=2060),
-                    years=101,
-                    cap=80,
-                    first_year=1960,
-                    last_year=2087,
-                ),
-            ),
-            EntityKindRefused(
-                pointer=f"{_DEFINITION_POINTER}/identity/entities/origin",
-                refused=RoleKindRefused(
-                    role="origin",
-                    axis="origin",
-                    dcid="Count_Person",
-                    kind="stat_var",
-                    allowed=("country", "organisation"),
-                    family=None,
-                ),
-            ),
-            RecipeNotDeclaredError("exemplar", cause="recipe_undeclared"),
-            RateCoverageGapError(
-                "exemplar", cause="currency_unmapped", entities=("CurrencyExemplar",)
-            ),
-            NonCurrencyUnitError("exemplar", unit="Exemplar"),
-            FacetBindingUnsupportedError("exemplar"),
-            RateTableInvalidError("exemplar"),
-            DatasetsStoreUnavailable("exemplar"),
-            SnapshotRevoked(id="spec_exemplar", content_version="cv_exemplar", reason=None),
-            IdentityCollision(subject_id="spec_exemplar"),
-            IdentityQuarantined(subject_id="spec_exemplar", id_kind="spec"),
-            # The mint's exemplars of the materialisation and rendering refusals both doors raise.
-            *(
-                exemplar
-                for exemplar in MINT_EXCEPTION_EXEMPLARS
-                if isinstance(exemplar, _SHARED_WITH_MINT_EXCEPTION_TYPES)
-            ),
-        ),
+        endpoint_exemplars=ROUTE_EXCEPTION_EXEMPLARS,
     )

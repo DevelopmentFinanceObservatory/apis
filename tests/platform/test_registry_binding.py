@@ -244,38 +244,18 @@ def _declared_types(door: DoorContribution) -> dict[str, tuple[type[BaseExceptio
     return {endpoint: ROUTE_EXCEPTION_TYPES[endpoint] for endpoint in endpoints}
 
 
-def _door_exemplars(
-    door: DoorContribution, *, pool: tuple[BaseException, ...]
-) -> dict[str, tuple[BaseException, ...]]:
-    """Per endpoint `door` binds, its exemplars and any exemplar in `pool` of exactly a type it
-    declares for that endpoint, since a door may declare a type it shares and leave the exemplar
-    to the door that owns it. A door that binds several endpoints declares their types per route,
-    and its own exemplars count where their type is declared."""
-    declared_by_endpoint = _declared_types(door)
-    single = len(declared_by_endpoint) == 1
-    return {
-        endpoint: (
-            *(ex for ex in door.exception_exemplars if single or isinstance(ex, declared)),
-            *(ex for ex in pool if type(ex) in declared),
-        )
-        for endpoint, declared in declared_by_endpoint.items()
-    }
-
-
 @pytest.fixture(scope="module")
-def datasets_built() -> tuple[tuple[DoorContribution, ...], tuple[BaseException, ...]]:
-    """Every Datasets door, and every exemplar they declare."""
-    doors = datasets_doors(deps=DepsCell(), settings=DatasetsBuildSettings.from_env())
-    return doors, tuple(exemplar for door in doors for exemplar in door.exception_exemplars)
+def datasets_built() -> tuple[DoorContribution, ...]:
+    """Every Datasets door."""
+    return datasets_doors(deps=DepsCell(), settings=DatasetsBuildSettings.from_env())
 
 
 @pytest.fixture(scope="module")
 def datasets_exemplars(datasets_built) -> dict[str, tuple[BaseException, ...]]:
-    """Per Datasets endpoint, the exemplars of every door that binds it (`_door_exemplars`)."""
-    doors, pool = datasets_built
+    """Per Datasets endpoint, the exemplars every door that binds it declares."""
     by_endpoint: dict[str, tuple[BaseException, ...]] = {}
-    for door in doors:
-        for endpoint, exemplars in _door_exemplars(door, pool=pool).items():
+    for door in datasets_built:
+        for endpoint, exemplars in door.endpoint_exemplars.items():
             by_endpoint[endpoint] = (*by_endpoint.get(endpoint, ()), *exemplars)
     return by_endpoint
 
@@ -315,14 +295,11 @@ def test_every_declared_type_has_an_exemplar_of_exactly_that_type(
     """A declared type with no exemplar of its own leaves the bijection below nothing to classify
     for it, so each has one, among the exemplars the endpoint's doors declare, apart from
     `_DECLARED_WITHOUT_EXEMPLAR`."""
-    datasets_doors_, pool = datasets_built
     presentation_doors, _classify = presentation_built
     declared = [
-        (endpoint, exc_type, exemplars)
-        for door in datasets_doors_
-        for (endpoint, types), exemplars in zip(
-            _declared_types(door).items(), _door_exemplars(door, pool=pool).values(), strict=True
-        )
+        (endpoint, exc_type, door.endpoint_exemplars[endpoint])
+        for door in datasets_built
+        for endpoint, types in _declared_types(door).items()
         for exc_type in types
     ] + [
         # A Presentation door declares its types for all its endpoints together.

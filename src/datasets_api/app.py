@@ -90,7 +90,13 @@ from datasets_api.version import DATASETS_CAPABILITY_VERSION
 from datasets_api.versions import HeadStore, VersionLister, VersionRecordWriter
 from dc_sdmx import SdmxClient
 from dfo_platform.app import Surface
-from dfo_platform.doors import DoorContribution, combine_classifiers, flatten
+from dfo_platform.doors import (
+    DoorContribution,
+    check_endpoint_exemplars,
+    combine_classifiers,
+    endpoint_exemplars,
+    flatten,
+)
 from graph_release.context import bound_served_release
 from graph_release.service import ReleaseService, get_release_service
 from materialise.graph import GraphReader
@@ -225,6 +231,11 @@ def datasets_surface(
     `running_analyses` is the analysis keys the process is computing, given with `deps_cell` so
     the live share slots and `POST /api/datasets/analysis` compute one key once. Left out, the
     analysis door holds a set of its own.
+
+    Raises:
+        LookupError: A door's exemplars do not cover the endpoints it binds and the types it
+            declares, or the code registry maps no one status for a code on the endpoint whose
+            routes raise it (`dfo_platform.doors.check_endpoint_exemplars`).
     """
     _settings = settings if settings is not None else DatasetsBuildSettings.from_env()
     _catalogue = catalogue if catalogue is not None else get_catalogue_service()
@@ -266,6 +277,15 @@ def datasets_surface(
         now=now,
     )
 
+    # Store classifiers cover errors shared across doors. Grammar refusals fall through to the
+    # platform's `StarletteHTTPException` handling.
+    classify = combine_classifiers(
+        *(door.classify for door in doors),
+        classify_store_exception,
+        classify_operation_store_exception,
+    )
+    check_endpoint_exemplars(doors, classify)
+
     router = flatten(doors)
 
     # Append grammar refusals after real routes. The converter excludes valid ids.
@@ -291,23 +311,14 @@ def datasets_surface(
         router=router,
         capability_version=DATASETS_CAPABILITY_VERSION,
         codes=DATASETS_CODE_CATALOGUE,
-        # Store classifiers cover errors shared across doors. Grammar refusals fall through to
-        # the platform's `StarletteHTTPException` handling.
-        classify=combine_classifiers(
-            *(door.classify for door in doors),
-            classify_store_exception,
-            classify_operation_store_exception,
-        ),
+        classify=classify,
         # A spec registry store fault can reach any door that reads or writes the registry, so
         # the surface declares it once.
         exception_types=(
             *(exc_type for door in doors for exc_type in door.exception_types),
             SpecRegistryStoreError,
         ),
-        exception_exemplars=(
-            *(exemplar for door in doors for exemplar in door.exception_exemplars),
-            SpecRegistryStoreError("exemplar"),
-        ),
+        exception_exemplars=(*endpoint_exemplars(doors), SpecRegistryStoreError("exemplar")),
         lifespan=lifespan,
         middleware=tuple(check for door in doors for check in door.middleware),
         registry_endpoints={
