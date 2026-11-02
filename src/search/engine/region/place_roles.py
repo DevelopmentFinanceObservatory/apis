@@ -293,6 +293,21 @@ def direction_assignments(
     return tuple(readings)
 
 
+def undirected_readings(
+    state: ResolveState, shape: ShapeDraft
+) -> tuple[tuple[RoleAxis, PlaceAssignment], ...]:
+    """Each flow axis `shape` can place the one set the request names without a direction
+    on, with the assignment that places it there: the axes a rule of the shape places it on
+    (`undirected_place_axes`), or where the shape leaves its direction open, each axis it
+    may take (`direction_assignments`). Empty when the shape places it on no flow axis."""
+    bound = bind_place_roles(state, shape)
+    if isinstance(bound, PlaceAssignment):
+        return tuple((axis, bound) for axis in sorted(undirected_place_axes(state, bound)))
+    if bound == "role_not_resolved":
+        return direction_assignments(state, shape)
+    return ()
+
+
 def undirected_place_name(state: ResolveState) -> str | None:
     """The request's words for the one place set it names without a direction
     (`ResolveState.words_of`), `None` when it names none or several."""
@@ -484,6 +499,38 @@ def without_unasked_axes(
         )
 
     return [shape for shape in shapes if not leaves(shape)]
+
+
+def on_undirected_axis(state: ResolveState, shapes: Sequence[ShapeDraft]) -> list[ShapeDraft]:
+    """`shapes` less each role-bearing shape whose every flow axis holds a place the request
+    names with a direction, once the data settles the axis of the place it names without
+    one (`ResolveState.undirected_axis`). Such a shape leaves that place no axis of its own,
+    so electing it would merge the place into a named side or refuse its direction.
+
+    "Aid from Germany in Kenya" reads Kenya as the recipient. DAC1's donor totals declare
+    only the donor axis, which Germany holds, so they could read Kenya only as a second
+    donor, "from Germany and Kenya", and they leave the menu for DAC2a. "Germany external
+    debt stocks" names no directed place, so the debt stocks, which read Germany as the
+    debtor, stay though a currency share by creditor holds Germany as a creditor and
+    settles that axis.
+
+    The rule runs only when the data settles the axis, the case where the part reads the
+    place on one side. Every shape stays when none would survive."""
+    if state.undirected_axis is None:
+        return list(shapes)
+    directed = {
+        role.axis
+        for name in state.entities
+        if name in state.place_sets
+        for role in state.entity_roles.get(name) or ()
+    }
+
+    def merges(shape: ShapeDraft) -> bool:
+        axes = role_names_by_axis(shape).keys()
+        return is_role_bearing(shape) and bool(axes) and axes <= directed
+
+    kept = [shape for shape in shapes if not merges(shape)]
+    return kept or list(shapes)
 
 
 def without_open_axis_gaps(state: ResolveState, shapes: Sequence[ShapeDraft]) -> list[ShapeDraft]:
