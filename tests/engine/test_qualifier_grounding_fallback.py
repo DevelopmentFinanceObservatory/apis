@@ -69,11 +69,7 @@ class _LLM:
             return Extraction(
                 kind="resolution",
                 variables=[_VARIABLE],
-                entities=[
-                    ExtractedEntity(
-                        text="Kenya", span="Kenya", flow_role="unspecified", role_span=None
-                    )
-                ],
+                entities=[ExtractedEntity(text="Kenya", span="Kenya")],
             ), None
         if self._nearest and "NOT ELECTABLE" in prompt:
             return _UniversalBindOutput(

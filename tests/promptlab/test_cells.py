@@ -27,7 +27,15 @@ from promptlab.graphcache import GraphCache
 from promptlab.llm import CallRecord
 from promptlab.manifest import BlockRef, RunConfig, Rung, StageSpec
 from promptlab.scoring import menu_five_tuple
-from promptlab.store import BindRecord, CaptureManifest, CaptureStore, CellManifest, CellStore
+from promptlab.store import (
+    BindRecord,
+    CaptureManifest,
+    CaptureStore,
+    CellManifest,
+    CellStore,
+    ExtractRecord,
+    StoreError,
+)
 from search.engine.errors import EngineInputError
 from search.eval.cases import Case, load_cases, validate_case
 from search.models import DatasetResubmitInput, RawTextInput
@@ -862,3 +870,40 @@ def test_run_extract_cell_raises_when_case_missing_for_captured_record(tmp_path:
                 rung, [], capture=capture, graph=FakeGraph(), out=out, llm=llm, concurrency=4
             )
         )
+
+
+def test_run_extract_cell_refuses_a_capture_recorded_in_another_schema(tmp_path: Path):
+    """A captured extraction carrying a field `Extraction` no longer has is refused by
+    name, and no call is made."""
+    capture = CaptureStore.create(tmp_path / "stale-capture", manifest=_capture_manifest())
+    capture.append_extract(
+        ExtractRecord(
+            case_id="sdg-03",
+            query="aid to Kenya",
+            system_sha1="e" * 40,
+            output={
+                "kind": "resolution",
+                "variables": ["aid"],
+                "entities": [{"text": "Kenya", "flow_role": "destination"}],
+                "dates": [],
+            },
+            usage=None,
+            elapsed_ms=0,
+        )
+    )
+    capture.finish()
+    out = CellStore.create(tmp_path / "extract-cell-stale", manifest=_cell_manifest())
+
+    with pytest.raises(StoreError, match="sdg-03"):
+        asyncio.run(
+            run_extract_cell(
+                _RUNG0,
+                _cases(),
+                capture=capture,
+                graph=FakeGraph(),
+                out=out,
+                llm=FakeLLM(),
+                concurrency=4,
+            )
+        )
+    assert out.call_records() == ()

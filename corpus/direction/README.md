@@ -4,7 +4,7 @@ Labelled cases measuring flow-direction recovery (which named place is the donor
 
 ## Why a separate set
 
-Flow direction is recovered structurally. The raw-text door's extraction stage fills each `ExtractedEntity.flow_role` from the query's own wording, a schema field the model fills directly. The parsed door reads the caller's own `role_text` through `search.engine.role_text.role_axis_for_text`. The only direction function in `role_text.py` is `contradicts`, a cross-check that can veto a door-supplied axis the query's own wording denies. The few two-place role-bearing cases in `corpus/*.yaml` carry explicit prepositions on both places ("aid from Germany to Kenya"), so they exercise nothing harder. This set's categories (coordinated lists, possessives, passive voice, substring collisions, non-English wording, world-knowledge bait) are the adversarial slice the main cases miss. Scoring them offline against fixed hand-labelled entities needs no graph or model call, so the result is reproducible for any pure function shaped like a direction recoverer. The frozen scanner scored below is such a function, and its numbers are the baseline for the current extraction path.
+Flow direction is recovered structurally. The raw-text door's extraction stage fills each `ExtractedEntity.role` (source, recipient, creditor or debtor) and the `cue` that states it from the query's own wording, schema fields the model fills directly, and maps the role to an axis through `search.engine.role_text.role_axis_for_text`. The parsed door reads the caller's own `role_text` through `search.engine.role_text.role_axis_for_text`. The only direction function in `role_text.py` is `contradicts`, a cross-check that can veto a door-supplied axis the query's own wording denies. The few two-place role-bearing cases in `corpus/*.yaml` carry explicit prepositions on both places ("aid from Germany to Kenya"), so they exercise nothing harder. This set's categories (coordinated lists, possessives, passive voice, substring collisions, non-English wording, world-knowledge bait) are the adversarial slice the main cases miss. Scoring them offline against fixed hand-labelled entities needs no graph or model call, so the result is reproducible for any pure function shaped like a direction recoverer. The frozen scanner scored below is such a function, and its numbers are the baseline for the current extraction path.
 
 ## Record format
 
@@ -69,7 +69,7 @@ Both runs have the same 5 confidently-wrong case ids: the four `substring_collis
 
 ### The production extraction path, scored on recorded output
 
-`corpus/direction/recorded_extraction.py` scores the production path against this set: the raw-text door's extraction stage, which fills `ExtractedEntity.flow_role` from the query's own wording, and `search.engine.extract._validate_role_spans`, the offline guard that downgrades a fabricated or mis-anchored `role_span` to `"unspecified"` before a caller sees it.
+`corpus/direction/recorded_extraction.py` scores the production path against this set: the raw-text door's extraction stage, which fills `ExtractedEntity.role` and `ExtractedEntity.cue` from the query's own wording, and `search.engine.extract._ground_roles`, the offline guard that drops a role whose cue the query does not hold before a caller sees it.
 
 The module replays recorded output and makes no model call. Each of the 39 distinct queries in `role_direction_cases.yaml` has an `Extraction` fixture in `tests/fixtures/llm_responses.json`, recorded by `scripts/harvest_llm_fixtures.py`, whose direction-corpus collector replays this file's queries through the extraction stage. The module exposes two scanners matching `detect_directions`'s shape, so both score through the same `eval_role_direction.py:score()` as the frozen scanner:
 
@@ -80,13 +80,13 @@ uv run scripts/eval_role_direction.py \
     --scanner corpus.direction.recorded_extraction:guarded_extraction
 ```
 
-`raw_extraction` reads `Extraction.entities` as the model returned them. `guarded_extraction` reads the same recorded entities after `_validate_role_spans`, which is what the pipeline answers. Over the same 88-entity set as the frozen scanner:
+`raw_extraction` reads `Extraction.entities` as the model returned them. `guarded_extraction` reads the same recorded entities after `_ground_roles`, which is what the pipeline answers. Over the same 88-entity set as the frozen scanner:
 
 ```
                        accuracy         false-confident   confidently-wrong
-raw model output       96.6%  (85/88)   0.0%  (0/23)      1  (1.5% of 65)
-after the guard        95.5%  (84/88)   0.0%  (0/23)      1  (1.5% of 65)
+raw model output       94.3%  (83/88)   0.0%  (0/23)      1  (1.5% of 65)
+after the guard        94.3%  (83/88)   0.0%  (0/23)      1  (1.5% of 65)
 frozen scanner         67.0%            0.0%              5  (7.7%)
 ```
 
-The guard costs one label, downgraded from correct to `"unspecified"`: `dir-leading-unevidenced-01` (Kenya) carries `destination` with no `role_span` to cite. Three labels are wrong in the raw model output. `dir-three-plus-list-01`'s "the United States" ("aid from the United States to Kenya, Uganda, or Ethiopia") and `dir-leading-unevidenced-02`'s "the United States" ("Ethiopia support from the United States") are read as `"unspecified"`. `dir-possessive-03`'s second "Kenya" ("aid from Kenya to Kenya") is a scorer limitation: `_axis_for` matches an entity by surface and returns the first match, so the model's `destination` occurrence scores against the `origin` label. `tests/scripts/test_recorded_extraction_baseline.py` pins both scanners' exact counts and the exact wrong labels, as `tests/scripts/test_role_text_pinned_baseline.py` does for the frozen scanner, so a change to the case file or the recorded fixtures fails the test.
+The guard costs no label: every role the model gives cites a cue the query holds. The same five labels are wrong in both runs. `dir-leading-unevidenced-01`'s "Kenya" ("Kenya aid from Norway") and `dir-leading-unevidenced-02`'s "Ethiopia" ("Ethiopia support from the United States") name the recipient by juxtaposition alone, and the model gives such a place no cue and so no role, which scores as `"unspecified"`. Three wrong labels are scorer limitations, since `_axis_for` matches an entity by its exact surface and returns the first match. In `dir-three-plus-list-01` ("aid from the United States to Kenya, Uganda, or Ethiopia") and `dir-leading-unevidenced-02` the model reads "United States" as the source, but its span drops the article the case's surface "the United States" carries, so no entity matches and the label scores as `"unspecified"`. `dir-possessive-03`'s second "Kenya" ("aid from Kenya to Kenya") matches the first Kenya, the source, so the model's recipient occurrence scores against the `origin` label. `tests/scripts/test_recorded_extraction_baseline.py` pins both scanners' exact counts and the exact wrong labels, as `tests/scripts/test_role_text_pinned_baseline.py` does for the frozen scanner, so a change to the case file or the recorded fixtures fails the test.

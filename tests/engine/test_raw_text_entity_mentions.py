@@ -734,8 +734,8 @@ def test_preparation_keeps_canonical_keys_and_query_wording_separate() -> None:
     entity = ExtractedEntity(
         text="Asia",
         span="Asie",
-        flow_role="destination",
-        role_span="to",
+        role="recipient",
+        cue="to",
     )
     extraction = Extraction(kind="resolution", variables=["aid"], entities=[entity])
 
@@ -747,7 +747,7 @@ def test_preparation_keeps_canonical_keys_and_query_wording_separate() -> None:
 
     assert prep.entities == ["Asia"]
     assert prep.entity_words == {"Asia": "Asie"}
-    assert list(prep.entity_roles) == ["Asia"]
+    assert list(prep.per_variable_entity_roles[0]) == ["Asia"]
 
 
 def test_registered_graph_pack_name_recovers_the_qualified_source_surface() -> None:
@@ -844,12 +844,12 @@ def test_raw_pipeline_recovers_the_dac_group_before_validating_its_members() -> 
         kind="resolution",
         variables=["ODA"],
         entities=[
-            ExtractedEntity(text="France", span="France", flow_role="origin", role_span="from"),
+            ExtractedEntity(text="France", span="France", role="source", cue="from"),
             ExtractedEntity(
                 text="Asia",
                 span="Asia (DAC)",
-                flow_role="destination",
-                role_span="to",
+                role="recipient",
+                cue="to",
                 members=True,
             ),
         ],
@@ -860,8 +860,8 @@ def test_raw_pipeline_recovers_the_dac_group_before_validating_its_members() -> 
     )
 
     assert interpretation.entities == ["France", "Asia (DAC)"]
-    assert prep.member_entities == frozenset({"Asia (DAC)"})
-    assert set(prep.entity_roles) == {"France", "Asia (DAC)"}
+    assert prep.per_variable_member_entities == [frozenset({"Asia (DAC)"})]
+    assert set(prep.per_variable_entity_roles[0]) == {"France", "Asia (DAC)"}
     assert prep.entity_words == {"France": "France", "Asia (DAC)": "Asia (DAC)"}
     assert isinstance(pre_resolved["Asia (DAC)"], Group)
 
@@ -886,8 +886,8 @@ def test_raw_pipeline_reads_a_translated_qualified_span_as_its_english_group() -
         kind="resolution",
         variables=["APD"],
         entities=[
-            ExtractedEntity(text="France", span="France", flow_role="origin", role_span="de"),
-            ExtractedEntity(text="Asia", span="Asie (DAC)", flow_role="destination", role_span="à"),
+            ExtractedEntity(text="France", span="France", role="source", cue="de"),
+            ExtractedEntity(text="Asia", span="Asie (DAC)", role="recipient", cue="à"),
         ],
     )
 
@@ -908,8 +908,8 @@ def test_raw_pipeline_keeps_a_qualified_pack_name_out_of_source_scan() -> None:
             ExtractedEntity(
                 text="World Bank",
                 span="World Bank",
-                flow_role="origin",
-                role_span="from",
+                role="source",
+                cue="from",
             )
         ],
     )
@@ -935,7 +935,7 @@ def test_raw_pipeline_keeps_a_members_reading() -> None:
         _raw_pipeline_capture("health spending of African countries", extraction)
     )
 
-    assert prep.member_entities == frozenset({"Africa"})
+    assert prep.per_variable_member_entities == [frozenset({"Africa"})]
 
 
 _KEN = Entity(dcid="country/KEN", name="Kenya", kind="country", graph_types=("Country",))
@@ -979,7 +979,7 @@ _FRA = Entity(dcid="country/FRA", name="France", kind="country", graph_types=("C
         ),
         # A national adjective, whose cue is its own span, names its country.
         pytest.param(
-            ExtractedEntity(text="France", span="French", flow_role="origin", role_span="French"),
+            ExtractedEntity(text="France", span="French", role="source", cue="French"),
             "French aid",
             {"France": Resolved(_FRA)},
             (),
@@ -1035,9 +1035,7 @@ class _MeasuresFromKenia(_ShapeZeroLLM):
 
     async def generate_structured(self, *, prompt, system, schema):
         if schema is Extraction:
-            kenya = ExtractedEntity(
-                text="Kenya", span="Kenia", flow_role="origin", role_span="from"
-            )
+            kenya = ExtractedEntity(text="Kenya", span="Kenia", role="source", cue="from")
             return Extraction(kind="resolution", variables=self.variables, entities=[kenya]), None
         return await super().generate_structured(prompt=prompt, system=system, schema=schema)
 

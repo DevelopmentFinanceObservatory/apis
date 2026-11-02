@@ -345,7 +345,7 @@ def test_a_marked_variable_keys_layer2_apart_from_the_unmarked_extraction():
             variable_qualifiers=[(), ()],
             operations=[(), ()],
             query=_COMPARE,
-            entity_roles={},
+            entity_roles=(),
             sources=[(), ()],
             query_text=None,
             separate=separate,

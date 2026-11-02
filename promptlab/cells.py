@@ -16,6 +16,8 @@ import itertools
 from collections.abc import Coroutine, Iterable, Mapping, Sequence
 from typing import Any, get_args
 
+from pydantic import ValidationError
+
 from promptlab.bindmenu import MenuEntry, parse_menu, truncate_menu
 from promptlab.compose import compose
 from promptlab.expectations import (
@@ -28,7 +30,7 @@ from promptlab.expectations import (
 from promptlab.llm import CallRecord, LadderLLM
 from promptlab.manifest import Rung
 from promptlab.scoring import menu_five_tuple
-from promptlab.store import BindRecord, CaptureStore, CellStore, ExtractRecord
+from promptlab.store import BindRecord, CaptureStore, CellStore, ExtractRecord, StoreError
 from search.engine.bind import UNRESOLVED_DENOMINATOR, bind_schema, menu_denominator
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import LLM, SupportsLLM, for_stage
@@ -432,7 +434,8 @@ async def run_extract_cell(
     recall, resolved entities, dates, and the variable split against the capture.
     Replace `[[TODAY]]` with the capture's date and `[[YEAR]]` with its year so extraction
     matches its bind menus.
-    Store each single extract call under `leg=0`."""
+    Store each single extract call under `leg=0`. A captured extraction that does not fit
+    the `Extraction` schema raises `StoreError`, which asks for a new capture."""
     capture.require_complete()
     case_by_id = {c.id: c for c in cases}
     substituted_date = capture.manifest.substituted_date
@@ -474,7 +477,13 @@ async def run_extract_cell(
 
     coros = []
     for record in capture.extract_records():
-        reference = Extraction.model_validate(record.output)
+        try:
+            reference = Extraction.model_validate(record.output)
+        except ValidationError as exc:
+            raise StoreError(
+                f"captured extract record {record.case_id!r} does not fit the current "
+                "Extraction schema; capture again"
+            ) from exc
         coros.extend(_one(record, reference, seed) for seed in rung.run.seeds)
     await _run_concurrently(coros)
 

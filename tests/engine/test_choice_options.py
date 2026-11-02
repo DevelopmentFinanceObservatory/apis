@@ -302,8 +302,8 @@ def _congo_to_congo(*extra: ExtractedEntity) -> tuple[TestClient, dict]:
     """The part "aid from Congo to Congo" answers, read as the Democratic Republic of the
     Congo to the Republic of the Congo, beside `extra`, and its client."""
     client = _congo_flow_client(
-        ExtractedEntity(text=_DRC, span="Congo", flow_role="origin", role_span="from"),
-        ExtractedEntity(text=_ROC, span="Congo", flow_role="destination", role_span="to"),
+        ExtractedEntity(text=_DRC, span="Congo", role="source", cue="from"),
+        ExtractedEntity(text=_ROC, span="Congo", role="recipient", cue="to"),
         *extra,
     )
     query = "aid from Congo to Congo" + (" by the World Bank" if extra else "")
@@ -385,8 +385,8 @@ def test_one_name_on_both_ends_asks_each_choice_apart():
     asks its own choice, each option pins its own row alone, the restatement states both
     rows, and two picks bind each end to its own country."""
     client = _congo_flow_client(
-        ExtractedEntity(text="Congo", flow_role="origin", role_span="from"),
-        ExtractedEntity(text="Congo", flow_role="destination", role_span="to"),
+        ExtractedEntity(text="Congo", role="source", cue="from"),
+        ExtractedEntity(text="Congo", role="recipient", cue="to"),
     )
 
     part = _raw_part(client, "aid from Congo to Congo")
@@ -487,8 +487,8 @@ def test_choosing_another_entity_keeps_a_name_its_words_leave_open_ambiguous():
     alone names none. Choosing the World Bank's lender posts the Congo row in the user's
     word under its name, so the next refusal asks the Congo choice again."""
     client = _congo_flow_client(
-        ExtractedEntity(text="World Bank", span="World Bank", flow_role="origin", role_span="from"),
-        ExtractedEntity(text="Congo", span="Congolese", flow_role="destination", role_span="to"),
+        ExtractedEntity(text="World Bank", span="World Bank", role="source", cue="from"),
+        ExtractedEntity(text="Congo", span="Congolese", role="recipient", cue="to"),
     )
     part = _raw_part(client, "aid from the World Bank to Congolese")
 

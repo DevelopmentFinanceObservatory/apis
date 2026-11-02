@@ -375,7 +375,7 @@ def _assert_imputed_part(spec: Spec) -> None:
     [
         ("top donors of education aid to Kenya", _E, CRS_MEMBER_COUNT, ["origin"]),
         (f"{_E} to Kenya", _E, CRS_MEMBER_COUNT, None),
-        ("total aid to Kenya", "aid", _PLAIN_AID_MEMBER_COUNT, None),
+        ("total aid to Kenya", "total aid", _PLAIN_AID_MEMBER_COUNT, None),
         ("top 5 donantes de ayuda a Kenia", "aid", _PLAIN_AID_MEMBER_COUNT, ["origin"]),
     ],
 )
@@ -406,7 +406,7 @@ def test_a_recipient_total_on_a_crs_only_shape_is_counted_on_the_crs_convention(
     only to a shape DAC2a publishes. The shape here is the CRS's alone, so the part takes the
     CRS's own convention, gross disbursements, and its choice names that convention as the
     rule that settled the basis."""
-    response, _llm = _resolve("total aid to Kenya", "aid")
+    response, _llm = _resolve("total aid to Kenya", "total aid")
 
     (spec,) = _specs(response)
     assert _bound(spec)["nettingBasis"] == "Gross"
@@ -557,13 +557,13 @@ def test_a_second_table_on_the_family_leaves_the_bind_prompt_as_it_was(
     """The bind menu offers no source: a second table publishing the CRS aid family leaves
     the prompt of a question naming no table as it was, and the part answers the CRS under
     its plain identity."""
-    _response, plain = _resolve("total aid to Kenya", "aid")
+    _response, plain = _resolve("total aid to Kenya", "total aid")
     _use_second_table(monkeypatch, opt_in=False)
 
-    response, shared = _resolve("total aid to Kenya", "aid")
+    response, shared = _resolve("total aid to Kenya", "total aid")
 
-    assert shared.bind_prompts["aid"] == plain.bind_prompts["aid"]
-    assert "axis=source" not in shared.bind_prompts["aid"]
+    assert shared.bind_prompts["total aid"] == plain.bind_prompts["total aid"]
+    assert "axis=source" not in shared.bind_prompts["total aid"]
     (spec,) = _specs(response)
     assert "source" not in _bound(spec)
     assert spec.spec_id == _spec_id(_plain_aid_identity())
@@ -1034,11 +1034,7 @@ _CONTRIBUTION_WORDS = ("contributions", "multilateral", "organisations")
     [
         pytest.param(
             "contributions to multilateral organisations",
-            (
-                ExtractedEntity(
-                    text="Germany", span="Germany", flow_role="origin", role_span="from"
-                ),
-            ),
+            (ExtractedEntity(text="Germany", span="Germany", role="source", cue="from"),),
             (
                 SlotBindingDraft(
                     axis="how",
@@ -1055,12 +1051,10 @@ _CONTRIBUTION_WORDS = ("contributions", "multilateral", "organisations")
                 ExtractedEntity(
                     text="multilateral organisations",
                     span="multilateral organisations",
-                    flow_role="destination",
-                    role_span="to",
+                    role="recipient",
+                    cue="to",
                 ),
-                ExtractedEntity(
-                    text="Germany", span="Germany", flow_role="origin", role_span="from"
-                ),
+                ExtractedEntity(text="Germany", span="Germany", role="source", cue="from"),
             ),
             (),
             id="the-phrase-as-a-recipient",
@@ -1136,8 +1130,8 @@ def test_an_alias_of_the_party_reads_as_its_name_does(
         llm = _ScriptedLLM(
             "ODA",
             entities=(
-                ExtractedEntity(text="Germany", span="Germany", flow_role="origin", role_span="'s"),
-                ExtractedEntity(text=text, span=text, flow_role="destination", role_span="to"),
+                ExtractedEntity(text="Germany", span="Germany", role="source", cue="'s"),
+                ExtractedEntity(text=text, span=text, role="recipient", cue="to"),
             ),
         )
         graph = _party_graph("ODA", "ODA")
@@ -1233,7 +1227,7 @@ def test_a_source_the_query_names_is_no_dropped_phrase(
     assert all(_OTHER_PHRASE in phrase for phrase in reported)
 
 
-_TO_KENYA = ExtractedEntity(text="Kenya", span="Kenya", flow_role="destination", role_span="to")
+_TO_KENYA = ExtractedEntity(text="Kenya", span="Kenya", role="recipient", cue="to")
 
 
 class _ScriptedLLM:
@@ -1570,6 +1564,28 @@ class _CountingLLM(_ScriptedLLM):
             prompt=prompt, system=system, schema=schema
         )
         return answer, {"input_tokens": 1, "output_tokens": 1, "cached_tokens": 0}
+
+
+def test_a_cue_before_a_list_puts_every_place_of_it_on_its_end(monkeypatch: pytest.MonkeyPatch):
+    """The model gives each listed place the "to" before the list as its cue, so the part
+    answers both on the recipient end. The question leaves nothing out."""
+
+    async def nothing_left_out(query: str, *, llm: object) -> tuple[ExclusionRead, None]:
+        return ExclusionRead(exclusions=[]), None
+
+    monkeypatch.setattr(raw_text, "read_exclusions", nothing_left_out)
+    llm = _ScriptedLLM(
+        "aid",
+        entities=(
+            ExtractedEntity(text="Kenya", span="Kenya", role="recipient", cue="to"),
+            ExtractedEntity(text="Uganda", span="Uganda", role="recipient", cue="to"),
+        ),
+    )
+    graph = _graph("aid", members=(_CRS_MEMBER,), countries={"Uganda": _UGA})
+
+    (spec,) = _specs(_resolve_scripted("aid to Kenya and Uganda", llm, graph=graph))
+
+    assert spec.definition.identity.entities == {"destination": [_KEN, _UGA]}
 
 
 def _resolve_scripted(
@@ -2826,7 +2842,7 @@ def test_the_aid_type_default_binds_a_slot_the_reply_leaves_out(
         resolve={"Germany": _DEU, "Kenya": _KEN},
         obs={},
     )
-    germany = ExtractedEntity(text="Germany", span="German", flow_role="origin", role_span="German")
+    germany = ExtractedEntity(text="Germany", span="German", role="source", cue="German")
 
     response = offline_resolve(
         ResolveRequest(input=RawTextInput(query="German aid to Kenya")),

@@ -161,13 +161,13 @@ def test_a_rank_operation_rides_on_its_part_with_the_donor_axis_open_and_no_warn
 
 
 def test_the_recorded_top_5_donors_reading_carries_its_rank_with_no_warning():
-    """The recorded model output for the design's headline query reads "Top 5" as a rank
-    over origin on "education aid"; the rank and the variable account for every word of
+    """The recorded model output for the design's headline query reads "Top 5 donors" as a
+    rank over origin on "education aid"; the rank and the variable account for every word of
     it, so the answer carries the rank and no unapplied-qualifier warning."""
     response = offline_resolve(make_request("Top 5 donors for education aid"))
 
     assert [p.operations for p in response.parts] == [
-        [Operation(verb="rank", phrase="Top 5", over="origin")]
+        [Operation(verb="rank", phrase="Top 5 donors", over="origin")]
     ]
     assert _query_qualifier_warnings(response) == []
     assert "was not applied" not in (response.rendered_sentence or "")
@@ -789,9 +789,9 @@ def test_a_reposted_forecast_part_keeps_its_target_year(door):
     assert part.restatement.operations == [forecast]
 
 
-def test_an_invalid_role_span_leaves_its_qualifier_unapplied_with_a_departure():
-    """A role span validation rejects is cleared before the trim reads it, so "fragile
-    states" stays an unapplied qualifier and the answer says so."""
+def test_a_cue_away_from_its_place_leaves_its_qualifier_unapplied_with_a_departure():
+    """Kenya's cue "fragile states" stands away from Kenya, so it credits no words to the
+    trim, and "fragile states" stays an unapplied qualifier the answer reports."""
     query = "top 5 donors for standard grants to Kenya in fragile states"
     response = offline_resolve(
         make_request(query),
@@ -800,10 +800,7 @@ def test_an_invalid_role_span_leaves_its_qualifier_unapplied_with_a_departure():
             _extraction(
                 entities=[
                     ExtractedEntity(
-                        text="Kenya",
-                        span="Kenya in fragile states",
-                        flow_role="destination",
-                        role_span="fragile states",
+                        text="Kenya", span="Kenya", cue="fragile states", role="recipient"
                     )
                 ],
                 operations=[
@@ -856,7 +853,7 @@ def _ambiguous_congo_llm() -> _ScriptedLLM:
         _extraction(
             entities=[
                 ExtractedEntity(text="Kenya"),
-                ExtractedEntity(text="Congo", flow_role="destination", role_span="to"),
+                ExtractedEntity(text="Congo", role="recipient", cue="to"),
             ],
             operations=[
                 ExtractedOperation(verb="rank", variable=0, phrase="top 5 donors", over="origin")
@@ -915,8 +912,8 @@ def test_an_ambiguous_part_carries_an_option_per_candidate_that_resolves_when_po
 
 
 def test_a_group_named_beside_an_ambiguous_wording_is_echoed_unpinned():
-    """Each option echoes a resolver group by its text alone: pinning it to one member's
-    dcid would resubmit that member for the group."""
+    """Each option echoes a resolver group by its text and the role its words state, with no
+    dcid: pinning it to one member's dcid would resubmit that member for the group."""
     g7 = ("CAN", "DEU", "FRA", "GBR", "ITA", "JPN", "USA")
     graph = FakeGraph(
         nodes={
@@ -930,8 +927,8 @@ def test_a_group_named_beside_an_ambiguous_wording_is_echoed_unpinned():
     llm = _ScriptedLLM(
         _extraction(
             entities=[
-                ExtractedEntity(text="G7"),
-                ExtractedEntity(text="Congo", flow_role="destination", role_span="to"),
+                ExtractedEntity(text="G7", role="source", cue="from"),
+                ExtractedEntity(text="Congo", role="recipient", cue="to"),
             ]
         )
     )
@@ -946,7 +943,10 @@ def test_a_group_named_beside_an_ambiguous_wording_is_echoed_unpinned():
     assert part.no_data.reason == "entity_ambiguous"
     options = part.no_data.options
     assert [o.data_query.parts[0].entities for o in options] == [
-        [ParsedEntity(text="G7"), ParsedEntity(text="Congo", role_text="to", dcid=dcid)]
+        [
+            ParsedEntity(text="G7", role_text="from"),
+            ParsedEntity(text="Congo", role_text="to", dcid=dcid),
+        ]
         for dcid in ("country/COD", "country/COG")
     ]
 
@@ -980,8 +980,8 @@ def test_an_ambiguous_name_on_both_axes_asks_each_end_and_restates_both():
         _extraction(
             entities=[
                 ExtractedEntity(text="Kenya"),
-                ExtractedEntity(text="Congo", flow_role="origin", role_span="from"),
-                ExtractedEntity(text="Congo", flow_role="destination", role_span="to"),
+                ExtractedEntity(text="Congo", role="source", cue="from"),
+                ExtractedEntity(text="Congo", role="recipient", cue="to"),
             ],
             operations=[
                 ExtractedOperation(verb="rank", variable=0, phrase="top 5 donors", over="origin")

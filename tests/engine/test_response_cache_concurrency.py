@@ -360,7 +360,7 @@ async def _test_layer2_leader_raising_lets_exactly_one_follower_become_the_new_l
         "dropped_qualifiers": [],
         "variable_qualifiers": [()],
         "operations": [()],
-        "entity_roles": {},
+        "entity_roles": (),
         "sources": [()],
         "query_text": None,
     }

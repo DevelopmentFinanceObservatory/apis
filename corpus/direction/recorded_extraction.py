@@ -1,8 +1,8 @@
 """Scores the 39-query direction corpus against recorded extraction fixtures.
 
 `raw_extraction` uses recorded `Extraction.entities`; `guarded_extraction`
-passes the same entities and their variables through `_validate_role_spans`,
-as `extract()` does. Both implement `eval_role_direction.py`'s scanner
+passes the same entities and their variables through `_ground_roles`, which drops a
+role whose cue the query does not hold, as `extract()` does. Both implement `eval_role_direction.py`'s scanner
 interface, so their accuracy difference measures the guard's effect on the
 same model output.
 
@@ -13,8 +13,9 @@ error and, when `HARVEST_MISS_PATH_ENV` is set, is logged as a harvest miss so
 `scripts/harvest_llm_fixtures.py` can record it. Scoring runs offline, without
 model or graph calls.
 
-Labels match entities by `span`, then `text`; unmatched labels return
-`flow_role="unspecified"`. The scanner's `dcid` input is unused because
+Labels match entities by `span`, then `text`, and read the axis of the entity's role
+(`role_text.role_axis_for_text`); an unmatched label or an entity with no role reads as
+undirected. The scanner's `dcid` input is unused because
 recorded extractions carry no dcid.
 """
 
@@ -29,7 +30,8 @@ from pathlib import Path
 from typing import Literal
 
 import search.engine.extract as extract
-from search.engine.extract import ExtractedEntity, Extraction, _validate_role_spans
+from search.engine.extract import ExtractedEntity, Extraction, _ground_roles
+from search.engine.role_text import role_axis_for_text
 from tests.fixtures import HARVEST_MISS_PATH_ENV, _append_harvest_line
 from tests.fixtures.keys import fixture_key
 
@@ -72,7 +74,7 @@ def _recorded_extraction(query: str) -> Extraction:
 def _axis_for(entities: Sequence[ExtractedEntity], surface: str) -> Axis | None:
     for entity in entities:
         if (entity.span or "") == surface or entity.text == surface:
-            return entity.flow_role if entity.flow_role != "unspecified" else None
+            return role_axis_for_text(entity.role)
     return None
 
 
@@ -85,12 +87,10 @@ def raw_extraction(query: str, entities: Sequence[tuple[str | None, str]]) -> li
 
 
 def guarded_extraction(query: str, entities: Sequence[tuple[str | None, str]]) -> list[Axis | None]:
-    """Scans recorded entities after `_validate_role_spans`, passing their variables
-    as `extract()` does."""
+    """Scans recorded entities after `_ground_roles`, passing their variables as
+    `extract()` does."""
     recorded_extraction = _recorded_extraction(query)
-    recorded = _validate_role_spans(
-        query, recorded_extraction.entities, recorded_extraction.variables
-    )
+    recorded = _ground_roles(query, recorded_extraction.entities, recorded_extraction.variables)
     return [
         _axis_for(recorded, surface) if surface is not None else None for surface, _dcid in entities
     ]

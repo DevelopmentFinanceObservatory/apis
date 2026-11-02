@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from code_index.shared import get_index, get_measure_index
 from dfo_platform.trace import get_trace_id
@@ -48,13 +48,12 @@ from search.engine.qualifier_match import (
     QualifierSpan,
     _all_normalized_text_ranges,
     _normalize,
-    _ranges_overlap,
     is_coded_only_phrase,
     names_plain_name,
     slot_noun_named,
 )
 from search.engine.quantity import query_normalisation
-from search.engine.role_text import role_axis_for_text
+from search.engine.role_text import Party, role_axis_for_text
 from search.engine.time_bind import parse_time_text
 from search.engine.unit.bind import names_price_basis, names_unit_request
 from search.engine.unit.lexicon import MAX_YEAR, MIN_YEAR
@@ -96,90 +95,58 @@ _ENTITY_MEMBERS_DESCRIPTION = (
     '`text` stays the name of the region or group either way ("Africa").'
 )
 
-_FLOW_ROLE_DESCRIPTION = """\
-Which direction of an aid/funding flow this place is on, from the query's OWN WORDING
-only:
-  - "origin": the query's wording states this place is the source/donor/provider
-    (a preposition like "from", a verb like "funds"/"provided", a possessive like
-    "Norway's aid to X", passive voice like "funded by Norway", or a national
-    adjective before the measure, like "French aid" or "Kenyan exports").
-  - "destination": the query's wording states this place is the recipient/beneficiary
-    (a preposition like "to", a verb like "receives", juxtaposition like "Kenya aid",
-    or a possessive over the measure this place receives, like "Kenya's imports").
-  - "unspecified": the query's wording does not state a direction for this place.
+_ENTITY_VARIABLES_DESCRIPTION = (
+    "Zero-based indices into `variables` of the measures this place scopes. Empty when it "
+    'scopes every measure: "Danish grants and Mexico\'s inflation" gives Denmark [0] and '
+    'Mexico [1], and "aid and GDP of Kenya" gives Kenya [].'
+)
 
-A national adjective names the same place the country's own name does: extract the
-country under its English name, and give it the direction the wording implies. An
-adjective before the measure names the measure's source, so "French aid" is aid FROM
-France and "Kenyan exports" are exports FROM Kenya. A possessive names the place whose
-own flow the measure is, so the direction follows the measure: "Norway's aid to X" is
-Norway's own outflow, origin, and "Kenya's imports" is Kenya's own inflow, destination.
+_ENTITY_CUE_DESCRIPTION = (
+    "The query's own words that state this place's role, copied verbatim and untranslated: "
+    'a preposition, verb or case ending ("from", "to", "funds", "received by", "owed to"), '
+    'the place with its possessive marker ("Mexico\'s"), or a national adjective, which is '
+    'its own cue ("Danish"). Null when the wording states no role for this place.'
+)
 
-Emit "origin" or "destination" ONLY when the query's own wording names the direction.
-NEVER infer a direction from world knowledge about who typically funds or receives --
-"ODA Kenya Norway" is "unspecified" for BOTH places even though you may know Norway is
-typically a donor and Kenya a recipient. Guessing from world knowledge here is the
-single highest-risk error this field exists to prevent.
+_ENTITY_ROLE_DESCRIPTION = (
+    "This place's party in the flow or debt the query names, as `cue` states it: "
+    '"source" gives or lends, "recipient" receives, "creditor" is owed a debt or its '
+    'repayments, "debtor" owes or repays it. A possessive or a national adjective names the '
+    "place whose own flow or debt the measure is, so the role follows the measure: "
+    '"Danish grants" make Denmark the source and "Mexico\'s debt" Mexico the debtor. Null '
+    "when `cue` is null. NEVER infer a role from world knowledge about who typically funds "
+    'or receives: "ODA Kenya Norway" is null for BOTH places, even though Norway is '
+    "typically a donor and Kenya a recipient."
+)
 
-Worked examples:
-  - "aid to Kenya from Norway and Sweden" -> Norway=origin role_span "from", Sweden=origin
-    role_span "from" (coordinated donor list; Sweden has no preposition of its own but
-    "and" ties it to Norway's), Kenya=destination role_span "to".
-  - "Taiwan's ODA to the Marshall Islands" -> Taiwan=origin role_span "'s" (the
-    possessive marker written next to the place), Marshall Islands=destination role_span
-    "to".
-  - "French aid to Senegal" -> France=origin role_span "French" (the national adjective
-    itself, exactly as written, and the same string as France's own span; extract the
-    country, not the adjective), Senegal=destination role_span "to".
-  - "Norway funds Kenya" -> Norway=origin role_span "funds", Kenya=destination role_span
-    "funds" (verb states it, no preposition at all).
-  - "ODA Kenya Uganda" -> Kenya=unspecified, Uganda=unspecified (bare comparison,
-    no preposition, verb, or possessive states a direction for either name -- do NOT
-    guess from which country is typically a donor).
-  - "ayuda de Noruega a Kenia" -> Noruega=origin role_span "de", Kenia=destination
-    role_span "a" (Spanish "de"/"a" state the direction exactly like English
-    "from"/"to").
-"""
 
-_ROLE_SPAN_DESCRIPTION = """\
-The verbatim query substring that states the direction for this place, copied
-character-for-character from the query. What to copy depends on the cue the query uses:
-  - a national adjective: the adjective itself, exactly as written, which is also this
-    entity's own span ("French" in "French aid to Senegal", "Kenyan" in "Kenyan aid to
-    Uganda").
-  - a possessive: the possessive marker written next to the place ("'s" in "Taiwan's
-    ODA").
-  - a preposition or a verb: that word or phrase ("from", "to", "funds").
-Null when flow_role is "unspecified". Never paraphrase or translate this field; if the
-query is in another language, copy the foreign-language word or phrase, not an English
-gloss of it. Never invent a span that is not a substring of the query.
-"""
+def _drop_closed_marker(schema: dict[str, object]) -> None:
+    """Keep `extra="forbid"` out of the response schema. google-genai supports
+    ``additionalProperties`` only on Vertex, and recorded fixtures are keyed by the schema
+    without it."""
+    schema.pop("additionalProperties", None)
 
 
 class ExtractedEntity(BaseModel):
-    """One named place, region or group the query mentions.
+    """One named place, region or group the query mentions."""
 
-    `members` states the reading of a region or group: its members each in their own
-    right, or the set as one place.
-
-    `span` and `role_span` are the structural guard against a direction
-    supplied from world knowledge rather than the query's own wording: a
-    direction the query actually stated has a verbatim substring naming the
-    cue, while a fabricated direction either cites no span or cites one an
-    offline check (`_validate_role_spans` below) can reject. Precedent:
-    `bind.SlotBindingDraft.unplaced` is likewise specified as "copied
-    verbatim from the variable phrase" and validated against source text via
-    `region.pipeline`'s text-range check; `SlotBindingDraft.evidence`
-    answers the same "did the text actually say this" question for slot
-    bindings.
-    """
-
+    # Unknown fields raise, so a reading or test that names a field the schema lacks fails
+    # instead of yielding an undirected place.
+    model_config = ConfigDict(extra="forbid", json_schema_extra=_drop_closed_marker)
+    # The class docstring enters the response schema (`model_json_schema`), so notes on the
+    # fields stay comments. Gemini generates fields in declaration order, so a place's
+    # measures are fixed before its role and its cue is written before the role. `extract`
+    # drops a role whose cue the query does not hold (`_ground_roles`), which is the guard
+    # against a role supplied from world knowledge. `variables` are positions in
+    # `Extraction.variables`, which Gemini generates before `entities`. An empty list scopes
+    # every measure (`scoped_measures`), as it does for a one-measure query and for a reading
+    # recorded without the field. `members` states the reading of a region or group, its
+    # members each in their own right or the set as one place.
     text: str = Field(description=_ENTITY_TEXT_DESCRIPTION)
     span: str | None = Field(default=None, description=_ENTITY_SPAN_DESCRIPTION)
-    flow_role: Literal["origin", "destination", "unspecified"] = Field(
-        default="unspecified", description=_FLOW_ROLE_DESCRIPTION
-    )
-    role_span: str | None = Field(default=None, description=_ROLE_SPAN_DESCRIPTION)
+    variables: list[int] = Field(default_factory=list, description=_ENTITY_VARIABLES_DESCRIPTION)
+    cue: str | None = Field(default=None, description=_ENTITY_CUE_DESCRIPTION)
+    role: Party | None = Field(default=None, description=_ENTITY_ROLE_DESCRIPTION)
     members: bool = Field(default=False, description=_ENTITY_MEMBERS_DESCRIPTION)
 
 
@@ -252,8 +219,8 @@ class Extraction(BaseModel):
             "One entry per named place or named region the query mentions. Retain "
             "every named geographic or group scope, even when it may not resolve in "
             "the graph. Empty list only when the query genuinely names no place or "
-            "group scope. Each entry's own field descriptions (text/span/flow_role/"
-            "role_span/members) define how to fill it; follow those exactly."
+            "group scope. Each entry's own field descriptions (text/span/variables/cue/"
+            "role/members) define how to fill it; follow those exactly."
         ),
     )
     operations: list[ExtractedOperation] = Field(
@@ -394,8 +361,8 @@ generic universe or class nouns wholly contained in that dropped qualifier, such
 Countries`, must remain in `entities`. A class noun added to the name of a region or
 group asks for its members: "African countries" and "countries in Africa" are the
 entity "Africa" with `members` true, where "Africa" alone has it false. The class noun
-is never a role_span: "African countries" takes its flow_role and role_span from the
-words around it, exactly as "Africa" would. Do not infer qualifiers that the query did
+is never a cue: "African countries" takes its role and cue from the words around it,
+exactly as "Africa" would. Do not infer qualifiers that the query did
 not state.
 
 Example — "health ODA grants from USA to Ethiopia":
@@ -451,7 +418,7 @@ growth rate in Ghana" minus "growth rate" names a different measure, so there is
 operation. The test only finds operations. Words that name a measure's direction or
 type, such as inward, outward, imports, exports, net, gross, disbursements or
 commitments, belong to the indicator and stay in the variable, even when an entity's
-flow_role repeats them. A share, rate, ratio or total that is part of
+role repeats them. A share, rate, ratio or total that is part of
 an indicator's own name is not an operation: "share of women in parliament", "renewable
 energy share", "total population", "total fertility rate", "remittances as percentage of
 GDP". Comparing named places, a series over time ("trends", "over time", "how has aid to
@@ -460,15 +427,15 @@ verbs:
 - rank: an order or a top or bottom N. "top 5 donors" runs over origin, "which countries
   received the most" over destination, "which sectors got the most aid" over category,
   "countries ranked by GDP" over place. "which African countries received the most" runs
-  over destination beside the entity "Africa" with `members` true, flow_role
-  "destination" and role_span "received".
+  over destination beside the entity "Africa" with `members` true, role
+  "recipient" and cue "received".
 - aggregate: a sum across a group of entities the query names or implies. "total aid to
-  the Sahel countries" runs over destination, and "Sahel" has `members` true, flow_role
-  "destination" and role_span "to".
-These axes describe operations only. An entity's flow_role still comes from the query's
-own wording alone, and its role_span copies that wording. A place the query only locates
-("literacy rate in Mali", "population of Chad") has flow_role "unspecified" and no
-role_span, and so do places named bare side by side ("ODA Chad Niger"), whichever of
+  the Sahel countries" runs over destination, and "Sahel" has `members` true, role
+  "recipient" and cue "to".
+These axes describe operations only. An entity's role still comes from the query's
+own wording alone, and its cue copies that wording. A place the query only locates
+("literacy rate in Mali", "population of Chad") has no role and no cue, and so do places
+named bare side by side ("ODA Chad Niger"), whichever of
 them usually gives or receives.
 - growth: a change between years the query names ("change in aid to Kenya since 2010").
   A change with no year named is a series over time, not growth.
@@ -513,15 +480,6 @@ def _extraction_system(year: int) -> str:
     return _EXTRACTION_SYSTEM_PROMPT.replace("[[YEAR]]", str(year))
 
 
-# Role spans are checked offline. Failures downgrade the role to `unspecified` and log a warning.
-# National adjectives qualify when their surface differs from the place name and modifies a
-# measure word in the query. `_role_cue_check` implements this rule.
-
-_LIST_SEPARATOR_WORDS = frozenset({"and", "or"})
-# Words that may stand between a cue and the span it attaches to.
-_ADJACENT_FILLER_WORDS = _LIST_SEPARATOR_WORDS | {"the"}
-
-
 def _char_script(char: str) -> str | None:
     """Return the first word of the Unicode character name, or `None` if unnamed."""
     try:
@@ -532,11 +490,10 @@ def _char_script(char: str) -> str | None:
     return first_word or None
 
 
-# Scripts without word spaces can establish a cue directly, and a piece of an operation
-# phrase in one matches the query as a substring (`_occurs_in`). Unlisted scripts fall
-# through to delimiter or abutment checks. Keep this list explicit and independent of
-# Unicode data. "KATAKANA-HIRAGANA" names the marks both kana share, the long-vowel mark
-# of "ドナー" among them, and "IDEOGRAPHIC" the iteration mark of "国々".
+# A piece of an operation phrase in a script without word spaces matches the query as a
+# substring (`_occurs_in`). Keep this list explicit and independent of Unicode data.
+# "KATAKANA-HIRAGANA" names the marks both kana share, the long-vowel mark of "ドナー"
+# among them, and "IDEOGRAPHIC" the iteration mark of "国々".
 _NON_DELIMITED_SCRIPTS = frozenset(
     {
         "CJK",
@@ -558,113 +515,6 @@ def _in_unspaced_script(char: str) -> bool:
     return _char_script(char) in _NON_DELIMITED_SCRIPTS
 
 
-def _cue_is_delimited(start: int, end: int, normalized_query: str) -> bool:
-    """Whether a cue has a non-letter or string edge on both sides.
-
-    This rejects fragments such as `a` in `ayuda` and keeps a standalone `a`.
-    Apostrophes count as non-letter edges.
-    """
-    left = normalized_query[start - 1] if start > 0 else None
-    right = normalized_query[end] if end < len(normalized_query) else None
-    return (left is None or not left.isalpha()) and (right is None or not right.isalpha())
-
-
-def _cue_abuts_own_span(start: int, end: int, own_ranges: list[tuple[int, int]]) -> bool:
-    """Whether a cue touches an entity-span edge with no gap.
-
-    This accepts attached markers such as Korean `에서`, Finnish `sta`, and English `'s`.
-    """
-    return any(start == own_end or end == own_start for own_start, own_end in own_ranges)
-
-
-def _cue_script_has_no_spaces(cue: str) -> bool:
-    """Return true when every cue letter belongs to a listed no-space script.
-
-    Read the cue's characters, not its neighbours. Japanese and Thai cues can
-    qualify across an intervening word. This route only accepts cues. Unlisted
-    scripts fall through to delimiter or span-abutment checks. Punctuation alone
-    does not qualify.
-    """
-    letters = [char for char in cue if char.isalpha()]
-    return bool(letters) and all(_in_unspaced_script(char) for char in letters)
-
-
-def _genuine_role_ranges(
-    role_span: str, normalized_query: str, own_ranges: list[tuple[int, int]]
-) -> list[tuple[int, int]]:
-    """Return role-span occurrences outside the entity's own span with cue evidence.
-
-    Evidence is a non-letter/string edge, direct contact with the entity span, or
-    a listed no-space script. Script names alone cannot mark word boundaries:
-    Korean particles attach to nouns, as do Finnish, Hungarian, Estonian, and
-    Turkish particles in Latin text.
-
-    A Korean or Finnish particle separated from its entity by an intervening word
-    remains unverified and downgrades the role. This module does not segment words.
-    """
-    candidates = _all_normalized_text_ranges(role_span, normalized_query)
-    return [
-        (start, end)
-        for start, end in candidates
-        if not any(_ranges_overlap((start, end), own) for own in own_ranges)
-        and (
-            _cue_is_delimited(start, end, normalized_query)
-            or _cue_abuts_own_span(start, end, own_ranges)
-            or _cue_script_has_no_spaces(role_span)
-        )
-    ]
-
-
-def _nearest_range_pair(
-    a_ranges: list[tuple[int, int]], b_ranges: list[tuple[int, int]]
-) -> tuple[tuple[int, int], tuple[int, int]]:
-    """Return the nearest cue and entity-span pair."""
-
-    def _gap(a: tuple[int, int], b: tuple[int, int]) -> int:
-        if a[1] <= b[0]:
-            return b[0] - a[1]
-        if b[1] <= a[0]:
-            return a[0] - b[1]
-        return 0  # overlap
-
-    return min(((a, b) for a in a_ranges for b in b_ranges), key=lambda ab: _gap(*ab))
-
-
-def _crossing_entities(
-    between: str, entity: ExtractedEntity, entities: list[ExtractedEntity]
-) -> list[ExtractedEntity]:
-    """Every OTHER entity whose own `span` occurs (normalized) inside the
-    query text strictly between `entity`'s role_span and its own span."""
-    normalized_between = _normalize(between)
-    return [
-        other
-        for other in entities
-        if other is not entity and other.span and _normalize(other.span) in normalized_between
-    ]
-
-
-def _residue_words(between: str, crossers: list[ExtractedEntity]) -> list[str]:
-    """The casefolded words of `between` left after removing the crossers' spans and commas."""
-    residue = between
-    for crosser in crossers:
-        assert crosser.span is not None  # narrowed by _crossing_entities
-        residue = re.sub(re.escape(crosser.span), "", residue, flags=re.IGNORECASE)
-    residue = re.sub(r"[,\s]+", " ", residue).strip()
-    return [t.casefold() for t in residue.split(" ") if t]
-
-
-def _coordination_exempt(
-    between: str, entity: ExtractedEntity, crossers: list[ExtractedEntity]
-) -> bool:
-    """Allow coordinated crossers sharing this role when the remaining text has
-    only list separators, commas, and whitespace. Without this exemption, 17% of
-    correct coordinated answers tested as false positives.
-    """
-    if any(c.flow_role != entity.flow_role for c in crossers):
-        return False
-    return all(t in _LIST_SEPARATOR_WORDS for t in _residue_words(between, crossers))
-
-
 def _modifies_measure_word(
     span_ranges: list[tuple[int, int]],
     normalized_query: str,
@@ -672,7 +522,6 @@ def _modifies_measure_word(
 ) -> bool:
     """Whether a span is followed, after whitespace only, by a variable word.
 
-    This admits national adjectives modifying a measure without an adjective lexicon.
     Any variable word qualifies. Words of one character or less are skipped.
     """
     measure_words = {
@@ -693,135 +542,129 @@ def _modifies_measure_word(
     return False
 
 
-@dataclass(frozen=True, slots=True)
-class RoleCuePairing:
-    """The occurrence of an entity's role cue that role-span validation pairs with the
-    entity's own span: the nearest cue and span occurrences (`_nearest_range_pair`).
+def _grounding_form(text: str) -> str:
+    """`text` folded as `_occurs_in` folds it, a typographic apostrophe read as a plain
+    one and whitespace collapsed."""
+    return " ".join(_folded(text.replace("\u2019", "'")).split())
 
-    `cue_first` holds when the cue precedes the span. `adjacent` holds when nothing but
-    an article, list separators and coordinated entity spans stands between them
-    ("from the United States", "from Norway and Sweden").
+
+def _grounded_cue(cue: str | None, query: str, *, span: str | None) -> bool:
+    """Whether `query` holds `cue` as whole words (`_end_of_whole_occurrence`), or at an
+    occurrence of the place's `span` that it either holds or touches, before or after it
+    with no space between, all in one folded form (`_grounding_form`).
+
+    A case ending or particle joined to the place grounds there, written alone ("sta"
+    after "Norja" in "Norjasta", "'ya" after "Kenya" in "Kenya'ya", "から" after "ケニア")
+    or with the place ("케냐로" for "케냐" in "케냐로의"). A word inside another word
+    grounds nowhere else, so "to" does not ground in "Togo aid". The test catches a cue the
+    model invented or translated.
     """
+    folded = _grounding_form(cue or "")
+    if not folded:
+        return False
+    text = _grounding_form(query)
+    if _end_of_whole_occurrence(folded, text, 0) is not None:
+        return True
+    place = _grounding_form(span or "")
+    if not place:
+        return False
+    places = [(at, at + len(place)) for at in _occurrences(place, text)]
+    for cue_start in _occurrences(folded, text):
+        cue_end = cue_start + len(folded)
+        for place_start, place_end in places:
+            touches = cue_end == place_start or cue_start == place_end
+            holds = cue_start <= place_start and place_end <= cue_end
+            if touches or holds:
+                return True
+    return False
 
-    cue_first: bool
-    adjacent: bool
+
+def _occurrences(piece: str, text: str) -> list[int]:
+    """The start of every occurrence of `piece` in `text`, overlapping ones included."""
+    starts: list[int] = []
+    at = text.find(piece)
+    while at >= 0:
+        starts.append(at)
+        at = text.find(piece, at + 1)
+    return starts
 
 
-def _role_cue_check(
-    normalized_query: str,
-    entity: ExtractedEntity,
-    entities: list[ExtractedEntity],
-    variables: list[str],
-) -> tuple[str | None, RoleCuePairing | None]:
-    """Return the role span's downgrade reason, `None` when valid, with the pairing.
+def cue_is_its_span(entity: ExtractedEntity) -> bool:
+    """Whether `entity`'s cue is the query's own words for the place, its span.
 
-    The normalised cue must occur with boundary evidence. An anchored cue cannot
-    cross another entity, except for same-role coordination with list-only text.
-
-    With no matching entity span, require a genuine cue and pass without overlap
-    or crossing checks, and with no pairing. Compare the nearest cue and span
-    occurrences when either repeats.
-
-    Substrings inside place names (such as `to` in `Togo`) fail cue-boundary checks.
-    An own-span overlap gets its own reason only when every occurrence overlaps.
-    Other invalid occurrences report a missing genuine cue.
-
-    If every cue occurrence overlaps the entity span, accept only a derived
-    surface (such as `French` for `France`) followed by a variable word after
-    whitespace, with no pairing. This identifies national adjectives modifying
-    measures without a lexicon.
-
-    Same-name spans or surfaces modifying another noun fail the check. Possessives such as `'s` qualify through direct span abutment.
+    Where the span differs from the name, the cue is a national adjective ("French" for
+    France) or the name inflected in the query's language ("Norjasta" for Norway), which
+    names the place and reads its role off the measure. Where the span is the name, the
+    cue is the bare name ("Norway" in "Norway give to the UN"), which reads the role off
+    the measure too.
     """
-    raw_ranges = _all_normalized_text_ranges(entity.role_span or "", normalized_query)
-    if not raw_ranges:
-        return "role_span not found in query", None
-    own_ranges = _all_normalized_text_ranges(entity.span, normalized_query) if entity.span else []
-    if own_ranges and all(any(_ranges_overlap(r, own) for own in own_ranges) for r in raw_ranges):
-        if _normalize(entity.span or "") != _normalize(entity.text) and _modifies_measure_word(
-            own_ranges, normalized_query, variables
-        ):
-            # A national adjective can occupy both spans. Validate its surface and measure here.
-            return None, None
-        return "role_span overlaps this entity's own span", None
-    role_ranges = _genuine_role_ranges(entity.role_span or "", normalized_query, own_ranges)
-    if not role_ranges:
-        return "role_span not found in query", None
-    if not own_ranges:
-        return None, None
-    role_range, own_range = _nearest_range_pair(role_ranges, own_ranges)
-    cue_first = role_range[1] <= own_range[0]
-    lo, hi = (role_range[1], own_range[0]) if cue_first else (own_range[1], role_range[0])
-    # Slice the normalised string used for offsets. Casefolding `ß` to `ss` changes length.
-    between = normalized_query[lo:hi]
-    crossers = _crossing_entities(between, entity, entities)
-    if crossers and not _coordination_exempt(between, entity, crossers):
-        return "role_span crosses another entity's span", None
-    adjacent = all(t in _ADJACENT_FILLER_WORDS for t in _residue_words(between, crossers))
-    return None, RoleCuePairing(cue_first=cue_first, adjacent=adjacent)
+    return bool(entity.span and entity.cue) and _normalize(entity.cue) == _normalize(entity.span)
 
 
-def role_cue_pairing(
-    query: str, entity: ExtractedEntity, entities: list[ExtractedEntity]
-) -> RoleCuePairing | None:
-    """The cue pairing role-span validation accepted for `entity` among `entities`.
-
-    `None` when the entity has no role span, its role span fails validation, or
-    validation pairs no cue occurrence with a span occurrence (the span is missing from
-    the query, or the cue is the span itself, a national adjective).
-    """
-    if entity.flow_role == "unspecified" or not (entity.role_span or "").strip():
-        return None
-    return _role_cue_check(_normalize(query), entity, entities, [])[1]
-
-
-def _validate_role_spans(
+def _ground_roles(
     query: str, entities: list[ExtractedEntity], variables: list[str]
 ) -> list[ExtractedEntity]:
-    """Downgrade invalid roles to `unspecified`, then read a lender named before the measure
-    as the origin.
+    """`entities` with each lender's role supplied (`_lends_the_measure`) and each role
+    whose cue `query` does not hold (`_grounded_cue`) dropped with its cue.
 
-    A missing or blank `role_span` fails. Other cues are checked against the query.
-    `variables` supports the national-adjective measure check and the lender rule
-    (`_lends_the_measure`): an organisation whose own words stand straight before a measure
-    word, as "IMF" in "IMF credit outstanding Argentina", is the origin with its own words
-    as cue, whatever role the model gave it.
-
-    Warning logs include the reason and trace id. Query-derived text appears only
-    in the matching debug log.
+    An organisation whose own words stand straight before a measure word, as "IMF" in "IMF
+    credit outstanding Argentina", is the source with its own words as cue, whatever role
+    the model gave it. A role with no grounded cue reads as world knowledge, so the place
+    keeps no role. The warning log carries the trace id
+    alone. Query-derived text appears only in the matching debug log.
     """
     normalized_query = _normalize(query)
-    validated: list[ExtractedEntity] = []
+    grounded: list[ExtractedEntity] = []
     for entity in entities:
         if _lends_the_measure(normalized_query, entity, variables):
-            span = (entity.span or entity.text).strip()
-            validated.append(entity.model_copy(update={"flow_role": "origin", "role_span": span}))
-            continue
-        if entity.flow_role == "unspecified":
-            validated.append(entity)
-            continue
-        if not entity.role_span or not entity.role_span.strip():
-            reason = "flow_role set with no role_span to cite"
+            cue = (entity.span or entity.text).strip()
+            grounded.append(entity.model_copy(update={"role": "source", "cue": cue}))
+        elif entity.role is None or _grounded_cue(entity.cue, query, span=entity.span):
+            grounded.append(entity)
         else:
-            reason, _pairing = _role_cue_check(normalized_query, entity, entities, variables)
-        if reason is None:
-            validated.append(entity)
+            trace_id = get_trace_id()
+            logger.warning(
+                "extract: dropping a role whose cue the query does not hold; trace_id=%s",
+                trace_id,
+            )
+            logger.debug(
+                "extract: dropped role detail trace_id=%s text=%r cue=%r",
+                trace_id,
+                entity.text,
+                entity.cue,
+            )
+            grounded.append(entity.model_copy(update={"role": None, "cue": None}))
+    return grounded
+
+
+def scoped_measures(entity: ExtractedEntity, variables: Sequence[str]) -> frozenset[str]:
+    """The stripped `variables` whose measures `entity` scopes (`ExtractedEntity.variables`),
+    every measure when it names none. The indices are the ones `extract` leaves
+    (`_entities_on_admitted_measures`), each inside `variables`."""
+    named = frozenset(variables[i].strip() for i in entity.variables)
+    return named or frozenset(variable.strip() for variable in variables)
+
+
+def _entities_on_admitted_measures(extraction: Extraction) -> list[ExtractedEntity]:
+    """`extraction.entities` with each one's measure indices (`ExtractedEntity.variables`)
+    re-indexed onto the variable list `_clamp_variables` leaves, as `_admit_operations`
+    re-indexes operations.
+
+    An index outside `variables` names no measure and is dropped, so an entity that names
+    none scopes every measure (`scoped_measures`). An entity whose every index names a
+    measure past the variable cap scopes only measures the request drops, and is dropped
+    with them.
+    """
+    admitted = _admitted_variables(extraction.variables)
+    positions = [i for i, v in enumerate(extraction.variables) if v.strip() in admitted]
+    kept: list[ExtractedEntity] = []
+    for entity in extraction.entities:
+        named = [i for i in entity.variables if 0 <= i < len(extraction.variables)]
+        linked = list(dict.fromkeys(positions.index(i) for i in named if i in positions))
+        if named and not linked:
             continue
-        trace_id = get_trace_id()
-        logger.warning(
-            "extract: downgrading flow_role to 'unspecified' (%s); trace_id=%s",
-            reason,
-            trace_id,
-        )
-        logger.debug(
-            "extract: downgrade detail trace_id=%s text=%r role_span=%r span=%r",
-            trace_id,
-            entity.text,
-            entity.role_span,
-            entity.span,
-        )
-        validated.append(entity.model_copy(update={"flow_role": "unspecified", "role_span": None}))
-    return validated
+        kept.append(entity.model_copy(update={"variables": linked}))
+    return kept
 
 
 def _lends_the_measure(
@@ -863,7 +706,7 @@ def _bound_entities(extraction: Extraction) -> Extraction:
     Check raw occurrence count first to bound per-occurrence scans, then the stripped
     distinct-name count. Keep all occurrences for role extraction. A catalogue or
     declined answer resolves no leg and reads its entities only for `scope.place`, so
-    past either cap it answers with its kind and no entities: the role-span scan has
+    past either cap it answers with its kind and no entities: the role grounding has
     nothing to read and `scope.place` stays unset, as it does for two countries.
     """
     entity_occurrence_count = len(extraction.entities)
@@ -1094,7 +937,7 @@ def _disclose_lost_words(
         return extraction
     held = [
         *extraction.variables,
-        *(text for e in extraction.entities for text in (e.text, e.span, e.role_span) if text),
+        *(text for e in extraction.entities for text in (e.text, e.span, e.cue) if text),
         *(operation.phrase for operation in extraction.operations),
         *extraction.dropped_qualifiers,
         *(year for d in extraction.dates for year in (d.start, d.end) if year),
@@ -1539,26 +1382,45 @@ def _applied_phrases(
     extraction: Extraction, *, date_wording: Sequence[str]
 ) -> frozenset[tuple[str, ...]]:
     """The word sequences the answer applies whenever it resolves: each entity's text
-    and span, the role span of each entity that holds a flow role, and the wording of
-    each relative date `_resolve_relative_dates` applied (`date_wording`), which the
-    resolved date's bounds no longer carry.
+    and span, the cue of each entity that holds a role written with its place
+    (`_cue_runs`), and the wording of each relative date `_resolve_relative_dates` applied
+    (`date_wording`), which the resolved date's bounds no longer carry.
 
     The span is the query's own wording of a place the model names in English ("Kenia",
-    "Kenyan", "DR Congo"), and a role span its cue ("funded by", "received", "au").
-    `extract` validates role spans first, so an entity whose role span
-    `_validate_role_spans` rejected is `unspecified` here and credits no role span.
-    Nothing offline tells a span or cue from other query text: a span the model
-    mislabels with words that name no entity and no cue, and that validation accepts,
-    is credited.
+    "Kenyan", "DR Congo"), and a cue the wording of its role ("funded by", "received",
+    "au"). `extract` grounds roles first (`_ground_roles`), so an entity whose cue the
+    query does not hold has no role here and credits no cue. A cue states the role of the
+    place it is written with, so words the model mislabels as a cue away from its place
+    ("fragile states" for Kenya in "top 5 donors to Kenya in fragile states") are
+    credited to nothing. Nothing offline tells a span from other query text, so a span the
+    model mislabels with words that name no place is credited.
     """
     texts = [text for entity in extraction.entities for text in (entity.text, entity.span) if text]
-    texts += [
-        entity.role_span
-        for entity in extraction.entities
-        if entity.role_span and entity.flow_role != "unspecified"
-    ]
     texts += date_wording
-    return frozenset(words for text in texts if (words := tuple(_words(text))))
+    phrases = {words for text in texts if (words := tuple(_words(text)))}
+    phrases.update(
+        run for entity in extraction.entities if entity.role for run in _cue_runs(entity)
+    )
+    return frozenset(phrases)
+
+
+def _cue_runs(entity: ExtractedEntity) -> set[tuple[str, ...]]:
+    """The word runs that write `entity`'s cue with its place: the cue straight before
+    the place's span or name, or before "the" and it, or straight after it ("funded by
+    Norway", "funded by the US", "Kenya received"). A cue that holds the place's words
+    ("Kenya's", "Kenyan") is a run of its own."""
+    cue = tuple(_words(entity.cue or ""))
+    runs: set[tuple[str, ...]] = set()
+    if not cue:
+        return runs
+    for text in (entity.span, entity.text):
+        place = tuple(_words(text or ""))
+        if not place:
+            continue
+        if any(cue[i : i + len(place)] == place for i in range(len(cue) - len(place) + 1)):
+            runs.add(cue)
+        runs.update({(*cue, *place), (*cue, "the", *place), (*place, *cue)})
+    return runs
 
 
 def _date_words(extraction: Extraction) -> frozenset[str]:
@@ -1622,8 +1484,8 @@ def _trim_qualifiers_to_what_operations_leave(
     (`_words_an_operation_accounts_for`) and, over origin or destination, the role noun
     anywhere in the qualifier (`_names_a_role_axis`). Such a qualifier loses, from both
     ends, those words, function words, date words, and every run of words that is an
-    entity's text or span, a validated role span or an applied relative date's wording
-    (`_applied_phrases`). What is left
+    entity's text or span, a grounded role's cue written with its place, or an applied
+    relative date's wording (`_applied_phrases`). What is left
     stays in `dropped_qualifiers` for
     the region, which reports it unless the answer applied it: "top 5 donors of standard
     grants" leaves "standard grants", unapplied when bind asks instead of electing. The
@@ -1948,11 +1810,13 @@ async def extract(
     `result.unit_texts` (`_peel_unit_phrases`), its entities bounded, its operations admitted (a
     forecast over a past year returns the year to `dates`), each admitted forecast's target
     year set on it (`_target_forecasts`) and then removed from its variable's dates
-    (`dates`, or `result.dates_by_variable` when another variable keeps them), and its role
-    spans validated against the variables the cap admits. A reading that repeats a variable
-    then lists the query words it lost as dropped qualifiers (`_disclose_lost_words`). The
-    words an admitted operation accounts for are then cut from its dropped qualifiers,
-    crediting only the role spans of roles that passed validation (`_applied_phrases`),
+    (`dates`, or `result.dates_by_variable` when another variable keeps them), each entity's
+    measure indices re-indexed onto the variables the cap admits
+    (`_entities_on_admitted_measures`), and its roles grounded against the query
+    (`_ground_roles`). A reading that repeats a variable then lists the query words it lost
+    as dropped qualifiers (`_disclose_lost_words`). The words an admitted operation accounts
+    for are then cut from its dropped qualifiers, crediting only the cues of grounded roles
+    (`_applied_phrases`),
     before the qualifier cap counts them. It is then bounded, reattached, clamped, and
     display-truncated in that order. Qualifier checks use full phrases and variables before
     caps can change their meaning. Usage is `None` when the client does not provide it. The stage
@@ -1977,8 +1841,9 @@ async def extract(
     )
     admitted = _admitted_variables(extraction.variables)
     clamped_variables = [v for v in extraction.variables if v.strip() in admitted]
+    entities = _entities_on_admitted_measures(extraction)
     extraction = extraction.model_copy(
-        update={"entities": _validate_role_spans(query, extraction.entities, clamped_variables)}
+        update={"entities": _ground_roles(query, entities, clamped_variables)}
     )
     extraction = _disclose_lost_words(
         query, extraction, date_wording=date_wording, unit_texts=unit_texts.values()

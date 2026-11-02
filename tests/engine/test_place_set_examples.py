@@ -185,22 +185,31 @@ def test_raw_text_that_asks_for_africas_members_binds_them(doors: Doors) -> None
         assert merged.spec_id == spec.spec_id
 
 
+@pytest.mark.parametrize(
+    "provider_direction",
+    [
+        pytest.param({"role": "source", "cue": "from"}, id="provider-directed"),
+        pytest.param(
+            {"role": "source", "cue": "Sub-Saharan African"},
+            id="provider-cue-overlaps-span",
+        ),
+    ],
+)
 def test_raw_text_asking_for_a_regions_members_on_one_end_reads_it_whole_on_the_other(
-    doors: Doors,
+    doors: Doors, provider_direction: dict
 ) -> None:
     """ "aid from Sub-Saharan African countries to Sub-Saharan Africa" names one place on
     both ends, and the extractor states `members` on the provider's mention alone. The Spec
     binds the region's members as the providers and its node as the recipient, the
     restatement asks for the members on the provider's end alone, and posted back it
-    answers with the same Spec."""
+    answers with the same Spec. A provider's mention whose cue is its own span, as a
+    national adjective's is, reads the same."""
     query = "aid from Sub-Saharan African countries to Sub-Saharan Africa"
     name = LABEL[SUB_SAHARAN]
     providers = ExtractedEntity(
-        text=name, span="Sub-Saharan African", flow_role="origin", role_span="from", members=True
+        text=name, span="Sub-Saharan African", members=True, **provider_direction
     )
-    recipient = ExtractedEntity(
-        text=name, span="Sub-Saharan Africa", flow_role="destination", role_span="to"
-    )
+    recipient = ExtractedEntity(text=name, span="Sub-Saharan Africa", role="recipient", cue="to")
 
     response = doors.raw_text(query, AID, providers, recipient)
 
@@ -223,8 +232,8 @@ def test_raw_text_ranking_africas_recipients_binds_its_members(doors: Doors, mem
     africa = ExtractedEntity(
         text="Africa",
         span="African",
-        flow_role="destination",
-        role_span="received",
+        role="recipient",
+        cue="received",
         members=members,
     )
     most = ExtractedOperation(

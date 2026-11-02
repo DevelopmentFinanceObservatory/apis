@@ -31,7 +31,7 @@ def extraction_key(query: str, *, version: str, year: int, identity: Mapping[str
     names and the model's `identity` (its id, seed and thinking level).
 
     The exact text keys the reading because `extract()` checks the reading against it:
-    role spans, operation phrases and restored word order all read the query's own text.
+    role cues, operation phrases and restored word order all read the query's own text.
     """
     document = {
         "query": query,

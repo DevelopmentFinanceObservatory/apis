@@ -1,4 +1,4 @@
-"""Tests extraction, role-span validation, and coded-qualifier reattachment."""
+"""Tests extraction, role grounding, and coded-qualifier reattachment."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import asyncio
 import logging
 from datetime import date
 from types import SimpleNamespace
+from typing import get_args
 
 import pytest
 
@@ -23,15 +24,16 @@ from search.engine.extract import (
     ExtractionResult,
     _admit_operations,
     _drop_forecast_years,
+    _ground_roles,
     _occurs_in,
     _resolve_relative_dates,
     _target_forecasts,
-    _validate_role_spans,
     dates_to_request,
     extract,
     slot_default_answers,
 )
 from search.engine.qualifier_match import is_coded_only_phrase, match_qualifiers, recall_text
+from search.engine.role_text import Party, role_axis_for_text
 from search.models import MAX_FORECAST_TARGET_YEAR, Operation, TimeWindow
 from tests.fixtures import FakeLLM
 from tests.fixtures.keys import fixture_key
@@ -153,7 +155,7 @@ def test_extraction_is_pydantic_model():
     obj = Extraction.model_validate(data)
     assert obj.variables == ["health ODA"]
     assert _texts(obj.entities) == ["Ethiopia"]
-    assert obj.entities[0].flow_role == "unspecified"
+    assert obj.entities[0].role is None
     assert obj.dates == []
     assert obj.dropped_qualifiers == []
 
@@ -204,13 +206,12 @@ def test_extraction_retains_a_named_group_when_a_qualifier_is_dropped():
 # ExtractedEntity: shape and defaults
 
 
-def test_extracted_entity_defaults_to_unspecified_with_no_spans():
-    """A bare {"text": ...} entity, with no direction fields at all, defaults
-    flow_role to "unspecified" with both span fields null, and asks for no members."""
+def test_extracted_entity_defaults_to_no_role_and_no_spans():
+    """A bare {"text": ...} entity holds no role, cue or span, scopes every measure, and
+    asks for no members."""
     entity = ExtractedEntity.model_validate({"text": "Kenya"})
-    assert entity.span is None
-    assert entity.flow_role == "unspecified"
-    assert entity.role_span is None
+    assert (entity.span, entity.cue, entity.role) == (None, None, None)
+    assert entity.variables == []
     assert entity.members is False
 
 
@@ -221,441 +222,171 @@ def test_the_extraction_schema_offers_members_on_an_entity():
     assert "members" not in entity["required"]
 
 
-def test_extracted_entity_accepts_full_shape():
-    entity = ExtractedEntity(text="Norway", span="Norway", flow_role="origin", role_span="from")
-    assert entity.flow_role == "origin"
-    assert entity.role_span == "from"
+def test_the_model_writes_an_entitys_measures_and_cue_before_its_role():
+    """Gemini fills fields in declaration order, so a role follows the measures it serves
+    and the words that state it."""
+    entity = Extraction.model_json_schema()["$defs"]["ExtractedEntity"]
+    assert list(entity["properties"]) == ["text", "span", "variables", "cue", "role", "members"]
 
 
-# The flow_role field description: adjectival and possessive national cues
+def test_each_party_word_has_a_fixed_axis():
+    """The raw-text door maps a party word through the parsed door's lexicon, so a creditor
+    is the origin and a debtor the destination whichever way the money moves."""
+    axes = {word: role_axis_for_text(word) for word in get_args(Party)}
+    assert axes == {
+        "source": "origin",
+        "recipient": "destination",
+        "creditor": "origin",
+        "debtor": "destination",
+    }
 
 
-def test_flow_role_description_names_the_adjectival_and_possessive_cues():
-    """The schema names national adjectives and possessives as direction cues."""
-    description = ExtractedEntity.model_fields["flow_role"].description
+def test_the_role_description_bans_world_knowledge():
+    description = ExtractedEntity.model_fields["role"].description
     assert description is not None
-    text = " ".join(description.split())
-
-    assert "national adjective before the measure" in text
-    assert '"French aid" is aid FROM France' in text
-    assert '"Kenyan exports" are exports FROM Kenya' in text
-    assert "\"Kenya's imports\" is Kenya's own inflow, destination" in text
-    assert 'France=origin role_span "French"' in text
-    assert '"French aid to Senegal"' in text
+    assert '"ODA Kenya Norway" is null for BOTH places' in description
 
 
-def test_role_span_description_spells_out_the_adjectival_and_possessive_cue():
-    """The schema tells `role_span` to copy the adjective or adjacent possessive marker."""
-    description = ExtractedEntity.model_fields["role_span"].description
-    assert description is not None
-    text = " ".join(description.split())
-
-    assert "a national adjective: the adjective itself, exactly as written" in text
-    assert "also this entity's own span" in text
-    assert "a possessive: the possessive marker written next to the place" in text
-    assert "Never invent a span that is not a substring of the query." in text
-    assert "'s aid to" not in text
+# _ground_roles: a role stands only on a cue the query holds
 
 
-# _validate_role_spans: offline structural audit
-
-
-def _entity(text, span=None, flow_role="unspecified", role_span=None) -> ExtractedEntity:
-    return ExtractedEntity(text=text, span=span, flow_role=flow_role, role_span=role_span)
-
-
-def test_validate_role_spans_keeps_a_directly_evidenced_entity():
-    entities = [
-        _entity("Norway", span="Norway", flow_role="origin", role_span="from"),
-        _entity("Kenya", span="Kenya", flow_role="destination", role_span="to"),
-    ]
-    validated = _validate_role_spans("aid from Norway to Kenya", entities, [])
-    assert [e.flow_role for e in validated] == ["origin", "destination"]
-
-
-def test_validate_role_spans_downgrades_a_role_span_not_in_the_query():
-    """A `role_span` absent from the query downgrades the directional claim."""
-    entities = [_entity("Norway", span="Norway", flow_role="origin", role_span="funded by")]
-    validated = _validate_role_spans("Norway ODA", entities, [])
-    assert validated[0].flow_role == "unspecified"
-    assert validated[0].role_span is None
-
-
-def test_validate_role_spans_downgrades_an_overlapping_role_span(caplog):
-    """A `role_span` equal to the entity span is rejected and logged separately from a missing cue."""
-    entities = [_entity("Kenya", span="Kenya", flow_role="destination", role_span="Kenya")]
-    with caplog.at_level(logging.WARNING, logger="search.engine.extract"):
-        validated = _validate_role_spans("aid to Kenya", entities, ["aid"])
-    assert validated[0].flow_role == "unspecified"
-    assert validated[0].role_span is None
-    assert "role_span overlaps this entity's own span" in caplog.records[0].getMessage()
-
-
-# _validate_role_spans: the adjectival acceptance route on condition (2)
+def _entity(text, span=None, role=None, cue=None, variables=()) -> ExtractedEntity:
+    return ExtractedEntity(text=text, span=span, role=role, cue=cue, variables=list(variables))
 
 
 @pytest.mark.parametrize(
-    ("query", "text", "span", "variable"),
+    ("query", "entity"),
     [
-        ("French aid to Senegal", "France", "French", "aid"),
-        ("IMF credit outstanding Argentina", "IMF", "IMF", "credit outstanding"),
+        ("aid from Norway to Kenya", _entity("Kenya", "Kenya", "recipient", "to")),
+        ("aid to Kenya", _entity("Kenya", "Kenya", "recipient", "to")),
+        # The place's own name grounds as its cue; the role is read off the measure.
+        ("Norway give to the UN", _entity("Norway", "Norway", "source", "Norway")),
+        ("Kenya aid", _entity("Kenya", "kenya", "recipient", "KENYA")),
+        # Grounding asks only whether the query holds the cue: a list member shares the
+        # list's "to", and a cue away from its place keeps its role (it credits no
+        # qualifier words, `_cue_runs`).
+        ("aid to Kenya and Uganda", _entity("Uganda", "Uganda", "recipient", "to")),
+        (
+            "top 5 donors in fragile states from Norway to Kenya",
+            _entity("Kenya", "Kenya", "recipient", "fragile states"),
+        ),
+        ("Aid FROM Norway", _entity("Norway", "Norway", "source", "from")),
+        # A case ending or particle grounds written straight against the place's span.
+        ("Norjasta Keniaan apua", _entity("Norway", "Norja", "source", "sta")),
+        ("Kenya'ya destek", _entity("Kenya", "Kenya", "recipient", "'ya")),
+        ("한국에서 케냐로의 원조", _entity("South Korea", "한국", "source", "에서")),
+        ("ケニアへのODA", _entity("Kenya", "ケニア", "recipient", "へ")),
+        ("ケニアからのODA", _entity("Kenya", "ケニア", "source", "から")),
+        # A cue that writes the place with its case ending grounds inside a longer word.
+        ("한국정부에서 케냐로의 원조", _entity("Kenya", "케냐", "recipient", "케냐로")),
+        (
+            "일본에서 베트남으로의 공적개발원조",
+            _entity("Vietnam", "베트남", "recipient", "베트남으로"),
+        ),
+        # A typographic apostrophe in the query matches a plain one in the cue.
+        ("Kenya\u2019s debt", _entity("Kenya", "Kenya", "debtor", "Kenya's")),
+        ("French aid to Senegal", _entity("France", "French", "source", "French")),
+        # An inflected name written as span and cue reads as an adjective does.
+        ("Norjasta Keniaan apua", _entity("Norway", "Norjasta", "source", "Norjasta")),
+        ("Kenya's debt to China", _entity("Kenya", "Kenya", "debtor", "Kenya's")),
     ],
 )
-def test_validate_role_spans_keeps_a_surface_modifying_a_measure(query, text, span, variable):
-    """A national adjective or an organisation's name directly before the measure is its
-    own cue."""
-    entities = [_entity(text, span=span, flow_role="origin", role_span=span)]
-    validated = _validate_role_spans(query, entities, [variable])
-    assert validated[0].flow_role == "origin"
-    assert validated[0].role_span == span
+def test_ground_roles_keeps_a_role_whose_cue_the_query_holds(query, entity):
+    assert _ground_roles(query, [entity], ["aid"]) == [entity]
 
 
 @pytest.mark.parametrize(
-    ("query", "text", "variable"),
+    ("query", "entity"),
     [
-        ("Kenya aid", "Kenya", "aid"),
-        ("China loans to Kenya", "China", "loans"),
+        pytest.param(
+            "Norway ODA", _entity("Norway", "Norway", "source", "funded by"), id="invented"
+        ),
+        pytest.param(
+            "ayuda de Noruega a Kenia",
+            _entity("Norway", "Noruega", "source", "from"),
+            id="translated",
+        ),
+        pytest.param("ODA Kenya Norway", _entity("Norway", "Norway", "source"), id="no-cue"),
+        pytest.param(
+            "ODA Kenya Norway", _entity("Norway", "Norway", "source", "   "), id="blank-cue"
+        ),
+        # A cue inside another word grounds only against the place's span.
+        pytest.param(
+            "Togo aid", _entity("Togo", "Togo", "recipient", "to"), id="word-inside-a-word"
+        ),
+        pytest.param(
+            "한국정부에서 케냐로의 원조",
+            _entity("South Korea", "한국", "source", "에서"),
+            id="particle-apart-from-the-span",
+        ),
     ],
 )
-def test_validate_role_spans_downgrades_a_place_named_before_a_measure(query, text, variable):
-    """A place's own name before the measure states no direction: "Kenya aid" is usually
-    aid to Kenya, and "US aid" aid from the US."""
-    entities = [_entity(text, span=text, flow_role="origin", role_span=text)]
-    validated = _validate_role_spans(query, entities, [variable])
-    assert validated[0].flow_role == "unspecified"
-    assert validated[0].role_span is None
+def test_ground_roles_drops_a_role_whose_cue_the_query_does_not_hold(query, entity):
+    (grounded,) = _ground_roles(query, [entity], ["ODA"])
+    assert (grounded.role, grounded.cue) == (None, None)
+
+
+def test_ground_roles_leaves_an_entity_with_no_role_alone():
+    """A cue with no role states nothing, so grounding has nothing to check."""
+    entity = _entity("Kenya", "Kenya", cue="nowhere in the query")
+    assert _ground_roles("ODA Kenya", [entity], ["ODA"]) == [entity]
 
 
 @pytest.mark.parametrize(
-    ("query", "flow_role", "role_span", "variable", "expected"),
+    ("query", "role", "cue", "variable", "expected"),
     [
-        ("IMF credit outstanding Argentina", "unspecified", None, "credit outstanding", "origin"),
+        ("IMF credit outstanding Argentina", None, None, "credit outstanding", "source"),
         (
             "IMF credit outstanding Argentina",
-            "destination",
+            "recipient",
             "Argentina",
             "credit outstanding",
-            "origin",
+            "source",
         ),
         # Named after the measure, the IMF is the source of the numbers.
-        ("Kenya GDP IMF", "unspecified", None, "GDP", "unspecified"),
+        ("Kenya GDP IMF", None, None, "GDP", None),
     ],
 )
-def test_validate_role_spans_reads_an_organisation_before_the_measure_as_lender(
-    query, flow_role, role_span, variable, expected
+def test_ground_roles_reads_an_organisation_before_the_measure_as_lender(
+    query, role, cue, variable, expected
 ):
-    """An organisation named straight before a measure word is the origin, with its own name
-    as cue, whatever role the model gave it."""
-    entities = [_entity("IMF", span="IMF", flow_role=flow_role, role_span=role_span)]
-    validated = _validate_role_spans(query, entities, [variable])
-    assert validated[0].flow_role == expected
-    assert validated[0].role_span == ("IMF" if expected == "origin" else None)
+    """An organisation named straight before a measure word is the source, with its own
+    name as cue, whatever role the model gave it."""
+    (grounded,) = _ground_roles(query, [_entity("IMF", "IMF", role, cue)], [variable])
+    assert grounded.role == expected
+    assert grounded.cue == ("IMF" if expected else None)
 
 
-def test_validate_role_spans_downgrades_an_adjectival_surface_with_no_measure_to_modify():
-    """An adjective cue is rejected when extraction supplies no measure for it to modify."""
-    entities = [_entity("France", span="French", flow_role="origin", role_span="French")]
-    validated = _validate_role_spans("French aid to Senegal", entities, [])
-    assert validated[0].flow_role == "unspecified"
-    assert validated[0].role_span is None
-
-
-def test_validate_role_spans_downgrades_an_adjectival_surface_whose_measure_is_elsewhere():
-    """The adjective must directly precede the measure.
-
-    A measure elsewhere in the query is insufficient.
-    """
-    entities = [_entity("Kenya", span="Kenia", flow_role="origin", role_span="Kenia")]
-    validated = _validate_role_spans("aid to Kenia", entities, ["aid"])
-    assert validated[0].flow_role == "unspecified"
-    assert validated[0].role_span is None
-
-
-def test_validate_role_spans_keeps_a_possessive_cue_through_the_abutment_route():
-    """A possessive marker directly after the entity span is accepted without an extracted measure."""
-    entities = [_entity("Kenya", span="Kenya", flow_role="destination", role_span="'s")]
-    validated = _validate_role_spans("Kenya's imports", entities, [])
-    assert validated[0].flow_role == "destination"
-
-
-def test_validate_role_spans_coordination_exemption_keeps_a_shared_preposition():
-    """The shared "from" cue applies to Norway and Sweden.
-
-    The coordination exemption cut false positives by 17%.
-    """
-    query = "aid to Kenya from Norway and Sweden"
-    entities = [
-        _entity("Kenya", span="Kenya", flow_role="destination", role_span="to"),
-        _entity("Norway", span="Norway", flow_role="origin", role_span="from"),
-        _entity("Sweden", span="Sweden", flow_role="origin", role_span="from"),
-    ]
-    validated = _validate_role_spans(query, entities, [])
-    assert [e.flow_role for e in validated] == ["destination", "origin", "origin"]
-
-
-def test_validate_role_spans_flags_a_crossing_entity_on_a_different_axis():
-    """The shared-cue exemption rejects Uganda because its destination axis differs from Norway's origin."""
-    query = "aid to Kenya from Norway and Uganda"
-    entities = [
-        _entity("Kenya", span="Kenya", flow_role="destination", role_span="to"),
-        _entity("Norway", span="Norway", flow_role="origin", role_span="from"),
-        _entity("Uganda", span="Uganda", flow_role="destination", role_span="from"),
-    ]
-    validated = _validate_role_spans(query, entities, [])
-    assert [e.flow_role for e in validated] == ["destination", "origin", "unspecified"]
-
-
-# _validate_role_spans: a script-agnostic genuine-cue rule for role_span
-
-
-def test_validate_role_spans_keeps_a_standalone_cue_that_also_occurs_inside_a_place_name():
-    """Only standalone "a" between words counts as a Spanish cue."""
-    entities = [_entity("Kenia", span="Kenia", flow_role="destination", role_span="a")]
-    validated = _validate_role_spans("ayuda de Noruega a Kenia", entities, [])
-    assert validated[0].flow_role == "destination"
-
-
-def test_validate_role_spans_keeps_a_standalone_cue_that_also_spells_a_place_names_prefix():
-    """The standalone preposition "to" counts.
-
-    The letters in "Togo" are ignored.
-    """
-    entities = [_entity("Togo", span="Togo", flow_role="destination", role_span="to")]
-    validated = _validate_role_spans("aid to Togo from Norway", entities, [])
-    assert validated[0].flow_role == "destination"
-
-
-def test_validate_role_spans_downgrades_a_cue_that_exists_only_inside_a_place_name_spanish():
-    """The letter "a" appears only within words, so it cannot serve as a Spanish role cue."""
-    entities = [_entity("Kenia", span=None, flow_role="destination", role_span="a")]
-    validated = _validate_role_spans("ayuda para Kenia", entities, [])
-    assert validated[0].flow_role == "unspecified"
-
-
-def test_validate_role_spans_downgrades_a_cue_that_exists_only_inside_a_place_name_english():
-    """The letters "to" inside "Togo" do not form a role cue."""
-    entities = [_entity("Togo", span=None, flow_role="origin", role_span="to")]
-    validated = _validate_role_spans("aid for Togo", entities, [])
-    assert validated[0].flow_role == "unspecified"
-
-
-def test_validate_role_spans_keeps_a_possessive_cue_whose_own_edge_is_not_a_letter():
-    """The possessive marker `'s` is accepted by abutment to "Taiwan", despite its letter boundary."""
-    entities = [_entity("Taiwan", span="Taiwan", flow_role="origin", role_span="'s")]
-    validated = _validate_role_spans("Taiwan's ODA to the Marshall Islands", entities, [])
-    assert validated[0].flow_role == "origin"
-
-
-def test_validate_role_spans_keeps_a_cue_adjacent_to_a_hyphenated_span():
-    """`to` stands alone, delimited by spaces on both sides, immediately
-    before a span that itself contains a hyphen ("Guinea-Bissau"). The
-    hyphen inside the entity's own span must not confuse the plain-text
-    range computation either side of it relies on."""
-    entities = [
-        _entity("Guinea-Bissau", span="Guinea-Bissau", flow_role="destination", role_span="to")
-    ]
-    validated = _validate_role_spans("aid to Guinea-Bissau from Norway", entities, [])
-    assert validated[0].flow_role == "destination"
-
-
-def test_validate_role_spans_keeps_a_multi_word_cue():
-    """A multiword cue such as "contribute to" matches as one phrase (#922)."""
-    entities = [_entity("G7", span="G7", flow_role="destination", role_span="contribute to")]
-    validated = _validate_role_spans(
-        "how much do G7 countries contribute to international aid", entities, []
-    )
-    assert validated[0].flow_role == "destination"
-
-
-def test_validate_role_spans_keeps_a_cue_glued_to_a_hiragana_particle():
-    """Hiragana cues such as `から` are accepted without word boundaries."""
-    entities = [_entity("日本", span="日本", flow_role="origin", role_span="から")]
-    validated = _validate_role_spans("日本からのケニア援助", entities, [])
-    assert validated[0].flow_role == "origin"
-
-
-def test_validate_role_spans_keeps_a_cue_glued_to_another_hiragana_word():
-    """The script rule accepts `から` between kana without spaces."""
-    entities = [_entity("ケニア", span="ケニア", flow_role="origin", role_span="から")]
-    validated = _validate_role_spans("ケニアからにほんへ", entities, [])
-    assert validated[0].flow_role == "origin"
-
-
-def test_validate_role_spans_keeps_a_destination_particle_glued_to_hiragana():
-    """The hiragana particle `へ` is accepted when attached to kana on both sides."""
-    entities = [_entity("ケニア", span="ケニア", flow_role="destination", role_span="へ")]
-    validated = _validate_role_spans("日本からケニアへの援助", entities, [])
-    assert validated[0].flow_role == "destination"
-
-
-def test_validate_role_spans_keeps_a_destination_particle_across_an_intervening_word():
-    """Japanese `へ` can cross an intervening word because the script has no spaces."""
-    entities = [_entity("ケニア", span="ケニア", flow_role="destination", role_span="へ")]
-    validated = _validate_role_spans("ケニア政府への援助", entities, [])
-    assert validated[0].flow_role == "destination"
-
-
-def test_validate_role_spans_keeps_a_thai_cue_glued_to_thai_on_both_sides():
-    """Thai cues such as `จาก` are accepted without word boundaries."""
-    entities = [_entity("ไทย", span="ไทย", flow_role="origin", role_span="จาก")]
-    validated = _validate_role_spans("ความช่วยเหลือจากไทยไปเคนยา", entities, [])
-    assert validated[0].flow_role == "origin"
-
-
-def test_validate_role_spans_keeps_a_japanese_cue_across_an_intervening_country_name():
-    """The Japanese script rule accepts `から` across an intervening word."""
-    entities = [_entity("アメリカ", span="アメリカ", flow_role="origin", role_span="から")]
-    validated = _validate_role_spans("アメリカ合衆国からケニアへの援助", entities, [])
-    assert validated[0].flow_role == "origin"
-
-
-def test_validate_role_spans_keeps_a_thai_cue_across_an_intervening_country_word():
-    """The Thai script rule accepts `จาก` across an intervening word."""
-    entities = [_entity("ไทย", span="ไทย", flow_role="origin", role_span="จาก")]
-    validated = _validate_role_spans("ความช่วยเหลือจากประเทศไทยไปเคนยา", entities, [])
-    assert validated[0].flow_role == "origin"
-
-
-def test_cue_script_has_no_spaces_is_an_accept_only_test():
-    """The fixed script list grants acceptance for scripts without spaces.
-
-    Hangul cues pass through the span-abutment rule.
-    """
-    from search.engine.extract import _cue_script_has_no_spaces
-
-    assert _cue_script_has_no_spaces("から") is True  # hiragana
-    assert _cue_script_has_no_spaces("จาก") is True  # thai
-    assert _cue_script_has_no_spaces("에서") is False  # hangul: absent, not thereby refused
-    assert _cue_script_has_no_spaces("to") is False  # latin
-    assert _cue_script_has_no_spaces("") is False  # no letters at all: never qualifies
-
-
-def test_validate_role_spans_keeps_korean_case_marking_particles_on_both_axes():
-    """Korean case markers `에서` and `로` pass when they abut their entity spans."""
-    entities = [
-        _entity("한국", span="한국", flow_role="origin", role_span="에서"),
-        _entity("케냐", span="케냐", flow_role="destination", role_span="로"),
-    ]
-    validated = _validate_role_spans("한국에서 케냐로의 원조", entities, [])
-    assert [e.flow_role for e in validated] == ["origin", "destination"]
-
-
-def test_validate_role_spans_keeps_a_finnish_case_marking_particle():
-    """The Finnish suffix `sta` passes when it abuts the entity span `Norja`."""
-    entities = [_entity("Norja", span="Norja", flow_role="origin", role_span="sta")]
-    validated = _validate_role_spans("Norjasta Keniaan apua", entities, [])
-    assert validated[0].flow_role == "origin"
-
-
-def test_validate_role_spans_downgrades_a_korean_particle_across_an_intervening_word():
-    """Korean cues across intervening words remain unsupported because Korean uses spaces."""
-    entities = [_entity("한국", span="한국", flow_role="origin", role_span="에서")]
-    validated = _validate_role_spans("한국정부에서 케냐로의 원조", entities, [])
-    assert validated[0].flow_role == "unspecified"
-
-
-def test_validate_role_spans_downgrade_log_omits_query_text_at_warning_level(caplog):
-    """WARNING logs expose the failure reason and trace id, not query text or extracted spans."""
+def test_ground_roles_logs_query_text_only_at_debug_level(caplog):
+    """The WARNING record carries the trace id alone; the DEBUG record with the same trace
+    id carries the extracted text."""
     query = "aid to Kenya with a secret-marker-phrase in it"
-    entities = [_entity("Kenya", span="Kenya", flow_role="origin", role_span="nonexistent")]
-    with caplog.at_level(logging.WARNING, logger="search.engine.extract"):
-        _validate_role_spans(query, entities, [])
-    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-    assert len(warnings) == 1
-    message = warnings[0].getMessage()
-    assert "secret-marker-phrase" not in message
-    assert "Kenya" not in message
-    assert "nonexistent" not in message
-    assert query not in message
-    assert "trace_id=" in message
-
-
-def test_validate_role_spans_downgrade_log_carries_spans_at_debug_level(caplog):
-    """DEBUG logs include extracted text with the WARNING record's trace id."""
-    query = "aid to Kenya with a secret-marker-phrase in it"
-    entities = [_entity("Kenya", span="Kenya", flow_role="origin", role_span="nonexistent")]
+    entity = _entity("Kenya", "Kenya", "recipient", "nonexistent")
     with caplog.at_level(logging.DEBUG, logger="search.engine.extract"):
-        _validate_role_spans(query, entities, [])
-    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-    debugs = [r for r in caplog.records if r.levelno == logging.DEBUG]
-    assert len(warnings) == 1
-    assert len(debugs) == 1
-    debug_message = debugs[0].getMessage()
-    assert "nonexistent" in debug_message
-    assert "Kenya" in debug_message
-    warning_trace_id = warnings[0].getMessage().rsplit("trace_id=", 1)[1]
-    assert warning_trace_id in debug_message
+        _ground_roles(query, [entity], [])
+    (warning,) = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    (debug,) = [r.getMessage() for r in caplog.records if r.levelno == logging.DEBUG]
+    assert all(text not in warning for text in ("secret-marker-phrase", "Kenya", "nonexistent"))
+    trace_id = warning.rsplit("trace_id=", 1)[1]
+    assert trace_id in debug
+    assert "nonexistent" in debug
 
 
-def test_validate_role_spans_downgrades_a_directional_claim_with_no_role_span():
-    """A directional claim without a cited `role_span` downgrades to `unspecified`."""
-    entities = [
-        _entity("Kenya", span="Kenya", flow_role="destination", role_span=None),
-        _entity("Norway", span="Norway", flow_role="origin", role_span=None),
-    ]
-    validated = _validate_role_spans("ODA Kenya Norway", entities, [])
-    assert [e.flow_role for e in validated] == ["unspecified", "unspecified"]
-    assert all(e.role_span is None for e in validated)
-
-
-def test_validate_role_spans_downgrades_a_directional_claim_with_a_blank_role_span():
-    """A blank `role_span` downgrades the directional claim like `None`."""
-    entities = [_entity("Kenya", span="Kenya", flow_role="destination", role_span="   ")]
-    validated = _validate_role_spans("ODA Kenya", entities, [])
-    assert validated[0].flow_role == "unspecified"
-
-
-def test_validate_role_spans_uses_normalized_offsets_on_a_query_with_leading_space():
-    """Ranges use stripped, case-folded query text.
-
-    Six leading spaces preserve the crossing check from Norway to Uganda's cue.
-    """
-    query = "      aid to Kenya from Norway and Uganda"
-    entities = [
-        _entity("Kenya", span="Kenya", flow_role="destination", role_span="to"),
-        _entity("Norway", span="Norway", flow_role="origin", role_span="from"),
-        _entity("Uganda", span="Uganda", flow_role="destination", role_span="from"),
-    ]
-    validated = _validate_role_spans(query, entities, [])
-    assert [e.flow_role for e in validated] == ["destination", "origin", "unspecified"]
-
-
-def test_validate_role_spans_never_refuses_only_downgrades():
-    """Validation returns entities, downgrading unsupported directional claims."""
-    entities = [_entity("Nowhere", span=None, flow_role="origin", role_span="nonexistent")]
-    validated = _validate_role_spans("a query naming no place", entities, [])
-    assert len(validated) == 1
-    assert validated[0].flow_role == "unspecified"
-
-
-# extract(): the validator runs inside the public entry point
-
-
-def test_extract_downgrades_a_fabricated_role_span_end_to_end():
-    """`extract()` applies role-span validation before returning the response."""
+def test_extract_drops_a_role_whose_cue_the_query_does_not_hold():
     query = "population of Kenya"
-    key = fixture_key(Extraction, _EXTRACTION_SYSTEM_PROMPT, query)
     llm = FakeLLM(
         responses={
-            key: {
+            fixture_key(Extraction, _EXTRACTION_SYSTEM_PROMPT, query): {
                 "kind": "resolution",
                 "variables": ["population"],
-                "entities": [
-                    {
-                        "text": "Kenya",
-                        "span": "Kenya",
-                        "flow_role": "origin",
-                        "role_span": "from",  # fabricated: "from" is not in the query
-                    }
-                ],
+                "entities": [{"text": "Kenya", "span": "Kenya", "cue": "from", "role": "source"}],
                 "dates": [],
             }
         }
     )
     result, _ = _run(extract(query, llm=llm))
-    extraction = result.extraction
-    assert extraction.entities[0].flow_role == "unspecified"
-    assert extraction.entities[0].role_span is None
+    (entity,) = result.extraction.entities
+    assert (entity.role, entity.cue) == (None, None)
 
 
 # Re-attaching a coded qualifier the model set aside (issue #397)
@@ -807,7 +538,7 @@ def test_extract_does_not_append_a_phrase_its_variable_already_carries():
         query,
         {
             "variables": ["gross disbursements type of finance 110"],
-            "entities": [{"text": "Kenya", "span": "Kenya", "flow_role": "destination"}],
+            "entities": [{"text": "Kenya", "span": "Kenya"}],
             "dropped_qualifiers": ["type of finance 110"],
             "dates": [],
         },
@@ -857,7 +588,7 @@ def test_extract_reattaches_a_purpose_code():
         query,
         {
             "variables": ["ODA disbursements"],
-            "entities": [{"text": "Kenya", "span": "Kenya", "flow_role": "destination"}],
+            "entities": [{"text": "Kenya", "span": "Kenya"}],
             "dropped_qualifiers": ["purpose code 31120"],
             "dates": [],
         },
@@ -887,8 +618,8 @@ def test_extract_keeps_entities_and_dates_when_several_variables_are_named():
         {
             "variables": ["ODA disbursements", "gross disbursements"],
             "entities": [
-                {"text": "Kenya", "span": "Kenya", "flow_role": "destination", "role_span": "to"},
-                {"text": "France", "span": "France", "flow_role": "origin", "role_span": "from"},
+                {"text": "Kenya", "span": "Kenya", "cue": "to", "role": "recipient"},
+                {"text": "France", "span": "France", "cue": "from", "role": "source"},
             ],
             "dropped_qualifiers": ["type of finance 110"],
             "dates": [{"kind": "point", "start": "2019", "end": "2019"}],
@@ -899,9 +630,9 @@ def test_extract_keeps_entities_and_dates_when_several_variables_are_named():
 
     assert extraction.variables == ["ODA disbursements", "gross disbursements"]
     assert extraction.dropped_qualifiers == []
-    assert [(e.text, e.flow_role, e.role_span) for e in extraction.entities] == [
-        ("Kenya", "destination", "to"),
-        ("France", "origin", "from"),
+    assert [(e.text, e.role, e.cue) for e in extraction.entities] == [
+        ("Kenya", "recipient", "to"),
+        ("France", "source", "from"),
     ]
     assert [(d.kind, d.start, d.end) for d in extraction.dates] == [("point", "2019", "2019")]
 
@@ -973,26 +704,16 @@ def test_extract_leaves_a_qualifier_dropped_when_no_variable_is_located():
     assert result.qualifiers == {}
 
 
-def test_extract_role_cue_adjacent_to_a_reattached_variable_still_validates():
-    """Coded-qualifier reattachment leaves national-adjective role validation unchanged."""
+def test_extract_role_cue_beside_a_reattached_variable_still_grounds():
+    """Coded-qualifier reattachment leaves a national adjective's role standing."""
     query = "French aid type of finance 110 to Senegal"
     llm = _stub_for(
         query,
         {
             "variables": ["aid"],
             "entities": [
-                {
-                    "text": "France",
-                    "span": "French",
-                    "flow_role": "origin",
-                    "role_span": "French",
-                },
-                {
-                    "text": "Senegal",
-                    "span": "Senegal",
-                    "flow_role": "destination",
-                    "role_span": "to",
-                },
+                {"text": "France", "span": "French", "cue": "French", "role": "source"},
+                {"text": "Senegal", "span": "Senegal", "cue": "to", "role": "recipient"},
             ],
             "dropped_qualifiers": ["type of finance 110"],
             "dates": [],
@@ -1003,9 +724,9 @@ def test_extract_role_cue_adjacent_to_a_reattached_variable_still_validates():
 
     assert extraction.variables == ["aid"]
     assert extraction.dropped_qualifiers == []
-    assert [(e.text, e.flow_role, e.role_span) for e in extraction.entities] == [
-        ("France", "origin", "French"),
-        ("Senegal", "destination", "to"),
+    assert [(e.text, e.role, e.cue) for e in extraction.entities] == [
+        ("France", "source", "French"),
+        ("Senegal", "recipient", "to"),
     ]
 
     sidecar = result.qualifiers[extraction.variables[0]]
@@ -1132,6 +853,41 @@ def test_extract_clamps_oversized_variables_before_the_reattach_scan(monkeypatch
 
 
 @pytest.mark.parametrize(
+    ("linked", "expected"),
+    [
+        pytest.param([7], [6], id="re-indexed-past-a-measure-the-cap-drops"),
+        pytest.param([0, 7, 7], [0, 6], id="deduplicated"),
+        pytest.param([6], None, id="a-measure-the-cap-drops-drops-the-place"),
+        pytest.param([6, 9], None, id="out-of-range-beside-a-dropped-measure"),
+        pytest.param([9], [], id="out-of-range-names-none"),
+        pytest.param([-1], [], id="negative-names-none"),
+        pytest.param([], [], id="unlinked"),
+    ],
+)
+def test_extract_reindexes_an_entitys_measures_onto_the_admitted_variables(linked, expected):
+    """An entity's measure indices (`ExtractedEntity.variables`) follow the variable list
+    the cap leaves, as operations' do. An index outside the list names nothing, so an
+    entity naming no measure scopes every one, and an entity whose every measure the cap
+    drops is dropped with them (`None`)."""
+    assert settings().max_variables == 6
+    variables = ["aid", "m1", "m2", "m3", "m4", "m5", "GDP", "aid"]
+    query = "aid and GDP of Kenya"
+    llm = _stub_for(
+        query,
+        {
+            "variables": variables,
+            "entities": [{"text": "Kenya", "span": "Kenya", "variables": linked}],
+            "dates": [],
+        },
+    )
+    result, _ = _run(extract(query, llm=llm))
+    assert result.extraction.variables == [*variables[:6], "aid"]
+    assert [e.variables for e in result.extraction.entities] == (
+        [] if expected is None else [expected]
+    )
+
+
+@pytest.mark.parametrize(
     ("query", "variables", "dates", "resolved", "dropped"),
     [
         # dq-crs-056's stored reading.
@@ -1198,7 +954,7 @@ def test_extract_lists_the_words_a_repeated_variable_lost(
         {
             "variables": variables,
             "entities": [
-                {"text": t, "span": t, "flow_role": "destination", "role_span": "to"}
+                {"text": t, "span": t, "cue": "to", "role": "recipient"}
                 for t in ("Kenya", "Uganda")
                 if t in query
             ],
@@ -1262,13 +1018,13 @@ def test_extract_leaves_a_qualifier_dropped_when_its_target_variable_is_clamped_
     assert result.qualifiers == {}
 
 
-def test_extract_refuses_oversized_entities_before_the_role_span_scan(monkeypatch):
-    """More than `max_entities` distinct entities raises before role-span validation."""
+def test_extract_refuses_oversized_entities_before_the_role_scan(monkeypatch):
+    """More than `max_entities` distinct entities raises before roles are grounded."""
 
     def _must_not_run(*args, **kwargs):
-        raise AssertionError("_validate_role_spans must not run for a refused extraction")
+        raise AssertionError("_ground_roles must not run for a refused extraction")
 
-    monkeypatch.setattr(extract_module, "_validate_role_spans", _must_not_run)
+    monkeypatch.setattr(extract_module, "_ground_roles", _must_not_run)
 
     n = settings().max_entities + 5
     query = "a query naming far too many places"
@@ -1302,16 +1058,16 @@ def test_extract_clears_the_places_of_a_question_past_a_cap_it_does_not_resolve(
     kind, cap, monkeypatch
 ):
     """A catalogue or declined question resolves no leg, so naming more places than a
-    resolution may still answers with its kind, with no entities: the role-span scan
-    gets an empty list."""
+    resolution may still answers with its kind, with no entities: the role scan gets an
+    empty list."""
     scanned: list[list] = []
-    validate = extract_module._validate_role_spans
+    ground = extract_module._ground_roles
 
     def _recording(query, entities, variables):
         scanned.append(list(entities))
-        return validate(query, entities, variables)
+        return ground(query, entities, variables)
 
-    monkeypatch.setattr(extract_module, "_validate_role_spans", _recording)
+    monkeypatch.setattr(extract_module, "_ground_roles", _recording)
     query = "Which of these many places do you cover?"
     names = _many_places()[cap]
     llm = _stub_for(
@@ -1319,9 +1075,7 @@ def test_extract_clears_the_places_of_a_question_past_a_cap_it_does_not_resolve(
         {
             "kind": kind,
             "variables": [],
-            "entities": [
-                {"text": name, "flow_role": "destination", "role_span": "to"} for name in names
-            ],
+            "entities": [{"text": name, "cue": "to", "role": "recipient"} for name in names],
             "dates": [],
         },
     )
@@ -1342,13 +1096,14 @@ def test_extract_keeps_the_places_of_a_question_at_the_cap_it_does_not_resolve()
     assert [e.text for e in result.extraction.entities] == names
 
 
-def test_extract_refuses_oversized_entity_occurrences_before_the_role_span_scan(monkeypatch):
-    """`max_entity_occurrences` bounds raw list length before role-span scans, even for one repeated name."""
+def test_extract_refuses_oversized_entity_occurrences_before_the_role_scan(monkeypatch):
+    """`max_entity_occurrences` bounds raw list length before the role scan, even for one
+    repeated name."""
 
     def _must_not_run(*args, **kwargs):
-        raise AssertionError("_validate_role_spans must not run for a refused extraction")
+        raise AssertionError("_ground_roles must not run for a refused extraction")
 
-    monkeypatch.setattr(extract_module, "_validate_role_spans", _must_not_run)
+    monkeypatch.setattr(extract_module, "_ground_roles", _must_not_run)
 
     n = settings().max_entity_occurrences + 1
     query = "population in Kenya repeated far too many times"
@@ -1572,7 +1327,7 @@ def test_extract_resolves_an_injected_out_of_scope_reading_of_a_data_question():
         {
             "kind": "out_of_scope",
             "variables": ["aid"],
-            "entities": [{"text": "Kenya", "flow_role": "destination", "role_span": "to"}],
+            "entities": [{"text": "Kenya", "cue": "to", "role": "recipient"}],
             "dates": [{"kind": "point", "start": "2022"}],
         },
     )
@@ -2673,50 +2428,29 @@ def test_extract_accounts_for_an_entity_only_as_a_run_of_its_words(dropped, expe
     assert result.extraction.dropped_qualifiers == expected
 
 
-def test_extract_credits_only_a_validated_role_span_with_a_qualifiers_words():
-    """Kenya's role span "fragile states" crosses Norway on another axis, so validation
-    clears it before the trim reads role spans, and "fragile states" stays unapplied."""
-    query = "top 5 donors in fragile states from Norway to Kenya"
+@pytest.mark.parametrize(
+    ("query", "entity"),
+    [
+        pytest.param(
+            "top 5 donors in fragile states to Kenya",
+            {"text": "Kenya", "span": "Kenya", "cue": "fragile states"},
+            id="no-role",
+        ),
+        pytest.param(
+            "top 5 donors in fragile states from Norway to Kenya",
+            {"text": "Kenya", "span": "Kenya", "cue": "fragile states", "role": "recipient"},
+            id="cue-away-from-its-place",
+        ),
+    ],
+)
+def test_extract_credits_no_cue_that_states_no_role_for_its_place(query, entity):
+    """A cue states the role of the place it is written with, so a cue left on an entity
+    with no role, or one the query holds away from its place, credits nothing."""
     llm = _stub_for(
         query,
         {
             "variables": ["ODA"],
-            "entities": [
-                {"text": "Norway", "span": "Norway", "flow_role": "origin", "role_span": "from"},
-                {
-                    "text": "Kenya",
-                    "span": "Kenya",
-                    "flow_role": "destination",
-                    "role_span": "fragile states",
-                },
-            ],
-            "operations": [_op("rank", 0, "top 5 donors", "origin")],
-            "dropped_qualifiers": ["top 5 donors in fragile states"],
-            "dates": [],
-        },
-    )
-    result, _ = _run(extract(query, llm=llm))
-    kenya = result.extraction.entities[1]
-    assert (kenya.flow_role, kenya.role_span) == ("unspecified", None)
-    assert result.extraction.dropped_qualifiers == ["fragile states"]
-
-
-def test_extract_credits_no_role_span_on_an_entity_without_a_flow_role():
-    """Validation reads only entities that hold a flow role, so a role span left on an
-    `unspecified` entity is unchecked and credits nothing."""
-    query = "top 5 donors in fragile states to Kenya"
-    llm = _stub_for(
-        query,
-        {
-            "variables": ["ODA"],
-            "entities": [
-                {
-                    "text": "Kenya",
-                    "span": "Kenya",
-                    "flow_role": "unspecified",
-                    "role_span": "fragile states",
-                }
-            ],
+            "entities": [entity],
             "operations": [_op("rank", 0, "top 5 donors", "origin")],
             "dropped_qualifiers": ["top 5 donors in fragile states"],
             "dates": [],
@@ -2733,13 +2467,13 @@ def test_extract_credits_no_role_span_on_an_entity_without_a_flow_role():
             "top 5 donantes de standard grants a Kenia",
             _op("rank", 0, "top 5 donantes", "origin"),
             "top 5 donantes a Kenia",
-            {"text": "Kenya", "span": "Kenia", "flow_role": "destination", "role_span": "a"},
+            {"text": "Kenya", "span": "Kenia", "cue": "a", "role": "recipient"},
         ),
         (
             "top 5 donors of Kenyan standard grants",
             _op("rank", 0, "top 5 donors", "origin"),
             "top 5 donors of Kenyan standard grants",
-            {"text": "Kenya", "span": "Kenyan", "flow_role": "origin", "role_span": "Kenyan"},
+            {"text": "Kenya", "span": "Kenyan", "cue": "Kenyan", "role": "source"},
         ),
         (
             "top 5 donors of standard grants to DR Congo",
@@ -2748,15 +2482,15 @@ def test_extract_credits_no_role_span_on_an_entity_without_a_flow_role():
             {
                 "text": "Democratic Republic of the Congo",
                 "span": "DR Congo",
-                "flow_role": "destination",
-                "role_span": "to",
+                "cue": "to",
+                "role": "recipient",
             },
         ),
         (
             "top 5 bailleurs de standard grants au Sénégal",
             _op("rank", 0, "top 5 bailleurs", "origin"),
             "top 5 bailleurs au Sénégal",
-            {"text": "Senegal", "span": "Sénégal", "flow_role": "destination", "role_span": "au"},
+            {"text": "Senegal", "span": "Sénégal", "cue": "au", "role": "recipient"},
         ),
         (
             "top 5 recipients of standard grants funded by Norway",
@@ -2765,8 +2499,8 @@ def test_extract_credits_no_role_span_on_an_entity_without_a_flow_role():
             {
                 "text": "Norway",
                 "span": "Norway",
-                "flow_role": "origin",
-                "role_span": "funded by",
+                "cue": "funded by",
+                "role": "source",
             },
         ),
         (
@@ -2776,8 +2510,8 @@ def test_extract_credits_no_role_span_on_an_entity_without_a_flow_role():
             {
                 "text": "Kenya",
                 "span": "Kenya",
-                "flow_role": "destination",
-                "role_span": "received",
+                "cue": "received",
+                "role": "recipient",
             },
         ),
     ],
@@ -2799,7 +2533,7 @@ def test_extract_credits_the_querys_wording_of_a_place_and_its_role_cue(
     )
     result, _ = _run(extract(query, llm=llm))
     [extracted] = result.extraction.entities
-    assert extracted.flow_role == entity["flow_role"]
+    assert extracted.role == entity["role"]
     assert result.extraction.dropped_qualifiers == []
 
 

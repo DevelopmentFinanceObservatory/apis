@@ -1795,7 +1795,7 @@ def _contradicted_names(state: ResolveState, names: Iterable[str]) -> tuple[str,
         name
         for name in names
         if any(
-            contradicts(state.role_query, span=role.span, axis=role.axis)
+            contradicts(state.role_query, span=role.span, axis=role.axis, party=role.party)
             for role in state.entity_roles.get(name) or ()
         )
     )

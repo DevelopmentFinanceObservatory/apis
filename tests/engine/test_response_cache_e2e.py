@@ -10,7 +10,7 @@ from unittest.mock import patch
 import pytest
 
 from graph_generation import UNKNOWN_GENERATION, FakeGeneration, GenerationProvider
-from search.engine import binders
+from search.engine import binders, response_cache_flow
 from search.engine.bind import _UniversalBindOutput
 from search.engine.binders import JevBinder, jev_client
 from search.engine.core import resolve_async, resolve_events
@@ -20,6 +20,7 @@ from search.engine.events import DoneEvent, ResponseEvent
 from search.engine.extract import ExtractedDate, ExtractedEntity, Extraction
 from search.engine.quantity_read import QuantityOutput
 from search.engine.response_cache import ResponseCache
+from search.engine.response_cache_keys import layer2_key
 from search.engine.time_bind import TIME_TEXT_NOT_PARSED
 from search.models import (
     ParsedEntity,
@@ -474,8 +475,8 @@ _KEN = "country/KEN"
 
 class _FixedExtractionLLM:
     """Ignores the prompt for both LLM stages: Extraction always names one
-    role-bearing entity (Kenya, destination, anchored on the query's own
-    "aid" token so extract()'s _validate_role_spans passes for every
+    role-bearing entity (Kenya, the recipient, with the query's own "aid"
+    token as cue so extract()'s cue grounding keeps the role for every
     wording this suite tries), and the bind stage always elects the sole
     candidate shape with no constraint bindings. Extraction, and everything
     derived from it, is byte-identical on every call. The only thing
@@ -486,9 +487,7 @@ class _FixedExtractionLLM:
 
     async def generate_structured(self, *, prompt: str, system: str, schema):
         if schema is Extraction:
-            entity = ExtractedEntity(
-                text="Kenya", span="Kenya", flow_role="destination", role_span="aid"
-            )
+            entity = ExtractedEntity(text="Kenya", span="Kenya", role="recipient", cue="aid")
             extraction = Extraction(
                 kind="resolution",
                 variables=["aid"],
@@ -609,6 +608,68 @@ def test_role_direction_agreement_keeps_distinct_query_sources_separate(monkeypa
     assert r1.status == "definite", r1
     assert r2.status == "definite", r2
     assert r1.rendered_sentence == r2.rendered_sentence
+
+
+class _ReadingLLM:
+    """Reads each query as the extraction `readings` holds for it; the bind stage elects
+    the sole candidate."""
+
+    def __init__(self, readings: dict[str, Extraction]) -> None:
+        self._readings = readings
+
+    async def generate_structured(self, *, prompt: str, system: str, schema):
+        if schema is Extraction:
+            return self._readings[prompt], None
+        if schema is QuantityOutput:
+            return NO_QUANTITY
+        return elected_reply(0), None
+
+
+def _repeated_measure_reading(variables: list[str]) -> Extraction:
+    """Kenya, the recipient, on the measure at position 1 of `variables`, and Uganda on the
+    one at position 2."""
+    return Extraction(
+        kind="resolution",
+        variables=variables,
+        entities=[
+            ExtractedEntity(text="Kenya", span="Kenya", variables=[1], cue="to", role="recipient"),
+            ExtractedEntity(text="Uganda", span="Uganda", variables=[2]),
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    ("second", "same_key"),
+    [
+        pytest.param(["ODA", "ODA", "GDP"], True, id="same-scoping"),
+        # Kenya scopes ODA in the first reading and GDP in the second.
+        pytest.param(["ODA", "GDP", "GDP"], False, id="other-scoping"),
+    ],
+)
+def test_the_layer2_key_states_the_parts_each_place_scopes(monkeypatch, second, same_key):
+    """Two readings with the same distinct measures and the same entities, whose repeated
+    measure moves Kenya onto another part, key apart; the same reading under the other
+    wording shares its key."""
+    keys: list[str] = []
+
+    def recording_key(**kwargs):
+        keys.append(layer2_key(**kwargs))
+        return keys[-1]
+
+    monkeypatch.setattr(response_cache_flow, "layer2_key", recording_key)
+    first_query, second_query = "ODA to Kenya and GDP of Uganda", "ODA to Kenya, GDP of Uganda"
+    llm = _ReadingLLM(
+        {
+            first_query: _repeated_measure_reading(["ODA", "ODA", "GDP"]),
+            second_query: _repeated_measure_reading(second),
+        }
+    )
+    cache = ResponseCache()
+    for query in (first_query, second_query):
+        _run(make_request(query), llm=llm, cache=cache)
+
+    first, other = keys
+    assert (first == other) is same_key
 
 
 class _UnparsedDateLLM(_FixedExtractionLLM):
