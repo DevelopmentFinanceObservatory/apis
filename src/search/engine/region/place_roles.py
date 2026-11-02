@@ -296,6 +296,28 @@ def direction_assignments(
 def undirected_place_name(state: ResolveState) -> str | None:
     """The request's words for the one place set it names without a direction
     (`ResolveState.words_of`), `None` when it names none or several."""
+    place_set = _undirected_set(state)
+    return state.words_of(place_set.name) if place_set is not None else None
+
+
+def undirected_place_axes(state: ResolveState, assignment: PlaceAssignment) -> set[RoleAxis]:
+    """The flow axes `assignment` places the one set the request names without a direction
+    on, as a rule of the shape places it (one required role, the open axis, the base of a
+    ratio). Empty when the request names none or several."""
+    place_set = _undirected_set(state)
+    if place_set is None:
+        return set()
+    key = place_key(place_set)
+    return {
+        axis
+        for axis in ("origin", "destination")
+        if any(place_key(placed) == key for placed in assignment.sets.get(axis, ()))
+    }
+
+
+def _undirected_set(state: ResolveState) -> PlaceSet | None:
+    """The one place set the request names without a direction (`part_sets`), `None` when
+    it names none or several."""
     named = part_sets(state)
     directed = {
         place_key(state.place_sets[name])
@@ -303,7 +325,7 @@ def undirected_place_name(state: ResolveState) -> str | None:
         if name in state.place_sets and state.entity_roles.get(name)
     }
     undirected = [key for key in named if key not in directed]
-    return state.words_of(named[undirected[0]].name) if len(undirected) == 1 else None
+    return named[undirected[0]] if len(undirected) == 1 else None
 
 
 def subject_shapes_refused(state: ResolveState) -> bool:
@@ -427,14 +449,19 @@ def without_unasked_axes(
     recalled members alone, a sample of its family, as in `without_open_axis_gaps`. Its
     axes are the sample's, and it reads no index code, so its empty reading would lie within
     any other's ("debt from France" would leave a debt series for DAC1 aid). The rule
-    stands down when a named place has no direction: "imputed rent Kenya" leaves the axis
-    the place fills open, so no axis is unasked.
+    stands down when a named place has no direction that its data settles: "imputed rent
+    Kenya" leaves the axis the place fills open, so no axis is unasked. A place whose
+    direction the data settles (`ResolveState.undirected_axis`) asks for that axis, so "ODA
+    in Germany" leaves DAC2a for DAC1 as "ODA from Germany" does.
     """
-    if any(
+    undirected = any(
         name in state.place_sets and not state.entity_roles.get(name) for name in state.entities
-    ):
+    )
+    if undirected and state.undirected_axis is None:
         return list(shapes)
     asked = query_role_axes(state) | state.open_axes
+    if undirected and state.undirected_axis is not None:
+        asked |= {state.undirected_axis}
     flow_axes: tuple[RoleAxis, ...] = ("origin", "destination")
     unasked = {
         id(shape): frozenset(

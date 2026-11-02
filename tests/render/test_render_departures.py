@@ -343,6 +343,22 @@ _CASES: list[tuple[DepartureFact, str | None, str]] = [
         "You asked for 1983. The source's total for every recipient starts in 1984, so this "
         "covers each recipient with data.",
     ),
+    (
+        DepartureFact(
+            code="year_unavailable",
+            binding_ref="when:",
+            asked="2020 to 2021",
+            shown="2020",
+            requested_years=(2020, 2021),
+            data_years=(2019, 2022),
+            over="origin",
+            whole_of=("official",),
+            limited_by="whole_total",
+        ),
+        "aid",
+        "You asked for 2020 to 2021. The source's total for every official donor holds no "
+        "figure for those years, so this covers each donor with data and shows 2020.",
+    ),
     # Deflators that leave out some donors' rows: before, after and inside the years kept,
     # every year, and a count past the third.
     (
