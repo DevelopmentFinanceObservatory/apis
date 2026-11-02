@@ -1410,13 +1410,16 @@ def test_a_place_only_one_table_holds_as_a_donor_settles_no_direction_before_ele
 
 class _MemberPickBinder(GeminiBinder):
     """Elects the menu shape holding `member`, or the first where the menu offers none, and
-    records whether each menu offered it. The house policies keep the pick."""
+    records whether each menu offered it and the members each menu holds. The house
+    policies keep the pick."""
 
     def __init__(self, member: str) -> None:
         self._member = member
         self.offered: list[bool] = []
+        self.menus: list[set[str]] = []
 
     async def bind(self, request: BindRequest, *, llm) -> tuple[BindResult, dict | None]:
+        self.menus.append({m for shape in request.shapes for m in shape.sv_arc_facts or {}})
         index = next(
             (
                 i
@@ -1461,6 +1464,29 @@ def test_a_place_without_a_direction_beside_a_donor_offers_no_donor_only_table(
     assert spec.definition.identity.entities == {"destination": [_ETH], "origin": [_DEU]}
     assert spec.resolved.members[0].ref.ref in _DAC2A_PAIR
     assert set(binder.offered) == {offered}
+
+
+def test_a_place_without_a_direction_and_no_directed_place_keeps_every_table(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """ "ODA in Ethiopia in 2020" holds data only with Ethiopia as the recipient, so that axis
+    settles. DAC1's donor tables could read Ethiopia only as a donor, but the part names no
+    donor for them to merge it into, so they stay on the menu, as the debt stocks of
+    "Germany external debt stocks" stay beside a creditor-side share that settles Germany
+    as a creditor."""
+    _both_tables_coverage(monkeypatch, 2020)
+    binder = _MemberPickBinder(_DAC2A_MEMBER)
+    variable = _VARIABLE
+    offline_resolve(
+        _parsed({"entities": [{"text": "Ethiopia"}], "time": "2020", "variable": variable}),
+        graph=_graph(variable=variable, members=(*_DAC2A_PAIR, *_DAC1_ODA)),
+        llm=_ScriptedLLM(variable),
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+        binder=binder,
+    )
+
+    assert binder.menus
+    assert set(_DAC1_ODA) <= binder.menus[0]
 
 
 # A sole-option claim on DAC2a's aid type that a recall sample alone backs. The walk refutes

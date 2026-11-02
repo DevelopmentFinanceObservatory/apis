@@ -502,25 +502,35 @@ def without_unasked_axes(
 
 
 def on_undirected_axis(state: ResolveState, shapes: Sequence[ShapeDraft]) -> list[ShapeDraft]:
-    """`shapes` less each role-bearing shape that cannot place the place the request names
-    without a direction on the axis its data settles (`ResolveState.undirected_axis`,
-    `undirected_readings`). "Aid from Germany in Kenya" reads Kenya as the recipient, so
-    DAC1's donor totals, which publish no recipient, leave the menu for DAC2a: elected,
-    they could only read Kenya as a second donor, where it holds no data. The axis is the
-    one on which some shape of `shapes` holds data with the place there
-    (`availability.undirected_axis`), so that shape stays. Every shape stays when the axis
-    is unsettled."""
-    axis = state.undirected_axis
-    if axis is None:
+    """`shapes` less each role-bearing shape whose every flow axis holds a place the request
+    names with a direction, once the data settles the axis of the place it names without
+    one (`ResolveState.undirected_axis`). Such a shape leaves that place no axis of its own,
+    so electing it would merge the place into a named side or refuse its direction.
+
+    "Aid from Germany in Kenya" reads Kenya as the recipient. DAC1's donor totals declare
+    only the donor axis, which Germany holds, so they could read Kenya only as a second
+    donor, "from Germany and Kenya", and they leave the menu for DAC2a. "Germany external
+    debt stocks" names no directed place, so the debt stocks, which read Germany as the
+    debtor, stay though a currency share by creditor holds Germany as a creditor and
+    settles that axis.
+
+    The rule runs only when the data settles the axis, the case where the part reads the
+    place on one side. Every shape stays when none would survive."""
+    if state.undirected_axis is None:
         return list(shapes)
-    kept = [
-        shape
-        for shape in shapes
-        if not is_role_bearing(shape)
-        or any(placed == axis for placed, _ in undirected_readings(state, shape))
-    ]
-    assert kept, "the undirected axis is one an eligible shape places the place on"
-    return kept
+    directed = {
+        role.axis
+        for name in state.entities
+        if name in state.place_sets
+        for role in state.entity_roles.get(name) or ()
+    }
+
+    def merges(shape: ShapeDraft) -> bool:
+        axes = role_names_by_axis(shape).keys()
+        return is_role_bearing(shape) and bool(axes) and axes <= directed
+
+    kept = [shape for shape in shapes if not merges(shape)]
+    return kept or list(shapes)
 
 
 def without_open_axis_gaps(state: ResolveState, shapes: Sequence[ShapeDraft]) -> list[ShapeDraft]:
