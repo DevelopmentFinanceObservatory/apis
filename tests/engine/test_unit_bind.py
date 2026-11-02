@@ -41,6 +41,7 @@ from search.engine.unit.lexicon import (
 from search.models import IdentityCurrencyRole
 from tests.engine._assemble_fixtures import _make_spec
 from unit_words.currency_codes import ISO_4217_CODES
+from unit_words.currency_nouns import CURRENCY_NOUNS, CURRENCY_SINGULAR_NOUNS
 
 # The base year the conversion tables declare in these tests.
 _DECLARED_BASE_YEAR = 2024
@@ -428,24 +429,6 @@ class TestDeliberateLexiconExclusions:
         assert outcome.request_basis["currency"] == "declared_default"
         assert outcome.request_basis["base_year"] == "declared_default"
 
-    def test_bare_franc_refuses_with_its_currency_alternatives(self) -> None:
-        outcome = _bind("franc")
-        assert isinstance(outcome, UnitNotResolved)
-        assert outcome.alternatives == (
-            CurrencyAlternative(currency="CHF", label="Swiss franc"),
-            CurrencyAlternative(currency="XAF", label="Central African CFA franc"),
-            CurrencyAlternative(currency="XOF", label="West African CFA franc"),
-        )
-
-    def test_bare_francs_plural_refuses_the_same_way(self) -> None:
-        outcome = _bind("francs")
-        assert isinstance(outcome, UnitNotResolved)
-        assert outcome.alternatives == (
-            CurrencyAlternative(currency="CHF", label="Swiss franc"),
-            CurrencyAlternative(currency="XAF", label="Central African CFA franc"),
-            CurrencyAlternative(currency="XOF", label="West African CFA franc"),
-        )
-
     def test_bare_kr_refuses_with_its_currency_alternatives(self) -> None:
         outcome = _bind("kr")
         assert isinstance(outcome, UnitNotResolved)
@@ -455,13 +438,59 @@ class TestDeliberateLexiconExclusions:
             CurrencyAlternative(currency="SEK", label="Swedish krona"),
         )
 
-    def test_bare_pesos_refuses_with_its_currency_alternatives(self) -> None:
-        outcome = _bind("pesos")
+    @pytest.mark.parametrize(
+        ("text", "codes"),
+        [
+            ("franc", ("BIF", "CDF", "CHF", "DJF", "GNF", "KMF", "RWF", "XAF", "XOF", "XPF")),
+            ("francs", ("BIF", "CDF", "CHF", "DJF", "GNF", "KMF", "RWF", "XAF", "XOF", "XPF")),
+            ("pesos", ("ARS", "CLP", "COP", "CUP", "DOP", "MXN", "PHP", "UYU")),
+            ("in kwachas", ("MWK", "ZMW")),
+            ("kwacha", ("MWK", "ZMW")),
+            # Turkmen manat is invariant, so "manats" names both.
+            ("manats", ("AZN", "TMT")),
+            ("kronur", ("ISK", "SEK")),
+        ],
+    )
+    def test_a_name_several_currencies_share_refuses_with_each(
+        self, text: str, codes: tuple[str, ...]
+    ) -> None:
+        outcome = _bind(text)
+        assert isinstance(outcome, UnitNotResolved)
+        assert tuple(alt.currency for alt in outcome.alternatives) == codes
+
+    def test_a_shared_name_offers_each_currency_by_its_singular_noun(self) -> None:
+        outcome = _bind("kwachas")
         assert isinstance(outcome, UnitNotResolved)
         assert outcome.alternatives == (
-            CurrencyAlternative(currency="MXN", label="Mexican peso"),
-            CurrencyAlternative(currency="PHP", label="Philippine peso"),
+            CurrencyAlternative(currency="MWK", label="Malawian kwacha"),
+            CurrencyAlternative(currency="ZMW", label="Zambian kwacha"),
         )
+
+    @pytest.mark.parametrize(
+        ("text", "code"),
+        [
+            ("in Malawian kwacha", "MWK"),
+            ("in Malawian kwachas", "MWK"),
+            ("Zambian kwacha", "ZMW"),
+            ("constant 2020 Zambian kwachas", "ZMW"),
+            ("Nicaraguan córdobas", "NIO"),
+            ("nicaraguan cordoba", "NIO"),
+            ("hryvnias", "UAH"),
+            # A conventional reading wins over a shared last word.
+            ("dollars", "USD"),
+        ],
+    )
+    def test_a_currency_noun_binds_its_code(self, text: str, code: str) -> None:
+        outcome = _bind(text)
+        assert isinstance(outcome, BoundUnitRequest)
+        assert outcome.currency == code
+
+    @pytest.mark.parametrize("code", sorted(CURRENCY_NOUNS))
+    def test_every_currency_noun_binds_its_code(self, code: str) -> None:
+        for noun in (CURRENCY_NOUNS[code], CURRENCY_SINGULAR_NOUNS[code]):
+            outcome = _bind(noun)
+            assert isinstance(outcome, BoundUnitRequest), noun
+            assert outcome.currency == code, noun
 
     def test_qualified_franc_phrase_still_resolves_outright(self) -> None:
         # A declared alias resolves a phrase outright, regardless of the

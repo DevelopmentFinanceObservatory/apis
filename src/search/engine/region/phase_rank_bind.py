@@ -126,6 +126,7 @@ from search.engine.region.availability import (
     menu_read_places,
     read_menu_availability,
     series_at_places,
+    undirected_axis,
 )
 from search.engine.region.codes import AVAILABILITY_PROBE_FAILED, DEGENERATE_BINDING_DETECTED
 from search.engine.region.decisions import PartyReadingWithdrawn
@@ -134,6 +135,7 @@ from search.engine.region.place_roles import (
     bind_place_roles,
     held_party_words,
     names_a_place,
+    on_undirected_axis,
     part_states,
     parties_of_kind,
     without_open_axis_gaps,
@@ -210,6 +212,7 @@ from search.models import (
     GraphRef,
     Operation,
     ResolvedQualifier,
+    RoleAxis,
     TraceDefaultReading,
     Warning,
 )
@@ -887,6 +890,14 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
         # floor; a refused reading takes the branch above.
         await _record_shape_step(state)
         return state.no_data("variable_not_resolved", llm_usage=state.var_usage)
+    # A place named without a direction is read on the one axis on which an eligible
+    # reading holds a series there, and stays open when both or neither do
+    # (`availability.undirected_axis`), so the rules below and the house policies read a
+    # part whose data settles the axis as its directed twin.
+    state.undirected_axis = undirected_axis(state, eligible_shapes)
+    # A reading that could place that place only beside a place named with a direction
+    # leaves, so the binder cannot elect one that merges the two (`on_undirected_axis`).
+    eligible_shapes = on_undirected_axis(state, eligible_shapes)
     # From here to the seated menu the phase reads the readings it may offer apart from
     # the part (`_read_offer`), and writes them to it only once the menu seats one, so a
     # part that offers none holds nothing they read.
@@ -4550,6 +4561,7 @@ class _HousePolicyStep:
     availability: Sequence[bool | None]
     code_index: CodeIndex
     basis_entries: Sequence[Entry] = ()
+    undirected_axis: RoleAxis | None = None
     siblings: Sequence[ShapeDraft] = ()
     read_sibling: Callable[[ShapeDraft], tuple[_ShapeRead, bool | None]] | None = None
     calls: int = 0
@@ -4685,6 +4697,7 @@ class _HousePolicyStep:
                     dict.fromkeys(d for f in self._facts_of(pool) for d in f.datasets)
                 ),
                 basis_entries=self.basis_entries,
+                undirected_axis=self.undirected_axis,
             )
         return self._contexts[key]
 
@@ -4822,6 +4835,7 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
         availability=availability,
         code_index=get_index(),
         basis_entries=state.scope_selection.entries_on("measure_basis"),
+        undirected_axis=state.undirected_axis,
         siblings=state.basis_siblings,
         read_sibling=read_sibling,
     )

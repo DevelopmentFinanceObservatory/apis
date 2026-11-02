@@ -301,6 +301,8 @@ async def _phase_place_bindings(state: ResolveState) -> RegionResult | None:
     assert bound is not None, "binding repair binds the query's places"
     if bound == "role_not_resolved":
         bound = _settle_direction(state)
+    elif isinstance(bound, PlaceAssignment):
+        _state_read_direction(state, bound)
     if bound == "role_incompatible":
         return await _role_incompatible_no_data(state)
     if bound == "role_not_resolved":
@@ -431,6 +433,19 @@ def _election_refusal(
     if isinstance(exc, RoleSignatureError):
         return state.no_data("role_signature_incompatible", llm_usage=state.var_usage)
     return state.no_data("variable_not_resolved", llm_usage=state.var_usage)
+
+
+def _state_read_direction(state: ResolveState, bound: PlaceAssignment) -> None:
+    """State the direction a place named without one is read on where the data settled it
+    before election (`ResolveState.undirected_axis`) and the elected shape binds the place
+    on that axis as named, as DAC1 binds "ODA in Germany" to the donor. The answer states
+    it as `_settle_direction` states a direction it settles (`departures.direction_inferred`)."""
+    axis = state.undirected_axis
+    name = undirected_place_name(state)
+    if axis is None or name is None:
+        return
+    if any(state.words_of(place_set.name) == name for place_set in bound.sets.get(axis, ())):
+        state.inferred_facts.append(direction_inferred(name, axis))
 
 
 def _settle_direction(

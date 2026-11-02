@@ -27,8 +27,8 @@ from search.engine.frame import Frame, door_frame
 from search.engine.qualifier_match import QualifierMatch
 from search.engine.role_text import DoorRole
 from search.engine.shape import ShapeDraft, SlotKeyDraft
-from search.models import TimeWindow
-from search.scope.basis import elect_basis
+from search.models import RoleAxis, TimeWindow
+from search.scope.basis import elect_basis, elect_part_basis
 
 _AUDIT_CASES = Path(__file__).parents[1] / "fixtures" / "house_policy" / "policy_audit_cases.json"
 
@@ -553,6 +553,111 @@ def test_the_part_names_the_kind_of_question_its_default_dataset_answers(
     assert context.dataset_case == expected
     assert context.wanted_dataset == wanted
     assert (context.basis is not None) == (wanted in _CONVENTION_DATASETS.values())
+
+
+# A recipient's grant equivalents are the CRS's, and its amounts DAC2a's.
+_ODA_SHAPES = (
+    _facts(0, measured_property="grantEquivalent", datasets=(_CONVENTION_DATASETS["sector"],)),
+    _facts(1, netting=("Gross", "Net"), datasets=(_CONVENTION_DATASETS["recipient"],)),
+)
+
+
+# A donor's grant equivalents and amounts, both DAC1's.
+_DONOR_SHAPES = tuple(replace(s, datasets=(_CONVENTION_DATASETS["donor"],)) for s in _ODA_SHAPES)
+
+
+@pytest.mark.parametrize(
+    ("places", "shapes", "expected"),
+    [
+        pytest.param({"Ethiopia": ()}, _ODA_SHAPES, 1, id="in-place-house-default-dataset"),
+        pytest.param({"Ethiopia": ("destination",)}, _ODA_SHAPES, 1, id="to-place-recipient-basis"),
+        pytest.param({"France": ("origin",)}, _ODA_SHAPES, 0, id="from-place-donor-basis"),
+        pytest.param({}, _ODA_SHAPES, 0, id="no-place-window"),
+        pytest.param({"Germany": ()}, _DONOR_SHAPES, 0, id="in-place-default-publishes-neither"),
+    ],
+)
+def test_a_place_without_a_direction_leaves_the_measure_to_the_house_default_dataset(
+    places: Mapping[str, tuple[str, ...]], shapes: tuple[ShapeFacts, ...], expected: int
+):
+    """ "ODA in Ethiopia in 2020" names its place without a direction, so the conventions
+    elect no basis until the shape settles, and the 2020 window alone would pick grant
+    equivalents. `amount_vs_ge` keeps both, and the recipient default (DAC2a) picks the
+    amount "ODA to Ethiopia in 2020" is counted on. Where the house default publishes
+    neither shape, the window decides."""
+    index = get_index()
+    context = context_of(
+        _frame(window=TimeWindow(start_year=2020, end_year=2020), places=places),
+        [],
+        [0, 1],
+        wanted_datasets=index.house_defaults(),
+        case_systems=index.house_case_systems(),
+        pool_datasets=tuple(_CONVENTION_DATASETS.values()),
+    )
+    pool = PolicyPool(measuring=(0, 1))
+
+    assert apply_house_policies(shapes, pool, context, chosen=1).survivor == expected
+
+
+# Every ODA shape a bare "ODA" recalls: the recipient's and the donor's.
+_ALL_ODA_SHAPES = (*_ODA_SHAPES, *(replace(s, index=s.index + 2) for s in _DONOR_SHAPES))
+
+
+@pytest.mark.parametrize(
+    ("place", "axis", "year", "expected"),
+    [
+        pytest.param("Ethiopia", "destination", 2020, 1, id="recipient-ethiopia"),
+        pytest.param("Kenya", "destination", 2015, 1, id="recipient-kenya-pre-ge"),
+        pytest.param("Germany", "origin", 2023, 2, id="donor-germany"),
+    ],
+)
+def test_a_place_without_a_direction_read_on_an_axis_is_its_directed_twin(
+    place: str, axis: RoleAxis, year: int, expected: int
+):
+    """A place named without a direction whose data settles its axis
+    (`availability.undirected_axis`) is the question its directed twin asks, with the same
+    kind, basis and wanted dataset, and the same elected shape. "ODA in Ethiopia in 2020" is
+    DAC2a's net receipts, and "ODA in Germany in 2023" DAC1's grant equivalents."""
+    index = get_index()
+    window = TimeWindow(start_year=year, end_year=year)
+
+    def choice(places: Mapping[str, tuple[str, ...]], undirected_axis: RoleAxis | None):
+        context = context_of(
+            _frame(window=window, places=places),
+            [],
+            [s.index for s in _ALL_ODA_SHAPES],
+            wanted_datasets=index.house_defaults(),
+            case_systems=index.house_case_systems(),
+            pool_datasets=tuple(dict.fromkeys(d for s in _ALL_ODA_SHAPES for d in s.datasets)),
+            undirected_axis=undirected_axis,
+        )
+        pool = PolicyPool(measuring=tuple(s.index for s in _ALL_ODA_SHAPES))
+        return context, apply_house_policies(_ALL_ODA_SHAPES, pool, context, chosen=0).survivor
+
+    undirected = choice({place: ()}, axis)
+    directed = choice({place: (axis,)}, None)
+
+    assert undirected == directed
+    assert undirected[1] == expected
+
+
+@pytest.mark.parametrize("directions", [["undirected"], ["destination"]])
+def test_a_restricted_part_without_a_direction_keeps_the_convention_its_datasets_read(
+    directions: list[str],
+):
+    """A part admitting a restriction code is a restricted part whatever direction its place
+    takes, and where its datasets lack the CRS it takes the convention of the first one a
+    convention reads, here DAC2a's net receipts."""
+    basis = elect_part_basis(
+        datasets=["provenance/OECDDAC2A"],
+        directions=directions,
+        admitted_systems=("crsTypeOfFinance",),
+        sector_systems=(),
+        window=TimeWindow(start_year=2020, end_year=2020),
+        entries=(),
+    )
+
+    assert basis is not None
+    assert (basis.convention.shape, basis.basis) == ("recipient_all_sectors", "net")
 
 
 @pytest.mark.parametrize(

@@ -108,6 +108,10 @@ class DepartureFact:
       leaves the rest out: the imputed multilateral line of the inclusive provider scope,
       or the published total a provider option reads; None when the option's reason names
       neither. `shown` is the run the answer serves.
+    - `limited_by` `whole_total`, `over` and `whole_of` (`year_unavailable`): on an answer
+      that lists the members of a side because the source's total of the side, covering the
+      `whole_of` classes, holds no point in the requested years, though the members do.
+      `data_years` is then the years the total holds.
     - `omitted_years` (`year_unavailable`): on an answer a constant-price unit request
       converts, each entity whose rows a missing deflator leaves out, by name, with the
       years it leaves out and the years it keeps, in the order the text names them.
@@ -152,7 +156,10 @@ class DepartureFact:
     data_years: tuple[int, int] | None = None
     converted_years: tuple[int, int] | None = None
     limited_by: (
-        Literal["exchange_rates", "deflators", "imputed_multilateral", "published_total"] | None
+        Literal[
+            "exchange_rates", "deflators", "imputed_multilateral", "published_total", "whole_total"
+        ]
+        | None
     ) = None
     covered_years: tuple[tuple[int, int], ...] = ()
     omitted_years: tuple[tuple[str, tuple[int, ...], tuple[int, ...]], ...] = ()

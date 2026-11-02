@@ -52,6 +52,7 @@ from search.models import (
     ObservationSeries,
     Operation,
     OperationVerb,
+    PartyClass,
     ProvenanceRef,
     ProviderBinding,
     ResolvedFacet,
@@ -720,6 +721,44 @@ def merged_entity_facts(facts: Iterable[DepartureFact]) -> list[DepartureFact]:
     return merged
 
 
+def merged_year_facts(facts: Iterable[DepartureFact]) -> list[DepartureFact]:
+    """`facts` with the plain `year_unavailable` fact on the years asked folded into the
+    side's-total fact on the same years (`whole_total_ended_fact`), so a part states one
+    fact. It gives the total's years, and the years its members' answer shows (`shown`)
+    where the members' data misses some of the years asked too (`_year_facts`)."""
+    facts = list(facts)
+    totals = {
+        fact.requested_years: fact
+        for fact in facts
+        if fact.code == "year_unavailable" and fact.limited_by == "whole_total"
+    }
+    if not totals:
+        return facts
+    plain = {
+        fact.requested_years: fact
+        for fact in facts
+        if fact.requested_years in totals and _plain_window_fact(fact)
+    }
+    return [
+        dataclasses.replace(fact, shown=plain[fact.requested_years].shown)
+        if fact.limited_by == "whole_total" and fact.requested_years in plain
+        else fact
+        for fact in facts
+        if not (_plain_window_fact(fact) and fact.requested_years in totals)
+    ]
+
+
+def _plain_window_fact(fact: DepartureFact) -> bool:
+    """Whether `fact` is `_year_facts`' `year_unavailable` on the years asked: the data's
+    years against them, with nothing else limiting them."""
+    return (
+        fact.code == "year_unavailable"
+        and fact.binding_ref == WHEN_REF
+        and fact.limited_by is None
+        and not fact.covered_years
+    )
+
+
 def _folded(first: DepartureFact, other: DepartureFact) -> DepartureFact:
     """`first` naming the entities, set members and sources of `other` too. A fact on no
     group asks for every entity and set it names."""
@@ -872,6 +911,30 @@ def window_gap_fact(gap: WindowGap | None) -> DepartureFact | None:
         asked=_range_text(start, end),
         requested_years=(start, end),
         data_years=data_years,
+    )
+
+
+def whole_total_ended_fact(
+    *,
+    requested: tuple[int | None, int | None],
+    total_years: tuple[int, int],
+    over: RoleAxis,
+    whole_of: tuple[PartyClass, ...],
+) -> DepartureFact:
+    """`year_unavailable` for an answer that lists the members of a side because the
+    source's total of the side (`over`, covering the `whole_of` classes) holds no point in
+    the `requested` years, though it holds `total_years`
+    (`phase_election._settle_places`). The members hold the requested years, so the
+    answer shows them; `data_years` are the total's."""
+    return DepartureFact(
+        code="year_unavailable",
+        binding_ref=WHEN_REF,
+        asked=_range_text(*requested),
+        requested_years=requested,
+        data_years=total_years,
+        over=over,
+        whole_of=whole_of,
+        limited_by="whole_total",
     )
 
 

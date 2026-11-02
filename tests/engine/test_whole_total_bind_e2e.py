@@ -25,6 +25,7 @@ import pytest
 
 from code_index.shared import get_index
 from search.engine.bind import SlotBindingDraft
+from search.engine.binders import BindRequest, BindResult, GeminiBinder
 from search.engine.departures import OPERATIONS_NOT_RUN
 from search.engine.extract import ExtractedEntity, ExtractedOperation
 from search.engine.region import (
@@ -44,9 +45,11 @@ from search.models import (
     DatasetResubmitInput,
     DefinitePart,
     EntityGroup,
+    IdentityShapeSchema,
     NoDataPart,
     ParsedInput,
     ParsedPart,
+    Part,
     RawTextInput,
     Resolution,
     ResolveRequest,
@@ -57,9 +60,11 @@ from search.models import (
     Spec,
     role_ref,
 )
+from search.scope.basis import BASIS_RULE, identity_basis_record
+from series_coverage.index import ABSENT_ENTITY
 from series_coverage.schema import FacetMetadata, RoleNames
 from tests.code_index.aid_identity import CRS_PROVENANCE, IMPUTED_PROVENANCE
-from tests.engine._binders import ReplyBinder
+from tests.engine._binders import FixedBinder, ReplyBinder, elected_reply
 from tests.engine._fake_coverage import patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import member_walk_reader, offline_resolve
@@ -79,6 +84,7 @@ _DAC1 = "provenance/OECDDAC1"
 _DAC2B = "provenance/OECDDAC2B"
 _ETH = "country/ETH"
 _FRA = "country/FRA"
+_DEU = "country/DEU"
 _OFFICIAL = "DACOfficialDonors"
 _PRIVATE = "DACPrivateDonors"
 _ALL_RECIPIENTS = "DACAllRecipients"
@@ -101,11 +107,13 @@ def _graph(
         nodes={
             _ETH: {"label": "Ethiopia", "type": "Country"},
             _FRA: {"label": "France", "type": "Country"},
+            _DEU: {"label": "Germany", "type": "Country"},
             **{
                 dcid: {"label": dcid, "type": "Organization"}
                 for dcid in (_OFFICIAL, _PRIVATE, _ALL_RECIPIENTS)
             },
             _DAC2A: {"label": "OECD DAC2a"},
+            _DAC1: {"label": "OECD DAC1"},
             CRS_PROVENANCE: {"label": "OECD Creditor Reporting System (CRS)"},
             IMPUTED_PROVENANCE: {"label": "ONE Imputed Multilateral Sectors"},
             **{
@@ -119,7 +127,7 @@ def _graph(
                 "cosine_scores": [0.9 - 0.05 * rank for rank in range(len(members))],
             }
         },
-        resolve={"Ethiopia": _ETH, "France": _FRA},
+        resolve={"Ethiopia": _ETH, "France": _FRA, "Germany": _DEU},
         obs={},
     )
 
@@ -129,17 +137,20 @@ def _coverage(
     *,
     official: bool = True,
     years: tuple[int, ...] = (2019, 2020, 2021),
+    total_years: tuple[int, ...] | None = None,
 ) -> None:
     """DAC2a holds series to Ethiopia from France, from the private donors' total and,
     unless told otherwise, from the official donors' total, and from France to every
-    recipient; the CRS holds France's series to Ethiopia."""
+    recipient; the CRS holds France's series to Ethiopia. The totals' series run over
+    `total_years` where given, the others' over `years`."""
     names = RoleNames(donor="financingProvider", recipient="financingRecipient")
     span = list(years)
+    totals = span if total_years is None else list(total_years)
     patch_coverage(
         monkeypatch,
         [
-            *([(_DAC2A_MEMBER, "dac2a", _OFFICIAL, _ETH, span)] if official else []),
-            (_DAC2A_MEMBER, "dac2a", _PRIVATE, _ETH, span),
+            *([(_DAC2A_MEMBER, "dac2a", _OFFICIAL, _ETH, totals)] if official else []),
+            (_DAC2A_MEMBER, "dac2a", _PRIVATE, _ETH, totals),
             (_DAC2A_MEMBER, "dac2a", _FRA, _ETH, span),
             (_DAC2A_MEMBER, "dac2a", _FRA, _ALL_RECIPIENTS, span),
             (_CRS_MEMBER, "crs", _FRA, _ETH, span),
@@ -837,6 +848,85 @@ def test_a_total_holding_no_series_leaves_the_side_to_its_parties(
     assert _available(answer) == []
 
 
+@pytest.mark.parametrize(
+    ("total_years", "time", "listed", "text"),
+    [
+        pytest.param(
+            (2019, 2020),
+            "2021",
+            True,
+            "You asked for 2021. The source's total for every official donor ends in 2020,"
+            " so this covers each donor with data.",
+            id="after-the-total-where-donors-hold-it",
+        ),
+        pytest.param(
+            (2019, 2020),
+            "2030",
+            False,
+            "You asked for 2030. The data covers only 2019 to 2020.",
+            id="after-every-series",
+        ),
+        pytest.param(
+            (2019, 2020),
+            "2010",
+            False,
+            "You asked for 2010. The data covers only 2019 to 2020.",
+            id="before-every-series",
+        ),
+        pytest.param(
+            (2019, 2020),
+            "2021 to 2022",
+            True,
+            "You asked for 2021 to 2022. The source's total for every official donor ends in"
+            " 2020, so this covers each donor with data and shows 2021.",
+            id="after-the-total-and-past-the-donors",
+        ),
+        pytest.param(
+            (2019, 2021),
+            "2020",
+            True,
+            "You asked for 2020. The source's total for every official donor holds no figure"
+            " for that year, so this covers each donor with data.",
+            id="in-a-gap-of-the-total",
+        ),
+        pytest.param(
+            (2018, 2021),
+            "2019 to 2020",
+            True,
+            "You asked for 2019 to 2020. The source's total for every official donor holds no"
+            " figure for those years, so this covers each donor with data.",
+            id="a-range-in-a-gap-of-the-total",
+        ),
+    ],
+)
+def test_a_total_missing_the_years_asked_states_its_years(
+    monkeypatch: pytest.MonkeyPatch,
+    total_years: tuple[int, ...],
+    time: str,
+    listed: bool,
+    text: str,
+):
+    """France's series to Ethiopia runs 2019 to 2021 and the official donors' total holds
+    `total_years`. Asked for years the donors hold and the total does not, the part lists
+    the donors and says the total ends before those years or holds no figure for them
+    between its first and last. Asked for 2021 to 2022, past the donors' years too, it says
+    so once, with the year it shows. Asked for a year no series holds, the part reads the
+    total, and its no-data text states the total's years, the span the answer would have
+    read."""
+    _coverage(monkeypatch, total_years=total_years)
+
+    (answer,) = _resolve({"entities": [_TO_ETHIOPIA], "time": time, "variable": _VARIABLE}).parts
+
+    (year,) = [d for d in answer.departures if d.code == "year_unavailable"]
+    assert year.asked == time
+    assert year.text == text
+    if listed:
+        assert isinstance(answer, DefinitePart), answer
+        assert _origin(answer.spec) is None
+    else:
+        assert isinstance(answer, NoDataPart), answer
+
+
 def test_a_named_whole_population_holding_no_series_refuses_as_a_named_party(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -1120,6 +1210,285 @@ def test_a_place_named_without_a_direction_reads_the_total_its_direction_leaves(
     assert (_whole_read(answer) is not None) == official
 
 
+_DAC2A_NET = _DAC2A_MEMBER.replace("_Gross_", "_Net_")
+_DAC1_ODA = (
+    "GrantEquivalent_FinancialFlow_Disbursement_DAC1AidType1010_Nominal",
+    "Amount_FinancialFlow_Gross_Disbursement_DAC1AidType1010_Nominal",
+    "Amount_FinancialFlow_Net_Disbursement_DAC1AidType1010_Nominal",
+)
+_FLOW_ROLES = RoleNames(donor="financingProvider", recipient="financingRecipient")
+
+
+def _both_tables_coverage(monkeypatch: pytest.MonkeyPatch, year: int) -> None:
+    """DAC1 holds Germany's ODA as grant equivalents and gross and net flows. DAC2a holds
+    gross and net disbursements to Ethiopia from the official donors' total, France and
+    Germany. The CRS holds France's and Germany's to Ethiopia. Every series covers `year`."""
+    dac2a = (_DAC2A_MEMBER, _DAC2A_NET)
+    patch_coverage(
+        monkeypatch,
+        [
+            *((member, "dac1", _DEU, ABSENT_ENTITY, [year]) for member in _DAC1_ODA),
+            *(
+                (member, "dac2a", donor, _ETH, [year])
+                for member in dac2a
+                for donor in (_OFFICIAL, _FRA, _DEU)
+            ),
+            *((_CRS_MEMBER, "crs", donor, _ETH, [year]) for donor in (_FRA, _DEU)),
+        ],
+        role_names={
+            **dict.fromkeys(_DAC1_ODA, RoleNames(donor="financingProvider", recipient=None)),
+            **dict.fromkeys((*dac2a, _CRS_MEMBER), _FLOW_ROLES),
+        },
+        facet_metadata={
+            "dac1": FacetMetadata(provenance_id=_DAC1, unit="USD"),
+            "dac2a": FacetMetadata(provenance_id=_DAC2A, unit="USD"),
+            "crs": FacetMetadata(provenance_id=CRS_PROVENANCE, unit="USD"),
+        },
+    )
+
+
+def _basis_choice(spec: Spec) -> tuple[str, str] | None:
+    """The active option and rule of `spec`'s measure-basis choice, or None when it has none."""
+    scope = spec.resolved.scope_choices
+    return next(
+        ((c.active, c.rule) for c in (scope.choices if scope else ()) if c.axis == "measure_basis"),
+        None,
+    )
+
+
+@pytest.mark.parametrize(
+    ("place", "directed", "year", "measured", "netting", "side"),
+    [
+        pytest.param("Ethiopia", "to", 2020, "amount", "Net", "recipient", id="recipient-ethiopia"),
+        pytest.param(
+            "Germany", "from", 2023, "grantEquivalent", None, "provider", id="donor-germany"
+        ),
+    ],
+)
+def test_a_place_named_without_a_direction_answers_as_its_directed_twin(
+    monkeypatch: pytest.MonkeyPatch,
+    place: str,
+    directed: str,
+    year: int,
+    measured: str,
+    netting: str | None,
+    side: str,
+):
+    """A place named without a direction is read on the one side its data holds.
+    "ODA in Ethiopia in 2020" holds data only with Ethiopia as recipient, so it answers as
+    "ODA to Ethiopia in 2020", with DAC2a's net receipts. "ODA in Germany in 2023" holds data
+    only with Germany as donor, so it answers as "ODA from Germany in 2023", with DAC1's
+    grant equivalents. Each states the direction it read, whether the elected shape settles it or
+    binds the place there as named, and a resubmit of the served identity states the
+    measure-basis rule its search stated."""
+    _both_tables_coverage(monkeypatch, year)
+    members = (_DAC2A_MEMBER, _DAC2A_NET, *_DAC1_ODA, _CRS_MEMBER)
+    undirected, twin = (
+        _part(
+            _resolve(
+                {"entities": [entity], "time": str(year), "variable": _VARIABLE}, members=members
+            )
+        )
+        for entity in ({"text": place}, {"text": place, "role": directed})
+    )
+
+    assert undirected.spec.model_dump(mode="json") == twin.spec.model_dump(mode="json")
+    identity = undirected.spec.definition.identity
+    assert isinstance(identity.shape, IdentityShapeSchema)
+    assert identity.shape.measured_property == measured
+    slots = {slot.property: slot.binding.model_dump() for slot in identity.slots}
+    assert slots.get("nettingBasis", {}).get("ref") == netting
+    assert [(d.code, d.text) for d in undirected.departures if d.code == "direction_inferred"] == [
+        (
+            "direction_inferred",
+            f"You named {place} without a direction. Only the data with {place} as the {side} "
+            f"holds values, so this reads it as the {side}.",
+        )
+    ]
+    # A resubmit, which runs no binder, records the basis its identity reads.
+    resubmitted = identity_basis_record(identity, get_index(), [])
+    assert _basis_choice(undirected.spec) == (
+        f"measure_basis:{'net' if netting else 'grant_equivalent'}",
+        resubmitted.rule if resubmitted is not None else BASIS_RULE,
+    )
+
+
+_DAC2A_PAIR = (_DAC2A_MEMBER, _DAC2A_NET)
+
+
+def _germany_on_both_sides_coverage(monkeypatch: pytest.MonkeyPatch, *, gives_in_dac2a: bool):
+    """DAC1 holds Germany's ODA as a donor, and DAC2a holds its receipts from the official
+    donors and France as a recipient. Where `gives_in_dac2a`, DAC2a and the CRS also hold
+    Germany's ODA to Ethiopia."""
+    given = [
+        *((member, "dac2a", _DEU, _ETH, [2023]) for member in _DAC2A_PAIR),
+        (_CRS_MEMBER, "crs", _DEU, _ETH, [2023]),
+    ]
+    patch_coverage(
+        monkeypatch,
+        [
+            *((member, "dac1", _DEU, ABSENT_ENTITY, [2023]) for member in _DAC1_ODA),
+            *(
+                (member, "dac2a", donor, _DEU, [2023])
+                for member in _DAC2A_PAIR
+                for donor in (_OFFICIAL, _FRA)
+            ),
+            *(given if gives_in_dac2a else ()),
+        ],
+        role_names={
+            **dict.fromkeys(_DAC1_ODA, RoleNames(donor="financingProvider", recipient=None)),
+            **dict.fromkeys((*_DAC2A_PAIR, _CRS_MEMBER), _FLOW_ROLES),
+        },
+        facet_metadata={
+            "dac1": FacetMetadata(provenance_id=_DAC1, unit="USD"),
+            "dac2a": FacetMetadata(provenance_id=_DAC2A, unit="USD"),
+            "crs": FacetMetadata(provenance_id=CRS_PROVENANCE, unit="USD"),
+        },
+    )
+
+
+def _germany_2023() -> Part:
+    """The one part "ODA in Germany in 2023" answers, over DAC2a's, DAC1's and the CRS's ODA."""
+    response = _resolve(
+        {"entities": [{"text": "Germany"}], "time": "2023", "variable": _VARIABLE},
+        members=(*_DAC2A_PAIR, *_DAC1_ODA, _CRS_MEMBER),
+    )
+    assert isinstance(response, Resolution), response
+    (part,) = response.parts
+    return part
+
+
+def test_a_place_holding_data_on_both_sides_offers_each_direction(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Germany holds DAC1's ODA as a donor and, here, DAC2a's receipts as a recipient, so
+    "ODA in Germany in 2023" settles no direction before election and offers both
+    readings, with Germany as the donor and as the recipient."""
+    _germany_on_both_sides_coverage(monkeypatch, gives_in_dac2a=True)
+
+    part = _germany_2023()
+
+    assert isinstance(part, CandidatesPart), part
+    sides = [
+        {axis for axis, places in spec.definition.identity.entities.items() if _DEU in places}
+        for spec in part.candidates.specs
+    ]
+    assert sides == [{"origin"}, {"destination"}]
+
+
+def test_a_place_only_one_table_holds_as_a_donor_settles_no_direction_before_election(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Germany holds DAC1's ODA as a donor, which DAC1 binds it as, and DAC2a's receipts as
+    a recipient, with no DAC2a series as a donor. DAC1's donor series counts as data on the
+    donor side, so the direction stays open before election, as on a part whose data holds
+    both sides. The house default reads DAC2a gross, whose data reads Germany as the
+    recipient alone. The answer states that direction and records the basis rule a resubmit
+    of its identity records."""
+    _germany_on_both_sides_coverage(monkeypatch, gives_in_dac2a=False)
+
+    part = _germany_2023()
+
+    assert isinstance(part, DefinitePart), part
+    identity = part.spec.definition.identity
+    assert identity.entities["destination"] == [_DEU]
+    slots = {slot.property: slot.binding.model_dump() for slot in identity.slots}
+    assert slots["nettingBasis"] == {"state": "value", "ref": "Gross"}
+    assert [(d.code, d.text) for d in part.departures if d.code == "direction_inferred"] == [
+        (
+            "direction_inferred",
+            "You named Germany without a direction. Only the data with Germany as the "
+            "recipient holds values, so this reads it as the recipient.",
+        )
+    ]
+    resubmitted = identity_basis_record(identity, get_index(), [])
+    assert _basis_choice(part.spec) == (
+        "measure_basis:gross",
+        resubmitted.rule if resubmitted is not None else BASIS_RULE,
+    )
+
+
+class _MemberPickBinder(GeminiBinder):
+    """Elects the menu shape holding `member`, or the first where the menu offers none, and
+    records whether each menu offered it and the members each menu holds. The house
+    policies keep the pick."""
+
+    def __init__(self, member: str) -> None:
+        self._member = member
+        self.offered: list[bool] = []
+        self.menus: list[set[str]] = []
+
+    async def bind(self, request: BindRequest, *, llm) -> tuple[BindResult, dict | None]:
+        self.menus.append({m for shape in request.shapes for m in shape.sv_arc_facts or {}})
+        index = next(
+            (
+                i
+                for i, shape in enumerate(request.shapes)
+                if self._member in (shape.sv_arc_facts or {})
+            ),
+            None,
+        )
+        self.offered.append(index is not None)
+        return await FixedBinder(elected_reply(index or 0)).bind(request, llm=llm)
+
+
+@pytest.mark.parametrize(
+    ("pick", "offered"), [(m, False) for m in _DAC1_ODA] + [(m, True) for m in _DAC2A_PAIR]
+)
+def test_a_place_without_a_direction_beside_a_donor_offers_no_donor_only_table(
+    monkeypatch: pytest.MonkeyPatch, pick: str, offered: bool
+):
+    """ "ODA from Germany in Ethiopia in 2020" holds data only with Ethiopia as the
+    recipient, so Ethiopia is read on that side before the menu seats. DAC1's donor tables
+    publish no recipient and could read Ethiopia only as a second donor, so they leave the
+    menu, and whichever reading the binder would pick, the part answers DAC2a's ODA from
+    Germany to Ethiopia."""
+    _both_tables_coverage(monkeypatch, 2020)
+    binder = _MemberPickBinder(pick)
+    variable = _VARIABLE
+    response = offline_resolve(
+        _parsed(
+            {
+                "entities": [{"text": "Germany", "role": "from"}, {"text": "Ethiopia"}],
+                "time": "2020",
+                "variable": variable,
+            }
+        ),
+        graph=_graph(variable=variable, members=(*_DAC2A_PAIR, *_DAC1_ODA)),
+        llm=_ScriptedLLM(variable),
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+        binder=binder,
+    )
+
+    spec = _part(response).spec
+    assert spec.definition.identity.entities == {"destination": [_ETH], "origin": [_DEU]}
+    assert spec.resolved.members[0].ref.ref in _DAC2A_PAIR
+    assert set(binder.offered) == {offered}
+
+
+def test_a_place_without_a_direction_and_no_directed_place_keeps_every_table(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """ "ODA in Ethiopia in 2020" holds data only with Ethiopia as the recipient, so that axis
+    settles. DAC1's donor tables could read Ethiopia only as a donor, but the part names no
+    donor for them to merge it into, so they stay on the menu, as the debt stocks of
+    "Germany external debt stocks" stay beside a creditor-side share that settles Germany
+    as a creditor."""
+    _both_tables_coverage(monkeypatch, 2020)
+    binder = _MemberPickBinder(_DAC2A_MEMBER)
+    variable = _VARIABLE
+    offline_resolve(
+        _parsed({"entities": [{"text": "Ethiopia"}], "time": "2020", "variable": variable}),
+        graph=_graph(variable=variable, members=(*_DAC2A_PAIR, *_DAC1_ODA)),
+        llm=_ScriptedLLM(variable),
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+        binder=binder,
+    )
+
+    assert binder.menus
+    assert set(_DAC1_ODA) <= binder.menus[0]
+
+
 # A sole-option claim on DAC2a's aid type that a recall sample alone backs. The walk refutes
 # it, so the answer binds the slot open, and the official donors' total holds a series only
 # under the open slot.
@@ -1140,6 +1509,13 @@ def _holds_only_open(_state: Any, _shape: Any, whole: Any, bindings: Any) -> boo
     return not any(b.sampled for b in bindings)
 
 
+def _reaches_only_open(
+    _state: Any, _shape: Any, sets: Any, *, bindings: Any, window: Any
+) -> tuple[bool, None]:
+    assert sets is _WHOLE.sets
+    return not any(b.sampled for b in bindings), None
+
+
 def test_binding_repair_judges_a_whole_total_on_the_bindings_without_their_sampled_claims(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -1149,10 +1525,10 @@ def test_binding_repair_judges_a_whole_total_on_the_bindings_without_their_sampl
     monkeypatch.setattr(phase_election, "bind_place_roles", lambda *_args: _NAMED)
     monkeypatch.setattr(phase_election, "whole_total_candidates", lambda *_args: [_WHOLE])
     monkeypatch.setattr(phase_election, "_settle_role_bindings", lambda *_a, **_k: settled)
-    monkeypatch.setattr(phase_election, "holds_whole_total", _holds_only_open)
+    monkeypatch.setattr(phase_election, "series_reach", _reaches_only_open)
     monkeypatch.setattr(phase_election, "_install_settled", lambda *_a, **_k: None)
     monkeypatch.setattr(phase_election, "_part_basis", lambda *_args: None)
-    state = SimpleNamespace(shape_draft=None, query_place_roles=None)
+    state = SimpleNamespace(shape_draft=None, query_place_roles=None, date_request=None)
     open_slot = SlotBindingDraft(axis="how", property_dcid="dac2aAidType", kind="unbound")
 
     phase_election._bind_query_places(

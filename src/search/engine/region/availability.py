@@ -39,13 +39,18 @@ from search.engine.extract import DateRequest
 from search.engine.place import ConsultedPresence
 from search.engine.reading_coverage import ReadingCoverage, holds_in, observed_years
 from search.engine.region.coverage_series import holds_series, requested_window
-from search.engine.region.place_roles import PlaceAssignment, bind_place_roles, names_a_place
+from search.engine.region.place_roles import (
+    PlaceAssignment,
+    bind_place_roles,
+    names_a_place,
+    undirected_readings,
+)
 from search.engine.region.place_set import PlaceSet
 from search.engine.region.state import ResolveState
 from search.engine.retrieval.bound_values import index_carries_shape
 from search.engine.retrieval.standard import _facet_reads
 from search.engine.shape import ShapeDraft, is_role_bearing
-from search.models import TimeWindow
+from search.models import RoleAxis, TimeWindow
 
 type _ShapeGroupKey = tuple[str, str, str, str, str | None, str | None, bool, frozenset[str]]
 
@@ -197,6 +202,25 @@ def series_at_places(state: ResolveState) -> SeriesReader:
         return holds_series(state, shape, bound_roles.sets)
 
     return read
+
+
+def undirected_axis(state: ResolveState, shapes: Sequence[ShapeDraft]) -> RoleAxis | None:
+    """The axis a place the part names without a direction is read on. It is the one axis
+    on which a shape of `shapes` holds a series at the places with the place on that axis.
+    A shape holds it on each axis it can place it on (`place_roles.undirected_readings`)
+    where that reading holds a series. `None` when the part names no place
+    without a direction, and when the shapes hold a series on both axes or on neither, so
+    the direction stays open and `phase_place_materialise._settle_direction` offers each
+    reading that holds data. The read uses the in-process coverage snapshot alone."""
+    if not any(place.direction == "undirected" for place in state.frame.places):
+        return None
+    series = series_at_places(state)
+    held: set[RoleAxis] = set()
+    for shape in shapes:
+        held |= {
+            axis for axis, reading in undirected_readings(state, shape) if series(shape, reading)
+        }
+    return next(iter(held)) if len(held) == 1 else None
 
 
 def _in_window(coverage: Mapping[str, ReadingCoverage], window: TimeWindow) -> bool:

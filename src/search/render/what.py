@@ -152,7 +152,8 @@ def _normalize_what_label(text: str) -> str:
     """Clean a catalog label for sentence rendering.
 
     Repeatedly strip trailing symbol-only parentheses and periods, then turn
-    a trailing bracketed qualifier into a recased parenthetical. Lower
+    a trailing bracketed qualifier into a recased parenthetical of its values
+    (`_slice_values`), or drop it when the head names every value. Lower
     plain Title-Case words only when the head has at least two such words and
     no lowercase content words. Acronyms, digits, and mixed case stay intact.
     Other labels keep their authored casing.
@@ -166,11 +167,38 @@ def _normalize_what_label(text: str) -> str:
         text = stripped
     bracket = _TRAILING_BRACKET.search(text)
     if bracket:
-        content = _recase_words(bracket.group(1))
-        text = f"{text[: bracket.start()]}({content})"
+        head = text[: bracket.start()]
+        values = _slice_values(bracket.group(1), head=head)
+        text = f"{head}({', '.join(values)})" if values else head.rstrip()
     if not _head_is_title_case(_label_head(text)):
         return text
     return _recase_words(text)
+
+
+def _slice_values(content: str, *, head: str) -> list[str]:
+    """The recased values of a bracketed slice list, without their keys, that ``head`` does
+    not already name: "15 years old and over, Female, Disability status = Persons with
+    disability" gives "15 years old and over", "female" and "persons with disability".
+
+    Graph labels list positional values first and ``Key=Value`` items after them, so a
+    comma before the first key separates items and a comma after a key stays inside that
+    key's value."""
+    values: list[str] = []
+    keyed = False
+    for fragment in content.split(","):
+        _, eq, value = fragment.partition("=")
+        if eq:
+            keyed = True
+            values.append(value)
+        elif keyed:
+            values[-1] = f"{values[-1]},{fragment}"
+        else:
+            values.append(fragment)
+    return [
+        _recase_words(stripped)
+        for value in values
+        if (stripped := value.strip()) and not _already_named_in(stripped, head)
+    ]
 
 
 def _content_words(text: str) -> set[str]:
