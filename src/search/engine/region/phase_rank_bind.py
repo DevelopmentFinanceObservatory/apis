@@ -135,6 +135,7 @@ from search.engine.region.place_roles import (
     bind_place_roles,
     held_party_words,
     names_a_place,
+    on_undirected_axis,
     part_states,
     parties_of_kind,
     without_open_axis_gaps,
@@ -894,6 +895,9 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
     # (`availability.undirected_axis`), so the rules below and the house policies read a
     # part whose data settles the axis as its directed twin.
     state.undirected_axis = undirected_axis(state, eligible_shapes)
+    # A reading that cannot place the place on that axis leaves, so the binder cannot elect
+    # one that would refuse the direction (`on_undirected_axis`).
+    eligible_shapes = on_undirected_axis(state, eligible_shapes)
     # From here to the seated menu the phase reads the readings it may offer apart from
     # the part (`_read_offer`), and writes them to it only once the menu seats one, so a
     # part that offers none holds nothing they read.

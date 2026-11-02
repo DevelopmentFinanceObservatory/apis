@@ -293,6 +293,21 @@ def direction_assignments(
     return tuple(readings)
 
 
+def undirected_readings(
+    state: ResolveState, shape: ShapeDraft
+) -> tuple[tuple[RoleAxis, PlaceAssignment], ...]:
+    """Each flow axis `shape` can place the one set the request names without a direction
+    on, with the assignment that places it there: the axes a rule of the shape places it on
+    (`undirected_place_axes`), or where the shape leaves its direction open, each axis it
+    may take (`direction_assignments`). Empty when the shape places it on no flow axis."""
+    bound = bind_place_roles(state, shape)
+    if isinstance(bound, PlaceAssignment):
+        return tuple((axis, bound) for axis in sorted(undirected_place_axes(state, bound)))
+    if bound == "role_not_resolved":
+        return direction_assignments(state, shape)
+    return ()
+
+
 def undirected_place_name(state: ResolveState) -> str | None:
     """The request's words for the one place set it names without a direction
     (`ResolveState.words_of`), `None` when it names none or several."""
@@ -484,6 +499,28 @@ def without_unasked_axes(
         )
 
     return [shape for shape in shapes if not leaves(shape)]
+
+
+def on_undirected_axis(state: ResolveState, shapes: Sequence[ShapeDraft]) -> list[ShapeDraft]:
+    """`shapes` less each role-bearing shape that cannot place the place the request names
+    without a direction on the axis its data settles (`ResolveState.undirected_axis`,
+    `undirected_readings`). "Aid from Germany in Kenya" reads Kenya as the recipient, so
+    DAC1's donor totals, which publish no recipient, leave the menu for DAC2a: elected,
+    they could only read Kenya as a second donor, where it holds no data. The axis is the
+    one on which some shape of `shapes` holds data with the place there
+    (`availability.undirected_axis`), so that shape stays. Every shape stays when the axis
+    is unsettled."""
+    axis = state.undirected_axis
+    if axis is None:
+        return list(shapes)
+    kept = [
+        shape
+        for shape in shapes
+        if not is_role_bearing(shape)
+        or any(placed == axis for placed, _ in undirected_readings(state, shape))
+    ]
+    assert kept, "the undirected axis is one an eligible shape places the place on"
+    return kept
 
 
 def without_open_axis_gaps(state: ResolveState, shapes: Sequence[ShapeDraft]) -> list[ShapeDraft]:

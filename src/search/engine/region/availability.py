@@ -42,9 +42,8 @@ from search.engine.region.coverage_series import holds_series, requested_window
 from search.engine.region.place_roles import (
     PlaceAssignment,
     bind_place_roles,
-    direction_assignments,
     names_a_place,
-    undirected_place_axes,
+    undirected_readings,
 )
 from search.engine.region.place_set import PlaceSet
 from search.engine.region.state import ResolveState
@@ -208,9 +207,8 @@ def series_at_places(state: ResolveState) -> SeriesReader:
 def undirected_axis(state: ResolveState, shapes: Sequence[ShapeDraft]) -> RoleAxis | None:
     """The axis a place the part names without a direction is read on. It is the one axis
     on which a shape of `shapes` holds a series at the places with the place on that axis.
-    A shape that places the place by a rule of its own (`place_roles.undirected_place_axes`)
-    holds it on that axis, and one that leaves its direction open holds it on each axis it
-    may take (`place_roles.direction_assignments`). `None` when the part names no place
+    A shape holds it on each axis it can place it on (`place_roles.undirected_readings`)
+    where that reading holds a series. `None` when the part names no place
     without a direction, and when the shapes hold a series on both axes or on neither, so
     the direction stays open and `phase_place_materialise._settle_direction` offers each
     reading that holds data. The read uses the in-process coverage snapshot alone."""
@@ -219,16 +217,9 @@ def undirected_axis(state: ResolveState, shapes: Sequence[ShapeDraft]) -> RoleAx
     series = series_at_places(state)
     held: set[RoleAxis] = set()
     for shape in shapes:
-        bound = bind_place_roles(state, shape)
-        if isinstance(bound, PlaceAssignment):
-            if series(shape, bound):
-                held |= undirected_place_axes(state, bound)
-        elif bound == "role_not_resolved":
-            held |= {
-                axis
-                for axis, reading in direction_assignments(state, shape)
-                if series(shape, reading)
-            }
+        held |= {
+            axis for axis, reading in undirected_readings(state, shape) if series(shape, reading)
+        }
     return next(iter(held)) if len(held) == 1 else None
 
 
