@@ -6,8 +6,12 @@ import ast
 from dataclasses import fields
 from pathlib import Path
 
+import pytest
+
+from search.engine.extract import ExtractedEntity
 from search.engine.response_cache_flow import Layer2Signals, compute_layer2_signals
 from search.engine.role_text import DoorRole
+from tests.engine.test_entity_roles import _linked, _part_roles
 
 _REGION_DIR = Path(__file__).parents[2] / "src" / "search" / "engine" / "region"
 
@@ -62,7 +66,14 @@ def test_supporting_preposition_does_not_contradict() -> None:
         query="aid to Kenya", entity_roles=[entity_roles], query_text=None
     )
     assert signals.role_contradictions == (
-        {"part": 0, "name": "Kenya", "span": "Kenya", "axis": "destination", "contradicts": False},
+        {
+            "part": 0,
+            "name": "Kenya",
+            "span": "Kenya",
+            "axis": "destination",
+            "stated": True,
+            "contradicts": False,
+        },
     )
 
 
@@ -74,8 +85,41 @@ def test_opposing_preposition_contradicts() -> None:
         query="aid from Kenya", entity_roles=[entity_roles], query_text=None
     )
     assert signals.role_contradictions == (
-        {"part": 0, "name": "Kenya", "span": "Kenya", "axis": "destination", "contradicts": True},
+        {
+            "part": 0,
+            "name": "Kenya",
+            "span": "Kenya",
+            "axis": "destination",
+            "stated": True,
+            "contradicts": True,
+        },
     )
+
+
+@pytest.mark.parametrize(
+    ("query", "entities", "contradicts"),
+    [
+        (
+            "aid to Kenya and Kenya's exports",
+            [
+                _linked("Kenya", "recipient", "to", parts=(0,)),
+                _linked("Kenya", "source", "Kenya's", parts=(1,)),
+            ],
+            [False, False],
+        ),
+        ("aid to Kenya from France", [_linked("Kenya", "source", "from")], [True]),
+    ],
+)
+def test_the_signal_reads_the_occurrences_the_door_ties_a_role_to(
+    query: str, entities: list[ExtractedEntity], contradicts: list[bool]
+) -> None:
+    """The signal reads the roles the raw-text door derives (`extract.veto_words`), as the
+    pipeline's veto does (`role_text.role_contradicted`): the exports part's Kenya, tied to
+    "Kenya's", is not contradicted by the aid clause's "to Kenya", and a source Kenya after
+    "to" is."""
+    entity_roles = _part_roles(entities, query=query, measures=["aid", "exports"][: len(entities)])
+    signals = compute_layer2_signals(query=query, entity_roles=entity_roles, query_text=None)
+    assert [signal["contradicts"] for signal in signals.role_contradictions] == contradicts
 
 
 def test_role_contradictions_cover_every_role_bearing_entity() -> None:
@@ -88,8 +132,22 @@ def test_role_contradictions_cover_every_role_bearing_entity() -> None:
         query="aid from Norway to Kenya", entity_roles=[entity_roles], query_text=None
     )
     assert signals.role_contradictions == (
-        {"part": 0, "name": "Kenya", "span": "Kenya", "axis": "destination", "contradicts": False},
-        {"part": 0, "name": "Norway", "span": "Norway", "axis": "origin", "contradicts": False},
+        {
+            "part": 0,
+            "name": "Kenya",
+            "span": "Kenya",
+            "axis": "destination",
+            "stated": True,
+            "contradicts": False,
+        },
+        {
+            "part": 0,
+            "name": "Norway",
+            "span": "Norway",
+            "axis": "origin",
+            "stated": True,
+            "contradicts": False,
+        },
     )
 
 
@@ -105,8 +163,22 @@ def test_role_contradictions_cover_every_occurrence_of_one_name() -> None:
         query="aid from Kenya to Kenya", entity_roles=[entity_roles], query_text=None
     )
     assert signals.role_contradictions == (
-        {"part": 0, "name": "Kenya", "span": "Kenya", "axis": "origin", "contradicts": False},
-        {"part": 0, "name": "Kenya", "span": "Kenya", "axis": "destination", "contradicts": False},
+        {
+            "part": 0,
+            "name": "Kenya",
+            "span": "Kenya",
+            "axis": "origin",
+            "stated": True,
+            "contradicts": False,
+        },
+        {
+            "part": 0,
+            "name": "Kenya",
+            "span": "Kenya",
+            "axis": "destination",
+            "stated": True,
+            "contradicts": False,
+        },
     )
 
 

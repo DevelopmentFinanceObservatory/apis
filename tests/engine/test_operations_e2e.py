@@ -167,7 +167,7 @@ def test_the_recorded_top_5_donors_reading_carries_its_rank_with_no_warning():
     response = offline_resolve(make_request("Top 5 donors for education aid"))
 
     assert [p.operations for p in response.parts] == [
-        [Operation(verb="rank", phrase="Top 5 donors", over="origin")]
+        [Operation(verb="rank", phrase="Top 5", over="origin")]
     ]
     assert _query_qualifier_warnings(response) == []
     assert "was not applied" not in (response.rendered_sentence or "")

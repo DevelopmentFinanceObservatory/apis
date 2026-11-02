@@ -916,6 +916,121 @@ def test_a_country_before_the_measure_takes_the_end_the_other_place_leaves(monke
     _assert_binds_china_as_creditor(monkeypatch, query, door_roles)
 
 
+_GIN = "country/GIN"
+
+
+@pytest.mark.parametrize(
+    ("query", "entities", "part", "reason"),
+    [
+        # The exports role's cue "Kenya's" ties it to its own occurrence, so the aid
+        # clause's "to Kenya" does not veto it.
+        pytest.param(
+            "aid to Kenya and Kenya's exports",
+            [
+                _linked("Kenya", "recipient", "to", parts=(0,)),
+                _linked("Kenya", "source", "Kenya's", parts=(1,)),
+            ],
+            1,
+            None,
+            id="another-measure-names-the-place",
+        ),
+        # A misquoted cue ties no occurrence; the role reads the occurrences no other role
+        # is tied to, "of Kenya" here.
+        pytest.param(
+            "aid to Kenya and exports of Kenya",
+            [
+                _linked("Kenya", "recipient", "to", parts=(0,)),
+                _linked("Kenya", "source", "from", parts=(1,)),
+            ],
+            1,
+            None,
+            id="misquoted-cue-reads-the-untied-occurrence",
+        ),
+        # A misquoted cue whose only occurrence another role claims reads that occurrence,
+        # whose "from" contradicts the recipient.
+        pytest.param(
+            "aid and exports from Kenya",
+            [
+                _linked("Kenya", "recipient", "to", parts=(0,)),
+                _linked("Kenya", "source", "from", parts=(1,)),
+            ],
+            0,
+            "role_not_resolved",
+            id="misquoted-cue-reads-a-claimed-occurrence",
+        ),
+        # "Kenya from" writes the cue straight after the place, whose own word before is
+        # "to", which still contradicts the source.
+        pytest.param(
+            "aid to Kenya from France",
+            [_linked("Kenya", "source", "from"), _linked("France")],
+            0,
+            "role_not_resolved",
+            id="cue-after-the-place-still-vetoed",
+        ),
+        # "Guinea-Bissau" holds no occurrence of Guinea, so "from" is not written with it
+        # and the "to" before Guinea contradicts the source.
+        pytest.param(
+            "aid from Guinea-Bissau to Guinea",
+            [_linked("Guinea", "source", "from")],
+            0,
+            "role_not_resolved",
+            id="place-inside-a-longer-name-still-vetoed",
+        ),
+    ],
+)
+def test_the_veto_reads_the_occurrences_a_role_is_tied_to(
+    monkeypatch, query: str, entities: list[ExtractedEntity], part: int, reason: str | None
+):
+    """A raw-text leg's role query is the whole query, and its veto reads only the
+    occurrences of the place the role's cue is written with (`extract.veto_words`). A role
+    the veto keeps binds its place on the origin axis its source names."""
+    measures = ["aid", "exports"]
+    index = patch_coverage(
+        monkeypatch,
+        [(_SV_DCID, "f1", _KEN, _CHN, [2018, 2019, 2020])],
+        role_names={_SV_DCID: _CREDITOR_DEBTOR_ROLE_NAMES},
+    )
+    graph = FakeGraph(
+        nodes={
+            _KEN: {"label": "Kenya", "type": "Country"},
+            _GIN: {"label": "Guinea", "type": "Country"},
+            _SV_DCID: {
+                "label": "Test flow",
+                "arcs": _declaring_arcs(observation_properties=["creditor", "debtor"]),
+            },
+        },
+        detect={measures[part]: {"svs": [_SV_DCID], "cosine_scores": [0.9]}},
+        resolve={"Kenya": _KEN, "Guinea": _GIN},
+        obs={},
+    )
+    entity_roles = _part_roles(entities, query=query, measures=measures)[part]
+    result = asyncio.run(
+        resolve_variable(
+            measures[part],
+            entities=list(entity_roles),
+            date_request=None,
+            detect_query=measures[part],
+            role_query=query,
+            entity_roles=entity_roles,
+            pac=True,
+            graph=graph,
+            resolver=make_resolver(graph),
+            llm=_FixedBindLLM(),
+            sdmx=FakeSdmxClient(observations={}),
+            base_timing={},
+            coverage=FakeCoverageService(index).snapshot(),
+        )
+    )
+    assert result.no_data_reason == reason, result
+    if reason is None:
+        assert result.status == "definite", result
+        spec = result.specs[0]
+        assert {(entity.ref, entity.role) for entity in spec.resolved.entities} == {
+            (_KEN, "origin")
+        }
+        assert spec.definition.identity.entities == {"origin": [_KEN]}
+
+
 _ZMB = "country/ZMB"
 
 

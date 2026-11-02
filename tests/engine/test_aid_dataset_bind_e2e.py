@@ -375,7 +375,7 @@ def _assert_imputed_part(spec: Spec) -> None:
     [
         ("top donors of education aid to Kenya", _E, CRS_MEMBER_COUNT, ["origin"]),
         (f"{_E} to Kenya", _E, CRS_MEMBER_COUNT, None),
-        ("total aid to Kenya", "total aid", _PLAIN_AID_MEMBER_COUNT, None),
+        ("total aid to Kenya", "aid", _PLAIN_AID_MEMBER_COUNT, None),
         ("top 5 donantes de ayuda a Kenia", "aid", _PLAIN_AID_MEMBER_COUNT, ["origin"]),
     ],
 )
@@ -406,7 +406,7 @@ def test_a_recipient_total_on_a_crs_only_shape_is_counted_on_the_crs_convention(
     only to a shape DAC2a publishes. The shape here is the CRS's alone, so the part takes the
     CRS's own convention, gross disbursements, and its choice names that convention as the
     rule that settled the basis."""
-    response, _llm = _resolve("total aid to Kenya", "total aid")
+    response, _llm = _resolve("total aid to Kenya", "aid")
 
     (spec,) = _specs(response)
     assert _bound(spec)["nettingBasis"] == "Gross"
@@ -557,13 +557,13 @@ def test_a_second_table_on_the_family_leaves_the_bind_prompt_as_it_was(
     """The bind menu offers no source: a second table publishing the CRS aid family leaves
     the prompt of a question naming no table as it was, and the part answers the CRS under
     its plain identity."""
-    _response, plain = _resolve("total aid to Kenya", "total aid")
+    _response, plain = _resolve("total aid to Kenya", "aid")
     _use_second_table(monkeypatch, opt_in=False)
 
-    response, shared = _resolve("total aid to Kenya", "total aid")
+    response, shared = _resolve("total aid to Kenya", "aid")
 
-    assert shared.bind_prompts["total aid"] == plain.bind_prompts["total aid"]
-    assert "axis=source" not in shared.bind_prompts["total aid"]
+    assert shared.bind_prompts["aid"] == plain.bind_prompts["aid"]
+    assert "axis=source" not in shared.bind_prompts["aid"]
     (spec,) = _specs(response)
     assert "source" not in _bound(spec)
     assert spec.spec_id == _spec_id(_plain_aid_identity())

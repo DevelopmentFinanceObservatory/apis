@@ -59,7 +59,7 @@ from search.engine.response_cache_keys import (
     to_entry,
 )
 from search.engine.response_cache_memo import PartMemo
-from search.engine.role_text import DoorRole, contradicts, every_member_axis
+from search.engine.role_text import DoorRole, every_member_axis, role_contradicted
 from search.engine.stated_scope import intake_key_document
 from search.engine.unit.conversion_catalogue import current_conversion_catalogue
 from search.engine.written_phrase import written_phrase
@@ -90,8 +90,9 @@ type ReplayedPlaceOptions = Callable[
 
 # ---------------------------------------------------------------------------
 # Raw-text inputs absent from Extraction: two `role_query` readers run on every leg. One
-# checks each DoorRole occurrence, the other reads the flow axis each dropped phrase asks
-# every member of (`role_text.every_member_axis`). Single-variable requests also read
+# checks each DoorRole occurrence (`role_text.role_contradicted`, which reads the words
+# before the occurrences a raw-text role is tied to), the other reads the flow axis each
+# dropped phrase asks every member of (`role_text.every_member_axis`). Single-variable requests also read
 # qualifier vocabulary, defaults, written phrases and graph value names.
 # `test_query_text_and_role_query_reader_counts_are_covered` guards this set.
 # Graph value names are known only after retrieval, so their signal keeps the whole
@@ -122,13 +123,15 @@ class Layer2Signals:
 def _role_contradiction(part: int, name: str, role: DoorRole, *, query: str) -> dict[str, object]:
     # Include the part and the entity name. A part reads only its own roles, and distinct
     # names can share a span and axis while the pipeline checks each name's role
-    # occurrences separately.
+    # occurrences separately. `stated` comes from the query's words and changes the
+    # disclosure, so two queries one extraction reads alike can differ in it alone.
     return {
         "part": part,
         "name": name,
         "span": role.span,
         "axis": role.axis,
-        "contradicts": contradicts(query, span=role.span, axis=role.axis, party=role.party),
+        "stated": role.stated,
+        "contradicts": role_contradicted(role, query=query),
     }
 
 

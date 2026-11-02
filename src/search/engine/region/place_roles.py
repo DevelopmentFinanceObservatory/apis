@@ -66,7 +66,7 @@ from search.engine.retrieval.bound_values import (
     shape_five_tuple,
     shape_part_datasets,
 )
-from search.engine.role_text import asks_members, contradicts
+from search.engine.role_text import asks_members, role_contradicted
 from search.engine.series_declarations import declared_side
 from search.engine.shape import (
     ShapeDraft,
@@ -1713,7 +1713,7 @@ def _untold_groups(state: ResolveState, groups: dict[str, list[str]]) -> dict[st
     no text of which carries a direction, a text that resolved to no set and names a whole
     population (`ResolveState.whole_named`, `ResolveState.whole_listed`) aside, else those
     one of whose texts states a direction the query's own wording contradicts
-    (`role_text.contradicts`)."""
+    (`role_text.role_contradicted`)."""
     undirected = {
         key: texts
         for key, texts in groups.items()
@@ -1790,12 +1790,13 @@ def direction_readings(state: ResolveState) -> tuple[dict[str, RoleAxis], ...]:
 
 def _contradicted_names(state: ResolveState, names: Iterable[str]) -> tuple[str, ...]:
     """The names in `names`, in order, one of whose stated directions the query's own
-    wording contradicts (`role_text.contradicts`)."""
+    wording contradicts (`role_text.role_contradicted`): the occurrences the door tied the
+    role to, else every occurrence in the role query."""
     return tuple(
         name
         for name in names
         if any(
-            contradicts(state.role_query, span=role.span, axis=role.axis, party=role.party)
+            role_contradicted(role, query=state.role_query)
             for role in state.entity_roles.get(name) or ()
         )
     )

@@ -13,17 +13,14 @@ def test_raw_model_output_scores_exactly_as_recorded_in_the_readme():
     assert result["entity_count"] == 88
     assert result["unspecified_count"] == 23
     correct = sum(1 for v in result["verdicts"] if v["correct"])
-    assert correct == 83
+    assert correct == 86
     assert result["accuracy"] == correct / 88
     assert result["false_confident_rate"] == 0.0
     assert result["confidently_wrong_count"] == 1
 
     wrong = [v for v in result["verdicts"] if not v["correct"]]
     assert [(v["case_id"], v["surface"]) for v in wrong] == [
-        ("dir-three-plus-list-01", "the United States"),
-        ("dir-leading-unevidenced-01", "Kenya"),
-        ("dir-leading-unevidenced-02", "Ethiopia"),
-        ("dir-leading-unevidenced-02", "the United States"),
+        ("dir-priorcontra-03", "Sweden"),
         ("dir-possessive-03", "Kenya"),
     ]
 
@@ -37,17 +34,14 @@ def test_guarded_extraction_scores_exactly_as_recorded_in_the_readme():
     assert result["entity_count"] == 88
     assert result["unspecified_count"] == 23
     correct = sum(1 for v in result["verdicts"] if v["correct"])
-    assert correct == 83
+    assert correct == 86
     assert result["accuracy"] == correct / 88
     assert result["false_confident_rate"] == 0.0
     assert result["confidently_wrong_count"] == 1
 
     wrong = [v for v in result["verdicts"] if not v["correct"]]
     assert [(v["case_id"], v["surface"]) for v in wrong] == [
-        ("dir-three-plus-list-01", "the United States"),
-        ("dir-leading-unevidenced-01", "Kenya"),
-        ("dir-leading-unevidenced-02", "Ethiopia"),
-        ("dir-leading-unevidenced-02", "the United States"),
+        ("dir-priorcontra-03", "Sweden"),
         ("dir-possessive-03", "Kenya"),
     ]
 

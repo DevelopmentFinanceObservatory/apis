@@ -480,9 +480,9 @@ class _FixedExtractionLLM:
     wording this suite tries), and the bind stage always elects the sole
     candidate shape with no constraint bindings. Extraction, and everything
     derived from it, is byte-identical on every call. The only thing
-    that can differ between two calls is contradicts()' own scan of the
-    raw query text, read inside `_phase_place_bindings`, which this double
-    never touches.
+    that can differ between two calls is the door's own reading of the raw
+    query text (`extract.veto_words`, `raw_text._states_direction`), which
+    this double never touches.
     """
 
     async def generate_structured(self, *, prompt: str, system: str, schema):
@@ -608,6 +608,76 @@ def test_role_direction_agreement_keeps_distinct_query_sources_separate(monkeypa
     assert r1.status == "definite", r1
     assert r2.status == "definite", r2
     assert r1.rendered_sentence == r2.rendered_sentence
+
+
+class _CuedRecipientLLM(_FixedExtractionLLM):
+    """`_FixedExtractionLLM` reading two measures, aid with Kenya's cue "to" and GDP with
+    Uganda. "aid to Kenya" holds the cue and so states Kenya's direction; "aid for Kenya"
+    does not, so its role is read off the measure."""
+
+    async def generate_structured(self, *, prompt: str, system: str, schema):
+        if schema is Extraction:
+            entities = [
+                ExtractedEntity(
+                    text="Kenya", span="Kenya", variables=[0], role="recipient", cue="to"
+                ),
+                ExtractedEntity(text="Uganda", span="Uganda", variables=[1]),
+            ]
+            return Extraction(kind="resolution", variables=["aid", "GDP"], entities=entities), None
+        return await super().generate_structured(prompt=prompt, system=system, schema=schema)
+
+
+_UGA = "country/UGA"
+_PLAIN_ARCS = {
+    "populationType": {"nodes": [{"dcid": "Person"}]},
+    "measuredProperty": {"nodes": [{"dcid": "count"}]},
+    "statType": {"nodes": [{"dcid": "measuredValue"}]},
+}
+
+
+def _subject_graph() -> FakeGraph:
+    """Two subject-only series, aid holding Kenya and GDP Uganda, so a stated direction is
+    discarded."""
+    facet = [{"earliestDate": "2015", "latestDate": "2020", "obsCount": 6}]
+    return FakeGraph(
+        nodes={
+            _KEN: {"label": "Kenya", "type": "Country"},
+            _UGA: {"label": "Uganda", "type": "Country"},
+            "Count_Aid": {"label": "Test aid count", "arcs": _PLAIN_ARCS},
+            "Count_GDP": {"label": "Test GDP count", "arcs": _PLAIN_ARCS},
+        },
+        detect={
+            "aid": {"svs": ["Count_Aid"], "cosine_scores": [0.9]},
+            "GDP": {"svs": ["Count_GDP"], "cosine_scores": [0.9]},
+        },
+        resolve={"Kenya": _KEN, "Uganda": _UGA},
+        obs={f"Count_Aid|{_KEN}": facet, f"Count_GDP|{_UGA}": facet},
+    )
+
+
+@pytest.mark.parametrize(
+    "queries",
+    [
+        ("aid to Kenya and GDP of Uganda", "aid for Kenya and GDP of Uganda"),
+        ("aid for Kenya and GDP of Uganda", "aid to Kenya and GDP of Uganda"),
+    ],
+)
+def test_a_stated_direction_keeps_its_own_layer2_entry(queries):
+    """One extraction whose cue one wording holds and the other does not shares no layer-2
+    entry: the sentence discloses only the stated direction as discarded, so each warm
+    answer reads as its cold one, in either order."""
+
+    def run(query: str, cache: ResponseCache | None) -> str:
+        response = _run(
+            make_request(query), llm=_CuedRecipientLLM(), cache=cache, graph=_subject_graph()
+        )
+        return response.rendered_sentence
+
+    cold = {query: run(query, None) for query in queries}
+    assert "You named Kenya as a recipient" in cold["aid to Kenya and GDP of Uganda"], cold
+    assert "You named" not in cold["aid for Kenya and GDP of Uganda"], cold
+    cache = ResponseCache()
+    assert {query: run(query, cache) for query in queries} == cold
 
 
 class _ReadingLLM:

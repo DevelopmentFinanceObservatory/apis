@@ -84,6 +84,7 @@ from search.engine.extract import (
     dates_to_request,
     extract,
     scoped_measures,
+    veto_words,
 )
 from search.engine.fanout import (
     _FanOutResult,
@@ -532,7 +533,9 @@ def _scoping_parts(
     ]
 
 
-def _entity_roles(part: Sequence[ExtractedEntity], *, query: str) -> dict[str, list[DoorRole]]:
+def _entity_roles(
+    part: Sequence[ExtractedEntity], *, entities: Sequence[ExtractedEntity], query: str
+) -> dict[str, list[DoorRole]]:
     """Map the stripped names of one part's entities to their roles, as the parsed door
     maps a part's (`parsed._entity_roles_for_part`).
 
@@ -541,10 +544,13 @@ def _entity_roles(part: Sequence[ExtractedEntity], *, query: str) -> dict[str, l
     debtor the destination. `extract` keeps a role only when the model cites a cue for it
     (`extract._ground_roles`), so every role here has one, and `stated` records whether
     `query` holds the cue and it states the direction, or the role is read off the
-    measure (`_states_direction`). An
+    measure (`_states_direction`). `preceding` holds the words before the occurrences of
+    the place its cue ties it to, read beside the other roles of `entities`, the whole
+    extraction's (`extract.veto_words`). An
     entity with no role is undirected. Preserve distinct mentions in order, including
     self-flows on opposite axes, and collapse duplicate mentions with the same axis, span
-    and reading. The span is the query's own words for the place, else its name.
+    and reading, which then read the occurrences each is tied to. The span is the query's
+    own words for the place, else its name.
     """
     roles: dict[str, list[DoorRole]] = {}
     for entity in part:
@@ -558,9 +564,14 @@ def _entity_roles(part: Sequence[ExtractedEntity], *, query: str) -> dict[str, l
             stated=_states_direction(entity, query=query),
             members=entity.members,
             party=entity.role,
+            preceding=veto_words(entity, entities=entities, query=query),
         )
         if role not in occurrences:
             occurrences.append(role)
+            continue
+        i = occurrences.index(role)
+        words = (*(occurrences[i].preceding or ()), *(role.preceding or ()))
+        occurrences[i] = dataclasses.replace(role, preceding=tuple(dict.fromkeys(words)))
     return roles
 
 
@@ -1351,7 +1362,10 @@ def _prepare_extraction(
         per_variable_entities=[
             list(dict.fromkeys(_entity_key(e) for e in part)) for part in per_part_entities
         ],
-        per_variable_entity_roles=[_entity_roles(part, query=query) for part in per_part_entities],
+        per_variable_entity_roles=[
+            _entity_roles(part, entities=extracted_entities, query=query)
+            for part in per_part_entities
+        ],
         # A text any mention of the part asks the members of. A directed mention asks on
         # its own end (`DoorRole.members`).
         per_variable_member_entities=[

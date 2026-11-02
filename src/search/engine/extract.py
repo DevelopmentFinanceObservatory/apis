@@ -14,7 +14,7 @@ import logging
 import re
 import unicodedata
 from collections import Counter
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal
@@ -77,7 +77,8 @@ ExtractionKind = Literal["resolution", "catalogue", "out_of_scope", "requires_an
 
 _ENTITY_TEXT_DESCRIPTION = (
     "Place name in ENGLISH, translated from the query's own language if needed "
-    '(e.g. "España" → "Spain", "Deutschland" → "Germany", "Kenia" → "Kenya").'
+    '(e.g. "España" → "Spain", "Deutschland" → "Germany", "Kenia" → "Kenya"). A name '
+    'with a bracketed qualifier is one place, kept whole ("Asia (DAC)").'
 )
 
 _ENTITY_SPAN_DESCRIPTION = (
@@ -105,7 +106,8 @@ _ENTITY_CUE_DESCRIPTION = (
     "The query's own words that state this place's role, copied verbatim and untranslated: "
     'a preposition, verb or case ending ("from", "to", "funds", "received by", "owed to"), '
     'the place with its possessive marker ("Mexico\'s"), or a national adjective, which is '
-    'its own cue ("Danish"). Null when the wording states no role for this place.'
+    'its own cue ("Danish"). A verb between two places is the cue of each: "owes" for both '
+    'Kenya and China in "Kenya owes China". Null when the wording states no role for this place.'
 )
 
 _ENTITY_ROLE_DESCRIPTION = (
@@ -113,7 +115,8 @@ _ENTITY_ROLE_DESCRIPTION = (
     '"source" gives or lends, "recipient" receives, "creditor" is owed a debt or its '
     'repayments, "debtor" owes or repays it. A possessive or a national adjective names the '
     "place whose own flow or debt the measure is, so the role follows the measure: "
-    '"Danish grants" make Denmark the source and "Mexico\'s debt" Mexico the debtor. Null '
+    '"Danish grants" make Denmark the source and "Mexico\'s debt" Mexico the debtor. '
+    '"Kenya owes China" makes Kenya the debtor and China the creditor. Null '
     "when `cue` is null. NEVER infer a role from world knowledge about who typically funds "
     'or receives: "ODA Kenya Norway" is null for BOTH places, even though Norway is '
     "typically a donor and Kenya a recipient."
@@ -1412,23 +1415,95 @@ def _applied_phrases(
     return frozenset(phrases)
 
 
-def _cue_runs(entity: ExtractedEntity) -> set[tuple[str, ...]]:
-    """The word runs that write `entity`'s cue with its place: the cue straight before
-    the place's span or name, or before "the" and it, or straight after it ("funded by
-    Norway", "funded by the US", "Kenya received"). A cue that holds the place's words
-    ("Kenya's", "Kenyan") is a run of its own."""
-    cue = tuple(_words(entity.cue or ""))
+def _cue_runs(
+    entity: ExtractedEntity, *, words: Callable[[str], list[str]] = _words
+) -> set[tuple[str, ...]]:
+    """The word runs that write `entity`'s cue with its place, each split into `words`:
+    the cue straight before the place's span or name, or before "the" and it, or straight
+    after it ("funded by Norway", "funded by the US", "Kenya received"). A cue that holds
+    the place's words ("Kenya's", "Kenyan") is a run of its own."""
+    cue = tuple(words(entity.cue or ""))
     runs: set[tuple[str, ...]] = set()
     if not cue:
         return runs
     for text in (entity.span, entity.text):
-        place = tuple(_words(text or ""))
+        place = tuple(words(text or ""))
         if not place:
             continue
         if any(cue[i : i + len(place)] == place for i in range(len(cue) - len(place) + 1)):
             runs.add(cue)
         runs.update({(*cue, *place), (*cue, "the", *place), (*place, *cue)})
     return runs
+
+
+# A word of the direction veto: letters and digits, joined across a hyphen or apostrophe,
+# so a place inside a longer name ("Guinea" in "Guinea-Bissau") is no occurrence of it.
+_VETO_WORD_RE = re.compile(r"[^\W_]+(?:['\u2019-][^\W_]+)*")
+_POSSESSIVE_RE = re.compile(r"(.+)['\u2019]s")
+
+
+def _veto_words(text: str) -> list[str]:
+    """The casefolded words of `text` the direction veto reads (`_VETO_WORD_RE`), a
+    possessive split from its place ("Kenya's" as "kenya", "s"), so the place is an
+    occurrence and the cue "Kenya's" or "'s" a run written with it."""
+    tokens: list[str] = []
+    for word in _VETO_WORD_RE.findall(text.casefold()):
+        if possessive := _POSSESSIVE_RE.fullmatch(word):
+            tokens += [possessive.group(1), "s"]
+        else:
+            tokens.append(word)
+    return tokens
+
+
+def _place_starts(place: Sequence[str], words: Sequence[str]) -> list[int]:
+    """The positions in `words` where a run equal to `place` starts."""
+    return [
+        start
+        for start in range(len(words) - len(place) + 1)
+        if tuple(words[start : start + len(place)]) == tuple(place)
+    ]
+
+
+def _cued_starts(entity: ExtractedEntity, words: Sequence[str]) -> set[int]:
+    """The positions in `words` where an occurrence of `entity`'s place (its span, else
+    its name) starts inside a run that writes its cue with it (`_cue_runs`)."""
+    place = _veto_words(entity.span or entity.text)
+    if not place:
+        return set()
+    starts = _place_starts(place, words)
+    tied: set[int] = set()
+    for run in _cue_runs(entity, words=_veto_words):
+        for at in _place_starts(run, words):
+            tied.update(s for s in starts if at <= s and s + len(place) <= at + len(run))
+    return tied
+
+
+def veto_words(
+    entity: ExtractedEntity, *, entities: Sequence[ExtractedEntity], query: str
+) -> tuple[str, ...]:
+    """The word straight before each occurrence of `entity`'s place (its span, else its
+    name) in `query` that its role is tied to, which the direction veto reads
+    (`role_text.role_contradicted`). Words are split as `_veto_words` splits them.
+
+    A role is tied to the occurrences its cue is written with (`_cue_runs`), so in "aid to
+    Kenya and Kenya's exports" the exports role, cue "Kenya's", reads only its own
+    occurrence and the aid clause's "to" does not veto it. A role whose cue is written with
+    no occurrence (detached or misquoted) reads every occurrence that no other role of
+    `entities` is tied to, and every occurrence when other roles claim them all. An
+    occurrence that opens the query has no word before it.
+    """
+    words = _veto_words(query)
+    tied = _cued_starts(entity, words)
+    if not tied:
+        claimed = {
+            start
+            for other in entities
+            if other is not entity and other.role
+            for start in _cued_starts(other, words)
+        }
+        starts = set(_place_starts(_veto_words(entity.span or entity.text), words))
+        tied = (starts - claimed) or starts
+    return tuple(words[start - 1] for start in sorted(tied) if start > 0)
 
 
 def _date_words(extraction: Extraction) -> frozenset[str]:

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, get_args
 
 from search.models import ParsedPart, RoleAxis
@@ -90,6 +90,15 @@ def role_text_for_axis(axis: RoleAxis) -> str:
     return _AXIS_TO_ROLE_TEXT[axis]
 
 
+def role_text_for(axis: RoleAxis, *, party: Party | None) -> str:
+    """The role text that restates a role on `axis`: a debt `party` as its own word, which
+    the lexicon reads back to the same axis and party and so draws no contradiction
+    (`contradicts`), and any other role as the axis's canonical text."""
+    if party is not None and party in _DEBT_PARTIES:
+        return party
+    return role_text_for_axis(axis)
+
+
 def _tokenize(text: str) -> list[str]:
     return _TOKEN_RE.findall(text.lower())
 
@@ -134,24 +143,35 @@ def contradicts(query: str, *, span: str, axis: RoleAxis, party: Party | None) -
     opposite to the debt and either preposition can name either party (``owed to
     China``, ``repays to China``, ``repayments from Zambia``).
     """
-    if party in _DEBT_PARTIES:
-        return False
     span_tokens = _tokenize(span)
     if not span_tokens:
         return False
     query_tokens = _tokenize(query)
-    opposite_preps = _OPPOSITE_PREPS[axis]
-    same_preps = _SAME_AXIS_PREPS[axis]
-    saw_contradiction = False
-    for i in _span_starts(query_tokens, span_tokens):
-        if i == 0:
-            continue
-        preceding = query_tokens[i - 1]
-        if preceding in same_preps:
-            return False  # a supporting occurrence clears every contradiction
-        if preceding in opposite_preps:
-            saw_contradiction = True
-    return saw_contradiction
+    preceding = [query_tokens[i - 1] for i in _span_starts(query_tokens, span_tokens) if i > 0]
+    return _preceding_contradicts(preceding, axis=axis, party=party)
+
+
+def _preceding_contradicts(
+    preceding: Sequence[str], *, axis: RoleAxis, party: Party | None
+) -> bool:
+    """Whether the words straight before a place's occurrences contradict `axis`: a
+    supporting ``from`` or ``to`` clears every contradiction, else an opposite one fires.
+    A debt party draws none (`contradicts`)."""
+    if party in _DEBT_PARTIES:
+        return False
+    if any(word in _SAME_AXIS_PREPS[axis] for word in preceding):
+        return False
+    return any(word in _OPPOSITE_PREPS[axis] for word in preceding)
+
+
+def role_contradicted(role: DoorRole, *, query: str) -> bool:
+    """Whether the query's wording contradicts a door-supplied `role`: the words before the
+    occurrences the door tied it to (`DoorRole.preceding`), else every occurrence of its
+    span in `query` (`contradicts`). The pipeline's veto and the layer-2 cache signal both
+    read it."""
+    if role.preceding is None:
+        return contradicts(query, span=role.span, axis=role.axis, party=role.party)
+    return _preceding_contradicts(role.preceding, axis=role.axis, party=role.party)
 
 
 def parsed_role_query(part: ParsedPart) -> str:
@@ -319,7 +339,11 @@ class DoorRole:
     whether the occurrence asks for the members of the set the name names
     (`ExtractedEntity.members`, `ParsedEntity.members`), on its own end alone
     (`asks_members`). ``party`` is the place's party when the door names one
-    (`ExtractedEntity.role`, `party_for_text`), which `contradicts` reads.
+    (`ExtractedEntity.role`, `party_for_text`), which `contradicts` reads. ``preceding``
+    is the word straight before each occurrence of the place the raw-text door ties the
+    role to (`extract.veto_words`), which `role_contradicted` reads in place of the role
+    query, so another measure's wording of the same place does not veto it. None reads
+    every occurrence in the role query, as the parsed door's part-local query does.
     """
 
     axis: RoleAxis
@@ -327,6 +351,9 @@ class DoorRole:
     stated: bool = True
     members: bool = False
     party: Party | None = None
+    # The evidence a role is checked against, so two mentions alike in every reading
+    # compare equal whatever occurrences each is tied to.
+    preceding: tuple[str, ...] | None = field(default=None, compare=False)
 
 
 def asks_members(roles: Sequence[DoorRole], axis: RoleAxis | None, *, asked: bool) -> bool:
