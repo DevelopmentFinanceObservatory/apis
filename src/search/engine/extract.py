@@ -136,8 +136,9 @@ class ExtractedEntity(BaseModel):
     # The class docstring enters the response schema (`model_json_schema`), so notes on the
     # fields stay comments. Gemini generates fields in declaration order, so a place's
     # measures are fixed before its role and its cue is written before the role. `extract`
-    # drops a role whose cue the query does not hold (`_ground_roles`), which is the guard
-    # against a role supplied from world knowledge. `variables` are positions in
+    # drops a role with no cue (`_ground_roles`), which is the guard against a role supplied
+    # from world knowledge, and reads a role whose cue the query does not hold
+    # (`cue_grounded`) off the measure. `variables` are positions in
     # `Extraction.variables`, which Gemini generates before `entities`. An empty list scopes
     # every measure (`scoped_measures`), as it does for a one-measure query and for a reading
     # recorded without the field. `members` states the reading of a region or group, its
@@ -548,24 +549,26 @@ def _grounding_form(text: str) -> str:
     return " ".join(_folded(text.replace("\u2019", "'")).split())
 
 
-def _grounded_cue(cue: str | None, query: str, *, span: str | None) -> bool:
-    """Whether `query` holds `cue` as whole words (`_end_of_whole_occurrence`), or at an
-    occurrence of the place's `span` that it either holds or touches, before or after it
+def cue_grounded(entity: ExtractedEntity, query: str) -> bool:
+    """Whether `query` holds `entity`'s cue as whole words (`_end_of_whole_occurrence`), or
+    at an occurrence of the place's span that it either holds or touches, before or after it
     with no space between, all in one folded form (`_grounding_form`).
 
     A case ending or particle joined to the place grounds there, written alone ("sta"
     after "Norja" in "Norjasta", "'ya" after "Kenya" in "Kenya'ya", "から" after "ケニア")
     or with the place ("케냐로" for "케냐" in "케냐로의"). A word inside another word
-    grounds nowhere else, so "to" does not ground in "Togo aid". The test catches a cue the
-    model invented or translated.
+    grounds nowhere else, so "to" does not ground in "Togo aid". Only a grounded cue
+    states a direction (`raw_text._states_direction`) or credits words to the qualifier
+    trim (`_applied_phrases`); a role whose cue the model misquoted is read off the
+    measure.
     """
-    folded = _grounding_form(cue or "")
+    folded = _grounding_form(entity.cue or "")
     if not folded:
         return False
     text = _grounding_form(query)
     if _end_of_whole_occurrence(folded, text, 0) is not None:
         return True
-    place = _grounding_form(span or "")
+    place = _grounding_form(entity.span or "")
     if not place:
         return False
     places = [(at, at + len(place)) for at in _occurrences(place, text)]
@@ -605,13 +608,15 @@ def _ground_roles(
     query: str, entities: list[ExtractedEntity], variables: list[str]
 ) -> list[ExtractedEntity]:
     """`entities` with each lender's role supplied (`_lends_the_measure`) and each role
-    whose cue `query` does not hold (`_grounded_cue`) dropped with its cue.
+    with a null or blank cue dropped.
 
     An organisation whose own words stand straight before a measure word, as "IMF" in "IMF
     credit outstanding Argentina", is the source with its own words as cue, whatever role
-    the model gave it. A role with no grounded cue reads as world knowledge, so the place
-    keeps no role. The warning log carries the trace id
-    alone. Query-derived text appears only in the matching debug log.
+    the model gave it. A role the model cites no words for reads as world knowledge, so
+    the place keeps no role. A role whose cue the query does not hold (`cue_grounded`)
+    stays, read off the measure: the model misquotes the cue of a role the query states
+    ("to" for China in "how much does Kenya owe China"). The warning log carries the trace
+    id alone. Query-derived text appears only in the matching debug log.
     """
     normalized_query = _normalize(query)
     grounded: list[ExtractedEntity] = []
@@ -619,12 +624,12 @@ def _ground_roles(
         if _lends_the_measure(normalized_query, entity, variables):
             cue = (entity.span or entity.text).strip()
             grounded.append(entity.model_copy(update={"role": "source", "cue": cue}))
-        elif entity.role is None or _grounded_cue(entity.cue, query, span=entity.span):
+        elif entity.role is None or (entity.cue or "").strip():
             grounded.append(entity)
         else:
             trace_id = get_trace_id()
             logger.warning(
-                "extract: dropping a role whose cue the query does not hold; trace_id=%s",
+                "extract: dropping a role with no cue; trace_id=%s",
                 trace_id,
             )
             logger.debug(
@@ -1379,17 +1384,17 @@ def _admit_operations(
 
 
 def _applied_phrases(
-    extraction: Extraction, *, date_wording: Sequence[str]
+    extraction: Extraction, *, query: str, date_wording: Sequence[str]
 ) -> frozenset[tuple[str, ...]]:
     """The word sequences the answer applies whenever it resolves: each entity's text
-    and span, the cue of each entity that holds a role written with its place
-    (`_cue_runs`), and the wording of each relative date `_resolve_relative_dates` applied
+    and span, the cue `query` holds (`cue_grounded`) of each entity that holds a role,
+    written with its place (`_cue_runs`), and the wording of each relative date `_resolve_relative_dates` applied
     (`date_wording`), which the resolved date's bounds no longer carry.
 
     The span is the query's own wording of a place the model names in English ("Kenia",
     "Kenyan", "DR Congo"), and a cue the wording of its role ("funded by", "received",
-    "au"). `extract` grounds roles first (`_ground_roles`), so an entity whose cue the
-    query does not hold has no role here and credits no cue. A cue states the role of the
+    "au"). A cue the query does not hold credits nothing, as "to" for Togo in "Togo
+    aid". A cue states the role of the
     place it is written with, so words the model mislabels as a cue away from its place
     ("fragile states" for Kenya in "top 5 donors to Kenya in fragile states") are
     credited to nothing. Nothing offline tells a span from other query text, so a span the
@@ -1399,7 +1404,10 @@ def _applied_phrases(
     texts += date_wording
     phrases = {words for text in texts if (words := tuple(_words(text)))}
     phrases.update(
-        run for entity in extraction.entities if entity.role for run in _cue_runs(entity)
+        run
+        for entity in extraction.entities
+        if entity.role and cue_grounded(entity, query)
+        for run in _cue_runs(entity)
     )
     return frozenset(phrases)
 
@@ -1474,7 +1482,7 @@ def _names_a_role_axis(word: str, axes: frozenset[str]) -> bool:
 
 
 def _trim_qualifiers_to_what_operations_leave(
-    extraction: Extraction, *, date_wording: Sequence[str]
+    query: str, extraction: Extraction, *, date_wording: Sequence[str]
 ) -> Extraction:
     """Cut from each dropped qualifier the words an admitted operation accounts for.
 
@@ -1501,7 +1509,7 @@ def _trim_qualifiers_to_what_operations_leave(
     """
     if not extraction.dropped_qualifiers or not extraction.operations:
         return extraction
-    phrases = _applied_phrases(extraction, date_wording=date_wording)
+    phrases = _applied_phrases(extraction, query=query, date_wording=date_wording)
     dates = _date_words(extraction)
     plain_names = frozenset(d.plain_name for d in get_index().declarations.values())
     variables = {tuple(_non_function_words(v)) for v in extraction.variables}
@@ -1848,7 +1856,9 @@ async def extract(
     extraction = _disclose_lost_words(
         query, extraction, date_wording=date_wording, unit_texts=unit_texts.values()
     )
-    extraction = _trim_qualifiers_to_what_operations_leave(extraction, date_wording=date_wording)
+    extraction = _trim_qualifiers_to_what_operations_leave(
+        query, extraction, date_wording=date_wording
+    )
     extraction, raw_variable_count, raw_dropped_qualifier_count, admitted_variables = (
         _bound_extraction(extraction)
     )

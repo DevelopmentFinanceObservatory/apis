@@ -69,7 +69,7 @@ Both runs have the same 5 confidently-wrong case ids: the four `substring_collis
 
 ### The production extraction path, scored on recorded output
 
-`corpus/direction/recorded_extraction.py` scores the production path against this set: the raw-text door's extraction stage, which fills `ExtractedEntity.role` and `ExtractedEntity.cue` from the query's own wording, and `search.engine.extract._ground_roles`, the offline guard that drops a role whose cue the query does not hold before a caller sees it.
+`corpus/direction/recorded_extraction.py` scores the production path against this set: the raw-text door's extraction stage, which fills `ExtractedEntity.role` and `ExtractedEntity.cue` from the query's own wording, and `search.engine.extract._ground_roles`, the offline guard that drops a role the model cites no cue for before a caller sees it. A role whose cue the query does not hold stays, read off the measure, so it scores like any other.
 
 The module replays recorded output and makes no model call. Each of the 39 distinct queries in `role_direction_cases.yaml` has an `Extraction` fixture in `tests/fixtures/llm_responses.json`, recorded by `scripts/harvest_llm_fixtures.py`, whose direction-corpus collector replays this file's queries through the extraction stage. The module exposes two scanners matching `detect_directions`'s shape, so both score through the same `eval_role_direction.py:score()` as the frozen scanner:
 

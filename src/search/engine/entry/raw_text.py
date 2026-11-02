@@ -79,6 +79,7 @@ from search.engine.extract import (
     Extraction,
     ExtractionResult,
     _dedupe_stripped,
+    cue_grounded,
     cue_is_its_span,
     dates_to_request,
     extract,
@@ -474,10 +475,12 @@ def _entity_surfaces(entities: list[ExtractedEntity], *, query: str) -> dict[str
     return surfaces
 
 
-def _states_direction(entity: ExtractedEntity) -> bool:
+def _states_direction(entity: ExtractedEntity, *, query: str) -> bool:
     """Whether `entity`'s cue (`ExtractedEntity.cue`) states its direction, which it does
-    when it reaches beyond the place's own words (its span and its name, each as whole
-    words), the article "the" and a possessive marker or "of" (`_MEASURE_READING_CUES`).
+    when `query` holds it (`extract.cue_grounded`) and it reaches beyond the place's own
+    words (its span and its name, each as whole words), the article "the" and a possessive
+    marker or "of" (`_MEASURE_READING_CUES`). A cue the query does not hold is one the
+    model misquoted, and its role is read off the measure.
 
     "to", "funded by" and the case ending in "Norjasta" with the span "Norja" state it. A
     national adjective or an inflected name, whose cue is its own span ("French aid",
@@ -485,6 +488,8 @@ def _states_direction(entity: ExtractedEntity) -> bool:
     "the US's aid", cue "the US's") and "of" ("debtors of China", "of the Gambia") read
     the direction off the measure, so none states it.
     """
+    if not cue_grounded(entity, query):
+        return False
     rest = (entity.cue or "").replace("\u2019", "'").casefold()
     for words in (entity.span, entity.text):
         if words and words.strip():
@@ -527,15 +532,16 @@ def _scoping_parts(
     ]
 
 
-def _entity_roles(part: Sequence[ExtractedEntity]) -> dict[str, list[DoorRole]]:
+def _entity_roles(part: Sequence[ExtractedEntity], *, query: str) -> dict[str, list[DoorRole]]:
     """Map the stripped names of one part's entities to their roles, as the parsed door
     maps a part's (`parsed._entity_roles_for_part`).
 
     An entity's party word (`ExtractedEntity.role`) gives its axis through the parsed
     door's lexicon (`role_text.role_axis_for_text`), so a creditor is the origin and a
-    debtor the destination. `extract` keeps a role only when the query holds its cue
+    debtor the destination. `extract` keeps a role only when the model cites a cue for it
     (`extract._ground_roles`), so every role here has one, and `stated` records whether
-    the cue states the direction or reads it off the measure (`_states_direction`). An
+    `query` holds the cue and it states the direction, or the role is read off the
+    measure (`_states_direction`). An
     entity with no role is undirected. Preserve distinct mentions in order, including
     self-flows on opposite axes, and collapse duplicate mentions with the same axis, span
     and reading. The span is the query's own words for the place, else its name.
@@ -549,7 +555,7 @@ def _entity_roles(part: Sequence[ExtractedEntity]) -> dict[str, list[DoorRole]]:
         role = DoorRole(
             axis=axis,
             span=entity.span or entity.text,
-            stated=_states_direction(entity),
+            stated=_states_direction(entity, query=query),
             members=entity.members,
             party=entity.role,
         )
@@ -1345,7 +1351,7 @@ def _prepare_extraction(
         per_variable_entities=[
             list(dict.fromkeys(_entity_key(e) for e in part)) for part in per_part_entities
         ],
-        per_variable_entity_roles=[_entity_roles(part) for part in per_part_entities],
+        per_variable_entity_roles=[_entity_roles(part, query=query) for part in per_part_entities],
         # A text any mention of the part asks the members of. A directed mention asks on
         # its own end (`DoorRole.members`).
         per_variable_member_entities=[

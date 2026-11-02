@@ -23,11 +23,13 @@ from search.engine.extract import (
     Extraction,
     ExtractionResult,
     _admit_operations,
+    _applied_phrases,
     _drop_forecast_years,
     _ground_roles,
     _occurs_in,
     _resolve_relative_dates,
     _target_forecasts,
+    cue_grounded,
     dates_to_request,
     extract,
     slot_default_answers,
@@ -293,6 +295,21 @@ def _entity(text, span=None, role=None, cue=None, variables=()) -> ExtractedEnti
 )
 def test_ground_roles_keeps_a_role_whose_cue_the_query_holds(query, entity):
     assert _ground_roles(query, [entity], ["aid"]) == [entity]
+    assert cue_grounded(entity, query)
+
+
+@pytest.mark.parametrize(
+    ("query", "entity"),
+    [
+        pytest.param("ODA Kenya Norway", _entity("Norway", "Norway", "source"), id="no-cue"),
+        pytest.param(
+            "ODA Kenya Norway", _entity("Norway", "Norway", "source", "   "), id="blank-cue"
+        ),
+    ],
+)
+def test_ground_roles_drops_a_role_with_no_cue(query, entity):
+    (grounded,) = _ground_roles(query, [entity], ["ODA"])
+    assert (grounded.role, grounded.cue) == (None, None)
 
 
 @pytest.mark.parametrize(
@@ -306,9 +323,16 @@ def test_ground_roles_keeps_a_role_whose_cue_the_query_holds(query, entity):
             _entity("Norway", "Noruega", "source", "from"),
             id="translated",
         ),
-        pytest.param("ODA Kenya Norway", _entity("Norway", "Norway", "source"), id="no-cue"),
+        # The model misquotes the cue of a role the query states.
         pytest.param(
-            "ODA Kenya Norway", _entity("Norway", "Norway", "source", "   "), id="blank-cue"
+            "how much does Kenya owe China",
+            _entity("China", "China", "creditor", "to"),
+            id="misquoted-creditor",
+        ),
+        pytest.param(
+            "how much does Kenya owe to China",
+            _entity("Kenya", "Kenya", "debtor", "owes"),
+            id="misquoted-debtor",
         ),
         # A cue inside another word grounds only against the place's span.
         pytest.param(
@@ -321,9 +345,17 @@ def test_ground_roles_keeps_a_role_whose_cue_the_query_holds(query, entity):
         ),
     ],
 )
-def test_ground_roles_drops_a_role_whose_cue_the_query_does_not_hold(query, entity):
-    (grounded,) = _ground_roles(query, [entity], ["ODA"])
-    assert (grounded.role, grounded.cue) == (None, None)
+def test_ground_roles_keeps_a_role_whose_cue_the_query_does_not_hold(query, entity):
+    """The role stays and is read off the measure (`raw_text._states_direction`)."""
+    assert _ground_roles(query, [entity], ["ODA"]) == [entity]
+    assert not cue_grounded(entity, query)
+
+
+def test_a_cue_the_query_does_not_hold_credits_no_words():
+    """ "to" for Togo in "Togo aid" grounds nowhere, so the trim credits it no words."""
+    togo = _entity("Togo", "Togo", "recipient", "to")
+    extraction = Extraction(kind="resolution", variables=["aid"], entities=[togo])
+    assert _applied_phrases(extraction, query="Togo aid", date_wording=()) == {("togo",)}
 
 
 def test_ground_roles_leaves_an_entity_with_no_role_alone():
@@ -361,32 +393,39 @@ def test_ground_roles_logs_query_text_only_at_debug_level(caplog):
     """The WARNING record carries the trace id alone; the DEBUG record with the same trace
     id carries the extracted text."""
     query = "aid to Kenya with a secret-marker-phrase in it"
-    entity = _entity("Kenya", "Kenya", "recipient", "nonexistent")
+    entity = _entity("Kenya", "Kenya", "recipient")
     with caplog.at_level(logging.DEBUG, logger="search.engine.extract"):
         _ground_roles(query, [entity], [])
     (warning,) = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
     (debug,) = [r.getMessage() for r in caplog.records if r.levelno == logging.DEBUG]
-    assert all(text not in warning for text in ("secret-marker-phrase", "Kenya", "nonexistent"))
+    assert all(text not in warning for text in ("secret-marker-phrase", "Kenya"))
     trace_id = warning.rsplit("trace_id=", 1)[1]
     assert trace_id in debug
-    assert "nonexistent" in debug
+    assert "Kenya" in debug
 
 
-def test_extract_drops_a_role_whose_cue_the_query_does_not_hold():
+@pytest.mark.parametrize(
+    ("cue", "kept"),
+    [
+        pytest.param(None, (None, None), id="no-cue"),
+        pytest.param("from", ("source", "from"), id="ungrounded"),
+    ],
+)
+def test_extract_drops_only_a_role_with_no_cue(cue, kept):
     query = "population of Kenya"
     llm = FakeLLM(
         responses={
             fixture_key(Extraction, _EXTRACTION_SYSTEM_PROMPT, query): {
                 "kind": "resolution",
                 "variables": ["population"],
-                "entities": [{"text": "Kenya", "span": "Kenya", "cue": "from", "role": "source"}],
+                "entities": [{"text": "Kenya", "span": "Kenya", "cue": cue, "role": "source"}],
                 "dates": [],
             }
         }
     )
     result, _ = _run(extract(query, llm=llm))
     (entity,) = result.extraction.entities
-    assert (entity.role, entity.cue) == (None, None)
+    assert (entity.role, entity.cue) == kept
 
 
 # Re-attaching a coded qualifier the model set aside (issue #397)

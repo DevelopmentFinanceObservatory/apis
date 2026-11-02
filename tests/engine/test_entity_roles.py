@@ -395,15 +395,41 @@ class TestRawTextDoorCarriesEveryOccurrence:
         )
         assert _occurrences(roles) == {"Uganda": [("origin", "from Uganda")]}
 
-    def test_a_role_whose_cue_the_query_does_not_hold_carries_no_entry(self):
+    def test_a_role_with_no_cue_carries_no_entry(self):
         """World knowledge: "ODA Kenya Norway" states no role, so a role the model cites no
-        query words for leaves the place undirected."""
+        words for leaves the place undirected."""
         roles = _prepared_roles(
-            [_linked("Norway", "source", "from"), _linked("Kenya", "recipient", "to")],
+            [_linked("Norway", "source"), _linked("Kenya", "recipient")],
             query="ODA Kenya Norway",
             measures=["ODA"],
         )
         assert roles == {}
+
+    @pytest.mark.parametrize(
+        ("query", "entity", "axis"),
+        [
+            pytest.param(
+                "how much does Kenya owe China",
+                _linked("China", "creditor", "to"),
+                "origin",
+                id="misquoted-creditor",
+            ),
+            pytest.param(
+                "how much does Kenya owe to China",
+                _linked("Kenya", "debtor", "owes"),
+                "destination",
+                id="misquoted-debtor",
+            ),
+            pytest.param("Togo aid", _linked("Togo", "recipient", "to"), "destination", id="togo"),
+        ],
+    )
+    def test_a_role_whose_cue_the_query_does_not_hold_is_read_off_the_measure(
+        self, query: str, entity: ExtractedEntity, axis: RoleAxis
+    ):
+        roles = _prepared_roles([entity], query=query, measures=["debt"])
+        assert roles == {
+            entity.text: [DoorRole(axis=axis, span=entity.text, stated=False, party=entity.role)]
+        }
 
 
 def test_an_operation_keeps_its_axis_beside_the_roles():

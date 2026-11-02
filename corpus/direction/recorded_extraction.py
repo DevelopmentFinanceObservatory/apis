@@ -2,7 +2,7 @@
 
 `raw_extraction` uses recorded `Extraction.entities`; `guarded_extraction`
 passes the same entities and their variables through `_ground_roles`, which drops a
-role whose cue the query does not hold, as `extract()` does. Both implement `eval_role_direction.py`'s scanner
+role with no cue, as `extract()` does. Both implement `eval_role_direction.py`'s scanner
 interface, so their accuracy difference measures the guard's effect on the
 same model output.
 
