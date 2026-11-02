@@ -215,6 +215,22 @@ def test_promotion_gate_a_content_words_ignore_punctuation():
             "Current health expenditure per capita",
             id="slice-named-by-the-head",
         ),
+        pytest.param(
+            "Unemployment rate - 13th ICLS "
+            "[15 years old and over, Female, Disability status = Persons with disability]",
+            "Unemployment rate - 13th ICLS (15 years old and over, female, persons with disability)",
+            id="positional-values-before-a-slice",
+        ),
+        pytest.param(
+            "Population, female [15 to 64 years old, Female]",
+            "Population, female (15 to 64 years old)",
+            id="positional-values-only",
+        ),
+        pytest.param(
+            "Employment [Economic activity=Agriculture, forestry and fishing, Sex=Male]",
+            "Employment (agriculture, forestry and fishing, male)",
+            id="comma-inside-a-slice-value",
+        ),
     ],
 )
 def test_slice_list_bracket_renders_its_values(label: str, expected: str):

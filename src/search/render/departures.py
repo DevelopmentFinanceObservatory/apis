@@ -328,15 +328,21 @@ def _whole_total_years(fact: DepartureFact, *, shows_data: bool) -> str:
     """The sentence saying where the years of the total the side would read stop, on the
     side of the years asked, and that the answer reads the side's members in its place:
     "The source's total for every official donor ends in 2024, so this covers each donor
-    with data." The years asked hold none of the total's, so they fall after its span or
-    before it. Where the members' data misses some of the years asked too
-    (`departures.merged_year_facts`), it adds the years the answer shows: "..., so this
-    covers each donor with data and shows 2025"."""
+    with data." The total holds its span's first and last years and none of the years
+    asked, so those fall after its span, before it, or inside it where the total skips
+    years: "... holds no figure for that year, so ...". Where the members' data misses
+    some of the years asked too (`departures.merged_year_facts`), it adds the years the
+    answer shows: "..., so this covers each donor with data and shows 2025"."""
     if fact.over is None or fact.data_years is None or fact.requested_years is None:
         raise ValueError("year_unavailable on a side's total needs the side and both spans")
     first, last = fact.data_years
-    after = any(year > last for year in fact.requested_years if year is not None)
-    bound = f"ends in {last}" if after else f"starts in {first}"
+    start, end = fact.requested_years
+    if start is not None and start > last:
+        bound = f"ends in {last}"
+    elif end is not None and end < first:
+        bound = f"starts in {first}"
+    else:
+        bound = f"holds no figure for {_those_years(fact)}"
     every = whole_population_text(fact.over, fact.whole_of)
     noun = WHOLE_MEMBER_NOUNS.get(fact.over, "member")
     shown = f" and shows {fact.shown}" if shows_data and fact.shown is not None else ""

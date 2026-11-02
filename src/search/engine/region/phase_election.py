@@ -1487,15 +1487,28 @@ def _bind_query_places(
     assignment = bind_place_roles(state, shape)
     place_roles, settled = _settle_places(state, shape, assignment, bindings, claims, basis)
     if basis is not None and basis.entry is None:
-        rank = _coverage_rank(state, place_roles, settled)
+        ranked = _ranked_roles(state, shape, place_roles)
+        rank = _coverage_rank(state, ranked, settled)
         if rank < _HELD:
             default_roles, default = _settle_places(
                 state, shape, assignment, bindings, claims, None
             )
-            if _coverage_rank(state, default_roles, default) > rank:
+            ranked = _ranked_roles(state, shape, default_roles)
+            if _coverage_rank(state, ranked, default) > rank:
                 place_roles, settled = default_roles, default
     state.query_place_roles = place_roles
     return _install_settled(state, settled, basis=basis)
+
+
+def _ranked_roles(
+    state: ResolveState, shape: ShapeDraft, place_roles: PlaceAssignment | PlaceRoleRefusal
+) -> PlaceAssignment | PlaceRoleRefusal:
+    """The roles `_coverage_rank` judges settled bindings at: `place_roles`, or where they
+    refuse only for a place named without a direction, that place on the axis read for it
+    (`ResolveState.undirected_axis`), the reading the answer serves when it holds data."""
+    if place_roles != "role_not_resolved" or state.undirected_axis is None:
+        return place_roles
+    return bind_place_roles(state, shape, direction=state.undirected_axis)
 
 
 def _settle_places(
@@ -1750,15 +1763,16 @@ def _install_settled(
 
 def _part_basis(state: ResolveState, shape: ShapeDraft) -> BasisElection | None:
     """The measure basis the part is counted on (`scope.basis.elect_part_basis`): read from
-    the shape its places and admitted codes give it, its window and the datasets `shape` is
-    answered from (`scope.basis.applicable_convention`), or from its explicit or
+    the shape its places (a place named without a direction on the axis read for it,
+    `ResolveState.undirected_axis`) and admitted codes give it, its window and the
+    datasets `shape` is answered from (`scope.basis.applicable_convention`), or from its explicit or
     carried measure-basis entry when `shape` measures the basis the entry asks for, else
     from the convention alone. None for a part the conventions read no shape of, and for a
     `shape` no dataset the conventions read publishes."""
     index = get_index()
     election = elect_part_basis(
         datasets=shape_part_datasets(shape, index),
-        directions=[place.direction for place in state.frame.places],
+        directions=state.frame.directions(state.undirected_axis),
         admitted_systems={match.code_system for match in state.admitted_qualifiers},
         sector_systems=sector_systems(index),
         window=state.frame.window.value,

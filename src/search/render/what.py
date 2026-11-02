@@ -44,10 +44,6 @@ _TRAILING_SYMBOL_PAREN = re.compile(r"\s*\([^\w\s]+\)\s*$")
 # Convert trailing bracketed slice qualifiers to parentheticals.
 _TRAILING_BRACKET = re.compile(r"\[([^\[\]]*)\]\s*$")
 
-# The comma before a ``Key=`` item of a graph slice list ("Age=Under 1 year old, Sex=Male").
-# Commas inside a value do not start an item.
-_SLICE_ITEM_BOUNDARY = re.compile(r",\s*(?=[^,=]+=)")
-
 
 def _is_unsplittable_allcaps_dcid(dcid: str, label: str | None) -> bool:
     """Return whether a fallback dcid has an unsplittable uppercase tail."""
@@ -181,13 +177,27 @@ def _normalize_what_label(text: str) -> str:
 
 def _slice_values(content: str, *, head: str) -> list[str]:
     """The recased values of a bracketed slice list, without their keys, that ``head`` does
-    not already name: "Age=Under 1 year old, Sex=Male" gives "under 1 year old" and "male".
-    Content without ``Key=Value`` items is one value ("15 to 19 years old, Female")."""
-    if "=" not in content:
-        return [_recase_words(content)]
-    values = (item.partition("=")[2].strip() for item in _SLICE_ITEM_BOUNDARY.split(content))
+    not already name: "15 years old and over, Female, Disability status = Persons with
+    disability" gives "15 years old and over", "female" and "persons with disability".
+
+    Graph labels list positional values first and ``Key=Value`` items after them, so a
+    comma before the first key separates items and a comma after a key stays inside that
+    key's value."""
+    values: list[str] = []
+    keyed = False
+    for fragment in content.split(","):
+        _, eq, value = fragment.partition("=")
+        if eq:
+            keyed = True
+            values.append(value)
+        elif keyed:
+            values[-1] = f"{values[-1]},{fragment}"
+        else:
+            values.append(fragment)
     return [
-        _recase_words(value) for value in values if value and not _already_named_in(value, head)
+        _recase_words(stripped)
+        for value in values
+        if (stripped := value.strip()) and not _already_named_in(stripped, head)
     ]
 
 

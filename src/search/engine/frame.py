@@ -224,6 +224,16 @@ class Frame(_FrameModel):
     normalisation: FrameNormalisation | None = None
     unresolved: tuple[Unresolved, ...] = ()
 
+    def directions(self, undirected_axis: RoleAxis | None = None) -> list[Direction]:
+        """Each place's direction, a place named without one read on `undirected_axis`
+        where one is given (`ResolveState.undirected_axis`)."""
+        return [
+            undirected_axis
+            if place.direction == "undirected" and undirected_axis is not None
+            else place.direction
+            for place in self.places
+        ]
+
     @property
     def window_defaulted(self) -> bool:
         """Whether the question named no window, so the frame reads every year."""

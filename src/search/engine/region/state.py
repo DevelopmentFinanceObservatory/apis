@@ -1261,6 +1261,11 @@ class ResolveState:
     # one, by capped-shape index of its copy, when both directions hold data: offered beside
     # it as a `direction` candidate (`phase_place_materialise._settle_direction`).
     direction_rivals: dict[int, PlaceAssignment] = field(default_factory=dict)
+    # The axis a place the question names without a direction is read on before the house
+    # policies run (`availability.undirected_axis`), so the policies and the measure basis
+    # read the part as its directed twin. `None` when no place is named without one, or the
+    # eligible shapes hold a series on both axes or on neither.
+    undirected_axis: RoleAxis | None = None
     # The elected shape narrowed to another breakdown of a family with no total, by
     # capped-shape index of its copy, with its own bindings: offered beside the elected
     # breakdown as a `breakdown` candidate (`phase_place_materialise._settle_breakdown`).

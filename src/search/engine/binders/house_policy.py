@@ -74,7 +74,7 @@ from search.engine.frame import Frame
 from search.engine.qualifier_match import QualifierMatch
 from search.engine.retrieval.bound_values import shape_part_datasets
 from search.engine.shape import ShapeDraft
-from search.models import Entry
+from search.models import Entry, RoleAxis
 from search.scope.basis import (
     GRANT_EQUIVALENT_HEADLINE_FROM,
     BasisElection,
@@ -256,6 +256,7 @@ def context_of(
     case_systems: Mapping[str, HouseDefaultCase],
     pool_datasets: Sequence[str],
     basis_entries: Sequence[Entry] = (),
+    undirected_axis: RoleAxis | None = None,
 ) -> Context:
     """The part's context over the pool before any policy narrows it.
 
@@ -271,7 +272,9 @@ def context_of(
     datasets the pool's shapes are answered from (`pool_datasets`, in pool order): the
     part's own convention where they include its dataset, else the convention of the first
     of them a convention reads. `basis_entries`, the part's measure-basis entries with explicit first
-    (`ScopeState.entries_on`), win over the convention.
+    (`ScopeState.entries_on`), win over the convention. A place named without a direction
+    is read on `undirected_axis` where one is given (`availability.undirected_axis`), so the
+    part is the question its directed twin asks.
     """
     window = frame.window.value
     if window == "all":
@@ -280,7 +283,7 @@ def context_of(
         pre_ge = False
     else:
         pre_ge = window.start_year is None or window.start_year < GE_STARTS
-    directions = [place.direction for place in frame.places]
+    directions = frame.directions(undirected_axis)
     systems = {
         match.code_system
         for i in pool
