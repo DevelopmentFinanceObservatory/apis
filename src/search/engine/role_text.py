@@ -99,8 +99,17 @@ def role_text_for(axis: RoleAxis, *, party: Party | None) -> str:
     return role_text_for_axis(axis)
 
 
+_APOSTROPHES = str.maketrans({"\u2018": "'", "\u2019": "'", "\u02bc": "'"})
+
+
+def fold_apostrophes(text: str) -> str:
+    """`text` with each typographic apostrophe (U+2018, U+2019, U+02BC) written as a plain
+    one, so "d\u2019Ivoire" and "d'Ivoire" read as one word."""
+    return text.translate(_APOSTROPHES)
+
+
 def _tokenize(text: str) -> list[str]:
-    return _TOKEN_RE.findall(text.lower())
+    return _TOKEN_RE.findall(fold_apostrophes(text).lower())
 
 
 _OPPOSITE_PREPS: dict[RoleAxis, frozenset[str]] = {

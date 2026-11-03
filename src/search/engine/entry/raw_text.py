@@ -80,7 +80,7 @@ from search.engine.extract import (
     ExtractionResult,
     _dedupe_stripped,
     _grounding_form,
-    cue_grounded,
+    cue_grounded_in_form,
     cue_is_its_span,
     dates_to_request,
     extract,
@@ -477,14 +477,14 @@ def _entity_surfaces(entities: list[ExtractedEntity], *, query: str) -> dict[str
     return surfaces
 
 
-def _states_direction(entity: ExtractedEntity, *, query: str) -> bool:
+def _states_direction(entity: ExtractedEntity, *, folded_query: str) -> bool:
     """Whether `entity`'s cue (`ExtractedEntity.cue`) states its direction, which it does
-    when `query` holds it (`extract.cue_grounded`) and it reaches beyond the place's own
+    when the query holds it (`extract.cue_grounded`) and it reaches beyond the place's own
     words (its span and its name, each as whole words), the article "the" and a possessive
     marker or "of" (`_MEASURE_READING_CUES`). A cue the query does not hold is one the
-    model misquoted, and its role is read off the measure. The cue and the place are read
-    in one folded form (`extract._grounding_form`), so a typographic apostrophe in either
-    is a plain one.
+    model misquoted, and its role is read off the measure. `folded_query`, the cue and the
+    place are read in one folded form (`extract._grounding_form`), so a typographic
+    apostrophe in any is a plain one.
 
     "to", "funded by" and the case ending in "Norjasta" with the span "Norja" state it. A
     national adjective or an inflected name, whose cue is its own span ("French aid",
@@ -492,7 +492,7 @@ def _states_direction(entity: ExtractedEntity, *, query: str) -> bool:
     "the US's aid", cue "the US's") and "of" ("debtors of China", "of the Gambia") read
     the direction off the measure, so none states it.
     """
-    if not cue_grounded(entity, query):
+    if not cue_grounded_in_form(entity, folded_query):
         return False
     rest = _grounding_form(entity.cue or "")
     for words in (entity.span, entity.text):
@@ -1211,8 +1211,13 @@ def _prepare_extraction(
         extracted_entities, measures=unique, variables=extraction.variables
     )
     per_part_entities = [[extracted_entities[i] for i in part] for part in part_positions]
-    # Every part reads the same query, so each entity's reading is made once for the request.
-    stated = [_states_direction(entity, query=query) for entity in extracted_entities]
+    # Every part reads the same query, so the readings of the entities that carry a role are
+    # made once for the request, on the query folded once.
+    folded_query = _grounding_form(query)
+    stated = [
+        bool(entity.role) and _states_direction(entity, folded_query=folded_query)
+        for entity in extracted_entities
+    ]
     preceding = veto_words(extracted_entities, query=query)
 
     # A relative date the extraction could not read is gone from `dates`; its warning says so.

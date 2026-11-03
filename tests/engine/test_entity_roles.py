@@ -599,8 +599,8 @@ def test_an_unrelated_part_leaves_the_roles_of_another_unchanged(
 
 
 def test_the_request_reads_each_entity_once_and_every_part_reads_its_own_roles(monkeypatch):
-    """The cue tie and the veto words of every entity are read once for the request, however
-    many parts it has. Kenya's two roles keep the words before the occurrence each is tied
+    """The cue tie and the veto words of every entity that carries a role are read once for
+    the request, however many parts it has. Kenya's two roles keep the words before the occurrence each is tied
     to, in the part that scopes it."""
     veto_calls: list[int] = []
     stated_calls: list[str] = []
@@ -611,9 +611,9 @@ def test_the_request_reads_each_entity_once_and_every_part_reads_its_own_roles(m
         veto_calls.append(len(entities))
         return veto_words(entities, query=query)
 
-    def _states_direction(entity, *, query):
+    def _states_direction(entity, *, folded_query):
         stated_calls.append(entity.text)
-        return states_direction(entity, query=query)
+        return states_direction(entity, folded_query=folded_query)
 
     monkeypatch.setattr(raw_text, "veto_words", _veto_words)
     monkeypatch.setattr(raw_text, "_states_direction", _states_direction)
@@ -629,7 +629,7 @@ def test_the_request_reads_each_entity_once_and_every_part_reads_its_own_roles(m
     )
 
     assert veto_calls == [3]
-    assert stated_calls == ["Kenya", "Kenya", "France"]
+    assert stated_calls == ["Kenya", "Kenya"]
     assert [
         {name: [r.preceding for r in rs] for name, rs in part.items()} for part in per_part
     ] == [{"Kenya": [("to",)]}, {"Kenya": [("and",)]}]
@@ -649,6 +649,30 @@ def test_a_creditor_on_a_debt_measure_keeps_its_role_and_draws_no_veto_from_a_la
         (imf,) = part["IMF"]
         assert (imf.axis, imf.party) == ("origin", "creditor")
         assert not role_contradicted(imf, query=query)
+
+
+def test_a_lender_the_model_cued_states_no_direction_from_the_models_cue():
+    """The model's cue "from" for the IMF is replaced by the IMF's own words, so the role
+    is read off the measure."""
+    (part,) = part_roles(
+        [linked("IMF", "debtor", "from")],
+        query="IMF lending Argentina from 2015",
+        measures=["lending"],
+    )
+
+    (imf,) = part["IMF"]
+    assert (imf.party, imf.stated) == ("creditor", False)
+
+
+def test_a_typographic_apostrophe_in_the_query_leaves_the_veto_as_with_a_plain_one():
+    """ "from" before "Côte d\u2019Ivoire" contradicts the recipient role the model gave the
+    span "Côte d'Ivoire"."""
+    entity = linked("Côte d'Ivoire", "recipient", "from")
+    for query in ("exports from Côte d'Ivoire", "exports from Côte d\u2019Ivoire"):
+        (part,) = part_roles([entity], query=query, measures=["exports"])
+        (role,) = part["Côte d'Ivoire"]
+        assert role.preceding == ("from",)
+        assert role_contradicted(role, query=query)
 
 
 @pytest.mark.parametrize(
