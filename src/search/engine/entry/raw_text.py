@@ -482,9 +482,9 @@ def _states_direction(entity: ExtractedEntity, *, folded_query: str) -> bool:
     when the query holds it (`extract.cue_grounded`) and it reaches beyond the place's own
     words (its span and its name, each as whole words), the article "the" and a possessive
     marker or "of" (`_MEASURE_READING_CUES`). A cue the query does not hold is one the
-    model misquoted, and its role is read off the measure. `folded_query`, the cue and the
-    place are read in one folded form (`extract._grounding_form`), so a typographic
-    apostrophe in any is a plain one.
+    model misquoted, and its role is read off the measure. `folded_query` is the query
+    folded once by `extract._grounding_form`, which a request that reads many entities
+    shares.
 
     "to", "funded by" and the case ending in "Norjasta" with the span "Norja" state it. A
     national adjective or an inflected name, whose cue is its own span ("French aid",
@@ -494,10 +494,10 @@ def _states_direction(entity: ExtractedEntity, *, folded_query: str) -> bool:
     """
     if not cue_grounded_in_form(entity, folded_query):
         return False
-    rest = _grounding_form(entity.cue or "")
+    rest = (entity.cue or "").replace("\u2019", "'").casefold()
     for words in (entity.span, entity.text):
         if words and words.strip():
-            place = re.escape(_grounding_form(words))
+            place = re.escape(words.strip().casefold())
             rest = re.sub(rf"(?<!\w){place}(?!\w)", " ", rest)
     residue = " ".join(token for token in rest.split() if token != "the")
     return residue not in _MEASURE_READING_CUES

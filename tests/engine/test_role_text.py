@@ -142,12 +142,6 @@ def test_span_starts_finds_whole_word_runs_and_no_empty_span() -> None:
     assert span_starts(["aid", "to"], []) == []
 
 
-@pytest.mark.parametrize("apostrophe", ["\u2019", "\u2018", "\u02bc"])
-def test_contradicts_reads_a_typographic_apostrophe_as_a_plain_one(apostrophe: str) -> None:
-    query = f"exports from Côte d{apostrophe}Ivoire"
-    assert contradicts(query, span="Côte d'Ivoire", axis="destination", party=None)
-
-
 def test_contradicts_false_when_span_absent_from_query() -> None:
     assert contradicts("population of Kenya", span="Norway", axis="origin", party=None) is False
 

@@ -53,13 +53,7 @@ from search.engine.qualifier_match import (
     slot_noun_named,
 )
 from search.engine.quantity import query_normalisation
-from search.engine.role_text import (
-    DEBT_PARTIES,
-    Party,
-    fold_apostrophes,
-    role_axis_for_text,
-    span_starts,
-)
+from search.engine.role_text import Party, role_axis_for_text, span_starts
 from search.engine.time_bind import parse_time_text
 from search.engine.unit.bind import names_price_basis, names_unit_request
 from search.engine.unit.lexicon import MAX_YEAR, MIN_YEAR
@@ -560,8 +554,8 @@ def _modifies_measure_word(
 
 def _grounding_form(text: str) -> str:
     """`text` folded as `_occurs_in` folds it, a typographic apostrophe read as a plain
-    one (`role_text.fold_apostrophes`) and whitespace collapsed."""
-    return " ".join(_folded(fold_apostrophes(text)).split())
+    one and whitespace collapsed."""
+    return " ".join(_folded(text.replace("\u2019", "'")).split())
 
 
 def cue_grounded(entity: ExtractedEntity, query: str) -> bool:
@@ -631,23 +625,19 @@ def _ground_roles(
     with a null or blank cue dropped.
 
     An organisation whose own words stand straight before a measure word, as "IMF" in "IMF
-    credit outstanding Argentina", is the lender. It becomes the creditor when the model
-    gave it a party to a debt (creditor or debtor), and the source otherwise, with its own
-    words as cue either way, so the model's cue is not kept and the role is read off the
-    measure. A role the model cites no words for reads as world knowledge, so the place
-    keeps no role. A role whose cue the query
-    does not hold (`cue_grounded`) stays, read off the measure: the model misquotes the cue
-    of a role the query states ("to" for China in "how much does Kenya owe China"). The
-    warning log carries the trace id alone. Query-derived text appears only in the matching
-    debug log.
+    credit outstanding Argentina", is the source with its own words as cue, whatever role
+    the model gave it. A role the model cites no words for reads as world knowledge, so
+    the place keeps no role. A role whose cue the query does not hold (`cue_grounded`)
+    stays, read off the measure: the model misquotes the cue of a role the query states
+    ("to" for China in "how much does Kenya owe China"). The warning log carries the trace
+    id alone. Query-derived text appears only in the matching debug log.
     """
     normalized_query = _normalize(query)
     grounded: list[ExtractedEntity] = []
     for entity in entities:
         if _lends_the_measure(normalized_query, entity, variables):
-            own_words = (entity.span or entity.text).strip()
-            role = "creditor" if entity.role in DEBT_PARTIES else "source"
-            grounded.append(entity.model_copy(update={"role": role, "cue": own_words}))
+            cue = (entity.span or entity.text).strip()
+            grounded.append(entity.model_copy(update={"role": "source", "cue": cue}))
         elif entity.role is None or (entity.cue or "").strip():
             grounded.append(entity)
         else:
@@ -704,9 +694,7 @@ def _lends_the_measure(
     whose words in the query stand straight before a measure word (`_modifies_measure_word`):
     "IMF credit outstanding", "World Bank IDA concessional flows". A country's name there
     states no direction ("Kenya aid" is usually aid to Kenya), so only an organisation
-    qualifies. `_ground_roles` makes such an organisation the creditor when the model gave
-    it a debt party, since a source's role would lose it the debt-party exemption from the
-    direction veto."""
+    qualifies."""
     if not is_organisation_name(entity.text):
         return False
     ranges = _all_normalized_text_ranges((entity.span or entity.text).strip(), normalized_query)
@@ -1023,9 +1011,8 @@ _PREPOSITIONS = JOINING_PREPOSITIONS | RESTRICTING_PREPOSITIONS
 
 
 def _words(text: str) -> list[str]:
-    """The casefolded words of `text`, in order, a typographic apostrophe read as a plain
-    one (`role_text.fold_apostrophes`)."""
-    return [word.casefold() for word in _WORD_RE.findall(fold_apostrophes(text))]
+    """The casefolded words of `text`, in order."""
+    return [word.casefold() for word in _WORD_RE.findall(text)]
 
 
 # What may sit between two words of one span: whitespace and hyphens ("under-5").
@@ -1472,17 +1459,16 @@ def _cue_runs(
 
 # A word of the direction veto: letters and digits, joined across a hyphen or apostrophe,
 # so a place inside a longer name ("Guinea" in "Guinea-Bissau") is no occurrence of it.
-_VETO_WORD_RE = re.compile(r"[^\W_]+(?:['-][^\W_]+)*")
-_POSSESSIVE_RE = re.compile(r"(.+)'s")
+_VETO_WORD_RE = re.compile(r"[^\W_]+(?:['\u2019-][^\W_]+)*")
+_POSSESSIVE_RE = re.compile(r"(.+)['\u2019]s")
 
 
 def _veto_words(text: str) -> list[str]:
     """The casefolded words of `text` the direction veto reads (`_VETO_WORD_RE`), a
     possessive split from its place ("Kenya's" as "kenya", "s"), so the place is an
-    occurrence and the cue "Kenya's" or "'s" a run written with it. A typographic apostrophe
-    reads as a plain one (`role_text.fold_apostrophes`)."""
+    occurrence and the cue "Kenya's" or "'s" a run written with it."""
     tokens: list[str] = []
-    for word in _VETO_WORD_RE.findall(fold_apostrophes(text).casefold()):
+    for word in _VETO_WORD_RE.findall(text.casefold()):
         if possessive := _POSSESSIVE_RE.fullmatch(word):
             tokens += [possessive.group(1), "s"]
         else:

@@ -30,8 +30,6 @@ from search.engine.extract import (
     _occurs_in,
     _resolve_relative_dates,
     _target_forecasts,
-    _veto_words,
-    _words,
     cue_grounded,
     dates_to_request,
     extract,
@@ -368,13 +366,6 @@ def test_an_entity_reads_a_blank_span_as_none(span, expected):
     assert _entity("Kenya", span, "recipient", "from").span == expected
 
 
-@pytest.mark.parametrize("apostrophe", ["\u2019", "\u2018", "\u02bc"])
-def test_the_word_readers_take_a_typographic_apostrophe_as_a_plain_one(apostrophe):
-    text = f"Côte d{apostrophe}Ivoire\u2019s debt"
-    assert _words(text) == _words("Côte d'Ivoire's debt")
-    assert _veto_words(text) == _veto_words("Côte d'Ivoire's debt")
-
-
 def test_ground_roles_leaves_an_entity_with_no_role_alone():
     """A cue with no role states nothing, so grounding has nothing to check."""
     entity = _entity("Kenya", "Kenya", cue="nowhere in the query")
@@ -404,26 +395,6 @@ def test_ground_roles_reads_an_organisation_before_the_measure_as_lender(
     (grounded,) = _ground_roles(query, [_entity("IMF", "IMF", role, cue)], [variable])
     assert grounded.role == expected
     assert grounded.cue == ("IMF" if expected else None)
-
-
-@pytest.mark.parametrize(
-    ("role", "cue"),
-    [
-        pytest.param("creditor", "owed to", id="creditor-with-a-cue"),
-        pytest.param("debtor", "owes", id="debtor-with-a-cue"),
-        pytest.param("creditor", None, id="creditor-with-no-cue"),
-        pytest.param("debtor", "  ", id="debtor-with-a-blank-cue"),
-    ],
-)
-def test_ground_roles_makes_an_organisation_the_model_gave_a_debt_party_the_creditor(role, cue):
-    """The lender is the creditor with its own words as cue, whichever debt party the model
-    gave it. A creditor is exempt from the from/to veto (`role_text.DEBT_PARTIES`); a
-    source would lose that."""
-    entity = _entity("IMF", "IMF", role, cue)
-    (grounded,) = _ground_roles(
-        "IMF credit outstanding Argentina", [entity], ["credit outstanding"]
-    )
-    assert (grounded.role, grounded.cue) == ("creditor", "IMF")
 
 
 def test_ground_roles_logs_query_text_only_at_debug_level(caplog):

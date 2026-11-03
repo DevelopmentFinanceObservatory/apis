@@ -63,7 +63,7 @@ _PARTY_WORDS: dict[str, Party] = {party: party for party in get_args(Party)} | {
     "borrower": "debtor",
 }
 # The parties of a debt, whose repayments run the other way (`contradicts`).
-DEBT_PARTIES: frozenset[Party] = frozenset({"creditor", "debtor"})
+_DEBT_PARTIES: frozenset[Party] = frozenset({"creditor", "debtor"})
 
 
 def party_for_text(role_text: str | None) -> Party | None:
@@ -94,22 +94,13 @@ def role_text_for(axis: RoleAxis, *, party: Party | None) -> str:
     """The role text that restates a role on `axis`: a debt `party` as its own word, which
     the lexicon reads back to the same axis and party and so draws no contradiction
     (`contradicts`), and any other role as the axis's canonical text."""
-    if party is not None and party in DEBT_PARTIES:
+    if party is not None and party in _DEBT_PARTIES:
         return party
     return role_text_for_axis(axis)
 
 
-_APOSTROPHES = str.maketrans({"\u2018": "'", "\u2019": "'", "\u02bc": "'"})
-
-
-def fold_apostrophes(text: str) -> str:
-    """`text` with each typographic apostrophe (U+2018, U+2019, U+02BC) written as a plain
-    one, so "d\u2019Ivoire" and "d'Ivoire" read as one word."""
-    return text.translate(_APOSTROPHES)
-
-
 def _tokenize(text: str) -> list[str]:
-    return _TOKEN_RE.findall(fold_apostrophes(text).lower())
+    return _TOKEN_RE.findall(text.lower())
 
 
 _OPPOSITE_PREPS: dict[RoleAxis, frozenset[str]] = {
@@ -167,7 +158,7 @@ def _preceding_contradicts(
     """Whether the words straight before a place's occurrences contradict `axis`: a
     supporting ``from`` or ``to`` clears every contradiction, else an opposite one fires.
     A debt party draws none (`contradicts`)."""
-    if party in DEBT_PARTIES:
+    if party in _DEBT_PARTIES:
         return False
     if any(word in _SAME_AXIS_PREPS[axis] for word in preceding):
         return False

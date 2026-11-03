@@ -23,7 +23,7 @@ from search.engine.extract import (
 )
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region.pipeline import resolve_variable
-from search.engine.role_text import DoorRole, Party, contradicts, role_contradicted
+from search.engine.role_text import DoorRole, Party, contradicts
 from search.models import DefinitePart, Operation, ParsedEntity, ParsedPart, RoleAxis
 from series_coverage.schema import RoleNames
 from series_coverage.shared import CoverageSnapshot
@@ -242,24 +242,6 @@ class TestRawTextDoorCarriesEveryOccurrence:
                 [("Ghana", "debtor", "of"), ("China", "creditor", "to")],
                 {"Ghana": False, "China": True},
                 id="debt-of-and-to",
-            ),
-            pytest.param(
-                "Côte d\u2019Ivoire\u2019s debt",
-                [("Côte d\u2019Ivoire", "debtor", "Côte d\u2019Ivoire\u2019s")],
-                {"Côte d\u2019Ivoire": False},
-                id="typographic-apostrophes-in-name-and-possessive",
-            ),
-            pytest.param(
-                "Côte d\u2019Ivoire\u2019s debt",
-                [("Côte d\u2019Ivoire", "debtor", "Côte d'Ivoire's")],
-                {"Côte d\u2019Ivoire": False},
-                id="typographic-name-and-plain-possessive",
-            ),
-            pytest.param(
-                "Côte d'Ivoire's debt",
-                [("Côte d'Ivoire", "debtor", "Côte d'Ivoire's")],
-                {"Côte d'Ivoire": False},
-                id="plain-apostrophes-in-name-and-possessive",
             ),
         ],
     )
@@ -600,8 +582,8 @@ def test_an_unrelated_part_leaves_the_roles_of_another_unchanged(
 
 def test_the_request_reads_each_entity_once_and_every_part_reads_its_own_roles(monkeypatch):
     """The cue tie and the veto words of every entity that carries a role are read once for
-    the request, however many parts it has. Kenya's two roles keep the words before the occurrence each is tied
-    to, in the part that scopes it."""
+    the request, however many parts it has. Kenya's two roles keep the words before the
+    occurrence each is tied to, in the part that scopes it."""
     veto_calls: list[int] = []
     stated_calls: list[str] = []
     veto_words = raw_text.veto_words
@@ -633,46 +615,6 @@ def test_the_request_reads_each_entity_once_and_every_part_reads_its_own_roles(m
     assert [
         {name: [r.preceding for r in rs] for name, rs in part.items()} for part in per_part
     ] == [{"Kenya": [("to",)]}, {"Kenya": [("and",)]}]
-
-
-def test_a_creditor_on_a_debt_measure_keeps_its_role_and_draws_no_veto_from_a_later_to():
-    """The IMF the model names creditor stays one, so the "to" before its second occurrence
-    does not veto it."""
-    query = "IMF credit outstanding and repayments to IMF from Argentina"
-    per_part = part_roles(
-        [linked("IMF", "creditor", "IMF"), linked("Argentina", "debtor", "from")],
-        query=query,
-        measures=["credit outstanding", "repayments"],
-    )
-
-    for part in per_part:
-        (imf,) = part["IMF"]
-        assert (imf.axis, imf.party) == ("origin", "creditor")
-        assert not role_contradicted(imf, query=query)
-
-
-def test_a_lender_the_model_cued_states_no_direction_from_the_models_cue():
-    """The model's cue "from" for the IMF is replaced by the IMF's own words, so the role
-    is read off the measure."""
-    (part,) = part_roles(
-        [linked("IMF", "debtor", "from")],
-        query="IMF lending Argentina from 2015",
-        measures=["lending"],
-    )
-
-    (imf,) = part["IMF"]
-    assert (imf.party, imf.stated) == ("creditor", False)
-
-
-def test_a_typographic_apostrophe_in_the_query_leaves_the_veto_as_with_a_plain_one():
-    """ "from" before "Côte d\u2019Ivoire" contradicts the recipient role the model gave the
-    span "Côte d'Ivoire"."""
-    entity = linked("Côte d'Ivoire", "recipient", "from")
-    for query in ("exports from Côte d'Ivoire", "exports from Côte d\u2019Ivoire"):
-        (part,) = part_roles([entity], query=query, measures=["exports"])
-        (role,) = part["Côte d'Ivoire"]
-        assert role.preceding == ("from",)
-        assert role_contradicted(role, query=query)
 
 
 @pytest.mark.parametrize(
