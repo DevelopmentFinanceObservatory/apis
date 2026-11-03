@@ -230,13 +230,13 @@ def _cover(monkeypatch: pytest.MonkeyPatch, dac1: tuple[str, ...]) -> None:
 _ALL_MEMBERS = (*_DAC1_MEMBERS, *_DAC2A_MEMBERS, *_CRS_MEMBERS)
 
 
-def _resolve(
+def _resolve_part(
     request: ResolveRequest,
     variable: str,
     *,
     pick: int = 0,
     members: tuple[str, ...] = _ALL_MEMBERS,
-) -> Spec:
+) -> DefinitePart:
     response = offline_resolve(
         request,
         graph=_graph(variable, members),
@@ -246,7 +246,17 @@ def _resolve(
     assert isinstance(response, Resolution), response
     (part,) = response.parts
     assert isinstance(part, DefinitePart), part
-    return part.spec
+    return part
+
+
+def _resolve(
+    request: ResolveRequest,
+    variable: str,
+    *,
+    pick: int = 0,
+    members: tuple[str, ...] = _ALL_MEMBERS,
+) -> Spec:
+    return _resolve_part(request, variable, pick=pick, members=members).spec
 
 
 def _ask(
@@ -1096,14 +1106,22 @@ def test_a_donor_window_crossing_2018_is_counted_on_the_oecd_headline_per_year()
     assert back.spec_id == spec.spec_id
 
 
+@pytest.mark.parametrize(
+    "mention",
+    [SourceMention(ref=_DAC1), SourceMention(text="DAC")],
+    ids=["dac1", "dac-collection"],
+)
 def test_a_donor_window_crossing_2018_from_dac1_is_counted_on_the_headline_it_splices(
-    bind_catalogue,
+    bind_catalogue, mention: SourceMention
 ):
-    """A part that names DAC1 is served the OECD headline per year, since the headline
-    composite splices only DAC1's own series, so the composite takes the place of the
-    source the part named."""
-    bind_catalogue(FakeCatalogue(provenances={_DAC1: provenance_row(_DAC1, BASE)}))
-    spec = _resolve(
+    """A part that names DAC1, or the DAC collection holding it, is served the OECD headline
+    per year, since the headline composite splices only DAC1's own series, so the composite
+    takes the place of the source the part named and serves it: no warning says the source
+    was not served."""
+    bind_catalogue(
+        FakeCatalogue(provenances={ref: provenance_row(ref, BASE) for ref in (_DAC1, _DAC2A)})
+    )
+    part = _resolve_part(
         ResolveRequest(
             input=ParsedInput(
                 parts=[
@@ -1111,14 +1129,16 @@ def test_a_donor_window_crossing_2018_from_dac1_is_counted_on_the_headline_it_sp
                         variable_text="aid",
                         entities=[ParsedEntity(text="United States", role_text="from")],
                         time_text="2015-2020",
-                        sources=[SourceMention(ref=_DAC1)],
+                        sources=[mention],
                     )
                 ]
             )
         ),
         "aid",
     )
+    spec = part.spec
 
+    assert "query_qualifier_dropped" not in {warning.code for warning in part.warnings}
     assert _basis_choice(spec) == ("measure_basis:oecd_headline", "default", None)
     assert (spec.definition.identity.facets or {})["provenance"] == IdentityBindingValue(
         ref=_HEADLINE
