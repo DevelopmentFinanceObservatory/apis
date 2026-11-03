@@ -79,6 +79,7 @@ from search.engine.extract import (
     Extraction,
     ExtractionResult,
     _dedupe_stripped,
+    _grounding_form,
     cue_is_its_span,
     cue_ties,
     dates_to_request,
@@ -476,19 +477,14 @@ def _entity_surfaces(entities: list[ExtractedEntity], *, query: str) -> dict[str
     return surfaces
 
 
-def _plain_apostrophes(text: str) -> str:
-    """`text` casefolded, a typographic apostrophe read as a plain one."""
-    return text.replace("\u2019", "'").casefold()
-
-
 def _states_direction(entity: ExtractedEntity, *, tied: bool) -> bool:
     """Whether `entity`'s cue (`ExtractedEntity.cue`) states its direction, which it does
     when `query` ties it to the place (`tied`, from `extract.cue_ties`) and it reaches
     beyond the place's own words (its span and its name, each as whole words), the article
     "the" and a possessive marker or "of" (`_MEASURE_READING_CUES`). A cue the query ties
-    to no occurrence of the place, and that no tied place of the extraction shares, is a
-    misquoted or detached one, and its role is read off the measure. Apostrophes are read plain on the
-    cue and on the place alike.
+    to no occurrence of the place, by the word, join or coordinated form of
+    `extract.cue_ties`, is a misquoted or detached one, and its role is read off the measure.
+    Apostrophes are read plain on the cue and on the place alike.
 
     "to", "funded by" and the case ending in "Norjasta" with the span "Norja" state it. A
     national adjective or an inflected name, whose cue is its own span ("French aid",
@@ -498,10 +494,10 @@ def _states_direction(entity: ExtractedEntity, *, tied: bool) -> bool:
     """
     if not tied:
         return False
-    rest = _plain_apostrophes(entity.cue or "")
+    rest = _grounding_form(entity.cue or "")
     for words in (entity.span, entity.text):
         if words and words.strip():
-            place = re.escape(_plain_apostrophes(words.strip()))
+            place = re.escape(_grounding_form(words))
             rest = re.sub(rf"(?<!\w){place}(?!\w)", " ", rest)
     residue = " ".join(token for token in rest.split() if token != "the")
     return residue not in _MEASURE_READING_CUES
@@ -1203,12 +1199,16 @@ def _prepare_extraction(
     # parts it scopes.
     entity_breakdowns: list[tuple[str, frozenset[str]]] = []
     extracted_entities: list[ExtractedEntity] = []
-    for entity in extraction.entities:
+    extracted_ties: list[bool] = []
+    # A tie reads the other entities of the extraction, those left out below among them.
+    ties = cue_ties(extraction.entities, query=query)
+    for entity, tied in zip(extraction.entities, ties, strict=True):
         words = entity.span or entity.text
         if words in scan.source_entities:
             continue
         if breakdown_axis(words, query=query) is None:
             extracted_entities.append(entity)
+            extracted_ties.append(tied)
         else:
             entity_breakdowns.append((words, scoped_measures(entity, extraction.variables)))
     entities: list[str] = list(dict.fromkeys(_entity_key(e) for e in extracted_entities))
@@ -1345,9 +1345,7 @@ def _prepare_extraction(
     entity_surfaces = _entity_surfaces(extracted_entities, query=query)
     stated = [
         _states_direction(entity, tied=tied)
-        for entity, tied in zip(
-            extracted_entities, cue_ties(extracted_entities, query=query), strict=True
-        )
+        for entity, tied in zip(extracted_entities, extracted_ties, strict=True)
     ]
     preceding = veto_words(extracted_entities, query=query)
 

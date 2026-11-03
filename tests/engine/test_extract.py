@@ -29,7 +29,7 @@ from search.engine.extract import (
     _occurs_in,
     _resolve_relative_dates,
     _target_forecasts,
-    cue_tied,
+    cue_ties,
     dates_to_request,
     extract,
     slot_default_answers,
@@ -287,7 +287,7 @@ def _entity(text, span=None, role=None, cue=None, variables=()) -> ExtractedEnti
 )
 def test_ground_roles_keeps_a_role_whose_cue_the_query_holds(query, entity):
     assert _ground_roles(query, [entity], ["aid"]) == [entity]
-    assert cue_tied(entity, query)
+    assert cue_ties([entity], query=query) == [True]
 
 
 @pytest.mark.parametrize(
@@ -357,7 +357,7 @@ def test_ground_roles_drops_a_role_with_no_cue(query, entity):
 def test_ground_roles_keeps_a_role_whose_cue_the_query_does_not_hold(query, entity):
     """The role stays and is read off the measure (`raw_text._states_direction`)."""
     assert _ground_roles(query, [entity], ["ODA"]) == [entity]
-    assert not cue_tied(entity, query)
+    assert cue_ties([entity], query=query) == [False]
 
 
 def test_a_cue_the_query_does_not_hold_credits_no_words():
@@ -365,6 +365,14 @@ def test_a_cue_the_query_does_not_hold_credits_no_words():
     togo = _entity("Togo", "Togo", "recipient", "to")
     extraction = Extraction(kind="resolution", variables=["aid"], entities=[togo])
     assert _applied_phrases(extraction, query="Togo aid", date_wording=()) == {("togo",)}
+
+
+_FROM = {"role": "source", "cue": "from"}
+
+
+def _from_each(*names: str):
+    """Source places that each cite "from"."""
+    return [_entity(name, name, **_FROM) for name in names]
 
 
 @pytest.mark.parametrize(
@@ -376,7 +384,7 @@ def test_a_cue_the_query_does_not_hold_credits_no_words():
                 _entity("Kenya", "Kenya", "recipient", "to"),
                 _entity("Uganda", "Uganda", "recipient", "to"),
             ],
-            True,
+            [True, True],
             id="coordinated-place-shares-the-cue-of-a-tied-one",
         ),
         pytest.param(
@@ -385,7 +393,7 @@ def test_a_cue_the_query_does_not_hold_credits_no_words():
                 _entity("Norway", "Norway", "source", "from"),
                 _entity("Sweden", "Sweden", "recipient", "from"),
             ],
-            False,
+            [True, False],
             id="same-cue-text-under-another-role",
         ),
         pytest.param(
@@ -394,25 +402,102 @@ def test_a_cue_the_query_does_not_hold_credits_no_words():
                 _entity("Kenya", "Kenya", "recipient", "fragile states"),
                 _entity("Uganda", "Uganda", "recipient", "fragile states"),
             ],
-            False,
+            [False, False],
             id="shared-cue-tied-to-neither",
+        ),
+        pytest.param(
+            "aid to Kenya and GDP growth in Uganda",
+            [
+                _entity("Kenya", "Kenya", "recipient", "to"),
+                _entity("Uganda", "Uganda", "recipient", "to"),
+            ],
+            [True, False],
+            id="words-of-another-phrase-lie-between",
+        ),
+        pytest.param(
+            "aid from France, Germany and the UK to Kenya",
+            [*_from_each("France", "Germany", "UK"), _entity("Kenya", "Kenya", "recipient", "to")],
+            [True, True, True, True],
+            id="list-of-places-ties-through-the-first",
+        ),
+        pytest.param(
+            "aid to Kenya from Norway and Sweden",
+            [
+                _entity("Kenya", "Kenya", "recipient", "to"),
+                *_from_each("Norway", "Sweden"),
+            ],
+            [True, True, True],
+            id="two-coordinated-roles",
+        ),
+        pytest.param(
+            "Norway receives aid from Sweden",
+            [_entity("Norway", "Norway", "source", "from"), *_from_each("Sweden")],
+            [False, True],
+            id="words-between-block-a-place-before-its-anchor",
+        ),
+        pytest.param(
+            "aid from Norway and Sweden",
+            [
+                _entity("Norway", "Norway", "source", "from"),
+                _entity("Sweden", "Sweden", "source", "by"),
+            ],
+            [True, False],
+            id="same-role-under-another-cue",
         ),
     ],
 )
-def test_cue_tied_reaches_a_place_through_a_tied_place_with_the_same_cue_and_role(
-    query, entities, tied
-):
-    """The last place is tied only when another place of the request has its cue text and
-    role and is tied itself."""
-    last = entities[-1]
-    assert cue_tied(last, query, entities=entities) is tied
-    assert not cue_tied(last, query)
+def test_cue_ties_reaches_a_place_through_a_tied_place_in_a_coordinated_run(query, entities, tied):
+    """A place with no tie of its own is tied through a place that has the same role and
+    cue, when only a coordinated run lies between them."""
+    assert cue_ties(entities, query=query) == tied
 
 
-def test_ground_roles_reads_a_blank_span_as_none():
-    entity = _entity("Kenya", " ", "recipient", "from")
-    (grounded,) = _ground_roles("Kenya aid from France", [entity], ["aid"])
-    assert grounded.span is None
+@pytest.mark.parametrize(
+    ("joiner", "tied"),
+    [
+        *(
+            (word, True)
+            for word in [
+                "and",
+                "or",
+                "y",
+                "e",
+                "et",
+                "und",
+                "en",
+                "og",
+                "och",
+                "i",
+                "ja",
+                "и",
+                "та",
+            ]
+        ),
+        *((mark, True) for mark in (",", " ,", "/", " / ", "&", "、")),
+        # Words and marks outside the closed list break the run.
+        *((word, False) for word in ("with", "plus", "versus", "als")),  # codespell:ignore
+        *((mark, False) for mark in (";", ".", "-", ":", "(")),
+    ],
+)
+def test_cue_ties_coordinates_places_only_across_the_closed_list(joiner, tied):
+    """Each coordinator and mark of the list ties the second place to the first; text
+    outside it does not."""
+    entities = _from_each("Norway", "Sweden")
+    query = f"aid from Norway {joiner} Sweden"
+    assert cue_ties(entities, query=query) == [True, tied]
+
+
+def test_cue_ties_coordinates_a_place_before_its_tied_anchor():
+    """The anchor can follow the place: "Kenya and Uganda received"."""
+    kenya, uganda = (_entity(n, n, "recipient", "received") for n in ("Kenya", "Uganda"))
+    assert cue_ties([kenya, uganda], query="Kenya and Uganda received aid") == [True, True]
+
+
+@pytest.mark.parametrize(
+    ("span", "expected"), [(" ", None), ("", None), (None, None), (" Kenya ", " Kenya ")]
+)
+def test_an_entity_reads_a_blank_span_as_none(span, expected):
+    assert _entity("Kenya", span, "recipient", "from").span == expected
 
 
 def test_ground_roles_leaves_an_entity_with_no_role_alone():
@@ -425,6 +510,9 @@ def test_ground_roles_leaves_an_entity_with_no_role_alone():
     ("query", "role", "cue", "variable", "expected"),
     [
         ("IMF credit outstanding Argentina", None, None, "credit outstanding", "source"),
+        # A creditor or debtor keeps its role; without a cue it takes the organisation's words.
+        ("IMF credit outstanding Argentina", "creditor", None, "credit outstanding", "creditor"),
+        ("IMF credit outstanding Argentina", "debtor", "  ", "credit outstanding", "debtor"),
         (
             "IMF credit outstanding Argentina",
             "recipient",
@@ -440,10 +528,17 @@ def test_ground_roles_reads_an_organisation_before_the_measure_as_lender(
     query, role, cue, variable, expected
 ):
     """An organisation named straight before a measure word is the source, with its own
-    name as cue, whatever role the model gave it."""
+    name as cue, whatever role the model gave it but creditor or debtor."""
     (grounded,) = _ground_roles(query, [_entity("IMF", "IMF", role, cue)], [variable])
     assert grounded.role == expected
     assert grounded.cue == ("IMF" if expected else None)
+
+
+def test_ground_roles_leaves_a_creditor_before_the_measure_its_cue():
+    creditor = _entity("IMF", "IMF", "creditor", "owed to")
+    assert _ground_roles(
+        "IMF credit outstanding Argentina", [creditor], ["credit outstanding"]
+    ) == [creditor]
 
 
 def test_ground_roles_logs_query_text_only_at_debug_level(caplog):

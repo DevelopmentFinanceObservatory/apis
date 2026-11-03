@@ -7,6 +7,7 @@ import asyncio
 
 import pytest
 
+from search.engine import extract
 from search.engine.entry import raw_text
 from search.engine.entry.dataset_entries import interpret_parts as dataset_door_interpretation
 from search.engine.entry.parsed import (
@@ -198,6 +199,29 @@ class TestRawTextDoorCarriesEveryOccurrence:
                 ],
                 {"Kenya": True, "Norway": True, "Sweden": True},
                 id="coordinated",
+            ),
+            pytest.param(
+                "aid to Kenya and GDP growth in Uganda",
+                [("Kenya", "recipient", "to"), ("Uganda", "recipient", "to")],
+                {"Kenya": True, "Uganda": False},
+                id="cue-of-another-phrase-is-no-coordination",
+            ),
+            pytest.param(
+                "aid from France, Germany and the UK to Kenya",
+                [
+                    ("France", "source", "from"),
+                    ("Germany", "source", "from"),
+                    ("UK", "source", "from"),
+                    ("Kenya", "recipient", "to"),
+                ],
+                {"France": True, "Germany": True, "UK": True, "Kenya": True},
+                id="list-of-places",
+            ),
+            pytest.param(
+                "aid from every donor and Sweden",
+                [("every donor", "source", "from"), ("Sweden", "source", "from")],
+                {"Sweden": True},
+                id="coordinated-with-a-breakdown-phrase",
             ),
             pytest.param(
                 "aid from Norway to Kenya",
@@ -683,6 +707,34 @@ def test_the_ties_and_veto_words_are_read_once_and_every_part_reads_its_own_enti
         {"Kenya": [("to",)]},
         {"Kenya": [("and",)]},
     ]
+
+
+def test_the_qualifier_trim_reads_the_cue_ties_once_for_all_its_entities(monkeypatch):
+    """`extract._applied_phrases` reads every entity's tie in one `cue_ties` call."""
+    reads = []
+    real = extract.cue_ties
+
+    def spy(*args, **kwargs):
+        reads.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(extract, "cue_ties", spy)
+    extraction = Extraction(
+        kind="resolution",
+        variables=["aid"],
+        entities=[
+            linked("Norway", "source", "from"),
+            linked("Sweden", "source", "from"),
+            linked("Kenya", "recipient", "to"),
+        ],
+    )
+
+    phrases = extract._applied_phrases(
+        extraction, query="aid from Norway and Sweden to Kenya", date_wording=()
+    )
+
+    assert len(reads) == 1
+    assert ("from", "sweden") in phrases
 
 
 def test_a_creditor_on_a_debt_measure_keeps_its_role_and_draws_no_veto_from_a_later_to():
