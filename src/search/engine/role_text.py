@@ -18,7 +18,6 @@ ROLE_TEXT_NOT_RECOGNISED = "role_text_not_recognised"
 
 _DONOR_PREPS: frozenset[str] = frozenset({"from"})
 _RECIPIENT_PREPS: frozenset[str] = frozenset({"to"})
-DIRECTION_PREPS: frozenset[str] = _DONOR_PREPS | _RECIPIENT_PREPS
 _TOKEN_RE = re.compile(r"[a-z][a-z'\-]*[a-z]|[a-z]")
 
 # English caller synonyms and declared graph role names map to flow axes.
@@ -205,7 +204,9 @@ _BREAKDOWN_WORDS: frozenset[str] = frozenset({"every", "each"})
 # countries". The preposition that governs them names it.
 _PLACE_NOUNS: frozenset[str] = frozenset({"country", "countries"})
 # The axis each role preposition names.
-_ROLE_PREP_AXES: dict[str, RoleAxis] = {prep: _ROLE_TEXT_TO_AXIS[prep] for prep in DIRECTION_PREPS}
+_ROLE_PREP_AXES: dict[str, RoleAxis] = {
+    prep: _ROLE_TEXT_TO_AXIS[prep] for prep in _DONOR_PREPS | _RECIPIENT_PREPS
+}
 
 
 def _noun_axis(token: str) -> RoleAxis | None:
@@ -341,7 +342,7 @@ class DoorRole:
     (`asks_members`). ``party`` is the place's party when the door names one
     (`ExtractedEntity.role`, `party_for_text`), which `contradicts` reads. ``preceding``
     is the word straight before each occurrence of the place the raw-text door ties the
-    role to (`extract.CueReading.preceding`), which `role_contradicted` reads in place of the role
+    role to (`extract.veto_words`), which `role_contradicted` reads in place of the role
     query, so another measure's wording of the same place does not veto it. None reads
     every occurrence in the role query, as the parsed door's part-local query does.
     """

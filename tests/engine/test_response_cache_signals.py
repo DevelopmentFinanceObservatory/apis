@@ -113,7 +113,7 @@ def test_opposing_preposition_contradicts() -> None:
 def test_the_signal_reads_the_occurrences_the_door_ties_a_role_to(
     query: str, entities: list[ExtractedEntity], contradicts: list[bool]
 ) -> None:
-    """The signal reads the roles the raw-text door derives (`extract.CueReading.preceding`), as the
+    """The signal reads the roles the raw-text door derives (`extract.veto_words`), as the
     pipeline's veto does (`role_text.role_contradicted`): the exports part's Kenya, tied to
     "Kenya's", is not contradicted by the aid clause's "to Kenya", and a source Kenya after
     "to" is."""

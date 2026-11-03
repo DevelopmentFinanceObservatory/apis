@@ -80,11 +80,12 @@ from search.engine.extract import (
     ExtractionResult,
     _dedupe_stripped,
     _grounding_form,
+    cue_grounded,
     cue_is_its_span,
     dates_to_request,
     extract,
-    read_cues,
     scoped_measures,
+    veto_words,
 )
 from search.engine.fanout import (
     _FanOutResult,
@@ -476,14 +477,14 @@ def _entity_surfaces(entities: list[ExtractedEntity], *, query: str) -> dict[str
     return surfaces
 
 
-def _states_direction(entity: ExtractedEntity, *, tied: bool) -> bool:
+def _states_direction(entity: ExtractedEntity, *, query: str) -> bool:
     """Whether `entity`'s cue (`ExtractedEntity.cue`) states its direction, which it does
-    when `query` ties it to the place (`tied`, from `extract.read_cues`) and it reaches
-    beyond the place's own words (its span and its name, each as whole words), the article
-    "the" and a possessive marker or "of" (`_MEASURE_READING_CUES`). A cue the query ties
-    to no occurrence of the place, by the word, join or coordinated form of
-    `extract.read_cues`, is a misquoted or detached one, and its role is read off the measure.
-    Apostrophes are read plain on the cue and on the place alike.
+    when `query` holds it (`extract.cue_grounded`) and it reaches beyond the place's own
+    words (its span and its name, each as whole words), the article "the" and a possessive
+    marker or "of" (`_MEASURE_READING_CUES`). A cue the query does not hold is one the
+    model misquoted, and its role is read off the measure. The cue and the place are read
+    in one folded form (`extract._grounding_form`), so a typographic apostrophe in either
+    is a plain one.
 
     "to", "funded by" and the case ending in "Norjasta" with the span "Norja" state it. A
     national adjective or an inflected name, whose cue is its own span ("French aid",
@@ -491,7 +492,7 @@ def _states_direction(entity: ExtractedEntity, *, tied: bool) -> bool:
     "the US's aid", cue "the US's") and "of" ("debtors of China", "of the Gambia") read
     the direction off the measure, so none states it.
     """
-    if not tied:
+    if not cue_grounded(entity, query):
         return False
     rest = _grounding_form(entity.cue or "")
     for words in (entity.span, entity.text):
@@ -506,11 +507,10 @@ def _part_positions(
     entities: Sequence[ExtractedEntity], *, measures: Sequence[str], variables: Sequence[str]
 ) -> list[list[int]]:
     """The positions in `entities` of each part's entities, parallel to `measures`. A part
-    holds the entities whose
-    linked measures (`extract.scoped_measures`) include its own. `variables` are the
-    extraction's own, whose positions the entities' links name, and `measures` the parts'
-    stripped distinct measures (`_ExtractionPrep.unique`). An entity that names no measure
-    scopes every part.
+    holds the entities whose linked measures (`extract.scoped_measures`) include its own.
+    `variables` are the extraction's own, whose positions the entities' links name, and
+    `measures` the parts' stripped distinct measures (`_ExtractionPrep.unique`). An entity
+    that names no measure scopes every part.
     """
     scopes = [scoped_measures(entity, variables) for entity in entities]
     return [[i for i, scope in enumerate(scopes) if measure in scope] for measure in measures]
@@ -542,25 +542,25 @@ def _entity_roles(
 ) -> dict[str, list[DoorRole]]:
     """Map the stripped names of one part's entities to their roles, as the parsed door
     maps a part's (`parsed._entity_roles_for_part`). `part` holds positions in `entities`
-    (`_part_positions`). `stated` and `preceding` hold, for every entity of `entities`, whether
-    its cue states its direction (`_states_direction`) and its veto words
-    (`extract.CueReading.preceding`), which the request reads once for all its parts.
+    (`_part_positions`), and `stated` and `preceding` hold, for each of `entities`, whether
+    its cue states its direction (`_states_direction`) and the words its role's veto reads
+    (`extract.veto_words`). The request reads both once for all its parts.
 
     An entity's party word (`ExtractedEntity.role`) gives its axis through the parsed
     door's lexicon (`role_text.role_axis_for_text`), so a creditor is the origin and a
     debtor the destination. `extract` keeps a role only when the model cites a cue for it
     (`extract._ground_roles`), so every role here has one, and `stated` records whether
-    the query ties the cue to its place and it states the direction, or the role is read
-    off the measure. `preceding` holds the words before the occurrences of
-    the place its cue ties it to, read beside the other roles of `entities`, the whole
-    extraction's. An entity with no role is undirected. Preserve distinct mentions in order, including
-    self-flows on opposite axes, and collapse duplicate mentions with the same axis, span
-    and reading, which then read the occurrences each is tied to. The span is the query's
-    own words for the place, else its name.
+    `query` holds the cue and it states the direction, or the role is read off the
+    measure. `preceding` holds the words before the occurrences of the place its cue ties
+    it to, read beside the other roles of `entities`. An entity with no role is undirected.
+    Preserve distinct mentions in order, including self-flows on opposite axes, and
+    collapse duplicate mentions with the same axis, span and reading, which then read the
+    occurrences each is tied to. The span is the query's own words for the place, else its
+    name.
     """
     roles: dict[str, list[DoorRole]] = {}
-    for i in part:
-        entity = entities[i]
+    for position in part:
+        entity = entities[position]
         axis = role_axis_for_text(entity.role)
         if axis is None:
             continue
@@ -568,17 +568,17 @@ def _entity_roles(
         role = DoorRole(
             axis=axis,
             span=entity.span or entity.text,
-            stated=stated[i],
+            stated=stated[position],
             members=entity.members,
             party=entity.role,
-            preceding=preceding[i],
+            preceding=preceding[position],
         )
         if role not in occurrences:
             occurrences.append(role)
             continue
-        seen = occurrences.index(role)
-        words = (*(occurrences[seen].preceding or ()), *(role.preceding or ()))
-        occurrences[seen] = dataclasses.replace(role, preceding=tuple(dict.fromkeys(words)))
+        i = occurrences.index(role)
+        words = (*(occurrences[i].preceding or ()), *(role.preceding or ()))
+        occurrences[i] = dataclasses.replace(role, preceding=tuple(dict.fromkeys(words)))
     return roles
 
 
@@ -1198,16 +1198,12 @@ def _prepare_extraction(
     # parts it scopes.
     entity_breakdowns: list[tuple[str, frozenset[str]]] = []
     extracted_entities: list[ExtractedEntity] = []
-    extracted_positions: list[int] = []
-    # A tie reads the other entities of the extraction, those left out below among them.
-    cues = read_cues(extraction.entities, query=query)
-    for position, entity in enumerate(extraction.entities):
+    for entity in extraction.entities:
         words = entity.span or entity.text
         if words in scan.source_entities:
             continue
         if breakdown_axis(words, query=query) is None:
             extracted_entities.append(entity)
-            extracted_positions.append(position)
         else:
             entity_breakdowns.append((words, scoped_measures(entity, extraction.variables)))
     entities: list[str] = list(dict.fromkeys(_entity_key(e) for e in extracted_entities))
@@ -1215,6 +1211,9 @@ def _prepare_extraction(
         extracted_entities, measures=unique, variables=extraction.variables
     )
     per_part_entities = [[extracted_entities[i] for i in part] for part in part_positions]
+    # Every part reads the same query, so each entity's reading is made once for the request.
+    stated = [_states_direction(entity, query=query) for entity in extracted_entities]
+    preceding = veto_words(extracted_entities, query=query)
 
     # A relative date the extraction could not read is gone from `dates`; its warning says so.
     clamp_warnings: list[Warning] = list(extract_result.warnings)
@@ -1342,11 +1341,6 @@ def _prepare_extraction(
     for entity in extracted_entities:
         entity_words.setdefault(_entity_key(entity), (entity.span or entity.text).strip())
     entity_surfaces = _entity_surfaces(extracted_entities, query=query)
-    stated = [
-        _states_direction(entity, tied=cues.ties[position])
-        for entity, position in zip(extracted_entities, extracted_positions, strict=True)
-    ]
-    preceding = cues.preceding(extracted_positions)
 
     reading = read_sources(query, interpretation_variables)
 

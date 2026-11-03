@@ -481,7 +481,7 @@ class _FixedExtractionLLM:
     candidate shape with no constraint bindings. Extraction, and everything
     derived from it, is byte-identical on every call. The only thing
     that can differ between two calls is the door's own reading of the raw
-    query text (`extract.CueReading.preceding`, `raw_text._states_direction`), which
+    query text (`extract.veto_words`, `raw_text._states_direction`), which
     this double never touches.
     """
 

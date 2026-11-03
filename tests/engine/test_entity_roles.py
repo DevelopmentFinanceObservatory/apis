@@ -7,7 +7,7 @@ import asyncio
 
 import pytest
 
-from search.engine import extract
+from search.engine.entry import raw_text
 from search.engine.entry.dataset_entries import interpret_parts as dataset_door_interpretation
 from search.engine.entry.parsed import (
     _entity_roles_for_part,
@@ -20,7 +20,6 @@ from search.engine.extract import (
     ExtractedOperation,
     Extraction,
     ExtractionResult,
-    read_cues,
 )
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region.pipeline import resolve_variable
@@ -191,36 +190,9 @@ class TestRawTextDoorCarriesEveryOccurrence:
             ),
             pytest.param(
                 "aid to Kenya from Norway and Sweden",
-                [
-                    ("Kenya", "recipient", "to"),
-                    ("Norway", "source", "from"),
-                    ("Sweden", "source", "from"),
-                ],
-                {"Kenya": True, "Norway": True, "Sweden": True},
+                [("Kenya", "recipient", "to"), ("Sweden", "source", "from")],
+                {"Kenya": True, "Sweden": True},
                 id="coordinated",
-            ),
-            pytest.param(
-                "aid to Kenya and GDP growth in Uganda",
-                [("Kenya", "recipient", "to"), ("Uganda", "recipient", "to")],
-                {"Kenya": True, "Uganda": False},
-                id="cue-of-another-phrase-is-no-coordination",
-            ),
-            pytest.param(
-                "aid from France, Germany and the UK to Kenya",
-                [
-                    ("France", "source", "from"),
-                    ("Germany", "source", "from"),
-                    ("UK", "source", "from"),
-                    ("Kenya", "recipient", "to"),
-                ],
-                {"France": True, "Germany": True, "UK": True, "Kenya": True},
-                id="list-of-places",
-            ),
-            pytest.param(
-                "aid from every donor and Sweden",
-                [("every donor", "source", "from"), ("Sweden", "source", "from")],
-                {"Sweden": True},
-                id="coordinated-with-a-breakdown-phrase",
             ),
             pytest.param(
                 "aid from Norway to Kenya",
@@ -271,49 +243,6 @@ class TestRawTextDoorCarriesEveryOccurrence:
                 {"Ghana": False, "China": True},
                 id="debt-of-and-to",
             ),
-            # A cue is tied to its place by the words it is written with. Words away from
-            # the place, or a preposition that opens the next phrase, state nothing.
-            pytest.param(
-                "top 5 donors to Kenya in fragile states",
-                [("Kenya", "recipient", "fragile states")],
-                {"Kenya": False},
-                id="cue-away-from-its-place",
-            ),
-            pytest.param(
-                "aid from Norway and Sweden",
-                [("Norway", "source", "from"), ("Sweden", "recipient", "from")],
-                {"Norway": True, "Sweden": False},
-                id="shared-cue-under-another-role",
-            ),
-            pytest.param(
-                "top 5 donors to Kenya and Uganda in fragile states",
-                [
-                    ("Kenya", "recipient", "fragile states"),
-                    ("Uganda", "recipient", "fragile states"),
-                ],
-                {"Kenya": False, "Uganda": False},
-                id="shared-cue-tied-to-neither",
-            ),
-            pytest.param(
-                "exports Ghana to China",
-                [("Ghana", "source", "to")],
-                {"Ghana": False},
-                id="preposition-opens-the-next-phrase",
-            ),
-            pytest.param(
-                "how much does Kenya owe China",
-                [("Kenya", "debtor", "owe"), ("China", "creditor", "owe")],
-                {"Kenya": True, "China": True},
-                id="one-verb-ties-both-places",
-            ),
-            # A genitive particle is also "from" in Spanish, French and Dutch, so it states
-            # the direction; only the English possessive and "of" read it off the measure.
-            pytest.param(
-                "deuda de Ghana",
-                [("Ghana", "debtor", "de")],
-                {"Ghana": True},
-                id="spanish-de-states",
-            ),
             pytest.param(
                 "Côte d\u2019Ivoire\u2019s debt",
                 [("Côte d\u2019Ivoire", "debtor", "Côte d\u2019Ivoire\u2019s")],
@@ -321,22 +250,16 @@ class TestRawTextDoorCarriesEveryOccurrence:
                 id="typographic-apostrophes-in-name-and-possessive",
             ),
             pytest.param(
+                "Côte d\u2019Ivoire\u2019s debt",
+                [("Côte d\u2019Ivoire", "debtor", "Côte d'Ivoire's")],
+                {"Côte d\u2019Ivoire": False},
+                id="typographic-name-and-plain-possessive",
+            ),
+            pytest.param(
                 "Côte d'Ivoire's debt",
                 [("Côte d'Ivoire", "debtor", "Côte d'Ivoire's")],
                 {"Côte d'Ivoire": False},
                 id="plain-apostrophes-in-name-and-possessive",
-            ),
-            pytest.param(
-                "Côte d\u2019Ivoire\u2019s debt",
-                [("Côte d'Ivoire", "debtor", "Côte d'Ivoire's")],
-                {"Côte d'Ivoire": False},
-                id="typographic-query-plain-name-and-cue",
-            ),
-            pytest.param(
-                "aid to Côte d\u2019Ivoire",
-                [("Côte d'Ivoire", "recipient", "to")],
-                {"Côte d'Ivoire": True},
-                id="typographic-query-plain-name-and-a-direction-cue",
             ),
         ],
     )
@@ -396,9 +319,9 @@ class TestRawTextDoorCarriesEveryOccurrence:
         """A span of whitespace is no wording of the place: the role takes the name as its
         span and the veto reads that name's occurrences, not every word of the query."""
         entity = ExtractedEntity(text="Kenya", span=" ", cue="from", role="recipient")
+        assert entity.span is None
         roles = _prepared_roles([entity], query="Kenya aid from France", measures=["aid"])
         assert [(role.span, role.preceding) for role in roles["Kenya"]] == [("Kenya", ())]
-        assert read_cues([entity], query="Kenya aid from France").preceding([0]) == [()]
 
     def test_a_debt_names_its_creditor_and_its_debtor_by_party_words(self):
         """The creditor is the origin and the debtor the destination. The possessive debtor
@@ -675,11 +598,25 @@ def test_an_unrelated_part_leaves_the_roles_of_another_unchanged(
     assert _part_axes(*two, [*entities, *added])[0] == alone
 
 
-def test_the_cues_are_read_once_and_every_part_reads_its_own_entity_ties():
-    """The request reads each entity's cue tie and veto words (`extract.read_cues`) once for
-    all its parts. Kenya's two roles keep the words before the occurrence each is tied to,
-    in the part that scopes it."""
-    extract._read_cues.cache_clear()
+def test_the_request_reads_each_entity_once_and_every_part_reads_its_own_roles(monkeypatch):
+    """The cue tie and the veto words of every entity are read once for the request, however
+    many parts it has. Kenya's two roles keep the words before the occurrence each is tied
+    to, in the part that scopes it."""
+    veto_calls: list[int] = []
+    stated_calls: list[str] = []
+    veto_words = raw_text.veto_words
+    states_direction = raw_text._states_direction
+
+    def _veto_words(entities, *, query):
+        veto_calls.append(len(entities))
+        return veto_words(entities, query=query)
+
+    def _states_direction(entity, *, query):
+        stated_calls.append(entity.text)
+        return states_direction(entity, query=query)
+
+    monkeypatch.setattr(raw_text, "veto_words", _veto_words)
+    monkeypatch.setattr(raw_text, "_states_direction", _states_direction)
 
     per_part = part_roles(
         [
@@ -691,47 +628,19 @@ def test_the_cues_are_read_once_and_every_part_reads_its_own_entity_ties():
         measures=["aid", "exports"],
     )
 
-    assert extract._read_cues.cache_info().misses == 1
+    assert veto_calls == [3]
+    assert stated_calls == ["Kenya", "Kenya", "France"]
     assert [
         {name: [r.preceding for r in rs] for name, rs in part.items()} for part in per_part
-    ] == [
-        {"Kenya": [("to",)]},
-        {"Kenya": [("and",)]},
-    ]
-
-
-def test_the_qualifier_trim_and_the_door_read_the_cues_once_between_them():
-    """`extract._applied_phrases` reads every entity's tie in one `read_cues` call, and the
-    door reads the same entities of the same query from that reading."""
-    extract._read_cues.cache_clear()
-    query = "aid from Norway and Sweden to Kenya"
-    entities = [
-        linked("Norway", "source", "from"),
-        linked("Sweden", "source", "from"),
-        linked("Kenya", "recipient", "to"),
-    ]
-    extraction = Extraction(kind="resolution", variables=["aid"], entities=entities)
-
-    phrases = extract._applied_phrases(extraction, query=query, date_wording=())
-    info = extract._read_cues.cache_info()
-    assert (info.hits, info.misses) == (0, 1)
-    assert ("from", "sweden") in phrases
-
-    part_roles(entities, query=query, measures=["aid"])
-    info = extract._read_cues.cache_info()
-    assert (info.hits, info.misses) == (1, 1)
+    ] == [{"Kenya": [("to",)]}, {"Kenya": [("and",)]}]
 
 
 def test_a_creditor_on_a_debt_measure_keeps_its_role_and_draws_no_veto_from_a_later_to():
-    """The lender rule rewrites an organisation the model gave no debt party role. The IMF
-    the model names creditor stays one, so the "to" before its second occurrence does not
-    veto it."""
+    """The IMF the model names creditor stays one, so the "to" before its second occurrence
+    does not veto it."""
     query = "IMF credit outstanding and repayments to IMF from Argentina"
     per_part = part_roles(
-        [
-            linked("IMF", "creditor", "IMF"),
-            linked("Argentina", "debtor", "from"),
-        ],
+        [linked("IMF", "creditor", "IMF"), linked("Argentina", "debtor", "from")],
         query=query,
         measures=["credit outstanding", "repayments"],
     )
@@ -1104,7 +1013,7 @@ _GIN = "country/GIN"
             [linked("Kenya", "source", "from"), linked("France")],
             0,
             "role_not_resolved",
-            id="cue-after-the-place-reads-the-untied-occurrence",
+            id="cue-after-the-place-still-vetoed",
         ),
         # "Guinea-Bissau" holds no occurrence of Guinea, so "from" is not written with it
         # and the "to" before Guinea contradicts the source.
@@ -1121,7 +1030,7 @@ def test_the_veto_reads_the_occurrences_a_role_is_tied_to(
     monkeypatch, query: str, entities: list[ExtractedEntity], part: int, reason: str | None
 ):
     """A raw-text leg's role query is the whole query, and its veto reads only the
-    occurrences of the place the role's cue is written with (`extract.CueReading.preceding`). A role
+    occurrences of the place the role's cue is written with (`extract.veto_words`). A role
     the veto keeps binds its place on the origin axis its source names."""
     measures = ["aid", "exports"]
     index = patch_coverage(
