@@ -17,6 +17,7 @@ from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
+from functools import lru_cache
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -58,7 +59,6 @@ from search.engine.role_text import (
     DIRECTION_PREPS,
     Party,
     role_axis_for_text,
-    span_starts,
 )
 from search.engine.time_bind import parse_time_text
 from search.engine.unit.bind import names_price_basis, names_unit_request
@@ -147,7 +147,7 @@ class ExtractedEntity(BaseModel):
     # measures are fixed before its role and its cue is written before the role. `extract`
     # drops a role with no cue (`_ground_roles`), which is the guard against a role supplied
     # from world knowledge, and reads a role whose cue the query does not hold
-    # (`cue_ties`) off the measure. `variables` are positions in
+    # (`read_cues`) off the measure. `variables` are positions in
     # `Extraction.variables`, which Gemini generates before `entities`. An empty list scopes
     # every measure (`scoped_measures`), as it does for a one-measure query and for a reading
     # recorded without the field. `members` states the reading of a region or group, its
@@ -564,21 +564,68 @@ def _grounding_form(text: str) -> str:
     return " ".join(_folded(text.replace("\u2019", "'")).split())
 
 
-def cue_ties(entities: Sequence[ExtractedEntity], *, query: str) -> list[bool]:
-    """For each of `entities`, whether `query` writes its cue with its place, in one of
-    three forms; parallel to `entities`.
+# Marks that separate the members of a list written without spaces, as read on the folded
+# query (`_grounding_form`): NFKC folds a fullwidth comma to ",".
+_LIST_SEPARATORS = frozenset("、・,/")
 
-    The word form is an occurrence of the place (its span, else its name) inside a run of
-    whole words that writes the cue with it (`_cued_starts`). The join form is an
-    occurrence of the span that the cue holds or touches with no space between, in one
-    folded form (`_grounding_form`): a case ending or particle joined to the place, written
-    alone ("sta" after "Norja" in "Norjasta", "'ya" after "Kenya" in "Kenya'ya", "から"
-    after "ケニア") or with the place ("케냐로" for "케냐" in "케냐로의").
 
-    The coordinated form ties a place through a place tied by the word form that has the
-    same role and the same cue text, when nothing but a coordinated run lies between their
-    occurrences (`_coordinated`). So "from" ties Sweden in "aid from Norway and Sweden" and
-    the UK in "aid from France, Germany and the UK to Kenya", through Norway and France.
+type _Placed = tuple[str, str | None, Party | None, str | None]
+
+
+@dataclass(frozen=True, slots=True)
+class CueReading:
+    """How a query writes the cue of each of some entities, read once.
+
+    `ties` holds, parallel to the entities, whether the query writes the entity's cue with
+    its place, in one of three forms (`read_cues`). The remaining fields serve
+    `preceding`.
+    """
+
+    ties: tuple[bool, ...]
+    words: tuple[str, ...]
+    starts: tuple[frozenset[int], ...]
+    cued: tuple[frozenset[int], ...]
+    has_role: tuple[bool, ...]
+
+    def preceding(self, kept: Sequence[int]) -> list[tuple[str, ...]]:
+        """The word straight before each occurrence of the place of each entity at a
+        position of `kept` (its span, else its name) that its role is tied to, which the
+        direction veto reads (`role_text.role_contradicted`), parallel to `kept`. Words
+        are split as `_veto_words` splits them.
+
+        A role is tied to the occurrences its cue is written with (`_cue_runs`), so in "aid
+        to Kenya and Kenya's exports" the exports role, cue "Kenya's", reads only its own
+        occurrence and the aid clause's "to" does not veto it. A role whose cue is written
+        with no occurrence (detached or misquoted) reads every occurrence that no other
+        role among `kept` is tied to, and every occurrence when other roles claim them all.
+        An occurrence that opens the query has no word before it.
+        """
+        claimed = {s for i in kept if self.has_role[i] for s in self.cued[i]}
+        preceding: list[tuple[str, ...]] = []
+        for i in kept:
+            tied = self.cued[i]
+            if not tied:
+                tied = (self.starts[i] - claimed) or self.starts[i]
+            preceding.append(tuple(self.words[start - 1] for start in sorted(tied) if start > 0))
+        return preceding
+
+
+def read_cues(entities: Sequence[ExtractedEntity], *, query: str) -> CueReading:
+    """Read how `query` writes the cue of each of `entities`.
+
+    A cue is tied to its place in one of three forms. The word form is an occurrence of the
+    place (its span, else its name) inside a run of whole words that writes the cue with it
+    (`_cued_starts`). The join form is an occurrence of the span that the cue holds or
+    touches with no space between, in one folded form (`_grounding_form`): a case ending or
+    particle joined to the place, written alone ("sta" after "Norja" in "Norjasta", "'ya"
+    after "Kenya" in "Kenya'ya", "から" after "ケニア") or with the place ("케냐로" for "케냐" in
+    "케냐로의").
+
+    The coordinated form ties a place through a place tied by the word or join form that
+    has the same role and the same cue text, when nothing but a list lies between their
+    occurrences (`_Scan.listed_by_words`, `_Scan.listed_by_join`). So "from" ties Sweden in
+    "aid from Norway and Sweden", the UK in "aid from France, Germany and the UK to Kenya",
+    and Norway in "ノルウェー、スウェーデンからの援助", through Norway, France and Sweden.
 
     A cue the query holds away from its place ties to nothing, so "fragile states" is no
     tie of Kenya in "top 5 donors to Kenya in fragile states", "to" is none of Ghana in
@@ -586,92 +633,199 @@ def cue_ties(entities: Sequence[ExtractedEntity], *, query: str) -> list[bool]:
     growth in Uganda" ties through no run. Only a tied cue states a direction
     (`raw_text._states_direction`) or credits words to the qualifier trim
     (`_applied_phrases`); a role whose cue is tied to no occurrence is read off the
-    measure. The veto reads the word form alone (`veto_words`), since a joined form has no
-    word before the place.
+    measure. The veto reads the word form alone (`CueReading.preceding`), since a joined
+    form has no word before the place.
 
-    The query is split and folded once, and each entity's own tie read once, however many
-    parts read the result.
+    The reading depends on each entity's text, span, role and cue and on the query alone,
+    so a request that reads the same entities twice computes it once.
     """
-    tokens = _veto_tokens(query)
-    words = [word for word, _ in tokens]
-    text = _grounding_form(query)
-    cued = [_cued_starts(entity, words) for entity in entities]
-    places = [_veto_words(entity.span or entity.text) for entity in entities]
-    return [
-        bool(starts)
-        or _cue_joins_place(entity, text)
-        or _coordinated(i, entities, places=places, cued=cued, tokens=tokens)
-        for i, (entity, starts) in enumerate(zip(entities, cued, strict=True))
+    return _read_cues(query, tuple((e.text, e.span, e.role, e.cue) for e in entities))
+
+
+@lru_cache(maxsize=8)
+def _read_cues(query: str, placed: tuple[_Placed, ...]) -> CueReading:
+    entities = [
+        ExtractedEntity.model_construct(text=text, span=span, role=role, cue=cue)
+        for text, span, role, cue in placed
     ]
-
-
-def _coordinated(
-    index: int,
-    entities: Sequence[ExtractedEntity],
-    *,
-    places: Sequence[list[str]],
-    cued: Sequence[set[int]],
-    tokens: Sequence[tuple[str, bool]],
-) -> bool:
-    """The coordinated form of `cue_ties`: whether an occurrence of the place of
-    `entities[index]` lies in a coordinated run with an occurrence of an anchor's place
-    that the anchor's cue ties. `places` (the words of each entity's span, else its name) and
-    `cued` (the starts `_cued_starts` finds) are parallel to `entities`.
-
-    An anchor is another of `entities` with the same role and the same cue text. Between
-    the two occurrences, in either order, every word is one of `_COORDINATORS` or lies in
-    the place of another entity with the role, and every separator is whitespace, ",", "、",
-    "/" or "&". `tokens` are the query's `_veto_tokens`."""
-    entity = entities[index]
-    cue = _grounding_form(entity.cue or "")
-    if not entity.role or not cue:
-        return False
-    words = [word for word, _ in tokens]
-    own_place = places[index]
-    others = [
-        (other, place, starts)
-        for i, (other, place, starts) in enumerate(zip(entities, places, cued, strict=True))
-        if i != index and other.role == entity.role
+    scan = _Scan.of(query, entities)
+    direct = [
+        bool(cued) or bool(joined) for cued, joined in zip(scan.cued, scan.joined, strict=True)
     ]
-    in_a_place = {
-        i
-        for _, place, _ in others
-        for start in span_starts(words, place)
-        for i in range(start, start + len(place))
-    }
-    for anchor, place, starts in others:
-        if _grounding_form(anchor.cue or "") != cue:
-            continue
-        for anchor_start in starts:
-            for start in span_starts(words, own_place):
-                if start >= anchor_start + len(place):
-                    first, last = anchor_start + len(place), start
-                elif start + len(own_place) <= anchor_start:
-                    first, last = start + len(own_place), anchor_start
+    groups: dict[tuple[Party, str], list[int]] = {}
+    for i, entity in enumerate(entities):
+        cue = _grounding_form(entity.cue or "")
+        if entity.role and cue:
+            groups.setdefault((entity.role, cue), []).append(i)
+    ties = list(direct)
+    for members in groups.values():
+        anchors = [j for j in members if direct[j]]
+        for i in members:
+            if not direct[i]:
+                ties[i] = any(
+                    scan.listed_by_words(i, j) or scan.listed_by_join(i, j) for j in anchors
+                )
+    return CueReading(
+        ties=tuple(ties),
+        words=tuple(scan.words),
+        starts=tuple(scan.starts),
+        cued=tuple(scan.cued),
+        has_role=tuple(bool(entity.role) for entity in entities),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _Scan:
+    """A query read against entities: what `read_cues` ties their cues with.
+
+    The fields are parallel to `entities`, except `tokens` and `words` (the query's
+    `_veto_tokens` and their words) and `text` (the query folded, `_grounding_form`).
+    `places` are the words of each entity's span, else its name, and `starts` the
+    positions in `words` where they occur. `cued` are the starts the word form ties
+    (`_cued_starts`), and `joined` the occurrences of the span, as character ranges of
+    `text`, that the join form ties (`_joined_places`). `spans` are the folded spans.
+    `covering` holds, for each role, the entities whose place covers each position of
+    `words`.
+    """
+
+    entities: list[ExtractedEntity]
+    tokens: list[tuple[str, bool]]
+    words: list[str]
+    text: str
+    places: list[tuple[str, ...]]
+    starts: list[frozenset[int]]
+    cued: list[frozenset[int]]
+    joined: list[list[tuple[int, int]]]
+    spans: list[str]
+    covering: dict[Party, dict[int, set[int]]]
+
+    @classmethod
+    def of(cls, query: str, entities: list[ExtractedEntity]) -> _Scan:
+        tokens = _veto_tokens(query)
+        words = [word for word, _ in tokens]
+        text = _grounding_form(query)
+        index: dict[str, list[int]] = {}
+        for at, word in enumerate(words):
+            index.setdefault(word, []).append(at)
+        places = [tuple(_veto_words(e.span or e.text)) for e in entities]
+        starts = [frozenset(_run_starts(index, words, place)) for place in places]
+        covering: dict[Party, dict[int, set[int]]] = {}
+        for i, entity in enumerate(entities):
+            if entity.role:
+                covered = covering.setdefault(entity.role, {})
+                for start in starts[i]:
+                    for position in range(start, start + len(places[i])):
+                        covered.setdefault(position, set()).add(i)
+        return cls(
+            entities=entities,
+            tokens=tokens,
+            words=words,
+            text=text,
+            places=places,
+            starts=starts,
+            cued=[
+                _cued_starts(e, index, words, place=place, starts=s)
+                for e, place, s in zip(entities, places, starts, strict=True)
+            ],
+            joined=[_joined_places(e, text) for e in entities],
+            spans=[_grounding_form(e.span or "") for e in entities],
+            covering=covering,
+        )
+
+    def listed_by_words(self, index: int, anchor: int) -> bool:
+        """Whether an occurrence of the place of `entities[index]` lies in a list with an
+        occurrence of the place of `entities[anchor]` that the word form ties.
+
+        Between the two occurrences, in either order, every word is one of `_LISTING_WORDS`
+        or lies in the place of another entity with the same role, and every separator is
+        whitespace, ",", "、", "/" or "&" (`_veto_tokens`).
+        """
+        role = self.entities[index].role
+        covering = self.covering.get(role, {}) if role else {}
+        own = len(self.places[index])
+        anchor_len = len(self.places[anchor])
+        for anchor_start in self.cued[anchor]:
+            for start in self.starts[index]:
+                if start >= anchor_start + anchor_len:
+                    first, last = anchor_start + anchor_len, start
+                elif start + own <= anchor_start:
+                    first, last = start + own, anchor_start
                 else:
                     continue
-                if all(tokens[i][1] for i in range(first, last + 1)) and all(
-                    i in in_a_place or words[i] in _COORDINATORS for i in range(first, last)
+                if all(self.tokens[k][1] for k in range(first, last + 1)) and all(
+                    self.words[k] in _LISTING_WORDS
+                    or any(other != index for other in covering.get(k, ()))
+                    for k in range(first, last)
                 ):
                     return True
-    return False
+        return False
+
+    def listed_by_join(self, index: int, anchor: int) -> bool:
+        """Whether an occurrence of the span of `entities[index]` precedes an occurrence of
+        the span of `entities[anchor]` that the join form ties, with only list separators
+        (`_LIST_SEPARATORS`), whitespace and the spans of other entities with the same role
+        between them, read on `text` by character offsets: "ノルウェー、スウェーデンからの"
+        lists both."""
+        own = self.spans[index]
+        if not own:
+            return False
+        role = self.entities[index].role
+        others = [
+            span
+            for k, span in enumerate(self.spans)
+            if k != index and span and self.entities[k].role == role
+        ]
+        for anchor_start, _ in self.joined[anchor]:
+            for at in _occurrences(own, self.text):
+                end = at + len(own)
+                if end <= anchor_start and _only_a_list(self.text, end, anchor_start, others):
+                    return True
+        return False
 
 
-def _cue_joins_place(entity: ExtractedEntity, text: str) -> bool:
-    """The join form of `cue_ties`; `text` is the query folded (`_grounding_form`)."""
+def _only_a_list(text: str, start: int, stop: int, places: Sequence[str]) -> bool:
+    """Whether `text[start:stop]` is made of list separators, whitespace and the folded
+    `places`."""
+    reach = {start}
+    for at in range(start, stop):
+        if at not in reach:
+            continue
+        if text[at] in _LIST_SEPARATORS or text[at].isspace():
+            reach.add(at + 1)
+        reach.update(at + len(place) for place in places if text.startswith(place, at))
+    return stop in reach
+
+
+def _run_starts(
+    index: Mapping[str, Sequence[int]], words: Sequence[str], run: Sequence[str]
+) -> list[int]:
+    """Each position in `words` where `run` occurs as whole words. `index` maps each word
+    to its positions. An empty run occurs nowhere."""
+    return (
+        [at for at in index.get(run[0], ()) if tuple(words[at : at + len(run)]) == tuple(run)]
+        if run
+        else []
+    )
+
+
+def _joined_places(entity: ExtractedEntity, text: str) -> list[tuple[int, int]]:
+    """The character ranges in `text` (the query folded, `_grounding_form`) of the
+    occurrences of `entity`'s span that its cue holds or touches with no space between: the
+    join form of `read_cues`."""
     cue = _grounding_form(entity.cue or "")
     place = _grounding_form(entity.span or "")
     if not cue or not place:
-        return False
+        return []
     places = [(at, at + len(place)) for at in _occurrences(place, text)]
+    joined: set[tuple[int, int]] = set()
     for cue_start in _occurrences(cue, text):
         cue_end = cue_start + len(cue)
         for place_start, place_end in places:
             touches = cue_end == place_start or cue_start == place_end
             holds = cue_start <= place_start and place_end <= cue_end
             if touches or holds:
-                return True
-    return False
+                joined.add((place_start, place_end))
+    return sorted(joined)
 
 
 def _occurrences(piece: str, text: str) -> list[int]:
@@ -703,11 +857,13 @@ def _ground_roles(
     with a null or blank cue dropped.
 
     An organisation whose own words stand straight before a measure word, as "IMF" in "IMF
-    credit outstanding Argentina", is the source with its own words as cue, whatever role
-    the model gave it but creditor or debtor. A creditor or debtor keeps its role and the
-    model's cue, or takes the organisation's own words as cue when it cites none. A role
+    credit outstanding Argentina", is the lender. Where the model read the measure as a debt
+    (it gave the organisation a creditor or debtor role) the lender is the creditor, whatever
+    debt party the model named, and keeps the model's cue or takes the organisation's own
+    words as cue when it cites none. Otherwise the lender is the source, with its own words
+    as cue, whatever role the model gave it. A role
     the model cites no words for reads as world knowledge, so the place keeps no role. A
-    role whose cue the query ties to no occurrence of the place (`cue_ties`) stays, read
+    role whose cue the query ties to no occurrence of the place (`read_cues`) stays, read
     off the measure: the model misquotes the cue of a role the query states ("to" for China
     in "how much does Kenya owe China"). The warning log carries the trace id alone.
     Query-derived text appears only in the matching debug log.
@@ -717,12 +873,12 @@ def _ground_roles(
     for entity in entities:
         if _lends_the_measure(normalized_query, entity, variables):
             own_words = (entity.span or entity.text).strip()
-            if entity.role not in DEBT_PARTIES:
-                update = {"role": "source", "cue": own_words}
-            elif (entity.cue or "").strip():
-                update = {}
+            if entity.role in DEBT_PARTIES:
+                update = {"role": "creditor"}
+                if not (entity.cue or "").strip():
+                    update["cue"] = own_words
             else:
-                update = {"cue": own_words}
+                update = {"role": "source", "cue": own_words}
             grounded.append(entity.model_copy(update=update))
         elif entity.role is None or (entity.cue or "").strip():
             grounded.append(entity)
@@ -780,9 +936,9 @@ def _lends_the_measure(
     whose words in the query stand straight before a measure word (`_modifies_measure_word`):
     "IMF credit outstanding", "World Bank IDA concessional flows". A country's name there
     states no direction ("Kenya aid" is usually aid to Kenya), so only an organisation
-    qualifies. `_ground_roles` leaves a creditor or debtor its role: "IMF" is the creditor
-    of "IMF credit outstanding", and a source's role would lose it the debt-party exemption
-    from the direction veto."""
+    qualifies. `_ground_roles` makes the organisation of a debt the creditor ("IMF" in "IMF
+    credit outstanding"), since a source's role would lose it the debt-party exemption from
+    the direction veto."""
     if not is_organisation_name(entity.text):
         return False
     ranges = _all_normalized_text_ranges((entity.span or entity.text).strip(), normalized_query)
@@ -967,7 +1123,7 @@ def _clamp_variables(
     variables return to `dropped_qualifiers` in order, so they cannot attach to a
     different measure and remain visible in the unapplied-qualifier warning.
     """
-    clamped_variables = [v for v in extraction.variables if v.strip() in admitted_variables]
+    clamped_variables, _ = _clamped_variables(extraction.variables)
     discarded_keys = [key for key in qualifiers if key not in admitted_variables]
     if clamped_variables == extraction.variables and not discarded_keys:
         return extraction, qualifiers
@@ -1499,7 +1655,7 @@ def _applied_phrases(
 ) -> frozenset[tuple[str, ...]]:
     """The word sequences the answer applies whenever it resolves: each entity's text
     and span, the cue of each entity that holds a role, written with its place
-    (`_cue_runs`) where `query` ties it there (`cue_ties`), and the wording of each
+    (`_cue_runs`) where `query` ties it there (`read_cues`), and the wording of each
     relative date `_resolve_relative_dates` applied (`date_wording`), which the resolved
     date's bounds no longer carry.
 
@@ -1517,7 +1673,7 @@ def _applied_phrases(
     phrases.update(
         run
         for entity, tied in zip(
-            extraction.entities, cue_ties(extraction.entities, query=query), strict=True
+            extraction.entities, read_cues(extraction.entities, query=query).ties, strict=True
         )
         if entity.role and tied
         for run in _cue_runs(entity)
@@ -1529,12 +1685,14 @@ def _cue_runs(
     entity: ExtractedEntity, *, words: Callable[[str], list[str]] = _words
 ) -> set[tuple[str, ...]]:
     """The word runs that write `entity`'s cue with its place, each split into `words`:
-    the cue straight before the place's span or name, or before "the" and it, or straight
-    after it ("funded by Norway", "funded by the US", "Kenya received"). A cue that holds
-    the place's words ("Kenya's", "Kenyan") is a run of its own.
+    the cue straight before the place's span or name, or before a filler word
+    (`_FILLERS`) and it, or straight after it ("funded by Norway", "funded by the US",
+    "aide à la Côte d'Ivoire", "Kenya received"). A cue that holds the place's words
+    ("Kenya's", "Kenyan") is a run of its own.
 
-    A cue that opens with "from" or "to" is not written after its place: it opens the next
-    phrase, so "to" is no run of Ghana in "exports Ghana to China"."""
+    A cue that opens with a direction preposition (`_PHRASE_OPENERS`) is not written after
+    its place: it opens the next phrase, so "to" is no run of Ghana in "exports Ghana to
+    China" and "a" none in "exportaciones Ghana a China"."""
     cue = tuple(words(entity.cue or ""))
     runs: set[tuple[str, ...]] = set()
     if not cue:
@@ -1545,22 +1703,42 @@ def _cue_runs(
             continue
         if any(cue[i : i + len(place)] == place for i in range(len(cue) - len(place) + 1)):
             runs.add(cue)
-        runs.update({(*cue, *place), (*cue, "the", *place)})
-        if cue[0] not in DIRECTION_PREPS:
+        runs.add((*cue, *place))
+        runs.update((*cue, filler, *place) for filler in _FILLERS)
+        if cue[0] not in _PHRASE_OPENERS:
             runs.add((*place, *cue))
     return runs
 
 
 # A word of the direction veto: letters and digits, joined across a hyphen or apostrophe,
 # so a place inside a longer name ("Guinea" in "Guinea-Bissau") is no occurrence of it.
-_VETO_WORD_RE = re.compile(r"[^\W_]+(?:['\u2019-][^\W_]+)*")
-_POSSESSIVE_RE = re.compile(r"(.+)['\u2019]s")
+_VETO_WORD_RE = re.compile(r"[^\W_]+(?:['-][^\W_]+)*")
+_POSSESSIVE_RE = re.compile(r"(.+)'s")
+# The elided article of French and Italian is a word of its own: "l'Ukraine" is "l", "ukraine".
+_ELISION_RE = re.compile(r"l'(.+)")
 
 
 # Words that join the places of one coordinated phrase, "aid from Norway and Sweden"; the
-# list is closed and explicit per language. "the" is the article of "and the UK".
-_COORDINATORS = frozenset(
-    {"and", "or", "the", "y", "e", "et", "und", "en", "og", "och", "i", "ja", "и", "та"}
+# list is closed and explicit per language. "en" and "i" also mean "in" and are left out.
+_COORDINATORS = frozenset({"and", "or", "y", "e", "et", "und", "og", "och", "ja", "и", "та"})
+# Words that may stand between a cue and its place, or inside a list of places: "to both
+# Kenya and Uganda", "aide à la Côte d'Ivoire", "Hilfe an die Ukraine". The list is closed
+# and explicit per language. "l" is the elision "l'" (`_ELISION_RE`).
+_FILLERS = frozenset(
+    {"the", "a", "an", "both"}
+    | {"la", "le", "les", "l"}
+    | {"el", "los", "las"}
+    | {"die", "der", "den", "dem", "das"}
+    | {"il", "lo", "gli"}
+    | {"o", "os", "as"}
+)
+_LISTING_WORDS = _COORDINATORS | _FILLERS
+# Prepositions that state a direction and are not genitives. A cue that opens with one
+# opens the next phrase when the query writes it after a place (`_cue_runs`). "de", "du",
+# "des", "del", "van" and "von" are left out: they mark a genitive as often as a direction.
+_PHRASE_OPENERS = DIRECTION_PREPS | frozenset(
+    {"into", "a", "à", "au", "aux", "vers", "hacia", "desde", "para", "nach", "zu", "an", "aus"}
+    | {"naar", "till", "från", "fra", "per", "da", "verso"}
 )
 # Between two words, only whitespace and these marks keep a phrase coordinated. "&" is a
 # coordinator that `_VETO_WORD_RE` reads as a separator.
@@ -1568,13 +1746,16 @@ _COORDINATING_SEPARATOR_RE = re.compile(r"[\s,\u3001/&]*")
 
 
 def _veto_tokens(text: str) -> list[tuple[str, bool]]:
-    """The casefolded words of `text` the direction veto reads (`_VETO_WORD_RE`), each with
-    whether only whitespace and coordinating marks (`_COORDINATING_SEPARATOR_RE`) lie
-    between it and the word before it. A possessive is split from its place ("Kenya's" as
-    "kenya", "s"), so the place is an occurrence and the cue "Kenya's" or "'s" a run
-    written with it."""
+    """The words of `text` the direction veto reads (`_VETO_WORD_RE`), each with whether
+    only whitespace and coordinating marks (`_COORDINATING_SEPARATOR_RE`) lie between it and
+    the word before it. The text is folded as every other form of a tie is
+    (`_grounding_form`), so a typographic apostrophe, a fullwidth letter and a difference of
+    case leave a place and its cue the same words. A possessive is split from its place
+    ("Kenya's" as "kenya", "s"), so the place is an occurrence and the cue "Kenya's" or "'s"
+    a run written with it, and the elided article is split from the word it joins
+    (`_ELISION_RE`)."""
     tokens: list[tuple[str, bool]] = []
-    folded = text.casefold()
+    folded = _grounding_form(text)
     previous_end = 0
     for match in _VETO_WORD_RE.finditer(folded):
         coordinated = bool(
@@ -1584,6 +1765,8 @@ def _veto_tokens(text: str) -> list[tuple[str, bool]]:
         word = match.group()
         if possessive := _POSSESSIVE_RE.fullmatch(word):
             tokens += [(possessive.group(1), coordinated), ("s", True)]
+        elif elision := _ELISION_RE.fullmatch(word):
+            tokens += [("l", coordinated), (elision.group(1), True)]
         else:
             tokens.append((word, coordinated))
     return tokens
@@ -1594,50 +1777,26 @@ def _veto_words(text: str) -> list[str]:
     return [word for word, _ in _veto_tokens(text)]
 
 
-def _cued_starts(entity: ExtractedEntity, words: Sequence[str]) -> set[int]:
-    """The positions in `words` where an occurrence of `entity`'s place (its span, else
-    its name) starts inside a run that writes its cue with it (`_cue_runs`): the word form
-    of `cue_ties`."""
-    place = _veto_words(entity.span or entity.text)
-    starts = span_starts(words, place)
+def _cued_starts(
+    entity: ExtractedEntity,
+    index: Mapping[str, Sequence[int]],
+    words: Sequence[str],
+    *,
+    place: Sequence[str],
+    starts: Iterable[int],
+) -> frozenset[int]:
+    """The positions in `words` where an occurrence of `entity`'s place (`place`, the words
+    of its span else its name, occurring at `starts`) starts inside a run that writes its
+    cue with it (`_cue_runs`): the word form of `read_cues`. `index` maps each word to its
+    positions."""
+    starts = frozenset(starts)
     tied: set[int] = set()
+    if not starts:
+        return frozenset(tied)
     for run in _cue_runs(entity, words=_veto_words):
-        for at in span_starts(words, run):
+        for at in _run_starts(index, words, run):
             tied.update(s for s in starts if at <= s and s + len(place) <= at + len(run))
-    return tied
-
-
-def veto_words(entities: Sequence[ExtractedEntity], *, query: str) -> list[tuple[str, ...]]:
-    """The word straight before each occurrence of each entity's place (its span, else its
-    name) in `query` that its role is tied to, which the direction veto reads
-    (`role_text.role_contradicted`), parallel to `entities`. Words are split as
-    `_veto_words` splits them.
-
-    A role is tied to the occurrences its cue is written with (`_cue_runs`), so in "aid to
-    Kenya and Kenya's exports" the exports role, cue "Kenya's", reads only its own
-    occurrence and the aid clause's "to" does not veto it. A role whose cue is written with
-    no occurrence (detached or misquoted) reads every occurrence that no other role of
-    `entities` is tied to, and every occurrence when other roles claim them all. An
-    occurrence that opens the query has no word before it.
-
-    The query is split once and each entity's tied occurrences (`_cued_starts`) are read
-    once, however many parts read the result.
-    """
-    words = _veto_words(query)
-    cued = [_cued_starts(entity, words) for entity in entities]
-    preceding: list[tuple[str, ...]] = []
-    for entity, tied in zip(entities, cued, strict=True):
-        if not tied:
-            claimed = {
-                start
-                for other, other_tied in zip(entities, cued, strict=True)
-                if other is not entity and other.role
-                for start in other_tied
-            }
-            starts = set(span_starts(words, _veto_words(entity.span or entity.text)))
-            tied = (starts - claimed) or starts
-        preceding.append(tuple(words[start - 1] for start in sorted(tied) if start > 0))
-    return preceding
+    return frozenset(tied)
 
 
 def _date_words(extraction: Extraction) -> frozenset[str]:

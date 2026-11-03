@@ -8,7 +8,6 @@ import asyncio
 import pytest
 
 from search.engine import extract
-from search.engine.entry import raw_text
 from search.engine.entry.dataset_entries import interpret_parts as dataset_door_interpretation
 from search.engine.entry.parsed import (
     _entity_roles_for_part,
@@ -21,7 +20,7 @@ from search.engine.extract import (
     ExtractedOperation,
     Extraction,
     ExtractionResult,
-    veto_words,
+    read_cues,
 )
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region.pipeline import resolve_variable
@@ -333,6 +332,12 @@ class TestRawTextDoorCarriesEveryOccurrence:
                 {"Côte d'Ivoire": False},
                 id="typographic-query-plain-name-and-cue",
             ),
+            pytest.param(
+                "aid to Côte d\u2019Ivoire",
+                [("Côte d'Ivoire", "recipient", "to")],
+                {"Côte d'Ivoire": True},
+                id="typographic-query-plain-name-and-a-direction-cue",
+            ),
         ],
     )
     def test_a_direction_is_stated_when_the_cue_reaches_beyond_the_place(
@@ -393,7 +398,7 @@ class TestRawTextDoorCarriesEveryOccurrence:
         entity = ExtractedEntity(text="Kenya", span=" ", cue="from", role="recipient")
         roles = _prepared_roles([entity], query="Kenya aid from France", measures=["aid"])
         assert [(role.span, role.preceding) for role in roles["Kenya"]] == [("Kenya", ())]
-        assert veto_words([entity], query="Kenya aid from France") == [()]
+        assert read_cues([entity], query="Kenya aid from France").preceding([0]) == [()]
 
     def test_a_debt_names_its_creditor_and_its_debtor_by_party_words(self):
         """The creditor is the origin and the debtor the destination. The possessive debtor
@@ -670,25 +675,11 @@ def test_an_unrelated_part_leaves_the_roles_of_another_unchanged(
     assert _part_axes(*two, [*entities, *added])[0] == alone
 
 
-def test_the_ties_and_veto_words_are_read_once_and_every_part_reads_its_own_entity_ties(
-    monkeypatch,
-):
-    """The request reads each entity's cue tie (`extract.cue_ties`) and veto words
-    (`extract.veto_words`) once for all its parts. Kenya's two roles keep the words before
-    the occurrence each is tied to, in the part that scopes it."""
-    reads = []
-
-    def spy(name):
-        real = getattr(raw_text, name)
-
-        def read(*args, **kwargs):
-            reads.append(name)
-            return real(*args, **kwargs)
-
-        monkeypatch.setattr(raw_text, name, read)
-
-    spy("veto_words")
-    spy("cue_ties")
+def test_the_cues_are_read_once_and_every_part_reads_its_own_entity_ties():
+    """The request reads each entity's cue tie and veto words (`extract.read_cues`) once for
+    all its parts. Kenya's two roles keep the words before the occurrence each is tied to,
+    in the part that scopes it."""
+    extract._read_cues.cache_clear()
 
     per_part = part_roles(
         [
@@ -700,7 +691,7 @@ def test_the_ties_and_veto_words_are_read_once_and_every_part_reads_its_own_enti
         measures=["aid", "exports"],
     )
 
-    assert sorted(reads) == ["cue_ties", "veto_words"]
+    assert extract._read_cues.cache_info().misses == 1
     assert [
         {name: [r.preceding for r in rs] for name, rs in part.items()} for part in per_part
     ] == [
@@ -709,32 +700,26 @@ def test_the_ties_and_veto_words_are_read_once_and_every_part_reads_its_own_enti
     ]
 
 
-def test_the_qualifier_trim_reads_the_cue_ties_once_for_all_its_entities(monkeypatch):
-    """`extract._applied_phrases` reads every entity's tie in one `cue_ties` call."""
-    reads = []
-    real = extract.cue_ties
+def test_the_qualifier_trim_and_the_door_read_the_cues_once_between_them():
+    """`extract._applied_phrases` reads every entity's tie in one `read_cues` call, and the
+    door reads the same entities of the same query from that reading."""
+    extract._read_cues.cache_clear()
+    query = "aid from Norway and Sweden to Kenya"
+    entities = [
+        linked("Norway", "source", "from"),
+        linked("Sweden", "source", "from"),
+        linked("Kenya", "recipient", "to"),
+    ]
+    extraction = Extraction(kind="resolution", variables=["aid"], entities=entities)
 
-    def spy(*args, **kwargs):
-        reads.append(1)
-        return real(*args, **kwargs)
-
-    monkeypatch.setattr(extract, "cue_ties", spy)
-    extraction = Extraction(
-        kind="resolution",
-        variables=["aid"],
-        entities=[
-            linked("Norway", "source", "from"),
-            linked("Sweden", "source", "from"),
-            linked("Kenya", "recipient", "to"),
-        ],
-    )
-
-    phrases = extract._applied_phrases(
-        extraction, query="aid from Norway and Sweden to Kenya", date_wording=()
-    )
-
-    assert len(reads) == 1
+    phrases = extract._applied_phrases(extraction, query=query, date_wording=())
+    info = extract._read_cues.cache_info()
+    assert (info.hits, info.misses) == (0, 1)
     assert ("from", "sweden") in phrases
+
+    part_roles(entities, query=query, measures=["aid"])
+    info = extract._read_cues.cache_info()
+    assert (info.hits, info.misses) == (1, 1)
 
 
 def test_a_creditor_on_a_debt_measure_keeps_its_role_and_draws_no_veto_from_a_later_to():
@@ -1136,7 +1121,7 @@ def test_the_veto_reads_the_occurrences_a_role_is_tied_to(
     monkeypatch, query: str, entities: list[ExtractedEntity], part: int, reason: str | None
 ):
     """A raw-text leg's role query is the whole query, and its veto reads only the
-    occurrences of the place the role's cue is written with (`extract.veto_words`). A role
+    occurrences of the place the role's cue is written with (`extract.CueReading.preceding`). A role
     the veto keeps binds its place on the origin axis its source names."""
     measures = ["aid", "exports"]
     index = patch_coverage(

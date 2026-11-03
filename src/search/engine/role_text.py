@@ -341,7 +341,7 @@ class DoorRole:
     (`asks_members`). ``party`` is the place's party when the door names one
     (`ExtractedEntity.role`, `party_for_text`), which `contradicts` reads. ``preceding``
     is the word straight before each occurrence of the place the raw-text door ties the
-    role to (`extract.veto_words`), which `role_contradicted` reads in place of the role
+    role to (`extract.CueReading.preceding`), which `role_contradicted` reads in place of the role
     query, so another measure's wording of the same place does not veto it. None reads
     every occurrence in the role query, as the parsed door's part-local query does.
     """

@@ -81,11 +81,10 @@ from search.engine.extract import (
     _dedupe_stripped,
     _grounding_form,
     cue_is_its_span,
-    cue_ties,
     dates_to_request,
     extract,
+    read_cues,
     scoped_measures,
-    veto_words,
 )
 from search.engine.fanout import (
     _FanOutResult,
@@ -479,11 +478,11 @@ def _entity_surfaces(entities: list[ExtractedEntity], *, query: str) -> dict[str
 
 def _states_direction(entity: ExtractedEntity, *, tied: bool) -> bool:
     """Whether `entity`'s cue (`ExtractedEntity.cue`) states its direction, which it does
-    when `query` ties it to the place (`tied`, from `extract.cue_ties`) and it reaches
+    when `query` ties it to the place (`tied`, from `extract.read_cues`) and it reaches
     beyond the place's own words (its span and its name, each as whole words), the article
     "the" and a possessive marker or "of" (`_MEASURE_READING_CUES`). A cue the query ties
     to no occurrence of the place, by the word, join or coordinated form of
-    `extract.cue_ties`, is a misquoted or detached one, and its role is read off the measure.
+    `extract.read_cues`, is a misquoted or detached one, and its role is read off the measure.
     Apostrophes are read plain on the cue and on the place alike.
 
     "to", "funded by" and the case ending in "Norjasta" with the span "Norja" state it. A
@@ -545,7 +544,7 @@ def _entity_roles(
     maps a part's (`parsed._entity_roles_for_part`). `part` holds positions in `entities`
     (`_part_positions`). `stated` and `preceding` hold, for every entity of `entities`, whether
     its cue states its direction (`_states_direction`) and its veto words
-    (`extract.veto_words`), which the request reads once for all its parts.
+    (`extract.CueReading.preceding`), which the request reads once for all its parts.
 
     An entity's party word (`ExtractedEntity.role`) gives its axis through the parsed
     door's lexicon (`role_text.role_axis_for_text`), so a creditor is the origin and a
@@ -577,9 +576,9 @@ def _entity_roles(
         if role not in occurrences:
             occurrences.append(role)
             continue
-        i = occurrences.index(role)
-        words = (*(occurrences[i].preceding or ()), *(role.preceding or ()))
-        occurrences[i] = dataclasses.replace(role, preceding=tuple(dict.fromkeys(words)))
+        seen = occurrences.index(role)
+        words = (*(occurrences[seen].preceding or ()), *(role.preceding or ()))
+        occurrences[seen] = dataclasses.replace(role, preceding=tuple(dict.fromkeys(words)))
     return roles
 
 
@@ -1199,16 +1198,16 @@ def _prepare_extraction(
     # parts it scopes.
     entity_breakdowns: list[tuple[str, frozenset[str]]] = []
     extracted_entities: list[ExtractedEntity] = []
-    extracted_ties: list[bool] = []
+    extracted_positions: list[int] = []
     # A tie reads the other entities of the extraction, those left out below among them.
-    ties = cue_ties(extraction.entities, query=query)
-    for entity, tied in zip(extraction.entities, ties, strict=True):
+    cues = read_cues(extraction.entities, query=query)
+    for position, entity in enumerate(extraction.entities):
         words = entity.span or entity.text
         if words in scan.source_entities:
             continue
         if breakdown_axis(words, query=query) is None:
             extracted_entities.append(entity)
-            extracted_ties.append(tied)
+            extracted_positions.append(position)
         else:
             entity_breakdowns.append((words, scoped_measures(entity, extraction.variables)))
     entities: list[str] = list(dict.fromkeys(_entity_key(e) for e in extracted_entities))
@@ -1344,10 +1343,10 @@ def _prepare_extraction(
         entity_words.setdefault(_entity_key(entity), (entity.span or entity.text).strip())
     entity_surfaces = _entity_surfaces(extracted_entities, query=query)
     stated = [
-        _states_direction(entity, tied=tied)
-        for entity, tied in zip(extracted_entities, extracted_ties, strict=True)
+        _states_direction(entity, tied=cues.ties[position])
+        for entity, position in zip(extracted_entities, extracted_positions, strict=True)
     ]
-    preceding = veto_words(extracted_entities, query=query)
+    preceding = cues.preceding(extracted_positions)
 
     reading = read_sources(query, interpretation_variables)
 
