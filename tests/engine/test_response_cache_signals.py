@@ -11,7 +11,7 @@ import pytest
 from search.engine.extract import ExtractedEntity
 from search.engine.response_cache_flow import Layer2Signals, compute_layer2_signals
 from search.engine.role_text import DoorRole
-from tests.engine.test_entity_roles import _linked, _part_roles
+from tests.engine._entity_roles import linked, part_roles
 
 _REGION_DIR = Path(__file__).parents[2] / "src" / "search" / "engine" / "region"
 
@@ -102,12 +102,12 @@ def test_opposing_preposition_contradicts() -> None:
         (
             "aid to Kenya and Kenya's exports",
             [
-                _linked("Kenya", "recipient", "to", parts=(0,)),
-                _linked("Kenya", "source", "Kenya's", parts=(1,)),
+                linked("Kenya", "recipient", "to", parts=(0,)),
+                linked("Kenya", "source", "Kenya's", parts=(1,)),
             ],
             [False, False],
         ),
-        ("aid to Kenya from France", [_linked("Kenya", "source", "from")], [True]),
+        ("aid to Kenya from France", [linked("Kenya", "source", "from")], [True]),
     ],
 )
 def test_the_signal_reads_the_occurrences_the_door_ties_a_role_to(
@@ -117,7 +117,7 @@ def test_the_signal_reads_the_occurrences_the_door_ties_a_role_to(
     pipeline's veto does (`role_text.role_contradicted`): the exports part's Kenya, tied to
     "Kenya's", is not contradicted by the aid clause's "to Kenya", and a source Kenya after
     "to" is."""
-    entity_roles = _part_roles(entities, query=query, measures=["aid", "exports"][: len(entities)])
+    entity_roles = part_roles(entities, query=query, measures=["aid", "exports"][: len(entities)])
     signals = compute_layer2_signals(query=query, entity_roles=entity_roles, query_text=None)
     assert [signal["contradicts"] for signal in signals.role_contradictions] == contradicts
 

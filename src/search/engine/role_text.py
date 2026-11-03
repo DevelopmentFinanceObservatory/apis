@@ -117,13 +117,17 @@ _SAME_AXIS_PREPS: dict[RoleAxis, frozenset[str]] = {
 }
 
 
-def _span_starts(query_tokens: list[str], span_tokens: list[str]) -> list[int]:
-    """Return each token index where ``span_tokens`` occurs as whole words."""
+def span_starts(query_tokens: Sequence[str], span_tokens: Sequence[str]) -> list[int]:
+    """Return each token index where ``span_tokens`` occurs as whole words. An empty span
+    occurs nowhere."""
     span_len = len(span_tokens)
+    if not span_len:
+        return []
+    target = tuple(span_tokens)
     return [
         i
         for i in range(len(query_tokens) - span_len + 1)
-        if query_tokens[i : i + span_len] == span_tokens
+        if tuple(query_tokens[i : i + span_len]) == target
     ]
 
 
@@ -144,10 +148,8 @@ def contradicts(query: str, *, span: str, axis: RoleAxis, party: Party | None) -
     China``, ``repays to China``, ``repayments from Zambia``).
     """
     span_tokens = _tokenize(span)
-    if not span_tokens:
-        return False
     query_tokens = _tokenize(query)
-    preceding = [query_tokens[i - 1] for i in _span_starts(query_tokens, span_tokens) if i > 0]
+    preceding = [query_tokens[i - 1] for i in span_starts(query_tokens, span_tokens) if i > 0]
     return _preceding_contradicts(preceding, axis=axis, party=party)
 
 
@@ -226,7 +228,7 @@ def _governing_axes(query_tokens: list[str], phrase_tokens: list[str]) -> set[Ro
     """The axes the role prepositions directly before each occurrence of the phrase name."""
     return {
         axis
-        for start in _span_starts(query_tokens, phrase_tokens)
+        for start in span_starts(query_tokens, phrase_tokens)
         if start > 0 and (axis := _ROLE_PREP_AXES.get(query_tokens[start - 1])) is not None
     }
 

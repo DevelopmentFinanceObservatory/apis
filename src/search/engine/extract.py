@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from code_index.shared import get_index, get_measure_index
 from dfo_platform.trace import get_trace_id
@@ -53,7 +53,7 @@ from search.engine.qualifier_match import (
     slot_noun_named,
 )
 from search.engine.quantity import query_normalisation
-from search.engine.role_text import Party, role_axis_for_text
+from search.engine.role_text import Party, role_axis_for_text, span_starts
 from search.engine.time_bind import parse_time_text
 from search.engine.unit.bind import names_price_basis, names_unit_request
 from search.engine.unit.lexicon import MAX_YEAR, MIN_YEAR
@@ -152,6 +152,12 @@ class ExtractedEntity(BaseModel):
     cue: str | None = Field(default=None, description=_ENTITY_CUE_DESCRIPTION)
     role: Party | None = Field(default=None, description=_ENTITY_ROLE_DESCRIPTION)
     members: bool = Field(default=False, description=_ENTITY_MEMBERS_DESCRIPTION)
+
+    @field_validator("span")
+    @classmethod
+    def _read_a_blank_span_as_none(cls, span: str | None) -> str | None:
+        """A blank span names no words of the query, so it reads as none."""
+        return span if span is None or span.strip() else None
 
 
 class ExtractedOperation(BaseModel):
@@ -565,10 +571,15 @@ def cue_grounded(entity: ExtractedEntity, query: str) -> bool:
     trim (`_applied_phrases`); a role whose cue the model misquoted is read off the
     measure.
     """
+    return cue_grounded_in_form(entity, _grounding_form(query))
+
+
+def cue_grounded_in_form(entity: ExtractedEntity, text: str) -> bool:
+    """`cue_grounded` for a query already folded by `_grounding_form` into `text`, so a
+    request that asks it of many entities folds the query once."""
     folded = _grounding_form(entity.cue or "")
     if not folded:
         return False
-    text = _grounding_form(query)
     if _end_of_whole_occurrence(folded, text, 0) is not None:
         return True
     place = _grounding_form(entity.span or "")
@@ -653,7 +664,9 @@ def scoped_measures(entity: ExtractedEntity, variables: Sequence[str]) -> frozen
     return named or frozenset(variable.strip() for variable in variables)
 
 
-def _entities_on_admitted_measures(extraction: Extraction) -> list[ExtractedEntity]:
+def _entities_on_admitted_measures(
+    extraction: Extraction, *, positions: Sequence[int]
+) -> list[ExtractedEntity]:
     """`extraction.entities` with each one's measure indices (`ExtractedEntity.variables`)
     re-indexed onto the variable list `_clamp_variables` leaves, as `_admit_operations`
     re-indexes operations.
@@ -661,10 +674,9 @@ def _entities_on_admitted_measures(extraction: Extraction) -> list[ExtractedEnti
     An index outside `variables` names no measure and is dropped, so an entity that names
     none scopes every measure (`scoped_measures`). An entity whose every index names a
     measure past the variable cap scopes only measures the request drops, and is dropped
-    with them.
+    with them. `positions` are the positions in `extraction.variables` of the occurrences
+    the cap admits (`_clamped_variables`).
     """
-    admitted = _admitted_variables(extraction.variables)
-    positions = [i for i, v in enumerate(extraction.variables) if v.strip() in admitted]
     kept: list[ExtractedEntity] = []
     for entity in extraction.entities:
         named = [i for i in entity.variables if 0 <= i < len(extraction.variables)]
@@ -704,6 +716,15 @@ def _dedupe_stripped(values: Sequence[str]) -> list[str]:
 def _admitted_variables(variables: Sequence[str]) -> frozenset[str]:
     """The stripped distinct variables, in first-seen order, that fit under the cap."""
     return frozenset(_dedupe_stripped(variables)[: settings().max_variables])
+
+
+def _clamped_variables(variables: Sequence[str]) -> tuple[list[str], list[int]]:
+    """`variables` with every occurrence of an admitted variable (`_admitted_variables`)
+    kept, and the positions in `variables` of the occurrences that survive. The position
+    of an occurrence in the first list is its index in the second."""
+    admitted = _admitted_variables(variables)
+    positions = [i for i, v in enumerate(variables) if v.strip() in admitted]
+    return [variables[i] for i in positions], positions
 
 
 def _bound_entities(extraction: Extraction) -> Extraction:
@@ -858,7 +879,7 @@ def _clamp_variables(
     variables return to `dropped_qualifiers` in order, so they cannot attach to a
     different measure and remain visible in the unapplied-qualifier warning.
     """
-    clamped_variables = [v for v in extraction.variables if v.strip() in admitted_variables]
+    clamped_variables, _ = _clamped_variables(extraction.variables)
     discarded_keys = [key for key in qualifiers if key not in admitted_variables]
     if clamped_variables == extraction.variables and not discarded_keys:
         return extraction, qualifiers
@@ -1349,8 +1370,8 @@ def _admit_operations(
     if not extraction.operations:
         return extraction, {}
     variables = extraction.variables
+    _, surviving_positions = _clamped_variables(variables)
     admitted = _admitted_variables(variables)
-    surviving_positions = [i for i, v in enumerate(variables) if v.strip() in admitted]
     kept: list[ExtractedOperation] = []
     dates = list(extraction.dates)
     sidecar: dict[str, dict[tuple[str, str, str | None], Operation]] = {}
@@ -1406,10 +1427,11 @@ def _applied_phrases(
     texts = [text for entity in extraction.entities for text in (entity.text, entity.span) if text]
     texts += date_wording
     phrases = {words for text in texts if (words := tuple(_words(text)))}
+    folded_query = _grounding_form(query)
     phrases.update(
         run
         for entity in extraction.entities
-        if entity.role and cue_grounded(entity, query)
+        if entity.role and cue_grounded_in_form(entity, folded_query)
         for run in _cue_runs(entity)
     )
     return frozenset(phrases)
@@ -1455,55 +1477,46 @@ def _veto_words(text: str) -> list[str]:
     return tokens
 
 
-def _place_starts(place: Sequence[str], words: Sequence[str]) -> list[int]:
-    """The positions in `words` where a run equal to `place` starts."""
-    return [
-        start
-        for start in range(len(words) - len(place) + 1)
-        if tuple(words[start : start + len(place)]) == tuple(place)
-    ]
-
-
 def _cued_starts(entity: ExtractedEntity, words: Sequence[str]) -> set[int]:
     """The positions in `words` where an occurrence of `entity`'s place (its span, else
     its name) starts inside a run that writes its cue with it (`_cue_runs`)."""
     place = _veto_words(entity.span or entity.text)
-    if not place:
-        return set()
-    starts = _place_starts(place, words)
+    starts = span_starts(words, place)
     tied: set[int] = set()
     for run in _cue_runs(entity, words=_veto_words):
-        for at in _place_starts(run, words):
+        for at in span_starts(words, run):
             tied.update(s for s in starts if at <= s and s + len(place) <= at + len(run))
     return tied
 
 
-def veto_words(
-    entity: ExtractedEntity, *, entities: Sequence[ExtractedEntity], query: str
-) -> tuple[str, ...]:
-    """The word straight before each occurrence of `entity`'s place (its span, else its
-    name) in `query` that its role is tied to, which the direction veto reads
-    (`role_text.role_contradicted`). Words are split as `_veto_words` splits them.
+def veto_words(entities: Sequence[ExtractedEntity], *, query: str) -> list[tuple[str, ...]]:
+    """For each of `entities`, the word straight before each occurrence of its place (its
+    span, else its name) in `query` that its role is tied to, which the direction veto
+    reads (`role_text.role_contradicted`). Words are split as `_veto_words` splits them.
+    An entity with no role has no veto and gets no words.
 
     A role is tied to the occurrences its cue is written with (`_cue_runs`), so in "aid to
     Kenya and Kenya's exports" the exports role, cue "Kenya's", reads only its own
     occurrence and the aid clause's "to" does not veto it. A role whose cue is written with
     no occurrence (detached or misquoted) reads every occurrence that no other role of
     `entities` is tied to, and every occurrence when other roles claim them all. An
-    occurrence that opens the query has no word before it.
+    occurrence that opens the query has no word before it. A place with no words (a
+    span of "-", say) occurs nowhere, so its role has no veto.
     """
     words = _veto_words(query)
-    tied = _cued_starts(entity, words)
-    if not tied:
-        claimed = {
-            start
-            for other in entities
-            if other is not entity and other.role
-            for start in _cued_starts(other, words)
-        }
-        starts = set(_place_starts(_veto_words(entity.span or entity.text), words))
-        tied = (starts - claimed) or starts
-    return tuple(words[start - 1] for start in sorted(tied) if start > 0)
+    cued = [_cued_starts(entity, words) if entity.role else set() for entity in entities]
+    cued_by_any_role = set().union(*cued)
+    preceding: list[tuple[str, ...]] = []
+    for i, entity in enumerate(entities):
+        if not entity.role:
+            preceding.append(())
+            continue
+        tied = cued[i]
+        if not tied:
+            starts = set(span_starts(words, _veto_words(entity.span or entity.text)))
+            tied = (starts - cued_by_any_role) or starts
+        preceding.append(tuple(words[start - 1] for start in sorted(tied) if start > 0))
+    return preceding
 
 
 def _date_words(extraction: Extraction) -> frozenset[str]:
@@ -1922,9 +1935,8 @@ async def extract(
     extraction, dates_by_variable = _drop_forecast_years(
         extraction, operations, today_year=today_year
     )
-    admitted = _admitted_variables(extraction.variables)
-    clamped_variables = [v for v in extraction.variables if v.strip() in admitted]
-    entities = _entities_on_admitted_measures(extraction)
+    clamped_variables, positions = _clamped_variables(extraction.variables)
+    entities = _entities_on_admitted_measures(extraction, positions=positions)
     extraction = extraction.model_copy(
         update={"entities": _ground_roles(query, entities, clamped_variables)}
     )

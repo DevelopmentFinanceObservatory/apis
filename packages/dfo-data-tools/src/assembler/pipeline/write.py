@@ -657,8 +657,9 @@ def _without_revision(member: object) -> object:
 
 
 def _structurally_equal(candidate: Mapping[str, object], head: Mapping[str, object]) -> bool:
-    """Compares payloads in everything a reader sees (`changed_members`)."""
-    return not changed_members(candidate, head)
+    """Compares payloads in everything a reader sees (`changed_members`), stopping at the
+    first difference."""
+    return next(_reader_visible_differences(candidate, head), None) is None
 
 
 def changed_members(candidate: Mapping[str, object], head: Mapping[str, object]) -> tuple[str, ...]:
@@ -673,17 +674,20 @@ def changed_members(candidate: Mapping[str, object], head: Mapping[str, object])
     A head whose `provenance.execution_ref` is null equals a candidate whatever replay key the
     candidate names, since cards issued before provenance named a derived frame's replay key
     store null there. Catalogue and schema versions remain part of the comparison."""
+    return tuple(sorted(_reader_visible_differences(candidate, head)))
+
+
+def _reader_visible_differences(
+    candidate: Mapping[str, object], head: Mapping[str, object]
+) -> Iterator[str]:
+    """The differing paths `changed_members` describes, unsorted and produced lazily."""
     head_provenance = cast("Mapping[str, object]", head.get("provenance") or {})
     volatile: tuple[str, ...] = ("generated_at",)
     if head_provenance.get("execution_ref") is None:
         volatile = (*volatile, "execution_ref")
-    return tuple(
-        sorted(
-            _differing_paths(
-                _excluding_volatile(candidate, volatile=volatile),
-                _excluding_volatile(head, volatile=volatile),
-            )
-        )
+    return _differing_paths(
+        _excluding_volatile(candidate, volatile=volatile),
+        _excluding_volatile(head, volatile=volatile),
     )
 
 

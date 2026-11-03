@@ -15,6 +15,7 @@ from search.engine.role_text import (
     every_member_breakdown_axis,
     parsed_directions_contradicted,
     role_axis_for_text,
+    span_starts,
 )
 from search.models import ParsedEntity, ParsedPart, RoleAxis
 
@@ -134,6 +135,11 @@ def test_role_axis_for_text_maps_to_family_to_destination() -> None:
     assert role_axis_for_text("to") == "destination"
     assert role_axis_for_text("recipient") == "destination"
     assert role_axis_for_text("beneficiary") == "destination"
+
+
+def test_span_starts_finds_whole_word_runs_and_no_empty_span() -> None:
+    assert span_starts(["aid", "to", "south", "sudan", "from", "sudan"], ["sudan"]) == [3, 5]
+    assert span_starts(["aid", "to"], []) == []
 
 
 def test_contradicts_false_when_span_absent_from_query() -> None:

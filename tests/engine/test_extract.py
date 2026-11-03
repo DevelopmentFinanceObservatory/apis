@@ -24,6 +24,7 @@ from search.engine.extract import (
     ExtractionResult,
     _admit_operations,
     _applied_phrases,
+    _clamped_variables,
     _drop_forecast_years,
     _ground_roles,
     _occurs_in,
@@ -356,6 +357,13 @@ def test_a_cue_the_query_does_not_hold_credits_no_words():
     togo = _entity("Togo", "Togo", "recipient", "to")
     extraction = Extraction(kind="resolution", variables=["aid"], entities=[togo])
     assert _applied_phrases(extraction, query="Togo aid", date_wording=()) == {("togo",)}
+
+
+@pytest.mark.parametrize(
+    ("span", "expected"), [(" ", None), ("", None), (None, None), (" Kenya ", " Kenya ")]
+)
+def test_an_entity_reads_a_blank_span_as_none(span, expected):
+    assert _entity("Kenya", span, "recipient", "from").span == expected
 
 
 def test_ground_roles_leaves_an_entity_with_no_role_alone():
@@ -889,6 +897,19 @@ def test_extract_clamps_oversized_variables_before_the_reattach_scan(monkeypatch
     # one of the n distinct variables, not just the settings().max_variables
     # survivors.
     assert seen_lengths == [n]
+
+
+def test_clamped_variables_keeps_every_occurrence_of_an_admitted_variable_with_its_position():
+    """The cap admits the first `max_variables` distinct stripped variables and keeps each
+    of their occurrences; a repeated one counts once."""
+    cap = settings().max_variables
+    admitted = [f"measure {i}" for i in range(cap - 1)]
+    variables = ["GDP", " GDP ", *admitted, "measure past the cap"]
+
+    clamped, positions = _clamped_variables(variables)
+
+    assert clamped == ["GDP", " GDP ", *admitted]
+    assert positions == list(range(cap + 1))
 
 
 @pytest.mark.parametrize(
