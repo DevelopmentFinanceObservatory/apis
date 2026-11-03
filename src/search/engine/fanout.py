@@ -47,7 +47,7 @@ from search.engine.region.result import (
     with_runnable_operations,
 )
 from search.engine.region.state import EngineOptions
-from search.engine.role_text import DoorRole, asks_members, role_text_for_axis
+from search.engine.role_text import DoorRole, Party, asks_members, role_text_for
 from search.engine.source_code import (
     PartCode,
     SeriesCodeMembers,
@@ -197,6 +197,15 @@ def _success_directional(
     return bool(role_query)
 
 
+def _axis_parties(roles: Sequence[DoorRole]) -> dict[RoleAxis | None, Party | None]:
+    """Each distinct axis of `roles`, in mention order, with the party its first occurrence
+    names; a name with no role has the one axis None."""
+    parties: dict[RoleAxis | None, Party | None] = {}
+    for role in roles:
+        parties.setdefault(role.axis, role.party)
+    return parties or {None: None}
+
+
 def _leg_parsed_form(
     variable_text: str,
     *,
@@ -214,9 +223,11 @@ def _leg_parsed_form(
     """Build the leg's inputs as one parsed part, the form `NoData.options` are built from.
 
     Each entity appears once per distinct axis the door gave it, with that axis as
-    `role_text`, as the parsed door reads a name repeated on opposite axes. An entity
-    without an axis appears bare. An entity of `member_entities` states `members` on each
-    end it asks for them on (`role_text.asks_members`).
+    `role_text`, as the parsed door reads a name repeated on opposite axes. A creditor or
+    debtor is written as its party (`role_text.role_text_for`), so the restatement draws no
+    contradiction the original did not. An entity without an axis appears bare. An entity
+    of `member_entities` states `members` on each end it asks for them on
+    (`role_text.asks_members`).
     `sources` are the mentions it echoes (`restated_sources`), so a reposted part answers
     from the same sources, and `source_code` is the series code it names. The leg's own
     open roles appear as their axes in `open_roles`, and the axes its operations open ride
@@ -230,11 +241,11 @@ def _leg_parsed_form(
             entities=[
                 ParsedEntity(
                     text=e,
-                    role_text=role_text_for_axis(axis) if axis is not None else None,
+                    role_text=role_text_for(axis, party=party) if axis is not None else None,
                     members=asks_members(roles.get(e) or (), axis, asked=e in member_entities),
                 )
                 for e in entities
-                for axis in (dict.fromkeys(role.axis for role in roles.get(e) or ()) or [None])
+                for axis, party in _axis_parties(roles.get(e) or ()).items()
             ]
             or None,
             time_text=_date_request_to_time_text(date_request),

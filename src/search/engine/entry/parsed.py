@@ -66,6 +66,7 @@ from search.engine.role_text import (
     ROLE_TEXT_NOT_RECOGNISED,
     DoorRole,
     parsed_role_query,
+    party_for_text,
     role_axis_for_text,
 )
 from search.engine.source_code import PartCode, compile_part_code, without_code_words
@@ -133,7 +134,12 @@ def _entity_roles_for_part(part: ParsedPart) -> dict[str, list[DoorRole]]:
         if axis is None:
             continue
         occurrences = roles.setdefault(entity.identity, [])
-        role = DoorRole(axis=axis, span=entity.text, members=bool(entity.members))
+        role = DoorRole(
+            axis=axis,
+            span=entity.text,
+            members=bool(entity.members),
+            party=party_for_text(entity.role_text),
+        )
         if role not in occurrences:
             occurrences.append(role)
     return roles

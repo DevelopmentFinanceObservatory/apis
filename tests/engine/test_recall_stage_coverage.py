@@ -5,12 +5,11 @@ The fixture uses a role-bearing CRS StatVar of the fixture index with finance an
 
 from __future__ import annotations
 
-from typing import Literal
-
 from search.engine.clients.graph import Facet
 from search.engine.extract import ExtractedEntity, Extraction
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
+from search.engine.role_text import Party
 from tests.engine._binders import elected_reply
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import make_request, offline_resolve
@@ -35,8 +34,6 @@ _FINANCE_CODE = "CRSTypeOfFinance110"
 _FLOW_CODE = "CRSTypeOfFlow10"
 
 # Entity text, flow cue, and resolved axis supplied by the door.
-_FlowRole = Literal["origin", "destination", "unspecified"]
-
 _RANKING_QUERY = "top 10 countries by population"
 _RANKING_QUALIFIER = "top 10 countries by population"
 
@@ -48,7 +45,7 @@ class _UnfixedExtractionLLM:
         self,
         variables: list[str],
         dropped_qualifiers: list[str],
-        entities: list[tuple[str, str, _FlowRole]],
+        entities: list[tuple[str, str, Party]],
     ) -> None:
         self._variables = variables
         self._dropped = dropped_qualifiers
@@ -60,10 +57,9 @@ class _UnfixedExtractionLLM:
                 kind="resolution",
                 variables=self._variables,
                 entities=[
-                    ExtractedEntity(
-                        text=text, span=text, flow_role=flow_role, role_span=role_span
-                    )  # span is the place's own surface, role_span the "to" cue
-                    for text, role_span, flow_role in self._entities
+                    # span is the place's own surface, cue the "to" before it
+                    ExtractedEntity(text=text, span=text, role=role, cue=cue)
+                    for text, cue, role in self._entities
                 ],
                 dates=[],
                 dropped_qualifiers=self._dropped,
@@ -126,7 +122,7 @@ def _resolve_coded_qualifier_query(graph: _DetectSpyGraph | None = None):
         llm=_UnfixedExtractionLLM(
             variables=[_UNFIXED_VARIABLE],
             dropped_qualifiers=[_QUALIFIER_PHRASE],
-            entities=[("Kenya", "to", "destination")],
+            entities=[("Kenya", "to", "recipient")],
         ),
         sdmx=_crs_sdmx(),
     )

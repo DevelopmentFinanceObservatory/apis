@@ -59,7 +59,7 @@ from search.engine.response_cache_keys import (
     to_entry,
 )
 from search.engine.response_cache_memo import PartMemo
-from search.engine.role_text import DoorRole, contradicts, every_member_axis
+from search.engine.role_text import DoorRole, every_member_axis, role_contradicted
 from search.engine.stated_scope import intake_key_document
 from search.engine.unit.conversion_catalogue import current_conversion_catalogue
 from search.engine.written_phrase import written_phrase
@@ -90,8 +90,9 @@ type ReplayedPlaceOptions = Callable[
 
 # ---------------------------------------------------------------------------
 # Raw-text inputs absent from Extraction: two `role_query` readers run on every leg. One
-# checks each DoorRole occurrence, the other reads the flow axis each dropped phrase asks
-# every member of (`role_text.every_member_axis`). Single-variable requests also read
+# checks each DoorRole occurrence (`role_text.role_contradicted`, which reads the words
+# before the occurrences a raw-text role is tied to), the other reads the flow axis each
+# dropped phrase asks every member of (`role_text.every_member_axis`). Single-variable requests also read
 # qualifier vocabulary, defaults, written phrases and graph value names.
 # `test_query_text_and_role_query_reader_counts_are_covered` guards this set.
 # Graph value names are known only after retrieval, so their signal keeps the whole
@@ -119,36 +120,42 @@ class Layer2Signals:
     query_text_value_source: str | None
 
 
-def _role_contradiction(name: str, role: DoorRole, *, query: str) -> dict[str, object]:
-    # Include the entity name: distinct names can share a span and axis, but
-    # the pipeline checks each name's role occurrences separately.
+def _role_contradiction(part: int, name: str, role: DoorRole, *, query: str) -> dict[str, object]:
+    # Include the part and the entity name. A part reads only its own roles, and distinct
+    # names can share a span and axis while the pipeline checks each name's role
+    # occurrences separately. `stated` comes from the query's words and changes the
+    # disclosure, so two queries one extraction reads alike can differ in it alone.
     return {
+        "part": part,
         "name": name,
         "span": role.span,
         "axis": role.axis,
-        "contradicts": contradicts(query, span=role.span, axis=role.axis),
+        "stated": role.stated,
+        "contradicts": role_contradicted(role, query=query),
     }
 
 
 def compute_layer2_signals(
     *,
     query: str,
-    entity_roles: Mapping[str, Sequence[DoorRole]],
+    entity_roles: Sequence[Mapping[str, Sequence[DoorRole]]],
     query_text: str | None,
     variables: Sequence[str] = (),
     dropped_qualifiers: Sequence[str] = (),
 ) -> Layer2Signals:
-    """`query` supplies every leg's raw role signals; `entity_roles` lists its
-    door-provided occurrences in mention order, and each of `dropped_qualifiers` gives the
-    flow axis it asks every member of, read with the preposition `query` puts before it.
+    """`query` supplies every leg's raw role signals. `entity_roles` runs parallel to the
+    parts and lists each part's door-provided occurrences in mention order, and each of
+    `dropped_qualifiers` gives the flow axis it asks every member of, read with the
+    preposition `query` puts before it.
     `query_text` is set only for a single-variable request, matching the pipeline's own
     raw-text readers. Each of
     `variables` gives the stretch of `query_text` that writes it (`written_phrase`), which
     the named-member binding reads.
     """
     role_contradictions = tuple(
-        _role_contradiction(name, role, query=query)
-        for name, roles in entity_roles.items()
+        _role_contradiction(part, name, role, query=query)
+        for part, part_roles in enumerate(entity_roles)
+        for name, roles in part_roles.items()
         for role in roles
     )
     every_member_axes = tuple(
@@ -392,7 +399,7 @@ class CacheScope:
         query: str,
         text: str | None = None,
         exclusions: Sequence[tuple[LeftOut, tuple[int, ...]]] = (),
-        entity_roles: Mapping[str, Sequence[DoorRole]],
+        entity_roles: Sequence[Mapping[str, Sequence[DoorRole]]],
         sources: Sequence[tuple[SourceMention, ...]],
         query_text: str | None,
         source_codes: Sequence[str | None] = (),
@@ -406,11 +413,13 @@ class CacheScope:
     ) -> ResolveResponse | None:
         """Look up layer 2 by effective extraction and raw-text signals.
 
-        `entity_roles`, `query_text`, and the parallel `variable_qualifiers`, `operations`
-        and `sources` are required to build a complete key. `source_codes` runs parallel to
-        `variables` and holds the series code the query writes for each. `unit_texts` runs
-        parallel to `variables` and holds the unit text extraction peeled from each
-        (`ExtractionResult.unit_texts`). `separate` runs parallel to
+        `query_text`, and the parallel `entity_roles`, `variable_qualifiers`, `operations`
+        and `sources` are required to build a complete key. `entities` carry their
+        measure positions in `variables` (`ExtractedEntity.variables`), so the key states
+        the parts each scopes, and `entity_roles` holds each part's roles. `source_codes`
+        runs parallel to `variables` and holds the series code the query writes for each.
+        `unit_texts` runs parallel to `variables` and holds the unit text extraction peeled
+        from each (`ExtractionResult.unit_texts`). `separate` runs parallel to
         `variables` and marks each one the raw query compares with another.
         `measure_qualifiers` runs parallel to `variables` and holds the words narrowing each
         one's measure. `open_axes` runs parallel to `variables` and holds the flow roles each

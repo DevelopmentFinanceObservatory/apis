@@ -6,7 +6,7 @@ growth rate in Ghana" minus "growth rate" names a different measure, so there is
 operation. The test only finds operations. Words that name a measure's direction or
 type, such as inward, outward, imports, exports, net, gross, disbursements or
 commitments, belong to the indicator and stay in the variable, even when an entity's
-flow_role repeats them. A share, rate, ratio or total that is part of
+role repeats them. A share, rate, ratio or total that is part of
 an indicator's own name is not an operation: "share of women in parliament", "renewable
 energy share", "total population", "total fertility rate", "remittances as percentage of
 GDP". Comparing named places, a series over time ("trends", "over time", "how has aid to
@@ -15,15 +15,15 @@ verbs:
 - rank: an order or a top or bottom N. "top 5 donors" runs over origin, "which countries
   received the most" over destination, "which sectors got the most aid" over category,
   "countries ranked by GDP" over place. "which African countries received the most" runs
-  over destination beside the entity "Africa" with `members` true, flow_role
-  "destination" and role_span "received".
+  over destination beside the entity "Africa" with `members` true, role
+  "recipient" and cue "received".
 - aggregate: a sum across a group of entities the query names or implies. "total aid to
-  the Sahel countries" runs over destination, and "Sahel" has `members` true, flow_role
-  "destination" and role_span "to".
-These axes describe operations only. An entity's flow_role still comes from the query's
-own wording alone, and its role_span copies that wording. A place the query only locates
-("literacy rate in Mali", "population of Chad") has flow_role "unspecified" and no
-role_span, and so do places named bare side by side ("ODA Chad Niger"), whichever of
+  the Sahel countries" runs over destination, and "Sahel" has `members` true, role
+  "recipient" and cue "to".
+These axes describe operations only. An entity's role still comes from the query's
+own wording alone, and its cue copies that wording. A place the query only locates
+("literacy rate in Mali", "population of Chad") has no role and no cue, and so do places
+named bare side by side ("ODA Chad Niger"), whichever of
 them usually gives or receives.
 - growth: a change between years the query names ("change in aid to Kenya since 2010").
   A change with no year named is a series over time, not growth.
