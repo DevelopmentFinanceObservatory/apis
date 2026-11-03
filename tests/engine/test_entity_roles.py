@@ -305,6 +305,13 @@ class TestRawTextDoorCarriesEveryOccurrence:
         roles = _prepared_roles([entity], query="Kenya aid from France", measures=["aid"])
         assert [(role.span, role.preceding) for role in roles["Kenya"]] == [("Kenya", ())]
 
+    def test_a_span_with_no_words_occurs_nowhere_and_its_role_has_no_veto(self):
+        """A span of "-" holds no word, so it occurs nowhere in the query and the veto reads
+        no word before it, where reading every position would veto the role by "from"."""
+        entity = ExtractedEntity(text="Kenya", span="-", cue="to", role="recipient")
+        roles = _prepared_roles([entity], query="aid from France to Kenya", measures=["aid"])
+        assert [role.preceding for role in roles["Kenya"]] == [()]
+
     def test_a_debt_names_its_creditor_and_its_debtor_by_party_words(self):
         """The creditor is the origin and the debtor the destination. The possessive debtor
         reads its direction off the measure; the creditor's "to" states it."""

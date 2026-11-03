@@ -1371,7 +1371,7 @@ def _admit_operations(
         return extraction, {}
     variables = extraction.variables
     _, surviving_positions = _clamped_variables(variables)
-    admitted = {variables[i].strip() for i in surviving_positions}
+    admitted = _admitted_variables(variables)
     kept: list[ExtractedOperation] = []
     dates = list(extraction.dates)
     sidecar: dict[str, dict[tuple[str, str, str | None], Operation]] = {}
@@ -1427,10 +1427,11 @@ def _applied_phrases(
     texts = [text for entity in extraction.entities for text in (entity.text, entity.span) if text]
     texts += date_wording
     phrases = {words for text in texts if (words := tuple(_words(text)))}
+    folded_query = _grounding_form(query)
     phrases.update(
         run
         for entity in extraction.entities
-        if entity.role and cue_grounded(entity, query)
+        if entity.role and cue_grounded_in_form(entity, folded_query)
         for run in _cue_runs(entity)
     )
     return frozenset(phrases)
@@ -1499,10 +1500,12 @@ def veto_words(entities: Sequence[ExtractedEntity], *, query: str) -> list[tuple
     occurrence and the aid clause's "to" does not veto it. A role whose cue is written with
     no occurrence (detached or misquoted) reads every occurrence that no other role of
     `entities` is tied to, and every occurrence when other roles claim them all. An
-    occurrence that opens the query has no word before it.
+    occurrence that opens the query has no word before it. A place with no words (a
+    span of "-", say) occurs nowhere, so its role has no veto.
     """
     words = _veto_words(query)
     cued = [_cued_starts(entity, words) if entity.role else set() for entity in entities]
+    cued_by_any_role = set().union(*cued)
     preceding: list[tuple[str, ...]] = []
     for i, entity in enumerate(entities):
         if not entity.role:
@@ -1510,14 +1513,8 @@ def veto_words(entities: Sequence[ExtractedEntity], *, query: str) -> list[tuple
             continue
         tied = cued[i]
         if not tied:
-            claimed = {
-                start
-                for j, (other, starts) in enumerate(zip(entities, cued, strict=True))
-                if j != i and other.role
-                for start in starts
-            }
             starts = set(span_starts(words, _veto_words(entity.span or entity.text)))
-            tied = (starts - claimed) or starts
+            tied = (starts - cued_by_any_role) or starts
         preceding.append(tuple(words[start - 1] for start in sorted(tied) if start > 0))
     return preceding
 

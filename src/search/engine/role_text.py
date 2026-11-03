@@ -123,10 +123,11 @@ def span_starts(query_tokens: Sequence[str], span_tokens: Sequence[str]) -> list
     span_len = len(span_tokens)
     if not span_len:
         return []
+    target = tuple(span_tokens)
     return [
         i
         for i in range(len(query_tokens) - span_len + 1)
-        if tuple(query_tokens[i : i + span_len]) == tuple(span_tokens)
+        if tuple(query_tokens[i : i + span_len]) == target
     ]
 
 
