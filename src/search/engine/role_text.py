@@ -18,6 +18,7 @@ ROLE_TEXT_NOT_RECOGNISED = "role_text_not_recognised"
 
 _DONOR_PREPS: frozenset[str] = frozenset({"from"})
 _RECIPIENT_PREPS: frozenset[str] = frozenset({"to"})
+DIRECTION_PREPS: frozenset[str] = _DONOR_PREPS | _RECIPIENT_PREPS
 _TOKEN_RE = re.compile(r"[a-z][a-z'\-]*[a-z]|[a-z]")
 
 # English caller synonyms and declared graph role names map to flow axes.
@@ -63,7 +64,7 @@ _PARTY_WORDS: dict[str, Party] = {party: party for party in get_args(Party)} | {
     "borrower": "debtor",
 }
 # The parties of a debt, whose repayments run the other way (`contradicts`).
-_DEBT_PARTIES: frozenset[Party] = frozenset({"creditor", "debtor"})
+DEBT_PARTIES: frozenset[Party] = frozenset({"creditor", "debtor"})
 
 
 def party_for_text(role_text: str | None) -> Party | None:
@@ -94,7 +95,7 @@ def role_text_for(axis: RoleAxis, *, party: Party | None) -> str:
     """The role text that restates a role on `axis`: a debt `party` as its own word, which
     the lexicon reads back to the same axis and party and so draws no contradiction
     (`contradicts`), and any other role as the axis's canonical text."""
-    if party is not None and party in _DEBT_PARTIES:
+    if party is not None and party in DEBT_PARTIES:
         return party
     return role_text_for_axis(axis)
 
@@ -117,13 +118,16 @@ _SAME_AXIS_PREPS: dict[RoleAxis, frozenset[str]] = {
 }
 
 
-def _span_starts(query_tokens: list[str], span_tokens: list[str]) -> list[int]:
-    """Return each token index where ``span_tokens`` occurs as whole words."""
+def span_starts(query_tokens: Sequence[str], span_tokens: Sequence[str]) -> list[int]:
+    """Return each token index where ``span_tokens`` occurs as whole words. An empty span
+    occurs nowhere."""
     span_len = len(span_tokens)
+    if not span_len:
+        return []
     return [
         i
         for i in range(len(query_tokens) - span_len + 1)
-        if query_tokens[i : i + span_len] == span_tokens
+        if tuple(query_tokens[i : i + span_len]) == tuple(span_tokens)
     ]
 
 
@@ -144,10 +148,8 @@ def contradicts(query: str, *, span: str, axis: RoleAxis, party: Party | None) -
     China``, ``repays to China``, ``repayments from Zambia``).
     """
     span_tokens = _tokenize(span)
-    if not span_tokens:
-        return False
     query_tokens = _tokenize(query)
-    preceding = [query_tokens[i - 1] for i in _span_starts(query_tokens, span_tokens) if i > 0]
+    preceding = [query_tokens[i - 1] for i in span_starts(query_tokens, span_tokens) if i > 0]
     return _preceding_contradicts(preceding, axis=axis, party=party)
 
 
@@ -157,7 +159,7 @@ def _preceding_contradicts(
     """Whether the words straight before a place's occurrences contradict `axis`: a
     supporting ``from`` or ``to`` clears every contradiction, else an opposite one fires.
     A debt party draws none (`contradicts`)."""
-    if party in _DEBT_PARTIES:
+    if party in DEBT_PARTIES:
         return False
     if any(word in _SAME_AXIS_PREPS[axis] for word in preceding):
         return False
@@ -203,9 +205,7 @@ _BREAKDOWN_WORDS: frozenset[str] = frozenset({"every", "each"})
 # countries". The preposition that governs them names it.
 _PLACE_NOUNS: frozenset[str] = frozenset({"country", "countries"})
 # The axis each role preposition names.
-_ROLE_PREP_AXES: dict[str, RoleAxis] = {
-    prep: _ROLE_TEXT_TO_AXIS[prep] for prep in _DONOR_PREPS | _RECIPIENT_PREPS
-}
+_ROLE_PREP_AXES: dict[str, RoleAxis] = {prep: _ROLE_TEXT_TO_AXIS[prep] for prep in DIRECTION_PREPS}
 
 
 def _noun_axis(token: str) -> RoleAxis | None:
@@ -226,7 +226,7 @@ def _governing_axes(query_tokens: list[str], phrase_tokens: list[str]) -> set[Ro
     """The axes the role prepositions directly before each occurrence of the phrase name."""
     return {
         axis
-        for start in _span_starts(query_tokens, phrase_tokens)
+        for start in span_starts(query_tokens, phrase_tokens)
         if start > 0 and (axis := _ROLE_PREP_AXES.get(query_tokens[start - 1])) is not None
     }
 

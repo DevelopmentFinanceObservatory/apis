@@ -29,7 +29,7 @@ from search.engine.extract import (
     _occurs_in,
     _resolve_relative_dates,
     _target_forecasts,
-    cue_grounded,
+    cue_tied,
     dates_to_request,
     extract,
     slot_default_answers,
@@ -264,14 +264,6 @@ def _entity(text, span=None, role=None, cue=None, variables=()) -> ExtractedEnti
         # The place's own name grounds as its cue; the role is read off the measure.
         ("Norway give to the UN", _entity("Norway", "Norway", "source", "Norway")),
         ("Kenya aid", _entity("Kenya", "kenya", "recipient", "KENYA")),
-        # Grounding asks only whether the query holds the cue: a list member shares the
-        # list's "to", and a cue away from its place keeps its role (it credits no
-        # qualifier words, `_cue_runs`).
-        ("aid to Kenya and Uganda", _entity("Uganda", "Uganda", "recipient", "to")),
-        (
-            "top 5 donors in fragile states from Norway to Kenya",
-            _entity("Kenya", "Kenya", "recipient", "fragile states"),
-        ),
         ("Aid FROM Norway", _entity("Norway", "Norway", "source", "from")),
         # A case ending or particle grounds written straight against the place's span.
         ("Norjasta Keniaan apua", _entity("Norway", "Norja", "source", "sta")),
@@ -295,7 +287,7 @@ def _entity(text, span=None, role=None, cue=None, variables=()) -> ExtractedEnti
 )
 def test_ground_roles_keeps_a_role_whose_cue_the_query_holds(query, entity):
     assert _ground_roles(query, [entity], ["aid"]) == [entity]
-    assert cue_grounded(entity, query)
+    assert cue_tied(entity, query)
 
 
 @pytest.mark.parametrize(
@@ -334,6 +326,23 @@ def test_ground_roles_drops_a_role_with_no_cue(query, entity):
             _entity("Kenya", "Kenya", "debtor", "owes"),
             id="misquoted-debtor",
         ),
+        # A cue the query holds away from its place, or as the preposition that opens the
+        # next phrase, is written with no occurrence of the place.
+        pytest.param(
+            "top 5 donors to Kenya in fragile states",
+            _entity("Kenya", "Kenya", "recipient", "fragile states"),
+            id="cue-away-from-its-place",
+        ),
+        pytest.param(
+            "top 5 donors in fragile states from Norway to Kenya",
+            _entity("Kenya", "Kenya", "recipient", "fragile states"),
+            id="cue-before-another-places-phrase",
+        ),
+        pytest.param(
+            "exports Ghana to China",
+            _entity("Ghana", "Ghana", "source", "to"),
+            id="preposition-opens-the-next-phrase",
+        ),
         # A cue inside another word grounds only against the place's span.
         pytest.param(
             "Togo aid", _entity("Togo", "Togo", "recipient", "to"), id="word-inside-a-word"
@@ -348,7 +357,7 @@ def test_ground_roles_drops_a_role_with_no_cue(query, entity):
 def test_ground_roles_keeps_a_role_whose_cue_the_query_does_not_hold(query, entity):
     """The role stays and is read off the measure (`raw_text._states_direction`)."""
     assert _ground_roles(query, [entity], ["ODA"]) == [entity]
-    assert not cue_grounded(entity, query)
+    assert not cue_tied(entity, query)
 
 
 def test_a_cue_the_query_does_not_hold_credits_no_words():
@@ -356,6 +365,54 @@ def test_a_cue_the_query_does_not_hold_credits_no_words():
     togo = _entity("Togo", "Togo", "recipient", "to")
     extraction = Extraction(kind="resolution", variables=["aid"], entities=[togo])
     assert _applied_phrases(extraction, query="Togo aid", date_wording=()) == {("togo",)}
+
+
+@pytest.mark.parametrize(
+    ("query", "entities", "tied"),
+    [
+        pytest.param(
+            "aid to Kenya and Uganda",
+            [
+                _entity("Kenya", "Kenya", "recipient", "to"),
+                _entity("Uganda", "Uganda", "recipient", "to"),
+            ],
+            True,
+            id="coordinated-place-shares-the-cue-of-a-tied-one",
+        ),
+        pytest.param(
+            "aid from Norway and Sweden",
+            [
+                _entity("Norway", "Norway", "source", "from"),
+                _entity("Sweden", "Sweden", "recipient", "from"),
+            ],
+            False,
+            id="same-cue-text-under-another-role",
+        ),
+        pytest.param(
+            "top 5 donors to Kenya and Uganda in fragile states",
+            [
+                _entity("Kenya", "Kenya", "recipient", "fragile states"),
+                _entity("Uganda", "Uganda", "recipient", "fragile states"),
+            ],
+            False,
+            id="shared-cue-tied-to-neither",
+        ),
+    ],
+)
+def test_cue_tied_reaches_a_place_through_a_tied_place_with_the_same_cue_and_role(
+    query, entities, tied
+):
+    """The last place is tied only when another place of the request has its cue text and
+    role and is tied itself."""
+    last = entities[-1]
+    assert cue_tied(last, query, entities=entities) is tied
+    assert not cue_tied(last, query)
+
+
+def test_ground_roles_reads_a_blank_span_as_none():
+    entity = _entity("Kenya", " ", "recipient", "from")
+    (grounded,) = _ground_roles("Kenya aid from France", [entity], ["aid"])
+    assert grounded.span is None
 
 
 def test_ground_roles_leaves_an_entity_with_no_role_alone():
