@@ -79,9 +79,13 @@ from search.engine.extract import (
     Extraction,
     ExtractionResult,
     _dedupe_stripped,
+    _grounding_form,
+    cue_grounded_in_form,
+    cue_is_its_span,
     dates_to_request,
     extract,
-    role_cue_pairing,
+    scoped_measures,
+    veto_words,
 )
 from search.engine.fanout import (
     _FanOutResult,
@@ -118,10 +122,8 @@ from search.engine.response_cache_flow import CacheScope
 from search.engine.role_text import (
     DoorRole,
     breakdown_axis,
-    debt_axes,
-    debtor_possessive,
     every_member_breakdown_axis,
-    receipt_axes,
+    role_axis_for_text,
 )
 from search.engine.source_code import PartCode, compile_part_code, scan_source_codes
 from search.engine.source_scan import left_out_sources, scan_sources, source_phrases
@@ -154,20 +156,14 @@ from search.scope.state import ScopeIntake
 logger = logging.getLogger(__name__)
 
 
-# Cues that read the direction off the measure: possessive markers ("Ghana's economy")
-# and "of" ("debtors of China"). The debt relation in "debt of Ghana" comes from
-# `role_text.debt_axes`, which states its axes by construction.
-_POSSESSIVE_CUES: frozenset[str] = frozenset({"'s", "'", "\u2019s", "\u2019", "of"})
+# What a cue that reads the direction off the measure holds once the place's own words and
+# "the" are removed: nothing for a national adjective ("French aid"), a possessive marker
+# for "Ghana's economy" and "of" for "debtors of China".
+_MEASURE_READING_CUES: frozenset[str] = frozenset({"", "'s", "'", "of"})
 
 # Words that narrow a measure to what one kind of provider gives or to one kind of terms.
 # Each one a part's variable holds is judged on that part alone (`_narrowing_words`).
 _NARROWING_WORDS: tuple[str, ...] = ("bilateral", "multilateral", "concessional")
-
-# Prepositions govern the noun after them, so one after a span belongs to the next phrase
-# ("to" in "Ghana to China" directs China, not Ghana).
-_PREPOSITIONS: frozenset[str] = frozenset(
-    {"to", "from", "by", "of", "on", "for", "in", "into", "through", "towards", "via", "with"}
-)
 
 
 def _entity_key(entity: ExtractedEntity) -> str:
@@ -176,7 +172,7 @@ def _entity_key(entity: ExtractedEntity) -> str:
 
 
 def _grounded(span: str, query: str) -> bool:
-    """Whether `span` occurs in `query`, casefolded as role-span validation reads it."""
+    """Whether `span` occurs in `query`, both casefolded."""
     return bool(_all_normalized_text_ranges(span, _normalize(query)))
 
 
@@ -423,13 +419,7 @@ async def _name_corrections(
     whose cue is its own span ("French" in "French aid"), names its country by its
     adjective and corrects nothing. Run on the recovered entities
     (`_recover_entity_surfaces`), whose surfaces that call resolved already."""
-    adjectives = {
-        _entity_key(entity)
-        for entity in entities
-        if entity.span
-        and entity.role_span
-        and _normalize(entity.role_span) == _normalize(entity.span)
-    }
+    adjectives = {_entity_key(entity) for entity in entities if cue_is_its_span(entity)}
     surfaces = {
         name: surface
         for name, surface in _entity_surfaces(entities, query=query).items()
@@ -487,74 +477,108 @@ def _entity_surfaces(entities: list[ExtractedEntity], *, query: str) -> dict[str
     return surfaces
 
 
-def _cue_states_direction(
-    entity: ExtractedEntity, *, entities: list[ExtractedEntity], query: str
-) -> bool:
-    """Whether `entity`'s validated cue (`ExtractedEntity.role_span`) states its direction.
+def _states_direction(entity: ExtractedEntity, *, folded_query: str) -> bool:
+    """Whether `entity`'s cue (`ExtractedEntity.cue`) states its direction, which it does
+    when the query holds it (`extract.cue_grounded`) and it reaches beyond the place's own
+    words (its span and its name, each as whole words), the article "the" and a possessive
+    marker or "of" (`_MEASURE_READING_CUES`). A cue the query does not hold is one the
+    model misquoted, and its role is read off the measure. `folded_query` is the query
+    folded once by `extract._grounding_form`, which a request that reads many entities
+    shares.
 
-    Attachment is the pairing role-span validation accepted (`extract.role_cue_pairing`).
-    The cue stands next to the entity, with only an article, list separators or
-    coordinated entities between them. A cue before the span states the direction
-    ("from the United States", "from Norway and Sweden", "funded by Germany"). A cue
-    after it does unless it is a preposition. "funds" in "Norway funds Kenya" states
-    Norway's, while "to" in "Ghana to China" and "Zambia debt owed to bondholders"
-    belongs to the next phrase. A possessive cue or "of" ("Ghana's economy", "debtors of
-    China"), and a national adjective, whose cue is its own span ("French aid"), read the
-    direction off the measure, so none states it. An entity with no cue states nothing.
+    "to", "funded by" and the case ending in "Norjasta" with the span "Norja" state it. A
+    national adjective or an inflected name, whose cue is its own span ("French aid",
+    "Norjasta" as span and cue), a possessive ("Ghana's economy", cue "Ghana's" or "'s";
+    "the US's aid", cue "the US's") and "of" ("debtors of China", "of the Gambia") read
+    the direction off the measure, so none states it.
     """
-    cue = (entity.role_span or "").strip().casefold()
-    if cue in _POSSESSIVE_CUES:
+    if not cue_grounded_in_form(entity, folded_query):
         return False
-    pairing = role_cue_pairing(query, entity, entities)
-    if pairing is None or not pairing.adjacent:
-        return False
-    return pairing.cue_first or cue.split()[-1] not in _PREPOSITIONS
+    rest = (entity.cue or "").replace("\u2019", "'").casefold()
+    for words in (entity.span, entity.text):
+        if words and words.strip():
+            place = re.escape(words.strip().casefold())
+            rest = re.sub(rf"(?<!\w){place}(?!\w)", " ", rest)
+    residue = " ".join(token for token in rest.split() if token != "the")
+    return residue not in _MEASURE_READING_CUES
+
+
+def _part_positions(
+    entities: Sequence[ExtractedEntity], *, measures: Sequence[str], variables: Sequence[str]
+) -> list[list[int]]:
+    """The positions in `entities` of each part's entities, parallel to `measures`. A part
+    holds the entities whose linked measures (`extract.scoped_measures`) include its own.
+    `variables` are the extraction's own, whose positions the entities' links name, and
+    `measures` the parts' stripped distinct measures (`_ExtractionPrep.unique`). An entity
+    that names no measure scopes every part.
+    """
+    scopes = [scoped_measures(entity, variables) for entity in entities]
+    return [[i for i, scope in enumerate(scopes) if measure in scope] for measure in measures]
+
+
+def _scoping_parts(
+    entities: Sequence[ExtractedEntity], *, variables: Sequence[str], parts: Sequence[str]
+) -> list[ExtractedEntity]:
+    """`entities` with each one's measure positions moved from the extraction's `variables`
+    onto `parts`, the stripped distinct measures (`_ExtractionPrep.unique`), which the
+    layer-2 key holds. `variables` can repeat a measure, so the same position there can
+    name a different part in two readings. A position in `parts` names one part."""
+    return [
+        entity.model_copy(
+            update={
+                "variables": sorted({parts.index(variables[i].strip()) for i in entity.variables})
+            }
+        )
+        for entity in entities
+    ]
 
 
 def _entity_roles(
-    entities: list[ExtractedEntity], *, query: str, measures: Sequence[str]
+    part: Sequence[int],
+    *,
+    entities: Sequence[ExtractedEntity],
+    stated: Sequence[bool],
+    preceding: Sequence[tuple[str, ...]],
 ) -> dict[str, list[DoorRole]]:
-    """Map stripped entity names to their flow axes and spans.
+    """Map the stripped names of one part's entities to their roles, as the parsed door
+    maps a part's (`parsed._entity_roles_for_part`). `part` holds positions in `entities`
+    (`_part_positions`), and `stated` and `preceding` hold, for each of `entities`, whether
+    its cue states its direction (`_states_direction`) and the words its role's veto reads
+    (`extract.veto_words`). The request reads both once for all its parts.
 
-    The query's debt wording sets the axes of a two-party debt relation
-    (`role_text.debt_axes`), and its receipt wording sets each recipient's
-    (`role_text.receipt_axes`). A query that is one place's possessive and its debt alone
-    makes that place the debtor (`role_text.debtor_possessive`). Every other place keeps
-    its extracted axis. Preserve distinct mentions in order, including self-flows on
-    opposite axes. Collapse duplicate mentions with the same axis, span and reading. Store
-    directional roles only, each recording whether the query's words give its direction and
-    whether the mention asks for the place's members (`DoorRole.members`). A
-    debt or receipt axis does by construction, a possessive debtor does not, since it
-    reads the measure, and an extracted axis does when its cue does
-    (`_cue_states_direction`). Fall back to entity text for the overlap anchor when
-    translation leaves no span.
+    An entity's party word (`ExtractedEntity.role`) gives its axis through the parsed
+    door's lexicon (`role_text.role_axis_for_text`), so a creditor is the origin and a
+    debtor the destination. `extract` keeps a role only when the model cites a cue for it
+    (`extract._ground_roles`), so every role here has one, and `stated` records whether
+    `query` holds the cue and it states the direction, or the role is read off the
+    measure. `preceding` holds the words before the occurrences of the place its cue ties
+    it to, read beside the other roles of `entities`. An entity with no role is undirected.
+    Preserve distinct mentions in order, including self-flows on opposite axes, and
+    collapse duplicate mentions with the same axis, span and reading, which then read the
+    occurrences each is tied to. The span is the query's own words for the place, else its
+    name.
     """
-    places: dict[str, list[str]] = {}
-    for entity in entities:
-        places.setdefault(_entity_key(entity), []).append(entity.span or entity.text)
-    # A place extraction put on both axes has no single extracted axis.
-    axes_by_place: dict[str, set[RoleAxis]] = {}
-    for entity in entities:
-        if entity.flow_role != "unspecified":
-            axes_by_place.setdefault(_entity_key(entity), set()).add(entity.flow_role)
-    directed = {name: next(iter(axes)) for name, axes in axes_by_place.items() if len(axes) == 1}
-    debt = debt_axes(query, measures=measures, places=places, directed=directed)
-    worded = receipt_axes(query, places=places) | debt
-    read = debtor_possessive(query, measures=measures, places=places, directed=directed)
     roles: dict[str, list[DoorRole]] = {}
-    for entity in entities:
-        name = _entity_key(entity)
-        axis = worded.get(name) or read.get(name)
+    for position in part:
+        entity = entities[position]
+        axis = role_axis_for_text(entity.role)
         if axis is None:
-            if entity.flow_role == "unspecified":
-                continue
-            axis = entity.flow_role
-        occurrences = roles.setdefault(name, [])
-        span = entity.span or entity.text
-        stated = name in worded or _cue_states_direction(entity, entities=entities, query=query)
-        role = DoorRole(axis=axis, span=span, stated=stated, members=entity.members)
+            continue
+        occurrences = roles.setdefault(_entity_key(entity), [])
+        role = DoorRole(
+            axis=axis,
+            span=entity.span or entity.text,
+            stated=stated[position],
+            members=entity.members,
+            party=entity.role,
+            preceding=preceding[position],
+        )
         if role not in occurrences:
             occurrences.append(role)
+            continue
+        i = occurrences.index(role)
+        words = (*(occurrences[i].preceding or ()), *(role.preceding or ()))
+        occurrences[i] = dataclasses.replace(role, preceding=tuple(dict.fromkeys(words)))
     return roles
 
 
@@ -830,17 +854,22 @@ class _ExtractionPrep:
 
     `unique` and `entities` preserve first-seen order. `entities` leaves out an entity
     every occurrence of whose words a source mention covers
-    (`source_scan.SourceScan.source_entities`), as do
-    `entity_roles`, `entity_words` and `member_entities`. `interpretation_variables`
-    adds coded-qualifier sidecars, while resolution and cache keys use bare text.
+    (`source_scan.SourceScan.source_entities`), as do `entity_words` and the per-part
+    entity fields. `per_variable_entities` runs parallel to `unique` and holds the names of
+    the entities whose measures (`ExtractedEntity.variables`) include that part's
+    (`_part_positions`). `per_variable_entity_roles` holds each part's roles, read from its
+    own entities (`_entity_roles`), and `per_variable_member_entities` the names
+    each part asks for as their members (`ResolveState.member_entities`).
+    `interpretation_variables` adds coded-qualifier sidecars, while resolution and cache
+    keys use bare text.
     `per_variable_operations` runs parallel to `unique`: each variable's operations
     ride on its part, and their phrases reach only that variable's bind, beside
     `dropped_qualifier_phrases`. They raise no warning.
     `per_variable_open_axes` runs parallel to `unique` too: the flow roles each part asks
     one value per member of (`role_text.breakdown_axis`), read off its own operations'
-    phrases (`every_member_breakdown_axis` for a verb other than `rank`) and the request's
-    dropped phrases and entities that are such a breakdown, which leave
-    those lists.
+    phrases (`every_member_breakdown_axis` for a verb other than `rank`), the request's
+    dropped phrases and the entities scoping its measure (`extract.scoped_measures`) that
+    are such a breakdown, which leave those lists.
     `per_variable_date_requests` runs parallel to `unique` too: `date_request`, or a
     forecasting variable's own window without its target years.
     `unit_text` is the dropped phrases that bind as one unit request
@@ -869,8 +898,7 @@ class _ExtractionPrep:
     maps each entity name to the query's own words for it (`ExtractedEntity.span`), first
     mention first. `entity_surfaces` holds those words where they occur in the query and
     differ from the name, which recall resolves the name through (`_entity_surfaces`).
-    `member_entities` are the entity names the query asks for as their
-    members (`ResolveState.member_entities`). `separate` runs parallel to `unique` and
+    `separate` runs parallel to `unique` and
     marks each variable the raw query compares with another (`source_spans.read_sources`),
     as `ParsedPart.separate` does. `read_connectives` are the offsets of the comparison
     words that marked one. `per_variable_sources` runs parallel to `unique` too: the
@@ -888,8 +916,9 @@ class _ExtractionPrep:
     date_request: DateRequest | None
     unique: list[str]
     entities: list[str]
-    entity_roles: dict[str, list[DoorRole]]
-    member_entities: frozenset[str]
+    per_variable_entities: list[list[str]]
+    per_variable_entity_roles: list[dict[str, list[DoorRole]]]
+    per_variable_member_entities: list[frozenset[str]]
     per_variable_qualifiers: list[tuple[CodedQualifier, ...]]
     per_variable_operations: list[tuple[Operation, ...]]
     per_variable_open_axes: list[frozenset[RoleAxis]]
@@ -1165,8 +1194,9 @@ def _prepare_extraction(
     per_variable_source_codes = scan_source_codes(query, measures=unique, index=get_index())
     # An entity that only asks for one value per member of a flow role ("every donor",
     # "across donors") names no place (`role_text.breakdown_axis`): it is a breakdown
-    # phrase, which opens that role as a dropped one does (`_breakdown_under`).
-    entity_breakdowns: list[str] = []
+    # phrase, which opens that role as a dropped one does (`_breakdown_under`), on the
+    # parts it scopes.
+    entity_breakdowns: list[tuple[str, frozenset[str]]] = []
     extracted_entities: list[ExtractedEntity] = []
     for entity in extraction.entities:
         words = entity.span or entity.text
@@ -1175,9 +1205,20 @@ def _prepare_extraction(
         if breakdown_axis(words, query=query) is None:
             extracted_entities.append(entity)
         else:
-            entity_breakdowns.append(words)
+            entity_breakdowns.append((words, scoped_measures(entity, extraction.variables)))
     entities: list[str] = list(dict.fromkeys(_entity_key(e) for e in extracted_entities))
-    entity_roles = _entity_roles(extracted_entities, query=query, measures=unique)
+    part_positions = _part_positions(
+        extracted_entities, measures=unique, variables=extraction.variables
+    )
+    per_part_entities = [[extracted_entities[i] for i in part] for part in part_positions]
+    # Every part reads the same query, so the readings of the entities that carry a role are
+    # made once for the request, on the query folded once.
+    folded_query = _grounding_form(query)
+    stated = [
+        bool(entity.role) and _states_direction(entity, folded_query=folded_query)
+        for entity in extracted_entities
+    ]
+    preceding = veto_words(extracted_entities, query=query)
 
     # A relative date the extraction could not read is gone from `dates`; its warning says so.
     clamp_warnings: list[Warning] = list(extract_result.warnings)
@@ -1253,11 +1294,10 @@ def _prepare_extraction(
     )
     # An operation whose phrase only asks for one value per member of a flow role is a
     # breakdown (`_breakdown_under`): it opens that role, as `open_roles` does on the parsed
-    # door, and runs no operation. A dropped phrase or an entity asking for it opens that
-    # role on each part whose operations read it so, by the same rule. Beside a sum it opens
-    # no part, and the total meets it (`role_text.breakdown_axis`), so it raises no warning
-    # either way.
-    breakdown_phrases = [*entity_breakdowns, *dropped_qualifier_phrases]
+    # door, and runs no operation. A dropped phrase, or an entity asking for it on the parts
+    # it scopes, opens that role on each such part whose operations read it so, by the same
+    # rule. Beside a sum it opens no part, and the total meets it (`role_text.breakdown_axis`),
+    # so it raises no warning either way.
     per_variable_operations: list[tuple[Operation, ...]] = []
     per_variable_open_axes: list[frozenset[RoleAxis]] = []
     for v in unique:
@@ -1265,6 +1305,10 @@ def _prepare_extraction(
         verbs = {op.verb for op in operations}
         read = [
             (op, _breakdown_under(op.phrase, verbs=(op.verb,), query=query)) for op in operations
+        ]
+        breakdown_phrases = [
+            *(words for words, scope in entity_breakdowns if v in scope),
+            *dropped_qualifier_phrases,
         ]
         phrase_axes = (
             _breakdown_under(phrase, verbs=verbs, query=query) for phrase in breakdown_phrases
@@ -1331,10 +1375,18 @@ def _prepare_extraction(
         date_request=date_request,
         unique=unique,
         entities=entities,
-        entity_roles=entity_roles,
-        # A text any mention asks the members of. A directed mention asks on its own end
-        # (`DoorRole.members`).
-        member_entities=frozenset(_entity_key(e) for e in extracted_entities if e.members),
+        per_variable_entities=[
+            list(dict.fromkeys(_entity_key(e) for e in part)) for part in per_part_entities
+        ],
+        per_variable_entity_roles=[
+            _entity_roles(part, entities=extracted_entities, stated=stated, preceding=preceding)
+            for part in part_positions
+        ],
+        # A text any mention of the part asks the members of. A directed mention asks on
+        # its own end (`DoorRole.members`).
+        per_variable_member_entities=[
+            frozenset(_entity_key(e) for e in part if e.members) for part in per_part_entities
+        ],
         per_variable_qualifiers=per_variable_qualifiers,
         per_variable_operations=per_variable_operations,
         per_variable_open_axes=per_variable_open_axes,
@@ -1393,7 +1445,7 @@ def _log_unclaimed_words(prep: _ExtractionPrep, extraction: Extraction, *, query
         *(
             text
             for entity in extraction.entities
-            for text in (entity.text, entity.span, entity.role_span)
+            for text in (entity.text, entity.span, entity.cue)
             if text
         ),
         *(bound for date in extraction.dates for bound in (date.start, date.end) if bound),
@@ -1433,8 +1485,9 @@ async def _handle_single_variable(
         _run_variables_streaming(
             prep.unique,
             entities=prep.entities,
-            entity_roles=prep.entity_roles,
-            member_entities=prep.member_entities,
+            per_variable_entities=prep.per_variable_entities,
+            per_variable_entity_roles=prep.per_variable_entity_roles,
+            per_variable_member_entities=prep.per_variable_member_entities,
             date_request=prep.date_request,
             query=prep.text,
             pac=params.pac,
@@ -1578,8 +1631,9 @@ async def _handle_multi_variable(
         _run_variables_streaming(
             prep.unique,
             entities=prep.entities,
-            entity_roles=prep.entity_roles,
-            member_entities=prep.member_entities,
+            per_variable_entities=prep.per_variable_entities,
+            per_variable_entity_roles=prep.per_variable_entity_roles,
+            per_variable_member_entities=prep.per_variable_member_entities,
             date_request=prep.date_request,
             query=prep.text,
             pac=params.pac,
@@ -1780,13 +1834,15 @@ async def handle(
             text=text,
             exclusions=tuple(zip(prep.exclusions, prep.exclusion_targets, strict=True)),
             variables=prep.unique,
-            entities=extraction.entities,
+            entities=_scoping_parts(
+                extraction.entities, variables=extraction.variables, parts=prep.unique
+            ),
             dates=extraction.dates,
             dropped_qualifiers=extraction.dropped_qualifiers,
             unit_texts=[extract_result.unit_texts.get(v) for v in prep.unique],
             variable_qualifiers=prep.per_variable_qualifiers,
             operations=prep.per_variable_operations,
-            entity_roles=prep.entity_roles,
+            entity_roles=prep.per_variable_entity_roles,
             sources=prep.per_variable_sources,
             source_codes=prep.per_variable_source_codes,
             query_text=text if len(prep.unique) == 1 else None,

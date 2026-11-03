@@ -187,9 +187,7 @@ class TestRestatementIsNullPerCase:
         llm = _llm_with_extraction(
             query,
             variables=["population"],
-            entities=[
-                {"text": "Nowherelandia", "span": "Nowherelandia", "flow_role": "unspecified"}
-            ],
+            entities=[{"text": "Nowherelandia", "span": "Nowherelandia"}],
         )
         part = offline_resolve(make_request(query), llm=llm).parts[0]
         assert part.restatement is None
@@ -205,8 +203,8 @@ class TestRestatementIsNullPerCase:
                 {
                     "text": long_entity,
                     "span": long_entity,
-                    "flow_role": "origin",
-                    "role_span": "from",
+                    "role": "source",
+                    "cue": "from",
                 }
             ],
         )

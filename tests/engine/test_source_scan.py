@@ -213,7 +213,7 @@ def test_the_raw_text_door_reads_a_source_entity_as_the_source_alone(
         variables=["education aid"],
         entities=[
             ExtractedEntity(text="OECD", span="OECD"),
-            ExtractedEntity(text="Kenya", span="Kenya", flow_role="destination", role_span="to"),
+            ExtractedEntity(text="Kenya", span="Kenya", role="recipient", cue="to"),
         ],
     )
     with bound_catalogue(catalogue):
@@ -222,7 +222,7 @@ def test_the_raw_text_door_reads_a_source_entity_as_the_source_alone(
         )
 
     assert prep.entities == ["Kenya"]
-    assert set(prep.entity_roles) == {"Kenya"}
+    assert set(prep.per_variable_entity_roles[0]) == {"Kenya"}
     assert prep.entity_words == {"Kenya": "Kenya"}
     assert prep.per_variable_sources == [(_in("OECD"),)]
 
@@ -238,10 +238,8 @@ def test_the_raw_text_door_keeps_an_entity_read_as_a_source_only_once(
         kind="resolution",
         variables=["aid"],
         entities=[
-            ExtractedEntity(
-                text="World Bank", span="World Bank", flow_role="origin", role_span="from"
-            ),
-            ExtractedEntity(text="Kenya", span="Kenya", flow_role="destination", role_span="to"),
+            ExtractedEntity(text="World Bank", span="World Bank", role="source", cue="from"),
+            ExtractedEntity(text="Kenya", span="Kenya", role="recipient", cue="to"),
         ],
     )
     with bound_catalogue(catalogue):
@@ -250,7 +248,7 @@ def test_the_raw_text_door_keeps_an_entity_read_as_a_source_only_once(
         )
 
     assert prep.entities == ["World Bank", "Kenya"]
-    assert [role.axis for role in prep.entity_roles["World Bank"]] == ["origin"]
+    assert [role.axis for role in prep.per_variable_entity_roles[0]["World Bank"]] == ["origin"]
     assert prep.per_variable_sources == [(_in("World Bank"),)]
 
 
@@ -802,7 +800,7 @@ def test_raw_door_reads_a_stretch_that_leaves_out_a_publisher(catalogue: Catalog
         kind="resolution",
         variables=["education aid"],
         entities=[
-            ExtractedEntity(text="Kenya", span="Kenya", flow_role="destination", role_span="to"),
+            ExtractedEntity(text="Kenya", span="Kenya", role="recipient", cue="to"),
         ],
     )
     with bound_catalogue(catalogue):

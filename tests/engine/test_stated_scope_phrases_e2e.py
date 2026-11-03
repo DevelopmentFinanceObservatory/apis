@@ -60,8 +60,8 @@ class _ReadingLLM(_PickingLLM):
                 kind="resolution",
                 variables=[*self.others, self.variable],
                 entities=[
-                    ExtractedEntity(text="United States", flow_role="origin", role_span="from"),
-                    ExtractedEntity(text="Kenya", flow_role="destination", role_span="to"),
+                    ExtractedEntity(text="United States", role="source", cue="from"),
+                    ExtractedEntity(text="Kenya", role="recipient", cue="to"),
                 ],
                 dates=[],
                 dropped_qualifiers=list(self.dropped),

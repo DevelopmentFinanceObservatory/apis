@@ -6,8 +6,12 @@ import ast
 from dataclasses import fields
 from pathlib import Path
 
+import pytest
+
+from search.engine.extract import ExtractedEntity
 from search.engine.response_cache_flow import Layer2Signals, compute_layer2_signals
 from search.engine.role_text import DoorRole
+from tests.engine._entity_roles import linked, part_roles
 
 _REGION_DIR = Path(__file__).parents[2] / "src" / "search" / "engine" / "region"
 
@@ -50,7 +54,7 @@ def test_query_text_and_role_query_reader_counts_are_covered() -> None:
 
 
 def test_no_role_bearing_entities_yields_no_role_contradictions() -> None:
-    signals = compute_layer2_signals(query="gdp in kenya", entity_roles={}, query_text=None)
+    signals = compute_layer2_signals(query="gdp in kenya", entity_roles=(), query_text=None)
     assert signals.role_contradictions == ()
 
 
@@ -59,10 +63,17 @@ def test_supporting_preposition_does_not_contradict() -> None:
     supporting the door-supplied axis."""
     entity_roles = {"Kenya": [DoorRole(axis="destination", span="Kenya")]}
     signals = compute_layer2_signals(
-        query="aid to Kenya", entity_roles=entity_roles, query_text=None
+        query="aid to Kenya", entity_roles=[entity_roles], query_text=None
     )
     assert signals.role_contradictions == (
-        {"name": "Kenya", "span": "Kenya", "axis": "destination", "contradicts": False},
+        {
+            "part": 0,
+            "name": "Kenya",
+            "span": "Kenya",
+            "axis": "destination",
+            "stated": True,
+            "contradicts": False,
+        },
     )
 
 
@@ -71,11 +82,44 @@ def test_opposing_preposition_contradicts() -> None:
     axis, with no supporting occurrence anywhere in the query."""
     entity_roles = {"Kenya": [DoorRole(axis="destination", span="Kenya")]}
     signals = compute_layer2_signals(
-        query="aid from Kenya", entity_roles=entity_roles, query_text=None
+        query="aid from Kenya", entity_roles=[entity_roles], query_text=None
     )
     assert signals.role_contradictions == (
-        {"name": "Kenya", "span": "Kenya", "axis": "destination", "contradicts": True},
+        {
+            "part": 0,
+            "name": "Kenya",
+            "span": "Kenya",
+            "axis": "destination",
+            "stated": True,
+            "contradicts": True,
+        },
     )
+
+
+@pytest.mark.parametrize(
+    ("query", "entities", "contradicts"),
+    [
+        (
+            "aid to Kenya and Kenya's exports",
+            [
+                linked("Kenya", "recipient", "to", parts=(0,)),
+                linked("Kenya", "source", "Kenya's", parts=(1,)),
+            ],
+            [False, False],
+        ),
+        ("aid to Kenya from France", [linked("Kenya", "source", "from")], [True]),
+    ],
+)
+def test_the_signal_reads_the_occurrences_the_door_ties_a_role_to(
+    query: str, entities: list[ExtractedEntity], contradicts: list[bool]
+) -> None:
+    """The signal reads the roles the raw-text door derives (`extract.veto_words`), as the
+    pipeline's veto does (`role_text.role_contradicted`): the exports part's Kenya, tied to
+    "Kenya's", is not contradicted by the aid clause's "to Kenya", and a source Kenya after
+    "to" is."""
+    entity_roles = part_roles(entities, query=query, measures=["aid", "exports"][: len(entities)])
+    signals = compute_layer2_signals(query=query, entity_roles=entity_roles, query_text=None)
+    assert [signal["contradicts"] for signal in signals.role_contradictions] == contradicts
 
 
 def test_role_contradictions_cover_every_role_bearing_entity() -> None:
@@ -85,11 +129,25 @@ def test_role_contradictions_cover_every_role_bearing_entity() -> None:
         "Norway": [DoorRole(axis="origin", span="Norway")],
     }
     signals = compute_layer2_signals(
-        query="aid from Norway to Kenya", entity_roles=entity_roles, query_text=None
+        query="aid from Norway to Kenya", entity_roles=[entity_roles], query_text=None
     )
     assert signals.role_contradictions == (
-        {"name": "Kenya", "span": "Kenya", "axis": "destination", "contradicts": False},
-        {"name": "Norway", "span": "Norway", "axis": "origin", "contradicts": False},
+        {
+            "part": 0,
+            "name": "Kenya",
+            "span": "Kenya",
+            "axis": "destination",
+            "stated": True,
+            "contradicts": False,
+        },
+        {
+            "part": 0,
+            "name": "Norway",
+            "span": "Norway",
+            "axis": "origin",
+            "stated": True,
+            "contradicts": False,
+        },
     )
 
 
@@ -102,11 +160,25 @@ def test_role_contradictions_cover_every_occurrence_of_one_name() -> None:
         ],
     }
     signals = compute_layer2_signals(
-        query="aid from Kenya to Kenya", entity_roles=entity_roles, query_text=None
+        query="aid from Kenya to Kenya", entity_roles=[entity_roles], query_text=None
     )
     assert signals.role_contradictions == (
-        {"name": "Kenya", "span": "Kenya", "axis": "origin", "contradicts": False},
-        {"name": "Kenya", "span": "Kenya", "axis": "destination", "contradicts": False},
+        {
+            "part": 0,
+            "name": "Kenya",
+            "span": "Kenya",
+            "axis": "origin",
+            "stated": True,
+            "contradicts": False,
+        },
+        {
+            "part": 0,
+            "name": "Kenya",
+            "span": "Kenya",
+            "axis": "destination",
+            "stated": True,
+            "contradicts": False,
+        },
     )
 
 
@@ -114,7 +186,7 @@ def test_query_text_none_yields_no_qualifier_or_unsupported_signals() -> None:
     """A missing raw-text signal yields no qualifier or default-trigger signals."""
     signals = compute_layer2_signals(
         query="funding for agriculture with non-concessional terms",
-        entity_roles={},
+        entity_roles=(),
         query_text=None,
     )
     assert signals.query_text_qualifier_matches == ()
@@ -129,7 +201,7 @@ def test_query_text_none_yields_no_qualifier_or_unsupported_signals() -> None:
 def test_query_text_qualifier_match_against_the_real_index() -> None:
     """The index maps the word "agriculture" to `CRSPurposeCode311`."""
     signals = compute_layer2_signals(
-        query="funding for agriculture in Ethiopia", entity_roles={}, query_text="agriculture"
+        query="funding for agriculture in Ethiopia", entity_roles=(), query_text="agriculture"
     )
     assert len(signals.query_text_qualifier_matches) == 1
     match = signals.query_text_qualifier_matches[0]
@@ -141,7 +213,7 @@ def test_query_text_qualifier_tie_against_the_real_index() -> None:
     """The index maps "budget support" to codes in separate systems: two CRS ones and two
     DAC1 aid types. The cache signals read the index before any shape exists."""
     signals = compute_layer2_signals(
-        query="budget support", entity_roles={}, query_text="budget support"
+        query="budget support", entity_roles=(), query_text="budget support"
     )
     assert len(signals.query_text_qualifier_ties) == 1
     tie = signals.query_text_qualifier_ties[0]
@@ -158,7 +230,7 @@ def test_query_text_qualifier_reading_against_the_real_index() -> None:
     """ "PPP" names one code row and one measure value, so `match_qualifiers` refuses it and
     only the two-reading signal records it."""
     signals = compute_layer2_signals(
-        query="GDP PPP in Kenya", entity_roles={}, query_text="GDP PPP in Kenya"
+        query="GDP PPP in Kenya", entity_roles=(), query_text="GDP PPP in Kenya"
     )
     assert signals.query_text_qualifier_matches == ()
     # A match of the query text carries no offsets.
@@ -186,7 +258,7 @@ def test_unsupported_qualifier_phrase_against_the_real_index() -> None:
     """ "non-concessional" is qualifier_match's own closed unsupported-term
     set, found in `query_text`."""
     signals = compute_layer2_signals(
-        query="non-concessional loans", entity_roles={}, query_text="non-concessional loans"
+        query="non-concessional loans", entity_roles=(), query_text="non-concessional loans"
     )
     assert signals.unsupported_qualifier_phrases == ("non-concessional",)
 
@@ -195,7 +267,7 @@ def test_query_text_matches_no_vocabulary_yields_empty_signals() -> None:
     """An ordinary query_text with no code-index or unsupported vocabulary
     match yields empty tuples, not an error."""
     signals = compute_layer2_signals(
-        query="fertility rate in Kenya", entity_roles={}, query_text="fertility rate in Kenya"
+        query="fertility rate in Kenya", entity_roles=(), query_text="fertility rate in Kenya"
     )
     assert signals.query_text_qualifier_matches == ()
     assert signals.query_text_qualifier_ties == ()
@@ -210,12 +282,12 @@ def test_declared_default_trigger_word_against_the_real_index() -> None:
     unnegated whole-word test `apply_declared_defaults` applies."""
     named = compute_layer2_signals(
         query="How much aid did Kenya get?",
-        entity_roles={},
+        entity_roles=(),
         query_text="How much aid did Kenya get?",
     )
     negated = compute_layer2_signals(
         query="non-aid financing to Kenya",
-        entity_roles={},
+        entity_roles=(),
         query_text="non-aid financing to Kenya",
     )
     assert named.declared_default_trigger_words == (
@@ -228,10 +300,10 @@ def test_declared_default_slot_named_against_the_real_index() -> None:
     """The real index declares a default on crsTypeOfFlow, whose plain name is "flow";
     a raw query naming "flows" carries it, and one naming no slot carries nothing."""
     named = compute_layer2_signals(
-        query="aid flows to Kenya", entity_roles={}, query_text="aid flows to Kenya"
+        query="aid flows to Kenya", entity_roles=(), query_text="aid flows to Kenya"
     )
     unnamed = compute_layer2_signals(
-        query="aid to Kenya", entity_roles={}, query_text="aid to Kenya"
+        query="aid to Kenya", entity_roles=(), query_text="aid to Kenya"
     )
     assert named.declared_default_slots_named == ("crsTypeOfFlow",)
     assert unnamed.declared_default_slots_named == ()
@@ -262,7 +334,7 @@ def test_a_dropped_phrase_of_place_nouns_takes_its_axis_from_the_query() -> None
     def axes(query: str) -> tuple[str | None, ...]:
         return compute_layer2_signals(
             query=query,
-            entity_roles={},
+            entity_roles=(),
             query_text=None,
             dropped_qualifiers=["all countries", "in all sectors"],
         ).every_member_axes
@@ -273,7 +345,7 @@ def test_a_dropped_phrase_of_place_nouns_takes_its_axis_from_the_query() -> None
 
 def test_graph_value_grounding_keeps_the_query_outside_indexed_vocabulary() -> None:
     query = "female population in Kenya"
-    signals = compute_layer2_signals(query=query, entity_roles={}, query_text=query)
+    signals = compute_layer2_signals(query=query, entity_roles=(), query_text=query)
     assert not any(
         match["matched_text"].casefold() == "female"
         for match in signals.query_text_qualifier_matches
@@ -288,7 +360,7 @@ def test_each_variable_carries_the_stretch_of_the_query_that_writes_it() -> None
     def written(query: str, query_text: str | None) -> tuple[str | None, ...]:
         return compute_layer2_signals(
             query=query,
-            entity_roles={},
+            entity_roles=(),
             query_text=query_text,
             variables=["external debt net flows"],
         ).written_variable_phrases

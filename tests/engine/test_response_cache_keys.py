@@ -78,8 +78,8 @@ def _entity(**overrides: object) -> ExtractedEntity:
     fields: dict[str, object] = {
         "text": "Kenya",
         "span": "Kenya",
-        "flow_role": "destination",
-        "role_span": "to",
+        "role": "recipient",
+        "cue": "to",
     }
     fields.update(overrides)
     return ExtractedEntity(**fields)
@@ -207,16 +207,16 @@ def test_two_wordings_with_identical_extraction_share_layer2_key() -> None:
     assert key_a == key_b
 
 
-def test_flow_role_alone_changes_layer2_key() -> None:
-    """Changing an entity's flow role changes the key."""
+def test_role_alone_changes_layer2_key() -> None:
+    """Changing an entity's role changes the key."""
     origin_kenya = _layer2_key(
         variables=["aid"],
-        entities=[_entity(text="Kenya", flow_role="origin", role_span="from")],
+        entities=[_entity(text="Kenya", role="source", cue="from")],
         dates=[],
     )
     destination_kenya = _layer2_key(
         variables=["aid"],
-        entities=[_entity(text="Kenya", flow_role="destination", role_span="to")],
+        entities=[_entity(text="Kenya", role="recipient", cue="to")],
         dates=[],
     )
     assert origin_kenya != destination_kenya
@@ -475,7 +475,7 @@ def test_query_text_qualifier_reading_alone_changes_layer2_key() -> None:
 
 def _qualifier_text_key(query_text: str) -> str:
     """The qualifier-matching signals' contribution to one extraction's layer-2 key."""
-    signals = compute_layer2_signals(query=query_text, entity_roles={}, query_text=query_text)
+    signals = compute_layer2_signals(query=query_text, entity_roles=(), query_text=query_text)
     return _layer2_key(
         query_text_qualifier_matches=list(signals.query_text_qualifier_matches),
         query_text_qualifier_ties=list(signals.query_text_qualifier_ties),
@@ -510,7 +510,7 @@ def _qualifier_text_key(query_text: str) -> str:
 )
 def test_query_text_some_vocabulary_reads_apart_changes_layer2_key(first, second, same) -> None:
     signals = [
-        compute_layer2_signals(query=text, entity_roles={}, query_text=text)
+        compute_layer2_signals(query=text, entity_roles=(), query_text=text)
         for text in (first, second)
     ]
     assert signals[0].query_text_qualifier_matches == signals[1].query_text_qualifier_matches
@@ -551,7 +551,7 @@ def test_raw_text_declared_default_trigger_alone_changes_layer2_key() -> None:
     variable = "development assistance to Kenya"
     keys = []
     for raw in ("How much aid did Kenya get?", "How much development assistance did Kenya get?"):
-        signals = compute_layer2_signals(query=raw, entity_roles={}, query_text=raw)
+        signals = compute_layer2_signals(query=raw, entity_roles=(), query_text=raw)
         keys.append(
             _layer2_key(
                 variables=[variable],
@@ -566,7 +566,7 @@ def test_raw_text_naming_a_defaulted_slot_alone_changes_layer2_key() -> None:
     extractions of "aid to Kenya" and "aid flows to Kenya" key apart."""
     keys = []
     for raw in ("aid to Kenya", "aid flows to Kenya"):
-        signals = compute_layer2_signals(query=raw, entity_roles={}, query_text=raw)
+        signals = compute_layer2_signals(query=raw, entity_roles=(), query_text=raw)
         keys.append(
             _layer2_key(
                 variables=["aid"],

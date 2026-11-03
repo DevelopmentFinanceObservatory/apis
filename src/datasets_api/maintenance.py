@@ -179,7 +179,10 @@ records by the one description builder. A card already worded from today's recor
 unchanged in everything a reader sees and writes nothing (`presentation_card_remint_unchanged`).
 Without `--apply` each revision is minted in the write transaction and not appended, and each
 card that would change gets one `presentation_card_remint_planned` line with its component id,
-head revision, and old and new `title`, `cite.text` and `about.measure.label`. With `--apply`
+head revision, old and new `title`, `cite.text` and `about.measure.label`, and `changed`, the
+payload members the revision changes (`assembler.pipeline.write.changed_members`). An empty
+`changed` means the payload is equal and the revision changes the stored intent or the series
+coordinates. With `--apply`
 each line is `presentation_card_reminted` and names the new revision. A card in a composition
 moves the composition's head with it, as any revise does. Older revisions keep their
 descriptions, and a snapshot share keeps the frozen copy it took. One
@@ -1411,6 +1414,7 @@ def run_remint_card_descriptions(
     """
     # Presentation is another surface's store, so its modules load for this task alone.
     from assembler.pipeline import remint_component
+    from assembler.pipeline.write import changed_members
     from presentation_store.frame_store import input_versions
     from presentation_store.store import described_heads
 
@@ -1464,13 +1468,15 @@ def run_remint_card_descriptions(
             )
             continue
         revised += 1
-        old_words = _card_words(old.resolved_payload if old is not None else {})
+        old_payload = old.resolved_payload if old is not None else {}
+        old_words = _card_words(old_payload)
         new_words = _card_words(reply.resolved_payload)
         emit(
             "presentation_card_reminted" if apply else "presentation_card_remint_planned",
             component_id=head.component_id,
             revision=head.revision,
             new_revision=reply.revision,
+            changed=list(changed_members(reply.resolved_payload, old_payload)),
             **{f"old_{name}": word for name, word in old_words.items()},
             **{f"new_{name}": word for name, word in new_words.items()},
         )

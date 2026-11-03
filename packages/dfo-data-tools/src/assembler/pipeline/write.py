@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime
 import json
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import cast
 
@@ -657,7 +657,14 @@ def _without_revision(member: object) -> object:
 
 
 def _structurally_equal(candidate: Mapping[str, object], head: Mapping[str, object]) -> bool:
-    """Compares payloads in everything a reader sees, ignoring what moves on every write of the
+    """Compares payloads in everything a reader sees (`changed_members`), stopping at the
+    first difference."""
+    return next(_reader_visible_differences(candidate, head), None) is None
+
+
+def changed_members(candidate: Mapping[str, object], head: Mapping[str, object]) -> tuple[str, ...]:
+    """The dotted paths of the members `candidate` and `head` differ in, everything a reader
+    sees, descending through mappings, sorted. Ignored is what moves on every write of the
     same content: `revision`, `provenance.generated_at`, the card revision a description
     names, and the description's `built_from`, whose vocabulary revision moves with every
     graph generation while its words stay put. The words themselves are compared, so a
@@ -667,10 +674,32 @@ def _structurally_equal(candidate: Mapping[str, object], head: Mapping[str, obje
     A head whose `provenance.execution_ref` is null equals a candidate whatever replay key the
     candidate names, since cards issued before provenance named a derived frame's replay key
     store null there. Catalogue and schema versions remain part of the comparison."""
+    return tuple(sorted(_reader_visible_differences(candidate, head)))
+
+
+def _reader_visible_differences(
+    candidate: Mapping[str, object], head: Mapping[str, object]
+) -> Iterator[str]:
+    """The differing paths `changed_members` describes, unsorted and produced lazily."""
     head_provenance = cast("Mapping[str, object]", head.get("provenance") or {})
     volatile: tuple[str, ...] = ("generated_at",)
     if head_provenance.get("execution_ref") is None:
         volatile = (*volatile, "execution_ref")
-    return _excluding_volatile(candidate, volatile=volatile) == _excluding_volatile(
-        head, volatile=volatile
+    return _differing_paths(
+        _excluding_volatile(candidate, volatile=volatile),
+        _excluding_volatile(head, volatile=volatile),
     )
+
+
+def _differing_paths(a: object, b: object, prefix: str = "") -> Iterator[str]:
+    """The dotted paths at which `a` and `b` differ, descending while both are mappings."""
+    if isinstance(a, Mapping) and isinstance(b, Mapping):
+        left, right = cast("Mapping[object, object]", a), cast("Mapping[object, object]", b)
+        for key in left.keys() | right.keys():
+            path = f"{prefix}.{key}" if prefix else str(key)
+            if key not in left or key not in right:
+                yield path
+            else:
+                yield from _differing_paths(left[key], right[key], path)
+    elif a != b:
+        yield prefix

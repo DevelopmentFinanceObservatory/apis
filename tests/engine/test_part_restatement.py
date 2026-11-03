@@ -14,6 +14,7 @@ import pytest
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from materialise.rate_tables import RateTableCache
 from search.engine.conjoin import BINDING_FOLDED, assemble_region, combine_regions
+from search.engine.entry.parsed import _entity_roles_for_part
 from search.engine.envelope import now_ms
 from search.engine.extract import DateRequest, dates_to_request
 from search.engine.fanout import (
@@ -24,7 +25,7 @@ from search.engine.fanout import (
     _success_directional,
 )
 from search.engine.region import RegionResult
-from search.engine.role_text import DoorRole
+from search.engine.role_text import DoorRole, parsed_directions_contradicted
 from search.engine.time_bind import parse_time_text
 from search.models import (
     DatasetResubmitInput,
@@ -217,6 +218,31 @@ class TestLegRestatement:
             ("Africa", "to", True),
             ("France", "from", None),
         ]
+
+    def test_a_debt_party_is_restated_by_its_party_word(self):
+        """A creditor after "to" passes the parsed door's veto as its party, so its
+        restatement names the party, which passes too (`parsed_directions_contradicted`)."""
+        original = ParsedPart(
+            variable_text="external debt owed to",
+            entities=[
+                ParsedEntity(text="China", role_text="creditor"),
+                ParsedEntity(text="Kenya", role_text="debtor"),
+            ],
+        )
+        restatement = _leg_restatement(
+            original.variable_text,
+            entities=["China", "Kenya"],
+            date_request=None,
+            unit_text=None,
+            entity_roles=_entity_roles_for_part(original),
+        )
+        assert restatement is not None
+        assert [(e.text, e.role_text) for e in restatement.entities or []] == [
+            ("China", "creditor"),
+            ("Kenya", "debtor"),
+        ]
+        assert not parsed_directions_contradicted(original)
+        assert not parsed_directions_contradicted(restatement)
 
     def test_no_entities_is_none_not_an_empty_list(self):
         restatement = _leg_restatement("GDP", entities=[], date_request=None, unit_text=None)

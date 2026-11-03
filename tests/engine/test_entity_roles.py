@@ -1,4 +1,5 @@
-"""All distinct mentions of one place retain their flow axes in the door map (#918)."""
+"""All distinct mentions of one place retain their flow axes in the door map (#918), each
+part reading the roles of its own places."""
 
 from __future__ import annotations
 
@@ -6,6 +7,7 @@ import asyncio
 
 import pytest
 
+from search.engine.entry import raw_text
 from search.engine.entry.dataset_entries import interpret_parts as dataset_door_interpretation
 from search.engine.entry.parsed import (
     _entity_roles_for_part,
@@ -18,46 +20,51 @@ from search.engine.extract import (
     ExtractedOperation,
     Extraction,
     ExtractionResult,
-    _validate_role_spans,
 )
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region.pipeline import resolve_variable
-from search.engine.role_text import DoorRole, contradicts
-from search.models import Operation, ParsedEntity, ParsedPart, RoleAxis
+from search.engine.role_text import DoorRole, Party, contradicts
+from search.models import DefinitePart, Operation, ParsedEntity, ParsedPart, RoleAxis
 from series_coverage.schema import RoleNames
 from series_coverage.shared import CoverageSnapshot
 from tests.engine._binders import elected_reply
+from tests.engine._entity_roles import linked, part_roles
 from tests.engine._fake_coverage import (
     FakeCoverageService,
     empty_coverage_snapshot,
     patch_coverage,
 )
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._harness import make_request, offline_resolve
 from tests.engine._quantity import NO_QUANTITY
 from tests.engine.test_role_bearing_pipeline_e2e import _SV_DCID, _declaring_arcs
 from tests.fixtures import FakeGraph, make_resolver
 
 _CREDITOR_DEBTOR_ROLE_NAMES = RoleNames(donor="creditor", recipient="debtor")
+_PARTY_AXES: dict[Party, RoleAxis] = {
+    "source": "origin",
+    "recipient": "destination",
+    "creditor": "origin",
+    "debtor": "destination",
+}
 
 _KEN = "country/KEN"
 _CHN = "country/CHN"
 _SELF_FLOW_QUERY = "aid from Kenya to Kenya"
 
 
-def _extracted(text: str, flow_role: RoleAxis, span: str | None = None) -> ExtractedEntity:
+def _extracted(text: str, role: Party | None, span: str | None = None) -> ExtractedEntity:
     """An extracted place whose cue is the preposition its span opens with, if any."""
     cue = span.split()[0] if span and span.split()[0] in {"from", "to"} else None
-    return ExtractedEntity(text=text, span=span, flow_role=flow_role, role_span=cue)
+    return ExtractedEntity(text=text, span=span, role=role, cue=cue)
 
 
 def _prepared_roles(
     entities: list[ExtractedEntity], *, query: str, measures: list[str]
 ) -> dict[str, list[DoorRole]]:
-    """The raw-text door's roles for scripted `entities`, read as `_prepare_extraction`
-    reads an extraction of `measures`."""
-    extraction = Extraction(kind="resolution", variables=measures, entities=entities)
-    result = ExtractionResult(extraction=extraction, qualifiers={})
-    return _prepare_extraction(extraction, result, query=query).entity_roles
+    """The roles of the one part of `measures` for scripted `entities`."""
+    (roles,) = part_roles(entities, query=query, measures=measures)
+    return roles
 
 
 def _occurrences(roles: dict[str, list[DoorRole]]) -> dict[str, list[tuple[RoleAxis, str]]]:
@@ -65,12 +72,22 @@ def _occurrences(roles: dict[str, list[DoorRole]]) -> dict[str, list[tuple[RoleA
     return {name: [(role.axis, role.span) for role in rs] for name, rs in roles.items()}
 
 
+def _part_axes(
+    query: str, measures: list[str], entities: list[ExtractedEntity]
+) -> list[dict[str, list[RoleAxis]]]:
+    """Each part's axes by name."""
+    return [
+        {name: [role.axis for role in roles] for name, roles in part.items()}
+        for part in part_roles(entities, query=query, measures=measures)
+    ]
+
+
 class TestRawTextDoorCarriesEveryOccurrence:
     def test_one_name_on_both_axes_carries_both_in_mention_order(self):
         roles = _prepared_roles(
             [
-                _extracted("Kenya", "origin", span="from Kenya"),
-                _extracted("Kenya", "destination", span="to Kenya"),
+                _extracted("Kenya", "source", span="from Kenya"),
+                _extracted("Kenya", "recipient", span="to Kenya"),
             ],
             query=_SELF_FLOW_QUERY,
             measures=["aid"],
@@ -83,592 +100,586 @@ class TestRawTextDoorCarriesEveryOccurrence:
         }
 
     @pytest.mark.parametrize(
-        ("query", "entities", "stated"),
+        ("query", "measures", "mentions", "expected"),
         [
-            # A cue before the span, or a verb after it, states the direction.
-            (
-                "aid to Sub-Saharan Africa",
-                [("Sub-Saharan Africa", "destination", "to")],
-                {"Sub-Saharan Africa": True},
+            pytest.param(
+                "aid from African countries to Africa",
+                ["aid"],
+                [("source", "from", True, ()), ("recipient", "to", False, ())],
+                [[("origin", True), ("destination", False)]],
+                id="each-reading-on-its-own-end",
             ),
-            (
-                "net ODA from the United States to Pakistan in 2020",
-                [("United States", "origin", "from")],
-                {"United States": True},
+            pytest.param(
+                "aid to Africa, especially African countries",
+                ["aid"],
+                [("recipient", "to", False, ()), (None, None, True, ())],
+                [[("destination", False)]],
+                id="an-uncued-reading-stays-undirected",
             ),
-            ("aid funded by Germany", [("Germany", "origin", "funded by")], {"Germany": True}),
-            (
-                "Norway funds Kenya",
-                [("Norway", "origin", "funds"), ("Kenya", "destination", "funds")],
-                {"Norway": True, "Kenya": True},
+            pytest.param(
+                "ODA to Africa and GDP growth of African countries",
+                ["ODA", "GDP growth"],
+                [("recipient", "to", False, (0,)), (None, None, True, (1,))],
+                [[("destination", False)], []],
+                id="two-parts-flow-first",
             ),
-            (
-                "How much does Norway give to the UN?",
-                [("Norway", "origin", "give")],
-                {"Norway": True},
+            pytest.param(
+                "GDP growth of African countries and ODA to Africa",
+                ["GDP growth", "ODA"],
+                [(None, None, True, (0,)), ("recipient", "to", False, (1,))],
+                [[], [("destination", False)]],
+                id="two-parts-flow-second",
             ),
-            # A coordinated list shares the cue before it.
-            (
-                "aid to Kenya from Norway and Sweden",
-                [
-                    ("Kenya", "destination", "to"),
-                    ("Norway", "origin", "from"),
-                    ("Sweden", "origin", "from"),
-                ],
-                {"Kenya": True, "Norway": True, "Sweden": True},
-            ),
-            # ids-024: the "to" after Ghana directs China.
-            (
-                "future debt service of Ghana to China",
-                [("Ghana", "destination", "to"), ("China", "origin", "to")],
-                {"Ghana": False, "China": True},
-            ),
-            # ids-007: a cue that belongs to another phrase directs nothing.
-            (
-                "Zambia debt owed to bondholders",
-                [("Zambia", "destination", "to")],
-                {"Zambia": False},
-            ),
-            # ids-027 "of", weo-037 a possessive: the direction comes from the measure.
-            ("top 10 debtors of China", [("China", "origin", "of")], {"China": False}),
-            ("is Ghana's economy growing", [("Ghana", "destination", "'s")], {"Ghana": False}),
-            (
-                "is Ghana\u2019s economy growing",
-                [("Ghana", "destination", "\u2019s")],
-                {"Ghana": False},
+            pytest.param(
+                "aid to African countries, Africa",
+                ["aid"],
+                [("recipient", "to", True, ()), ("recipient", "to", True, ())],
+                [[("destination", True)]],
+                id="shared-reading",
             ),
         ],
     )
-    def test_a_direction_is_stated_when_the_validated_cue_attaches_to_the_place(
-        self, query: str, entities: list[tuple[str, RoleAxis, str]], stated: dict[str, bool]
+    def test_each_reading_of_a_set_holds_only_the_role_its_own_cue_states(
+        self,
+        query: str,
+        measures: list[str],
+        mentions: list[tuple[Party | None, str | None, bool, tuple[int, ...]]],
+        expected: list[list[tuple[RoleAxis, bool]]],
     ):
-        """Live extractions for each query; every cue passes role-span validation."""
-        extracted = [
-            ExtractedEntity(text=text, span=text, flow_role=axis, role_span=cue)
-            for text, axis, cue in entities
+        """A mention of Africa read whole and one read as its members are two places, so
+        each holds the role of its own cue alone, in the parts it scopes alone."""
+        entities = [
+            linked(
+                "Africa",
+                role,
+                cue,
+                parts=parts,
+                span="African countries" if members else "Africa",
+                members=members,
+            )
+            for role, cue, members, parts in mentions
         ]
-        assert _validate_role_spans(query, extracted, ["aid"]) == extracted
+
+        per_part = part_roles(entities, query=query, measures=measures)
+
+        assert [
+            [(r.axis, r.members) for r in roles.get("Africa", [])] for roles in per_part
+        ] == expected
+
+    @pytest.mark.parametrize(
+        ("query", "entities", "stated"),
+        [
+            # A cue beyond the place's own words states the direction.
+            pytest.param(
+                "aid to Sub-Saharan Africa",
+                [("Sub-Saharan Africa", "recipient", "to")],
+                {"Sub-Saharan Africa": True},
+                id="preposition",
+            ),
+            pytest.param(
+                "aid funded by Germany",
+                [("Germany", "source", "funded by")],
+                {"Germany": True},
+                id="passive",
+            ),
+            pytest.param(
+                "Norway funds Kenya",
+                [("Norway", "source", "funds"), ("Kenya", "recipient", "funds")],
+                {"Norway": True, "Kenya": True},
+                id="verb",
+            ),
+            pytest.param(
+                "aid to Kenya from Norway and Sweden",
+                [("Kenya", "recipient", "to"), ("Sweden", "source", "from")],
+                {"Kenya": True, "Sweden": True},
+                id="coordinated",
+            ),
+            pytest.param(
+                "aid from Norway to Kenya",
+                [("Kenya", "recipient", "to Kenya")],
+                {"Kenya": True},
+                id="cue-written-with-its-place",
+            ),
+            # A possessive, "of" or a national adjective reads the direction off the measure.
+            pytest.param(
+                "top 10 debtors of China",
+                [("China", "creditor", "of")],
+                {"China": False},
+                id="of",
+            ),
+            pytest.param(
+                "is Ghana's economy growing",
+                [("Ghana", "recipient", "Ghana's")],
+                {"Ghana": False},
+                id="possessive-with-its-place",
+            ),
+            pytest.param(
+                "is Ghana's economy growing",
+                [("Ghana", "recipient", "'s")],
+                {"Ghana": False},
+                id="possessive-marker",
+            ),
+            pytest.param(
+                "is Ghana\u2019s economy growing",
+                [("Ghana", "recipient", "Ghana\u2019s")],
+                {"Ghana": False},
+                id="typographic-possessive",
+            ),
+            pytest.param(
+                "Norway give to the UN",
+                [("Norway", "source", "Norway")],
+                {"Norway": False},
+                id="own-name",
+            ),
+            pytest.param(
+                "is the Gambia's debt sustainable",
+                [("Gambia", "debtor", "the Gambia's")],
+                {"Gambia": False},
+                id="article-and-possessive",
+            ),
+            pytest.param(
+                "future debt service of Ghana to China",
+                [("Ghana", "debtor", "of"), ("China", "creditor", "to")],
+                {"Ghana": False, "China": True},
+                id="debt-of-and-to",
+            ),
+        ],
+    )
+    def test_a_direction_is_stated_when_the_cue_reaches_beyond_the_place(
+        self, query: str, entities: list[tuple[str, Party, str]], stated: dict[str, bool]
+    ):
+        extracted = [
+            ExtractedEntity(text=text, span=text, cue=cue, role=role)
+            for text, role, cue in entities
+        ]
         roles = _prepared_roles(extracted, query=query, measures=["aid"])
         assert {name: [role.stated for role in rs] for name, rs in roles.items()} == {
             name: [value] for name, value in stated.items()
         }
 
-    def test_a_national_adjective_states_no_direction(self):
-        """The cue is the entity's own span ("French aid")."""
-        entity = ExtractedEntity(
-            text="France", span="French", flow_role="origin", role_span="French"
-        )
-        roles = _prepared_roles([entity], query="French aid to Senegal", measures=["aid"])
-        assert [role.stated for role in roles["France"]] == [False]
+    @pytest.mark.parametrize(
+        ("query", "text", "span", "cue", "stated"),
+        [
+            pytest.param(
+                "French aid to Senegal", "France", "French", "French", False, id="adjective"
+            ),
+            pytest.param(
+                "Norjasta Keniaan apua", "Norway", "Norja", "Norjasta", True, id="case-ending"
+            ),
+            pytest.param("Norjasta Keniaan apua", "Norway", "Norja", "sta", True, id="bare-ending"),
+            # An inflected name written as both span and cue reads like a national adjective:
+            # nothing offline tells its case ending from the name, so the role stands and is
+            # read off the measure.
+            pytest.param(
+                "Norjasta Keniaan apua",
+                "Norway",
+                "Norjasta",
+                "Norjasta",
+                False,
+                id="inflected-name-as-its-own-cue",
+            ),
+            pytest.param(
+                "the US's aid to Kenya",
+                "United States",
+                "US",
+                "the US's",
+                False,
+                id="article-and-possessive-on-a-short-name",
+            ),
+        ],
+    )
+    def test_a_place_written_apart_from_its_name_states_by_the_words_beyond_its_span(
+        self, query: str, text: str, span: str, cue: str, stated: bool
+    ):
+        """A national adjective is its own cue and states nothing, nor does a possessive
+        with its article; a case ending beyond the span states the direction."""
+        entity = ExtractedEntity(text=text, span=span, cue=cue, role="source")
+        roles = _prepared_roles([entity], query=query, measures=["aid"])
+        assert [role.stated for role in roles[text]] == [stated]
 
-    def test_a_debt_axis_is_stated_by_construction(self):
-        """The possessive debtor in "Kenya's debt to China" takes its axis from the debt
-        wording, so it is stated although its cue is a possessive."""
+    def test_a_blank_span_is_read_as_none_and_vetoes_nothing(self):
+        """A span of whitespace is no wording of the place: the role takes the name as its
+        span and the veto reads that name's occurrences, not every word of the query."""
+        entity = ExtractedEntity(text="Kenya", span=" ", cue="from", role="recipient")
+        assert entity.span is None
+        roles = _prepared_roles([entity], query="Kenya aid from France", measures=["aid"])
+        assert [(role.span, role.preceding) for role in roles["Kenya"]] == [("Kenya", ())]
+
+    def test_a_span_with_no_words_occurs_nowhere_and_its_role_has_no_veto(self):
+        """A span of "-" holds no word, so it occurs nowhere in the query and the veto reads
+        no word before it, where reading every position would veto the role by "from"."""
+        entity = ExtractedEntity(text="Kenya", span="-", cue="to", role="recipient")
+        roles = _prepared_roles([entity], query="aid from France to Kenya", measures=["aid"])
+        assert [role.preceding for role in roles["Kenya"]] == [()]
+
+    def test_a_debt_names_its_creditor_and_its_debtor_by_party_words(self):
+        """The creditor is the origin and the debtor the destination. The possessive debtor
+        reads its direction off the measure; the creditor's "to" states it."""
         roles = _prepared_roles(
             [
-                ExtractedEntity(text="Kenya", span="Kenya", flow_role="origin", role_span="'s"),
-                ExtractedEntity(
-                    text="China", span="China", flow_role="destination", role_span="to"
-                ),
+                ExtractedEntity(text="Kenya", span="Kenya", cue="Kenya's", role="debtor"),
+                ExtractedEntity(text="China", span="China", cue="to", role="creditor"),
             ],
             query="Kenya's debt to China",
             measures=["debt"],
         )
         assert roles == {
-            "Kenya": [DoorRole(axis="destination", span="Kenya", stated=True)],
-            "China": [DoorRole(axis="origin", span="China", stated=True)],
+            "Kenya": [DoorRole(axis="destination", span="Kenya", stated=False, party="debtor")],
+            "China": [DoorRole(axis="origin", span="China", stated=True, party="creditor")],
         }
 
-    def test_a_lone_debt_possessive_sets_the_debtor_and_states_no_direction(self):
-        """The possessive debtor in "Kenya's debt service" reads its axis off the measure,
-        so the axis changes and the direction stays unstated."""
-        roles = _prepared_roles(
-            [ExtractedEntity(text="Kenya", span="Kenya", flow_role="origin", role_span="'s")],
-            query="Kenya's debt service",
-            measures=["debt service"],
-        )
-        assert roles == {"Kenya": [DoorRole(axis="destination", span="Kenya", stated=False)]}
-
     @pytest.mark.parametrize(
-        ("query", "measure", "entities", "expected"),
+        ("query", "cue"),
         [
-            # Stored readings whose cues are paraphrases ("owes", "to") or not cues at all
-            # ("does"): validation drops each role, and the query's own wording sets it.
-            (
-                "how much does China owe India",
-                "external debt",
-                [("China", "destination", "owes"), ("India", "origin", "to")],
-                {"China": "destination", "India": "origin"},
-            ),
-            (
-                "what does Zambia owe the IMF",
-                "IMF debt",
-                [("Zambia", "destination", "owes"), ("IMF", "origin", "owes")],
-                {"Zambia": "destination", "IMF": "origin"},
-            ),
-            (
-                "how much does Kenya owe China",
-                "external debt",
-                [("Kenya", "unspecified", None), ("China", "origin", "does")],
-                {"Kenya": "destination", "China": "origin"},
-            ),
-            (
-                "net ODA received by Ethiopia in 1965",
-                "net ODA received",
-                [("Ethiopia", "destination", "to")],
-                {"Ethiopia": "destination"},
-            ),
-            (
-                "By what percentage did the total ODA Ghana received from all donors change "
-                "between 2012 and 2021?",
-                "total ODA",
-                [("Ghana", "destination", "to")],
-                {"Ghana": "destination"},
-            ),
+            ("net ODA received by Ethiopia in 1965", "received by"),
+            ("the total ODA Ethiopia received from all donors", "received"),
         ],
     )
-    def test_query_wording_directs_a_place_whose_cue_failed_validation(
-        self,
-        query: str,
-        measure: str,
-        entities: list[tuple[str, RoleAxis, str | None]],
-        expected: dict[str, RoleAxis],
-    ):
-        extracted = [
-            ExtractedEntity(text=text, span=text, flow_role=axis, role_span=cue)
-            for text, axis, cue in entities
-        ]
-        validated = _validate_role_spans(query, extracted, [measure])
-        assert {e.flow_role for e in validated} == {"unspecified"}
-        roles = _prepared_roles(validated, query=query, measures=[measure])
+    def test_a_receipt_names_its_recipient_by_party_word(self, query: str, cue: str):
+        roles = _prepared_roles(
+            [ExtractedEntity(text="Ethiopia", span="Ethiopia", cue=cue, role="recipient")],
+            query=query,
+            measures=["ODA"],
+        )
         assert roles == {
-            name: [DoorRole(axis=axis, span=name, stated=True)] for name, axis in expected.items()
+            "Ethiopia": [DoorRole(axis="destination", span="Ethiopia", party="recipient")]
         }
 
     def test_an_exact_repeat_collapses_to_one_occurrence(self):
         roles = _prepared_roles(
             [
-                _extracted("Kenya", "destination", span="to Kenya"),
-                _extracted("Kenya", "destination", span="to Kenya"),
+                _extracted("Kenya", "recipient", span="to Kenya"),
+                _extracted("Kenya", "recipient", span="to Kenya"),
             ],
             query=_SELF_FLOW_QUERY,
             measures=["aid"],
         )
         assert _occurrences(roles) == {"Kenya": [("destination", "to Kenya")]}
 
-    def test_an_unspecified_occurrence_is_skipped(self):
+    def test_an_occurrence_with_no_role_is_skipped(self):
         roles = _prepared_roles(
             [
-                _extracted("Kenya", "unspecified"),
-                _extracted("Kenya", "origin", span="from Kenya"),
+                _extracted("Kenya", None),
+                _extracted("Kenya", "source", span="from Kenya"),
             ],
             query=_SELF_FLOW_QUERY,
             measures=["aid"],
         )
         assert _occurrences(roles) == {"Kenya": [("origin", "from Kenya")]}
 
-    def test_a_name_unspecified_in_every_occurrence_carries_no_entry(self):
+    def test_a_name_with_no_role_in_any_occurrence_carries_no_entry(self):
         roles = _prepared_roles(
             [
-                _extracted("Kenya", "unspecified"),
-                _extracted("Kenya", "unspecified"),
-                _extracted("Uganda", "origin", span="from Uganda"),
+                _extracted("Kenya", None),
+                _extracted("Kenya", None),
+                _extracted("Uganda", "source", span="from Uganda"),
             ],
             query=_SELF_FLOW_QUERY,
             measures=["aid"],
         )
         assert _occurrences(roles) == {"Uganda": [("origin", "from Uganda")]}
 
+    def test_a_role_with_no_cue_carries_no_entry(self):
+        """World knowledge: "ODA Kenya Norway" states no role, so a role the model cites no
+        words for leaves the place undirected."""
+        roles = _prepared_roles(
+            [linked("Norway", "source"), linked("Kenya", "recipient")],
+            query="ODA Kenya Norway",
+            measures=["ODA"],
+        )
+        assert roles == {}
 
-def _debt_roles(
-    query: str, extracted: list[tuple[str, str | None, str]], measures: list[str]
-) -> dict[str, list[RoleAxis]]:
-    """The raw-text door's axes by name for ``(text, span, extracted axis)`` places."""
-    roles = _prepared_roles(
-        [ExtractedEntity(text=text, span=span, flow_role=axis) for text, span, axis in extracted],
-        query=query,
-        measures=measures,
+    @pytest.mark.parametrize(
+        ("query", "entity", "axis"),
+        [
+            pytest.param(
+                "how much does Kenya owe China",
+                linked("China", "creditor", "to"),
+                "origin",
+                id="misquoted-creditor",
+            ),
+            pytest.param(
+                "how much does Kenya owe to China",
+                linked("Kenya", "debtor", "owes"),
+                "destination",
+                id="misquoted-debtor",
+            ),
+            pytest.param("Togo aid", linked("Togo", "recipient", "to"), "destination", id="togo"),
+        ],
     )
-    return {name: [role.axis for role in occurrences] for name, occurrences in roles.items()}
+    def test_a_role_whose_cue_the_query_does_not_hold_is_read_off_the_measure(
+        self, query: str, entity: ExtractedEntity, axis: RoleAxis
+    ):
+        roles = _prepared_roles([entity], query=query, measures=["debt"])
+        assert roles == {
+            entity.text: [DoorRole(axis=axis, span=entity.text, stated=False, party=entity.role)]
+        }
 
 
-_AXIS_COMBINATIONS = [
-    ("destination", "origin"),
-    ("origin", "destination"),
-    ("unspecified", "unspecified"),
-    ("origin", "unspecified"),
-    ("unspecified", "origin"),
-    ("destination", "destination"),
-]
-
-
-def _extracted_axes(kenya: str, china: str) -> dict[str, list[str]]:
-    return {
-        name: [axis] for name, axis in (("Kenya", kenya), ("China", china)) if axis != "unspecified"
-    }
-
-
-def _place(name: str, axis: str, span: str | None = None, cue: str | None = None):
-    return ExtractedEntity(text=name, span=span or name, flow_role=axis, role_span=cue)
-
-
-@pytest.mark.parametrize(
-    ("query", "measure", "entities", "over", "expected"),
-    [
-        # A bare debt possessive sets its place's role and nothing else.
-        (
-            "Kenya's debt service",
-            "debt service",
-            [_place("Kenya", "origin", cue="'s")],
-            "destination",
-            {"Kenya": "destination"},
-        ),
-        # Any other words leave the possessor where the extraction put it.
-        (
-            "Which countries does Kenya's debt service go to",
-            "debt service",
-            [_place("Kenya", "origin", cue="'s")],
-            "destination",
-            {"Kenya": "origin"},
-        ),
-        # Receipt wording sets the recipient's role alone: the other places and the rank keep
-        # the extraction's ends.
-        (
-            "French ODA received by Kenya",
-            "ODA",
-            [_place("France", "origin", span="French"), _place("Kenya", "origin")],
-            "destination",
-            {"France": "origin", "Kenya": "destination"},
-        ),
-        (
-            "Top donors of ODA received by Kenya",
-            "ODA",
-            [_place("Kenya", "origin")],
-            "origin",
-            {"Kenya": "destination"},
-        ),
-        (
-            "Kenya's ODA vs ODA received by Uganda",
-            "ODA",
-            [_place("Kenya", "destination", cue="'s"), _place("Uganda", "origin")],
-            "destination",
-            {"Kenya": "destination", "Uganda": "destination"},
-        ),
-        (
-            "Ethiopian ODA vs ODA received by Kenya",
-            "ODA",
-            [_place("Ethiopia", "destination", span="Ethiopian"), _place("Kenya", "origin")],
-            "destination",
-            {"Ethiopia": "destination", "Kenya": "destination"},
-        ),
-    ],
-)
-def test_query_wording_sets_only_its_own_places_role(query, measure, entities, over, expected):
-    """The query's wording sets the roles of the places it names (`role_text.receipt_axes`,
-    `role_text.debtor_possessive`). Every other place and every operation's axis keep the
-    extraction's reading."""
+def test_an_operation_keeps_its_axis_beside_the_roles():
+    """Roles come from the entities alone, so an operation's axis is the extraction's."""
     extraction = Extraction(
         kind="resolution",
-        variables=[measure],
-        entities=entities,
-        operations=[ExtractedOperation(verb="rank", variable=0, phrase="top", over=over)],
+        variables=["ODA"],
+        entities=[linked("Kenya", "recipient", "received by")],
+        operations=[ExtractedOperation(verb="rank", variable=0, phrase="Top", over="origin")],
     )
     result = ExtractionResult(
         extraction=extraction,
         qualifiers={},
-        operations={measure: (Operation(verb="rank", phrase="top", over=over),)},
+        operations={"ODA": (Operation(verb="rank", phrase="Top", over="origin"),)},
     )
 
-    prep = _prepare_extraction(extraction, result, query=query)
+    prep = _prepare_extraction(extraction, result, query="Top donors of ODA received by Kenya")
 
-    assert {name: [r.axis for r in rs] for name, rs in prep.entity_roles.items()} == {
-        name: [axis] for name, axis in expected.items()
-    }
-    assert [op.over for ops in prep.per_variable_operations for op in ops] == [over]
+    assert prep.per_variable_entity_roles == [
+        {"Kenya": [DoorRole(axis="destination", span="Kenya", party="recipient")]}
+    ]
+    assert [op.over for ops in prep.per_variable_operations for op in ops] == ["origin"]
 
 
-class TestRawTextDoorReadsDebtWording:
-    """In a two-party debt relation the wording sets both axes, whatever extraction says."""
-
-    @pytest.mark.parametrize(
-        "query",
-        [
-            "Kenya's debt to China",
-            "Kenya's debt owed to China",
-            "debt owed to China, Kenya's debt",
-            "debt owed to China by Kenya",
-            "debt owed by Kenya to China",
-            "Kenya's debt service payments to China",
+@pytest.mark.parametrize(
+    ("parts", "open_axes"),
+    [
+        pytest.param((0,), [frozenset({"origin"}), frozenset()], id="scoped-to-one-part"),
+        pytest.param((), [frozenset({"origin"})] * 2, id="scoping-every-part"),
+    ],
+)
+def test_a_breakdown_entity_opens_its_role_on_the_parts_it_scopes(
+    parts: tuple[int, ...], open_axes: list[frozenset[RoleAxis]]
+):
+    """ "every donor" asks one value per donor of the measures it scopes alone."""
+    extraction = Extraction(
+        kind="resolution",
+        variables=["aid", "remittances"],
+        entities=[
+            linked("Kenya", "recipient", "to"),
+            ExtractedEntity(text="every donor", span="every donor", variables=list(parts)),
         ],
     )
-    @pytest.mark.parametrize(("kenya", "china"), _AXIS_COMBINATIONS)
-    def test_cues_on_both_places_set_the_creditor_and_the_debtor(
-        self, query: str, kenya: str, china: str
-    ):
-        extracted = [("Kenya", "Kenya", kenya), ("China", "China", china)]
-        assert _debt_roles(query, extracted, ["debt"]) == {
-            "Kenya": ["destination"],
-            "China": ["origin"],
-        }
+    result = ExtractionResult(extraction=extraction, qualifiers={})
 
-    @pytest.mark.parametrize(
-        ("query", "uncued"),
-        [
-            ("Kenya debt owed to China", "Kenya"),
-            ("Kenya debt to China", "Kenya"),
-        ],
+    prep = _prepare_extraction(
+        extraction, result, query="aid to Kenya from every donor and remittances to Kenya"
     )
-    @pytest.mark.parametrize(("kenya", "china"), _AXIS_COMBINATIONS)
-    def test_an_uncued_place_needs_an_extracted_axis(
-        self, query: str, uncued: str, kenya: str, china: str
-    ):
-        """The uncued place is the debtor only when extraction put it on destination,
-        opposite the cued creditor; on origin or on no axis it is no party, and both places
-        keep their extracted axes."""
-        extracted = [("Kenya", "Kenya", kenya), ("China", "China", china)]
-        uncued_axis = kenya if uncued == "Kenya" else china
-        expected = (
-            {"Kenya": ["destination"], "China": ["origin"]}
-            if uncued_axis == "destination"
-            else _extracted_axes(kenya, china)
-        )
-        assert _debt_roles(query, extracted, ["debt"]) == expected
 
-    def test_a_national_adjective_takes_the_party_the_creditor_leaves(self):
-        extracted = [("Kenya", "Kenyan", "destination"), ("China", "China", "destination")]
-        assert _debt_roles("Kenyan debt to China", extracted, ["debt"]) == {
-            "Kenya": ["destination"],
-            "China": ["origin"],
-        }
+    assert prep.per_variable_open_axes == open_axes
+    assert prep.per_variable_entities == [["Kenya"], ["Kenya"]]
 
-    def test_a_national_adjective_on_the_creditors_axis_keeps_the_extracted_axes(self):
-        """Extraction puts Kenya on origin, the axis China's cue claims, so Kenya is a
-        second creditor and nothing is set."""
-        extracted = [("Kenya", "Kenyan", "origin"), ("China", "China", "destination")]
-        assert _debt_roles("Kenyan debt to China", extracted, ["debt"]) == {
-            "Kenya": ["origin"],
-            "China": ["destination"],
-        }
 
-    def test_a_translated_name_without_a_span_matches_by_its_text(self):
-        extracted = [("Kenya", "Kenya", "unspecified"), ("China", None, "destination")]
-        assert _debt_roles("Kenya's debt to China", extracted, ["debt"]) == {
-            "Kenya": ["destination"],
-            "China": ["origin"],
-        }
-
-    @pytest.mark.parametrize(
-        ("query", "extracted"),
-        [
-            (
-                "Kenya's external debt compared with China",
-                [("Kenya", "Kenya", "unspecified"), ("China", "China", "unspecified")],
-            ),
-            (
-                "China and Kenya's external debt",
-                [("China", "China", "unspecified"), ("Kenya", "Kenya", "unspecified")],
-            ),
-            (
-                "Kenya and Ghana's external debt",
-                [("Kenya", "Kenya", "unspecified"), ("Ghana", "Ghana", "destination")],
-            ),
-            (
-                "Kenya's external debt compared with Uganda",
-                [("Kenya", "Kenya", "destination"), ("Uganda", "Uganda", "unspecified")],
-            ),
-            (
-                "Kenya's external debt vs Uganda",
-                [("Kenya", "Kenya", "origin"), ("Uganda", "Uganda", "unspecified")],
-            ),
-            (
-                "Kenya's debt versus Ghana's",
-                [("Kenya", "Kenya", "destination"), ("Ghana", "Ghana", "destination")],
-            ),
-            (
-                "Kenya's share of Africa's debt",
-                [("Kenya", "Kenya", "origin"), ("Africa", "Africa", "destination")],
-            ),
-            (
-                "Kenya's external debt in East Africa",
-                [("Kenya", "Kenya", "origin"), ("East Africa", "East Africa", "unspecified")],
-            ),
-            (
-                "Kenya's debt relative to Sub-Saharan Africa",
-                [
-                    ("Kenya", "Kenya", "destination"),
-                    ("Sub-Saharan Africa", "Sub-Saharan Africa", "unspecified"),
-                ],
-            ),
-            (
-                "Nairobi's debt in Kenya",
-                [("Nairobi", "Nairobi", "origin"), ("Kenya", "Kenya", "unspecified")],
-            ),
-            # The second place on the debtor's own axis is a second debtor, as live
-            # extraction gives "Kenya's debt relative to Sub-Saharan Africa".
-            (
-                "Kenya's debt relative to Sub-Saharan Africa",
-                [
-                    ("Kenya", "Kenya", "unspecified"),
-                    ("Sub-Saharan Africa", "Sub-Saharan Africa", "destination"),
-                ],
-            ),
-            (
-                "Kenya's external debt compared with Uganda",
-                [("Kenya", "Kenya", "unspecified"), ("Uganda", "Uganda", "destination")],
-            ),
-            (
-                "Kenya's external debt vs Uganda",
-                [("Kenya", "Kenya", "destination"), ("Uganda", "Uganda", "destination")],
-            ),
-            (
-                "Kenya's external debt in East Africa",
-                [("Kenya", "Kenya", "unspecified"), ("East Africa", "East Africa", "destination")],
-            ),
-            (
-                "Nairobi's debt in Kenya",
-                [("Nairobi", "Nairobi", "unspecified"), ("Kenya", "Kenya", "destination")],
-            ),
-        ],
-    )
-    def test_a_comparison_or_a_locative_keeps_the_extracted_axes(
-        self, query: str, extracted: list[tuple[str, str, str]]
-    ):
-        expected = {name: [axis] for name, _span, axis in extracted if axis != "unspecified"}
-        assert _debt_roles(query, extracted, ["external debt"]) == expected
-
-    @pytest.mark.parametrize(
-        ("query", "extracted", "measures", "expected"),
-        [
-            # A holder of someone else's debt is no debtor.
-            (
-                "China's holdings of Kenyan debt",
-                [("China", "China", "origin"), ("Kenya", "Kenyan", "unspecified")],
-                ["debt holdings"],
-                {"China": ["origin"]},
-            ),
-            (
-                "China's share of Zambia debt",
-                [("China", "China", "unspecified"), ("Zambia", "Zambia", "unspecified")],
-                ["debt"],
-                {},
-            ),
-            (
-                "China's debt claims on Africa",
-                [("China", "China", "origin"), ("Africa", "Africa", "destination")],
-                ["debt claims"],
-                {"China": ["origin"], "Africa": ["destination"]},
-            ),
-            # A second measure leaves every leg on its extracted axes.
-            (
-                "Japan's ODA and external debt",
-                [("Japan", "Japan", "origin")],
-                ["ODA", "external debt"],
-                {"Japan": ["origin"]},
-            ),
-            (
-                "Japan's ODA disbursements and debt to Kenya",
-                [("Japan", "Japan", "origin"), ("Kenya", "Kenya", "destination")],
-                ["ODA disbursements", "debt"],
+@pytest.mark.parametrize(
+    ("query", "measures", "entities", "expected"),
+    [
+        pytest.param(
+            "ODA to Kenya and Uganda economic growth",
+            ["ODA", "GDP growth"],
+            [linked("Kenya", "recipient", "to", parts=(0,)), linked("Uganda", parts=(1,))],
+            [{"Kenya": ["destination"]}, {}],
+            id="no-carry-into-another-part",
+        ),
+        pytest.param(
+            "How much aid was Kenya provided with by France?",
+            ["aid"],
+            [linked("Kenya", "recipient", "provided with"), linked("France", "source", "by")],
+            [{"Kenya": ["destination"], "France": ["origin"]}],
+            id="passive-names-the-giver-after-by",
+        ),
+        pytest.param(
+            "How much does Zambia give to China in debt repayments, and what is Zambia's GDP?",
+            ["debt repayments", "GDP"],
+            [
+                linked("Zambia", "debtor", "give", parts=(0,)),
+                linked("China", "creditor", "to", parts=(0,)),
+                linked("Zambia", parts=(1,)),
+            ],
+            [{"Zambia": ["destination"], "China": ["origin"]}, {}],
+            id="debt-repayments-name-the-creditor",
+        ),
+        # A name repeated in two parts keeps a separate role in each.
+        pytest.param(
+            "ODA from Kenya and remittances to Kenya",
+            ["ODA", "remittances"],
+            [
+                linked("Kenya", "source", "from", parts=(0,)),
+                linked("Kenya", "recipient", "to", parts=(1,)),
+            ],
+            [{"Kenya": ["origin"]}, {"Kenya": ["destination"]}],
+            id="one-name-two-parts",
+        ),
+        # One mention scoping two measures carries its one role to both.
+        pytest.param(
+            "Japan's ODA disbursements and loans to Kenya",
+            ["ODA disbursements", "loans"],
+            [
+                linked("Japan", "source", "Japan's"),
+                linked("Kenya", "recipient", "to"),
+            ],
+            [
                 {"Japan": ["origin"], "Kenya": ["destination"]},
-            ),
-            (
-                "Kenya's GDP and debt",
-                [("Kenya", "Kenya", "unspecified")],
-                ["GDP", "debt"],
-                {},
-            ),
-            # One place the extraction left undirected, one whose debt is measured against
-            # a quantity, one with a possessive claim on a debt, or a creditor's claim
-            # words.
-            (
-                "Kenya's external debt",
-                [("Kenya", "Kenya", "unspecified")],
-                ["external debt"],
-                {},
-            ),
-            (
-                "Kenya's debt to GDP ratio",
-                [("Kenya", "Kenya", "origin")],
-                ["debt"],
-                {"Kenya": ["origin"]},
-            ),
-            (
-                "Kenya's share of external debt",
-                [("Kenya", "Kenya", "origin")],
-                ["external debt"],
-                {"Kenya": ["origin"]},
-            ),
-            (
-                "China's debt exposure",
-                [("China", "China", "origin")],
-                ["debt exposure"],
-                {"China": ["origin"]},
-            ),
-            (
-                "China's debt exposure",
-                [("China", "China", "origin")],
-                ["debt"],
-                {"China": ["origin"]},
-            ),
-            (
-                "China's debt claims",
-                [("China", "China", "origin")],
-                ["debt claims"],
-                {"China": ["origin"]},
-            ),
-            # No debt measure.
-            ("refugees owing to Syria", [("Syria", "Syria", "unspecified")], ["refugees"], {}),
-            (
-                "aid owed to Kenya",
-                [("Kenya", "Kenya", "destination")],
-                ["aid"],
-                {"Kenya": ["destination"]},
-            ),
-            (
-                "aid owed to Kenya by Norway",
-                [("Kenya", "Kenya", "destination"), ("Norway", "Norway", "origin")],
-                ["aid"],
-                {"Kenya": ["destination"], "Norway": ["origin"]},
-            ),
-            (
-                "Norway's debt relief to Kenya",
-                [("Norway", "Norway", "origin"), ("Kenya", "Kenya", "destination")],
-                ["debt relief"],
-                {"Norway": ["origin"], "Kenya": ["destination"]},
-            ),
-            (
-                "aid to Kenya from Norway",
-                [("Norway", "Norway", "origin"), ("Kenya", "Kenya", "destination")],
-                ["aid"],
-                {"Norway": ["origin"], "Kenya": ["destination"]},
-            ),
-            (
-                "ODA Kenya Norway",
-                [("Kenya", "Kenya", "unspecified"), ("Norway", "Norway", "unspecified")],
-                ["ODA"],
-                {},
-            ),
-            # Three places.
-            (
-                "Kenya's debt to China and India",
-                [
-                    ("Kenya", "Kenya", "origin"),
-                    ("China", "China", "destination"),
-                    ("India", "India", "destination"),
-                ],
-                ["debt"],
-                {"Kenya": ["origin"], "China": ["destination"], "India": ["destination"]},
-            ),
+                {"Japan": ["origin"], "Kenya": ["destination"]},
+            ],
+            id="one-mention-two-parts",
+        ),
+        # An unlinked place scopes every part, and with no role it directs none.
+        pytest.param(
+            "aid to Kenya and GDP of Uganda",
+            ["aid", "GDP"],
+            [linked("Kenya", "recipient", "to", parts=(0,)), linked("Uganda")],
+            [{"Kenya": ["destination"]}, {}],
+            id="unlinked-place-with-no-role",
+        ),
+    ],
+)
+def test_each_part_reads_its_own_places(
+    query: str,
+    measures: list[str],
+    entities: list[ExtractedEntity],
+    expected: list[dict[str, list[RoleAxis]]],
+):
+    """Each part's roles come from the places linked to its measure alone."""
+    assert _part_axes(query, measures, entities) == expected
+
+
+# (query, measures, entities) of one part, and the same with an unrelated part added.
+_WITH_AN_UNRELATED_PART = [
+    pytest.param(
+        ("aid from Norway to Kenya", ["aid"]),
+        ("aid from Norway to Kenya and GDP of Uganda", ["aid", "GDP"]),
+        [
+            linked("Norway", "source", "from", parts=(0,)),
+            linked("Kenya", "recipient", "to", parts=(0,)),
         ],
+        [linked("Uganda", parts=(1,))],
+        id="cued",
+    ),
+    pytest.param(
+        ("ODA to Kenya and Uganda", ["ODA"]),
+        ("ODA to Kenya and Uganda and GDP growth of Rwanda", ["ODA", "GDP growth"]),
+        [
+            linked("Kenya", "recipient", "to", parts=(0,)),
+            linked("Uganda", "recipient", "to", parts=(0,)),
+        ],
+        [linked("Rwanda", parts=(1,))],
+        id="coordinated",
+    ),
+    pytest.param(
+        ("How much does Zambia owe China?", ["external debt"]),
+        ("How much does Zambia owe China, and what is Kenya's GDP?", ["external debt", "GDP"]),
+        [
+            linked("Zambia", "debtor", "owe", parts=(0,)),
+            linked("China", "creditor", "owe", parts=(0,)),
+        ],
+        [linked("Kenya", parts=(1,))],
+        id="debt",
+    ),
+]
+
+
+@pytest.mark.parametrize(("one", "two", "entities", "added"), _WITH_AN_UNRELATED_PART)
+def test_an_unrelated_part_leaves_the_roles_of_another_unchanged(
+    one: tuple[str, list[str]],
+    two: tuple[str, list[str]],
+    entities: list[ExtractedEntity],
+    added: list[ExtractedEntity],
+):
+    (alone,) = _part_axes(*one, entities)
+    assert alone
+    assert _part_axes(*two, [*entities, *added])[0] == alone
+
+
+def test_the_request_reads_each_entity_once_and_every_part_reads_its_own_roles(monkeypatch):
+    """The cue tie and the veto words of every entity that carries a role are read once for
+    the request, however many parts it has. Kenya's two roles keep the words before the
+    occurrence each is tied to, in the part that scopes it."""
+    veto_calls: list[int] = []
+    stated_calls: list[str] = []
+    veto_words = raw_text.veto_words
+    states_direction = raw_text._states_direction
+
+    def _veto_words(entities, *, query):
+        veto_calls.append(len(entities))
+        return veto_words(entities, query=query)
+
+    def _states_direction(entity, *, folded_query):
+        stated_calls.append(entity.text)
+        return states_direction(entity, folded_query=folded_query)
+
+    monkeypatch.setattr(raw_text, "veto_words", _veto_words)
+    monkeypatch.setattr(raw_text, "_states_direction", _states_direction)
+
+    per_part = part_roles(
+        [
+            linked("Kenya", "recipient", "to", parts=(0,)),
+            linked("Kenya", "source", "Kenya's", parts=(1,)),
+            linked("France", parts=(0, 1)),
+        ],
+        query="aid to Kenya and Kenya's exports with France",
+        measures=["aid", "exports"],
     )
-    def test_other_queries_keep_the_extracted_axes(
-        self,
-        query: str,
-        extracted: list[tuple[str, str | None, str]],
-        measures: list[str],
-        expected: dict[str, list[str]],
-    ):
-        assert _debt_roles(query, extracted, measures) == expected
+
+    assert veto_calls == [3]
+    assert stated_calls == ["Kenya", "Kenya"]
+    assert [
+        {name: [r.preceding for r in rs] for name, rs in part.items()} for part in per_part
+    ] == [{"Kenya": [("to",)]}, {"Kenya": [("and",)]}]
+
+
+@pytest.mark.parametrize(
+    ("active", "passive", "parties"),
+    [
+        (
+            (
+                "How much aid did France provide to Kenya?",
+                [linked("France", "source", "provide"), linked("Kenya", "recipient", "to")],
+            ),
+            (
+                "How much aid was Kenya provided with by France?",
+                [linked("Kenya", "recipient", "provided with"), linked("France", "source", "by")],
+            ),
+            {"France": "source", "Kenya": "recipient"},
+        ),
+        (
+            (
+                "Norway gave aid to Kenya",
+                [linked("Norway", "source", "gave"), linked("Kenya", "recipient", "to")],
+            ),
+            (
+                "aid was given to Kenya by Norway",
+                [linked("Kenya", "recipient", "to"), linked("Norway", "source", "by")],
+            ),
+            {"Norway": "source", "Kenya": "recipient"},
+        ),
+        (
+            (
+                "how much does Kenya owe China",
+                [linked("Kenya", "debtor", "owe"), linked("China", "creditor", "owe")],
+            ),
+            (
+                "debt owed to China by Kenya",
+                [linked("China", "creditor", "owed to"), linked("Kenya", "debtor", "by")],
+            ),
+            {"China": "creditor", "Kenya": "debtor"},
+        ),
+    ],
+)
+def test_an_active_sentence_and_its_passive_keep_the_same_parties(
+    active: tuple[str, list[ExtractedEntity]],
+    passive: tuple[str, list[ExtractedEntity]],
+    parties: dict[str, Party],
+):
+    """Voice moves the cue, and the party word keeps the axis: every cue here is a verb or
+    preposition, so each direction is stated."""
+
+    def read(query: str, entities: list[ExtractedEntity]) -> dict[str, list[DoorRole]]:
+        (roles,) = part_roles(entities, query=query, measures=["aid"])
+        return roles
+
+    expected = {
+        name: [DoorRole(axis=_PARTY_AXES[party], span=name, party=party)]
+        for name, party in parties.items()
+    }
+    assert read(*active) == expected
+    assert read(*passive) == expected
 
 
 class TestParsedDoorCarriesEveryOccurrence:
@@ -733,7 +744,7 @@ class TestDatasetEntriesDoorCarriesEveryOccurrence:
         assert roles == {
             "Kenya": [
                 DoorRole(axis="origin", span="Kenya"),
-                DoorRole(axis="destination", span="Kenya"),
+                DoorRole(axis="destination", span="Kenya", party="recipient"),
             ]
         }
 
@@ -767,8 +778,8 @@ def _run_self_flow_occurrences(
     )
     door_roles = _prepared_roles(
         [
-            _extracted("Kenya", "origin", span="from Kenya"),
-            _extracted("Kenya", "destination", span="to Kenya"),
+            _extracted("Kenya", "source", span="from Kenya"),
+            _extracted("Kenya", "recipient", span="to Kenya"),
         ],
         query=_SELF_FLOW_QUERY,
         measures=["aid"],
@@ -815,15 +826,23 @@ def test_one_name_on_both_axes_binds_the_dcid_on_both_axes(monkeypatch):
     assert spec.definition.identity.entities == {"origin": [_KEN], "destination": [_KEN]}
 
 
-@pytest.mark.parametrize("query", ["Kenya's debt to China", "Kenya's debt owed to China"])
-def test_debt_wording_binds_the_creditor_as_origin_and_the_debtor_as_destination(
-    monkeypatch, query: str
+@pytest.mark.parametrize(
+    ("query", "debtor_cue", "creditor_cue"),
+    [
+        ("Kenya's debt to China", "Kenya's", "to"),
+        ("Kenya's debt owed to China", "Kenya's", "owed to"),
+        ("Kenya gives to China in debt repayments", "gives", "to"),
+    ],
+)
+def test_debt_party_words_bind_the_creditor_as_origin_and_the_debtor_as_destination(
+    monkeypatch, query: str, debtor_cue: str, creditor_cue: str
 ):
-    """A by-creditor series answers with China on origin, though the extraction reversed them."""
+    """A by-creditor series answers with the creditor China on origin, whatever word
+    governs the "to" before it."""
     door_roles = _prepared_roles(
         [
-            ExtractedEntity(text="Kenya", span="Kenya", flow_role="origin", role_span="'s"),
-            ExtractedEntity(text="China", span="China", flow_role="destination", role_span="to"),
+            ExtractedEntity(text="Kenya", span="Kenya", cue=debtor_cue, role="debtor"),
+            ExtractedEntity(text="China", span="China", cue=creditor_cue, role="creditor"),
         ],
         query=query,
         measures=["debt"],
@@ -831,24 +850,25 @@ def test_debt_wording_binds_the_creditor_as_origin_and_the_debtor_as_destination
     _assert_binds_china_as_creditor(monkeypatch, query, door_roles)
 
 
-def test_parsed_door_binds_a_declared_creditor_after_owed_to(monkeypatch):
-    """A declared creditor after "owed to" in parsed variable text binds on origin, because
-    that "to" closes a creditor cue."""
+@pytest.mark.parametrize("variable_text", ["external debt owed to", "external debt arrears to"])
+def test_parsed_door_binds_a_declared_creditor_after_to(monkeypatch, variable_text: str):
+    """A declared creditor after "to" in parsed variable text binds on origin, because the
+    party word "creditor" exempts it from the preposition veto."""
     part = ParsedPart(
-        variable_text="external debt owed to",
+        variable_text=variable_text,
         entities=[
             ParsedEntity(text="China", role_text="creditor"),
             ParsedEntity(text="Kenya", role_text="debtor"),
         ],
     )
     role_query, warnings = _role_query_for_part(part)
-    assert (role_query, warnings) == ("external debt owed to China Kenya", [])
+    assert (role_query, warnings) == (f"{variable_text} China Kenya", [])
     door_roles = _entity_roles_for_part(part)
     assert door_roles == {
-        "China": [DoorRole(axis="origin", span="China")],
-        "Kenya": [DoorRole(axis="destination", span="Kenya")],
+        "China": [DoorRole(axis="origin", span="China", party="creditor")],
+        "Kenya": [DoorRole(axis="destination", span="Kenya", party="debtor")],
     }
-    assert contradicts(role_query, span="China", axis="origin") is False
+    assert contradicts(role_query, span="China", axis="origin", party="creditor") is False
     _assert_binds_china_as_creditor(monkeypatch, role_query, door_roles)
 
 
@@ -901,19 +921,208 @@ def _assert_binds_china_as_creditor(
 
 
 def test_a_country_before_the_measure_takes_the_end_the_other_place_leaves(monkeypatch):
-    """ "China loans to Kenya": China's own name before "loans" states no direction, so
-    validation leaves it unspecified, and Kenya's cue makes Kenya the debtor. A by-creditor
-    series places China on the end Kenya leaves open."""
+    """ "China loans to Kenya": China's name before "loans" carries no role, and Kenya's
+    cue makes Kenya the debtor. A by-creditor series places China on the end Kenya leaves
+    open."""
     query = "China loans to Kenya"
-    extracted = _validate_role_spans(
-        query,
+    door_roles = _prepared_roles(
         [
-            ExtractedEntity(text="China", span="China", flow_role="origin", role_span="China"),
-            ExtractedEntity(text="Kenya", span="Kenya", flow_role="destination", role_span="to"),
+            ExtractedEntity(text="China", span="China"),
+            ExtractedEntity(text="Kenya", span="Kenya", cue="to", role="debtor"),
         ],
-        ["loans"],
+        query=query,
+        measures=["loans"],
     )
-    assert [entity.flow_role for entity in extracted] == ["unspecified", "destination"]
-    door_roles = _prepared_roles(extracted, query=query, measures=["loans"])
 
     _assert_binds_china_as_creditor(monkeypatch, query, door_roles)
+
+
+_GIN = "country/GIN"
+
+
+@pytest.mark.parametrize(
+    ("query", "entities", "part", "reason"),
+    [
+        # The exports role's cue "Kenya's" ties it to its own occurrence, so the aid
+        # clause's "to Kenya" does not veto it.
+        pytest.param(
+            "aid to Kenya and Kenya's exports",
+            [
+                linked("Kenya", "recipient", "to", parts=(0,)),
+                linked("Kenya", "source", "Kenya's", parts=(1,)),
+            ],
+            1,
+            None,
+            id="another-measure-names-the-place",
+        ),
+        # A misquoted cue ties no occurrence; the role reads the occurrences no other role
+        # is tied to, "of Kenya" here.
+        pytest.param(
+            "aid to Kenya and exports of Kenya",
+            [
+                linked("Kenya", "recipient", "to", parts=(0,)),
+                linked("Kenya", "source", "from", parts=(1,)),
+            ],
+            1,
+            None,
+            id="misquoted-cue-reads-the-untied-occurrence",
+        ),
+        # A misquoted cue whose only occurrence another role claims reads that occurrence,
+        # whose "from" contradicts the recipient.
+        pytest.param(
+            "aid and exports from Kenya",
+            [
+                linked("Kenya", "recipient", "to", parts=(0,)),
+                linked("Kenya", "source", "from", parts=(1,)),
+            ],
+            0,
+            "role_not_resolved",
+            id="misquoted-cue-reads-a-claimed-occurrence",
+        ),
+        # "Kenya from" writes the cue straight after the place, whose own word before is
+        # "to", which still contradicts the source.
+        pytest.param(
+            "aid to Kenya from France",
+            [linked("Kenya", "source", "from"), linked("France")],
+            0,
+            "role_not_resolved",
+            id="cue-after-the-place-still-vetoed",
+        ),
+        # "Guinea-Bissau" holds no occurrence of Guinea, so "from" is not written with it
+        # and the "to" before Guinea contradicts the source.
+        pytest.param(
+            "aid from Guinea-Bissau to Guinea",
+            [linked("Guinea", "source", "from")],
+            0,
+            "role_not_resolved",
+            id="place-inside-a-longer-name-still-vetoed",
+        ),
+    ],
+)
+def test_the_veto_reads_the_occurrences_a_role_is_tied_to(
+    monkeypatch, query: str, entities: list[ExtractedEntity], part: int, reason: str | None
+):
+    """A raw-text leg's role query is the whole query, and its veto reads only the
+    occurrences of the place the role's cue is written with (`extract.veto_words`). A role
+    the veto keeps binds its place on the origin axis its source names."""
+    measures = ["aid", "exports"]
+    index = patch_coverage(
+        monkeypatch,
+        [(_SV_DCID, "f1", _KEN, _CHN, [2018, 2019, 2020])],
+        role_names={_SV_DCID: _CREDITOR_DEBTOR_ROLE_NAMES},
+    )
+    graph = FakeGraph(
+        nodes={
+            _KEN: {"label": "Kenya", "type": "Country"},
+            _GIN: {"label": "Guinea", "type": "Country"},
+            _SV_DCID: {
+                "label": "Test flow",
+                "arcs": _declaring_arcs(observation_properties=["creditor", "debtor"]),
+            },
+        },
+        detect={measures[part]: {"svs": [_SV_DCID], "cosine_scores": [0.9]}},
+        resolve={"Kenya": _KEN, "Guinea": _GIN},
+        obs={},
+    )
+    entity_roles = part_roles(entities, query=query, measures=measures)[part]
+    result = asyncio.run(
+        resolve_variable(
+            measures[part],
+            entities=list(entity_roles),
+            date_request=None,
+            detect_query=measures[part],
+            role_query=query,
+            entity_roles=entity_roles,
+            pac=True,
+            graph=graph,
+            resolver=make_resolver(graph),
+            llm=_FixedBindLLM(),
+            sdmx=FakeSdmxClient(observations={}),
+            base_timing={},
+            coverage=FakeCoverageService(index).snapshot(),
+        )
+    )
+    assert result.no_data_reason == reason, result
+    if reason is None:
+        assert result.status == "definite", result
+        spec = result.specs[0]
+        assert {(entity.ref, entity.role) for entity in spec.resolved.entities} == {
+            (_KEN, "origin")
+        }
+        assert spec.definition.identity.entities == {"origin": [_KEN]}
+
+
+_ZMB = "country/ZMB"
+
+
+class _ZambiaDebtToChinaLLM:
+    """Extracts "external debt" with Zambia as `zambia_role` on its own name and China as
+    the creditor its "to" names, and elects the first shape with no bindings."""
+
+    def __init__(self, zambia_role: Party | None):
+        self._zambia = ExtractedEntity(
+            text="Zambia",
+            span="Zambia",
+            cue="Zambia" if zambia_role else None,
+            role=zambia_role,
+        )
+
+    async def generate_structured(self, *, prompt, system, schema):
+        if schema is Extraction:
+            return Extraction(
+                kind="resolution",
+                variables=["external debt"],
+                entities=[
+                    self._zambia,
+                    ExtractedEntity(text="China", span="China", cue="to", role="creditor"),
+                ],
+            ), None
+        if schema is QuantityOutput:
+            return NO_QUANTITY
+        assert schema.__name__ == "_UniversalBindOutput"
+        return elected_reply(0, bindings=[]), None
+
+
+@pytest.mark.parametrize("zambia_role", ["debtor", None])
+def test_a_raw_text_debt_to_a_creditor_binds_the_place_before_it_as_debtor(
+    monkeypatch, zambia_role: Party | None
+):
+    """ "Zambia external debt to China" answers a series holding both directions with the
+    creditor China on origin and Zambia on destination, whether the extraction names Zambia
+    the debtor or leaves it undirected."""
+    patch_coverage(
+        monkeypatch,
+        [
+            (_SV_DCID, "f1", _CHN, _ZMB, [2018, 2019, 2020]),
+            (_SV_DCID, "f1", _ZMB, _CHN, [2018, 2019, 2020]),
+        ],
+        role_names={_SV_DCID: _CREDITOR_DEBTOR_ROLE_NAMES},
+    )
+    graph = FakeGraph(
+        nodes={
+            _ZMB: {"label": "Zambia", "type": "Country"},
+            _CHN: {"label": "China", "type": "Country"},
+            _SV_DCID: {
+                "label": "Test debt",
+                "arcs": _declaring_arcs(observation_properties=["creditor", "debtor"]),
+            },
+        },
+        detect={"external debt": {"svs": [_SV_DCID], "cosine_scores": [0.9]}},
+        resolve={"Zambia": _ZMB, "China": _CHN},
+        obs={},
+    )
+
+    response = offline_resolve(
+        make_request("Zambia external debt to China"),
+        graph=graph,
+        llm=_ZambiaDebtToChinaLLM(zambia_role),
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+    )
+
+    (part,) = response.parts
+    assert isinstance(part, DefinitePart), part
+    assert {(entity.ref, entity.role) for entity in part.spec.resolved.entities} == {
+        (_CHN, "origin"),
+        (_ZMB, "destination"),
+    }
+    assert part.spec.definition.identity.entities == {"origin": [_CHN], "destination": [_ZMB]}

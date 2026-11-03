@@ -26,6 +26,7 @@ from typing import Any, cast
 import pytest
 
 from assembler.fakes import FakeFrameStore
+from assembler.pipeline.write import changed_members
 from assembler.ports import FrameRef, ResolvedFrame
 from dataset_store import DatasetStore
 from datasets_api.maintenance import run_remint_card_descriptions
@@ -215,6 +216,10 @@ def test_a_dry_run_lists_the_stale_cards_and_writes_nothing(
     assert not malaria["new_title"].startswith(f"{_STALE_TITLE},")
     quotient = planned[world.cards["quotient"]]
     assert quotient["old_title"] != quotient["new_title"]
+    # Each line names the members the revision would change, and none of those that move on
+    # every write.
+    assert {"description.title", "description.cite.title"} <= set(malaria["changed"])
+    assert {"description.sources", "description.cite.inputs"} <= set(quotient["changed"])
     counts = ("applied", "selected", "revised", "unchanged", "failed")
     assert {key: lines[-1][key] for key in counts} == {
         "applied": False,
@@ -276,3 +281,55 @@ def test_an_apply_revises_the_stale_cards_to_todays_records_and_a_second_run_rev
     n = len(selected)
     assert {key: again[-1][key] for key in counts} == {"selected": n, "revised": 0, "unchanged": n}
     assert {name: world.head(name) for name in world.cards} == after
+
+
+_HEAD = {
+    "revision": 1,
+    "provenance": {"generated_at": "2026-01-01T00:00:00Z", "execution_ref": "replay-a"},
+    "description": {"title": "Old words", "built_from": {"vocabulary": 1}, "cite": {"revision": 1}},
+}
+
+
+@pytest.mark.parametrize(
+    ("candidate", "changed"),
+    [
+        pytest.param(
+            {
+                "revision": 2,
+                "provenance": {"generated_at": "2026-02-01T00:00:00Z", "execution_ref": "replay-a"},
+                "description": {
+                    "title": "Old words",
+                    "built_from": {"vocabulary": 2},
+                    "cite": {"revision": 2},
+                },
+            },
+            (),
+            id="only-what-moves-on-every-write",
+        ),
+        pytest.param(
+            {**_HEAD, "description": {**_HEAD["description"], "title": "New words"}},
+            ("description.title",),
+            id="reworded",
+        ),
+        pytest.param(
+            {**_HEAD, "provenance": {**_HEAD["provenance"], "execution_ref": "replay-b"}},
+            ("provenance.execution_ref",),
+            id="another-replay-key",
+        ),
+        pytest.param(
+            {**_HEAD, "warnings": []},
+            ("warnings",),
+            id="a-member-the-head-lacks",
+        ),
+    ],
+)
+def test_changed_members_names_what_a_reader_would_see_change(
+    candidate: dict[str, Any], changed: tuple[str, ...]
+) -> None:
+    assert changed_members(candidate, _HEAD) == changed
+
+
+def test_a_head_with_no_replay_key_equals_any_candidate_s_key() -> None:
+    head = {**_HEAD, "provenance": {**_HEAD["provenance"], "execution_ref": None}}
+
+    assert changed_members(_HEAD, head) == ()

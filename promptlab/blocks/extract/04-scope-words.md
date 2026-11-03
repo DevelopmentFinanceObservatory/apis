@@ -16,6 +16,6 @@ generic universe or class nouns wholly contained in that dropped qualifier, such
 Countries`, must remain in `entities`. A class noun added to the name of a region or
 group asks for its members: "African countries" and "countries in Africa" are the
 entity "Africa" with `members` true, where "Africa" alone has it false. The class noun
-is never a role_span: "African countries" takes its flow_role and role_span from the
-words around it, exactly as "Africa" would. Do not infer qualifiers that the query did
+is never a cue: "African countries" takes its role and cue from the words around it,
+exactly as "Africa" would. Do not infer qualifiers that the query did
 not state.

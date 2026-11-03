@@ -49,9 +49,7 @@ def _llm() -> _OpenFlowAndSectorBindLLM:
         Extraction(
             kind="resolution",
             variables=[_VARIABLE],
-            entities=[
-                ExtractedEntity(text="Kenya", span="Kenya", flow_role="destination", role_span="to")
-            ],
+            entities=[ExtractedEntity(text="Kenya", span="Kenya", role="recipient", cue="to")],
         )
     )
 
@@ -98,8 +96,8 @@ _FLOW = (
     "aid from France to Kenya",
     AID,
     (
-        ExtractedEntity(text="France", span="France", flow_role="origin", role_span="from"),
-        ExtractedEntity(text="Kenya", span="Kenya", flow_role="destination", role_span="to"),
+        ExtractedEntity(text="France", span="France", role="source", cue="from"),
+        ExtractedEntity(text="Kenya", span="Kenya", role="recipient", cue="to"),
     ),
     (origin("France"), destination("Kenya")),
 )

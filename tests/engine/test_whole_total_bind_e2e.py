@@ -2559,9 +2559,7 @@ def test_a_side_read_whole_departs_with_the_way_back_to_its_members(
     assert departure.text == text
 
 
-_EXTRACTED_ETHIOPIA = ExtractedEntity(
-    text="Ethiopia", span="Ethiopia", flow_role="destination", role_span="to"
-)
+_EXTRACTED_ETHIOPIA = ExtractedEntity(text="Ethiopia", span="Ethiopia", role="recipient", cue="to")
 
 
 def _raw(
@@ -2628,8 +2626,8 @@ def _raw(
                     ExtractedEntity(
                         text="every donor",
                         span="every donor",
-                        flow_role="origin",
-                        role_span="from",
+                        role="source",
+                        cue="from",
                     ),
                 )
             },
@@ -2704,8 +2702,8 @@ def test_a_raw_text_sum_tagged_with_breakdown_words_keeps_its_operation(
                     ExtractedEntity(
                         text="across donors",
                         span="across donors",
-                        flow_role="origin",
-                        role_span="across",
+                        role="source",
+                        cue="across",
                     ),
                 )
             },

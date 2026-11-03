@@ -1,15 +1,14 @@
-"""Map parsed role text to flow axes and check it against query wording.
+"""Map role words to flow axes and check them against query wording.
 
-The door supplies each axis. This module checks it against query text, and reads
-the direction of a debt (`debt_axes`) and of a receipt (`receipt_axes`) from the query's
-own wording.
+The door supplies each axis. This module checks it against query text (`contradicts`).
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Collection, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, field
+from typing import Literal, get_args
 
 from search.models import ParsedPart, RoleAxis
 
@@ -55,6 +54,26 @@ def role_axis_for_text(role_text: str | None) -> RoleAxis | None:
     return _ROLE_TEXT_TO_AXIS.get(role_text.casefold())
 
 
+# The parties a place can be in a flow or a debt. Each is a word of the lexicon above. A
+# source or creditor is the origin, a recipient or debtor the destination.
+Party = Literal["source", "recipient", "creditor", "debtor"]
+# "lender" and "borrower" name the debt parties too.
+_PARTY_WORDS: dict[str, Party] = {party: party for party in get_args(Party)} | {
+    "lender": "creditor",
+    "borrower": "debtor",
+}
+# The parties of a debt, whose repayments run the other way (`contradicts`).
+_DEBT_PARTIES: frozenset[Party] = frozenset({"creditor", "debtor"})
+
+
+def party_for_text(role_text: str | None) -> Party | None:
+    """The party a role text names, or None. A party word ("creditor", "lender") names one.
+    Other synonyms such as "donor" and prepositions such as "to" name none."""
+    if role_text is None:
+        return None
+    return _PARTY_WORDS.get(role_text.casefold())
+
+
 # Canonical echo terms round-trip through the caller lexicon.
 # The assertion below catches any mapping change that breaks that contract.
 _AXIS_TO_ROLE_TEXT: dict[RoleAxis, str] = {"origin": "from", "destination": "to"}
@@ -71,11 +90,19 @@ def role_text_for_axis(axis: RoleAxis) -> str:
     return _AXIS_TO_ROLE_TEXT[axis]
 
 
+def role_text_for(axis: RoleAxis, *, party: Party | None) -> str:
+    """The role text that restates a role on `axis`: a debt `party` as its own word, which
+    the lexicon reads back to the same axis and party and so draws no contradiction
+    (`contradicts`), and any other role as the axis's canonical text."""
+    if party is not None and party in _DEBT_PARTIES:
+        return party
+    return role_text_for_axis(axis)
+
+
 def _tokenize(text: str) -> list[str]:
     return _TOKEN_RE.findall(text.lower())
 
 
-_OPPOSITE_AXIS: dict[RoleAxis, RoleAxis] = {"origin": "destination", "destination": "origin"}
 _OPPOSITE_PREPS: dict[RoleAxis, frozenset[str]] = {
     # Opposite-axis prepositions contradict the claimed direction.
     "origin": _RECIPIENT_PREPS,
@@ -90,391 +117,21 @@ _SAME_AXIS_PREPS: dict[RoleAxis, frozenset[str]] = {
 }
 
 
-# Words that govern a creditor through "to": "owed to", "debt to", "repaid to".
-_CREDITOR_CUE_HEADS: frozenset[str] = frozenset(
-    {
-        "owe",
-        "owed",
-        "owes",
-        "debt",
-        "debts",
-        "repaid",
-        "repay",
-        "repayment",
-        "repayments",
-        "liabilities",
-        "borrowed",
-    }
-)
-# Nouns that name a debt: "Kenya's debt", "Ghana's liabilities".
-_DEBT_NOUNS: frozenset[str] = frozenset({"debt", "debts", "liabilities", "repayment", "repayments"})
-# After a debt noun these name an action on the debt, which either party can hold:
-# "China's debt relief to Kenya" and "Kenya's debt relief" both occur.
-_DEBT_ACTION_WORDS: frozenset[str] = frozenset(
-    {
-        "relief",
-        "forgiveness",
-        "cancellation",
-        "rescheduling",
-        "restructuring",
-        "refinancing",
-        "swap",
-        "swaps",
-    }
-)
-# Active forms of "owe", whose subject is the debtor and whose object is the creditor:
-# "how much does China owe India". The past "owed" is left out, since "China owed by
-# Kenya" is passive and reverses the parties.
-_OWE_VERBS: frozenset[str] = frozenset({"owe", "owes"})
-# Words before a "by" that make the place after it the debtor: "owed by Kenya".
-_DEBTOR_BY_HEADS: frozenset[str] = frozenset(
-    {"owed", "repaid", "borrowed", "incurred", "debt", "debts"}
-)
-# Words that close a debt phrase before "to": "debt service to", "debt payments to".
-_DEBT_PHRASE_TAILS: frozenset[str] = frozenset(
-    {"service", "servicing", "payment", "payments", "stock", "stocks"}
-)
-# Prepositions that end a noun phrase.
-_PHRASE_END_PREPS: frozenset[str] = _DONOR_PREPS | _RECIPIENT_PREPS | {"by", "of", "on"}
-# A possessed debt phrase ended by one of these names a claim on another party:
-# "China's debt claims on Africa", "China's holdings of Kenyan debt".
-_CLAIM_PREPS: frozenset[str] = frozenset({"of", "on"})
-_POSSESSIVE = "'s"
-_CONJUNCTIONS: frozenset[str] = frozenset({"and", "or"})
-
-
-def _ends_phrase(token: str) -> bool:
-    """Whether ``token`` ends a noun phrase: a preposition or a possessive."""
-    return token in _PHRASE_END_PREPS or token.endswith(_POSSESSIVE)
-
-
-def _span_starts(query_tokens: list[str], span_tokens: list[str]) -> list[int]:
-    """Return each token index where ``span_tokens`` occurs as whole words."""
+def span_starts(query_tokens: Sequence[str], span_tokens: Sequence[str]) -> list[int]:
+    """Return each token index where ``span_tokens`` occurs as whole words. An empty span
+    occurs nowhere."""
     span_len = len(span_tokens)
+    if not span_len:
+        return []
+    target = tuple(span_tokens)
     return [
         i
         for i in range(len(query_tokens) - span_len + 1)
-        if query_tokens[i : i + span_len] == span_tokens
+        if tuple(query_tokens[i : i + span_len]) == target
     ]
 
 
-def _names_debt(tokens: list[str]) -> bool:
-    """Whether ``tokens`` hold a debt noun that no action word follows."""
-    return any(
-        token in _DEBT_NOUNS and (i + 1 == len(tokens) or tokens[i + 1] not in _DEBT_ACTION_WORDS)
-        for i, token in enumerate(tokens)
-    )
-
-
-def _follows_creditor_cue(
-    query_tokens: list[str], start: int, debtor_ends: Collection[int] = ()
-) -> bool:
-    """Whether the place starting at ``start`` follows a creditor cue such as ``owed to``.
-
-    The ``to`` follows an owe or debt word, a tail word of a debt phrase (``debt service
-    payments to``), or a debtor place (``owed by Kenya to China``; ``debtor_ends`` holds the
-    token index after each such place). An article between the cue and the place is
-    skipped: ``repaid to the IMF``.
-    """
-    prep = start - 1
-    if prep >= 0 and query_tokens[prep] == "the":
-        prep -= 1
-    if prep < 1 or query_tokens[prep] != "to":
-        return False
-    before = query_tokens[prep - 1]
-    if before in _CREDITOR_CUE_HEADS or prep in debtor_ends:
-        return True
-    if before not in _DEBT_PHRASE_TAILS:
-        return False
-    phrase_start = prep
-    while phrase_start > 0 and not _ends_phrase(query_tokens[phrase_start - 1]):
-        phrase_start -= 1
-    return _names_debt(query_tokens[phrase_start:prep])
-
-
-def _possessed_phrase(query_tokens: list[str], after: int) -> tuple[list[str], str | None]:
-    """Return the phrase a possessive governs from ``after``, and the word that ends it.
-
-    The phrase ends at a preposition in ``_PHRASE_END_PREPS`` or a second possessive; the
-    ending word is None when the phrase runs to the end of the query.
-    """
-    end = after
-    while end < len(query_tokens):
-        if _ends_phrase(query_tokens[end]):
-            return query_tokens[after:end], query_tokens[end]
-        end += 1
-    return query_tokens[after:end], None
-
-
-def _follows_debtor_by(query_tokens: list[str], start: int, creditor_ends: set[int]) -> bool:
-    """Whether the place starting at ``start`` follows a debtor ``by``.
-
-    The ``by`` follows an owe or debt word (``owed by``, ``debt incurred by``) or ends a
-    creditor place (``owed to China by Kenya``). An article before the place is skipped.
-    """
-    prep = start - 1
-    if prep >= 0 and query_tokens[prep] == "the":
-        prep -= 1
-    return (
-        prep >= 1
-        and query_tokens[prep] == "by"
-        and (query_tokens[prep - 1] in _DEBTOR_BY_HEADS or prep in creditor_ends)
-    )
-
-
-def _owns_debt(query_tokens: list[str], after: int) -> bool | None:
-    """Whether a possessive ending at ``after`` names its possessor's debt; None for a claim.
-
-    The governed phrase names the debt when it holds a debt noun. A phrase that is empty or
-    only a conjunction, before the query's end or another possessive, shares the debt the
-    other possessive names: ``Kenya's debt versus Ghana's``, ``Kenya's and Ghana's debt``.
-    A phrase that ``of`` or ``on`` ends names a claim on another party's debt (``Kenya's
-    share of Africa's debt``), which gives None.
-    """
-    phrase, ended_by = _possessed_phrase(query_tokens, after)
-    if ended_by in _CLAIM_PREPS:
-        return None
-    if _names_debt(phrase):
-        return True
-    shares = ended_by is None or ended_by.endswith(_POSSESSIVE)
-    return shares and all(token in _CONJUNCTIONS for token in phrase)
-
-
-def _debt_possessors(
-    query_tokens: list[str], places: Mapping[str, Sequence[str]]
-) -> set[str] | None:
-    """Return each place a possessive names over its own debt (``_owns_debt``), by place
-    name; None when a possessive names a claim on another party's debt."""
-    possessors: set[str] = set()
-    for name, spans in places.items():
-        for _start, after in _possessive_spans(query_tokens, spans):
-            owns = _owns_debt(query_tokens, after)
-            if owns is None:
-                return None
-            if owns:
-                possessors.add(name)
-    return possessors
-
-
-def _possessive_spans(query_tokens: list[str], spans: Sequence[str]) -> Iterator[tuple[int, int]]:
-    """The start of each possessive of one of ``spans`` in the query, the span's last word
-    with "'s" (``Kenya's``, ``the Gambia's``), and the index of the token after it."""
-    for tokens in (_tokenize(span) for span in spans):
-        if not tokens:
-            continue
-        possessive = [*tokens[:-1], tokens[-1].removesuffix(_POSSESSIVE) + _POSSESSIVE]
-        for start in _span_starts(query_tokens, possessive):
-            yield start, start + len(possessive)
-
-
-def _follows_owe(query_tokens: list[str], start: int) -> bool:
-    """Whether the place starting at ``start`` is the object of an active ``owe``, as
-    ``India`` in ``China owe India``. An article before the place is skipped: ``owe the
-    IMF``."""
-    verb = start - 1
-    if verb >= 0 and query_tokens[verb] == "the":
-        verb -= 1
-    return verb >= 0 and query_tokens[verb] in _OWE_VERBS
-
-
-def debt_axes(
-    query: str,
-    *,
-    measures: Sequence[str],
-    places: Mapping[str, Sequence[str]],
-    directed: Mapping[str, RoleAxis],
-) -> dict[str, RoleAxis]:
-    """Return the axis the query's debt wording sets for each place, by place name.
-
-    A debt runs from the creditor, origin, to the debtor, destination. The rule reads one
-    two-party relation: a single measure that names a debt (``Kenya's debt to China``) and
-    exactly two places, each listed with its verbatim spans. Any other query gets {}.
-
-    A place after a creditor ``to`` (``debt to``, ``owed to``, ``repaid to``, or ``to``
-    after the debtor in ``owed by Kenya to China``) is the creditor. A possessive place
-    over its own debt (``Kenya's debt``, ``Kenya's debt service payments``) and a place
-    after a debtor ``by`` (``owed by``, or ``by`` after the creditor in ``owed to China by
-    Kenya``) are the debtor. An active ``owe`` reads both parties: its subject is the debtor
-    and its object the creditor (``how much does China owe India``, ``what does Zambia owe
-    the IMF``). Each place needs its own evidence of being a party: a cue, or
-    an extracted axis (``directed`` maps those places to their extracted axes). A cued
-    place sets its axis. A place with no cue keeps an extracted axis opposite the cued one,
-    so ``Kenya debt owed to China`` sets both parties. A place with no cue whose
-    extracted axis equals the cued one is a second debtor or creditor, as in ``Kenya's debt
-    relative to Sub-Saharan Africa``, and a place with neither, as in ``Kenya's external
-    debt compared with China``: both leave the query a comparison and set nothing. So does
-    a possessive claim on another party's debt
-    (``Kenya's share of Africa's debt``), two cues that clash (``Kenya's debt versus
-    Ghana's``), and a place both cues claim. Cues match whole words.
-    """
-    if len(measures) != 1 or not _names_debt(_tokenize(measures[0])) or len(places) != 2:
-        return {}
-    query_tokens = _tokenize(query.replace("\u2019", "'"))
-    possessors = _debt_possessors(query_tokens, places)
-    if possessors is None:
-        return {}
-    # (name, start, end) for every whole-word occurrence of every span.
-    occurrences = [
-        (name, start, start + len(tokens))
-        for name, spans in places.items()
-        for tokens in (_tokenize(span) for span in spans)
-        if tokens
-        for start in _span_starts(query_tokens, tokens)
-    ]
-    creditor_ends = {
-        end for _, start, end in occurrences if _follows_creditor_cue(query_tokens, start)
-    }
-    debtor_by = [
-        (name, end)
-        for name, start, end in occurrences
-        if _follows_debtor_by(query_tokens, start, creditor_ends)
-    ]
-    debtor_ends = {end for _, end in debtor_by}
-    creditors = {
-        name
-        for name, start, _ in occurrences
-        if _follows_creditor_cue(query_tokens, start, debtor_ends)
-        or _follows_owe(query_tokens, start)
-    }
-    debtors = {name for name, _ in debtor_by} | possessors
-    debtors.update(
-        name
-        for name, _, end in occurrences
-        if end < len(query_tokens) and query_tokens[end] in _OWE_VERBS
-    )
-    if creditors & debtors or len(creditors) > 1 or len(debtors) > 1:
-        return {}
-    cued: dict[str, RoleAxis] = dict.fromkeys(creditors, "origin")
-    cued.update(dict.fromkeys(debtors, "destination"))
-    if not cued:
-        return {}
-    for name in places:
-        if name not in cued:
-            (other,) = cued.values()
-            if directed.get(name) != _OPPOSITE_AXIS[other]:
-                return {}
-            cued[name] = _OPPOSITE_AXIS[other]
-    return cued
-
-
-def debtor_possessive(
-    query: str,
-    *,
-    measures: Sequence[str],
-    places: Mapping[str, Sequence[str]],
-    directed: Mapping[str, RoleAxis],
-) -> dict[str, RoleAxis]:
-    """Return the debtor's axis for the one place a possessive names over its own debt.
-
-    The rule reads a single measure that names a debt and exactly one place the extraction
-    gave an axis (``directed``), and only a query that is the possessive and its measure
-    alone (`_bare_possessive`: ``Kenya's debt``, ``Kenya's external debt``), the one
-    reading in which the possessor owes the debt. Any other words leave the extraction's
-    axis standing (``Kenya's debt by creditor``, ``China's debt extended to each
-    country``), and so do a measure word that names a party of the debt (``China's
-    official creditor debt``), a creditor cue whose object is no place (``Kenya's debt to
-    GDP ratio``) and a possessive claim on another party's debt (``Kenya's share of
-    external debt``). A phrase whose head is no debt word (``China's debt receivables``,
-    ``Kenya's debt reduction target``) names no debt the possessor owes.
-
-    The possessive reads the measure, so the axis states no direction of its own
-    (``FramePlace.direction_stated``).
-    """
-    if len(measures) != 1 or len(places) != 1:
-        return {}
-    ((name, spans),) = places.items()
-    if name not in directed:
-        return {}
-    query_tokens = _tokenize(query.replace("\u2019", "'"))
-    measure_tokens = set(_tokenize(measures[0]))
-    for start, after in _possessive_spans(query_tokens, spans):
-        if (
-            _bare_possessive(query_tokens, start, after, measure_tokens)
-            and _owns_debt(query_tokens, after)
-            and not any(
-                _follows_creditor_cue(query_tokens, i) for i in range(after, len(query_tokens))
-            )
-        ):
-            return {name: "destination"}
-    return {}
-
-
-# The parties of a debt by their role: a bare possessive over these names a side, so it
-# reads no debtor ("China's official creditor debt", "Kenya's debtor debt").
-_DEBT_PARTY_NOUNS: frozenset[str] = frozenset({"creditor", "debtor", "lender", "borrower"})
-
-
-def _bare_possessive(
-    query_tokens: list[str], start: int, after: int, measure_tokens: Collection[str]
-) -> bool:
-    """Whether the query is the possessive at ``start`` and its own debt alone, after an
-    optional ``the``: every word after it is one of ``measure_tokens``, none a debt party's
-    noun (`_DEBT_PARTY_NOUNS`), and the last, the phrase's head, a debt word (`_DEBT_NOUNS`,
-    `_DEBT_PHRASE_TAILS`). ``Kenya's external debt`` over "external debt", ``Kenya's
-    debt`` over "total debt" and ``Kenya's debt service`` are; ``Kenya's debt by
-    creditor``, ``China's official creditor debt`` and ``China's debt receivables`` are
-    not."""
-    rest = query_tokens[after:]
-    return (
-        query_tokens[:start] in ([], ["the"])
-        and bool(rest)
-        and rest[-1] in _DEBT_NOUNS | _DEBT_PHRASE_TAILS
-        and all(
-            token in measure_tokens
-            and not any(
-                part in _DEBT_PARTY_NOUNS or _singular(part) in _DEBT_PARTY_NOUNS
-                for part in token.split("-")
-            )
-            for token in rest
-        )
-    )
-
-
-# Forms of "receive" that read the place beside them as the recipient: "received by
-# Ethiopia", "the ODA Ghana received".
-_RECEIPT_VERBS: frozenset[str] = frozenset({"receive", "receives", "received", "receiving"})
-_RECEIPT_AGENT_PREP = "by"
-# A preposition before a place makes it the head of its own phrase, so a receipt verb
-# after it reads another noun: "aid from Norway received by Kenya".
-_PLACE_PHRASE_PREPS: frozenset[str] = _PHRASE_END_PREPS | {"in", "for"}
-
-
-def receipt_axes(query: str, *, places: Mapping[str, Sequence[str]]) -> dict[str, RoleAxis]:
-    """Return ``destination`` for each place the query names as a recipient, by place name.
-
-    A place right after ``received by`` (an article skipped: ``received by the Gambia``)
-    and a place right before a form of ``receive`` (``the ODA Ghana received``) is the
-    recipient. A place a preposition opens is the head of its own phrase, so the verb after
-    it reads another noun: in ``aid from Norway received by Kenya`` only Kenya receives.
-    Spans match whole words, and every occurrence of a place's spans is read.
-    """
-    query_tokens = _tokenize(query.replace("\u2019", "'"))
-    recipients: dict[str, RoleAxis] = {}
-    for name, spans in places.items():
-        for tokens in (_tokenize(span) for span in spans):
-            if not tokens:
-                continue
-            for start in _span_starts(query_tokens, tokens):
-                end = start + len(tokens)
-                prep = start - 1
-                if prep >= 0 and query_tokens[prep] == "the":
-                    prep -= 1
-                after_agent = (
-                    prep >= 1
-                    and query_tokens[prep] == _RECEIPT_AGENT_PREP
-                    and query_tokens[prep - 1] in _RECEIPT_VERBS
-                )
-                before_verb = (
-                    end < len(query_tokens)
-                    and query_tokens[end] in _RECEIPT_VERBS
-                    and not (prep >= 0 and query_tokens[prep] in _PLACE_PHRASE_PREPS)
-                )
-                if after_agent or before_verb:
-                    recipients[name] = "destination"
-    return recipients
-
-
-def contradicts(query: str, *, span: str, axis: RoleAxis) -> bool:
+def contradicts(query: str, *, span: str, axis: RoleAxis, party: Party | None) -> bool:
     """Check whether query wording contradicts a door-supplied axis for ``span``.
 
     Only the token before each exact occurrence counts. A supporting ``from``
@@ -486,30 +143,37 @@ def contradicts(query: str, *, span: str, axis: RoleAxis) -> bool:
     ``Sudan`` is preceded by ``to`` but the standalone occurrence is supported
     by ``from``. The direction corpus covers 40 cases and 88 entity labels.
 
-    A ``to`` that closes a creditor cue leaves an origin uncontradicted: in
-    ``Kenya's debt owed to China`` the words ``owed to`` make China the creditor.
-    Every other ``to`` is checked as usual, so ``aid to Kenya`` claimed as origin
-    contradicts.
+    A creditor or a debtor (``party``) draws no contradiction, since repayments run
+    opposite to the debt and either preposition can name either party (``owed to
+    China``, ``repays to China``, ``repayments from Zambia``).
     """
     span_tokens = _tokenize(span)
-    if not span_tokens:
-        return False
     query_tokens = _tokenize(query)
-    opposite_preps = _OPPOSITE_PREPS[axis]
-    same_preps = _SAME_AXIS_PREPS[axis]
-    saw_contradiction = False
-    for i in _span_starts(query_tokens, span_tokens):
-        if i == 0:
-            continue
-        preceding = query_tokens[i - 1]
-        if preceding in same_preps:
-            return False  # a supporting occurrence clears every contradiction
-        if preceding not in opposite_preps:
-            continue
-        if axis == "origin" and _follows_creditor_cue(query_tokens, i):
-            continue
-        saw_contradiction = True
-    return saw_contradiction
+    preceding = [query_tokens[i - 1] for i in span_starts(query_tokens, span_tokens) if i > 0]
+    return _preceding_contradicts(preceding, axis=axis, party=party)
+
+
+def _preceding_contradicts(
+    preceding: Sequence[str], *, axis: RoleAxis, party: Party | None
+) -> bool:
+    """Whether the words straight before a place's occurrences contradict `axis`: a
+    supporting ``from`` or ``to`` clears every contradiction, else an opposite one fires.
+    A debt party draws none (`contradicts`)."""
+    if party in _DEBT_PARTIES:
+        return False
+    if any(word in _SAME_AXIS_PREPS[axis] for word in preceding):
+        return False
+    return any(word in _OPPOSITE_PREPS[axis] for word in preceding)
+
+
+def role_contradicted(role: DoorRole, *, query: str) -> bool:
+    """Whether the query's wording contradicts a door-supplied `role`: the words before the
+    occurrences the door tied it to (`DoorRole.preceding`), else every occurrence of its
+    span in `query` (`contradicts`). The pipeline's veto and the layer-2 cache signal both
+    read it."""
+    if role.preceding is None:
+        return contradicts(query, span=role.span, axis=role.axis, party=role.party)
+    return _preceding_contradicts(role.preceding, axis=role.axis, party=role.party)
 
 
 def parsed_role_query(part: ParsedPart) -> str:
@@ -525,7 +189,9 @@ def parsed_directions_contradicted(part: ParsedPart) -> bool:
     query = parsed_role_query(part)
     for entity in part.entities or ():
         axis = role_axis_for_text(entity.role_text)
-        if axis is not None and contradicts(query, span=entity.text, axis=axis):
+        if axis is not None and contradicts(
+            query, span=entity.text, axis=axis, party=party_for_text(entity.role_text)
+        ):
             return True
     return False
 
@@ -562,7 +228,7 @@ def _governing_axes(query_tokens: list[str], phrase_tokens: list[str]) -> set[Ro
     """The axes the role prepositions directly before each occurrence of the phrase name."""
     return {
         axis
-        for start in _span_starts(query_tokens, phrase_tokens)
+        for start in span_starts(query_tokens, phrase_tokens)
         if start > 0 and (axis := _ROLE_PREP_AXES.get(query_tokens[start - 1])) is not None
     }
 
@@ -668,20 +334,28 @@ class DoorRole:
     Raw-text spans fall back to entity text after translation; parsed text is
     preserved in its role query. A name can occur on both axes, so each
     occurrence has its own entry. ``stated`` is whether the request's own words give
-    the place its direction. A parsed part's role text always does, and so does a debt
-    axis (`debt_axes`) or a receipt axis (`receipt_axes`). On raw text, any other direction is stated when the extractor's
-    validated cue (`ExtractedEntity.role_span`) attaches to the place, as a cue before it
-    or a verb after it (`raw_text._cue_states_direction`). A possessive, "of" or a national
-    adjective reads the direction off the measure, so it states none. ``members`` is
+    the place its direction. A parsed part's role text always does. On raw text a direction
+    is stated when the extractor's cue (`ExtractedEntity.cue`) reaches beyond the place's
+    own words (`raw_text._states_direction`). A possessive, "of" or a national adjective
+    reads the direction off the measure, so it states none. ``members`` is
     whether the occurrence asks for the members of the set the name names
     (`ExtractedEntity.members`, `ParsedEntity.members`), on its own end alone
-    (`asks_members`).
+    (`asks_members`). ``party`` is the place's party when the door names one
+    (`ExtractedEntity.role`, `party_for_text`), which `contradicts` reads. ``preceding``
+    is the word straight before each occurrence of the place the raw-text door ties the
+    role to (`extract.veto_words`), which `role_contradicted` reads in place of the role
+    query, so another measure's wording of the same place does not veto it. None reads
+    every occurrence in the role query, as the parsed door's part-local query does.
     """
 
     axis: RoleAxis
     span: str
     stated: bool = True
     members: bool = False
+    party: Party | None = None
+    # The evidence a role is checked against, so two mentions alike in every reading
+    # compare equal whatever occurrences each is tied to.
+    preceding: tuple[str, ...] | None = field(default=None, compare=False)
 
 
 def asks_members(roles: Sequence[DoorRole], axis: RoleAxis | None, *, asked: bool) -> bool:
