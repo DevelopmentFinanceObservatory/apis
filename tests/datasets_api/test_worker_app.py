@@ -479,7 +479,8 @@ class TestRunOutcomes:
             _run_path(operation_id), json=_task_body(), headers={"Authorization": "Bearer t"}
         )
 
-        assert resp.status_code >= 300
+        assert resp.status_code == 503
+        assert "upstream SDMX call failed" not in resp.text
         # `run_operation` releases a transient failure itself; this stub never did.
         assert operation_store.get(operation_id).state == "running"
 

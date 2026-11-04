@@ -320,7 +320,7 @@ def run_operation(
             exc,
         )
         operation_store.release(operation.id, attempt=operation.attempt_count)
-        raise OperationTransientFailure(str(exc)) from exc
+        raise OperationTransientFailure() from exc
 
     completed = operation_store.complete(
         operation.id,

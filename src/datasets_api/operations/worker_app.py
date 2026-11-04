@@ -471,8 +471,8 @@ def build_worker_app(
         except OperationSuperseded:
             # Another attempt owns the work. A 2xx stops this delivery.
             return JSONResponse({"status": "superseded"}, status_code=200)
-        except OperationTransientFailure as exc:
-            return JSONResponse({"detail": str(exc)}, status_code=503)
+        except OperationTransientFailure:
+            return JSONResponse({"detail": "transient worker failure"}, status_code=503)
         except Exception:
             logger.exception("Datasets worker: operation %r crashed unexpectedly", operation_id)
             return JSONResponse({"detail": "unexpected worker failure"}, status_code=500)
