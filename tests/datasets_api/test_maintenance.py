@@ -465,8 +465,10 @@ def test_settle_runs_from_the_job_environment_alone_and_fails_on_rows_left_unset
     monkeypatch, capsys, left, exit_code, severity
 ):
     """A version row holding no facts fails every read of it, a raw pin principal matches no
-    caller, and a profile naming the enrichment `kind` loses it from the options document, so
-    the deploy step running settle fails on any of them."""
+    caller, a profile naming the enrichment `kind` loses it from the options document, and a
+    warning in an old format names refs no reader labels, so the deploy step running settle
+    fails on any of them. The warnings are counted in a transaction of their own, after the one
+    holding the pin lock."""
     store = _RecordingStore(count=left)
     closed: list[bool] = []
     monkeypatch.setattr(maintenance, "LiveDatasetStore", lambda connections: store)
@@ -475,8 +477,10 @@ def test_settle_runs_from_the_job_environment_alone_and_fails_on_rows_left_unset
 
     assert maintenance.main(["settle"]) == exit_code
 
-    (statements,) = store.transactions
+    statements, warning_statements = store.transactions
     assert statements[: len(maintenance.SETTLE_STATEMENTS)] == list(maintenance.SETTLE_STATEMENTS)
+    (warning_count,) = warning_statements
+    assert warning_count.startswith("SELECT count(*) AS count FROM datasets.version_record")
     lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert [
         (
@@ -484,10 +488,11 @@ def test_settle_runs_from_the_job_environment_alone_and_fails_on_rows_left_unset
             line["factless_versions"],
             line["raw_pin_principals"],
             line["legacy_party_kind_profiles"],
+            line["legacy_warning_refs"],
         )
         for line in lines
         if line["event"] == "datasets_settled"
-    ] == [(severity, left, left, left)]
+    ] == [(severity, left, left, left, left)]
     assert closed == [True]
 
 
