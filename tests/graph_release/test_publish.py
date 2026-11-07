@@ -25,6 +25,7 @@ from artifact_publication.uri import (
     write_uri_bytes,
 )
 from graph_release.format import (
+    FORMAT,
     Manifest,
     Pointer,
     StagedPart,
@@ -365,6 +366,17 @@ def test_pruning_keeps_the_newest_ten_and_the_held_release_and_their_parts(bucke
     stray = part_uri(bucket.root, _release(tmp_path / "stray", revision="x", blocks="x")[0][1].ref)
     write_uri_bytes(stray, b"stray")
     bucket.backdate(stray.removeprefix(f"{bucket.root}/"), old)
+    # A release of the previous format, written after every old one of this
+    # format, stays with its parts and takes none of the ten places.
+    foreign_staged, foreign_manifest = _release(tmp_path / "foreign", revision="f", blocks="f")
+    foreign = {**json.loads(foreign_manifest.to_json()), "format": FORMAT - 1}
+    foreign_paths = [f"manifests/{'f' * 64}.json"]
+    write_uri_bytes(f"{bucket.root}/{foreign_paths[0]}", json.dumps(foreign).encode())
+    for part in foreign_staged:
+        foreign_paths.append(f"parts/{part.ref.file_name}")
+        write_uri_bytes(f"{bucket.root}/{foreign_paths[-1]}", part.path.read_bytes())
+    for path in foreign_paths:
+        bucket.backdate(path, old + 100)
 
     deleted = prune_releases(bucket.root, now=now)
 
@@ -382,6 +394,7 @@ def test_pruning_keeps_the_newest_ten_and_the_held_release_and_their_parts(bucke
         assert f"manifests/{manifests[index].release_id}.json" in remaining
         for ref in manifests[index].parts:
             assert f"parts/{ref.file_name}" in remaining
+    assert set(foreign_paths) <= remaining
     assert prune_releases(bucket.root, now=now) == ()
 
 
@@ -395,14 +408,25 @@ def test_pruning_keeps_every_manifest_younger_than_a_day(bucket, tmp_path):
     assert _objects(bucket.root) == before
 
 
-def test_pruning_deletes_nothing_without_a_readable_pointer_and_manifests(bucket, tmp_path):
+@pytest.mark.parametrize(
+    "unreadable",
+    [
+        {"format": FORMAT},
+        {"format": FORMAT - 1},
+        {"format": FORMAT - 1, "parts": [{"sha256": 1, "suffix": ".json"}]},
+    ],
+    ids=["this-format", "foreign-without-parts", "foreign-part-not-a-name"],
+)
+def test_pruning_deletes_nothing_without_a_readable_pointer_and_manifests(
+    bucket, tmp_path, unreadable
+):
     staged, manifest = _release(tmp_path / "a", revision="rev", blocks="a")
     assert prune_releases(bucket.root, now=time.time()) == ()
 
     _publish(bucket.root, staged, manifest)
     stray = f"{bucket.root}/parts/{'f' * 64}.json"
     write_uri_bytes(stray, b"stray")
-    write_uri_bytes(f"{bucket.root}/manifests/{'e' * 64}.json", b'{"format": 2}')
+    write_uri_bytes(f"{bucket.root}/manifests/{'e' * 64}.json", json.dumps(unreadable).encode())
     before = _objects(bucket.root)
 
     assert prune_releases(bucket.root, now=time.time() + 2 * KEEP_SECONDS) == ()

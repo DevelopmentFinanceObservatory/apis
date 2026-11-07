@@ -17,6 +17,7 @@ import pytest
 from artifact_publication.uri import write_uri_bytes
 from graph_release import format as release_format
 from graph_release.format import (
+    FORMAT,
     PART_SCHEMAS,
     SERIES,
     Manifest,
@@ -240,7 +241,7 @@ def _rewrite_manifest(root: Path, release_id: str, /, **changes: object) -> None
 @pytest.mark.parametrize(
     ("changes", "reason"),
     [
-        ({"format": 2}, "format"),
+        ({"format": FORMAT + 1}, "format"),
         ({"format": None}, "format"),
         ({"import_execution_id": "another-execution"}, "contents give"),
     ],
