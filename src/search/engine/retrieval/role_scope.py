@@ -47,6 +47,7 @@ from search.engine.retrieval.read_plan import (
     RoleYears,
     asked_years,
     in_elected_datasets,
+    misses_judged_years,
     plan_role_read,
     role_years,
     window_gap,
@@ -711,7 +712,9 @@ def _no_point_in_years(
         sv_dcids=[sv],
         facets_by_sv={sv: by_sv[sv]},
         has_data=False,
-        coverage=CoverageBare(has_data=False, window=date_request.window if date_request else None),
+        coverage=CoverageBare(
+            has_data=False, window=date_request.asked_window if date_request else None
+        ),
         available_at_place=True,
         window_gap=window_gap(dateless.plan, years),
         role_declaration_unverified=role_declaration_unverified,
@@ -815,7 +818,11 @@ def discover_role_scope(
         if years is not None
         else None
     )
-    if read is None or not read.members:
+    if (
+        read is None
+        or not read.members
+        or (read.plan is not None and misses_judged_years(read.plan, date_request))
+    ):
         return _no_point_in_years(
             coverage_index,
             surviving_svs=surviving_svs,

@@ -66,6 +66,7 @@ def _grounded(*rows: tuple[Spec, str, ShapeDraft, CandidateBasis | None]) -> _Gr
         cand_confirmed_facets={},
         cand_answered_roles={},
         cand_places={},
+        cand_date_requests={spec.spec_id: None for spec, *_ in rows},
         answer_t0=0,
         cand_candidates={spec.spec_id: _candidate(shape, basis) for spec, _, shape, basis in rows},
     )

@@ -1,0 +1,225 @@
+- id: rep-uk-health-tanzania
+  query: UK health aid in Tanzania
+  why: '"Health" binds CRS 120 and 130 together, and a sector part reads CRS gross disbursements from the UK to Tanzania on every run.'
+  tags:
+    {
+      theme: health,
+      entity: two_roles,
+      direction: both,
+      unit: default,
+      time: none,
+      operation: none,
+      breakdown: sector,
+      door: raw_text,
+      phrasing: casual,
+      probe: [stability],
+    }
+  repeat: 5
+  expect:
+    definite:
+      measure:
+        family: crs.disbursement_gross
+        bound:
+          crsTypeOfFlow: CRSTypeOfFlow10
+          crsPurpose: [CRSPurposeCode120, CRSPurposeCode130]
+      entities:
+        [
+          { dcid: country/GBR, role: origin },
+          { dcid: country/TZA, role: destination },
+        ]
+
+- id: rep-uk-health-tanzania-2022
+  query: UK health aid in Tanzania in 2022
+  why: A named year leaves the measure of "UK health aid in Tanzania" unchanged, CRS gross disbursements for health, on every run.
+  tags:
+    {
+      theme: health,
+      entity: two_roles,
+      direction: both,
+      unit: default,
+      time: year,
+      operation: none,
+      breakdown: sector,
+      door: raw_text,
+      phrasing: casual,
+      probe: [stability],
+    }
+  repeat: 5
+  expect:
+    definite:
+      measure:
+        family: crs.disbursement_gross
+        bound:
+          crsTypeOfFlow: CRSTypeOfFlow10
+          crsPurpose: [CRSPurposeCode120, CRSPurposeCode130]
+      entities:
+        [
+          { dcid: country/GBR, role: origin },
+          { dcid: country/TZA, role: destination },
+        ]
+      window: { kind: range, start: 2022, end: 2022 }
+
+- id: rep-germany-health-tanzania
+  query: Germany health aid to Tanzania
+  why: '"Health" binds CRS 120 and 130 together, and a sector part reads CRS gross disbursements from Germany to Tanzania on every run.'
+  tags:
+    {
+      theme: health,
+      entity: two_roles,
+      direction: both,
+      unit: default,
+      time: none,
+      operation: none,
+      breakdown: sector,
+      door: raw_text,
+      phrasing: casual,
+      probe: [stability],
+    }
+  repeat: 5
+  expect:
+    definite:
+      measure:
+        family: crs.disbursement_gross
+        bound:
+          crsTypeOfFlow: CRSTypeOfFlow10
+          crsPurpose: [CRSPurposeCode120, CRSPurposeCode130]
+      entities:
+        [
+          { dcid: country/DEU, role: origin },
+          { dcid: country/TZA, role: destination },
+        ]
+
+- id: rep-germany-oda-gni
+  query: Germany ODA and GNI from 2015 to 2022
+  why: Germany's ODA reads the OECD headline total ODA and its GNI the DAC1 series, both from 2015 to 2022, on every run.
+  tags:
+    {
+      theme: aid,
+      entity: country,
+      direction: origin_only,
+      unit: default,
+      time: range,
+      operation: none,
+      breakdown: none,
+      door: raw_text,
+      phrasing: casual,
+      probe: [stability],
+    }
+  repeat: 5
+  expect:
+    parts:
+      - definite:
+          measure:
+            family: dac1.disbursement_net
+            bound: { dac1AidType: DAC1AidType1010 }
+          provenance: { dataset: provenance/ONEOECDHeadlineODA, bound: true }
+          entities: [{ dcid: country/DEU, role: origin }]
+          window: { kind: range, start: 2015, end: 2022 }
+      - definite:
+          measure: { family: dac1.gni }
+          entities: [{ dcid: country/DEU, role: observationAbout }]
+          window: { kind: range, start: 2015, end: 2022 }
+
+- id: rep-sudan-aid-korea
+  query: Sudan aid from Korea
+  why: Korea is named as the provider, so Sudan reads as the recipient of DAC2a net ODA on every run.
+  tags:
+    {
+      theme: aid,
+      entity: two_roles,
+      direction: both,
+      unit: default,
+      time: none,
+      operation: none,
+      breakdown: none,
+      door: raw_text,
+      phrasing: casual,
+      probe: [stability],
+    }
+  repeat: 5
+  expect:
+    definite:
+      measure: { family: dac2a.oda_net_received }
+      entities:
+        [
+          { dcid: country/KOR, role: origin },
+          { dcid: country/SDN, role: destination },
+        ]
+
+- id: rep-two-questions
+  query: ODA from Spain to Congo and ODA from Korea to Ghana 2019
+  why: Two questions answer as two parts, Spain to an ambiguous Congo refused and Korea to Ghana in 2019 from DAC2a, on every run.
+  tags:
+    {
+      theme: aid,
+      entity: two_roles,
+      direction: both,
+      unit: default,
+      time: year,
+      operation: none,
+      breakdown: none,
+      door: raw_text,
+      phrasing: casual,
+      conjunction: two_questions,
+      probe: [stability],
+    }
+  known_failure: { issue: 103, checks: [disposition, parts] }
+  repeat: 5
+  expect:
+    parts:
+      - no_data: { reason: entity_ambiguous }
+        entities: [{ dcid: country/ESP, role: origin }]
+      - definite:
+          measure: { family: dac2a.oda_net_received }
+          entities:
+            [
+              { dcid: country/KOR, role: origin },
+              { dcid: country/GHA, role: destination },
+            ]
+          window: { kind: range, start: 2019, end: 2019 }
+
+- id: rep-population-probe
+  query: Ghana population totals for 2015 through 2020, python concurrency probe
+  why: A population question for Ghana from 2015 to 2020 answers one population series on every run, whatever the trailing words.
+  tags:
+    {
+      theme: population,
+      entity: country,
+      direction: subject,
+      unit: default,
+      time: range,
+      operation: none,
+      breakdown: none,
+      door: raw_text,
+      phrasing: technical,
+      probe: [stability],
+    }
+  known_failure: { issue: 103, checks: [agreement] }
+  repeat: 5
+  expect:
+    definite:
+      entities: [{ dcid: country/GHA, role: observationAbout }]
+      window: { kind: range, start: 2015, end: 2020 }
+
+- id: rep-germany-health-tanzania-2021
+  query: Germany health aid to Tanzania in 2021
+  why: A named year leaves the measure of "Germany health aid to Tanzania" unchanged, CRS gross disbursements for health, on every run.
+  tags: { theme: health, entity: two_roles, direction: both, unit: default, time: year, operation: none, breakdown: sector, door: raw_text, phrasing: casual, probe: [stability] }
+  repeat: 5
+  expect:
+    definite:
+      measure:
+        family: crs.disbursement_gross
+        bound:
+          crsTypeOfFlow: CRSTypeOfFlow10
+          crsPurpose: [CRSPurposeCode120, CRSPurposeCode130]
+      entities: [{ dcid: country/DEU, role: origin }, { dcid: country/TZA, role: destination }]
+      window: { kind: range, start: 2021, end: 2021 }
+
+- id: rep-congo-aid-belgium
+  query: Congo aid from Belgium
+  why: '"Congo" names both the Democratic Republic of the Congo and the Republic of the Congo, so the part refuses entity_ambiguous on every run before reading a direction.'
+  tags: { theme: aid, entity: two_roles, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, probe: [stability] }
+  repeat: 5
+  expect:
+    no_data: { reason: entity_ambiguous }

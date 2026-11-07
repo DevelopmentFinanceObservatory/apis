@@ -123,6 +123,7 @@ from search.engine.region.scope_decision import (
     guarded_scope_decision,
 )
 from search.engine.region.state import MeasureFamily, ResolveState, raised_facts
+from search.engine.region.trailing import SettledTrailing, settle_trailing
 from search.engine.region.un_system import member_labels
 from search.engine.region.whole_totals import whole_total_warnings
 from search.engine.retrieval.bound_values import (
@@ -170,6 +171,7 @@ from search.models import (
     SlotOptions,
     Spec,
     SpecObservations,
+    TimeWindow,
     Warning,
 )
 
@@ -264,14 +266,22 @@ def _over_conversion_period(
     mat_result: Materialised,
     filtered: FilteredAnswer,
     admission: FacetAdmission,
+    *,
+    settled: SettledTrailing | None,
 ) -> tuple[Materialised, FilteredAnswer]:
     """The answer a unit request shows when its conversion tables cover only part of the
     years `filtered` serves (`convertibility.unit_request_period`): the request reads the
     period's window from here on, the plan is read over it and filtered again, and the
-    answer departs `year_unavailable` naming the table. Otherwise both as they are. Either
-    way an answer whose deflators leave out some entities' rows departs `year_unavailable`
-    naming them (`convertibility.deflator_omission_departure`)."""
+    answer departs `year_unavailable` naming the table and the years asked, which for a
+    trailing request `settled` are the years its words cover. Otherwise both as they are,
+    and a stale trailing answer departs as `settled` holds. The conversion's departure
+    replaces the stale one, so the answer states its years once. Either way an answer
+    whose deflators leave out some entities' rows departs `year_unavailable` naming them
+    (`convertibility.deflator_omission_departure`)."""
+    stale = settled.departure if settled is not None else None
     if state.unit_request is None or state.unit_elected_selections is None:
+        if stale is not None:
+            state.depart(*stale)
         return mat_result, filtered
     catalogue = current_conversion_catalogue()
     period = unit_request_period(
@@ -282,7 +292,18 @@ def _over_conversion_period(
         catalogue=catalogue,
     )
     if period is not None:
-        mat_result, filtered = _narrowed_to_period(state, mat_result, admission, period)
+        requested = (
+            settled.asked
+            if settled is not None
+            else state.date_request.asked_window
+            if state.date_request is not None
+            else None
+        )
+        mat_result, filtered = _narrowed_to_period(
+            state, mat_result, admission, period, requested=requested
+        )
+    elif stale is not None:
+        state.depart(*stale)
     omission = deflator_omission_departure(
         filtered.plan,
         state.unit_request,
@@ -294,15 +315,43 @@ def _over_conversion_period(
     return mat_result, filtered
 
 
+def _over_trailing_years(
+    state: ResolveState, mat_result: Materialised, filtered: FilteredAnswer
+) -> tuple[Materialised, FilteredAnswer, SettledTrailing | None]:
+    """The answer a trailing request shows once admission has fixed its series: the newest
+    years they hold (`trailing.settle_trailing`), which the request reads from here on, and
+    the settlement, whose stale departure `_over_conversion_period` raises. Otherwise both
+    as they are and None. A trailing request starts its related-measures reads here, over
+    the years it reads from here on, since the years read before settling are not the
+    answer's (`_ground_elected_answer`)."""
+    # Read from the request before settling replaces it with a plain range.
+    trailing = state.date_request is not None and state.date_request.trailing_years is not None
+    settled = settle_trailing(
+        mat_result,
+        filtered,
+        date_request=state.date_request,
+        coverage_index=state.coverage.index,
+    )
+    if settled is not None:
+        state.date_request = settled.date_request
+        state.mat_result = mat_result = settled.mat
+        filtered = settled.filtered
+    if trailing:
+        start_elected_related_read(state, mat_result)
+    return mat_result, filtered, settled
+
+
 def _narrowed_to_period(
     state: ResolveState,
     mat_result: Materialised,
     admission: FacetAdmission,
     period: ConversionPeriod,
+    *,
+    requested: TimeWindow | None,
 ) -> tuple[Materialised, FilteredAnswer]:
     """The answer read over `period`'s window, departing `year_unavailable` naming the
-    table that leaves the other years out (`_over_conversion_period`)."""
-    requested = state.date_request.window if state.date_request is not None else None
+    table that leaves the other years out and `requested`, the years asked
+    (`_over_conversion_period`)."""
     state.date_request = DateRequest(window=period.window, latest=False)
     mat_result = over_conversion_period(mat_result, period)
     state.mat_result = mat_result
@@ -405,7 +454,10 @@ async def _ground_elected_answer(state: ResolveState) -> RegionResult | None:
     # The phase spine narrows this result to ``Materialised``. The attribute loses that
     # narrowing here.
     mat_result = cast(Materialised, state.mat_result)
-    start_elected_related_read(state, mat_result)
+    # A trailing request reads its related measures once it has settled its years
+    # (`_over_trailing_years`).
+    if state.date_request is None or state.date_request.trailing_years is None:
+        start_elected_related_read(state, mat_result)
 
     early = await _decide_bound_unit_convertibility(state, mat_result)
     if early is not None:
@@ -428,7 +480,10 @@ async def _ground_elected_answer(state: ResolveState) -> RegionResult | None:
         date_request=state.date_request,
         coverage_index=state.coverage.index,
     )
-    mat_result, _filtered = _over_conversion_period(state, mat_result, _filtered, _admission)
+    mat_result, _filtered, settled = _over_trailing_years(state, mat_result, _filtered)
+    mat_result, _filtered = _over_conversion_period(
+        state, mat_result, _filtered, _admission, settled=settled
+    )
     _install_filtered_answer(state, mat_result, _filtered)
 
     # A member holds data at the place but no point in the years read: the answer is
@@ -1269,6 +1324,7 @@ async def _finalize_definite_result(
         default_facet_probe=setup.facet_probe,
         facets_pinned=setup.facets_pinned,
         variable_labels=member_labels((spec,)),
+        date_request=state.date_request,
     )
     slot_options_task = (
         relaunch_slot_options(spec.spec_id, setup.slot_options_raw)

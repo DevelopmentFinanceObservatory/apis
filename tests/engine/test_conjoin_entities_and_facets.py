@@ -1361,7 +1361,6 @@ def test_a_merged_relaunch_streams_options_over_every_members_places():
     kenya = facet_probe(["sv_x"], {"observationAbout": [_KEN]}, years=None)
     ethiopia = facet_probe(["sv_x"], {"observationAbout": ["country/ETH"]}, years=None)
     state = SimpleNamespace(
-        date_request=None,
         graph=graph,
         sdmx=None,
         materialise_graph=None,
@@ -1385,6 +1384,7 @@ def test_a_merged_relaunch_streams_options_over_every_members_places():
                 facets_pinned=False,
                 variable_labels=NO_LABELS,
                 open_axes=frozenset(),
+                date_request=None,
             )
 
     events, _warnings = asyncio.run(_events())

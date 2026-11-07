@@ -48,8 +48,9 @@ class LadderLLM(LLM):
     """Substitute a composed prompt for mapped schemas and append every call to `sink`.
 
     Schemas outside `_STAGE_BY_SCHEMA`, or absent from `systems`, keep the engine's
-    prompt. The wrapper mirrors the inner LLM's thinking level and seed so
-    `for_stage` preserves explicit overrides and applies bind's default pin.
+    prompt. The wrapper mirrors the inner LLM's thinking level and seed and passes its own
+    to the inner LLM, so `for_stage` preserves explicit overrides and applies bind's default
+    pin, and a `reseeded` copy samples under its own seed.
     Shallow copies share `sink`, so bind calls remain in the caller's list.
     `generate_structured` awaits the inner LLM directly."""
 
@@ -77,9 +78,13 @@ class LadderLLM(LLM):
         variant = self._systems.get(stage, system) if stage is not None else system
 
         inner = self._llm
-        if self._thinking_level is not None and isinstance(inner, LLM):
+        if isinstance(inner, LLM) and (
+            self._thinking_level is not None or self._seed != inner._seed
+        ):
             inner = copy.copy(inner)
-            inner._thinking_level = self._thinking_level
+            if self._thinking_level is not None:
+                inner._thinking_level = self._thinking_level
+            inner._seed = self._seed
 
         t0 = time.perf_counter()
         parsed, usage = await inner.generate_structured(

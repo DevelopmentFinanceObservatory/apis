@@ -598,10 +598,23 @@ def _direction_discarded(fact: DepartureFact, _family: FlowFamily | None, shows_
 def _direction_inferred(fact: DepartureFact, family: FlowFamily | None, _shows_data: bool) -> str:
     if fact.over is None:
         raise ValueError("direction_inferred needs the flow axis the place was read on")
-    noun = role_wording(family).noun(fact.over).singular
+    wording = role_wording(family)
+    noun = wording.noun(fact.over)
+    other = wording.noun("destination" if fact.over == "origin" else "origin")
+    asked = _asked(fact)
+    match fact.read_by:
+        case "complement":
+            reason = f"The question names the {other.singular}"
+        case "operation":
+            reason = f"The question looks across the {other.plural}"
+        case "declaration":
+            if fact.listed_by is None:
+                raise ValueError("a declaration names the dataset that lists the place")
+            reason = f"{fact.listed_by} lists {asked} among its providers"
+        case _:
+            reason = f"Only the data with {asked} as the {noun.singular} holds values"
     return (
-        f"You named {_asked(fact)} without a direction. Only the data with {_asked(fact)} as "
-        f"the {noun} holds values, so this reads it as the {noun}."
+        f"You named {asked} without a direction. {reason}, so this reads it as the {noun.singular}."
     )
 
 

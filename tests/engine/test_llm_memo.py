@@ -25,6 +25,7 @@ from search.engine.clients.llm import (
     for_stage,
     generate_structured_async,
     recording_llm_usage,
+    reseeded,
 )
 from search.engine.errors import LLMInfraError, LLMOutputRefused
 from search.engine.extract import Extraction
@@ -1025,6 +1026,28 @@ def test_for_stage_clone_keys_apart_from_its_parent(monkeypatch):
 
     assert len(client.models.calls) == 2
     # Parent and clone are separate memo entries, so neither evicted the other.
+    assert memo.stats().entries == 2
+
+
+@pytest.mark.parametrize(("seed", "next_seed"), [(1, 2), (None, 1)], ids=["seeded", "unseeded"])
+def test_a_reseeded_clone_shares_the_memo_and_is_never_coalesced_with_its_parent(
+    monkeypatch, search_settings, seed, next_seed
+):
+    """Concurrent identical calls from a client and its reseeded clone both reach the model,
+    each under its own seed, and each answer is then a memo hit for its own seed."""
+    search_settings(llm_seed=None)
+    memo = _memo()
+    llm, client = _llm(monkeypatch, _response(), memo=memo, seed=seed)
+    clone = reseeded(llm)
+
+    async def both():
+        return await asyncio.gather(_call(llm), _call(clone))
+
+    asyncio.run(both())
+    asyncio.run(both())
+
+    assert len(client.models.calls) == 2
+    assert {call[2].seed for call in client.models.calls} == {seed, next_seed}
     assert memo.stats().entries == 2
 
 

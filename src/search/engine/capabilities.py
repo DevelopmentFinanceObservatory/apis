@@ -117,7 +117,9 @@ class CapabilityCaps(BaseModel):
     scope_max_window_years: int = Field(
         description=(
             "ceiling on a requested window's year span for a role-bearing read, "
-            "named or discovered; over this refuses scope_too_broad"
+            "named or discovered; over this refuses scope_too_broad. A span counted back "
+            "from now ('the last five years') counts the years it asks for, though its read "
+            "also lists the years before them it searches for the newest data"
         )
     )
 

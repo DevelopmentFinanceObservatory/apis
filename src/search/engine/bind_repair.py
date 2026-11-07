@@ -30,6 +30,7 @@ from search.engine.qualifier_match import (
 )
 from search.engine.retrieval.facts import read_constraints
 from search.engine.shape import ShapeDraft
+from search.render.labels import join_labels
 
 if TYPE_CHECKING:
     from search.engine.exclusion_read import LeftOut
@@ -139,6 +140,41 @@ def _slot_open_to_default(
     return _taxonomy_holds(shape_draft, code_system, default_code)
 
 
+def _above_default_unnamed(
+    binding: SlotBindingDraft,
+    shape_draft: ShapeDraft,
+    code_system: str,
+    default_code: str,
+    *,
+    index: CodeIndex,
+    named_codes: frozenset[str],
+) -> tuple[str, ...]:
+    """The values of the reply's `binding` broader than the declared default that the
+    question does not name, in binding order, on a slot whose taxonomy holds the default;
+    empty when there are none.
+
+    A code system that declares a default states what a question naming none of its codes
+    asks about: a DAC1 question that names no aid type asks about total ODA,
+    ``DAC1AidType1010``. A proper ancestor of that default, such as ``DAC1AidType5``
+    ("official and private flow"), is a broader and larger quantity, so a reply binding it
+    for "total aid" answers a different question. Such a value is the question's only when
+    it is one of `named_codes` or lies under one of them. A value at or under the default,
+    or beside it, is the reply's to bind. A ``requested_all`` slot keeps its full
+    requested scope.
+    """
+    if binding.kind not in ("value", "set") or binding.evidence == "requested_all":
+        return ()
+    if not _taxonomy_holds(shape_draft, code_system, default_code):
+        return ()
+    return tuple(
+        value
+        for value in binding.value_dcids
+        if value != default_code
+        and default_code in index.descendants(value)
+        and not any(value in index.descendants(code) for code in named_codes)
+    )
+
+
 def _taxonomy_holds(shape_draft: ShapeDraft, property_dcid: str, value_dcid: str) -> bool:
     """Whether ``shape_draft`` has a slot on ``property_dcid`` whose taxonomy holds
     ``value_dcid``."""
@@ -208,6 +244,7 @@ def apply_declared_defaults(
     query_qualifier_ties: tuple[QualifierTie, ...] = (),
     engine_authored_properties: frozenset[str] = frozenset(),
     pinned_properties: frozenset[str] = frozenset(),
+    named_codes: frozenset[str] = frozenset(),
 ) -> tuple[list[SlotBindingDraft], list[SlotBindingDraft]]:
     """Apply declared defaults to open slots when query evidence triggers them.
 
@@ -217,7 +254,12 @@ def apply_declared_defaults(
     extracted ``variable`` can trigger a default.
 
     A slot must be open, have no ``requested_all`` evidence, contain the default code in
-    its taxonomy, and hold no pin of the elected dataset. ``pinned_properties`` names the
+    its taxonomy, and hold no pin of the elected dataset. A slot the reply bound to values
+    above the default that the question does not name (`_above_default_unnamed`, read
+    against `named_codes`, the codes the question names) takes the default as an open one
+    does: the default replaces exactly those values and the slot keeps the reply's others,
+    so a set beside them stays bound. Wherever the default does not fire the slot keeps the
+    reply's values. ``pinned_properties`` names the
     pins, and every row of that dataset holds the pinned value, so the slot takes no
     default. Any raw qualifier match or tie for that code system blocks the default,
     including unresolved ambiguity. Then either another query-derived ``value``/
@@ -235,11 +277,13 @@ def apply_declared_defaults(
     one without warns only where the query names its slot (``defaulted_slots_named``).
 
     Returns the listified input and ``[]`` when unchanged. Otherwise returns the repaired
-    bindings and the pre-default entries. Iteration follows binding and declaration order.
+    bindings and the pre-default entries, each an open slot's entry or, where the default
+    replaced reply values, the reply's entry holding only those values. Iteration follows
+    binding and declaration order.
     """
     bindings = list(bindings)
 
-    fire: dict[int, str] = {}
+    fire: dict[int, tuple[str, tuple[str, ...]]] = {}
     for code_system, declaration in index.declarations.items():
         default = declaration.default
         if default is None:
@@ -249,8 +293,17 @@ def apply_declared_defaults(
         )
         if target_index is None or code_system in pinned_properties:
             continue
-        if not _slot_open_to_default(
-            bindings[target_index], shape_draft, code_system, default.code
+        binding = bindings[target_index]
+        replaces = _above_default_unnamed(
+            binding,
+            shape_draft,
+            code_system,
+            default.code,
+            index=index,
+            named_codes=named_codes,
+        )
+        if not replaces and not _slot_open_to_default(
+            binding, shape_draft, code_system, default.code
         ):
             continue
         if any(m.code_system == code_system for m in query_qualifier_matches):
@@ -271,16 +324,31 @@ def apply_declared_defaults(
         )
         if not triggered:
             continue
-        fire[target_index] = default.code
+        fire[target_index] = default.code, replaces
 
     if not fire:
         return bindings, []
 
     result = list(bindings)
     defaulted: list[SlotBindingDraft] = []
-    for i, code in fire.items():
-        defaulted.append(result[i])
-        result[i] = result[i].model_copy(update={"kind": "value", "value_dcids": [code]})
+    for i, (code, replaces) in fire.items():
+        binding = result[i]
+        if not replaces:
+            defaulted.append(binding)
+            result[i] = binding.model_copy(update={"kind": "value", "value_dcids": [code]})
+            continue
+        defaulted.append(binding.model_copy(update={"value_dcids": list(replaces)}))
+        values = list(
+            dict.fromkeys(code if value in replaces else value for value in binding.value_dcids)
+        )
+        result[i] = binding.model_copy(
+            update={
+                "kind": "value" if len(values) == 1 else "set",
+                "value_dcids": values,
+                "evidence": "mentioned",
+                "drafted_by": "engine",
+            }
+        )
     return result, defaulted
 
 
@@ -463,33 +531,56 @@ def defaulted_slots_named(
     names a slot by its declared plain name, singular or plural (``names_plain_name``), so
     "top 5 aid flows" names the flow slot. A default fires only on a slot no operation and
     no ``requested_all`` claim opened, so each pair is a slot the query asked about and
-    the answer fixed to one value. A default with a declared note speaks through it
-    (``defaulted_slot_notes``) and is left out here.
+    the answer fixed to one value. A default with a declared note, or one that replaced a
+    reply's value (``_replaced``), speaks through ``defaulted_slot_notes`` and is left out
+    here.
     """
     named: list[tuple[str, str]] = []
     for binding in defaulted:
         declaration = index.declarations.get(binding.property_dcid or "")
         if declaration is None or declaration.default is None or declaration.default.note:
             continue
+        if _replaced(binding):
+            continue
         if not any(names_plain_name(text, declaration.plain_name) for text in texts):
             continue
-        row = index.code_by_dcid(declaration.default.code)
-        named.append(
-            (declaration.plain_name, row.label if row is not None else declaration.default.code)
-        )
+        named.append((declaration.plain_name, _code_label(declaration.default.code, index=index)))
     return named
 
 
 def defaulted_slot_notes(defaulted: Sequence[SlotBindingDraft], *, index: CodeIndex) -> list[str]:
-    """Return the declared note of each fired default that carries one
-    (``DeclaredDefault.note``), in the order of ``defaulted``, the pre-default entries
-    ``apply_declared_defaults`` returns. The note is stated whatever the query's words."""
+    """Return a note for each fired default, in the order of ``defaulted``, the pre-default
+    entries ``apply_declared_defaults`` returns, whatever the query's words: for a default
+    that replaced a reply's broader value (``_replaced``), a sentence naming the default and
+    the value it replaced, so an override the question meant to avoid shows; for any other,
+    its declared note (``DeclaredDefault.note``) where it carries one."""
     notes: list[str] = []
     for binding in defaulted:
         declaration = index.declarations.get(binding.property_dcid or "")
-        if declaration is not None and declaration.default is not None and declaration.default.note:
+        if declaration is None or declaration.default is None:
+            continue
+        if _replaced(binding):
+            replaced = join_labels([_code_label(dcid, index=index) for dcid in binding.value_dcids])
+            notes.append(
+                f"The answer covers {_code_label(declaration.default.code, index=index)}, the "
+                f"default {declaration.plain_name}, in place of {replaced}, a broader "
+                f"{declaration.plain_name} no word of the question names."
+            )
+        elif declaration.default.note:
             notes.append(declaration.default.note)
     return notes
+
+
+def _replaced(binding: SlotBindingDraft) -> bool:
+    """Whether a pre-default entry bound a value its default replaced
+    (`_above_default_unnamed`); an open slot's entry binds none."""
+    return binding.kind in ("value", "set")
+
+
+def _code_label(dcid: str, *, index: CodeIndex) -> str:
+    """The code index's full label for `dcid`, or the dcid where it holds no row."""
+    row = index.code_by_dcid(dcid)
+    return row.label if row is not None else dcid
 
 
 def declared_default_slots_named(text: str, *, index: CodeIndex) -> tuple[str, ...]:

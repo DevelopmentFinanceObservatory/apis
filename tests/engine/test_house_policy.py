@@ -613,8 +613,8 @@ _ALL_ODA_SHAPES = (*_ODA_SHAPES, *(replace(s, index=s.index + 2) for s in _DONOR
 def test_a_place_without_a_direction_read_on_an_axis_is_its_directed_twin(
     place: str, axis: RoleAxis, year: int, expected: int
 ):
-    """A place named without a direction whose data settles its axis
-    (`availability.undirected_axis`) is the question its directed twin asks, with the same
+    """A place named without a direction whose axis a rule settles
+    (`undirected.settle_undirected_axis`) is the question its directed twin asks, with the same
     kind, basis and wanted dataset, and the same elected shape. "ODA in Ethiopia in 2020" is
     DAC2a's net receipts, and "ODA in Germany in 2023" DAC1's grant equivalents."""
     index = get_index()

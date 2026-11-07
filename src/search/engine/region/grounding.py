@@ -183,12 +183,14 @@ def reject_reversed_window(window: RequestedWindow | None) -> None:
 def requested_window_from_date_request(date_request: DateRequest | None) -> RequestedWindow | None:
     """Map a date request to identity data: `"latest"`, a concrete window, or None.
 
-    The sentinel distinguishes an explicit latest request from no date request. Reversed
-    windows raise `EngineInputError(code="request_invalid")` before spec construction.
+    The sentinel distinguishes an explicit latest request from no date request. A trailing
+    span no answer settled names the calendar years its words cover
+    (`DateRequest.asked_window`). Reversed windows raise
+    `EngineInputError(code="request_invalid")` before spec construction.
     """
     if date_request is None:
         return None
-    window = "latest" if date_request.latest else date_request.window
+    window = "latest" if date_request.latest else date_request.asked_window
     reject_reversed_window(window)
     return window
 

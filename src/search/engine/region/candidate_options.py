@@ -77,6 +77,7 @@ def _make_slot_options_task(
                 _candidate_facet_probe(state, grounded, s),
                 bool(s.definition.identity.facets),
                 member_labels((s,)),
+                grounded.cand_date_requests[s.spec_id],
             )
         )
     if not probes:
@@ -85,7 +86,6 @@ def _make_slot_options_task(
     return create_owned_task(
         _gather_slot_options_events(
             probes,
-            date_request=state.date_request,
             graph=state.graph,
             sdmx=state.sdmx,
             materialise_graph=state.materialise_graph,
@@ -117,6 +117,7 @@ def _make_slot_options_relaunch(
         default_facet_probe=_candidate_facet_probe(state, grounded, original_spec),
         facets_pinned=bool(original_spec.definition.identity.facets),
         variable_labels=member_labels((original_spec,)),
+        date_request=grounded.cand_date_requests[original_spec.spec_id],
     )
 
 
@@ -222,7 +223,7 @@ async def _attach_candidate_slot_options(
         _raw_options,
         entities=grounded.cand_places[spec.spec_id].roles.resolved_entities,
         open_axes=grounded.cand_places[spec.spec_id].roles.open_axes,
-        date_request=state.date_request,
+        date_request=grounded.cand_date_requests[spec.spec_id],
         materialise_graph=state.materialise_graph,
         place_dcids=_place_dcids,
         include_option_coverage=True,
@@ -255,7 +256,7 @@ async def _attach_candidate_entity_options(
         grounded.cand_places[spec.spec_id].roles.resolved_entities,
         state.entity_objects,
         _sv_dcids,
-        date_request=state.date_request,
+        date_request=grounded.cand_date_requests[spec.spec_id],
         graph=state.graph,
         sdmx=state.sdmx,
         include_option_coverage=state.include_option_coverage,

@@ -116,6 +116,9 @@ class ResolveRecord:
     the pipeline produced, None when it ended before them. `error_code` is how a request that
     did not run to its end ended (`resolve_line`), None for one that did. `delivered` says
     the SSE route's last frame has left, so nothing after it can end the request.
+    `extraction_agreed` says whether the samples of a raw_text request's exclusion read and
+    of its extraction each agreed on its reading (`CacheScope.note_extraction`), None when the
+    request extracted nothing.
     """
 
     cache: str = "inactive"
@@ -125,6 +128,7 @@ class ResolveRecord:
     done: DoneEvent | None = None
     error_code: str | None = None
     delivered: bool = False
+    extraction_agreed: bool | None = None
 
 
 @contextmanager
@@ -206,7 +210,8 @@ def _log_resolve(
 
     The object carries the request's `trace_id`, the input kind, the caller's User-Agent, the
     posted `include_*` flags (an unposted flag is absent), the transport (`sse` or
-    `buffered`), the response cache outcome, the part memo's hits and misses, the envelope's
+    `buffered`), the response cache outcome, whether the extraction samples agreed
+    (`ResolveRecord.extraction_agreed`), the part memo's hits and misses, the envelope's
     `timing_ms` total and `by_step`, and each part's own `by_step`.
 
     `outcome` is the response's `status` for a resolution and its `kind` otherwise.
@@ -259,6 +264,7 @@ def _log_resolve(
                 **{name: value for name, value in posted.items() if name.startswith("include_")},
                 "transport": transport,
                 "cache": record.cache,
+                "extraction_agreed": record.extraction_agreed,
                 "memo_hits": record.memo_hits,
                 "memo_misses": record.memo_misses,
                 "total_ms": timing.total if timing is not None else None,
@@ -818,6 +824,7 @@ async def _resolve_pipeline_events(
                 yield ev
     finally:
         record.cache = scope.outcome
+        record.extraction_agreed = scope.extraction_agreed
         await scope.release()
 
 

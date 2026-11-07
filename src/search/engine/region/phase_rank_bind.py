@@ -57,10 +57,11 @@ from search.engine.binders.house_policy import (
     shape_facts,
 )
 from search.engine.clients.graph import family_ref
+from search.engine.clients.llm import sum_usage
 from search.engine.config import settings
 from search.engine.degraded_reads import fail_open_reads
 from search.engine.departures import qualifier_property
-from search.engine.envelope import _emit_step, _sum_usage, now_ms
+from search.engine.envelope import _emit_step, now_ms
 from search.engine.errors import GraphInfraError, LLMOutputRefused
 from search.engine.events import FrameEvent
 from search.engine.frame import Frame, SlotDefault, with_recall
@@ -135,7 +136,6 @@ from search.engine.region.availability import (
     menu_read_places,
     read_menu_availability,
     series_at_places,
-    undirected_axis,
 )
 from search.engine.region.codes import AVAILABILITY_PROBE_FAILED, DEGENERATE_BINDING_DETECTED
 from search.engine.region.decisions import PartyReadingWithdrawn
@@ -175,6 +175,7 @@ from search.engine.region.state import (
     unapplied_departure,
     with_requirement,
 )
+from search.engine.region.undirected import settle_undirected_axis
 from search.engine.retrieval.bound_values import (
     DefaultReading,
     applies_one_of,
@@ -1019,11 +1020,11 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
         # floor; a refused reading takes the branch above.
         await _record_shape_step(state)
         return state.no_data("variable_not_resolved", llm_usage=state.var_usage)
-    # A place named without a direction is read on the one axis on which an eligible
-    # reading holds a series there, and stays open when both or neither do
-    # (`availability.undirected_axis`), so the rules below and the house policies read a
-    # part whose data settles the axis as its directed twin.
-    state.undirected_axis = undirected_axis(state, eligible_shapes)
+    # A place named without a direction is read on the axis one rule settles over the
+    # eligible readings, and stays open when none does (`settle_undirected_axis`), so the
+    # rules below, the house policies and the measure basis read the part as its directed
+    # twin.
+    state.undirected = settle_undirected_axis(state, eligible_shapes)
     # A reading that could place that place only beside a place named with a direction
     # leaves, so the binder cannot elect one that merges the two (`on_undirected_axis`).
     eligible_shapes = on_undirected_axis(state, eligible_shapes)
@@ -2147,9 +2148,15 @@ def _admit_qualifier_ties(
     hold only the flow type.
 
     Drop a tie of no declared system, promote a single surviving row to an ordinary match,
-    and pass ties with two or more rows to the model for election, vetted after shape
-    choice. A tie of a declared system whose codes the family holds none of, though rows
-    of another family do, is `unheld`. A shape's own reading skips codes no shape can bind
+    and likewise a row every other surviving row sits under (`_broadest_row`): nested rows
+    are one reading, which the ancestor answers without narrowing the phrase, as admission
+    keeps the broadest code of a union ("ODA grants" binds the grants finance type, not the
+    standard grant under it). Pass other ties with two or more rows to the model for
+    election, vetted after shape choice. Each tie is one question, which code a phrase
+    names, so an identical tie the variable and the query text both carry is kept once:
+    asked twice, the model may answer each copy with another row. A tie of a declared
+    system whose codes the family holds none of, though rows of another family do, is
+    `unheld`. A shape's own reading skips codes no shape can bind
     (`qualifier_match.bindable_codes`), so they form no tie.
     """
     promoted: list[list[QualifierMatch]] = []
@@ -2170,11 +2177,32 @@ def _admit_qualifier_ties(
                         QualifierTie(matched_text=tie.matched_text, rows=in_vocabulary)
                     )
                 continue
-            if len(narrowed) == 1:
-                promoted[-1].append(narrowed[0])
+            if (broadest := _broadest_row(narrowed)) is not None:
+                promoted[-1].append(broadest)
                 continue
             admitted[-1].append(QualifierTie(matched_text=tie.matched_text, rows=narrowed))
-    return _ShapeTies(merge_lists(promoted), merge_lists(admitted), merge_lists(unheld))
+    return _ShapeTies(merge_lists(promoted), _each_once(admitted), _each_once(unheld))
+
+
+def _broadest_row(rows: Sequence[QualifierMatch]) -> QualifierMatch | None:
+    """The row of `rows` whose code every other row's code sits at or under
+    (`CodeIndex.descendants`), a lone row included, else `None`."""
+    index = get_index()
+    for row in rows:
+        under = set(index.descendants(row.code_dcid))
+        if all(other.code_dcid in under for other in rows):
+            return row
+    return None
+
+
+def _each_once(lists: list[list[QualifierTie]]) -> tuple[QualifierTie, ...]:
+    """The ties of `lists` in first-seen order, each tie once: ties of one phrase, compared
+    casefolded (`QualifierTie.phrase`), over the same codes are one tie."""
+    once: dict[tuple[str, tuple[tuple[str, str], ...]], QualifierTie] = {}
+    for tie in (tie for ties in lists for tie in ties):
+        key = (tie.phrase, tuple((row.code_system, row.code_dcid) for row in tie.rows))
+        once.setdefault(key, tie)
+    return tuple(once.values())
 
 
 def _shape_qualifiers(
@@ -4876,7 +4904,9 @@ def _log_bind_decision(state: ResolveState, decision: BindResult | None) -> None
     (`BindResult.scores`, Jev's per-shape measure score among them), beside them the
     verdict rule 4 read on each name of measure nouns the variable holds, for each menu
     shape (``verdicts``, `_measure_verdicts_by_shape`), the facts the policies read of
-    each pool shape, and whether the schema refused the reply (`decision` None)."""
+    each pool shape, the axis a place named without a direction is read on and the rule
+    that settled it (`ResolveState.undirected`, None while it stays open), and whether the
+    schema refused the reply (`decision` None)."""
     pool = decision.policy_pool if decision is not None else None
     choice = decision.policy_choice if decision is not None else None
     output = decision.output if decision is not None else None
@@ -4894,6 +4924,8 @@ def _log_bind_decision(state: ResolveState, decision: BindResult | None) -> None
         "scores": dict(decision.scores) if decision is not None else {},
         "verdicts": _measure_verdicts_by_shape(state),
         "facts": [asdict(f) for f in choice.facts] if choice is not None else [],
+        "undirected_axis": state.undirected_axis,
+        "undirected_rule": state.undirected.rule if state.undirected is not None else None,
         "refused": decision is None,
     }
     logger.info("bind_decision %s", json.dumps(record, separators=(",", ":")))
@@ -5083,7 +5115,7 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
             "part %r: the binder broke the house-policy contract: %s", state.variable, breach
         )
         usage = refusal.usage if refusal is not None else _bind_usage
-        return state.no_data("variable_not_resolved", llm_usage=_sum_usage(state.var_usage, usage))
+        return state.no_data("variable_not_resolved", llm_usage=sum_usage(state.var_usage, usage))
     if refusal is not None:
         state.warnings.append(
             Warning(
@@ -5096,9 +5128,9 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
             )
         )
         return state.no_data(
-            "variable_not_resolved", llm_usage=_sum_usage(state.var_usage, refusal.usage)
+            "variable_not_resolved", llm_usage=sum_usage(state.var_usage, refusal.usage)
         )
-    _var_usage = state.var_usage = _sum_usage(state.var_usage, _bind_usage)
+    _var_usage = state.var_usage = sum_usage(state.var_usage, _bind_usage)
 
     # An ask that names a refused reading stands that reading in as the elected shape. Any
     # other ask, or an out-of-range shape index, ends the part here: on code terms no shape

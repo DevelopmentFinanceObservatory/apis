@@ -26,7 +26,7 @@ from origin_catalogue import (
 )
 from search.engine.binders import Binder, GeminiBinder
 from search.engine.clients.graph import EngineGraphClient
-from search.engine.clients.llm import SupportsLLM, recording_llm_usage
+from search.engine.clients.llm import SupportsLLM, recording_llm_usage, sum_usage
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.deadline import _cancel_trailing_tasks
 from search.engine.degraded_reads import (
@@ -35,7 +35,7 @@ from search.engine.degraded_reads import (
     note_degraded_read,
     recording_degraded_reads,
 )
-from search.engine.envelope import _sum_usage, now_ms
+from search.engine.envelope import now_ms
 from search.engine.errors import (
     RATE_TABLE_REFUSALS,
     DeclaredDefaultUnsupportedError,
@@ -516,7 +516,7 @@ async def resolve_variable(
     result, _lost = await attempt(
         party_words_off=True, sink=emit, carried=carried, carried_consulted=no_data
     )
-    usage = functools.reduce(_sum_usage, spent.calls, result.llm_usage)
+    usage = functools.reduce(sum_usage, spent.calls, result.llm_usage)
     return dataclasses.replace(result, llm_usage=usage)
 
 
@@ -889,7 +889,7 @@ async def _fill_gap(
         chosen,
         warnings=(*chosen.warnings, *carried),
         timing_by_step=timing,
-        llm_usage=_sum_usage(result.llm_usage, second.llm_usage),
+        llm_usage=sum_usage(result.llm_usage, second.llm_usage),
     )
 
 

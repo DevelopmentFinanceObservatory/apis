@@ -79,6 +79,7 @@ CheckName = Literal[
     "groundedness",
     "materialisation",
     "task_outcome",
+    "agreement",
 ]
 """Every check name the scorer reports and ``known_failure.checks`` may cite."""
 CHECK_NAMES: tuple[CheckName, ...] = get_args(CheckName)
@@ -590,6 +591,14 @@ class Case(_CaseModel):
     reuse: _NonEmpty | None = Field(default=None, description="a sentence-panel id")
     tags: dict[_NonEmpty, _NonEmpty | list[_NonEmpty]] = Field(default_factory=dict)
     known_failure: KnownFailure | None = None
+    repeat: int | None = Field(
+        default=None,
+        ge=2,
+        description=(
+            "fresh runs the case takes on every side of the gate, each of which must give "
+            "the same answer (the agreement check)"
+        ),
+    )
     expect: Expect
 
     @field_validator("why")
@@ -724,8 +733,10 @@ def load_cases(corpus_dir: Path = DEFAULT_CORPUS_DIR) -> list[Case]:
 
 
 def _normalised(case: Case) -> dict[str, Any]:
-    """The request and expectation as authored, with every family expanded."""
-    return {
+    """The request and expectation as authored, with every family expanded. ``repeat``
+    joins only where a case sets it, so a case without it hashes as it did before the field
+    existed."""
+    normalised = {
         "query": case.query,
         "door": case.door,
         "parsed": [p.model_dump(mode="json", exclude_unset=True) for p in case.parsed or []],
@@ -735,10 +746,14 @@ def _normalised(case: Case) -> dict[str, Any]:
         "include_observations": case.include_observations,
         "expect": case.expect.model_dump(mode="json", exclude_unset=True, context={"expand": True}),
     }
+    if case.repeat is not None:
+        normalised["repeat"] = case.repeat
+    return normalised
 
 
 def expectation_hash(case: Case) -> str:
-    """sha256 over the normalised expectation (families expanded), query, door and payload.
+    """sha256 over the normalised expectation (families expanded), query, door, payload and
+    ``repeat``.
 
     Editing ``why``, ``tags``, ``slice``, ``activation``, ``reuse`` or ``known_failure``
     leaves it unchanged. Editing a family changes it for every case citing the family.
@@ -817,11 +832,13 @@ def asserted_checks(case: Case) -> frozenset[CheckName]:
     ``refusal`` reads the ``no_data``, ``unsupported`` and ``declined`` details. ``request``
     reads ``window`` and ``unit``. ``provenance`` reads an explicit override or the
     measure's family. ``materialisation`` joins under an accepted ``definite`` or ``mixed``
-    status. The checks that read no case field (``entry_path``, ``structural``,
-    ``groundedness``, ``task_outcome``) are left out.
+    status, and ``agreement`` where the case sets ``repeat``. The checks that read no case
+    field (``entry_path``, ``structural``, ``groundedness``, ``task_outcome``) are left out.
     """
     expect = case.expect
     checks: set[CheckName] = {"disposition"}
+    if case.repeat is not None:
+        checks.add("agreement")
     if expect.declined is not None:
         checks.add("refusal")
     checks |= _status_keyed_checks(expect)

@@ -152,14 +152,16 @@ class _FanOutResult:
 def _date_request_to_time_text(date_request: DateRequest | None) -> str | None:
     """Encode the date request in the parsed door's `time_text` grammar.
 
-    Returns `latest`, a year/range/`since` phrase, or `None` when the request
-    is dateless, open-start, or reversed. The latter windows have no phrase
-    that round-trips through the parser.
+    Returns `latest`, `last N years` for a trailing span, a year/range/`since`
+    phrase, or `None` when the request is dateless, open-start, or reversed. The
+    latter windows have no phrase that round-trips through the parser.
     """
     if date_request is None:
         return None
     if date_request.latest:
         return "latest"
+    if date_request.trailing_years is not None:
+        return f"last {date_request.trailing_years} years"
     window = date_request.window
     if window is None or window.start_year is None:
         return None

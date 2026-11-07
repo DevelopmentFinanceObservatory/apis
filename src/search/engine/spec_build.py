@@ -25,6 +25,7 @@ from search.engine import multilaterals
 from search.engine.bind import SlotBindingDraft, slot_label
 from search.engine.config import settings
 from search.engine.departures import members_left_out
+from search.engine.named_group import NamedGroup
 from search.engine.retrieval.bound_values import (
     MeasurePartition,
     StatedMembers,
@@ -48,6 +49,7 @@ from search.engine.retrieval.read_plan import (
     unserved_entities,
     unserved_members,
 )
+from search.engine.retrieval.whole_reading import whole_groups_over_identity
 from search.engine.shape import (
     ShapeDraft,
     SlotKeyDraft,
@@ -88,7 +90,6 @@ from search.models import (
     MeasureAxisValue,
     OpenAxisValueCount,
     OpenConstraintAxisFact,
-    PartyClass,
     ProvenanceRef,
     QuantityForm,
     RequestedWindow,
@@ -291,30 +292,6 @@ def _resolved_entities(
             )
         )
     return resolved
-
-
-@dataclass(frozen=True)
-class NamedGroup:
-    """A group the request named ("EU member states") and the entity dcids it stands for.
-
-    `label` is the group's name as the request gave it. `dcid` is its own graph node, when
-    the graph holds one, and `entity_type` is that node's graph type. `named_alone` are the
-    members the request also named on their own, each as the role key it fills and its
-    dcid. `total` is the party a flow dataset publishes as the group's total
-    (`PlaceSet.total`), which a role can bind in place of the members. `group_id` is the
-    membership registry's id for a group the graph holds no node for (`EntityGroup.group_id`).
-    `whole_of` is the classes of party a side read as its whole population covers
-    (`region.whole_totals.WholeReading`), empty for any other group.
-    """
-
-    label: str
-    dcid: str | None
-    member_dcids: frozenset[str]
-    entity_type: str | None = None
-    named_alone: frozenset[tuple[str, str]] = frozenset()
-    total: str | None = None
-    group_id: str | None = None
-    whole_of: tuple[PartyClass, ...] = ()
 
 
 def spec_named_groups(spec: Spec) -> tuple[NamedGroup, ...]:
@@ -1245,6 +1222,28 @@ class AnswerIdentity:
     served_datasets: frozenset[str]
 
 
+def _whole_groups_over_identity(
+    named_groups: tuple[NamedGroup, ...], entities: list[Entity], identity: BaseIdentity
+) -> tuple[NamedGroup, ...]:
+    """`named_groups` with each whole population (`NamedGroup.whole_of`) read again over
+    `identity`'s own dataset and window (`whole_reading.whole_groups_over_identity`), the reading
+    a resubmit of the Spec restores: kept where the identity reads the role it stands for
+    as that whole population, and dropped where it does not. A request whose years settle
+    only once its series are read ("the last five years") so states the whole populations
+    of the range it settled on. No role the request did not read whole gains a reading, so
+    "official donors" beside "private donors" stays two named parties."""
+    whole_roles = set(
+        role_entity_groups((group for group in named_groups if group.whole_of), entities)
+    )
+    if not whole_roles:
+        return named_groups
+    read = whole_groups_over_identity(identity, whole_roles)
+    return (
+        *(group for group in named_groups if not group.whole_of),
+        *(read[role] for role in sorted(read)),
+    )
+
+
 def answer_identity(
     shape: Shape,
     slots: list[Slot],
@@ -1263,7 +1262,11 @@ def answer_identity(
 ) -> AnswerIdentity:
     """The identity `build_spec` mints from these of its arguments, and what it states
     beside it (`AnswerIdentity`). The answer phase reads it before the options are counted,
-    so the scope an answer states can be decided before its preview launches."""
+    so the scope an answer states can be decided before its preview launches.
+
+    A role `named_groups` reads as a whole population (`NamedGroup.whole_of`) keeps that
+    reading only where the minted identity reads it over its own window
+    (`_whole_groups_over_identity`)."""
     if pin_served_provenance and (served := served_provenances(plan)):
         slots = with_served_provenance(slots, served)
         if facets is not None and (provenance_facet := facets.get("provenance")) is not None:
@@ -1282,6 +1285,7 @@ def answer_identity(
         requested_window=requested_window,
         explicit_facets=facet_bindings,
     )
+    named_groups = _whole_groups_over_identity(tuple(named_groups), hashed_entities, identity_doc)
     index = get_index()
     served_datasets = index.statvar_provenances(sv.ref.ref for sv in stat_vars)
     entity_groups = with_multilateral_holdings(

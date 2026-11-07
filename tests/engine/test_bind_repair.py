@@ -7,6 +7,7 @@ Synthetic properties isolate constraint matching.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 
 import pytest
 
@@ -819,3 +820,226 @@ class TestOpenSlotDefault:
         )
 
         assert defaulted == []
+
+
+_ROOT_FLOWS = "DAC1AidType5"
+_BILATERAL_ODA = QualifierMatch(
+    code_system="dac1AidType",
+    code_dcid="DAC1AidType1015",
+    label="bilateral official development assistance",
+    source="label",
+    matched_text="bilateral ODA",
+)
+
+
+def _dac1_shape_holding(*codes: str) -> ShapeDraft:
+    """`_dac1_shape` with an aid-type slot offering `codes`."""
+    return dataclasses.replace(_dac1_shape(), slot_taxonomy={"how:dac1AidType": list(codes)})
+
+
+def _dac1_tie(*codes: str) -> QualifierTie:
+    index = get_index()
+    return QualifierTie(
+        matched_text="flows", rows=tuple(row for c in codes if (row := index.code_by_dcid(c)))
+    )
+
+
+_HOLDS_ROOT = (_ROOT_FLOWS, "DAC1AidType1010", "DAC1AidType1015", "DAC1AidType200")
+
+
+class TestAReplyValueAboveTheDefault:
+    """A reply binding a value above the declared default that the question does not name
+    ("official and private flows" for "total aid") gives way to the default where the
+    default fires, and keeps its value wherever it does not, so no slot is left with
+    neither. In a set, the default replaces only such values and the reply's others stay."""
+
+    @pytest.mark.parametrize(
+        ("binding", "taxonomy", "default", "named", "matches", "ties", "binds"),
+        [
+            pytest.param(
+                _aid_type("value", _ROOT_FLOWS),
+                _HOLDS_ROOT,
+                "DAC1AidType1010",
+                (),
+                (),
+                (),
+                ["DAC1AidType1010"],
+                id="root-named-by-nothing",
+            ),
+            pytest.param(
+                SlotBindingDraft(
+                    axis="how",
+                    property_dcid="dac1AidType",
+                    kind="set",
+                    value_dcids=[_ROOT_FLOWS, "DAC1AidType200"],
+                ),
+                _HOLDS_ROOT,
+                "DAC1AidType1010",
+                (),
+                (),
+                (),
+                ["DAC1AidType1010", "DAC1AidType200"],
+                id="set-holding-the-root",
+            ),
+            pytest.param(
+                SlotBindingDraft(
+                    axis="how",
+                    property_dcid="dac1AidType",
+                    kind="set",
+                    value_dcids=[_ROOT_FLOWS, "DAC1AidType1010"],
+                ),
+                _HOLDS_ROOT,
+                "DAC1AidType1010",
+                (),
+                (),
+                (),
+                ["DAC1AidType1010"],
+                id="set-holding-the-root-and-the-default",
+            ),
+            pytest.param(
+                _aid_type("value", "DAC1AidType1010"),
+                _HOLDS_ROOT,
+                "DAC1AidType1015",
+                (),
+                (),
+                (),
+                ["DAC1AidType1015"],
+                id="value-above-a-deeper-default",
+            ),
+            pytest.param(
+                _aid_type("value", _ROOT_FLOWS),
+                _HOLDS_ROOT,
+                "DAC1AidType1010",
+                (_ROOT_FLOWS,),
+                (),
+                (),
+                None,
+                id="root-the-question-names",
+            ),
+            pytest.param(
+                _aid_type("value", "DAC1AidType1010"),
+                _HOLDS_ROOT,
+                "DAC1AidType1015",
+                (_ROOT_FLOWS,),
+                (),
+                (),
+                None,
+                id="value-under-a-named-code",
+            ),
+            pytest.param(
+                _aid_type("value", "DAC1AidType1015"),
+                _HOLDS_ROOT,
+                "DAC1AidType1010",
+                (),
+                (),
+                (),
+                None,
+                id="value-under-the-default",
+            ),
+            pytest.param(
+                _aid_type("value", "DAC1AidType200"),
+                _HOLDS_ROOT,
+                "DAC1AidType1010",
+                (),
+                (),
+                (),
+                None,
+                id="value-beside-the-default",
+            ),
+            pytest.param(
+                _aid_type("value", _ROOT_FLOWS),
+                (_ROOT_FLOWS, "DAC1AidType200"),
+                "DAC1AidType1010",
+                (),
+                (),
+                (),
+                None,
+                id="slot-whose-taxonomy-lacks-the-default",
+            ),
+            pytest.param(
+                _aid_type("value", _ROOT_FLOWS),
+                _HOLDS_ROOT,
+                "DAC1AidType1010",
+                (),
+                (),
+                (_dac1_tie(_ROOT_FLOWS, "DAC1AidType200"),),
+                None,
+                id="a-tie-on-the-system-the-reply-settled-on-the-root",
+            ),
+            pytest.param(
+                _aid_type("value", _ROOT_FLOWS),
+                _HOLDS_ROOT,
+                "DAC1AidType1010",
+                (),
+                (_BILATERAL_ODA,),
+                (),
+                None,
+                id="an-unadmitted-match-on-the-system",
+            ),
+            pytest.param(
+                SlotBindingDraft(
+                    axis="how",
+                    property_dcid="dac1AidType",
+                    kind="value",
+                    value_dcids=[_ROOT_FLOWS],
+                    evidence="requested_all",
+                ),
+                _HOLDS_ROOT,
+                "DAC1AidType1010",
+                (),
+                (),
+                (),
+                None,
+                id="requested-all",
+            ),
+        ],
+    )
+    def test_the_default_replaces_it_exactly_where_it_fires(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        binding,
+        taxonomy,
+        default,
+        named,
+        matches,
+        ties,
+        binds,
+    ):
+        index = get_index()
+        declaration = index.declarations["dac1AidType"]
+        assert declaration.default is not None
+        monkeypatch.setitem(
+            index.declarations,
+            "dac1AidType",
+            dataclasses.replace(
+                declaration, default=dataclasses.replace(declaration.default, code=default)
+            ),
+        )
+
+        repaired, defaulted = apply_declared_defaults(
+            [binding],
+            _dac1_shape_holding(*taxonomy),
+            index=index,
+            variable="total aid from Japan",
+            query_qualifier_matches=matches,
+            query_qualifier_ties=ties,
+            named_codes=frozenset(named),
+        )
+
+        if binds is None:
+            assert (repaired, defaulted) == ([binding], [])
+        else:
+            # The default replaces the values above it alone, and the pre-default entry,
+            # which the note names, holds only those.
+            replaced = [value for value in binding.value_dcids if value not in binds]
+            assert defaulted == [binding.model_copy(update={"value_dcids": replaced})]
+            assert repaired == [
+                binding.model_copy(
+                    update={
+                        "kind": "value" if len(binds) == 1 else "set",
+                        "value_dcids": binds,
+                        "evidence": "mentioned",
+                        "drafted_by": "engine",
+                    }
+                )
+            ]

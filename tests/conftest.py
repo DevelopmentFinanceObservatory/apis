@@ -270,10 +270,10 @@ def _doubles_read_no_exclusion(request: pytest.FixtureRequest) -> Iterator[None]
 
     read_exclusions = raw_text.read_exclusions
 
-    async def read(query: str, *, llm: object) -> tuple[ExclusionRead, None]:
+    async def read(query: str, *, llm: object) -> tuple[ExclusionRead, None, bool]:
         if isinstance(llm, FakeLLM) and llm.recorded:
             return await read_exclusions(query, llm=llm)
-        return ExclusionRead(exclusions=[]), None
+        return ExclusionRead(exclusions=[]), None, True
 
     raw_text.read_exclusions = read
     try:
