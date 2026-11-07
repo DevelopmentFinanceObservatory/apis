@@ -276,6 +276,12 @@ async def _within_model_timeout[T](call: Callable[[], Coroutine[Any, Any, T]]) -
         raise LLMInfraError(f"Gemini API error: {_LLM_WAITER_DEADLINE_EXCEEDED_DETAIL}") from exc
 
 
+# The samples whose agreement a reading served from the extraction store passed: `two_samples`
+# draws this many, and `extraction_key` carries it, so a reading stored under another sampling
+# policy is a miss.
+AGREEMENT_SAMPLES = 2
+
+
 async def two_samples[T](
     sample: Callable[[SupportsLLM], Coroutine[Any, Any, tuple[T, dict | None]]],
     llm: SupportsLLM,

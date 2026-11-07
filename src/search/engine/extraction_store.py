@@ -3,8 +3,9 @@
 `extract()` consults the store before it calls the model and writes the model's
 `Extraction` JSON to it after a valid parse, before any post-processing. A key
 (`extraction_key`) hashes the query as sent, the extract version (the system
-prompt and the `Extraction` schema) and the model id, seed and thinking level, so
-any edit to the prompt or schema reads afresh. `SEARCH_EXTRACT_STORE` selects the
+prompt and the `Extraction` schema), the model id, seed and thinking level, and the
+number of samples whose agreement a stored reading passed (`AGREEMENT_SAMPLES`), so any
+edit to the prompt, the schema or the sampling policy reads afresh. `SEARCH_EXTRACT_STORE` selects the
 store: `off`, `memory` (an in-process LRU bounded in bytes, with no TTL) or
 `file:<path>` (JSON lines, recorded by one run and replayed by others).
 """
@@ -19,6 +20,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Protocol
 
+from search.engine.clients.llm import AGREEMENT_SAMPLES
+
 logger = logging.getLogger(__name__)
 
 # The in-process store's byte budget. An extraction is under 1 KiB of JSON, so it
@@ -28,7 +31,7 @@ MEMORY_STORE_MAX_BYTES = 16 * 1024 * 1024
 
 def extraction_key(query: str, *, version: str, year: int, identity: Mapping[str, object]) -> str:
     """Hash `query` as sent to the model, the extract `version`, the `year` the prompt
-    names and the model's `identity` (its id, seed and thinking level).
+    names, the model's `identity` (its id, seed and thinking level) and `AGREEMENT_SAMPLES`.
 
     The exact text keys the reading because `extract()` checks the reading against it:
     role cues, operation phrases and restored word order all read the query's own text.
@@ -38,6 +41,7 @@ def extraction_key(query: str, *, version: str, year: int, identity: Mapping[str
         "version": version,
         "year": year,
         "identity": identity,
+        "samples": AGREEMENT_SAMPLES,
     }
     canonical = json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return "extract_" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
