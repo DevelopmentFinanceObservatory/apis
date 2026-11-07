@@ -347,15 +347,7 @@ def choose_reading(
     source reading was possible; else another named source listing the organisation as a
     party; else the source reading's scope refusing; else none of the organisation's own
     data leading the source reading's recall."""
-    party = any(
-        family.axes and governs(top=position == 0, score=family.score)
-        for position, family in enumerate(measure)
-    ) and any(
-        (dataset, axis) in published
-        for family in measure
-        for dataset in family.datasets
-        for axis in family.axes
-    )
+    party = party_possible(measure, published)
     listed_by = tuple(
         words
         for words, tables in (named or {}).items()
@@ -385,6 +377,25 @@ def choose_reading(
     )
 
 
+def party_possible(
+    measure: Sequence[RecalledFamily], published: AbstractSet[tuple[str, RoleAxis]]
+) -> bool:
+    """Whether a party reading of an organisation that the `(dataset, axis)` pairs
+    `published` publish as a party is possible against `measure`, the families the party
+    reading's pass recalls (`choose_reading`): a flow family of `measure` governs, and a
+    family of `measure` is published by a dataset that publishes the organisation on an axis
+    the family declares."""
+    return any(
+        family.axes and governs(top=position == 0, score=family.score)
+        for position, family in enumerate(measure)
+    ) and any(
+        (dataset, axis) in published
+        for family in measure
+        for dataset in family.datasets
+        for axis in family.axes
+    )
+
+
 def choose_readings(
     organisations: Sequence[OrganisationEvidence],
     *,
@@ -399,11 +410,17 @@ def choose_readings(
     whether the source reading's scope refused (`refused`).
 
     An organisation read as the source names a source as any other does, so where its
-    tables list another organisation as a party, the other reads as a party
-    (`OrganisationReading.listed_by`). "World Bank debt service from Kenya to the IMF" reads
-    the World Bank, which no word governs, as the source, and the IMF, after "to" and an IDS
-    creditor, as a party. Two organisations read as sources whose tables list each other
-    stay sources, since the data give no ground to choose which one names the data."""
+    tables list another organisation whose party reading is possible (`party_possible`),
+    the other reads as a party (`OrganisationReading.listed_by`). "World Bank debt service
+    from Kenya to the IMF" reads the World Bank, which no word governs, as the source, and
+    the IMF, after "to" and an IDS creditor, as a party. "World Bank and IMF GDP of Kenya"
+    reads both as sources, since GDP has no flow in which the IMF can be a party.
+
+    Only an organisation read as the source that no other such organisation can list in
+    this way names a source for the others, so the listing goes one step: where A lists B and
+    B lists C, B reads as a party and C stays a source, and two organisations that list each
+    other both stay sources, since the data give no ground to choose which one names the
+    data."""
     first = [
         choose_reading(
             measure=measure,
@@ -421,21 +438,30 @@ def choose_readings(
         for organisation, reading in zip(organisations, first, strict=True)
         if reading.role == "source"
     ]
+
+    def listed_by(
+        organisation: OrganisationEvidence, among: Sequence[OrganisationEvidence]
+    ) -> list[OrganisationEvidence]:
+        """The organisations of `among`, other than `organisation`, whose tables list it,
+        where its party reading is possible; none where it is not."""
+        if not party_possible(measure, organisation.published):
+            return []
+        return [
+            source
+            for source in among
+            if source is not organisation and _lists(source, organisation)
+        ]
+
+    naming = [source for source in sources if not listed_by(source, sources)]
     readings: list[OrganisationReading] = []
     for organisation, reading in zip(organisations, first, strict=True):
-        listers = {
-            source.words: source.allowed
-            for source in sources
-            if source is not organisation
-            and _lists(source, organisation)
-            and not (reading.role == "source" and _lists(organisation, source))
-        }
-        if listers:
+        listing = {source.words: source.allowed for source in listed_by(organisation, naming)}
+        if listing:
             reading = choose_reading(
                 measure=measure,
                 scoped=scoped,
                 allowed=organisation.allowed,
-                named={**(named or {}), **listers},
+                named={**(named or {}), **listing},
                 published=organisation.published,
                 direction=organisation.direction,
                 refused=refused,

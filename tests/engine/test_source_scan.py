@@ -949,6 +949,8 @@ def test_another_named_source_that_publishes_the_organisation_makes_it_a_party(
     assert reading.listed_by == (("CRS",) if role == "party" else ())
 
 
+# A table of the African Development Bank.
+_AFDB = "provenance/AfDBStatistics"
 # Where the index publishes the IMF as a party: an IDS creditor.
 _IMF_PARTIES: frozenset[tuple[str, RoleAxis]] = frozenset({(_IDS, "origin")})
 
@@ -1005,6 +1007,42 @@ def _imf(
             [_IDS_DEBT, RecalledFamily(datasets=frozenset({_WEO}), axes=_FLOW, score=0.9)],
             [("source", None, ()), ("source", None, ())],
             id="two sources listing each other",
+        ),
+        # GDP families have no flow, so the IMF can be no party, though the IDS, a World
+        # Bank table, lists it as a creditor: both read as sources.
+        pytest.param(
+            [_world_bank(None), _imf(None)],
+            [dataclasses.replace(_WDI_SERIES, score=0.9), dataclasses.replace(_WEO_GDP, score=0.9)],
+            [dataclasses.replace(_WDI_SERIES, score=0.9), dataclasses.replace(_WEO_GDP, score=0.9)],
+            [("source", None, ()), ("source", None, ())],
+            id="World Bank and IMF GDP of Kenya",
+        ),
+        # The World Bank lists the IMF and the IMF lists the AfDB, each where a debt family
+        # publishing both lenders governs. Only a source no other source lists names a
+        # source for the others, so the IMF reads as a party and the AfDB stays a source.
+        pytest.param(
+            [
+                _world_bank(None),
+                _imf(None),
+                OrganisationEvidence(
+                    words="AfDB",
+                    direction=None,
+                    allowed=frozenset({_AFDB}),
+                    published=frozenset({(_WEO, "origin")}),
+                ),
+            ],
+            [RecalledFamily(datasets=frozenset({_IDS, _WEO}), axes=_FLOW, score=0.9)],
+            [
+                dataclasses.replace(_IDS_DEBT, score=0.9),
+                RecalledFamily(datasets=frozenset({_WEO}), axes=_FLOW, score=0.9),
+                RecalledFamily(datasets=frozenset({_AFDB}), axes=_FLOW, score=0.9),
+            ],
+            [
+                ("source", None, ()),
+                ("party", "named_source", ("World Bank",)),
+                ("source", None, ()),
+            ],
+            id="a chain of listings",
         ),
     ],
 )
@@ -1236,15 +1274,17 @@ def test_the_raw_text_door_runs_the_one_reading_the_data_choose(
 
 
 @pytest.mark.parametrize(
-    ("query", "place", "entities", "scoped", "handed", "warned"),
+    ("query", "variable", "hit", "place", "entities", "scoped", "handed", "warned"),
     [
         # "To" governs the World Bank and an IDS creditor family publishes IBRD and IDA: the
         # leg reads it as a party and its pass recalls from the probe's party detection.
         pytest.param(
             "Ghana debt service to the World Bank",
+            "debt service",
+            _IDS_BY_CREDITOR,
             "Ghana",
             ["Ghana", "World Bank"],
-            None,
+            (),
             True,
             [("World Bank", ORGANISATION_READ_AS_PARTY)],
             id="Ghana debt service to the World Bank",
@@ -1255,31 +1295,48 @@ def test_the_raw_text_door_runs_the_one_reading_the_data_choose(
         # text after the probe's two detections.
         pytest.param(
             "World Bank debt service from Kenya to the IMF",
+            "debt service",
+            _IDS_BY_CREDITOR,
             "Kenya",
             ["Kenya", "IMF"],
-            "World Bank",
+            ("World Bank",),
             False,
             [("IMF", ORGANISATION_READ_AS_PARTY)],
             id="World Bank debt service from Kenya to the IMF",
+        ),
+        # A series no index row lists recalls GDP, so neither organisation can be a party
+        # and each one's tables may publish it: both read as sources, though the IDS, a World
+        # Bank table, lists the IMF as a creditor.
+        pytest.param(
+            "World Bank and IMF GDP of Kenya",
+            "GDP",
+            "Unrecorded_Series",
+            "Kenya",
+            ["Kenya"],
+            ("World Bank", "IMF"),
+            True,
+            [],
+            id="World Bank and IMF GDP of Kenya",
         ),
     ],
 )
 def test_the_raw_text_door_reads_each_contested_organisation_on_its_own_evidence(
     catalogue: CatalogueSnapshot,
     query: str,
+    variable: str,
+    hit: str,
     place: str,
     entities: list[str],
-    scoped: str | None,
+    scoped: tuple[str, ...],
     handed: bool,
     warned: list[tuple[str, str]],
 ):
-    """Both probe detections lead with an IDS debt family by creditor. The pipeline is a stub
-    that refuses on every organisation the reading holds as an entity. `scoped` names the
-    source mention whose tables scope the pass, and `handed` whether the pass recalls from a
-    probe detection."""
+    """Both probe detections recall `hit`. The pipeline is a stub that refuses on every
+    organisation the reading holds as an entity. `scoped` names the source mentions whose
+    tables scope the pass, and `handed` whether the pass recalls from a probe detection."""
     extraction = Extraction(
         kind="resolution",
-        variables=["debt service"],
+        variables=[variable],
         entities=[ExtractedEntity(text=place, span=place)],
     )
     prep = _prep(query, extraction, catalogue)
@@ -1295,9 +1352,7 @@ def test_the_raw_text_door_reads_each_contested_organisation_on_its_own_evidence
         detections.append(text)
         return _detection(
             text,
-            DetectedSV(
-                dcid=_IDS_BY_CREDITOR, score=0.9, type_of="StatisticalVariable", sentence=None
-            ),
+            DetectedSV(dcid=hit, score=0.9, type_of="StatisticalVariable", sentence=None),
         )
 
     async def _pipeline(variable: str, **kwargs: Any) -> RegionResult:
@@ -1317,7 +1372,8 @@ def test_the_raw_text_door_reads_each_contested_organisation_on_its_own_evidence
     with patch.object(source_choice, "detect_measure", detect):
         (region,) = _stream_door(query, prep, catalogue, _pipeline, degrade_on_error=False)
 
-    assert ran == [(entities, tables[scoped] if scoped else None, handed)]
+    expected = frozenset().union(*(tables[words] for words in scoped)) if scoped else None
+    assert ran == [(entities, expected, handed)]
     assert len(detections) == 2
     assert [(fact.asked, fact.code) for fact in region.departure_facts.values()] == warned
 
