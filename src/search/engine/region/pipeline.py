@@ -43,6 +43,7 @@ from search.engine.errors import (
 )
 from search.engine.events import Event, EventSink
 from search.engine.extract import DateRequest
+from search.engine.interpret import Detected
 from search.engine.leg_phase import enter_phase
 from search.engine.qualifier_match import CodedQualifier
 from search.engine.region.candidate_admission import alternates_unevaluated_warning
@@ -196,6 +197,7 @@ async def resolve_variable(
     options: EngineOptions | None = None,
     door: EntryPath = "parsed",
     scope_intake: ScopeIntake | None = None,
+    detected: Detected | None = None,
 ) -> RegionResult:
     """Run recall, binding, materialisation, and answer assembly for one variable.
 
@@ -248,6 +250,8 @@ async def resolve_variable(
     part's frame (`ResolveState.frame`); a direct caller states them as the parsed door's does.
     `scope_intake` is the part's posted scope entries and total intent, which every
     resolution of the part starts its `ResolveState.scope_selection` from; None posts none.
+    `detected` is a detection of the part's recall text the door already made under the
+    part's scope, which recall takes in place of its own (`interpret.recall`).
 
     `graph` and `sdmx` are shared, thread-safe clients. Dev-finance role-keyed observation and
     availability reads use `sdmx`. `llm` is stateless per call. `binder` reads the quantity
@@ -310,6 +314,7 @@ async def resolve_variable(
             entities=entities,
             date_request=date_request,
             detect_query=detect_query,
+            detected=detected,
             role_query=role_query,
             entity_roles=entity_roles or {},
             member_entities=member_entities,

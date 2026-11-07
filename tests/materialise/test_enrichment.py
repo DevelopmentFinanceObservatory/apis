@@ -364,8 +364,7 @@ _TRUST_FUNDS = PartyRow(
     dcid="IMFConcessionalTrustFunds",
     kind="party",
     party_class="official",
-    datasets=(_CRS, _DAC2A),
-    axes=("origin",),
+    published=((_CRS, "origin"), (_DAC2A, "origin")),
     dataset_kinds=((_DAC2A, "total"),),
 )
 

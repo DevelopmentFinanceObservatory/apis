@@ -6,28 +6,53 @@ the unbound-qualifier records that name the scope's sources in a refusal (`scope
 the mark and warning of an excluding mention that removes nothing (`with_idle_exclusions`,
 `idle_exclusion_warnings`) and of an including mention that serves nothing of the answer
 (`with_idle_inclusions`, `idle_inclusion_warnings`), and whether the scope allows a
-provenance of the UN System Data Commons (`allows_un_system`).
+provenance of the UN System Data Commons (`allows_un_system`). It also decides, before a
+part's pass, whether the part reads an organisation its query names as its source or as a
+party to the flow (`read_organisation`, `choose_reading`), and how the answer discloses
+that reading (`read_as_source`, `read_as_party`).
 """
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
-from collections.abc import Sequence
-from typing import Literal
+from collections.abc import Mapping, Sequence
+from collections.abc import Set as AbstractSet
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Literal
 
 from code_index.composites import provenance_datasets
 from code_index.query import CodeIndex
 from code_index.shared import get_index
-from origin_catalogue import UN_SYSTEM, Catalogue, current_catalogue
-from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
+from materialise.roles import RoleAxis, roles_by_axis
+from origin_catalogue import UN_SYSTEM, Catalogue, current_catalogue, scoped_reads
+from search.engine.clients.graph import DetectedSV, EngineGraphClient
+from search.engine.departures import (
+    organisation_read_as_party,
+    organisation_read_as_source,
+    warning_key,
+)
+from search.engine.interpret import Detected, detect_measure
+from search.engine.region.codes import (
+    ORGANISATION_READ_AS_PARTY,
+    ORGANISATION_READ_AS_SOURCE,
+    QUERY_QUALIFIER_DROPPED,
+)
+from search.engine.region.flow_governance import governs
+from search.engine.region.result import with_departure_facts
 from search.engine.retrieval.bound_values import shape_datasets, shape_listed_rows
+from search.engine.retrieval.topics import is_topic_candidate
 from search.engine.shape import ShapeDraft
+from search.engine.source_code import PartCode, SeriesCodeMembers
 from search.engine.source_scope import (
     NamedSource,
     SourceCollection,
+    SourceRefusal,
     SourceScope,
+    normalise_source_text,
     source_label,
 )
+from search.heading.departure_fact import DirectionWord, PartyReason
 from search.models import (
     GraphRef,
     IdentityBindingSet,
@@ -37,6 +62,10 @@ from search.models import (
     Spec,
     Warning,
 )
+
+if TYPE_CHECKING:
+    from search.engine.region.result import RegionResult
+    from search.heading.departure_fact import DepartureFact
 
 
 def source_record(ref: str) -> ResolvedQualifier:
@@ -189,12 +218,12 @@ def _may_publish(
         return not provenances.isdisjoint(datasets)
     if listed := shape_listed_rows(shape, index):
         return any(not provenances.isdisjoint(row.provenances) for row in listed)
-    known = {
+    known = frozenset(
         row.id for sv in shape.sv_arc_facts or () for row in catalogue.variable_provenances(sv)
-    }
-    if known:
-        return not provenances.isdisjoint(known)
-    return not provenances <= index.datasets.keys()
+    )
+    if not known:
+        return not provenances <= index.datasets.keys()
+    return not provenances.isdisjoint(known)
 
 
 def _mention_words(mention: SourceMention, named: NamedSource | None) -> str:
@@ -214,3 +243,408 @@ def allows_un_system(scope: SourceScope | None) -> bool:
         row is not None and row.data_commons == UN_SYSTEM
         for row in map(catalogue.provenance, scope.allowed)
     )
+
+
+@dataclass(frozen=True, slots=True)
+class ContestedOrganisation:
+    """Organisations a part's query names that it may read as its source or as parties to the
+    flow (`source_scan.SourceHit.contested`): their words, the dcids the entity pack names
+    them (`entity_resolution.pack.organisations_named`), and the word naming a party to a
+    flow that governs one of them, "to" where one follows "to", else "from" where one follows
+    "from", else `None` (`source_scan.direction_word`)."""
+
+    words: tuple[str, ...]
+    parties: frozenset[str]
+    direction: DirectionWord | None
+
+
+@dataclass(frozen=True, slots=True)
+class RecalledFamily:
+    """A family a detection recalls, as one of its rows stands for it: the provenances
+    publishing it, the flow axes it declares and the row's measured recall score."""
+
+    datasets: frozenset[str]
+    axes: frozenset[RoleAxis]
+    score: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class OrganisationReading:
+    """How a part reads its contested organisations (`choose_reading`): as `"party"` to the
+    flow or as its `"source"`, whether the source reading was possible, why a party reading
+    was chosen (`reason`, `None` on a source reading), the words of the other sources the
+    part names that list an organisation as a party (`listed_by`), and the detection the
+    chosen reading's pass recalls from (`detected`, set by `read_organisation`)."""
+
+    role: Literal["party", "source"]
+    source_possible: bool
+    reason: PartyReason | None = None
+    listed_by: tuple[str, ...] = ()
+    detected: Detected | None = None
+
+
+def choose_reading(
+    *,
+    measure: Sequence[RecalledFamily],
+    scoped: Sequence[RecalledFamily],
+    allowed: frozenset[str],
+    named: Mapping[str, frozenset[str]] | None = None,
+    published: AbstractSet[tuple[str, RoleAxis]],
+    direction: DirectionWord | None,
+    refused: bool = False,
+) -> OrganisationReading:
+    """The reading of a part's contested organisations, from the families the party
+    reading's pass recalls (`measure`) and those the source reading's pass recalls
+    (`scoped`), each in recall order, the organisations' own tables (`allowed`,
+    `organisation_tables`), the tables of each other source the part names by its words
+    (`named`, `other_named_tables`), whether the source reading's scope refused
+    (`refused`), the `(dataset, axis)` pairs that publish one of the
+    organisations as a party (`PartyRow.published`), and the word governing them.
+
+    One rule judges both readings: a family governs a recall as the pass reads a flow
+    family (`flow_governance.governs`: the first family, or one whose score is at least
+    ``SEARCH_UNKNOWN_SCORE_THRESHOLD``). A party reading is possible where a flow family of
+    `measure` governs and a family of `measure` is published by a dataset that publishes an
+    organisation on an axis the family declares. A debt family recalled at 0.61 under GDP
+    families leaves "GDP of Kenya from the IMF" no party reading; DAC1 families leading
+    "contributions" let the DAC2a family recalled under them, which publishes the World
+    Bank, make one possible. A source reading is possible where a family of `scoped` with a
+    publisher among `allowed` governs, so DAC1 families leading the scoped recall of "World
+    Bank core contributions" leave a World Bank family recalled at 0.53 no source reading,
+    and none is possible where another source the part names publishes an organisation as
+    a party: that source says whose data the part reads, so "CRS World Bank disbursements
+    to Kenya", the CRS publishing IDA and IBRD as donors, reads the World Bank as a party.
+
+    The part reads the organisations as parties when that is possible and either a
+    direction word governs them or the source reading is impossible, else as its source
+    when that is possible, else as parties, whose pass refuses on the organisations' own
+    words. Two possible readings with no direction word read as the source: a publisher
+    named before the indicator, as in "World Bank external debt owed to China".
+
+    A party reading carries why it was chosen (`PartyReason`): the direction word, where the
+    source reading was possible; else another named source listing an organisation as a
+    party; else the source reading's scope refusing; else none of the organisations' own
+    data leading the source reading's recall."""
+    party = any(
+        family.axes and governs(top=position == 0, score=family.score)
+        for position, family in enumerate(measure)
+    ) and any(
+        (dataset, axis) in published
+        for family in measure
+        for dataset in family.datasets
+        for axis in family.axes
+    )
+    listed_by = tuple(
+        words
+        for words, tables in (named or {}).items()
+        if any(dataset in tables for dataset, _ in published)
+    )
+    source = not listed_by and any(
+        not family.datasets.isdisjoint(allowed) and governs(top=position == 0, score=family.score)
+        for position, family in enumerate(scoped)
+    )
+    if party and (direction is not None or not source):
+        role: Literal["party", "source"] = "party"
+    else:
+        role = "source" if source else "party"
+    if role == "source":
+        return OrganisationReading(role=role, source_possible=True)
+    reason: PartyReason
+    if source:
+        reason = "direction"
+    elif listed_by:
+        reason = "named_source"
+    elif refused:
+        reason = "source_unresolved"
+    else:
+        reason = "no_own_data"
+    return OrganisationReading(
+        role=role, source_possible=source, reason=reason, listed_by=listed_by
+    )
+
+
+async def read_organisation(
+    contested: ContestedOrganisation,
+    *,
+    party_text: str,
+    party_variable: str,
+    party_scope: SourceScope | SourceRefusal | None,
+    party_code: PartCode | None = None,
+    source_text: str,
+    source_variable: str,
+    source_scope: SourceScope | SourceRefusal | None,
+    source_code: PartCode | None = None,
+    graph: EngineGraphClient,
+) -> OrganisationReading:
+    """The reading of `contested` in a part (`choose_reading`), from the recall each reading's
+    pass makes: the party reading's from `party_text`, `party_variable`, `party_scope` and
+    `party_code`, the source reading's from `source_text`, `source_variable`, `source_scope`
+    and `source_code`.
+
+    A reading whose series code compiled to StatVars recalls those StatVars and searches
+    nothing (`interpret.recall`), so it is judged on their families, each at score 1.0, and
+    a reading whose code refused recalls nothing and is judged on none. Any other reading's
+    text is detected under its scope, read through the catalogue scoped as that pass's
+    recall reads it (`interpret.detect_measure`). The searches run together, and a failed
+    search raises. The reading carries the chosen reading's detection
+    (`OrganisationReading.detected`), which that reading's pass takes as its recall's
+    (`interpret.recall`), so the pass searches its text once.
+
+    The source reading counts only the organisation's own tables (`organisation_tables`), so
+    another source the part names cannot make it possible: in "CRS World Bank disbursements
+    to Kenya" the CRS families leading the scoped recall leave the World Bank no source
+    reading. A part whose source reading names none of the organisation's tables, its scope
+    refused, runs no scoped search and has no source reading."""
+    index = get_index()
+    tables = organisation_tables(contested, source_scope)
+    others = other_named_tables(contested, source_scope)
+
+    async def recall_of(
+        text: str,
+        variable: str,
+        scope: SourceScope | SourceRefusal | None,
+        code: PartCode | None,
+    ) -> tuple[list[DetectedSV], Detected | None]:
+        """The candidates the reading's pass recalls, and the detection made for them."""
+        if isinstance(code, SeriesCodeMembers):
+            return [
+                DetectedSV(dcid=dcid, score=1.0, type_of="StatisticalVariable", sentence=None)
+                for dcid in code.dcids
+            ], None
+        if code is not None:
+            return [], None
+        with scoped_reads(scope.allowed if isinstance(scope, SourceScope) else None):
+            detected = await detect_measure(graph, text, variable=variable)
+        return detected.candidates, detected
+
+    async def scoped_recall() -> tuple[list[DetectedSV], Detected | None]:
+        if not tables:
+            return [], None
+        return await recall_of(source_text, source_variable, source_scope, source_code)
+
+    (measure, party_detected), (scoped, source_detected) = await asyncio.gather(
+        recall_of(party_text, party_variable, party_scope, party_code), scoped_recall()
+    )
+    catalogue = current_catalogue()
+    reading = choose_reading(
+        measure=_recalled(measure, index, catalogue, unrecorded=frozenset()),
+        # As candidacy reads a shape no one records a publisher for (`_may_publish`), any of
+        # the organisation's tables but a declared dataset may publish such a series.
+        scoped=_recalled(scoped, index, catalogue, unrecorded=tables - index.datasets.keys()),
+        allowed=tables,
+        named=others,
+        published=frozenset(
+            pair
+            for dcid in contested.parties
+            if (party := index.parties.get(dcid)) is not None
+            for pair in party.published
+        ),
+        direction=contested.direction,
+        refused=isinstance(source_scope, SourceRefusal),
+    )
+    return dataclasses.replace(
+        reading, detected=party_detected if reading.role == "party" else source_detected
+    )
+
+
+def organisation_tables(
+    contested: ContestedOrganisation, scope: SourceScope | SourceRefusal | None
+) -> frozenset[str]:
+    """The provenances `scope` allows for `contested`'s own words: the expansions of its
+    included mentions whose words, normalised (`normalise_source_text`), are among the
+    organisation's, within `scope.allowed`. None for a scope that refused or names none of
+    them."""
+    return frozenset().union(
+        *(
+            tables
+            for words, tables in _included_tables(scope)
+            if normalise_source_text(words) in _own_words(contested)
+        )
+    )
+
+
+def other_named_tables(
+    contested: ContestedOrganisation, scope: SourceScope | SourceRefusal | None
+) -> dict[str, frozenset[str]]:
+    """The provenances `scope` allows for each other source the part names, by its words
+    (`_mention_words`): the expansions of its included mentions whose words are not
+    `contested`'s, within `scope.allowed`."""
+    named: dict[str, frozenset[str]] = {}
+    for words, tables in _included_tables(scope):
+        if normalise_source_text(words) not in _own_words(contested):
+            named[words] = named.get(words, frozenset()) | tables
+    return named
+
+
+def _own_words(contested: ContestedOrganisation) -> frozenset[str]:
+    """`contested`'s words, normalised (`normalise_source_text`)."""
+    return frozenset(normalise_source_text(word) for word in contested.words)
+
+
+def _included_tables(
+    scope: SourceScope | SourceRefusal | None,
+) -> list[tuple[str, frozenset[str]]]:
+    """Each included mention of `scope`, its words (`_mention_words`) and its expansion
+    within `scope.allowed`; none for a scope that refused."""
+    if not isinstance(scope, SourceScope):
+        return []
+    references = scope.references or (None,) * len(scope.mentions)
+    return [
+        (_mention_words(mention, reference), expansion & scope.allowed)
+        for mention, reference, expansion in zip(
+            scope.mentions, references, scope.expansions, strict=True
+        )
+        if mention.polarity == "include"
+    ]
+
+
+def _recalled(
+    hits: Sequence[DetectedSV],
+    index: CodeIndex,
+    catalogue: Catalogue,
+    *,
+    unrecorded: frozenset[str],
+) -> list[RecalledFamily]:
+    """The family each series of `hits` stands for, in their order, with its hit's score; a
+    topic stands for none. An index row's family is published by its family's datasets
+    (`CodeIndex.family_by_dcid`), else by the row's provenances, and declares the flow axes
+    of the row's roles. Any other series is published by the provenances the catalogue
+    knows to hold it, else by `unrecorded`, and declares no axis the index records."""
+    recalled: list[RecalledFamily] = []
+    for hit in hits:
+        if is_topic_candidate(hit.dcid, hit.type_of):
+            continue
+        row = index.statvar_by_dcid(hit.dcid)
+        if row is None:
+            provenances = frozenset(p.id for p in catalogue.variable_provenances(hit.dcid))
+            recalled.append(
+                RecalledFamily(
+                    datasets=provenances or unrecorded, axes=frozenset(), score=hit.score
+                )
+            )
+            continue
+        family = index.family_by_dcid.get(hit.dcid)
+        recalled.append(
+            RecalledFamily(
+                datasets=frozenset(family.datasets if family is not None else row.provenances),
+                axes=frozenset(roles_by_axis(row.observation_properties)),
+                score=hit.score,
+            )
+        )
+    return recalled
+
+
+def read_as_source(region: RegionResult, contested: ContestedOrganisation) -> RegionResult:
+    """`region`, the answer of a part reading `contested` as its source, disclosing that
+    reading where a direction word governs the organisations and the answer's measure has a
+    flow axis (`_answers_a_flow`): an `organisation_read_as_source` warning and its
+    departure. The part reads organisations a direction word governs as its source only
+    where no party reading is possible (`choose_reading`): no flow family governs the
+    recall, or none of its families lists the organisations as parties. The text says that
+    the data that best matches the question does not list them as parties, which holds in
+    both cases. "GDP of Kenya from the IMF" answers from a GDP series with no flow axis
+    and is `region` as it is, as is any part with no direction word."""
+    if contested.direction is None or not _answers_a_flow(region):
+        return region
+    names = _organisation_words(contested)
+    warning = Warning(
+        code=ORGANISATION_READ_AS_SOURCE,
+        severity="warn",
+        message=(
+            f'{names}, written after "{contested.direction}", was read as the source of the '
+            "data, since the data that best matches this question does not list it as a "
+            "party to a flow."
+        ),
+    )
+    return _disclosed(
+        region, warning, organisation_read_as_source(names, direction=contested.direction)
+    )
+
+
+def _answers_a_flow(region: RegionResult) -> bool:
+    """Whether a series `region` answers from, or elected and found no data for
+    (`RegionResult.elected_stat_vars`), is an index row declaring a role on a flow axis."""
+    index = get_index()
+    dcids = [
+        *(member.ref.ref for spec in region.specs for member in spec.resolved.members),
+        *(ref.ref for ref in region.elected_stat_vars or ()),
+    ]
+    return any(
+        (row := index.statvar_by_dcid(dcid)) is not None
+        and bool(roles_by_axis(row.observation_properties))
+        for dcid in dcids
+    )
+
+
+def read_as_party(
+    region: RegionResult, contested: ContestedOrganisation, reading: OrganisationReading
+) -> RegionResult:
+    """`region`, the answer of a part reading `contested` as parties to the flow
+    (`reading`), disclosing that where the answer reads them as parties: an
+    `organisation_read_as_party` warning and its departure, which name the direction word
+    where the query wrote one and give the reading's reason (`OrganisationReading.reason`).
+    It discloses where a Spec binds one of the organisations
+    (`ContestedOrganisation.parties`) or the part refuses on their own words, as ambiguous,
+    unresolved or with no admitted role. Any other answer turns on something else, says
+    nothing of a party reading, and is `region` as it is."""
+    if not _reads_as_party(region, contested):
+        return region
+    names = _organisation_words(contested)
+    reason = reading.reason or "no_own_data"
+    listed_by = _join_words(reading.listed_by) or None
+    written = (
+        f'{names}, written after "{contested.direction}",'
+        if contested.direction is not None
+        else names
+    )
+    because = {
+        "direction": "not as the source of the data",
+        "named_source": f"since {listed_by} lists it as a party",
+        "source_unresolved": "since its words name no single source of data",
+        "no_own_data": "since none of the data it publishes measures this",
+    }[reason]
+    warning = Warning(
+        code=ORGANISATION_READ_AS_PARTY,
+        severity="info",
+        message=f"{written} was read as a party to the flow, {because}.",
+    )
+    return _disclosed(
+        region,
+        warning,
+        organisation_read_as_party(
+            names, direction=contested.direction, reason=reason, listed_by=listed_by
+        ),
+    )
+
+
+def _reads_as_party(region: RegionResult, contested: ContestedOrganisation) -> bool:
+    """Whether `region` binds one of `contested`'s organisations or refuses on their words."""
+    bound = any(
+        dcid in contested.parties
+        for spec in region.specs
+        for dcids in spec.definition.identity.entities.values()
+        for dcid in dcids
+    )
+    words = {word.casefold() for word in contested.words}
+    refused_on = (
+        *(entity.text for entity in region.ambiguous_entities),
+        *region.unresolved_entity_names,
+        *(entity.text for entity in region.role_not_admitted_entities),
+    )
+    return bound or any(text.casefold() in words for text in refused_on)
+
+
+def _organisation_words(contested: ContestedOrganisation) -> str:
+    """The organisations' words, joined (`_join_words`)."""
+    return _join_words(contested.words)
+
+
+def _join_words(words: Sequence[str]) -> str:
+    """`words` joined with "and"."""
+    return " and ".join(words)
+
+
+def _disclosed(region: RegionResult, warning: Warning, fact: DepartureFact) -> RegionResult:
+    """`region` holding `warning` and, under its key, the departure `fact` it raises."""
+    warned = dataclasses.replace(region, warnings=(*region.warnings, warning))
+    return with_departure_facts(warned, {warning_key(warning): fact})

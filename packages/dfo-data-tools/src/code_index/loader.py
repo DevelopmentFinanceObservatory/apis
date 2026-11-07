@@ -3,7 +3,9 @@ blocks into a separate `MeasureIndex` (`parse_measure_axes`)."""
 
 from __future__ import annotations
 
+import hashlib
 import itertools
+import json
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from typing import cast, get_args
@@ -57,6 +59,37 @@ class IndexFormatError(ValueError):
     """A `CodeIndex` export has a missing required key or a value of the wrong type."""
 
 
+class ContentHashMismatch(IndexFormatError):
+    """A code index document whose data blocks hash to something other than the
+    `content_hash` its stamp states, because the body was edited or cut short after export."""
+
+    def __init__(self, *, stated: object, computed: str, source: object) -> None:
+        super().__init__(
+            f"code index {source!r} states content_hash {stated!r} but its blocks hash to "
+            f"{computed!r}"
+        )
+        self.stated = stated
+        self.computed = computed
+
+
+def content_hash(blocks: Mapping[str, object]) -> str:
+    """SHA-256 of canonical JSON for a code index document's data blocks, every key but
+    `stamp`. The export writes it to the stamp and `check_content_hash` recomputes it."""
+    encoded = json.dumps(blocks, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def check_content_hash(document: Mapping[str, object], *, source: object = "<document>") -> None:
+    """Raises `ContentHashMismatch` unless `document`'s data blocks hash (`content_hash`) to
+    the `content_hash` its stamp states. A document with no stamp, or a stamp with no
+    `content_hash`, states none to match and refuses alike."""
+    stamp = document.get("stamp")
+    stated = stamp.get("content_hash") if isinstance(stamp, Mapping) else None
+    computed = content_hash({key: value for key, value in document.items() if key != "stamp"})
+    if stated != computed:
+        raise ContentHashMismatch(stated=stated, computed=computed, source=source)
+
+
 def parse_index(
     payload: Mapping,
     *,
@@ -99,7 +132,8 @@ def parse_index(
     contradict (`_check_whole_totals`). A party without
     a `whole` key is no whole total. The index serves each of `composites` whose component
     tables it declares, and refuses one `_check_composites` refuses. A code row without a
-    `definition` carries none, as does a measure value or measure label in `parse_measure_axes`."""
+    `definition` carries none, as does a measure value or measure label in `parse_measure_axes`.
+    A code row or measure label without `also_called` has none."""
     try:
         stamp = _parse_stamp(payload["stamp"])
         declarations = [_parse_declaration(row) for row in payload["declarations"]]
@@ -348,7 +382,7 @@ def _parse_party(row: Mapping) -> PartyRow:
     party that holds no group or that counts residuals. `whole` markers are parsed by
     `_parse_whole_marker` and checked by `_check_whole_markers`, the dataset kinds by
     `_check_dataset_kinds`, and the class by `_check_party_class`. `residuals`,
-    `sums_members`, `label`, `datasets`, `axes`, `whole` and `dataset_kinds` are optional, and
+    `sums_members`, `label`, `published`, `whole` and `dataset_kinds` are optional, and
     a row without `sums_members` reads it as true. `party_class` is required on a `party` and a
     residual and may be absent on a total."""
     party = PartyRow(
@@ -359,8 +393,9 @@ def _parse_party(row: Mapping) -> PartyRow:
         residuals=tuple(row.get("residuals", ())),
         sums_members=row.get("sums_members", True),
         label=row.get("label"),
-        datasets=tuple(row.get("datasets", ())),
-        axes=tuple(row.get("axes", ())),
+        published=tuple(
+            sorted((entry["dataset"], entry["axis"]) for entry in row.get("published", ()))
+        ),
         whole=tuple(
             sorted(
                 (_parse_whole_marker(marker) for marker in row.get("whole", ())),
@@ -882,16 +917,12 @@ def _check_datasets(datasets: Sequence[DatasetDeclaration], statvars: Sequence[S
 def _check_party_words(datasets: Sequence[DatasetDeclaration], parties: Sequence[PartyRow]) -> None:
     """Raises `IndexFormatError` when a dataset names a party for a word
     (`DatasetDeclaration.party_words`) that the `parties` block does not list for that
-    dataset on that axis (`PartyRow.datasets`, `PartyRow.axes`)."""
+    dataset on that axis (`PartyRow.published`)."""
     by_dcid = {party.dcid: party for party in parties}
     for dataset in datasets:
         for named in dataset.party_words:
             party = by_dcid.get(named.party)
-            if (
-                party is None
-                or dataset.provenance not in party.datasets
-                or named.axis not in party.axes
-            ):
+            if party is None or (dataset.provenance, named.axis) not in party.published:
                 raise IndexFormatError(
                     f"dataset {dataset.provenance!r} names {named.party!r} for {named.word!r} "
                     f"on {named.axis!r}, which the parties block does not list for that "
@@ -946,6 +977,7 @@ def _parse_code(payload: Mapping) -> CodeRow:
         short_name=payload["short_name"],
         parent=payload["parent"],
         definition=payload.get("definition"),
+        also_called=tuple(payload.get("also_called", ())),
     )
 
 
@@ -1115,6 +1147,7 @@ def _parse_measure_partition_label(payload: Mapping) -> MeasurePartitionLabel:
         named_values=tuple((prop, value) for prop, value in payload.get("named_values", ())),
         definition=payload.get("definition"),
         codes=tuple((prop, code) for prop, code in payload.get("codes", ())),
+        also_called=tuple(payload.get("also_called", ())),
     )
 
 

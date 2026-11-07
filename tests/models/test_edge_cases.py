@@ -335,7 +335,7 @@ class TestResolvedEntityRoleKeys:
                 ),
             ),
         ]
-        resolved = _resolved_entities(entities)
+        resolved = _resolved_entities(entities, parties={}, datasets=())
         assert {r.role for r in resolved} == {"observationAbout", "origin", "destination"}
         for source, projected in zip(entities, resolved, strict=True):
             assert projected.role == entity_role_key(source)

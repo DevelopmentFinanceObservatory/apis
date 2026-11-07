@@ -39,7 +39,13 @@ from typing import TYPE_CHECKING, Literal
 from code_index.composites import provenance_datasets
 from code_index.shared import get_index
 from dfo_platform.roles import role_key_axis
-from search.heading.departure_fact import DepartureFact, UnservedMembers, ordered_facts
+from search.heading.departure_fact import (
+    DepartureFact,
+    DirectionWord,
+    PartyReason,
+    UnservedMembers,
+    ordered_facts,
+)
 from search.heading.words import content_words
 from search.models import (
     SOURCE_REF,
@@ -238,6 +244,40 @@ def direction_discarded(name: str, axis: RoleAxis) -> DepartureFact:
     """A place `name` the request's own words put on the flow `axis` (`DoorRole.stated`),
     which the answer reads as its own subject."""
     return DepartureFact(code="direction_discarded", binding_ref=WHERE_REF, asked=name, over=axis)
+
+
+def organisation_read_as_source(words: str, *, direction: DirectionWord) -> DepartureFact:
+    """An organisation the request named after `direction`, in its words `words`, which the
+    answer reads as the source of the data, since the data that best matches the request
+    does not list it as a party to a flow (`source_choice.choose_reading`). Naming another
+    source clears it."""
+    return DepartureFact(
+        code="organisation_read_as_source",
+        binding_ref=SOURCE_REF,
+        asked=words,
+        direction=direction,
+    )
+
+
+def organisation_read_as_party(
+    words: str,
+    *,
+    direction: DirectionWord | None,
+    reason: PartyReason,
+    listed_by: str | None = None,
+) -> DepartureFact:
+    """An organisation the request named, in its words `words`, after `direction` where it
+    wrote one, which the answer reads as a party to the flow for `reason`; `listed_by` names
+    the other sources that list it as a party, for `named_source`. No slot edit clears
+    it."""
+    return DepartureFact(
+        code="organisation_read_as_party",
+        binding_ref=None,
+        asked=words,
+        shown=listed_by,
+        direction=direction,
+        party_reason=reason,
+    )
 
 
 def direction_inferred(name: str, axis: RoleAxis) -> DepartureFact:

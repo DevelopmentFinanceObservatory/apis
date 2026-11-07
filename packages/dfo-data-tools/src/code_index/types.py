@@ -26,7 +26,9 @@ class CodeRow:
     `short_name` is the graph `shortName` arc when the code has one, else the
     name the export authors, else `None`. `definition` is the graph `description`
     arc, the sentence that says what the code means, or `None` when the graph
-    holds none.
+    holds none. `also_called` are the authored names a question uses for the code
+    (`declarations.CODE_ALSO_CALLED`): "aid" for ODA. They name the code for judgement
+    and never bind: the closest-match test reads them, and no matcher does.
     """
 
     dcid: str
@@ -37,6 +39,7 @@ class CodeRow:
     parent: str | None
     short_name: str | None = None
     definition: str | None = None
+    also_called: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -339,7 +342,7 @@ class PartyWord:
 
     `word` is one lowercase word, `measured_property` the measured-property dcid of the
     rows it selects, one the table has a row for, `axis` the flow axis the party stands
-    on, and `party` the dcid of a `PartyRow` that lists the dataset and the axis. The word
+    on, and `party` the dcid of a `PartyRow` that lists the dataset on that axis. The word
     selects the rows whose party on `axis` is `party`. `where` maps a flow axis to the
     entity kind the row's party on that axis must have, as `StatedWord.where` does; empty,
     every row with the measured property is selected.
@@ -609,9 +612,10 @@ class PartyRow:
     matches (`DACAllRecipients`, or "lower middle-income countries", whose DAC members
     differ from the World Bank list). `label` is the party's
     graph name ("Africa, unallocated by country (DAC)"), `None` when the graph gives it none.
-    `datasets` are the provenances of the declared and listed datasets that publish the
-    party, and `axes` the flow axes they publish it on (`origin` as a donor, `destination` as a
-    recipient), each sorted.
+    `published` holds each `(dataset, axis)` pair that publishes the party, sorted: the
+    provenance of a declared or listed dataset and the flow axis it publishes the party on
+    (`origin` as a donor, `destination` as a recipient). `datasets` and `axes` are its
+    datasets and its axes, each sorted.
 
     `party_class` is `private` for a party the export's `PRIVATE_PROVIDERS` lists and
     `official` for every other party, on every axis, and `residual` for a residual. A total
@@ -641,10 +645,19 @@ class PartyRow:
     residuals: tuple[str, ...] = ()
     sums_members: bool = True
     label: str | None = None
-    datasets: tuple[str, ...] = ()
-    axes: tuple[RoleAxis, ...] = ()
+    published: tuple[tuple[str, RoleAxis], ...] = ()
     whole: tuple[WholeMarker, ...] = ()
     dataset_kinds: tuple[tuple[str, PartyKind], ...] = ()
+
+    @property
+    def datasets(self) -> tuple[str, ...]:
+        """The datasets of `published`, sorted."""
+        return tuple(sorted({dataset for dataset, _ in self.published}))
+
+    @property
+    def axes(self) -> tuple[RoleAxis, ...]:
+        """The axes of `published`, sorted."""
+        return tuple(sorted({axis for _, axis in self.published}))
 
     def marker(self, dataset: str) -> WholeMarker | None:
         """The marker for `dataset`, or `None` where the party is an ordinary total."""
@@ -857,6 +870,17 @@ class MeasurePartitionLabel:
     partition two tables share: ONE Data's attributed climate disbursements and the imputed
     multilateral ODA rows hold one partition, and only the first hold
     `climatePolicyObjective` at or below `ClimateChangePolicyObjective`.
+
+    `also_called` are other whole names of the measure a question uses: "gross domestic
+    product" beside the noun "GDP". They name the measure for judgement, the closest-match
+    test and admission, and never bind.
+
+    A noun judges admission: a question naming its label, an `also_called` name or a
+    declared acronym of one (`CodeIndex.variable_aliases`, so "GNI per capita" names gross
+    national income) states
+    the noun's constraint values, and a shape of its population type every member of which
+    carries another value on one of them is refused `variable_not_resolved` before bind
+    (`search.engine.region.admissibility`, rule 4).
     """
 
     axis_values: tuple[tuple[str, str], ...]
@@ -864,6 +888,7 @@ class MeasurePartitionLabel:
     named_values: tuple[tuple[str, str], ...] = ()
     definition: str | None = None
     codes: tuple[tuple[str, str], ...] = ()
+    also_called: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

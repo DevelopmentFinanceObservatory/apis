@@ -41,11 +41,12 @@ from search.engine.events import EventSink
 from search.engine.extract import DateRequest
 from search.engine.frame import Frame, door_frame
 from search.engine.function_words import FUNCTION_WORDS
-from search.engine.interpret import PinnedResolved, Recall
+from search.engine.interpret import Detected, PinnedResolved, Recall
 from search.engine.interpretation import Interpretation, InterpretationSet
 from search.engine.place import ConsultedPresence, read_default_presence
 from search.engine.qualifier_match import (
     CodedQualifier,
+    NamedMeasure,
     QualifierMatch,
     QualifierReadings,
     QualifierSpan,
@@ -480,9 +481,19 @@ class MeasureRule:
 # naming a value by its graph label ("value"), a value the bind drafted on a slot the
 # elected reading lacks ("stray"), each value of such a set of two or more ("set_value"), a
 # request-named value unbinding drops ("unbinding"), a value a resubmit posts and cannot
-# apply ("posted"), or a phrase the request asked to leave out ("exclusion").
+# apply ("posted"), a phrase the request asked to leave out ("exclusion"), or a value the
+# phrase names that the elected reading binds and a candidate's shape cannot hold
+# ("unheld").
 type RequirementOrigin = Literal[
-    "tie", "bind", "value", "stray", "set_value", "unbinding", "posted", "exclusion"
+    "tie",
+    "bind",
+    "value",
+    "stray",
+    "set_value",
+    "unbinding",
+    "posted",
+    "exclusion",
+    "unheld",
 ]
 
 # How an answer is judged on a requirement: by its codes (`CodeRule`), by the measure value
@@ -978,6 +989,10 @@ class ResolveState:
     # (`quantity.NamedDenominator`). `None` when the question names none. Materialise
     # holds the elected shape to it (`quantity.check_denominator`).
     named_denominator: NamedDenominator | None = None
+    # The names of measure nouns the variable holds outside its places and quoted base,
+    # which admissibility rule 4 judges each shape on (`phase_rank_bind._named_measure_nouns`)
+    # and the `bind_decision` line logs the verdicts of.
+    named_measures: tuple[NamedMeasure, ...] = ()
     # The admissible shapes the narrowing leaves before the measure-family collapse, less
     # those a source exclusion removes; written once the menu seats one of them or the
     # exclusion leaves none.
@@ -1046,6 +1061,9 @@ class ResolveState:
     # reads in place of the embedding resolve (`interpret.recall`), or `None` when the part
     # names no code.
     source_code: SeriesCodeMembers | None = None
+    # A detection of `detect_query` the door made under the part's scope, which recall takes
+    # in place of its own (`interpret.recall`), or `None`.
+    detected: Detected | None = None
     # Whether the part's scope removed a reading where it applies: candidacy for a part that
     # names a source, and for one that only excludes a reading the menu would have offered
     # without the exclusion and does not offer with it

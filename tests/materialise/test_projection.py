@@ -494,16 +494,14 @@ _WHOLE_PARTIES = {
     "DACAllRecipients": PartyRow(
         dcid="DACAllRecipients",
         kind="total",
-        datasets=(_DAC2A, _DAC2B),
-        axes=("destination",),
+        published=((_DAC2A, "destination"), (_DAC2B, "destination")),
         whole=(WholeMarker(dataset=_DAC2A, covers=("official", "residual"), years=(1984, 2024)),),
     ),
     "DACOfficialDonors": PartyRow(
         dcid="DACOfficialDonors",
         kind="total",
         party_class="official",
-        datasets=(_DAC2A, _DAC2B),
-        axes=("origin",),
+        published=((_DAC2A, "origin"), (_DAC2B, "origin")),
         whole=(
             WholeMarker(dataset=_DAC2A, covers=("official",)),
             WholeMarker(dataset=_DAC2B, covers=("official",)),
@@ -672,8 +670,7 @@ def test_a_party_whose_kind_differs_between_datasets_reads_none_on_a_row_naming_
         dcid="IMFConcessionalTrustFunds",
         kind="party",
         party_class="official",
-        datasets=(_CRS, _DAC2A),
-        axes=("origin",),
+        published=((_CRS, "origin"), (_DAC2A, "origin")),
         dataset_kinds=((_DAC2A, "total"),),
     )
     columns = ("stat_var", "financingProvider", "time_period", "provenance", "value")

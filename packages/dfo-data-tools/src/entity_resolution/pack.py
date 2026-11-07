@@ -8,6 +8,7 @@ import functools
 import importlib.resources
 import json
 import os
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from importlib.resources.abc import Traversable
@@ -191,15 +192,55 @@ def _committed_alias_index() -> AliasIndex:
     return build_alias_index(records_path=records_path(), curated_path=curated_path())
 
 
-def is_organisation_name(text: str) -> bool:
-    """Whether `text` is a name the pack stores for an organisation ("IMF" for the
-    International Monetary Fund), read from the committed records and curated aliases the
-    shared resolver indexes, with no resolver started. Countries and other places are
-    outside the pack, so a place name is none."""
-    return any(
-        candidate.entity_type == ENTITY_TYPE_ORGANISATION
+def organisations_named(text: str) -> frozenset[str]:
+    """The dcids of the organisations the pack stores `text` as a name or alias of: IBRD
+    and IDA for "World Bank", the International Monetary Fund for "IMF". Read from the
+    committed records and curated aliases the shared resolver indexes, with no resolver
+    started. Countries and other places are outside the pack, so a place name names none."""
+    return frozenset(
+        candidate.entity_id.removeprefix(NAMESPACE_PREFIX)
         for candidate in _committed_alias_index().owners_of(text)
+        if candidate.entity_type == ENTITY_TYPE_ORGANISATION
     )
+
+
+def is_organisation_name(text: str) -> bool:
+    """Whether `text` is a name the pack stores for an organisation (`organisations_named`)."""
+    return bool(organisations_named(text))
+
+
+def written_as_stored(word: str) -> bool:
+    """Whether `word` names an organisation (`organisations_named`) and is written as a word
+    of a name or alias the pack stores for it, casing kept: "Gavi" of "Gavi, the Vaccine
+    Alliance", "AfDB", "IsDB"."""
+    forms = _organisation_forms()
+    return any(
+        word in re.findall(r"\w+", form)
+        for dcid in organisations_named(word)
+        for form in forms.get(dcid, ())
+    )
+
+
+@functools.cache
+def _organisation_forms() -> dict[str, tuple[str, ...]]:
+    """Each organisation's names and aliases, by dcid, as the committed records and curated
+    aliases write them."""
+    curated = _load_curated(curated_path())
+    return {
+        record["dcid"]: (
+            record["name"],
+            *(record.get("aliases") or ()),
+            *curated.get(record["dcid"], ()),
+        )
+        for record in _load_records(records_path())
+        if record["kind"] == "organisation"
+    }
+
+
+@functools.cache
+def longest_name_words() -> int:
+    """The most words any name or alias the pack stores has, in its normal form."""
+    return max((len(key.split()) for key in _committed_alias_index().owners), default=0)
 
 
 @functools.cache

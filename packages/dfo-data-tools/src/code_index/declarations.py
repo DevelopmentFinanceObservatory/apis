@@ -1111,6 +1111,16 @@ CODE_SYNONYMS: Mapping[str, tuple[str, ...]] = {
     "CrossCuttingClimateChangePolicyObjective": ("cross-cutting",),
 }
 
+# Names a question uses for a code that no matcher reads, exported as `CodeRow.also_called`.
+# Only the closest-match test reads them (`search.engine.closest_match`): "aid" answered with
+# DAC1's or DAC2a's bound ODA code names the measure asked. As a code synonym "aid" would bind
+# ODA for any phrase holding the word, and as a declared default's `when_named` it would drive
+# the binding of those aid types. CRS ODA needs no entry: its default's `when_named` is "aid".
+CODE_ALSO_CALLED: Mapping[str, tuple[str, ...]] = {
+    DAC1_TOTAL_ODA: ("aid",),
+    "DAC2aAidType206": ("aid",),
+}
+
 # Code synonyms `_strip_measure_words` keeps whole although a measure value's words sit inside
 # them, because there the word names no measure. Each is written casefolded. Without "social
 # safety net" on CRSPurposeCode16010, "net" in "social safety nets in Kenya" would read as the
@@ -1536,10 +1546,17 @@ _GDP_DEFINITION = (
     "The total income earned through the production of goods and services in an economy "
     "during a period, measured by what is spent, earned or produced."
 )
+# The graph names GDP series "gross domestic product" ("Nominal gross domestic product"), and
+# a heading reads that name where no noun covers the series' pairs, so "GDP" names it.
+_GDP_ALSO_CALLED = ("gross domestic product",)
 
 
-def _noun(label: str, *pairs: tuple[str, str], definition: str) -> MeasurePartitionLabel:
-    return MeasurePartitionLabel(axis_values=pairs, label=label, definition=definition)
+def _noun(
+    label: str, *pairs: tuple[str, str], definition: str, also_called: tuple[str, ...] = ()
+) -> MeasurePartitionLabel:
+    return MeasurePartitionLabel(
+        axis_values=pairs, label=label, definition=definition, also_called=also_called
+    )
 
 
 def _ids(
@@ -1708,6 +1725,7 @@ MEASURE_NOUNS: tuple[MeasurePartitionLabel, ...] = (
         *_GDP_BASIS,
         # NGDPD
         definition=_GDP_DEFINITION,
+        also_called=_GDP_ALSO_CALLED,
     ),
     _noun(
         "GDP",
@@ -1718,6 +1736,7 @@ MEASURE_NOUNS: tuple[MeasurePartitionLabel, ...] = (
         ("currencyConversionBasis", "PurchasingPowerParityRate"),
         # PPPGDP
         definition=_GDP_DEFINITION,
+        also_called=_GDP_ALSO_CALLED,
     ),
     _noun(
         "output gap",
@@ -1727,6 +1746,21 @@ MEASURE_NOUNS: tuple[MeasurePartitionLabel, ...] = (
         *_GDP_BASIS,
         # NGAP_NPGDP
         definition="The difference between an economy's actual output and its potential output.",
+    ),
+    _noun(
+        "potential GDP",
+        (_POPULATION, "EconomicProduction"),
+        (_PROPERTY, "valueAdded"),
+        (_STAT_TYPE, "measuredValue"),
+        *_GDP_BASIS,
+        ("cyclicalAdjustment", "CyclicallyAdjusted"),
+        # The base of NGAP_NPGDP, which the graph names "Potential gross domestic product
+        # (GDP)".
+        definition=(
+            "The output an economy can produce with its resources fully employed and "
+            "inflation steady."
+        ),
+        also_called=("potential gross domestic product",),
     ),
     _noun(
         "gross national savings",
@@ -1775,6 +1809,7 @@ MEASURE_NOUNS: tuple[MeasurePartitionLabel, ...] = (
         ("activitySource", "GrossDomesticProduction"),
         # NY.GDP.MKTP.CD
         definition=_GDP_DEFINITION,
+        also_called=_GDP_ALSO_CALLED,
     ),
     _noun(
         "GDP growth",
@@ -1784,6 +1819,15 @@ MEASURE_NOUNS: tuple[MeasurePartitionLabel, ...] = (
         ("activitySource", "GrossDomesticProduction"),
         # NY.GDP.MKTP.KD.ZG: "the percentage change over each previous year"
         definition="The change in gross domestic product from the year before, as a percentage.",
+    ),
+    _noun(
+        "GNI growth",
+        (_POPULATION, "EconomicActivity"),
+        (_PROPERTY, "amount"),
+        (_STAT_TYPE, "growthRate"),
+        ("activitySource", "GrossNationalIncome"),
+        # NY.GNP.MKTP.KD.ZG: "annual percentage growth rate of GNI"
+        definition="The change in gross national income from the year before, as a percentage.",
     ),
     _noun(
         "health expenditure",

@@ -8160,5 +8160,539 @@
   "Amount_FinancialFlow_Net_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance510_CRSPurposeCode24020_Nominal|country/KEN": [],
   "Amount_FinancialFlow_Net_Disbursement_DAC2bAidType972_Nominal|country/KEN": [],
   "Amount_FinancialFlow_Net_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance510_CRSPurposeCode31120_Nominal|country/KEN": [],
-  "sdg/DC_ODA_BDVDL|country/KEN": []
+  "sdg/DC_ODA_BDVDL|country/KEN": [],
+  "Amount_EconomicActivity_GrossDomesticProduction_Nominal_AsAFractionOf_Count_Person|country/GHA": [],
+  "Amount_EconomicActivity_GrossNationalIncome_PurchasingPowerParity_PerCapita|country/GHA": [
+    {
+      "earliestDate": "1990",
+      "latestDate": "2025",
+      "obsCount": 36,
+      "dates": [
+        "1990",
+        "1991",
+        "1992",
+        "1993",
+        "1994",
+        "1995",
+        "1996",
+        "1997",
+        "1998",
+        "1999",
+        "2000",
+        "2001",
+        "2002",
+        "2003",
+        "2004",
+        "2005",
+        "2006",
+        "2007",
+        "2008",
+        "2009",
+        "2010",
+        "2011",
+        "2012",
+        "2013",
+        "2014",
+        "2015",
+        "2016",
+        "2017",
+        "2018",
+        "2019",
+        "2020",
+        "2021",
+        "2022",
+        "2023",
+        "2024",
+        "2025"
+      ],
+      "values": [
+        1570,
+        1660,
+        1730,
+        1800,
+        1860,
+        1930,
+        2010,
+        2080,
+        2150,
+        2220,
+        2280,
+        2370,
+        2450,
+        2560,
+        2700,
+        2890,
+        3040,
+        3230,
+        3500,
+        3610,
+        3810,
+        4280,
+        4750,
+        5070,
+        5230,
+        5040,
+        4810,
+        4920,
+        5290,
+        5760,
+        5750,
+        6240,
+        6710,
+        7180,
+        7540,
+        8080
+      ],
+      "provenanceId": "dc/base/WorldDevelopmentIndicators",
+      "unit": "InternationalDollar",
+      "facetId": "17472210810576593472"
+    }
+  ],
+  "Amount_EconomicActivity_GrossNationalIncome_PurchasingPowerParity|country/GHA": [
+    {
+      "earliestDate": "1990",
+      "latestDate": "2025",
+      "obsCount": 36,
+      "provenanceId": "dc/base/WorldDevelopmentIndicators",
+      "unit": "InternationalDollar",
+      "facetId": "17472210810576593472"
+    }
+  ],
+  "PrimaryIncome_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal|country/GHA": [
+    {
+      "earliestDate": "1970",
+      "latestDate": "2024",
+      "obsCount": 55,
+      "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+      "unit": "CurrencyUSD",
+      "facetId": "2052749850102211920"
+    }
+  ],
+  "ValueAdded_EconomicProduction_IncludingProductTaxes_GrossOfFixedCapitalConsumption_Nominal_AsAFractionOf_Count_Person|country/GHA": [
+    {
+      "earliestDate": "2026",
+      "latestDate": "2031",
+      "obsCount": 6,
+      "provenanceId": "provenance/IMFWorldEconomicOutlook",
+      "measurementMethod": "Estimated",
+      "unit": "CurrencyGHS",
+      "facetId": "16627516547205484570"
+    },
+    {
+      "earliestDate": "2026",
+      "latestDate": "2031",
+      "obsCount": 6,
+      "provenanceId": "provenance/IMFWorldEconomicOutlook",
+      "measurementMethod": "Estimated",
+      "unit": "CurrencyUSD",
+      "facetId": "7662166056012033925"
+    },
+    {
+      "earliestDate": "1980",
+      "latestDate": "2025",
+      "obsCount": 46,
+      "provenanceId": "provenance/IMFWorldEconomicOutlook",
+      "unit": "CurrencyGHS",
+      "facetId": "18085501219884690221"
+    },
+    {
+      "earliestDate": "1980",
+      "latestDate": "2025",
+      "obsCount": 46,
+      "provenanceId": "provenance/IMFWorldEconomicOutlook",
+      "unit": "CurrencyUSD",
+      "facetId": "6680142867682665069"
+    }
+  ],
+  "ValueAdded_EconomicProduction_IncludingProductTaxes_GrossOfFixedCapitalConsumption_PurchasingPowerParityRate_Nominal_AsAFractionOf_Count_Person|country/GHA": [
+    {
+      "earliestDate": "2026",
+      "latestDate": "2031",
+      "obsCount": 6,
+      "provenanceId": "provenance/IMFWorldEconomicOutlook",
+      "measurementMethod": "Estimated",
+      "unit": "PPPInternationalDollar",
+      "facetId": "10017870814462812184"
+    },
+    {
+      "earliestDate": "1980",
+      "latestDate": "2025",
+      "obsCount": 46,
+      "provenanceId": "provenance/IMFWorldEconomicOutlook",
+      "unit": "PPPInternationalDollar",
+      "facetId": "16342053695656906670"
+    }
+  ],
+  "Mean_Income_Household|country/GHA": [],
+  "Count_Person_15OrMoreYears_WithIncome|country/GHA": [],
+  "Mean_Income_Household_NonfamilyHousehold|country/GHA": [],
+  "Median_Income_Person|country/GHA": [],
+  "ValueAdded_EconomicProduction_IncludingProductTaxes_GrossOfFixedCapitalConsumption_Nominal|country/GHA": [
+    {
+      "earliestDate": "2026",
+      "latestDate": "2031",
+      "obsCount": 6,
+      "provenanceId": "provenance/IMFWorldEconomicOutlook",
+      "measurementMethod": "Estimated",
+      "unit": "CurrencyGHS",
+      "facetId": "16627516547205484570"
+    },
+    {
+      "earliestDate": "2026",
+      "latestDate": "2031",
+      "obsCount": 6,
+      "provenanceId": "provenance/IMFWorldEconomicOutlook",
+      "measurementMethod": "Estimated",
+      "unit": "CurrencyUSD",
+      "facetId": "7662166056012033925"
+    },
+    {
+      "earliestDate": "1980",
+      "latestDate": "2025",
+      "obsCount": 46,
+      "provenanceId": "provenance/IMFWorldEconomicOutlook",
+      "unit": "CurrencyGHS",
+      "facetId": "18085501219884690221"
+    },
+    {
+      "earliestDate": "1980",
+      "latestDate": "2025",
+      "obsCount": 46,
+      "provenanceId": "provenance/IMFWorldEconomicOutlook",
+      "unit": "CurrencyUSD",
+      "facetId": "6680142867682665069"
+    }
+  ],
+  "Median_Income_Household|country/GHA": [],
+  "ValueAdded_EconomicProduction_IncludingProductTaxes_GrossOfFixedCapitalConsumption_PurchasingPowerParityRate_Nominal|country/GHA": [
+    {
+      "earliestDate": "2026",
+      "latestDate": "2031",
+      "obsCount": 6,
+      "provenanceId": "provenance/IMFWorldEconomicOutlook",
+      "measurementMethod": "Estimated",
+      "unit": "PPPInternationalDollar",
+      "facetId": "10017870814462812184"
+    },
+    {
+      "earliestDate": "1980",
+      "latestDate": "2025",
+      "obsCount": 46,
+      "provenanceId": "provenance/IMFWorldEconomicOutlook",
+      "unit": "PPPInternationalDollar",
+      "facetId": "16342053695656906670"
+    }
+  ],
+  "Mean_Income_Household_FamilyHousehold|country/GHA": [],
+  "Count_Person_Employed_TotalNonfarm|country/GHA": [],
+  "Median_Income_Person_15OrMoreYears_WithIncome_ForeignBorn|country/GHA": [],
+  "Count_Person_16OrMoreYears_WithEarnings|country/GHA": [],
+  "Median_Income_Person_18OrMoreYears_Civilian_WithIncome|country/GHA": [],
+  "Saving_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal_AsAFractionOf_ValueAdded_EconomicProduction_IncludingProductTaxes_GrossOfFixedCapitalConsumption_Nominal|country/GHA": [
+    {
+      "earliestDate": "2026",
+      "latestDate": "2031",
+      "obsCount": 6,
+      "provenanceId": "provenance/IMFWorldEconomicOutlook",
+      "measurementMethod": "Estimated",
+      "unit": "Percent",
+      "facetId": "19793097982459176"
+    },
+    {
+      "earliestDate": "1983",
+      "latestDate": "2025",
+      "obsCount": 43,
+      "provenanceId": "provenance/IMFWorldEconomicOutlook",
+      "unit": "Percent",
+      "facetId": "9788785484102064451"
+    }
+  ],
+  "Median_Income_Person_15OrMoreYears_Male_WithIncome|country/GHA": [],
+  "Median_Income_Household_NonfamilyHousehold|country/GHA": [],
+  "Median_Income_Person_25OrMoreYears_EducationalAttainmentGraduateOrProfessionalDegree_WithIncome|country/GHA": [],
+  "sdg/SI_POV_DAY1|country/GHA": [
+    {
+      "earliestDate": "1987",
+      "latestDate": "2016",
+      "obsCount": 7,
+      "provenanceId": "dc/base/UN_SDG",
+      "measurementMethod": "SDG_G_G",
+      "unit": "SDG_PERCENT",
+      "facetId": "10868335968854191536"
+    }
+  ],
+  "Mean_Earnings_Person_Male|country/GHA": [],
+  "Amount_Stock_AsFractionOf_Amount_EconomicActivity_GrossDomesticProduction_Nominal|country/GHA": [
+    {
+      "earliestDate": "1993",
+      "latestDate": "2025",
+      "obsCount": 26,
+      "provenanceId": "dc/base/WorldDevelopmentIndicators",
+      "unit": "Percent",
+      "facetId": "3571112545699673962"
+    }
+  ],
+  "Amount_EconomicActivity_ExpenditureActivity_EducationExpenditure_Government_AsFractionOf_Amount_EconomicActivity_GrossDomesticProduction_Nominal|country/GHA": [
+    {
+      "earliestDate": "1971",
+      "latestDate": "2022",
+      "obsCount": 34,
+      "provenanceId": "dc/base/WorldDevelopmentIndicators",
+      "unit": "Percent",
+      "facetId": "3571112545699673962"
+    }
+  ],
+  "Amount_EconomicActivity_ExpenditureActivity_HealthcareExpenditure_AsFractionOf_Count_Person|country/GHA": [
+    {
+      "earliestDate": "2000",
+      "latestDate": "2023",
+      "obsCount": 24,
+      "provenanceId": "dc/base/WorldDevelopmentIndicators",
+      "unit": "InternationalDollar",
+      "facetId": "17472210810576593472"
+    },
+    {
+      "earliestDate": "2000",
+      "latestDate": "2023",
+      "obsCount": 24,
+      "provenanceId": "dc/base/WorldDevelopmentIndicators",
+      "unit": "USDollar",
+      "facetId": "8535402560764839853"
+    }
+  ],
+  "Median_Income_Household_FamilyHousehold|country/GHA": [],
+  "Mean_Earnings_Household_ForeignBorn_PlaceOfBirthNorthamerica|country/GHA": [],
+  "Median_Income_Household_MarriedCoupleFamilyHousehold|country/GHA": [],
+  "Mean_Income_Household_MarriedCoupleFamilyHousehold|country/GHA": [],
+  "Median_Income_Household_ForeignBorn_PlaceOfBirthNorthamerica|country/GHA": [],
+  "Median_Income_Person_25OrMoreYears_EducationalAttainmentBachelorsDegree_WithIncome|country/GHA": [],
+  "Median_Earnings_Person_Male|country/GHA": [],
+  "dc/gvnh5cpl9h1rf|country/GHA": [],
+  "Amount_EconomicActivity_GrossDomesticProduction_RealValue|country/GHA": [],
+  "WagesTotal_Worker_NAICSTotalAllIndustries|country/GHA": [],
+  "ValueAdded_EconomicProduction_IncludingProductTaxes_GrossOfFixedCapitalConsumption_CyclicallyAdjusted_RealValue|country/GHA": [],
+  "Amount_FinancialFlow_Net_Disbursement_DAC1AidType5_Nominal_AsAFractionOf_PrimaryIncome_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal|country/GHA": [],
+  "GrantEquivalent_FinancialFlow_Disbursement_DAC1AidType1010_Nominal_AsAFractionOf_PrimaryIncome_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal|country/GHA": [],
+  "Amount_FinalExpenditure_GrossOfFixedCapitalConsumption_CapitalFormation_Nominal_AsAFractionOf_ValueAdded_EconomicProduction_IncludingProductTaxes_GrossOfFixedCapitalConsumption_Nominal|country/GHA": [
+    {
+      "earliestDate": "2026",
+      "latestDate": "2031",
+      "obsCount": 6,
+      "provenanceId": "provenance/IMFWorldEconomicOutlook",
+      "measurementMethod": "Estimated",
+      "unit": "Percent",
+      "facetId": "19793097982459176"
+    },
+    {
+      "earliestDate": "1983",
+      "latestDate": "2025",
+      "obsCount": 43,
+      "provenanceId": "provenance/IMFWorldEconomicOutlook",
+      "unit": "Percent",
+      "facetId": "9788785484102064451"
+    }
+  ],
+  "Amount_FinancialFlow_Net_Disbursement_DAC2aAidType206_Nominal_AsAFractionOf_Count_Person|country/GHA": [],
+  "Amount_FinancialFlow_Net_Disbursement_DAC1AidType1010_Nominal_AsAFractionOf_PrimaryIncome_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal|country/GHA": [],
+  "Amount_FinancialFlow_Net_Disbursement_DAC1AidType1410_Nominal|country/GHA": [],
+  "GrantEquivalent_FinancialFlow_Disbursement_DAC1AidType1010_Nominal|country/GHA": [],
+  "Amount_FinancialFlow_Net_Disbursement_CRSTypeOfFlow30_CRSTypeOfFinance110_CRSCooperationModalityD01_CRSPurposeCode16010_Nominal|country/GHA": [],
+  "Amount_FinancialFlow_Net_Disbursement_CRSTypeOfFlow30_CRSTypeOfFinance110_CRSCooperationModalityH01_CRSPurposeCode13010_Nominal|country/GHA": [],
+  "Amount_FinancialFlow_Net_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityD01_CRSPurposeCode32110_Nominal|country/GHA": [],
+  "Amount_FinancialFlow_Net_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityH01_CRSPurposeCode13010_Nominal|country/GHA": [],
+  "Amount_FinancialFlow_Net_Disbursement_DAC2aAidType206_Nominal_AsAFractionOf_PrimaryIncome_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal|country/GHA": [],
+  "Amount_FinancialFlow_Gross_Disbursement_DAC1AidType1410_Nominal|country/GHA": [],
+  "Amount_FinancialFlow_Net_Disbursement_CRSTypeOfFlow30_CRSTypeOfFinance110_CRSCooperationModalityB01_CRSPurposeCode13010_Nominal|country/GHA": [],
+  "undata/undphdro/HDI_gnipc|country/GHA": [
+    {
+      "earliestDate": "1990",
+      "latestDate": "2023",
+      "obsCount": 34,
+      "provenanceId": "undata/p/UNDP_HDRO",
+      "unit": "undata/UNIT_MEASURE-RATIO_CR_USD_PPP_PER_COUNT_POP",
+      "facetId": "11746044251090971719"
+    }
+  ],
+  "undata/undphdro/HDI_gnipc.SEX--M|country/GHA": [
+    {
+      "earliestDate": "1990",
+      "latestDate": "2023",
+      "obsCount": 34,
+      "provenanceId": "undata/p/UNDP_HDRO",
+      "unit": "undata/UNIT_MEASURE-RATIO_CR_USD_PPP_PER_COUNT_POP",
+      "facetId": "11746044251090971719"
+    }
+  ],
+  "undata/undphdro/HDI_gnipc.SEX--F|country/GHA": [
+    {
+      "earliestDate": "1990",
+      "latestDate": "2023",
+      "obsCount": 34,
+      "provenanceId": "undata/p/UNDP_HDRO",
+      "unit": "undata/UNIT_MEASURE-RATIO_CR_USD_PPP_PER_COUNT_POP",
+      "facetId": "11746044251090971719"
+    }
+  ],
+  "undata/unicef/SPP_GDPPC|country/GHA": [
+    {
+      "earliestDate": "2024",
+      "latestDate": "2024",
+      "obsCount": 1,
+      "provenanceId": "undata/p/UNICEF",
+      "unit": "undata/UNIT_MEASURE-CR_USD",
+      "facetId": "15681139658922190378"
+    }
+  ],
+  "undata/ilo/GDP_211P_NB|country/GHA": [
+    {
+      "earliestDate": "2000",
+      "latestDate": "2025",
+      "obsCount": 26,
+      "provenanceId": "undata/p/ILO",
+      "unit": "undata/UNIT_MEASURE-CR_USD_PPP",
+      "facetId": "3055098473104232071"
+    }
+  ],
+  "undata/unido/NA_GDPCUD|country/GHA": [
+    {
+      "earliestDate": "1990",
+      "latestDate": "2024",
+      "obsCount": 35,
+      "provenanceId": "undata/p/UNIDO",
+      "unit": "undata/UNIT_MEASURE-CR_USD",
+      "facetId": "16825279579402601657"
+    }
+  ],
+  "undata/unicef/SPP_HSLD_INCOME_SHARE|country/GHA": [
+    {
+      "earliestDate": "2024",
+      "latestDate": "2024",
+      "obsCount": 1,
+      "provenanceId": "undata/p/UNICEF",
+      "unit": "Percent",
+      "facetId": "15005650441306304968"
+    }
+  ],
+  "undata/unicef/SPP_HSLD_INCOME_SHARE.WEALTH_QUANTILE--BOTTOM40|country/GHA": [
+    {
+      "earliestDate": "2016",
+      "latestDate": "2024",
+      "obsCount": 2,
+      "provenanceId": "undata/p/UNICEF",
+      "unit": "Percent",
+      "facetId": "15005650441306304968"
+    }
+  ],
+  "undata/who/GDP_PC_GROW_R|country/GHA": [
+    {
+      "earliestDate": "1961",
+      "latestDate": "2018",
+      "obsCount": 58,
+      "provenanceId": "undata/p/WHO",
+      "unit": "Percent",
+      "facetId": "15881878718417744244"
+    }
+  ],
+  "undata/unido/NA_GDPCOD|country/GHA": [
+    {
+      "earliestDate": "1990",
+      "latestDate": "2025",
+      "obsCount": 36,
+      "provenanceId": "undata/p/UNIDO",
+      "unit": "undata/UNIT_MEASURE-CR_USD_K",
+      "facetId": "9737045769073868868"
+    }
+  ],
+  "undata/sdg/SI_POV_NAHC|country/GHA": [
+    {
+      "earliestDate": "1991",
+      "latestDate": "2016",
+      "obsCount": 5,
+      "provenanceId": "undata/p/SDG",
+      "unit": "Percent",
+      "facetId": "3722936608695937273"
+    }
+  ],
+  "undata/ilo/EAR_EMTA_NB_PPP.ECONOMIC_ACTIVITY--ECO_SECTOR_TOTAL|country/GHA": [
+    {
+      "earliestDate": "2013",
+      "latestDate": "2025",
+      "obsCount": 7,
+      "provenanceId": "undata/p/ILO",
+      "unit": "undata/UNIT_MEASURE-CR_USD_PPP_2021",
+      "facetId": "3187193977100037544"
+    }
+  ],
+  "undata/unicef/SPP_HSLD_INCOME_SHARE.WEALTH_QUANTILE--Q1|country/GHA": [
+    {
+      "earliestDate": "2016",
+      "latestDate": "2016",
+      "obsCount": 1,
+      "provenanceId": "undata/p/UNICEF",
+      "unit": "Percent",
+      "facetId": "15005650441306304968"
+    }
+  ],
+  "undata/ilo/EAR_EMTA_NB_PPP.ECONOMIC_ACTIVITY--ECO_SECTOR_TOTAL__SEX--O|country/GHA": [],
+  "undata/unicef/SPP_HSLD_INCOME_SHARE.WEALTH_QUANTILE--Q5|country/GHA": [
+    {
+      "earliestDate": "2016",
+      "latestDate": "2024",
+      "obsCount": 2,
+      "provenanceId": "undata/p/UNICEF",
+      "unit": "Percent",
+      "facetId": "15005650441306304968"
+    }
+  ],
+  "undata/unido/CIP_MVAPC|country/GHA": [
+    {
+      "earliestDate": "1990",
+      "latestDate": "2024",
+      "obsCount": 35,
+      "provenanceId": "undata/p/UNIDO",
+      "unit": "undata/UNIT_MEASURE-CR_USD_K",
+      "facetId": "9737045769073868868"
+    }
+  ],
+  "undata/ilo/EAR_EMTA_NB_PPP.ECONOMIC_ACTIVITY--ECO_AGGREGATE_TOTAL__SEX--O|country/GHA": [],
+  "undata/ilo/EAR_EMTA_NB_PPP.ECONOMIC_ACTIVITY--ECO_AGGREGATE_TOTAL|country/GHA": [
+    {
+      "earliestDate": "2013",
+      "latestDate": "2025",
+      "obsCount": 7,
+      "provenanceId": "undata/p/ILO",
+      "unit": "undata/UNIT_MEASURE-CR_USD_PPP_2021",
+      "facetId": "3187193977100037544"
+    }
+  ],
+  "undata/ilo/EAR_EMTA_NB_PPP.ECONOMIC_ACTIVITY--ECO_SECTOR_NAG|country/GHA": [
+    {
+      "earliestDate": "2013",
+      "latestDate": "2025",
+      "obsCount": 7,
+      "provenanceId": "undata/p/ILO",
+      "unit": "undata/UNIT_MEASURE-CR_USD_PPP_2021",
+      "facetId": "3187193977100037544"
+    }
+  ],
+  "undata/undphdro/HDI_hdi|country/GHA": [
+    {
+      "earliestDate": "1990",
+      "latestDate": "2023",
+      "obsCount": 34,
+      "provenanceId": "undata/p/UNDP_HDRO",
+      "unit": "undata/UNIT_MEASURE-INDEX",
+      "facetId": "9235035198795760647"
+    }
+  ],
+  "undata/ilo/EAR_EMTA_NB_PPP.ECONOMIC_ACTIVITY--ECO_AGGREGATE_TOTAL__SEX--M|country/GHA": [
+    {
+      "earliestDate": "2013",
+      "latestDate": "2025",
+      "obsCount": 7,
+      "provenanceId": "undata/p/ILO",
+      "unit": "undata/UNIT_MEASURE-CR_USD_PPP_2021",
+      "facetId": "3187193977100037544"
+    }
+  ]
 }

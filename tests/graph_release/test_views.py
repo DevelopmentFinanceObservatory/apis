@@ -13,10 +13,12 @@ import dataclasses
 import json
 from collections.abc import Collection
 from pathlib import Path
+from typing import cast
 
 import pytest
 
-from code_index.export import content_hash
+from code_index.export import index_bytes
+from code_index.loader import ContentHashMismatch, content_hash
 from graph_release.context import current_release
 from graph_release.dfo import build_dfo_parts, dfo_inputs
 from graph_release.format import DFO, LoadedRelease, PartRef, open_release
@@ -107,6 +109,27 @@ def test_the_code_index_view_is_the_fixture_index_stamped_with_the_release(
     for block in ("codes", "statvars", "listed_statvars", "source_codes"):
         assert getattr(index, block) == getattr(fixture, block), block
     assert measures == load_measure_axes(INDEX_FIXTURE)
+
+
+def test_a_code_index_edited_after_export_refuses_to_open(tmp_path: Path) -> None:
+    """The fixture index with its last party row cut still parses, but its blocks no longer
+    hash to the stamp's `content_hash`, so the release refuses the view and names both."""
+    manifest = build_fixture_index_release(tmp_path.as_uri())
+    release = _open(tmp_path, manifest.release_id)
+    document = read_document(release.blobs[CODE_INDEX_PART])
+    stamp = cast(dict, document["stamp"])
+    document["parties"] = cast(list, document["parties"])[:-1]
+    edited = dataclasses.replace(
+        release, blobs={**release.blobs, CODE_INDEX_PART: index_bytes(document)}
+    )
+
+    with pytest.raises(ViewRefused) as refused:
+        release_code_indexes(edited)
+
+    mismatch = refused.value.__cause__
+    assert isinstance(mismatch, ContentHashMismatch)
+    blocks = {key: value for key, value in document.items() if key != "stamp"}
+    assert (mismatch.stated, mismatch.computed) == (stamp["content_hash"], content_hash(blocks))
 
 
 def test_the_slice_release_opens_as_both_views(tmp_path: Path) -> None:

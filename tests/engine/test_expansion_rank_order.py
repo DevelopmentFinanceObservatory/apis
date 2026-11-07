@@ -418,14 +418,14 @@ class TestMenuSeatsWholeRoots:
         if refuses:
             judge = phase_rank_bind.judge_pinned_parts
 
-            def refusing_the_flow(state, interpretations, matches):
+            def refusing_the_flow(state, interpretations, matches, spans, own=None):
                 return [
                     Interpretation(
                         shape=i.shape, reason="qualifier_not_bound", pinned_failure="pinned_code"
                     )
                     if i.shape.shape_id == "flow"
                     else i
-                    for i in judge(state, interpretations, matches)
+                    for i in judge(state, interpretations, matches, spans, own)
                 ]
 
             monkeypatch.setattr(phase_rank_bind, "judge_pinned_parts", refusing_the_flow)

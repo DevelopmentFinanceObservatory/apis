@@ -14,6 +14,10 @@ the form and denominator clauses, so a candidate set never offers a reading the 
 refuses. A part is matched to the region pass that produced it by `spec_id`, through a spy
 on `pipeline._run_phases`.
 
+The closest-match rule fires at assembly, on one reading (`closest_match.spec_closest_match_fact`)
+or on a candidates part's readings together (`closest_match.substituted_readings_fact`), on
+exactly the cases `CLOSEST_MATCH_FIRES` names, recorded by a spy on both assembly calls.
+
 Each case's stream keeps the sentence contract: at most one sentence event per part, after
 every shape event of that part, keyed to the spec its response part states
 (`sentence_events.response_sentence_events`).
@@ -26,11 +30,12 @@ It therefore carries no skip or deselecting marker, so a run of the suite always
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 
 import pytest
 
 from materialise.rate_tables import RateTableCache
+from search.engine import assemble
 from search.engine.errors import EngineInputError
 from search.engine.events import Event, ResponseEvent, SentenceEvent, ShapeEvent
 from search.engine.quantity import (
@@ -45,6 +50,7 @@ from search.engine.region.state import ResolveState
 from search.engine.shape import ShapeDraft
 from search.eval.cases import Case, load_cases
 from search.eval.runner import build_request
+from search.heading.departure_fact import DepartureFact
 from search.models import (
     CandidatesPart,
     DefinitePart,
@@ -60,6 +66,11 @@ from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import build_materialise_double, offline_events
 
 _CASES = load_cases()
+
+CLOSEST_MATCH_FIRES: frozenset[str] = frozenset()
+"""The corpus cases whose answer the lexical closest-match rule flags. std-02 ("GDP India")
+stays silent: its offline answer leaves `activitySource` open, so the heading reads the
+shape's name, "nominal gross domestic product", which the GDP noun's `also_called` names."""
 
 type Pass = tuple[ResolveState, RegionResult]
 
@@ -102,7 +113,9 @@ def _sentence_violations(events: list[Event]) -> list[str]:
 
 @pytest.mark.parametrize("case", _CASES, ids=[case.id for case in _CASES])
 def test_corpus_case_resolves_offline(case: Case, monkeypatch: pytest.MonkeyPatch) -> None:
+    closest_matches = _record_closest_matches(monkeypatch)
     resolved = _resolve(case, monkeypatch)
+    assert bool(closest_matches) == (case.id in CLOSEST_MATCH_FIRES), closest_matches
     if resolved is None:
         return
     response, passes, events = resolved
@@ -223,6 +236,33 @@ def _resolve(
         return None
     (response,) = [event.response for event in events if isinstance(event, ResponseEvent)]
     return (response, passes, events) if isinstance(response, Resolution) else None
+
+
+def _record_closest_matches(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Record, for the rest of the test, the variable text of each closest match assembly
+    raises: on one reading (`spec_closest_match_fact`) and on a candidates part's readings
+    together (`substituted_readings_fact`)."""
+    flagged: list[str] = []
+    reading_rule = assemble.spec_closest_match_fact
+    readings_rule = assemble.substituted_readings_fact
+
+    def _reading(spec: Spec, *, variable_text: str, measure_noun: str) -> DepartureFact | None:
+        fact = reading_rule(spec, variable_text=variable_text, measure_noun=measure_noun)
+        if fact is not None:
+            flagged.append(variable_text)
+        return fact
+
+    def _readings(
+        *, variable_text: str, readings: Iterable[tuple[Spec, str]]
+    ) -> DepartureFact | None:
+        fact = readings_rule(variable_text=variable_text, readings=readings)
+        if fact is not None:
+            flagged.append(variable_text)
+        return fact
+
+    monkeypatch.setattr(assemble, "spec_closest_match_fact", _reading)
+    monkeypatch.setattr(assemble, "substituted_readings_fact", _readings)
+    return flagged
 
 
 def _record_passes(monkeypatch: pytest.MonkeyPatch) -> list[Pass]:

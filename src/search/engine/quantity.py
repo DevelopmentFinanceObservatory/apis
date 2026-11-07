@@ -28,8 +28,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from search.engine.function_words import FUNCTION_WORDS
+from search.engine.measure_verdict import shape_pairs
 from search.engine.region.equivalent_series import CLUSTER_BY_MEMBER
-from search.engine.retrieval.facts import _dcids_for, read_name
+from search.engine.retrieval.facts import _dcids_for, read_constraints, read_five_tuple, read_name
 from search.engine.shape import ShapeDraft, counts_persons, measures_count
 from search.models import GraphRef, QuantityForm
 from unit_words.unit_class import is_per_head_denominator
@@ -115,11 +116,25 @@ def statvar_denominators(shapes: Iterable[ShapeDraft]) -> list[str]:
 
 @dataclass(frozen=True, slots=True)
 class DenominatorRead:
-    """What the graph says of one StatVar denominator: its kind and its name, `None` when
-    it gives none."""
+    """What the graph says of one StatVar denominator: its kind, its name, `None` when it
+    gives none, and `pairs`, its population type, measured property, stat type and
+    constraint values as `(property, value)`, empty when the graph gives none."""
 
     kind: DenominatorKind
     name: str | None
+    pairs: tuple[tuple[str, str], ...] = ()
+
+
+def _measure_pairs(arcs: dict) -> tuple[tuple[str, str], ...]:
+    """The five-tuple pairs (`measure_verdict.shape_pairs`) and constraint values `arcs`
+    state, as `(property, value)`."""
+    five_tuple = read_five_tuple(arcs)
+    return (
+        *shape_pairs(
+            five_tuple.pop_type_dcid, five_tuple.meas_prop_dcid, five_tuple.stat_type_dcid
+        ),
+        *read_constraints(arcs).items(),
+    )
 
 
 def read_denominators(
@@ -144,6 +159,7 @@ def read_denominators(
         reads[denominator] = DenominatorRead(
             kind=denominator_kind_from_arcs(arcs),
             name=read_name(arcs, denominator) if arcs is not None else None,
+            pairs=_measure_pairs(arcs) if arcs is not None else (),
         )
     return reads
 
