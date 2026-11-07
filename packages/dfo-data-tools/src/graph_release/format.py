@@ -5,7 +5,7 @@ A release lives under `GRAPH_RELEASE_URI`:
 
     parts/<sha256>.arrow | .json | .json.gz
     manifests/<release_id>.json
-    format-1/current.json        {"release_id": "...", "hold": null}
+    format-<FORMAT>/current.json {"release_id": "...", "hold": null}
 
 A tabular part is an uncompressed Arrow IPC file holding one record batch,
 sorted by the part's key, with dictionary key columns whose dictionaries are
@@ -43,7 +43,7 @@ import pyarrow.compute as pc
 
 from artifact_publication.uri import download_uri_to_path, join_uri, read_uri_bytes
 
-FORMAT: Final[int] = 1
+FORMAT: Final[int] = 2
 
 MAX_ROWS = 2**21
 """The most rows a `series` or `edges` file holds, unless one variable or

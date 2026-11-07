@@ -6,7 +6,7 @@ The graph release is one build of DFO's Data Commons graph and the DFO layer per
 
 `GRAPH_RELEASE_URI` (`gs://` or `file://`) is the release root:
 
-- `format-1/current.json`, the pointer: `{"release_id": ..., "hold": null}`. The job moves it last, conditional on the version it read, so it is the commit point.
+- `format-<FORMAT>/current.json`, the pointer: `{"release_id": ..., "hold": null}`, one per release format (`graph_release.format.FORMAT`). The job moves it last, conditional on the version it read, so it is the commit point.
 - `manifests/<release_id>.json`, one per release, create-only. The release id hashes the part hashes, the import execution id, the DC serving revision and the format.
 - `parts/<sha256>.arrow`, `.json` and `.json.gz`, named by content and shared between releases. The `code_index_blocks` part is a code index document `code_index.loader.parse_index` loads: the blocks and a stamp holding their counts and `content_hash`, with an empty `exported_at` and a null `coverage_build`. A serving process fills those two from the manifest, the `read_timestamp` and the release id, when it opens the index (`graph_release.views.release_code_indexes`). The part cannot hold them, since its bytes feed the release id, so an unchanged index keeps its part and its `content_hash` across releases.
 - `lease.json`, the build lease, and `builder_state.json`: the last built inputs and the release they built, the last failed inputs, the last unavailable inputs and when. Ticks write the state file with and without the lease, so each write is conditional on the version it read and is applied again to a newer one, up to five times.
@@ -24,7 +24,7 @@ Cloud Scheduler starts the job every 2 minutes. Each tick:
 7. Re-reads the serving revision and discards the build if it moved (`graph_release_discarded`, reason `serving_revision_moved`), before acting on any finding or unavailable read from step 6, so it records nothing. A dependency unavailable during step 6 ends the build and triggers the same re-read; an Admin API that cannot answer it adds its own entry to the unavailable line. A release id equal to the serving one records the inputs and publishes nothing. Otherwise it uploads the missing parts, writes the manifest and moves the pointer, then records the inputs as the last built. A failed write of that record logs `graph_release_state_write_failed` and leaves the outcome `published`; the next tick builds the same inputs, finds the release unchanged and records them. It prunes while still holding the lease, then releases it. A failed prune logs `graph_release_prune_failed` and a failed lease release a warning. Neither changes the tick's outcome.
 8. After a publish, starts one execution of the search catalogue job `SEARCH_CATALOGUE_JOB_NAME` names, through the Cloud Run Admin API's `jobs.run`, and logs `graph_release_catalogue_started` with the operation name. The execution builds the catalogue of the release the pointer names. A failed start logs `graph_release_catalogue_trigger_failed` at `WARNING` with the job and the error, and leaves the outcome `published`, so the execution exits 0. Nothing retries it. The catalogue stays on the previous release until the next publish or deploy starts the job. With the variable unset the tick starts nothing.
 
-Pruning keeps the ten newest manifests, every manifest younger than 24 hours and the pointer's release, and deletes the parts none of them names.
+Pruning keeps the ten newest manifests of this format, every manifest younger than 24 hours, the pointer's release and every manifest of another format, and deletes the parts none of them names. It deletes nothing when a manifest of this format does not parse or a manifest of another format lists parts it cannot read.
 
 ## Gate outcomes
 
@@ -41,6 +41,10 @@ The deploy workflow (`.github/workflows/deploy.yml`) points the job at the new i
 A failed verify runs one build execution on the new image, `python -m graph_release.job --wait-for-lease`, and then verifies again. A scheduled tick can hold the lease when the deploy's build starts. While it does, the build logs `graph_release_waiting` and runs the tick again every 30 seconds for up to 1830 seconds, one lease and one poll, so a dead holder's lease lapses within the wait. Each repeat reads everything afresh. Once the holder has published these inputs the build ends `inputs_built`, and once the lease is free it builds. The execution runs with `--task-timeout=3630s`, the wait plus one build, and the lease it takes lasts until then. A tick exits 0 on a gate finding, an unavailable dependency or a wait that ran out, so the second verify decides. A second failure stops the deploy with both services on their current image.
 
 The step runs on every deploy, since every serving process fails startup without a release it can open.
+
+### A format bump
+
+A changed part type, key, sort order or mask definition, or a removed part, bumps `FORMAT`, and the new image reads and writes `format-<FORMAT>/current.json`. Verify then ends `no_pointer` on the first deploy, and the build execution publishes the first release of the new format. Revisions of the old image read the old pointer, which stops moving once the job runs the new image, so they keep starting and serve the last old-format release. Manifests and parts of the old format share `manifests/` and `parts/` with the new ones, and pruning keeps every old-format manifest and the parts it names. Remove them by hand once no revision of the old image serves. A hold on the old pointer does not apply to the new one, so hold the new pointer with `graph_release.hold` from the new image.
 
 ## Hold and rollback
 
