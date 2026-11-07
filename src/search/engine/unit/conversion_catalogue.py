@@ -28,7 +28,7 @@ import hashlib
 import logging
 import threading
 import time
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -136,6 +136,12 @@ class ConversionCatalogue:
         """The recipe `provenance` names, None when it names none."""
         recipe_id = self.recipes.get(provenance)
         return RECIPE_BODIES[recipe_id] if recipe_id is not None else None
+
+    def served_recipe(self, provenances: Iterable[str]) -> ConversionRecipe | None:
+        """The one recipe every provenance in `provenances` names, None when they name none
+        or several."""
+        recipes = {self.recipe(provenance) for provenance in provenances}
+        return next(iter(recipes)) if len(recipes) == 1 else None
 
 
 def _revision(catalogue: ConversionCatalogue) -> str:
@@ -354,6 +360,13 @@ def current_conversion_catalogue() -> ConversionCatalogue | None:
     """The catalogue bound to this request, None where none is bound or none loaded."""
     bound = _BOUND.get()
     return bound if isinstance(bound, ConversionCatalogue) else None
+
+
+def served_recipe(provenances: Iterable[str]) -> ConversionRecipe | None:
+    """`ConversionCatalogue.served_recipe` under the catalogue bound to this request, None
+    where none is bound."""
+    catalogue = current_conversion_catalogue()
+    return catalogue.served_recipe(provenances) if catalogue is not None else None
 
 
 def conversion_catalogue_unavailable() -> bool:

@@ -223,7 +223,7 @@ def _card_bundle() -> dict[str, bytes]:
             select=None,
             window=None,
         ),
-        member=member,
+        members=(member,),
         reproducing_call=ReproducingCall(path=route, options={"format": "csv", "bundle": "true"}),
         context=BundleContext(
             heading="German aid to Nigeria",

@@ -1,7 +1,8 @@
 """The `unit_label` a long download writes beside each split unit (`materialise.projection`).
 
 A currency reads as its price basis and plural noun, the byline's unit token in sentence case:
-"Current US dollars", "Constant 2023 US dollars". The nouns are Search's
+"Current US dollars", "Constant 2023 US dollars", and a conversion to constant prices adds
+whose prices deflated it, "Constant 2024 Nigerian naira, donor prices". The nouns are Search's
 (`unit_words.currency_nouns`), so a download names a currency as the answer above it does.
 Any other unit reads as its graph name, else as `UNNAMED_UNIT_LABELS` for the units the graph
 leaves unnamed, else stays empty.
@@ -48,7 +49,12 @@ def unit_label(parts: UnitParts, name: str | None) -> str | None:
     if parts.currency is not None:
         noun = currency_noun(parts.currency, label=name)
         basis = (
-            PriceBasis(prices=parts.price_basis, base_year=parts.base_year, chained=parts.chained)
+            PriceBasis(
+                prices=parts.price_basis,
+                base_year=parts.base_year,
+                chained=parts.chained,
+                deflated_by=parts.deflated_by,
+            )
             if parts.price_basis is not None
             else None
         )

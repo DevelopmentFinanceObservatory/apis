@@ -20,13 +20,15 @@ cannot correct it, so there `retryable` is true only when the same request may s
 code and answers false for every other mode. `presentation_api.refusals` names the code of each
 `FrameUnavailable` reason.
 
-Missing-field `schema_invalid`, `binding_invalid`, and `constraint_violation` use
-`correct_and_retry`, which `retryable_for` answers false. The request must change before it can
-succeed, and a client retries a retryable refusal unchanged. Illegal fields use `do_not_retry`. Conflicts and some frame refusals need a
-refresh. Transient release, service, and timeout failures retry after a delay. `not_found`,
+`schema_invalid`, `binding_invalid`, and `constraint_violation` use `correct_and_retry`, which
+`retryable_for` answers false. The request must change before it can succeed, and a client
+retries a retryable refusal unchanged. Conflicts and some frame refusals need a refresh.
+Transient release, service, and timeout failures retry after a delay. `not_found`,
 `write_refused`, `resource_exhausted`, `refresh_not_permitted`, `render_target_mismatch`, and
-`internal_error` use `do_not_retry`. `CODE_RETRY_MODE` mirrors the
-release manifest.
+`internal_error` use `do_not_retry`. `CODE_RETRY_MODE` mirrors the release manifest. Each problem
+body states the mode for its own occurrence as `retry_mode`
+(`presentation_api.refusals.retry_mode`). A `resource_exhausted` on a limit the request's own
+content crossed is `correct_and_retry`.
 
 The shares door (`presentation_api.doors.shares`) serves `SHARE_CODE_CATALOGUE` beside these:
 `write_token_required`, `write_token_invalid` and `share_import_not_permitted` at 403,
@@ -38,8 +40,8 @@ none of these, so they stay out of `CODE_RETRY_MODE`. `PRESENTATION_SERVED_CODES
 serves.
 
 Problem details expose fixed extension fields and no generic extra-data slot. Legal-value lists
-use `alternatives`, structured facet failures use `issues`, and details such as `minimal_intent`,
-constraint fixes, and limit names appear in `detail`.
+use `alternatives`, structured facet failures use `issues`, details such as `minimal_intent` and
+constraint fixes appear in `detail`, and the limit a `resource_exhausted` crossed in `limit_name`.
 """
 
 from __future__ import annotations

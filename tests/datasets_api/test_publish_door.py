@@ -1513,7 +1513,7 @@ def test_unit_mapping_value_at_exactly_max_cell_chars_parses() -> None:
 
 
 def test_http_unit_entries_over_the_cap_is_request_invalid_and_writes_nothing() -> None:
-    """A fourth `unit` member exceeds the three-key grammar and fails request validation."""
+    """A fifth `unit` member exceeds the four-key grammar and fails request validation."""
     deps = _Deps()
     client = _build_client(deps)
     row = {
@@ -1521,7 +1521,13 @@ def test_http_unit_entries_over_the_cap_is_request_invalid_and_writes_nothing() 
         "time_period": "2020",
         "value": 1.0,
         "recipient": "country/KEN",
-        "unit": {"currency": "USD", "prices": "current", "base_year": 2020, "extra": "x"},
+        "unit": {
+            "currency": "USD",
+            "prices": "constant",
+            "base_year": 2020,
+            "deflation_basis": "donor",
+            "extra": "x",
+        },
     }
     response = client.post(
         "/api/datasets/frames/publish",
@@ -1544,7 +1550,12 @@ def test_http_unit_entries_at_exactly_the_cap_succeeds() -> None:
         "time_period": "2020",
         "value": 1.0,
         "recipient": "country/KEN",
-        "unit": {"currency": "USD", "prices": "constant", "base_year": 2015},
+        "unit": {
+            "currency": "USD",
+            "prices": "constant",
+            "base_year": 2015,
+            "deflation_basis": "donor",
+        },
     }
     assert len(row["unit"]) == MAX_UNIT_ENTRIES
     response = client.post(

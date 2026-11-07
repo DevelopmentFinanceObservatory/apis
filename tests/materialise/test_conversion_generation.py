@@ -274,7 +274,7 @@ def test_member_loads_both_tables_for_constant_prices():
     assert _EXCHANGE_VAR in dispatched
     assert _DEFLATOR_VAR in dispatched
     assert _unit_cells(only_chunk(result)) == [
-        FrameUnitRequest(currency="USD", prices="constant", base_year=2024)
+        FrameUnitRequest(currency="USD", prices="constant", base_year=2024, deflation_basis="donor")
     ]
 
 

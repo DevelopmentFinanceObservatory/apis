@@ -330,6 +330,8 @@ _EVERY_FIELD_SPEC = ProblemSpec(
     ceiling_kind="candidate_window",
     count=4000,
     cap=4000,
+    limit_name="MAX_LINE_CHART_SERIES",
+    retry_mode="correct_and_retry",
     headers={"A-Header": "1", "B-Header": "2"},
 )
 
@@ -361,6 +363,20 @@ def test_every_problem_spec_field_survives_the_round_trip():
         getattr(_EVERY_FIELD_SPEC, field) != ProblemSpec._field_defaults[field]
         for field in wire_fields & set(ProblemSpec._field_defaults)
     )
+
+
+@pytest.mark.parametrize(
+    ("field", "spec"),
+    [
+        pytest.param("limit_name", _EVERY_FIELD_SPEC._replace(limit_name=None), id="limit_name"),
+        pytest.param("retry_mode", _EVERY_FIELD_SPEC._replace(retry_mode=None), id="retry_mode"),
+    ],
+)
+def test_a_spec_without_an_optional_member_writes_no_key_for_it(field: str, spec: ProblemSpec):
+    data = spec.to_canonical_data()
+
+    assert field not in data
+    assert ProblemSpec.from_canonical_data(data) == spec
 
 
 def test_from_canonical_data_defaults_a_key_dumped_before_the_field_existed():

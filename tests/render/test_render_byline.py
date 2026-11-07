@@ -16,12 +16,14 @@ from search.models import (
     IdentityFacetValueRequest,
     IdentityUnitRequest,
     ResolvedFacet,
+    Spec,
     StatVar,
+    UnitConversion,
 )
 from search.render.heading import LATEST_YEAR_LABEL, heading_from_parts
 from search.render.plan import render_sentence_plan
 from search.render.tokens import plan_tokens, sentence_from_plan
-from tests.render._helpers import _ref, _spec
+from tests.render._helpers import _entity_from, _entity_to, _ref, _spec
 
 _CURRENCY_UNITS = {
     "CurrencyUSD": "USD",
@@ -393,3 +395,56 @@ def test_a_heading_built_before_materialise_has_no_period_and_no_byline():
     )
     assert sentence_from_plan(plan) == "Development finance flow."
     assert all(t.segment == "heading" for t in plan if t.text)
+
+
+@pytest.mark.parametrize(
+    ("prices", "deflated_by", "expected"),
+    [
+        pytest.param(
+            "constant", "donor", "Constant 2024 Nigerian naira, donor prices", id="dac2a-aid"
+        ),
+        pytest.param(
+            "constant",
+            "recipient",
+            "Constant 2024 Nigerian naira, recipient prices",
+            id="ids-debt",
+        ),
+        pytest.param("constant", None, "Constant 2024 Nigerian naira", id="no-basis-stated"),
+        pytest.param("current", "donor", "Current Nigerian naira", id="current-prices"),
+    ],
+)
+def test_a_constant_price_conversion_names_whose_prices_deflated_it(prices, deflated_by, expected):
+    """DAC2a aid deflates by the donor's prices and IDS debt service by the debtor's, so one
+    currency and base year reads differently for each, by the basis the engine states with the
+    conversion (`UnitConversion.deflation_basis`), on the Spec and on one rebuilt from its wire
+    JSON. Current prices deflate nothing."""
+    spec = _spec(
+        measured_property=_ref("disbursements", "Disbursements"),
+        facets={
+            "unit": ResolvedFacet(
+                basis="fallback", ref="CurrencyNGN", label="CurrencyNGN", currency="NGN"
+            )
+        },
+        entities=[
+            _entity_from("country/USA", "United States"),
+            _entity_to("country/NGA", "Nigeria"),
+        ],
+        **_converted("NGN", prices, 2024 if prices == "constant" else None),
+    )
+    offer = UnitConversion(currencies=[], default_base_year=2024, deflation_basis=deflated_by)
+    spec = spec.model_copy(
+        update={"resolved": spec.resolved.model_copy(update={"unit_conversion": offer})}
+    )
+    # The wire carries no sentence facts, so the rebuilt Spec is given them again; the basis
+    # comes from its wire JSON alone.
+    rebuilt = Spec.model_validate_json(spec.model_dump_json())
+    rebuilt = rebuilt.model_copy(
+        update={
+            "resolved": rebuilt.resolved.stating_members(
+                spec.resolved.members
+            ).stating_sentence_facts(spec.resolved.sentence_facts)
+        }
+    )
+    for answer in (spec, rebuilt):
+        plan = render_sentence_plan(answer)
+        assert next(t for t in plan if t.axis == "unit").text == expected

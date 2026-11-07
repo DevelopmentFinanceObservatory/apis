@@ -20,7 +20,7 @@ import pytest
 from datasets_api import maintenance
 from datasets_api.description_record import UnrecordedSets, unrecorded_sets
 from datasets_api.maintenance import run_backfill_within_sets
-from description.facts import DescriptionRecord
+from description.facts import SCHEMA_VERSION, DescriptionRecord
 
 from . import test_serve_groupby_collapse as family_fixture
 from ._description_doubles import FAMILY_AXIS, read_record
@@ -152,7 +152,7 @@ def test_an_apply_fills_the_set_and_titles_the_record_as_a_fresh_one(
     filled = after[_BEFORE_SETS]
     assert filled is not None
     assert _axis(filled).within_set == _axis(fresh).within_set == ["TestAxisA", "TestAxisB"]
-    assert filled.schema_version == 2
+    assert filled.schema_version == SCHEMA_VERSION
     assert {(late.field, late.basis) for late in filled.late_fields} == {
         ("variables.dimensions.0.within_set", "backfill"),
         ("evidence.title", "backfill"),

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 from dfo_frame_grammar import Frame
-from dfo_frame_grammar.grammar import ComposedUnit, StatVarPart
+from dfo_frame_grammar.grammar import ComposedUnit, StatVarPart, UnitRequest
 from frame_fixtures import join_compatible_frame_pair, two_source_sum_frame_pair
 
 from dfo_analysis_engine.engine.aggregate import ComposedUnitSumError
@@ -21,6 +21,12 @@ from dfo_analysis_engine.engine.sum_of import run_sum_of
 from dfo_analysis_engine.result import observed_shape
 
 _OWN_REF = "dcid:ops_" + "e" * 32
+
+# Nigerian naira at constant 2024 prices, as DAC2a aid (a donor's deflator) and IDS debt
+# service (the debtor's) are converted, and as a cell that names no deflation basis.
+_NGN_2024 = {"currency": "NGN", "prices": "constant", "base_year": 2024}
+_NGN_DONOR = {**_NGN_2024, "deflation_basis": "donor"}
+_NGN_RECIPIENT = {**_NGN_2024, "deflation_basis": "recipient"}
 
 
 def _frame(rows: list[dict[str, object]]) -> Frame:
@@ -157,8 +163,34 @@ def test_two_slices_of_one_frame() -> None:
             CompareAmbiguousSliceError,
             {"side": "left"},
         ),
+        (
+            [_row(unit=_NGN_DONOR)],
+            [_row(stat_var="dcid:Y", unit=_NGN_RECIPIENT)],
+            CompareUnitMismatchError,
+            {
+                "left_unit": UnitRequest("NGN", "constant", 2024, deflation_basis="donor"),
+                "right_unit": UnitRequest("NGN", "constant", 2024, deflation_basis="recipient"),
+            },
+        ),
+        (
+            [_row(unit=_NGN_2024)],
+            [_row(stat_var="dcid:Y", unit=_NGN_DONOR)],
+            CompareUnitMismatchError,
+            {
+                "left_unit": UnitRequest("NGN", "constant", 2024),
+                "right_unit": UnitRequest("NGN", "constant", 2024, deflation_basis="donor"),
+            },
+        ),
     ],
-    ids=["periods disjoint", "unit mismatch", "unit unbound", "non-finite sum", "ambiguous"],
+    ids=[
+        "periods disjoint",
+        "unit mismatch",
+        "unit unbound",
+        "non-finite sum",
+        "ambiguous",
+        "deflation bases differ",
+        "one side names no deflation basis",
+    ],
 )
 def test_refusals(
     left_rows: list[dict[str, object]],
@@ -176,6 +208,15 @@ def test_refusals(
         )
     for name, expected in attributes.items():
         assert getattr(raised.value, name) == expected
+
+
+def test_two_sides_deflated_alike_sum() -> None:
+    left = _frame([_row(value=2.0, unit=_NGN_DONOR)])
+    right = _frame([_row(value=6.0, stat_var="dcid:Y", unit=_NGN_DONOR)])
+
+    result = run_sum_of(left, right, stat_var=_OWN_REF, left_entity={}, right_entity={})
+
+    assert [entry.value for entry in result.period_sums] == [8.0]
 
 
 def test_two_sides_in_a_composed_unit_refuse() -> None:

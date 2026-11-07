@@ -6,7 +6,13 @@ import dataclasses
 
 import pytest
 
-from materialise.recipe_bodies import RECIPE_BODIES, RECIPE_CLASSES, recipe_body_digest
+from materialise.recipe_bodies import (
+    RECIPE_BODIES,
+    RECIPE_CLASSES,
+    _check_deflation_bases,
+    recipe_body_digest,
+)
+from materialise.recipes import deflation_basis
 
 _RECIPE = RECIPE_BODIES["ConversionRecipeDAC"]
 
@@ -68,3 +74,52 @@ def test_recipe_body_digest_changes_when_any_field_replaced():
     for field, new_value in replacements.items():
         changed = dataclasses.replace(_RECIPE, **{field: new_value})
         assert recipe_body_digest(changed) != baseline, field
+
+
+_FLOW = ("financingProvider", "financingRecipient")
+
+
+@pytest.mark.parametrize(
+    ("recipe_id", "role_sets", "expected"),
+    [
+        pytest.param(
+            "ConversionRecipeDAC", (_FLOW,), "donor", id="dac2a-aid-deflates-by-the-donor"
+        ),
+        pytest.param(
+            "ConversionRecipeIDS", (_FLOW,), "recipient", id="ids-debt-deflates-by-the-debtor"
+        ),
+        pytest.param(
+            "ConversionRecipeDAC",
+            (("observationAbout",),),
+            "donor",
+            id="dac-subject-deflates-by-the-dac-table",
+        ),
+        pytest.param("ConversionRecipeIMF", (("observationAbout",),), "national", id="imf-gdp"),
+        pytest.param(
+            "ConversionRecipeDAC",
+            (_FLOW, ("observationAbout",)),
+            "donor",
+            id="dac-statvars-on-two-roles-of-one-basis",
+        ),
+        pytest.param(
+            "ConversionRecipeIMF",
+            (("financingProvider",), ("observationAbout",)),
+            None,
+            id="imf-statvars-on-two-bases",
+        ),
+        pytest.param(
+            "ConversionRecipeIDS", (("financingProvider",),), None, id="no-deflator-role-declared"
+        ),
+    ],
+)
+def test_the_deflation_basis_follows_the_recipe_and_the_role_it_deflates_by(
+    recipe_id: str, role_sets: tuple[tuple[str, ...], ...], expected: str | None
+):
+    assert deflation_basis(RECIPE_BODIES[recipe_id], role_sets=role_sets) == expected
+
+
+def test_a_recipe_role_with_no_deflation_basis_fails_the_check(monkeypatch: pytest.MonkeyPatch):
+    unmapped = dataclasses.replace(_RECIPE, deflator_entity_roles=frozenset({"lender"}))
+    monkeypatch.setitem(RECIPE_BODIES, "ConversionRecipeLender", unmapped)
+    with pytest.raises(RuntimeError, match="lender"):
+        _check_deflation_bases()

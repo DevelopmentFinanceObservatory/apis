@@ -9,8 +9,11 @@ configuration error.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 
+from dfo_frame_grammar import DeflationBasis
 from dfo_spec_kit.identity import canonicalize
 
 
@@ -106,3 +109,47 @@ RECIPE_BODIES: dict[str, ConversionRecipe] = {
 RECIPE_CLASSES: tuple[str, ...] = tuple(sorted(RECIPE_BODIES))
 """The recipe members this deployment can apply, published as the
 capabilities field `recipe_classes`."""
+
+DEFLATION_BASES: Mapping[str, Mapping[str, DeflationBasis]] = MappingProxyType(
+    {
+        # The DAC table holds donors' deflators and the DAC countries' total, so a row
+        # deflated through it is in donor prices whichever role keys it.
+        "ConversionRecipeDAC": MappingProxyType(
+            {"financingProvider": "donor", "observationAbout": "donor"}
+        ),
+        "ConversionRecipeIMF": MappingProxyType(
+            {"financingProvider": "donor", "observationAbout": "national"}
+        ),
+        "ConversionRecipeIDS": MappingProxyType({"financingRecipient": "recipient"}),
+    }
+)
+"""Whose prices deflate a row each recipe deflates by the entity on each of its
+`deflator_entity_roles`, by recipe id. A conversion deflates each row by the entity on the
+one role `resolve_deflator_role` settles, so the basis follows the recipe's table and that
+role. It stays outside `recipe_body_digest`, since it is read from the recipe's table and
+role set. A converted cell carries it as `deflation_basis` (`DeflationBasis`, the frame
+grammar's), so it reaches a constant-price frame's content version through the frame's
+bytes."""
+
+
+def basis_of_role(recipe: ConversionRecipe, role: str) -> DeflationBasis:
+    """Whose prices `recipe` deflates a row by when it reads the deflator entity on `role`
+    (`DEFLATION_BASES`)."""
+    return DEFLATION_BASES[recipe.recipe_id][role]
+
+
+def _check_deflation_bases() -> None:
+    unmapped = {
+        (recipe.recipe_id, role)
+        for recipe in RECIPE_BODIES.values()
+        for role in recipe.deflator_entity_roles
+        if role not in DEFLATION_BASES.get(recipe.recipe_id, {})
+    }
+    if unmapped:
+        raise RuntimeError(
+            f"recipe deflator roles {sorted(unmapped)!r} name no deflation basis; add them "
+            "to DEFLATION_BASES"
+        )
+
+
+_check_deflation_bases()

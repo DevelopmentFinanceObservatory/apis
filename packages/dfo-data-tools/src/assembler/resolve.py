@@ -12,6 +12,7 @@ the estimates alone."""
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import cast
@@ -52,7 +53,11 @@ def resolve_selectors(
     resolved_frame: ResolvedFrame,
     selectors: Sequence[Mapping[str, object]],
     window: Mapping[str, object] | None,
+    line_chart_cap: int | None = None,
 ) -> tuple[ResolvedSeries, ...]:
+    """`line_chart_cap` is set when a line chart's write is held to its series cap: an
+    estimate over `MAX_SERIES_PER_COMPONENT` then refuses as `MAX_LINE_CHART_SERIES`, naming
+    the line chart's cap, the limit a caller has to meet."""
     if len(selectors) > MAX_SELECTORS:
         raise ResourceExhausted(
             pointer="/select",
@@ -72,6 +77,7 @@ def resolve_selectors(
         coordinate_columns=coordinate_columns,
         facet_names=facet_names,
         dimension_by_name=dimension_by_name,
+        line_chart_cap=line_chart_cap,
     )
 
     continuation = resolved_frame.continuation
@@ -171,12 +177,19 @@ def _check_series_estimate(
     coordinate_columns: Sequence[str],
     facet_names: frozenset[str],
     dimension_by_name: Mapping[str, DimensionView],
+    line_chart_cap: int | None,
 ) -> None:
     """Estimates the series upper bound from selector shapes and dimension counts before
     grouping rows. Bound dimensions use their requested value count. Unbound facets count
     1, because a facet that splits a series is refused separately. Other unbound
-    dimensions use their frame-wide count (minimum 1)."""
+    dimensions use their frame-wide count (minimum 1).
+
+    A refusal names the dimensions that multiply the largest selector's estimate past one,
+    each with the count it contributes, and says what brings the select within the limit
+    (`multiplying_advice`)."""
     estimate = 0
+    widest: dict[str, int] = {}
+    widest_listed: list[str] = []
     for selector in selectors:
         if "id" in selector:
             estimate += 1
@@ -184,23 +197,77 @@ def _check_series_estimate(
         bound = {
             str(binding["dimension"]): _binding_values(binding) for binding in _bindings(selector)
         }
-        factor = 1
+        factors: dict[str, int] = {}
         for column in coordinate_columns:
             if column in bound:
-                factor *= len(bound[column])
+                factors[column] = len(bound[column])
             elif column not in facet_names:
                 dimension = dimension_by_name.get(column)
-                factor *= max(dimension.total_count, 1) if dimension is not None else 1
+                factors[column] = max(dimension.total_count, 1) if dimension is not None else 1
+        factor = math.prod(factors.values())
         estimate += factor
-    if estimate > MAX_SERIES_PER_COMPONENT:
+        if factor > math.prod(widest.values()):
+            widest = factors
+            widest_listed = [name for name, values in bound.items() if len(values) > 1]
+    if estimate <= MAX_SERIES_PER_COMPONENT:
+        return
+    kept = widest_listed[0] if len(widest_listed) == 1 else None
+    if line_chart_cap is not None:
         raise ResourceExhausted(
             pointer="/select",
-            limit_name="MAX_SERIES_PER_COMPONENT",
+            limit_name="MAX_LINE_CHART_SERIES",
             detail=(
-                f"selectors expand to an estimated {estimate} series, over the maximum of "
-                f"{MAX_SERIES_PER_COMPONENT}"
+                f"selectors expand to an estimated {estimate} series, and a line chart draws "
+                f"at most {line_chart_cap}; "
+                + multiplying_advice(widest, listed=line_chart_cap, kept=kept)
             ),
         )
+    raise ResourceExhausted(
+        pointer="/select",
+        limit_name="MAX_SERIES_PER_COMPONENT",
+        detail=(
+            f"selectors expand to an estimated {estimate} series, over the maximum of "
+            f"{MAX_SERIES_PER_COMPONENT}: "
+            + multiplying_advice(widest, listed=MAX_SERIES_PER_COMPONENT, kept=kept)
+        ),
+    )
+
+
+def multiplying_advice(counts: Mapping[str, int], *, listed: int, kept: str | None) -> str:
+    """What brings a select within `listed` series, given each dimension's count of series
+    values (`counts`, those above one multiplying). `kept` is the dimension the select
+    lists, which stays the series dimension. Every other multiplying dimension is bound to
+    one value, and `kept` to at most `listed` values when it holds more. With no list, two or
+    more multiplying dimensions are told to bind all but one, and a single one is the series
+    dimension. With none, as for selectors naming series by id, fewer series are named.
+    Dimensions are named with their counts, fewest first."""
+    multiplying = sorted(
+        ((name, count) for name, count in counts.items() if count > 1),
+        key=lambda factor: (factor[1], factor[0]),
+    )
+    named = {name: f"{name} ({count} values)" for name, count in multiplying}
+    if not named:
+        return f"name at most {listed} series"
+    if kept in named:
+        others = [text for name, text in named.items() if name != kept]
+        if not others:
+            return f"{named[kept]} is the series dimension; bind it to at most {listed} values"
+        trim = f", and list at most {listed} of its values" if counts[kept] > listed else ""
+        return f"bind {_and(others)} to one value, keeping {named[kept]} as the series{trim}"
+    if len(named) == 1:
+        (only,) = named.values()
+        return f"{only} is the series dimension; bind it to at most {listed} values"
+    return (
+        f"{_and(list(named.values()))} multiply; bind all but one of them to one value, and "
+        f"the other to at most {listed} values"
+    )
+
+
+def _and(items: Sequence[str]) -> str:
+    """`items` as an English list: "a", "a and b", "a, b, and c"."""
+    if len(items) <= 2:
+        return " and ".join(items)
+    return f"{', '.join(items[:-1])}, and {items[-1]}"
 
 
 def _resolve_by_id(

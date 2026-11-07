@@ -93,6 +93,10 @@ EUR_PER_PERSON_CELL = ComposedUnit(
     [
         ("dcid:USDollar", "dcid:USDollar"),
         (CONSTANT_EUR, UnitRequest(currency="EUR", prices="constant", base_year=2020)),
+        (
+            {**CONSTANT_EUR, "deflation_basis": "donor"},
+            UnitRequest(currency="EUR", prices="constant", base_year=2020, deflation_basis="donor"),
+        ),
         ({"currency": "USD", "prices": "current"}, UnitRequest(currency="USD", prices="current")),
         (
             UnitRequest(currency="USD", prices="current"),
@@ -184,6 +188,8 @@ def test_a_converted_pin_and_a_ref_pin_mint_different_op_spec_hashes() -> None:
         {"currency": "USD", "prices": "nominal"},
         {"currency": "EUR", "prices": "constant"},
         {"currency": "USD", "prices": "current", "base_year": 2020},
+        {"currency": "USD", "prices": "current", "deflation_basis": "donor"},
+        {"currency": "EUR", "prices": "constant", "base_year": 2020, "deflation_basis": "world"},
         {"currency": "EUR", "prices": "constant", "base_year": True},
         {"currency": "USD", "prices": "current", "label": "dollars"},
         {"currency": {"role": "observationAbout"}, "prices": "current"},

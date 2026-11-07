@@ -1,5 +1,6 @@
 """The plain-language price basis of a currency unit, such as "current prices,
-US dollars" or "constant 2020 prices, euros".
+US dollars", "constant 2020 prices, euros" or, for an amount a conversion deflated by
+one party's prices, "constant 2024 prices, NGN, donor prices".
 
 The `get_data` digest reads a recognised unit code this way, and the unit
 refusals (`dfo_analysis_engine.refusal`) label a converted unit the same way, so a
@@ -12,15 +13,26 @@ from __future__ import annotations
 _CURRENCY_NAMES = {"USD": "US dollars", "EUR": "euros", "GBP": "pounds sterling"}
 
 
-def price_basis_reading(*, currency: str, prices: str, base_year: int | str | None) -> str:
+def price_basis_reading(
+    *,
+    currency: str,
+    prices: str,
+    base_year: int | str | None,
+    deflation_basis: str | None = None,
+) -> str:
     """The price basis, then `currency`'s name, joined by a comma. `prices`
     is `current` or `constant`, and a constant basis names `base_year` when
     it has one: "current prices, US dollars", "constant 2020 prices, euros",
-    "constant prices, JPY"."""
+    "constant prices, JPY". A `deflation_basis` (`donor`, `recipient`,
+    `national`) names whose prices deflated the amount and follows as its
+    own phrase: "constant 2024 prices, NGN, donor prices"."""
     if prices == "current":
         basis = "current prices"
     elif base_year is not None:
         basis = f"constant {base_year} prices"
     else:
         basis = "constant prices"
-    return f"{basis}, {_CURRENCY_NAMES.get(currency, currency)}"
+    reading = f"{basis}, {_CURRENCY_NAMES.get(currency, currency)}"
+    if deflation_basis is None:
+        return reading
+    return f"{reading}, {deflation_basis} prices"

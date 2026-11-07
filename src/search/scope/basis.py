@@ -29,7 +29,7 @@ from typing import Literal
 from code_index.composites import provenance_datasets
 from code_index.labels import PRICES_BY_QUALIFIER
 from code_index.members import identity_family_query, query_family
-from code_index.query import CodeIndex
+from code_index.query import CodeIndex, IndexFamily
 from code_index.scope_conventions import (
     BASIS_MEASURES,
     BASIS_RESTRICTIONS,
@@ -44,6 +44,9 @@ from code_index.scope_conventions import (
     WindowClass,
 )
 from code_index.shared import per_index
+from materialise.recipe_bodies import ConversionRecipe, DeflationBasis
+from materialise.recipes import deflation_basis
+from materialise.roles import declared_roles
 from search.models import (
     BaseIdentity,
     Entry,
@@ -64,6 +67,7 @@ from search.scope.edits import HEADLINE_PROVENANCE, ScopeTableError, apply_bindi
 from search.scope.state import AxisRecord
 from search.scope.tables import AxisTable, ScopeFacts, allowed_values
 from search.scope.vocabulary import measure_basis_option_id
+from unit_words.price_basis import deflation_phrase
 
 BASIS_RULE = "measure_basis_convention"
 """The declared rule the measure-basis axis applies."""
@@ -449,6 +453,12 @@ def basis_dataset(identity: BaseIdentity, index: CodeIndex) -> str | None:
     it, else None: `identity` holds a declared basis (`held_measure`), the conventions read
     its shape (`identity_part_shape`), and its family is published by a dataset the
     conventions read (`CONVENTION_DATASETS`)."""
+    found = _basis_family(identity, index)
+    return found[0] if found is not None else None
+
+
+def _basis_family(identity: BaseIdentity, index: CodeIndex) -> tuple[str, IndexFamily] | None:
+    """`basis_dataset` with the family the identity reads, None where it gives None."""
     if held_measure(identity) is None or identity_part_shape(identity, index) is None:
         return None
     document = table_document(identity, index)
@@ -457,7 +467,24 @@ def basis_dataset(identity: BaseIdentity, index: CodeIndex) -> str | None:
     family = query_family(index, identity_family_query(index, document))
     if family is None:
         return None
-    return next((dataset for dataset in family.datasets if dataset in CONVENTION_DATASETS), None)
+    dataset = next((dataset for dataset in family.datasets if dataset in CONVENTION_DATASETS), None)
+    return None if dataset is None else (dataset, family)
+
+
+def _deflated_by(
+    identity: BaseIdentity, family: IndexFamily, recipe: ConversionRecipe | None
+) -> DeflationBasis | None:
+    """Whose prices deflate `identity`'s conversion to constant prices under `recipe`, from
+    the roles `family`'s rows declare (`StatVarRow.observation_properties`), by the rule
+    the conversion of an answer's members follows (`materialise.recipes.deflation_basis`).
+    None without a constant-price unit request or a recipe."""
+    unit = (identity.facets or {}).get("unit")
+    if recipe is None or not (
+        isinstance(unit, IdentityFacetValueRequest) and unit.request.prices == "constant"
+    ):
+        return None
+    role_sets = {declared_roles(row.observation_properties) for row in family.rows}
+    return deflation_basis(recipe, role_sets=role_sets)
 
 
 def offers_basis_of(scope: PartScope, identity: BaseIdentity) -> bool:
@@ -505,17 +532,19 @@ def basis_rule(
     `basis_not_published` otherwise. The headline is available when both bases it splices
     are (`_headline_availability`). A composite base is read through the identity its option was
     set on (`table_document`)."""
-    dataset = basis_dataset(base, facts.index)
+    found = _basis_family(base, facts.index)
     held_id = held_option(base)
-    if dataset is None or held_id is None:
+    if found is None or held_id is None:
         return None
+    dataset, family = found
+    deflated_by = _deflated_by(base, family, facts.part.conversion_recipe)
     headline = _offers_headline(base, dataset)
     measures = [basis_binding(row) for row in BASIS_MEASURES]
     bindings = [*measures, *((HEADLINE_BINDING,) if headline else ())]
     options = [
         Option(
             option_id=(option_id := measure_basis_option_id(row.basis)),
-            label=basis_label(row, base),
+            label=basis_label(row, base, deflated_by=deflated_by),
             binding=binding,
             availability=(
                 OptionAvailability(status="available")
@@ -587,11 +616,14 @@ def _headline_availability(
     return OptionAvailability(status="available")
 
 
-def basis_label(row: BasisMeasure, identity: BaseIdentity) -> str:
+def basis_label(
+    row: BasisMeasure, identity: BaseIdentity, *, deflated_by: DeflationBasis | None = None
+) -> str:
     """The reader's name of `row`'s basis on `identity` (`OPTION_LABELS`): its words and the
     identity's prices and currency, "gross disbursements, current USD". A unit request
     (`identity.facets["unit"]`) states both, so a part converted to constant prices reads
-    "net disbursements, constant 2024 USD" and one converted to a role's currency "net
+    "net disbursements, constant 2024 USD, donor prices", naming whose prices deflate it
+    (`deflated_by`, `deflation_phrase`), and one converted to a role's currency "net
     disbursements, current donor currency". Without one, the prices are the shape's price
     basis (`PRICES_BY_QUALIFIER`) in the conventions' currency (`CONVENTION_CURRENCY`), and
     the words stand alone when the shape states no price basis."""
@@ -604,7 +636,12 @@ def basis_label(row: BasisMeasure, identity: BaseIdentity) -> str:
             if isinstance(request.currency, IdentityCurrencyRole)
             else request.currency
         )
-        return OPTION_LABELS.measure_basis.format(words=row.words, prices=prices, currency=currency)
+        label = OPTION_LABELS.measure_basis.format(
+            words=row.words, prices=prices, currency=currency
+        )
+        if request.prices == "constant" and deflated_by is not None:
+            return f"{label}, {deflation_phrase(deflated_by)}"
+        return label
     shape = identity.shape
     qualifier = shape.measurement_qualifier if isinstance(shape, IdentityShapeSchema) else None
     qualified = PRICES_BY_QUALIFIER.get(qualifier) if qualifier is not None else None
