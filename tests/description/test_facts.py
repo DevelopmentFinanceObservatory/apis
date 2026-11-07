@@ -21,6 +21,7 @@ from jsonschema import Draft202012Validator
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from description.facts import (
+    SCHEMA_VERSION,
     Builds,
     CaveatFact,
     CodeIndexStamp,
@@ -337,7 +338,7 @@ def _set(payload: dict[str, Any], path: tuple[str | int, ...], value: Any) -> di
         (("colour",), "red"),
         (("series", "status", "imputed"), 0),
         (("evidence", "sources", 0, "publisher"), "OECD"),
-        (("schema_version",), 3),
+        (("schema_version",), SCHEMA_VERSION + 1),
         (("schema_version",), True),
         (("series", "series"), "523"),
         (("series", "series"), 523.0),
@@ -358,7 +359,7 @@ def _set(payload: dict[str, Any], path: tuple[str | int, ...], value: Any) -> di
         "unknown-member",
         "unknown-status-member",
         "unknown-source-member",
-        "schema-version-3",
+        "schema-version-after-the-latest",
         "schema-version-true",
         "count-as-string",
         "count-as-float",
@@ -627,16 +628,30 @@ def test_step_text_bounds_are_the_kits():
     assert served == LONG_TEXT_MAX_LENGTH
 
 
+_CONSTANT_NGN_BY_DONOR = {
+    "currency": "NGN",
+    "prices": "constant",
+    "base_year": 2024,
+    "deflation_basis": "donor",
+}
+
+
 @pytest.mark.parametrize(
-    ("within_set", "lowest"),
-    [(None, 1), (["CRSPurposeCode121", "CRSPurposeCode122"], 2)],
-    ids=["no-set", "set"],
+    ("within_set", "unit", "lowest"),
+    [
+        (None, None, 1),
+        (["CRSPurposeCode121", "CRSPurposeCode122"], None, 2),
+        (None, _CONSTANT_NGN_BY_DONOR, 3),
+        (None, {"numerator": _CONSTANT_NGN_BY_DONOR, "denominator": {"ref": "Person"}}, 3),
+    ],
+    ids=["no-set", "set", "deflation-basis", "deflation-basis-in-a-side"],
 )
 def test_a_record_is_of_the_lowest_version_that_describes_it_or_a_later_one(
-    within_set: list[str] | None, lowest: int
+    within_set: list[str] | None, unit: dict[str, object] | None, lowest: int
 ):
-    """Version 1 lacks `within_set`, so a record narrowing a dimension to a set is of version
-    2 and refuses a stamp of 1; any other record is of version 1 and reads stamped 1 or 2."""
+    """Version 1 lacks `within_set` and version 2 `deflation_basis`, so a record narrowing a
+    dimension to a set is of version 2 or later, one holding a unit that names its deflation
+    basis of version 3, and any other record of version 1 or later."""
     variables = _worked_example().variables
     assert variables is not None
     assert variables.dimensions is not None
@@ -645,12 +660,20 @@ def test_a_record_is_of_the_lowest_version_that_describes_it_or_a_later_one(
         dimensions[1] = dimensions[1].model_copy(update={"within": None, "within_set": within_set})
     narrowed = variables.model_copy(update={"dimensions": dimensions})
     payload = json.loads(_worked_example(variables=narrowed).model_dump_json())
+    if unit is not None:
+        payload["series"]["by_source_unit"][0]["unit"] = unit
+    record = DescriptionRecord.model_validate({**payload, "schema_version": SCHEMA_VERSION})
 
-    assert lowest_schema_version(narrowed) == lowest
-    for version in (1, 2):
+    assert (
+        lowest_schema_version(
+            variables=record.variables, series=record.series, steps=record.known_steps
+        )
+        == lowest
+    )
+    for version in range(1, SCHEMA_VERSION + 1):
         stamped = {**payload, "schema_version": version}
         if version >= lowest:
             assert DescriptionRecord.model_validate(stamped).schema_version == version
         else:
-            with pytest.raises(ValidationError, match="schema version 2"):
+            with pytest.raises(ValidationError, match=f"schema version {lowest}"):
                 DescriptionRecord.model_validate(stamped)

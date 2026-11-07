@@ -107,7 +107,9 @@ _RESERVED_COLUMNS = frozenset(
     {"stat_var", "time_period", "value", "unit", "measurementMethod", "provenance", "status"}
 )
 _OPTIONAL_COLUMNS = frozenset({UNIT_COLUMN, "measurementMethod", "provenance"})
-_UNIT_TYPE = canonical_frame_schema((UNIT_COLUMN,)).field(UNIT_COLUMN).type
+# The recipe layout holds every member a converted cell can carry. The frame build narrows
+# a column whose cells carry no conversion member to the layout without them.
+_UNIT_TYPE = canonical_frame_schema((UNIT_COLUMN,), recipe=True).field(UNIT_COLUMN).type
 
 
 def requests_kinds(columns: Sequence[str]) -> bool:

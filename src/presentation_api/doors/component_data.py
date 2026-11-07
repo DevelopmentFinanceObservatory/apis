@@ -3,10 +3,16 @@ as CSV, XLSX, or Parquet, bundled by default, through
 `assembler.pipeline.export_component.export_component_data`.
 
 The route belongs to the components door: `build_components_door` registers it on its router,
-and it shares that door's executor, semaphore, timeout, and stores. A card's file is bounded by
-`assembler.limits` (24 series of 500 points, or 2,000 table rows), so the route serves the bytes
-directly. A revision is immutable, and its stored creation time fixes its file name. Its bytes
-match from one request to the next while the graph's labels and source documentation behind
+and it shares that door's executor, semaphore, timeout, and stores. The file of the card's shown
+values is bounded by `assembler.limits` (24 series of 500 points, or 2,000 table rows). A bundle
+of a card whose `select` lists the members of one dimension, when the members a cut ranks
+(`dfo_analysis_engine.place_type.comparable_members`) include one the card leaves out, also
+holds `data/<card-slug>-all-members.<format>`, the frame's rows for each of those members at the
+periods the card shows (`assembler.pipeline.export_component`). The frame bounds that file,
+since the frame store loads at most `PUBLISH_MAX_ROWS` (250,000) rows
+(`presentation_store.frame_store`). The route builds either file in memory and serves the
+bytes directly. A revision is immutable, and its stored creation time fixes its file name. Its
+bytes match from one request to the next while the graph's labels and source documentation behind
 its frame are unchanged, so the caller may cache the response for an hour. Bundle links sit
 under the public site origin, `DFO_PUBLIC_SITE_URL`, which the door reads in its lifespan.
 """
@@ -95,7 +101,11 @@ def add_component_data_route(
                 "description": "The rows behind every value the revision shows. "
                 "`bundle=true` serves a zip holding the file under `data/` with "
                 "`data/codes.csv`, `datapackage.json`, `CITATION.cff`, `README.md`, and "
-                "`SOURCES.md`.",
+                "`SOURCES.md`. When the revision's `select` lists the members of one "
+                "dimension and the members a cut ranks include one the card leaves out, the "
+                "zip also holds `data/{slug}-all-members.{format}`: the frame's rows for each "
+                "of those members at the periods the card shows. The frame bounds that "
+                "file, at most 250,000 rows.",
                 "content": {media_type: {} for media_type in COMPONENT_DATA_MEDIA_TYPES},
             }
         },

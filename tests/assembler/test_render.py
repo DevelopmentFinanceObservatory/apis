@@ -23,7 +23,7 @@ from assembler.testing import (
     malaria_ethiopia_rows,
 )
 
-from ._pipeline_support import _malaria_intent, _multi_recipient_frame
+from ._pipeline_support import _malaria_intent, _multi_recipient_frame, _stored_resolved_frame
 
 _TARGET = FrameRef(
     spec_id=malaria_ethiopia_frame_ref().spec_id,
@@ -302,6 +302,44 @@ def test_an_intent_stored_under_the_first_release_renders_under_the_current_one(
     )
 
 
+def test_a_line_chart_stored_over_the_series_cap_renders(frame_store, revision_store, release):
+    """A line chart stored over the series cap renders every series it holds."""
+    recipients = tuple(
+        f"country/C{index:02d}" for index in range(release.line_chart_max_series + 1)
+    )
+    frame = dataclasses.replace(
+        _moved_frame(recipients=recipients), frame_ref=malaria_ethiopia_frame_ref()
+    )
+    frame_store.put(resolved_frame=frame)
+    created = write_component(
+        intent={
+            "type": "line_chart",
+            "frame_ref": {
+                "spec_id": frame.frame_ref.spec_id,
+                "content_version": frame.frame_ref.content_version,
+            },
+            "select": {"stat_var": "dcid:MalariaGrantDisbursements"},
+        },
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=FakeReleaseRegistry(
+            release=dataclasses.replace(release, line_chart_max_series=len(recipients))
+        ),
+    )
+    frame_store.put(resolved_frame=_moved_frame(recipients=recipients))
+
+    rendered = render_component(
+        component_id=created.component_id,
+        revision=1,
+        target_frame=_TARGET,
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=FakeReleaseRegistry(release=release),
+    )
+
+    assert len(rendered.resolved_payload["component"]["series"]) == len(recipients)
+
+
 def test_a_revision_minted_under_a_newer_release_refuses(frame_store, revision_store, release):
     _, created = _create(
         frame_store=frame_store,
@@ -370,3 +408,80 @@ def test_a_missing_revision_and_an_unavailable_target_frame_refuse(
     frame_store.put(resolved_frame=_moved_frame())
     with pytest.raises(RevisionNotFound):
         render(2)
+
+
+_CONSTANT_USD = {"currency": "USD", "prices": "constant", "base_year": 2024}
+
+
+def _converted_frame(frame_ref: FrameRef, *, bases: tuple[str | None, ...]):
+    """The malaria rows once per deflation basis in `bases`, at constant 2024 US dollars, a
+    `None` basis as frames minted before keys named one hold it."""
+    return _stored_resolved_frame(
+        frame_ref=frame_ref,
+        role_keys=("recipient",),
+        rows=[
+            {
+                **row,
+                "unit": _CONSTANT_USD
+                if basis is None
+                else {**_CONSTANT_USD, "deflation_basis": basis},
+            }
+            for basis in bases
+            for row in malaria_ethiopia_rows()
+        ],
+        labels={"country/ETH": "Ethiopia"},
+    )
+
+
+@pytest.mark.parametrize(
+    ("bases", "refused"),
+    [
+        # The one unit the rebuilt frame holds stands in for the key it no longer holds.
+        pytest.param(("donor",), False, id="one-unit"),
+        # Two units leave the binding nothing to follow.
+        pytest.param(("donor", "recipient"), True, id="two-bases"),
+    ],
+)
+def test_a_card_bound_to_a_key_without_a_basis_renders_on_a_rebuilt_frame_of_one_unit(
+    bases, refused, frame_store, revision_store, release_registry
+):
+    """A card whose `select` binds `unit` to `USD/constant/2024` follows the rebuilt frame's
+    one unit, `USD/constant/2024/donor` (`StoredSelect` rule 4), and refuses only on a frame
+    holding several."""
+    stored = _converted_frame(malaria_ethiopia_frame_ref(), bases=(None,))
+    frame_store.put(resolved_frame=stored)
+    frame_store.put(resolved_frame=_converted_frame(_TARGET, bases=bases))
+    created = write_component(
+        intent={
+            "type": "line_chart",
+            "frame_ref": {
+                "spec_id": stored.frame_ref.spec_id,
+                "content_version": stored.frame_ref.content_version,
+            },
+            "select": {
+                "stat_var": "dcid:MalariaGrantDisbursements",
+                "recipient": "country/ETH",
+                "unit": "USD/constant/2024",
+            },
+        },
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+
+    def render():
+        return render_component(
+            component_id=created.component_id,
+            revision=created.revision,
+            target_frame=_TARGET,
+            frame_store=frame_store,
+            revision_store=revision_store,
+            release_registry=release_registry,
+        )
+
+    if refused:
+        with pytest.raises(BindingInvalid) as excinfo:
+            render()
+        assert excinfo.value.pointer == "/select/unit"
+    else:
+        assert _values(render().resolved_payload) == _values(created.resolved_payload)

@@ -341,7 +341,7 @@ def test_eur_from_native_usd_loads_one_rate_table_and_converts():
     assert len(server.data_requests()) == 1  # apply reuses the plan's own already-loaded table
     assert table["OBS_VALUE"].to_pylist() == [repr(100.0 * 0.9 / 1.0)]
     assert table["unit"].to_pylist() == [
-        {"currency": "EUR", "prices": "current", "base_year": None}
+        {"currency": "EUR", "prices": "current", "base_year": None, "deflation_basis": None}
     ]
     assert record is not None
     assert record.recipe_id == _DAC_RECIPE
@@ -651,7 +651,7 @@ def test_role_shaped_destination_currency_resolves_served_entities_only():
     assert len(server.data_requests()) == 1
     assert table["OBS_VALUE"].to_pylist() == [repr(100.0 * 112.0 / 1.0)]
     assert table["unit"].to_pylist() == [
-        {"currency": "KES", "prices": "current", "base_year": None}
+        {"currency": "KES", "prices": "current", "base_year": None, "deflation_basis": None}
     ]
     assert record is not None
 

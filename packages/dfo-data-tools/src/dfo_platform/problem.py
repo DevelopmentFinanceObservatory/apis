@@ -106,8 +106,9 @@ class ProblemDetails(BaseModel):
 
     Standard base fields (type, title, status, detail) plus the platform
     registry's stable extensions (code, pointer, alternatives, truncated,
-    issues, constraint_id, trace_id, capability_version, retryable). Optional
-    members (pointer, alternatives, truncated, issues, constraint_id) are
+    issues, constraint_id, limit_name, retry_mode, trace_id, capability_version, retryable).
+    Optional members (pointer, alternatives, truncated, issues, constraint_id, limit_name,
+    retry_mode) are
     omitted from the wire body when absent -- callers should serialize with
     ``model_dump(mode="json", exclude_none=True)``, which ``to_json`` does.
     """
@@ -161,6 +162,21 @@ class ProblemDetails(BaseModel):
         description=(
             "for over_ceiling: the ceiling, in ceiling_kind's own unit, that count crossed. "
             "Under candidate_window it is the candidate window the read was allowed"
+        ),
+    )
+    limit_name: str | None = Field(
+        default=None,
+        description=(
+            "for resource_exhausted: the name of the limit the request crossed, such as "
+            "MAX_LINE_CHART_SERIES"
+        ),
+    )
+    retry_mode: str | None = Field(
+        default=None,
+        description=(
+            "what a caller does with this occurrence: correct_and_retry (change the request "
+            "and send it again), refresh_then_retry, retry_after_delay, or do_not_retry. "
+            "Omitted by a surface that states only the code's headline mode"
         ),
     )
     trace_id: str = Field(
@@ -218,6 +234,8 @@ class ProblemSpec(NamedTuple):
     ceiling_kind: str | None = None
     count: int | None = None
     cap: int | None = None
+    limit_name: str | None = None
+    retry_mode: str | None = None
     headers: Mapping[str, str] | None = None
     # What `log_problem` logs for a refusal a surface's classifier or admission check returns,
     # so both stay pure, with the classified exception's traceback when `log_traceback`, and
@@ -229,7 +247,10 @@ class ProblemSpec(NamedTuple):
     log_event: str | None = None
 
     def to_canonical_data(self) -> dict[str, object]:
-        """Return JSON-safe fields, dumping nested models and sorting headers for stable hashes."""
+        """Return JSON-safe fields, dumping nested models and sorting headers for stable hashes.
+
+        `limit_name` and `retry_mode` are written only when set, so the hash of a spec naming
+        neither is unchanged and an image without the members reads the row."""
         return {
             "status": self.status,
             "code": self.code,
@@ -252,6 +273,8 @@ class ProblemSpec(NamedTuple):
             "ceiling_kind": self.ceiling_kind,
             "count": self.count,
             "cap": self.cap,
+            **({} if self.limit_name is None else {"limit_name": self.limit_name}),
+            **({} if self.retry_mode is None else {"retry_mode": self.retry_mode}),
             "headers": dict(sorted(self.headers.items())) if self.headers is not None else None,
         }
 
@@ -298,6 +321,7 @@ def refused(
     issues: list[ProblemIssue] | None = None,
     cause: Cause | None = None,
     constraint_id: str | None = None,
+    limit_name: str | None = None,
     headers: Mapping[str, str] | None = None,
     log: str | None = None,
     log_level: int = logging.ERROR,
@@ -321,6 +345,7 @@ def refused(
         issues=issues,
         cause=cause,
         constraint_id=constraint_id,
+        limit_name=limit_name,
         headers=headers,
         log=log,
         log_level=log_level,
@@ -444,6 +469,8 @@ class Envelope:
         ceiling_kind: str | None = None,
         count: int | None = None,
         cap: int | None = None,
+        limit_name: str | None = None,
+        retry_mode: str | None = None,
         retryable: bool,
     ) -> ProblemDetails:
         """Build one problem body. Raise `UnregisteredCode` for unknown codes.
@@ -466,6 +493,8 @@ class Envelope:
             ceiling_kind=ceiling_kind,
             count=count,
             cap=cap,
+            limit_name=limit_name,
+            retry_mode=retry_mode,
             trace_id=get_trace_id(),
             capability_version=self.capability_version,
             retryable=retryable,
@@ -486,6 +515,8 @@ class Envelope:
         ceiling_kind: str | None = None,
         count: int | None = None,
         cap: int | None = None,
+        limit_name: str | None = None,
+        retry_mode: str | None = None,
         retryable: bool,
         headers: Mapping[str, str] | None = None,
     ) -> JSONResponse:
@@ -508,6 +539,8 @@ class Envelope:
                 ceiling_kind=ceiling_kind,
                 count=count,
                 cap=cap,
+                limit_name=limit_name,
+                retry_mode=retry_mode,
                 retryable=retryable,
             ),
             headers=headers,
@@ -546,6 +579,8 @@ class Envelope:
             ceiling_kind=spec.ceiling_kind,
             count=spec.count,
             cap=spec.cap,
+            limit_name=spec.limit_name,
+            retry_mode=spec.retry_mode,
             retryable=spec.retryable,
         )
 

@@ -147,6 +147,7 @@ def test_current_prices_formula_matches_hand_computation() -> None:
         "currency": "KES",
         "prices": "current",
         "base_year": None,
+        "deflation_basis": None,
     }
     assert record.deflator_table_version is None
     assert record.native_currency == _USD
@@ -175,6 +176,7 @@ def test_constant_prices_formula_matches_hand_computation() -> None:
         "currency": "GBP",
         "prices": "constant",
         "base_year": 2015,
+        "deflation_basis": "donor",
     }
     assert record.deflator_table_version == deflator.version
     assert record.exchange_rate_table_version == exchange.version
@@ -214,6 +216,7 @@ def test_ids_recipe_deflates_by_the_debtor() -> None:
         base_year=2015,
     )
     assert converted[VALUE_COLUMN].to_pylist()[0] == repr(10.0 * (80.0 / 100.0) * 1.0 / 1.0)
+    assert converted["unit"].to_pylist()[0]["deflation_basis"] == "recipient"
 
 
 # ---------------------------------------------------------------------------
@@ -266,8 +269,18 @@ def test_role_shaped_target_carries_a_different_currency_per_row() -> None:
         repr(200.0 * 0.81 / 1.0),
     ]
     units = converted["unit"].to_pylist()
-    assert units[0] == {"currency": "KES", "prices": "current", "base_year": None}
-    assert units[1] == {"currency": "GBP", "prices": "current", "base_year": None}
+    assert units[0] == {
+        "currency": "KES",
+        "prices": "current",
+        "base_year": None,
+        "deflation_basis": None,
+    }
+    assert units[1] == {
+        "currency": "GBP",
+        "prices": "current",
+        "base_year": None,
+        "deflation_basis": None,
+    }
 
 
 def test_role_shaped_target_raises_usage_error_for_an_unmapped_entity() -> None:
@@ -605,7 +618,12 @@ def test_null_native_value_on_a_role_shaped_target_skips_the_currency_lookup() -
     assert converted[VALUE_COLUMN].to_pylist() == ["", repr(100.0 * 112.0 / 1.0)]
     units = converted["unit"].to_pylist()
     assert units[0] is None
-    assert units[1] == {"currency": "KES", "prices": "current", "base_year": None}
+    assert units[1] == {
+        "currency": "KES",
+        "prices": "current",
+        "base_year": None,
+        "deflation_basis": None,
+    }
     assert record.fallback_count == 0
     assert record.projected_count == 0
 

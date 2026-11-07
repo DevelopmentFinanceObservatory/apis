@@ -594,6 +594,33 @@ def test_an_answer_offers_nothing_without_a_bound_catalogue():
 
 
 @pytest.mark.parametrize(
+    ("provenance", "member_roles", "expected"),
+    [
+        pytest.param(_CRS, (_DONORS,), "donor", id="dac-aid-by-the-donor"),
+        pytest.param(_IDS, (_DONORS,), "recipient", id="ids-debt-by-the-debtor"),
+        pytest.param(_CRS, (("observationAbout",),), "donor", id="dac-subject-by-the-dac-table"),
+        pytest.param(
+            _CRS, (_DONORS, ("observationAbout",)), "donor", id="dac-members-on-two-roles"
+        ),
+        pytest.param(_WEO, (("observationAbout",),), "national", id="imf-subject"),
+        pytest.param(_WEO, (_DONORS, ("observationAbout",)), None, id="imf-members-on-two-bases"),
+    ],
+)
+def test_an_offer_states_whose_prices_deflate_it_from_its_members_declared_roles(
+    provenance: str, member_roles: tuple[tuple[str, ...], ...], expected: str | None
+):
+    """The basis follows the served recipe and the deflator role each member declares under
+    it (`resolve_deflator_role`), the role the conversion deflates by, so members on roles
+    of two bases state none."""
+    population = "EconomicProduction" if provenance == _WEO else "FinancialFlow"
+    members = [member for roles in member_roles for member in _members(population, roles=roles)]
+    with bound_conversion_catalogue(_CATALOGUE):
+        converted = with_unit_conversion(_usd(provenance), members=members, plans=())
+    assert converted.resolved.unit_conversion is not None
+    assert converted.resolved.unit_conversion.deflation_basis == expected
+
+
+@pytest.mark.parametrize(
     ("spec", "bound", "warns"),
     [
         pytest.param(_usd(), None, True, id="currency-no-catalogue-loaded"),

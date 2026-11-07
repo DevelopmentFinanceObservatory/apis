@@ -66,7 +66,7 @@ def test_a_spec_mint_writes_its_record_with_basis_mint() -> None:
     assert (record.id, record.content_version, record.schema_version, record.basis) == (
         spec_id,
         content_version,
-        2,
+        SCHEMA_VERSION,
         "mint",
     )
     assert record.computed is None

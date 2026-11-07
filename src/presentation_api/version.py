@@ -2,8 +2,9 @@
 the release this surface serves. The hash covers the release document with a fixed
 `catalog_version`, strict intent schemas, formatter profile, grammar members, encoding classes,
 constraints, rendered refusal exemplars, frame-unavailable and bare-spec outcomes, the status the code registry
-gives each code on each `presentation.*` endpoint, the endpoint each route serves, and the
-replay rule of the render routes. Wording in the release schemas affects the hash.
+gives each code on each `presentation.*` endpoint, the endpoint each route serves, the
+replay rule of the render routes, and the `retry_mode` each refusal states, of a request or of
+a replayed stored intent (`occurrence_retry_modes`, from `presentation_api.refusals.retry_mode_table`). Wording in the release schemas affects the hash.
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ from presentation_api.codes import (
     PRESENTATION_CODE_CATALOGUE,
 )
 from presentation_api.doors.release import release_document
-from presentation_api.refusals import NEWEST_NOT_READY_OUTCOME
+from presentation_api.refusals import NEWEST_NOT_READY_OUTCOME, retry_mode_table
 from presentation_api.routes import RENDER_ENDPOINT, ROUTE_ENDPOINTS
 
 __all__ = ["compute_presentation_capability_version"]
@@ -71,6 +72,8 @@ def _render_refusal_exemplars(
                         detail="exemplar issue detail",
                     )
                 ],
+                limit_name="EXEMPLAR_LIMIT",
+                retry_mode=retry_modes[code],
                 retryable=retryable,
             )
         else:
@@ -119,6 +122,8 @@ def compute_presentation_capability_version(
         "newest_not_ready_outcome": list(newest_not_ready_outcome),
         "route_endpoints": sorted((*key, endpoint) for key, endpoint in route_endpoints.items()),
         "replay": {"endpoint": RENDER_ENDPOINT, "retry_modes": sorted(replay_modes)},
+        # What each refusal states as `retry_mode`, so a change to the rule moves the version.
+        "occurrence_retry_modes": retry_mode_table(),
         "release_document": pinned_release_document,
     }
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))

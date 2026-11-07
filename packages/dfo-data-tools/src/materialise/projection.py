@@ -56,6 +56,7 @@ from code_index.types import PartyRow
 from dfo_platform.roles import role_key_axis
 from materialise.enrichment import PARTY_FIELDS, is_party_role, is_whole_total, period_year
 from materialise.errors import MaterialisationUsageError
+from materialise.recipe_bodies import DeflationBasis
 from materialise.reshape import Table, TableLike
 from materialise.unit_cells import unit_cell_text
 
@@ -268,7 +269,8 @@ class UnitParts:
 
     `unit` is the unit node dcid, the cell itself for a native unit and `Currency<ISO>` for a
     converted one. `currency` is the ISO 4217 code, `None` for a non-currency unit. `chained`
-    is true for chain-linked constant prices.
+    is true for chain-linked constant prices. `deflated_by` names whose prices deflated a
+    conversion to constant prices, `None` for any other unit and where unknown.
     """
 
     unit: str
@@ -276,6 +278,7 @@ class UnitParts:
     price_basis: PriceBasis | None
     base_year: int | None
     chained: bool = False
+    deflated_by: DeflationBasis | None = None
 
 
 @dataclass(frozen=True)
@@ -299,7 +302,8 @@ def split_unit(
     """The unit columns of one `unit` cell, `None` for an empty cell.
 
     A converted cell (`UnitRequest`) names one concrete currency per row, a role-currency
-    request included (`validate_unit_request`), and states its own prices and base year. A
+    request included (`validate_unit_request`), and states its own prices and base year. At
+    constant prices it carries its own `deflation_basis`. A
     native unit is a currency when `currency_of` gives its currency. A unit that states its
     prices keeps them, with its base year and chaining. Any other takes `native_price_basis`,
     the price basis of the row's StatVar. A composed cell (`ComposedUnit`) is no one currency: `unit` holds
@@ -318,6 +322,7 @@ def split_unit(
             currency=cell.currency,
             price_basis="constant" if cell.prices == "constant" else "current",
             base_year=cell.base_year,
+            deflated_by=cell.deflation_basis if cell.prices == "constant" else None,
         )
     if not isinstance(cell, str) or not cell:
         return None

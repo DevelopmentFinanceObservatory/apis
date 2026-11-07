@@ -1,5 +1,6 @@
 """Reads a frame1 `unit` cell in its JSON form: `None`, a unit ref string, a converted unit
-`{currency, prices, base_year?}`, or a composed unit `{numerator, denominator}`.
+`{currency, prices, base_year?, deflation_basis?}`, or a composed unit
+`{numerator, denominator}`.
 
 Presentation groups, lists and selects a unit by `unit_key_text`. `shared_unit_key` finds the
 one case in which two different cells share that text. `unit_cell_text` is the text a tabular
@@ -41,8 +42,9 @@ def composed_unit_words(unit: object) -> tuple[str, str] | None:
     form, `None` for any other unit.
 
     A string side reads as it is, a unit's label. A StatVar side reads as its `label`. A
-    converted side reads as `unit_key_text` gives it, `currency/prices[/base_year]`. The words
-    are for display, and a unit is matched and selected by its key text."""
+    converted side reads as `unit_key_text` gives it,
+    `currency/prices[/base_year][/deflation_basis]`. The words are for display, and a unit is
+    matched and selected by its key text."""
     sides = composed_unit_sides(unit)
     if sides is None:
         return None
@@ -66,15 +68,15 @@ def unit_cell_text(cell: UnitRequest | ComposedUnit) -> str:
 def unit_key_text(unit: Mapping[str, object]) -> str:
     """Returns the text a converted or composed `unit` cell is grouped and displayed by.
 
-    A converted unit renders as `currency/prices[/base_year]`, keeping converted units
-    distinct. A composed unit renders as its JCS text, such as
+    A converted unit renders as `currency/prices[/base_year][/deflation_basis]`, keeping
+    converted units distinct, two deflation bases included. A composed unit renders as its JCS
+    text, such as
     `{"denominator":{"stat_var":"dcid:Count_Person"},"numerator":"USDollar"}`, so two composed
     units share a key only when they are equal."""
     if composed_unit_sides(unit) is not None:
         return canonicalize(dict(unit)).decode("utf-8")
-    text = f"{unit['currency']}/{unit['prices']}"
-    base_year = unit.get("base_year")
-    return f"{text}/{base_year}" if base_year is not None else text
+    parts = (unit["currency"], unit["prices"], unit.get("base_year"), unit.get("deflation_basis"))
+    return "/".join(str(part) for part in parts if part is not None)
 
 
 def shared_unit_key(*, cells: Sequence[object]) -> str | None:

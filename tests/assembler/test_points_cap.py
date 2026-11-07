@@ -3,15 +3,511 @@
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Mapping
+from typing import cast
 
 import pytest
 
-from assembler.errors import BindingInvalid, ResourceExhausted
+from assembler.errors import BindingInvalid, ResourceExhausted, SchemaInvalid
+from assembler.fakes import FakeReleaseRegistry
+from assembler.limits import MAX_SERIES_PER_COMPONENT
 from assembler.pipeline import write_component
+from assembler.pipeline.candidate import _check_line_chart_series
 from assembler.ports import FrameRef
+from assembler.resolve import resolve_selectors
+from assembler.select import normalize_select
 from assembler.testing import build_resolved_frame
 
 from ._pipeline_support import _multi_recipient_frame, computed_record
+
+# -- line chart series cap ----------------------------------------------------
+
+
+def _recipients_frame(*, count, stat_vars=("dcid:X",), periods=("2020", "2021")):
+    """One series per variable and recipient, `count` recipients over `periods`."""
+    return build_resolved_frame(
+        frame_ref=FrameRef(spec_id="spec_" + "4" * 32, content_version="cv_" + "4" * 32),
+        role_keys=("recipient",),
+        rows=[
+            {
+                "stat_var": stat_var,
+                "recipient": f"country/C{index:02d}",
+                "time_period": period,
+                "value": 1.0,
+                "unit": None,
+                "measurementMethod": None,
+                "provenance": "src_a",
+            }
+            for stat_var in stat_vars
+            for index in range(count)
+            for period in periods
+        ],
+    )
+
+
+def _write_line_chart(*, frame, select, frame_store, revision_store, release_registry):
+    frame_store.put(resolved_frame=frame)
+    return write_component(
+        intent={
+            "type": "line_chart",
+            "frame_ref": {
+                "spec_id": frame.frame_ref.spec_id,
+                "content_version": frame.frame_ref.content_version,
+            },
+            "select": select,
+        },
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+
+
+@pytest.mark.parametrize(
+    "count",
+    [
+        pytest.param(lambda cap: cap + 1, id="one-over"),
+        # An estimate over MAX_SERIES_PER_COMPONENT names the line chart's cap.
+        pytest.param(lambda _cap: MAX_SERIES_PER_COMPONENT + 1, id="over-the-component-cap"),
+    ],
+)
+def test_a_line_chart_with_an_unbound_dimension_over_the_cap_refuses(
+    count, frame_store, revision_store, release, release_registry
+):
+    with pytest.raises(ResourceExhausted) as excinfo:
+        _write_line_chart(
+            frame=_recipients_frame(count=count(release.line_chart_max_series)),
+            select={"stat_var": "dcid:X"},
+            frame_store=frame_store,
+            revision_store=revision_store,
+            release_registry=release_registry,
+        )
+    assert excinfo.value.pointer == "/select"
+    assert excinfo.value.limit_name == "MAX_LINE_CHART_SERIES"
+
+
+def _sector_frame(*, recipients, sectors, periods=("2020", "2021")):
+    """One series per recipient and sector over `periods`."""
+    return build_resolved_frame(
+        frame_ref=FrameRef(spec_id="spec_" + "7" * 32, content_version="cv_" + "7" * 32),
+        role_keys=("recipient", "sector"),
+        rows=[
+            {
+                "stat_var": "dcid:X",
+                "recipient": f"country/C{index:02d}",
+                "sector": f"sector/S{sector}",
+                "time_period": period,
+                "value": 1.0,
+                "unit": None,
+                "measurementMethod": None,
+                "provenance": "src_a",
+            }
+            for index in range(recipients)
+            for sector in range(sectors)
+            for period in periods
+        ],
+    )
+
+
+def _unit_per_variable_frame(*, count):
+    """One recipient at 2020 holding `count` variables, each in a unit of its own."""
+    return build_resolved_frame(
+        frame_ref=FrameRef(spec_id="spec_" + "8" * 32, content_version="cv_" + "8" * 32),
+        role_keys=("recipient",),
+        rows=[
+            {
+                "stat_var": f"dcid:V{index:02d}",
+                "recipient": "country/C00",
+                "time_period": "2020",
+                "value": 1.0,
+                "unit": f"Unit{index:02d}",
+                "measurementMethod": None,
+                "provenance": "src_a",
+            }
+            for index in range(count)
+        ],
+    )
+
+
+_BAR_OFFER = "as a bar_chart"
+_TABLE_OFFER = "as a table"
+
+
+@pytest.mark.parametrize(
+    ("frame", "select", "named", "offered"),
+    [
+        # One recipient over the cap, over two years: a bar chart draws one period or one
+        # series, so only the table is offered.
+        pytest.param(
+            lambda over: _recipients_frame(count=over),
+            {"stat_var": "dcid:X"},
+            "recipient ({over} values) is the series dimension",
+            ("table",),
+            id="unbound-over-two-years",
+        ),
+        # At one period a bar chart draws one bar per recipient.
+        pytest.param(
+            lambda over: _recipients_frame(count=over, periods=("2020",)),
+            {"stat_var": "dcid:X"},
+            "recipient ({over} values) is the series dimension",
+            ("bar_chart", "table"),
+            id="unbound-at-one-period",
+        ),
+        # Over 1700 to 2020 a table of that many recipients passes `MAX_TABLE_ROWS`.
+        pytest.param(
+            lambda over: _recipients_frame(count=over, periods=("1700", "2020")),
+            {"stat_var": "dcid:X"},
+            "recipient ({over} values) is the series dimension",
+            (),
+            id="unbound-over-321-years",
+        ),
+        # Three listed recipients and four unbound sectors: sector is the one to bind.
+        pytest.param(
+            lambda _over: _sector_frame(recipients=3, sectors=4),
+            {"recipient": [f"country/C{index:02d}" for index in range(3)]},
+            "bind sector (4 values) to one value, keeping recipient (3 values) as the series",
+            ("table",),
+            id="listed-and-unbound",
+        ),
+        # Both unbound: either may stay the series. A bar chart compares one dimension.
+        pytest.param(
+            lambda _over: _sector_frame(recipients=3, sectors=4),
+            {"stat_var": "dcid:X"},
+            "recipient (3 values) and sector (4 values) multiply",
+            ("table",),
+            id="two-unbound",
+        ),
+        # Nine variables in nine units: a bar chart's bars share a value axis, which
+        # `comparable_units_required` refuses, so only the table is offered.
+        pytest.param(
+            lambda over: _unit_per_variable_frame(count=over),
+            {"recipient": "country/C00"},
+            "stat_var ({over} values) is the series dimension",
+            ("table",),
+            id="series-in-different-units",
+        ),
+    ],
+)
+def test_a_line_chart_refusal_names_its_dimensions_and_offers_what_draws(
+    frame, select, named, offered, frame_store, revision_store, release, release_registry
+):
+    """The refusal names the dimensions the resolved series vary on, the listed one kept as
+    the series, and offers a bar_chart or a table of the same select only where that write
+    draws."""
+    over = release.line_chart_max_series + 1
+    frame = frame(over)
+    named = named.format(over=over)
+    with pytest.raises(ResourceExhausted) as excinfo:
+        _write_line_chart(
+            frame=frame,
+            select=select,
+            frame_store=frame_store,
+            revision_store=revision_store,
+            release_registry=release_registry,
+        )
+    detail = excinfo.value.detail
+    assert excinfo.value.limit_name == "MAX_LINE_CHART_SERIES"
+    assert named in detail
+    assert "bind recipient" not in detail
+    assert tuple(member for member in ("bar_chart", "table") if f"as a {member}" in detail) == (
+        offered
+    )
+    for member in offered:
+        written = write_component(
+            intent={
+                "type": member,
+                "frame_ref": {
+                    "spec_id": frame.frame_ref.spec_id,
+                    "content_version": frame.frame_ref.content_version,
+                },
+                "select": select,
+            },
+            frame_store=frame_store,
+            revision_store=revision_store,
+            release_registry=release_registry,
+        )
+        component = cast("Mapping[str, object]", written.resolved_payload["component"])
+        assert component["type"] == member
+
+
+def _two_sources_frame(*, recipients):
+    """One series per recipient from each of two sources over 2020 and 2021."""
+    return build_resolved_frame(
+        frame_ref=FrameRef(spec_id="spec_" + "8" * 32, content_version="cv_" + "8" * 32),
+        role_keys=("recipient",),
+        rows=[
+            {
+                "stat_var": "dcid:X",
+                "recipient": f"country/C{index:02d}",
+                "time_period": period,
+                "value": 1.0,
+                "unit": None,
+                "measurementMethod": None,
+                "provenance": source,
+            }
+            for index in range(recipients)
+            for source in ("src_oecd", "src_imf")
+            for period in ("2020", "2021")
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    ("frame", "select", "advice", "followed"),
+    [
+        # A listed facet is the series: the unbound recipient is the one to bind.
+        pytest.param(
+            _two_sources_frame(recipients=5),
+            {"stat_var": "dcid:X", "provenance": ["src_oecd", "src_imf"]},
+            "bind recipient (5 values) to one value, keeping provenance (2 values) as the series",
+            {
+                "stat_var": "dcid:X",
+                "provenance": ["src_oecd", "src_imf"],
+                "recipient": "country/C00",
+            },
+            id="listed-facet",
+        ),
+        pytest.param(
+            _sector_frame(recipients=3, sectors=4),
+            {"recipient": [f"country/C{index:02d}" for index in range(3)]},
+            "bind sector (4 values) to one value, keeping recipient (3 values) as the series",
+            {"recipient": [f"country/C{index:02d}" for index in range(3)], "sector": "sector/S0"},
+            id="listed-and-unbound",
+        ),
+    ],
+)
+def test_a_line_chart_refusals_advice_draws_when_followed(
+    frame, select, advice, followed, frame_store, revision_store, release_registry
+):
+    """The select the refusal's advice describes draws."""
+    stores = {
+        "frame_store": frame_store,
+        "revision_store": revision_store,
+        "release_registry": release_registry,
+    }
+    with pytest.raises(ResourceExhausted) as excinfo:
+        _write_line_chart(frame=frame, select=select, **stores)
+    assert advice in excinfo.value.detail
+
+    written = _write_line_chart(frame=frame, select=followed, **stores)
+
+    component = cast("Mapping[str, object]", written.resolved_payload["component"])
+    assert component["type"] == "line_chart"
+
+
+def test_a_line_chart_refusal_offers_nothing_when_the_window_refuses(release):
+    """A window past `MAX_POINTS_PER_SERIES` draws no other type either, so none is offered."""
+    cap = release.line_chart_max_series
+    frame = _recipients_frame(count=cap + 1)
+    with pytest.raises(ResourceExhausted) as excinfo:
+        _check_line_chart_series(
+            series=resolve_selectors(
+                resolved_frame=frame,
+                selectors=normalize_select(select={"stat_var": "dcid:X"}),
+                window=None,
+            ),
+            cap=cap,
+            select={"stat_var": "dcid:X"},
+            resolved_frame=frame,
+            window={"start": "1000", "end": "2021"},
+            release=release,
+        )
+    assert excinfo.value.limit_name == "MAX_LINE_CHART_SERIES"
+    assert "draw the same select" not in excinfo.value.detail
+
+
+def test_a_line_chart_refusal_offers_no_other_type_past_the_component_cap(
+    monkeypatch, frame_store, revision_store, release, release_registry
+):
+    """No other type draws more series than `MAX_SERIES_PER_COMPONENT`. The estimate
+    refuses such a select first on the write path, so the check runs here under a component
+    cap of the line chart's own cap against one series more, which a bar chart or a table
+    would otherwise draw."""
+    import assembler.pipeline.candidate as candidate_module
+
+    cap = release.line_chart_max_series
+    monkeypatch.setattr(candidate_module, "MAX_SERIES_PER_COMPONENT", cap)
+    with pytest.raises(ResourceExhausted) as excinfo:
+        _write_line_chart(
+            frame=_recipients_frame(count=cap + 1, periods=("2020",)),
+            select={"stat_var": "dcid:X"},
+            frame_store=frame_store,
+            revision_store=revision_store,
+            release_registry=release_registry,
+        )
+    assert excinfo.value.limit_name == "MAX_LINE_CHART_SERIES"
+    assert "draw the same select" not in excinfo.value.detail
+
+
+@pytest.mark.parametrize(
+    ("count", "refusal", "limit_name"),
+    [
+        # The exact count runs after the span check, so the span refusal names the bar chart.
+        pytest.param(
+            lambda cap: cap + 1, BindingInvalid, None, id="over-the-cap-under-the-estimate"
+        ),
+        # The estimate runs while the span check resolves the select, so it wins. A span
+        # frame's line chart never draws, so it names the component limit of the bar chart
+        # the span refusal points to.
+        pytest.param(
+            lambda _cap: MAX_SERIES_PER_COMPONENT + 1,
+            ResourceExhausted,
+            "MAX_SERIES_PER_COMPONENT",
+            id="over-the-estimate",
+        ),
+    ],
+)
+def test_a_span_frame_line_chart_over_the_cap_refuses_by_which_check_runs_first(
+    count, refusal, limit_name, frame_store, revision_store, release, release_registry
+):
+    with pytest.raises(refusal) as excinfo:
+        _write_line_chart(
+            frame=_recipients_frame(
+                count=count(release.line_chart_max_series), periods=("2018/2022",)
+            ),
+            select={"stat_var": "dcid:X"},
+            frame_store=frame_store,
+            revision_store=revision_store,
+            release_registry=release_registry,
+        )
+    assert getattr(excinfo.value, "limit_name", None) == limit_name
+
+
+def test_a_span_frame_estimate_refusal_advises_what_the_bar_chart_draws(
+    frame_store, revision_store, release_registry
+):
+    """A span frame's line chart never draws, so its estimate refusal names the
+    `MAX_SERIES_PER_COMPONENT` series a bar chart draws, and a bar chart listing that many of
+    them draws."""
+    frame = _recipients_frame(count=MAX_SERIES_PER_COMPONENT + 1, periods=("2018/2022",))
+    with pytest.raises(ResourceExhausted) as excinfo:
+        _write_line_chart(
+            frame=frame,
+            select={"stat_var": "dcid:X"},
+            frame_store=frame_store,
+            revision_store=revision_store,
+            release_registry=release_registry,
+        )
+    assert excinfo.value.limit_name == "MAX_SERIES_PER_COMPONENT"
+    assert f"bind it to at most {MAX_SERIES_PER_COMPONENT} values" in excinfo.value.detail
+    written = write_component(
+        intent={
+            "type": "bar_chart",
+            "frame_ref": {
+                "spec_id": frame.frame_ref.spec_id,
+                "content_version": frame.frame_ref.content_version,
+            },
+            "select": {
+                "recipient": [f"country/C{index:02d}" for index in range(MAX_SERIES_PER_COMPONENT)]
+            },
+        },
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+    component = cast("Mapping[str, object]", written.resolved_payload["component"])
+    assert component["type"] == "bar_chart"
+
+
+def test_a_line_chart_with_an_unbound_dimension_at_the_cap_draws_every_series(
+    frame_store, revision_store, release, release_registry
+):
+    cap = release.line_chart_max_series
+    written = _write_line_chart(
+        frame=_recipients_frame(count=cap),
+        select={"stat_var": "dcid:X"},
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+    assert len(written.resolved_payload["component"]["series"]) == cap
+
+
+_STORED = {"stat_var": "dcid:X"}
+# A select of two dimensions, which a `jsonb` column returns in its own key order.
+_STORED_TWO_KEYS = {"stat_var": "dcid:X", "provenance": "src_a"}
+
+
+@pytest.mark.parametrize(
+    ("stored", "patch", "refused"),
+    [
+        pytest.param(_STORED, {"title": "Grants by recipient"}, False, id="title-keeps-select"),
+        pytest.param(
+            _STORED, {"select": {"stat_var": ["dcid:X"]}}, False, id="same-select-restated"
+        ),
+        pytest.param(
+            _STORED_TWO_KEYS,
+            {
+                "title": "Grants by recipient",
+                "select": {"provenance": "src_a", "stat_var": "dcid:X"},
+            },
+            False,
+            id="same-select-in-another-key-order",
+        ),
+        # The recipients `_cut` fills in, one per value the cap allows.
+        pytest.param(_STORED, "cut", False, id="select-cut-to-the-cap"),
+        pytest.param(
+            _STORED,
+            {"select": {"stat_var": "dcid:Y"}},
+            True,
+            id="select-changed-still-over",
+        ),
+    ],
+)
+def test_a_revision_of_a_stored_over_cap_line_chart_is_held_to_the_cap_when_it_changes_select(
+    stored, patch, refused, frame_store, revision_store, release, release_registry
+):
+    """A chart stored over the cap takes edits that keep its select, and is refused when an
+    edit changes its select to one that resolves over the cap."""
+    cap = release.line_chart_max_series
+    if patch == "cut":
+        patch = {
+            "select": {"stat_var": "dcid:X", "recipient": [f"country/C{i:02d}" for i in range(cap)]}
+        }
+    created = _write_line_chart(
+        frame=_recipients_frame(count=cap + 1, stat_vars=("dcid:X", "dcid:Y")),
+        select=stored,
+        frame_store=frame_store,
+        revision_store=revision_store,
+        # A release whose cap the stored select fits, as an earlier release's may have.
+        release_registry=FakeReleaseRegistry(
+            release=dataclasses.replace(release, line_chart_max_series=cap + 1)
+        ),
+    )
+
+    def revise():
+        return write_component(
+            intent=patch,
+            component_id=created.component_id,
+            write_token=created.write_token,
+            frame_store=frame_store,
+            revision_store=revision_store,
+            release_registry=release_registry,
+        )
+
+    if refused:
+        with pytest.raises(ResourceExhausted) as excinfo:
+            revise()
+        assert excinfo.value.limit_name == "MAX_LINE_CHART_SERIES"
+    else:
+        assert revise().resolved_payload["component"]["type"] == "line_chart"
+
+
+def test_a_line_chart_listing_more_values_than_the_cap_fails_its_schema(
+    frame_store, revision_store, release, release_registry
+):
+    over = release.line_chart_max_series + 1
+    with pytest.raises(SchemaInvalid):
+        _write_line_chart(
+            frame=_recipients_frame(count=over),
+            select={
+                "stat_var": "dcid:X",
+                "recipient": [f"country/C{index:02d}" for index in range(over)],
+            },
+            frame_store=frame_store,
+            revision_store=revision_store,
+            release_registry=release_registry,
+        )
+
 
 # -- points cap ----------------------------------------------------------------
 
@@ -116,29 +612,33 @@ def _top_one(frame):
 
 
 @pytest.mark.parametrize(
-    ("resolved_frame", "row_count"),
+    ("resolved_frame", "row_count", "advice"),
     [
+        # 2,000 // 410 periods is 4 series, and 2,000 // 5 series is 400 periods.
         pytest.param(
             _wide_table_frame(
                 frame_ref=FrameRef(spec_id="spec_" + "6" * 32, content_version="cv_" + "6" * 32)
             ),
             None,
+            ("5 series x 410 periods = 2050 rows", "at most 4 series", "at most 400 periods"),
             id="padded",
         ),
         pytest.param(
             _top_one(_wide_table_frame(frame_ref=_TOP_ONE_FRAME)),
             410,
+            (),
             id="per-period-selection",
         ),
         pytest.param(
             _top_one(_wide_table_frame(frame_ref=_TOP_ONE_FRAME, years=range(2020, 2030))),
             None,
+            ("keeps 2010 rows", "bind fewer series or narrow the window"),
             id="per-period-selection-over-years-no-row-holds",
         ),
     ],
 )
 def test_table_row_cap_counts_the_rows_the_table_lists(
-    frame_store, revision_store, release_registry, monkeypatch, resolved_frame, row_count
+    frame_store, revision_store, release_registry, monkeypatch, resolved_frame, row_count, advice
 ):
     """Five recipients across 410 years pad to 2,050 rows, above the 2,000-row cap, so the
     table refuses before `bind_all` runs. A frame keeping each period's selection lists only
@@ -181,6 +681,8 @@ def test_table_row_cap_counts_the_rows_the_table_lists(
             _write()
         assert excinfo.value.pointer == "/select"
         assert excinfo.value.limit_name == "MAX_TABLE_ROWS"
+        for words in advice:
+            assert words in excinfo.value.detail
         return
 
     reply = _write()

@@ -65,8 +65,8 @@ def _stored(**changes: Any) -> dict[str, object]:
     [
         pytest.param(_BASE.as_json(), (), id="identical"),
         pytest.param(None, ("schema",), id="no-stored-fingerprint"),
-        pytest.param({**_BASE.as_json(), "schema": 2}, ("schema",), id="unknown-schema"),
-        pytest.param({"schema": 1, "members": "x"}, ("schema",), id="malformed"),
+        pytest.param({**_BASE.as_json(), "schema": 1}, ("schema",), id="earlier-schema"),
+        pytest.param({"schema": 2, "members": "x"}, ("schema",), id="malformed"),
         pytest.param({**_BASE.as_json(), "imported_data": 7}, ("schema",), id="non-text-import"),
         pytest.param(_stored(members=members_digest(["A"])), ("members",), id="members"),
         pytest.param(
@@ -289,7 +289,7 @@ def test_build_dependencies_records_what_the_run_dispatched():
     assert dependencies.recipes == (recipe_dependency_fingerprint(_RECIPE_ID),)
     assert dependencies.window == (2015, 2026)
     assert dependencies.as_json() == {
-        "schema": 1,
+        "schema": 2,
         "members": members_digest(["A", "B"]),
         "sources": [
             {"ref": "provenance/W", "token": None},

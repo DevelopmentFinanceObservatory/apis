@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from assembler.fakes import FakeFrameStore
 from assembler.ports import FrameRef
@@ -11,6 +12,7 @@ from dfo_platform import HealthResponse, ProblemDetails
 from presentation_api.models import (
     CapabilitiesResponse,
     ComponentReadResponse,
+    ConvertedUnitModel,
     CreateReplyResponse,
     FrameDimensionValuesResponse,
     FrameFilteredViewResponse,
@@ -234,6 +236,30 @@ def test_fact_summary_unit_on_the_wire_matches_its_model(
         assert body["fact_summary"]["unit"] == expected
         assert body["resolved_payload"]["component"]["unit"] == expected
         model.model_validate(body)
+
+
+@pytest.mark.parametrize(
+    ("unit", "error_type"),
+    [
+        pytest.param(
+            {"currency": "USD", "prices": "constant"}, "base_year_missing", id="constant-no-year"
+        ),
+        pytest.param(
+            {"currency": "USD", "prices": "current", "base_year": 2020},
+            "base_year_without_constant_prices",
+            id="current-with-year",
+        ),
+        pytest.param(
+            {"currency": "USD", "prices": "current", "deflation_basis": "donor"},
+            "deflation_basis_without_constant_prices",
+            id="current-with-basis",
+        ),
+    ],
+)
+def test_a_converted_unit_outside_the_frame_grammar_refuses(unit: dict, error_type: str):
+    with pytest.raises(ValidationError) as caught:
+        ConvertedUnitModel.model_validate(unit)
+    assert [error["type"] for error in caught.value.errors()] == [error_type]
 
 
 @pytest.mark.parametrize(

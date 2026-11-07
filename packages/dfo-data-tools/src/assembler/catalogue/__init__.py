@@ -45,6 +45,8 @@ class CatalogueRelease:
     constraints: tuple[ConstraintSpec, ...]
     formatter_profile: Mapping[str, object]
     retry_modes: Mapping[str, str]
+    line_chart_max_series: int
+    """Series a `line_chart` draws, the `maxItems` of its select's one array."""
     referenced_schemas: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
 
 
@@ -134,6 +136,27 @@ def _derive_tolerant_schema(*, strict: Mapping[str, object]) -> dict[str, object
     return {**strict, "properties": tolerant_properties, "required": []}
 
 
+class CatalogueShapeError(Exception):
+    """A schema in the bundle lacks a value the assembler reads from it."""
+
+
+def _line_chart_max_series(*, tolerant: Mapping[str, object]) -> int:
+    """The `maxItems` of the array a `line_chart` select may bind one dimension to."""
+    properties = cast("Mapping[str, Mapping[str, object]]", tolerant.get("properties", {}))
+    select = properties.get("select", {})
+    values = cast("Mapping[str, object]", select.get("additionalProperties", {}))
+    branches = cast("Sequence[Mapping[str, object]]", values.get("anyOf", ()))
+    caps = [
+        branch["maxItems"]
+        for branch in branches
+        if branch.get("type") == "array" and isinstance(branch.get("maxItems"), int)
+    ]
+    if len(caps) != 1:
+        msg = "the line_chart select schema names no single array maxItems"
+        raise CatalogueShapeError(msg)
+    return cast(int, caps[0])
+
+
 def load_release(*, catalogue_dir: Path | None = None) -> CatalogueRelease:
     """Loads and digest-verifies a catalogue bundle, and the schemas it references, into
     `CatalogueRelease`.
@@ -174,6 +197,9 @@ def load_release(*, catalogue_dir: Path | None = None) -> CatalogueRelease:
         constraints=CONSTRAINT_REGISTRY,
         formatter_profile=cast("Mapping[str, object]", manifest["formatter_profile"]),
         retry_modes=cast("Mapping[str, str]", manifest["retry_modes"]),
+        line_chart_max_series=_line_chart_max_series(
+            tolerant=intent_schemas_tolerant["line_chart"]
+        ),
         referenced_schemas={
             schema_id: json.loads(content) for schema_id, content in referenced.items()
         },

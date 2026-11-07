@@ -276,8 +276,9 @@ jobs:
 
       # The datasets maintenance job runs `datasets-maintenance` tasks (the
       # reconciliation sweep, aging terminal operations) on its own Scheduler,
-      # so the deploy points it at the new image here and executes it only for
-      # the settle step after the services move. It moves after both
+      # so the deploy points it at the new image here, executes it for the
+      # pinned-unit count before the services move and for the settle and
+      # backfill steps after they move. It moves after both
       # migrations, so its next run finds the schema this image expects. The
       # job and its variable come from `infra`, and the upfront variable
       # check refuses the deploy when the variable is missing.
@@ -290,6 +291,37 @@ jobs:
             --region="${{ vars.REGION }}" \
             --project="${{ vars.PROJECT_ID }}" \
             --quiet
+
+      # Once the apis service runs this image, a constant-price converted
+      # unit names its deflation basis. `datasets-maintenance
+      # count-pinned-units` lists, before the services move and changing
+      # nothing, the live recipes that pin such a unit with no basis
+      # (`pinned_recipes`) and counts the cards drawing their frames
+      # (`pinned_*`). Each such recipe refuses `unit_not_present` once its
+      # roots rebuild, so its frame stops refreshing until it is minted again.
+      # These lists are the frames and cards to re-mint. A card whose select
+      # binds a constant-price key with no basis is not counted. On a rebuilt
+      # frame holding one unit the binding follows that unit, and only a frame
+      # holding several refuses it (`binding_invalid`). Also not counted are a
+      # recipe comparing a DAC-rooted and an IDS-rooted constant-price side
+      # (`cross_frame_unit_mismatch`) and a line or bar chart whose series span
+      # deflation bases (`comparable_units_required`). Each of these surfaces
+      # on its next live refresh as a share slot's warning in the apis
+      # service's logs, found by `jsonPayload.code` (for example
+      # `jsonPayload.code="binding_invalid"`) or
+      # `jsonPayload.constraint_id="comparable_units_required"`. The task
+      # writes one `datasets_pinned_units_counted` line to the maintenance
+      # job's logs, WARNING when any count is above 0, and exits 0 whatever it
+      # counts, so the step fails only when the task cannot run.
+      - name: Count recipes pinning a unit without its deflation basis
+        if: steps.decide.outputs.deploy == 'true'
+        run: |
+          set -euo pipefail
+          gcloud run jobs execute "${{ vars.JOB_DATASETS_MAINTENANCE }}" \
+            --region="${{ vars.REGION }}" \
+            --project="${{ vars.PROJECT_ID }}" \
+            --wait \
+            --args=count-pinned-units
 
       # The origin catalogue job moves onto the new image on every deploy so
       # its scheduled runs (Cloud Scheduler, every 15 minutes) use the new

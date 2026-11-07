@@ -42,6 +42,7 @@ one axis hold disjoint party classes, so a sum across a role of whole totals alo
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Callable, Collection, Mapping
 from types import MappingProxyType
 from typing import Literal, get_args
@@ -89,6 +90,7 @@ _SEPARATOR = ","
 PartyKind = Literal["party", "residual", "total"]
 PARTY_KINDS: frozenset[str] = frozenset(get_args(PartyKind))
 TOTAL_KIND: PartyKind = "total"
+MEMBER_KIND: PartyKind = "party"
 
 # The classes apis serves in a `{role}_party_class` cell: a party's `official` or `private`, a
 # residual's `residual`. A whole total lists the classes it holds in full.
@@ -158,3 +160,22 @@ def at_one_level(cells: Collection[str], *, place_count: Callable[[], int]) -> b
     if not cells or frozenset.intersection(*(levels_of(cell) & PLACE_LEVELS for cell in cells)):
         return True
     return len(cells) == 1 and place_count() == 1
+
+
+def comparable_members(cells: Mapping[str, str], *, dimension: str) -> frozenset[str]:
+    """The members of `dimension` one ranking compares, from each member's kind or type cell.
+
+    On a flow party role these are the members of kind `party`, official and private alike,
+    so a group total such as the G7, a whole-population total and a residual are left out.
+    On a place role they are the members at the level in `PLACE_LEVELS` most of them sit at,
+    the alphabetically first on a tie, so a World Bank aggregate or a region among countries
+    is left out. A member with no cell in `cells` is not compared. dfo-ai's harness picks a
+    cut card's largest members from this population."""
+    if dimension in PARTY_ROLES:
+        return frozenset(member for member, kind in cells.items() if kind == MEMBER_KIND)
+    levels = {member: levels_of(cell) & PLACE_LEVELS for member, cell in cells.items()}
+    counts = Counter(level for member_levels in levels.values() for level in member_levels)
+    if not counts:
+        return frozenset()
+    level = max(sorted(counts), key=counts.__getitem__)
+    return frozenset(member for member, member_levels in levels.items() if level in member_levels)

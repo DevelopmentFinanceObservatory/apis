@@ -748,60 +748,6 @@ def test_elected_years_count_the_series_the_read_selects() -> None:
     ) == {_WINDOW_SV: 2024}
 
 
-def test_a_variable_the_index_cannot_elect_for_is_absent_and_serves_its_own_latest() -> None:
-    """A variable with a monthly facet elects no year, as the index cannot find a latest
-    month, and neither does a variable the index holds no row of. The monthly variable
-    serves and heads its own latest year, 2025, where two of its six donors hold data."""
-    idx = _election_index(
-        [
-            *_donor_rows(_WINDOW_SV, {2025: 2, 2024: 6}, facet_id=_MONTHLY_FACET),
-            *_donor_rows(_SECOND_SV, {2025: 2, 2024: 6}),
-        ],
-        {
-            _MONTHLY_FACET: FacetMetadata(provenance_id="p", observation_period="P1M"),
-            _WINDOW_FACET: FacetMetadata(provenance_id="p", observation_period="P1Y"),
-        },
-    )
-
-    elected = idx.elected_years(variables=[_WINDOW_SV, _SECOND_SV, "Unknown"])
-    served = idx.series_years(variables=[_WINDOW_SV], latest=elected)
-    headline = idx.headline(variables=[_WINDOW_SV], elected=elected)
-
-    assert elected == {_SECOND_SV: 2024}
-    assert served is not None and served.series == 2
-    assert headline is not None
-    assert (headline.year, headline.series) == (2025, 2)
-
-
-@pytest.mark.parametrize("build_year", [2026, None])
-def test_a_monthly_variable_heads_its_recent_year_beside_older_elected_ones(
-    build_year: int | None,
-) -> None:
-    """A monthly variable holds 2025 at two donors and elects nothing. An annual one ends
-    in 2021 and elects it. The headline names 2025, one of its `recent_years`, with the
-    monthly variable's two series, whether or not the index states a build year."""
-    idx = _election_index(
-        [
-            *_donor_rows(_WINDOW_SV, {2025: 2, 2024: 6}, facet_id=_MONTHLY_FACET),
-            *_donor_rows(_SECOND_SV, {2021: 4, 2020: 4}),
-        ],
-        {
-            _MONTHLY_FACET: FacetMetadata(provenance_id="p", observation_period="P1M"),
-            _WINDOW_FACET: FacetMetadata(provenance_id="p", observation_period="P1Y"),
-        },
-        build_year=build_year,
-    )
-    variables = [_WINDOW_SV, _SECOND_SV]
-
-    elected = idx.elected_years(variables=variables)
-    headline = idx.headline(variables=variables, elected=elected)
-
-    assert elected == {_SECOND_SV: 2021}
-    assert headline is not None
-    assert (headline.year, headline.series) == (2025, 2)
-    assert [c.year for c in headline.recent_years] == [2025, 2024, 2023]
-
-
 def test_a_two_variable_headline_names_the_newest_elected_year_and_counts_its_variable() -> None:
     """One variable holds 2025 at four of five donors and elects it. The other holds 2025
     at one of six and elects 2024. The headline names 2025 with the four series serving it,
@@ -1782,7 +1728,7 @@ def test_a_range_selects_pairs_holding_data_in_it_and_keeps_their_facets_from_ev
     assert len(pairs(None, None)) == count(None, None) == 2
 
 
-_MONTHLY_FACET = "monthly-facet"
+_OTHER_METHOD_FACET = "other-method-facet"
 
 
 @pytest.mark.parametrize(
@@ -1791,45 +1737,45 @@ _MONTHLY_FACET = "monthly-facet"
         pytest.param(
             {},
             {(_WINDOW_SV, KEN, FRA): [2005, 2020, 2021, 2022], (_WINDOW_SV, ETH, DEU): [2000]},
-            KeptFacets(frozenset({_WINDOW_FACET, _MONTHLY_FACET}), groups=2, sub_annual=True),
+            KeptFacets(frozenset({_WINDOW_FACET, _OTHER_METHOD_FACET}), groups=2),
             id="every-year",
         ),
         pytest.param(
             {"first_year": 2020, "last_year": 2022},
             {(_WINDOW_SV, KEN, FRA): [2020, 2021, 2022]},
-            KeptFacets(frozenset({_WINDOW_FACET}), groups=1, sub_annual=False),
+            KeptFacets(frozenset({_WINDOW_FACET}), groups=1),
             id="a-range",
         ),
         pytest.param(
             {"latest": {}},
             {(_WINDOW_SV, KEN, FRA): [2022]},
-            KeptFacets(frozenset({_WINDOW_FACET, _MONTHLY_FACET}), groups=2, sub_annual=True),
+            KeptFacets(frozenset({_WINDOW_FACET, _OTHER_METHOD_FACET}), groups=2),
             id="latest-keeps-the-variables-latest-year",
         ),
         pytest.param(
             {"latest": {_WINDOW_SV: 2005}},
             {(_WINDOW_SV, KEN, FRA): [2005]},
-            KeptFacets(frozenset({_WINDOW_FACET, _MONTHLY_FACET}), groups=2, sub_annual=True),
+            KeptFacets(frozenset({_WINDOW_FACET, _OTHER_METHOD_FACET}), groups=2),
             id="latest-keeps-the-elected-year",
         ),
         pytest.param(
             {"admits": lambda _variable, facet: facet != _WINDOW_FACET},
             {(_WINDOW_SV, KEN, FRA): [2005]},
-            KeptFacets(frozenset({_MONTHLY_FACET}), groups=1, sub_annual=True),
+            KeptFacets(frozenset({_OTHER_METHOD_FACET}), groups=1),
             id="an-admitted-facet",
         ),
     ],
 )
 def test_series_years_or_each_series_facets(read, expected, kept) -> None:
-    """KEN holds the annual facet from FRA in 2005 and 2020 to 2022 and a monthly facet
-    with another method in 2005 alone. ETH holds the annual facet from DEU in 2000. Each
+    """KEN holds the annual facet from FRA in 2005 and 2020 to 2022 and a facet with
+    another method in 2005 alone. ETH holds the annual facet from DEU in 2000. Each
     series ORs the years of the facets it keeps. Under `latest` the variable serves 2022
     alone, so ETH, whose latest year is 2000, serves nothing, and elected at 2005 it
     serves that year from KEN, which holds it."""
     table, horizon = coverage_table(
         [
             (_WINDOW_SV, _WINDOW_FACET, FRA, KEN, [2005, 2020, 2021, 2022]),
-            (_WINDOW_SV, _MONTHLY_FACET, FRA, KEN, [2005]),
+            (_WINDOW_SV, _OTHER_METHOD_FACET, FRA, KEN, [2005]),
             (_WINDOW_SV, _WINDOW_FACET, DEU, ETH, [2000]),
         ]
     )
@@ -1838,8 +1784,8 @@ def test_series_years_or_each_series_facets(read, expected, kept) -> None:
         _WINDOW_ROLE_NAMES,
         {
             _WINDOW_FACET: FacetMetadata(provenance_id="p", observation_period="P1Y"),
-            _MONTHLY_FACET: FacetMetadata(
-                provenance_id="p", measurement_method="Monthly", observation_period="P1M"
+            _OTHER_METHOD_FACET: FacetMetadata(
+                provenance_id="p", measurement_method="Other", observation_period="P1Y"
             ),
         },
         horizon=horizon,
