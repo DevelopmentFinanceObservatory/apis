@@ -25,6 +25,7 @@ from code_index.shared import get_index, get_measure_index
 from dfo_platform.trace import get_trace_id
 from entity_resolution.pack import is_organisation_name
 from search.engine.clients.llm import (
+    AGREEMENT_SAMPLES,
     LLM,
     MEMO_HIT_USAGE,
     SupportsLLM,
@@ -1934,8 +1935,9 @@ class ExtractionResult:
     agreed: bool = True
 
 
-# The model calls an extraction that misses the store sends: two samples (`_model_extraction`).
-EXTRACTION_CALLS = 2
+# The model calls an extraction that misses the store sends: one per agreement sample
+# (`_model_extraction`).
+EXTRACTION_CALLS = AGREEMENT_SAMPLES
 
 
 async def _model_extraction(

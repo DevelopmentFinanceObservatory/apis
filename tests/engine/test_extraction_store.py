@@ -9,6 +9,8 @@ Async calls use `asyncio.run` because the suite has no pytest-asyncio plugin.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import subprocess
 import sys
 from datetime import date
@@ -19,9 +21,10 @@ from pydantic import BaseModel, create_model
 
 import search.engine.clients.llm as llm_module
 import search.engine.extract as extract_module
-from search.engine.clients.llm import LLM
+from search.engine.clients.llm import LLM, for_stage
 from search.engine.errors import LLMInfraError, LLMOutputRefused
 from search.engine.exclusion_read import (
+    EXCLUSION_READ_VERSION,
     Exclusion,
     ExclusionRead,
     read_exclusions,
@@ -328,6 +331,53 @@ def test_an_exclusion_read_is_stored_only_when_its_samples_agree(monkeypatch, se
     assert sorted(models.seeds) == [1, 2]
     assert usage is not None and usage["input_tokens"] == 22
     assert stored_exclusion_read(_READ_QUERY, llm=llm) == (_READ if agreed else None)
+
+
+def _single_sample_key(query: str, *, version: str, year: int, identity: dict) -> str:
+    """The key a store recorded before agreement held, whose document has no `samples`."""
+    document = {"query": query, "version": version, "year": year, "identity": identity}
+    canonical = json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return "extract_" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def test_an_extraction_stored_before_agreement_is_a_miss_and_reads_the_model(monkeypatch):
+    """A reading keyed by the document without the sampling policy was never agreed, so
+    replaying it as agreed would skip the check. It misses and two samples read afresh."""
+    store = MemoryExtractionStore(max_bytes=1024 * 1024)
+    llm, models = _llm(monkeypatch, store)
+    store.put(
+        _single_sample_key(
+            _QUERY,
+            version=EXTRACT_VERSION,
+            year=extract_module.date.today().year,
+            identity=llm.sampling_identity(),
+        ),
+        _OTHER_ANSWER.model_dump_json(),
+    )
+
+    result, _ = _extract(_QUERY, llm)
+
+    assert models.prompts == [_QUERY] * 2
+    assert result.extraction.variables == ["GDP"]
+    assert result.agreed
+
+
+def test_an_exclusion_read_stored_before_agreement_is_not_found(monkeypatch):
+    store = MemoryExtractionStore(max_bytes=1024 * 1024)
+    llm, _models = _llm(monkeypatch, store)
+    staged = for_stage(llm, "exclusion_read")
+    assert isinstance(staged, LLM)
+    store.put(
+        _single_sample_key(
+            "GDP excluding grants",
+            version=EXCLUSION_READ_VERSION,
+            year=extract_module.date.today().year,
+            identity=staged.sampling_identity(),
+        ),
+        ExclusionRead(exclusions=[]).model_dump_json(),
+    )
+
+    assert stored_exclusion_read("GDP excluding grants", llm=llm) is None
 
 
 def test_a_file_store_written_by_one_process_is_read_by_a_second(monkeypatch, tmp_path):
