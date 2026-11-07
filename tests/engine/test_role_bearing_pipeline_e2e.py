@@ -154,6 +154,7 @@ def _run(
     date_request: DateRequest | None = None,
     coverage: CoverageSnapshot | None = None,
     source_scope: SourceScope | None = None,
+    variable_text: str = "aid",
 ):
     graph = FakeGraph(
         nodes={
@@ -167,7 +168,7 @@ def _run(
     )
     return asyncio.run(
         resolve_variable(
-            "aid",
+            variable_text,
             entities=entities,
             date_request=date_request,
             detect_query=role_query,
