@@ -840,7 +840,8 @@ def test_extract_reattaches_on_a_memo_hit_too(monkeypatch):
     first, _ = _run(extract(query, llm=llm))
     second, _ = _run(extract(query, llm=llm))
 
-    assert len(client.models.calls) == 1  # the memo served the second call
+    # The memo served the second call's two samples, one per seed.
+    assert sorted(call[2].seed for call in client.models.calls) == [1, 2]
     for result in (first, second):
         extraction = result.extraction
         # variables is never rewritten: the bare measure text the model
@@ -896,7 +897,8 @@ def test_extract_clamps_oversized_variables_before_the_reattach_scan(monkeypatch
     # The spy ran (a coded phrase was present to trigger it) and saw every
     # one of the n distinct variables, not just the settings().max_variables
     # survivors.
-    assert seen_lengths == [n]
+    # One scan per sample's reading, each before the clamp.
+    assert seen_lengths == [n, n]
 
 
 def test_clamped_variables_keeps_every_occurrence_of_an_admitted_variable_with_its_position():
@@ -1000,7 +1002,7 @@ def test_extract_reindexes_an_entitys_measures_onto_the_admitted_variables(linke
             "aid to Kenya and Uganda over the last five years",
             ["aid", "aid"],
             [{"kind": "range", "relative": "over the last five years"}],
-            [{"kind": "range", "start": "2022", "end": "2026"}],
+            [{"kind": "range", "start": "2022", "end": "2026", "trailing_years": 5}],
             [],
         ),
     ],
@@ -1142,7 +1144,8 @@ def test_extract_clears_the_places_of_a_question_past_a_cap_it_does_not_resolve(
     result, _ = _run(extract(query, llm=llm))
     assert result.extraction.kind == kind
     assert result.extraction.entities == []
-    assert scanned == [[]]
+    # Each sample's reading reaches the role scan empty.
+    assert scanned == [[], []]
 
 
 def test_extract_keeps_the_places_of_a_question_at_the_cap_it_does_not_resolve():
@@ -1213,7 +1216,8 @@ def test_extract_bounds_dropped_qualifiers_count_before_the_reattach_scan(monkey
     assert extraction.dropped_qualifiers == [
         f"unsupported qualifier {i}" for i in range(settings().max_dropped_qualifiers)
     ]
-    assert call_count <= settings().max_dropped_qualifiers
+    # The cap bounds the scan of each sample's reading.
+    assert call_count <= 2 * settings().max_dropped_qualifiers
 
 
 def test_extract_bounds_a_dropped_qualifiers_phrase_length():
@@ -2843,17 +2847,17 @@ def test_extract_leaves_a_qualifier_no_operation_touches_to_the_region():
     [
         (
             [{"kind": "range", "relative": "over the last decade"}],
-            [{"kind": "range", "start": "2017", "end": "2026"}],
+            [{"kind": "range", "start": "2017", "end": "2026", "trailing_years": 10}],
             [],
         ),
         (
             [{"kind": "range", "relative": "in the last 5 years"}],
-            [{"kind": "range", "start": "2022", "end": "2026"}],
+            [{"kind": "range", "start": "2022", "end": "2026", "trailing_years": 5}],
             [],
         ),
         (
             [{"kind": "range", "relative": "the past decade"}],
-            [{"kind": "range", "start": "2017", "end": "2026"}],
+            [{"kind": "range", "start": "2017", "end": "2026", "trailing_years": 10}],
             [],
         ),
         (
@@ -2863,7 +2867,7 @@ def test_extract_leaves_a_qualifier_no_operation_touches_to_the_region():
         ),
         (
             [{"kind": "range", "relative": "los últimos 10 años"}],
-            [{"kind": "range", "start": "2017", "end": "2026"}],
+            [{"kind": "range", "start": "2017", "end": "2026", "trailing_years": 10}],
             [],
         ),
         ([{"kind": "range", "relative": "last 0 years"}], [], ["time_text_not_parsed"]),
@@ -2918,7 +2922,8 @@ def test_resolve_relative_dates_reads_the_wording_against_the_current_year(
 ):
     extraction = Extraction(kind="resolution", variables=["aid"], dates=dates)
     out, warnings, _ = _resolve_relative_dates(extraction, current_year=2026)
-    # A resolved date dumps without `relative`, as the wire and the response cache keys read it.
+    # A resolved date dumps without `relative`, as the wire and the response cache keys read it,
+    # and a span counted back states the years it trails.
     assert [d.model_dump(mode="json") for d in out.dates] == resolved
     assert [w.code for w in warnings] == warning_codes
     assert out.model_copy(update={"dates": extraction.dates}) == extraction

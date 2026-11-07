@@ -1639,3 +1639,49 @@ def test_node_arc_targets_many_records_what_the_replay_graph_answers(monkeypatch
 
     assert replay.node_arc_targets_many(dcids, properties=PROVENANCE_NAME_PROPERTIES) == recorded
     assert recorded["dc/base/WHO_GHO"]["isPartOf"][0].name == "WHO Global Health Observatory"
+
+
+def test_a_case_whose_every_attempt_fails_stops_the_run_before_any_fixture_is_written(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    """A recording that cannot resolve a case exits non-zero, names the case and its last
+    error, and writes no fixture file, so a broken recorder cannot pass for a clean one."""
+    import search.engine.clients.graph_client as graph_client
+    import search.engine.clients.llm as llm
+    import search.engine.clients.sdmx as sdmx
+    import search.engine.core as core
+    import search.eval.live_clients as live_clients
+
+    async def unresolvable(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("no graph release is bound")
+
+    written: list[object] = []
+    monkeypatch.setattr(core, "resolve_async", unresolvable)
+    monkeypatch.setattr(live_clients, "bind_run_catalogue", lambda: None)
+    monkeypatch.setattr(graph_client.LiveGraphClient, "from_search_settings", lambda: object())
+    monkeypatch.setattr(llm, "LLM", object)
+    monkeypatch.setattr(sdmx, "LiveSdmxClient", object)
+    monkeypatch.setattr(record, "_FIXTURES_DIR", tmp_path)
+    monkeypatch.setattr(record, "_write_json", lambda path, data: written.append(path))
+    monkeypatch.setattr(record.time, "sleep", lambda _s: None)
+    monkeypatch.setenv("RESOLVEKIT_CACHE_DIR", "/nonexistent")
+    case_id = "dq-dac-001"
+    monkeypatch.setattr("sys.argv", ["record", "--file", "dac", "--ids", case_id])
+
+    with pytest.raises(SystemExit) as exited:
+        record.main()
+
+    assert isinstance(exited.value.code, str)
+    assert case_id in exited.value.code
+    assert "no graph release is bound" in exited.value.code
+    assert written == []
+
+
+def test_a_run_without_a_resolver_cache_directory_refuses_before_any_read(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.delenv("RESOLVEKIT_CACHE_DIR", raising=False)
+    monkeypatch.setattr("sys.argv", ["record", "--file", "dac"])
+
+    with pytest.raises(SystemExit, match="RESOLVEKIT_CACHE_DIR"):
+        record.main()

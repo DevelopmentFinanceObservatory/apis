@@ -666,3 +666,43 @@ def test_a_first_head_sample_that_reaches_no_asserted_check_takes_more_samples(f
     state.rounds["head"] += [_known_disposition_sample(case, Verdict.FAIL)] * 2
     state.judge()
     assert {state.judgements[c].outcome for c in {*others, ANSWER}} == {Outcome.NEEDS_BASE}
+
+
+def other_spec() -> dict:
+    """The worked example under another spec id: the same recipient, another reading."""
+    body = answer()
+    body["parts"][0]["spec"]["spec_id"] = "spec_other"
+    return body
+
+
+@pytest.mark.parametrize(
+    ("head", "code", "verdict", "posts"),
+    [
+        pytest.param(steady, 0, "pass", 3, id="every-run-agrees"),
+        pytest.param(
+            lambda q, n: (200, other_spec() if n == 2 else answer()),
+            1,
+            "new_case_failure",
+            6,
+            id="one-run-differs",
+        ),
+    ],
+)
+def test_a_repeated_case_gates_on_every_run_giving_one_answer(tmp_path, head, code, verdict, posts):
+    """A new case with `repeat: 3` takes three head samples in the first round, and blocks
+    when one of them answers with another spec, though each answer passes its checks. A
+    blocked case takes the rest of its samples, at least three more."""
+    repeated = CASES.replace(
+        "  query: health ODA to Ethiopia\n", "  query: health ODA to Ethiopia\n  repeat: 3\n"
+    )
+    corpus = make_corpus(tmp_path, base=GONE, head=repeated)
+
+    exit_code, head_posts, _ = run_driver(
+        [*paired_args(corpus, tmp_path), "--case=eth-steady"], head=head
+    )
+
+    assert exit_code == code
+    report = json.loads((tmp_path / "report.json").read_text())
+    assert report["cases"]["eth-steady"]["checks"]["agreement"]["verdict"] == verdict
+    assert report["cases"]["eth-steady"]["checks"]["entities"]["verdict"] == "pass"
+    assert head_posts[STEADY] == posts

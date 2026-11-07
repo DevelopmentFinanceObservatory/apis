@@ -24813,5 +24813,1528 @@
     "operations": [],
     "dropped_qualifiers": [],
     "dates": []
+  },
+  "_UniversalBindOutput@7105c7d81a38:bb0f556cbedd2161e3b20d685de5a79075fd0a4e": {
+    "chosen_shape_index": 0,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "crsCooperationModality",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "crsPurpose",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "crsTypeOfFinance",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "crsTypeOfFlow",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": null,
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 0,
+        "rating": 1.0
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:5b573c7b6796c29a0367b489077a98064b7e4045": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:5dbca179fbd47296ad86fd3487adabbbfa3e899a": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:a9c0732273b0a092b4e53aecdcba47b35e0acf9f": {
+    "exclusions": []
+  },
+  "Extraction@840d8db0c01a:89c3e53cf225133994bad4a26971473fb0157386": {
+    "kind": "resolution",
+    "variables": [
+      "total aid"
+    ],
+    "entities": [
+      {
+        "text": "Canada",
+        "span": "Canada",
+        "variables": [
+          0
+        ],
+        "cue": null,
+        "role": null,
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "range",
+        "start": "2010",
+        "end": null
+      }
+    ]
+  },
+  "Extraction@840d8db0c01a:4274208a52af8e593c0ca12cd32970033aca2ea1": {
+    "kind": "resolution",
+    "variables": [
+      "total aid"
+    ],
+    "entities": [
+      {
+        "text": "Netherlands",
+        "span": "the Netherlands",
+        "variables": [
+          0
+        ],
+        "cue": "the Netherlands",
+        "role": "source",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "range",
+        "start": "2010",
+        "end": null
+      }
+    ]
+  },
+  "Extraction@840d8db0c01a:011f9f8b69e23719c1feb0f709b11c0313606d24": {
+    "kind": "resolution",
+    "variables": [
+      "total aid"
+    ],
+    "entities": [
+      {
+        "text": "United States",
+        "span": "the United States",
+        "variables": [
+          0
+        ],
+        "cue": "the",
+        "role": null,
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "range",
+        "start": "2010",
+        "end": null
+      }
+    ]
+  },
+  "Extraction@840d8db0c01a:68f3f79e293126cd6a5c7c2360b9d23ab51ee085": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "variables": [
+          0
+        ],
+        "cue": "to",
+        "role": null,
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "excluding the CRS"
+    ],
+    "dates": []
+  },
+  "Extraction@840d8db0c01a:efb63c51274d4d05fcdc5572c52a9426462561a5": {
+    "kind": "resolution",
+    "variables": [
+      "education aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "variables": [
+          0
+        ],
+        "cue": "to",
+        "role": "recipient",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "excluding the CRS"
+    ],
+    "dates": []
+  },
+  "Extraction@840d8db0c01a:5220f359364a7895f8125ec63c9ceaafef6fb4ee": {
+    "kind": "resolution",
+    "variables": [
+      "education aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "variables": [
+          0
+        ],
+        "cue": "to",
+        "role": "recipient",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "excluding imputed multilateral"
+    ],
+    "dates": []
+  },
+  "Extraction@840d8db0c01a:f60192f3407988f763c15ed069531be32c4f0b5a": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "variables": [
+          0
+        ],
+        "cue": "to",
+        "role": null,
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "not imputed"
+    ],
+    "dates": []
+  },
+  "Extraction@840d8db0c01a:d0008cdd9f948627016cc0a09e4fbbbd8dd995a3": {
+    "kind": "resolution",
+    "variables": [
+      "ODA"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "variables": [
+          0
+        ],
+        "cue": "to",
+        "role": "recipient",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "excluding the CRS"
+    ],
+    "dates": []
+  },
+  "Extraction@840d8db0c01a:8b5116ff560ed5b724498863176d9427e09204fc": {
+    "kind": "resolution",
+    "variables": [
+      "education aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "variables": [
+          0
+        ],
+        "cue": "to",
+        "role": "recipient",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "excluding multilateral donors"
+    ],
+    "dates": []
+  },
+  "Extraction@840d8db0c01a:1a98897e2c64f9eb4388cbdd3131c96308359a5e": {
+    "kind": "resolution",
+    "variables": [
+      "ODA",
+      "humanitarian aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "variables": [
+          0,
+          1
+        ],
+        "cue": "to",
+        "role": "recipient",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "excluding humanitarian aid"
+    ],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "Extraction@840d8db0c01a:199d4243b9f4a98c7a80450382c8300d0bbd12b2": {
+    "kind": "resolution",
+    "variables": [
+      "ODA"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "variables": [
+          0
+        ],
+        "cue": "to",
+        "role": "recipient",
+        "members": false
+      },
+      {
+        "text": "United States",
+        "span": "United States",
+        "variables": [
+          0
+        ],
+        "cue": "from",
+        "role": "source",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "not from the United States"
+    ],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "Extraction@840d8db0c01a:fe1acaffefa68dcaaf926b509cfcd27dda295058": {
+    "kind": "resolution",
+    "variables": [
+      "official development assistance"
+    ],
+    "entities": [
+      {
+        "text": "Africa",
+        "span": "Africa",
+        "variables": [
+          0
+        ],
+        "cue": "to",
+        "role": "recipient",
+        "members": false
+      },
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "variables": [
+          0
+        ],
+        "cue": "except",
+        "role": "recipient",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "except Kenya"
+    ],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "Extraction@840d8db0c01a:8890a2d954771ac33b1bfe5888ea7551134a8d62": {
+    "kind": "resolution",
+    "variables": [
+      "official development assistance"
+    ],
+    "entities": [
+      {
+        "text": "France",
+        "span": "France",
+        "variables": [
+          0
+        ],
+        "cue": "from",
+        "role": "source",
+        "members": false
+      },
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "variables": [
+          0
+        ],
+        "cue": "to",
+        "role": "recipient",
+        "members": false
+      },
+      {
+        "text": "Uganda",
+        "span": "Uganda",
+        "variables": [
+          0
+        ],
+        "cue": "to",
+        "role": "recipient",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "except to Kenya and Uganda"
+    ],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "Extraction@840d8db0c01a:d428d42283613acf9a7dbce4fd406ba8fa912e7f": {
+    "kind": "resolution",
+    "variables": [
+      "ODA",
+      "humanitarian aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenia",
+        "variables": [],
+        "cue": "a",
+        "role": "recipient",
+        "members": false
+      }
+    ],
+    "operations": [
+      {
+        "verb": "share_of",
+        "variable": 0,
+        "phrase": "sin",
+        "over": null
+      }
+    ],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "Extraction@840d8db0c01a:f0ed441034ceabdc5c3983d826bded1ddfffc37d": {
+    "kind": "resolution",
+    "variables": [
+      "gross ODA"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "variables": [
+          0
+        ],
+        "cue": "to",
+        "role": "recipient",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "not net"
+    ],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "Extraction@840d8db0c01a:ffbbc83ec157615a95365d18e9296a9ba31df7b6": {
+    "kind": "resolution",
+    "variables": [
+      "net ODA"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "variables": [
+          0
+        ],
+        "cue": "to",
+        "role": "recipient",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "Extraction@840d8db0c01a:4804524943a4380b17a59eb34cb1c7cde7284f5f": {
+    "kind": "resolution",
+    "variables": [
+      "humanitarian aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "variables": [
+          0
+        ],
+        "cue": "to",
+        "role": null,
+        "members": false
+      }
+    ],
+    "operations": [
+      {
+        "verb": "forecast",
+        "variable": 0,
+        "phrase": "in 2022",
+        "over": null
+      }
+    ],
+    "dropped_qualifiers": [
+      "no"
+    ],
+    "dates": []
+  },
+  "Extraction@840d8db0c01a:c725abe31d917a57e0a3b68f08c9da98a1d08f87": {
+    "kind": "resolution",
+    "variables": [
+      "humanitarian aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "variables": [
+          0
+        ],
+        "cue": "to",
+        "role": "recipient",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "everything but"
+    ],
+    "dates": []
+  },
+  "Extraction@840d8db0c01a:229d5823f4f9f0a8050cb9513fc30afca642b4a1": {
+    "kind": "resolution",
+    "variables": [
+      "long-term external debt",
+      "IMF credit"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "variables": [
+          0,
+          1
+        ],
+        "cue": "of",
+        "role": "debtor",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "without IMF credit"
+    ],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2020",
+        "end": "2020"
+      }
+    ]
+  },
+  "Extraction@840d8db0c01a:a8e918d1f5d32f6d791b05bfeaa4979981813ffe": {
+    "kind": "resolution",
+    "variables": [
+      "debt"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "variables": [
+          0
+        ],
+        "cue": "owes",
+        "role": "debtor",
+        "members": false
+      },
+      {
+        "text": "China",
+        "span": "China",
+        "variables": [
+          0
+        ],
+        "cue": "owes",
+        "role": "creditor",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "excluding debt relief"
+    ],
+    "dates": []
+  },
+  "Extraction@840d8db0c01a:5eb3d531a59f3679ed5289c0b18dd1f651a26e6e": {
+    "kind": "resolution",
+    "variables": [
+      "ODA",
+      "grants"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "variables": [],
+        "cue": "to",
+        "role": "recipient",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "excluding grants"
+    ],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "Extraction@840d8db0c01a:afdc577c0bdf0c84fe6e0eab90219d7ee8c5c708": {
+    "kind": "resolution",
+    "variables": [
+      "ODA excluding standard grants"
+    ],
+    "entities": [
+      {
+        "text": "France",
+        "span": "France",
+        "variables": [
+          0
+        ],
+        "cue": "from",
+        "role": "source",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@840d8db0c01a:c1865abbdfe72a6fd6c0cce3e7de9a3507f74d82": {
+    "kind": "resolution",
+    "variables": [
+      "ODA"
+    ],
+    "entities": [
+      {
+        "text": "Africa",
+        "span": "Africa",
+        "variables": [
+          0
+        ],
+        "cue": "to",
+        "role": "recipient",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "excluding North Africa"
+    ],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "Extraction@840d8db0c01a:84a86541671d33b5b039a2fdf8d02d40e81bebcd": {
+    "kind": "resolution",
+    "variables": [
+      "bilateral ODA",
+      "bilateral loans"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "variables": [],
+        "cue": "to",
+        "role": "recipient",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "excluding bilateral loans"
+    ],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "Extraction@840d8db0c01a:133b276dee3858447210236a8cc0b7545cc80711": {
+    "kind": "resolution",
+    "variables": [
+      "bilateral aid"
+    ],
+    "entities": [
+      {
+        "text": "Norway",
+        "span": "Norway's",
+        "variables": [
+          0
+        ],
+        "cue": "Norway's",
+        "role": "source",
+        "members": false
+      },
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "variables": [
+          0
+        ],
+        "cue": "to",
+        "role": "recipient",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "not counting what goes through multilaterals"
+    ],
+    "dates": []
+  },
+  "ExclusionRead@3c024839b279:2d8241f2d6534bf9df75be8273a614f9cd8dcc18": {
+    "exclusions": []
+  },
+  "Extraction@840d8db0c01a:7dfa2c0c4cd3e1cdf7a3106bc9c3f28ebf43c73c": {
+    "kind": "resolution",
+    "variables": [
+      "budget support"
+    ],
+    "entities": [
+      {
+        "text": "Low income countries",
+        "span": "Low income countries",
+        "variables": [
+          0
+        ],
+        "cue": null,
+        "role": "recipient",
+        "members": true
+      },
+      {
+        "text": "Germany",
+        "span": "Germany",
+        "variables": [
+          0
+        ],
+        "cue": "from",
+        "role": "source",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "range",
+        "start": "2020",
+        "end": "2024"
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:c8419bc11fa4ad3498adb5abe53188b03da7c5a3": {
+    "exclusions": []
+  },
+  "Extraction@840d8db0c01a:f677836e36c9d90a0cd202c40af6e656c67a6309": {
+    "kind": "resolution",
+    "variables": [
+      "budget support"
+    ],
+    "entities": [
+      {
+        "text": "Germany",
+        "span": "Germany",
+        "variables": [
+          0
+        ],
+        "cue": "Germany",
+        "role": "source",
+        "members": false
+      },
+      {
+        "text": "low income countries",
+        "span": "low income countries",
+        "variables": [
+          0
+        ],
+        "cue": "to",
+        "role": "recipient",
+        "members": true
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "range",
+        "start": "2020",
+        "end": "2024"
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:290f3281fefa2638c4a75e265a05f1e135337209": {
+    "exclusions": []
+  },
+  "Extraction@840d8db0c01a:ed19220f050161da88b4dc390e9bdb26cb3b337f": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "South Korea",
+        "span": "Korea",
+        "variables": [
+          0
+        ],
+        "cue": "Korea's",
+        "role": "recipient",
+        "members": false
+      }
+    ],
+    "operations": [
+      {
+        "verb": "rank",
+        "variable": 0,
+        "phrase": "top",
+        "over": "origin"
+      }
+    ],
+    "dropped_qualifiers": [
+      "top"
+    ],
+    "dates": []
+  },
+  "ExclusionRead@3c024839b279:14de9058f22577da8efb517aab73967ac0714621": {
+    "exclusions": []
+  },
+  "Extraction@840d8db0c01a:cc5b34e91e7c01a9cc31713e4e6a3a3d0b206c12": {
+    "kind": "resolution",
+    "variables": [
+      "total ODA"
+    ],
+    "entities": [
+      {
+        "text": "Norway",
+        "span": "Norway",
+        "variables": [
+          0
+        ],
+        "cue": "Norway",
+        "role": "source",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2017",
+        "end": "2017"
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:8550a95f90b18a8655e834d73df122ff26a9e53a": {
+    "exclusions": []
+  },
+  "Extraction@840d8db0c01a:41b2eb9f9c42b272f84fc5d32b1969ba1fbdc70a": {
+    "kind": "resolution",
+    "variables": [
+      "total aid"
+    ],
+    "entities": [
+      {
+        "text": "Sweden",
+        "span": "Sweden",
+        "variables": [],
+        "cue": "Sweden",
+        "role": "source",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "range",
+        "start": "2010",
+        "end": null
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:9099cbc0154ce235fae4903f37151e5d8224ce42": {
+    "exclusions": []
+  },
+  "Extraction@840d8db0c01a:a62160f69ac9f5c1e689cbc1756cdfeda8feeb6d": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "Sweden",
+        "span": "Sweden",
+        "variables": [],
+        "cue": null,
+        "role": null,
+        "members": false
+      }
+    ],
+    "operations": [
+      {
+        "verb": "aggregate",
+        "variable": 0,
+        "phrase": "total",
+        "over": null
+      }
+    ],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "range",
+        "start": "2010",
+        "end": null
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:100f845c1ab0f66a63a1d4c1fe8a0bc0e3a85195": {
+    "exclusions": []
+  },
+  "Extraction@840d8db0c01a:edb0c07b079298c8d6ec55df3e44db85e3051950": {
+    "kind": "resolution",
+    "variables": [
+      "total ODA"
+    ],
+    "entities": [
+      {
+        "text": "Norway",
+        "span": "Norway",
+        "variables": [
+          0
+        ],
+        "cue": null,
+        "role": null,
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2017",
+        "end": "2017"
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:91008127590cbf8ea0628d48b92e1bdc06b58c1d": {
+    "exclusions": []
+  },
+  "Extraction@840d8db0c01a:340d399daa03b0eea6e3d2eb6dd98921f2fa8396": {
+    "kind": "resolution",
+    "variables": [
+      "total aid"
+    ],
+    "entities": [
+      {
+        "text": "Korea",
+        "span": "Korea",
+        "variables": [],
+        "cue": null,
+        "role": null,
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "1980",
+        "end": "1980"
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:43b75bc417c29b8fe4aca95e15e5110db94c5506": {
+    "exclusions": []
+  },
+  "Extraction@840d8db0c01a:ed5b282aff6274108c4fb9e63fa14ea4076d5505": {
+    "kind": "resolution",
+    "variables": [
+      "total aid"
+    ],
+    "entities": [
+      {
+        "text": "South Korea",
+        "span": "Korea",
+        "variables": [
+          0
+        ],
+        "cue": null,
+        "role": null,
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2005",
+        "end": "2005"
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:ee1cc3e0d985d7372928eac207aebec4fe863833": {
+    "exclusions": []
+  },
+  "Extraction@840d8db0c01a:f3f42e3570ad97b4e8d974d8fb93d560d2121710": {
+    "kind": "resolution",
+    "variables": [
+      "health aid"
+    ],
+    "entities": [
+      {
+        "text": "United Kingdom",
+        "span": "UK",
+        "variables": [
+          0
+        ],
+        "cue": "UK",
+        "role": "source",
+        "members": false
+      },
+      {
+        "text": "Tanzania",
+        "span": "Tanzania",
+        "variables": [
+          0
+        ],
+        "cue": "in",
+        "role": "recipient",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "ExclusionRead@3c024839b279:fb69a2c128560087fb82ab2c8a7890deaf728b20": {
+    "exclusions": []
+  },
+  "Extraction@840d8db0c01a:149ea0ca39c45f2c6dd1c0eba1e015b7fbc3deed": {
+    "kind": "resolution",
+    "variables": [
+      "health aid"
+    ],
+    "entities": [
+      {
+        "text": "United Kingdom",
+        "span": "UK",
+        "variables": [
+          0
+        ],
+        "cue": "UK",
+        "role": "source",
+        "members": false
+      },
+      {
+        "text": "Tanzania",
+        "span": "Tanzania",
+        "variables": [
+          0
+        ],
+        "cue": "in",
+        "role": "recipient",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:7dabaf367f2e4c654adda839fc942c3f19a6954b": {
+    "exclusions": []
+  },
+  "Extraction@840d8db0c01a:655d3c38991c96311dacf1f36465c5bbfdb04d85": {
+    "kind": "resolution",
+    "variables": [
+      "health aid"
+    ],
+    "entities": [
+      {
+        "text": "Germany",
+        "span": "Germany",
+        "variables": [
+          0
+        ],
+        "cue": "Germany",
+        "role": "source",
+        "members": false
+      },
+      {
+        "text": "Tanzania",
+        "span": "Tanzania",
+        "variables": [
+          0
+        ],
+        "cue": "to",
+        "role": "recipient",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "ExclusionRead@3c024839b279:59dd3947da350e880dba704e0b46985c9f01c838": {
+    "exclusions": []
+  },
+  "Extraction@840d8db0c01a:61baccfea738978351aeda2ff1b11722c234fd13": {
+    "kind": "resolution",
+    "variables": [
+      "official development assistance",
+      "gross national income"
+    ],
+    "entities": [
+      {
+        "text": "Germany",
+        "span": "Germany",
+        "variables": [
+          0,
+          1
+        ],
+        "cue": null,
+        "role": null,
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "range",
+        "start": "2015",
+        "end": "2022"
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:67faadf2816fbec3820584c90c51e360ab50148a": {
+    "exclusions": []
+  },
+  "Extraction@840d8db0c01a:dde365c4f65370dea8d42d18cca3991271d26fc9": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "Sudan",
+        "span": "Sudan",
+        "variables": [
+          0
+        ],
+        "cue": null,
+        "role": null,
+        "members": false
+      },
+      {
+        "text": "South Korea",
+        "span": "Korea",
+        "variables": [
+          0
+        ],
+        "cue": "from",
+        "role": "source",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "ExclusionRead@3c024839b279:446bfe66c96f0dee8fcd343bf6dbae4fdccd14b5": {
+    "exclusions": []
+  },
+  "Extraction@840d8db0c01a:06bc7151ad771f392111de2f73fa8b48b37ea06d": {
+    "kind": "resolution",
+    "variables": [
+      "official development assistance"
+    ],
+    "entities": [
+      {
+        "text": "Spain",
+        "span": "Spain",
+        "variables": [
+          0
+        ],
+        "cue": "from",
+        "role": "source",
+        "members": false
+      },
+      {
+        "text": "Democratic Republic of the Congo",
+        "span": "Congo",
+        "variables": [
+          0
+        ],
+        "cue": "to",
+        "role": "recipient",
+        "members": false
+      },
+      {
+        "text": "South Korea",
+        "span": "Korea",
+        "variables": [
+          0
+        ],
+        "cue": "from",
+        "role": "source",
+        "members": false
+      },
+      {
+        "text": "Ghana",
+        "span": "Ghana",
+        "variables": [
+          0
+        ],
+        "cue": "to",
+        "role": "recipient",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2019",
+        "end": "2019"
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:b3b4d8e6d352f19884e755b5d53d385f0f6e2738": {
+    "exclusions": []
+  },
+  "Extraction@840d8db0c01a:fb2d9d7b75fdd759ecba946f143c90df1adba7b4": {
+    "kind": "resolution",
+    "variables": [
+      "population"
+    ],
+    "entities": [
+      {
+        "text": "Ghana",
+        "span": "Ghana",
+        "variables": [
+          0
+        ],
+        "cue": null,
+        "role": null,
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "python concurrency probe"
+    ],
+    "dates": [
+      {
+        "kind": "range",
+        "start": "2015",
+        "end": "2020"
+      }
+    ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:8608389ebb9acdfadb64bb71f0a27182af5d7d25": {
+    "chosen_shape_index": 0,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "age",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "nativity",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "employment",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "race",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "placeOfResidenceClassification",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "religion",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "literacyStatus",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "gender",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "residenceType",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "educationalAttainment",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "placeOfBirth",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "armedForcesStatus",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": null,
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 0,
+        "rating": 1.0
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:574b862c3f7f85bb0457193ca68765cde091f1a2": {
+    "exclusions": []
+  },
+  "Extraction@840d8db0c01a:a6b1e2356cc15932682849febeb9b72a6ea47cd7": {
+    "kind": "resolution",
+    "variables": [
+      "health aid"
+    ],
+    "entities": [
+      {
+        "text": "Germany",
+        "span": "Germany",
+        "variables": [
+          0
+        ],
+        "cue": "Germany",
+        "role": "source",
+        "members": false
+      },
+      {
+        "text": "Tanzania",
+        "span": "Tanzania",
+        "variables": [
+          0
+        ],
+        "cue": "to",
+        "role": "recipient",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2021",
+        "end": "2021"
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:69ad8850ac0a259352bed1432c9d89ae52e56f12": {
+    "exclusions": []
+  },
+  "Extraction@840d8db0c01a:e4624e67273fc841d3e4a97924bb8885c4089216": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "Democratic Republic of the Congo",
+        "span": "Congo",
+        "variables": [
+          0
+        ],
+        "cue": "from",
+        "role": "recipient",
+        "members": false
+      },
+      {
+        "text": "Belgium",
+        "span": "Belgium",
+        "variables": [
+          0
+        ],
+        "cue": "from",
+        "role": "source",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
   }
 }

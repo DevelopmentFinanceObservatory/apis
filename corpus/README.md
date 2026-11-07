@@ -43,6 +43,7 @@ Each `corpus/*.yaml` file is a YAML list of cases. Measure families live in `cor
 | `reuse`                | Optional sentence-panel id.                                                                                                      |
 | `tags`                 | A mapping of tag name to a value or list of values.                                                                              |
 | `known_failure`        | `{issue, checks}`: checks that fail on the current engine, with the issue tracking the fault.                                    |
+| `repeat`               | Fresh runs the case takes on each side of the gate, at least two. The `agreement` check fails unless every run gives one answer. |
 | `expect`               | What a correct answer looks like.                                                                                                |
 
 ## The `expect` block
@@ -98,4 +99,4 @@ A case gates when it sits in the `main` slice, its activation is `live`, it hold
 
 ## Expectation hash
 
-`search.eval.cases.expectation_hash` is the sha256 of the case's query, door, door payload, `include_observations` and `expect` as authored, with families expanded. Editing `why`, `tags`, `slice`, `activation`, `reuse` or `known_failure` leaves it unchanged. Editing a family changes it for every case that names the family. The paired gate treats a case whose hash differs from the base corpus as new.
+`search.eval.cases.expectation_hash` is the sha256 of the case's query, door, door payload, `include_observations`, `repeat` where set, and `expect` as authored, with families expanded. Editing `why`, `tags`, `slice`, `activation`, `reuse` or `known_failure` leaves it unchanged. Editing a family changes it for every case that names the family. The paired gate treats a case whose hash differs from the base corpus as new.

@@ -19,10 +19,10 @@ import hashlib
 import json
 import logging
 import re
-from collections.abc import Iterator
+from collections.abc import Callable, Coroutine, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, Literal, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar
 
 import httpx
 from pydantic import BaseModel, ValidationError
@@ -50,6 +50,22 @@ _DETACHED_CLIENT = None
 # Memo and extraction-store hits report zero usage because they skip Gemini. Live calls return None
 # when Gemini omits usage metadata.
 MEMO_HIT_USAGE: dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "cached_tokens": 0}
+
+
+# The usage key counting the model calls a request sent whose tokens it cannot count.
+UNCOUNTED_CALLS = "uncounted_calls"
+
+
+def sum_usage(a: dict | None, b: dict | None) -> dict | None:
+    """Sum two LLM usage dicts key by key, over every key either holds, in the order they
+    first appear: the Gemini counts, ``jev_input_tokens`` and ``jev_output_tokens`` from a
+    Jev call, and ``uncounted_calls``. Return `None` when both are `None`."""
+    if a is None:
+        return b
+    if b is None:
+        return a
+    return {key: a.get(key, 0) + b.get(key, 0) for key in a | b}
+
 
 # Follower wait limit. HttpOptions.timeout is per phase, so a stalled
 # connection can outlast it. This overall wait uses the same configured bound.
@@ -234,6 +250,79 @@ def for_stage(
     clone = copy.copy(llm)
     clone._thinking_level = level
     return clone
+
+
+def reseeded(llm: SupportsLLM) -> SupportsLLM:
+    """`llm` sampling under another seed: a shallow copy whose seed is one past `llm`'s, or
+    1 for an unseeded client. It shares the original's client, memo and extraction store,
+    and the seed enters the memo key (`_memo_key`), so the memo keeps the two answers apart.
+    Any other `SupportsLLM` comes back as it is."""
+    if not isinstance(llm, LLM):
+        return llm
+    clone = copy.copy(llm)
+    clone._seed = 1 if llm._seed is None else llm._seed + 1
+    return clone
+
+
+async def _within_model_timeout[T](call: Callable[[], Coroutine[Any, Any, T]]) -> T:
+    """`call()` bounded by `llm_timeout_s` from its start, raising `LLMInfraError` at the
+    deadline as a memo follower does. Cancelling a memo leader's caller releases its lease,
+    and the memo then cancels the live call (`_lead`). The coroutine is made here, so a task
+    cancelled before it starts leaves none unawaited."""
+    try:
+        async with asyncio.timeout(config.settings().llm_timeout_s):
+            return await call()
+    except TimeoutError as exc:
+        raise LLMInfraError(f"Gemini API error: {_LLM_WAITER_DEADLINE_EXCEEDED_DETAIL}") from exc
+
+
+async def two_samples[T](
+    sample: Callable[[SupportsLLM], Coroutine[Any, Any, tuple[T, dict | None]]],
+    llm: SupportsLLM,
+    *,
+    stage: str,
+) -> tuple[T, T | None, dict | None]:
+    """Two concurrent samples of one call, `sample(llm)` and `sample(reseeded(llm))`, with
+    their summed usage. A first sample that fails raises and cancels the second.
+
+    Once the first answers, the second gets `llm_second_sample_wait_s` more. A second that
+    fails with `LLMInfraError`, a refusal among them, or is still running then comes back
+    `None`, so the caller serves the first with nothing to agree with. Its usage still
+    counts: a refusal's reported tokens, else one uncounted call (`UNCOUNTED_CALLS`), since
+    its request was sent and no response reports its tokens. `stage` names the call in the
+    warning such a second logs.
+
+    A second still running when the wait ends is cancelled and awaited before the first is
+    served, so it releases its call and its pool connection (the memo cancels a leader's
+    live call, `_lead`) and stores nothing: a request holds no model call past its own
+    reads, and the next identical call samples the second again. The second also ends by
+    `llm_timeout_s` from its start (`_within_model_timeout`)."""
+    second_task = asyncio.create_task(_within_model_timeout(lambda: sample(reseeded(llm))))
+    try:
+        first, first_usage = await sample(llm)
+    except BaseException:
+        second_task.cancel()
+        await asyncio.gather(second_task, return_exceptions=True)
+        raise
+    try:
+        async with asyncio.timeout(config.settings().llm_second_sample_wait_s):
+            second, second_usage = await asyncio.shield(second_task)
+    except asyncio.CancelledError:
+        second_task.cancel()
+        raise
+    except (LLMInfraError, TimeoutError) as exc:
+        # A wait that ran out carries no traceback worth logging.
+        logger.warning(
+            "%s: second sample failed; the first is served unagreed",
+            stage,
+            exc_info=None if isinstance(exc, TimeoutError) else exc,
+        )
+        if not second_task.done():
+            second_task.cancel()
+            await asyncio.gather(second_task, return_exceptions=True)
+        refused = exc.usage if isinstance(exc, LLMOutputRefused) else None
+        return first, None, sum_usage(first_usage, refused or {UNCOUNTED_CALLS: 1})
+    return first, second, sum_usage(first_usage, second_usage)
 
 
 def _thinking_config_for_model(

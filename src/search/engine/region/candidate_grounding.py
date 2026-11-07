@@ -9,7 +9,7 @@ import functools
 import logging
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import NamedTuple, cast
 
 from code_index.shared import get_index, get_measure_index
@@ -20,6 +20,7 @@ from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import Facet
 from search.engine.envelope import now_ms
 from search.engine.errors import EngineInfraError
+from search.engine.extract import DateRequest
 from search.engine.region.arcs import (
     inapplicable_slots_from_member_facts,
     unresolved_slots_from_member_facts,
@@ -58,6 +59,7 @@ from search.engine.region.grounding import (
     requested_window_from_date_request,
     restate_role_scope_warnings,
 )
+from search.engine.region.materialise_step import Departed
 from search.engine.region.observations.bulk_scope import BulkScope, bulk_scope_for
 from search.engine.region.observations.entities import (
     _flat_obs_entities,
@@ -82,6 +84,7 @@ from search.engine.region.scope import (
     stated_scope_members,
 )
 from search.engine.region.state import ResolveState
+from search.engine.region.trailing import settle_trailing
 from search.engine.retrieval.bound_values import (
     MeasureFamilyCacheKey,
     MeasurePartition,
@@ -160,6 +163,11 @@ class _CandidatePrep:
     scope_types: dict[str, str]
     # Each candidate's unit filter as a twin cluster member (`_twin_unit_filters`), else None.
     twin_unit_filters: list[Mapping[str, FacetAxisFilter] | None]
+    # Each candidate's date request: a trailing request settled on the newest years its
+    # filtered plan serves (`trailing.settle_trailing`), else the request's own.
+    date_requests: list[DateRequest | None]
+    # The departure each candidate's stale newest year raises (`trailing.stale_departure`).
+    trailing_departures: list[Departed | None]
 
 
 def _twin_unit_filters(
@@ -182,6 +190,8 @@ def _prepare_candidate_context(state: ResolveState, candidates: list[_Candidate]
     preview's read plan take that filter once per candidate, before any election
     (`filter_answer`). Under a bound unit each candidate's conversion then runs over its
     filtered plan (`_candidate_conversions`), and all three leave out the rows it omits.
+    Before that, a trailing request reads each candidate over the newest years its own
+    filtered plan serves (`_settled_trailing`).
     Each scope lists the members its candidate's filtered plan serves, then one label/type
     batch covers their union.
 
@@ -279,6 +289,10 @@ def _prepare_candidate_context(state: ResolveState, candidates: list[_Candidate]
             )
         )
 
+    candidates, _cand_filtered, _cand_date_requests, _cand_trailing_departures = _settled_trailing(
+        state, candidates, _cand_filtered
+    )
+
     _cand_unit_coverage = [UnitCoverage() for _ in candidates]
     _cand_unit_gate_reasons: list[str | None] = [None for _ in candidates]
     if state.bound_unit_outcome is not None:
@@ -288,6 +302,7 @@ def _prepare_candidate_context(state: ResolveState, candidates: list[_Candidate]
             _cand_filtered,
             _cand_elected_raw,
             [entities for entities, _warning in _cand_obs_entities],
+            _cand_date_requests,
         )
         _cand_filtered = [c.answer for c in converted]
         _cand_unit_coverage = [c.coverage for c in converted]
@@ -316,7 +331,40 @@ def _prepare_candidate_context(state: ResolveState, candidates: list[_Candidate]
         scope_labels=_cand_scope_labels,
         scope_types=_cand_scope_types,
         twin_unit_filters=_cand_twin_unit_filters,
+        date_requests=_cand_date_requests,
+        trailing_departures=_cand_trailing_departures,
     )
+
+
+def _settled_trailing(
+    state: ResolveState, candidates: list[_Candidate], filtered: list[FilteredAnswer]
+) -> tuple[list[_Candidate], list[FilteredAnswer], list[DateRequest | None], list[Departed | None]]:
+    """Each candidate read over the newest years its own filtered plan serves under a
+    trailing request (`trailing.settle_trailing`), so each Spec states its own range, with
+    its date request and the departure a stale newest year raises. A candidate the request
+    does not settle keeps its answer and the request's own date request. The elected
+    shape's result stays the state's (`ResolveState.mat_result`)."""
+    kept: list[_Candidate] = []
+    answers: list[FilteredAnswer] = []
+    requests: list[DateRequest | None] = []
+    departures: list[Departed | None] = []
+    for cand, answer in zip(candidates, filtered, strict=True):
+        settled = settle_trailing(
+            cand.mat, answer, date_request=state.date_request, coverage_index=state.coverage.index
+        )
+        if settled is None:
+            kept.append(cand)
+            answers.append(answer)
+            requests.append(state.date_request)
+            departures.append(None)
+            continue
+        if cand.mat is state.mat_result:
+            state.mat_result = settled.mat
+        kept.append(replace(cand, mat=settled.mat))
+        answers.append(settled.filtered)
+        requests.append(settled.date_request)
+        departures.append(settled.departure)
+    return kept, answers, requests, departures
 
 
 def _candidate_observation_entities(
@@ -351,6 +399,7 @@ def _candidate_conversions(
     filtered: Sequence[FilteredAnswer],
     elected: Sequence[Mapping[str, tuple[Mapping[str, FacetSelection], ...]]],
     obs_entities: Sequence[Mapping[str, list[str]]],
+    date_requests: Sequence[DateRequest | None],
 ) -> list[_CandidateConversion]:
     """Each candidate's conversion (`_CandidateConversion`), in input order.
 
@@ -383,7 +432,7 @@ def _candidate_conversions(
             rate_cache=state.rate_cache,
             dated_facets=state.graph,
             deadline=state.deadline,
-            date_request=state.date_request,
+            date_request=date_requests[index],
             coverage_index=state.coverage.index,
         )
         if answer is filtered[index]:
@@ -656,6 +705,10 @@ class _GroundedCandidate:
     unit_coverage: UnitCoverage
     # The bound-unit gate's verdict on the plan its answer serves (`_CandidateConversion`).
     unit_gate_reason: str | None
+    # The Spec's own date request (`_CandidatePrep.date_requests`): a trailing request
+    # settled on the newest years its plan serves, which its option coverage and related
+    # measures read, as a resubmit of the Spec does.
+    date_request: DateRequest | None
 
     @property
     def spec_id(self) -> str:
@@ -763,7 +816,7 @@ def _candidate_answer(
         groundwork.entities,
         identity_entities=groundwork.identity_entities,
         open_roles=cand.mat.open_axes,
-        requested_window=requested_window_from_date_request(state.date_request),
+        requested_window=requested_window_from_date_request(prep.date_requests[cand_index]),
         facet_bindings=facet_bindings,
         facets=groundwork.facets,
         resolved_sources=groundwork.source_refs,
@@ -878,7 +931,7 @@ def _finish_candidate(
         slot_options=groundwork.slot_options_raw,
         available_at_place=cand_available_at_place,
         confidence=cand_confidence,
-        requested_window=requested_window_from_date_request(state.date_request),
+        requested_window=requested_window_from_date_request(prep.date_requests[cand_index]),
         identity_entities=groundwork.identity_entities,
         open_roles=cand_mat.open_axes,
         inapplicable_slots=groundwork.inapplicable_slots,
@@ -957,6 +1010,7 @@ def _finish_candidate(
         unit_refusals=unit_refusals,
         unit_coverage=coverage,
         unit_gate_reason=prep.unit_gate_reasons[cand_index],
+        date_request=prep.date_requests[cand_index],
     )
 
 
@@ -1090,6 +1144,8 @@ def ground_candidates(state: ResolveState, candidates: list[_Candidate]) -> _Gro
         entries[entry.spec_id] = entry
         if cand.mat.family_total_absent is not None:
             state.family_total_absent[entry.spec_id] = cand.mat.family_total_absent
+        if (stale := prep.trailing_departures[cand_index]) is not None:
+            state.stale_trailing[entry.spec_id] = stale
 
     _warn_for_candidates(state, prep, groundworks)
     return _GroundedCandidates(entries=entries, answer_t0=answer_t0)

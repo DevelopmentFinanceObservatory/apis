@@ -647,11 +647,14 @@ class TotalGroup:
     With `sums_members` true the total equals the sum of the group's members plus
     `residuals`, the residuals it counts beside them, sorted. With `sums_members` false the
     total is the figure the source publishes for the group, which can differ from that sum,
-    and it counts no residuals."""
+    and it counts no residuals. With `declares_providers` true a dataset publishing the total
+    declares each member of the group a provider, so search reads a member named without a
+    direction as the provider on that dataset (`search.engine.region.undirected`)."""
 
     group: str
     residuals: tuple[str, ...] = ()
     sums_members: bool = True
+    declares_providers: bool = False
 
 
 def _unallocated(*regions: str) -> tuple[str, ...]:
@@ -676,7 +679,10 @@ def _unallocated(*regions: str) -> tuple[str, ...]:
 # Africa and South and Central Asia, but they are parties, not residuals, and their amounts stop
 # before 1994, so no row counts them. Totals that hold no group: DAC's lower and upper middle
 # income and small island states totals differ from the sums over the resolver's members, and
-# Northern America has no amounts after 1996.
+# Northern America has no amounts after 1996. DAC countries, total, alone declares providers
+# (`TotalGroup.declares_providers`). The non-DAC providers' total and the G7's declare none, so
+# those providers fall to the coverage rule: the non-DAC group holds major recipients such as
+# Iraq and Timor-Leste, whose question named without a direction is about the aid they receive.
 TOTAL_GROUPS: Mapping[str, TotalGroup] = {
     "DACAfrica": TotalGroup(
         "africa",
@@ -720,7 +726,7 @@ TOTAL_GROUPS: Mapping[str, TotalGroup] = {
         _unallocated("Caribbean", "CaribbeanAndCentralAmerica", "CentralAmerica"),
     ),
     "DACCentralAmerica": TotalGroup("CentralAmerica", _unallocated("CentralAmerica")),
-    "DACCountriesTotal": TotalGroup("groups/OECD.DAC", sums_members=False),
+    "DACCountriesTotal": TotalGroup("groups/OECD.DAC", sums_members=False, declares_providers=True),
     "DACEasternAfrica": TotalGroup(
         "groups/OECD.DAC.Region.EasternAfrica", _unallocated("EasternAfrica")
     ),

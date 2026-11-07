@@ -12,6 +12,7 @@ from code_index.shared import get_index
 from materialise.place_scope import DefaultPlaceScope
 from search.engine.clients.materialise_bridge import _FACET_PROBE_MAX_PAIRS_PER_POST
 from search.engine.place import ConsultedPresence, is_worldwide_scope
+from search.engine.reading_coverage import observed_years
 from search.engine.retrieval.bound_values import (
     RoleKeys,
     _bound_value_conflicts,
@@ -888,7 +889,7 @@ def _default_scope_short_circuit(
                 sv_dcids=[representative_sv],
                 has_data=False,
                 coverage=CoverageBare(
-                    has_data=False, window=date_request.window if date_request else None
+                    has_data=False, window=date_request.asked_window if date_request else None
                 ),
                 scope_member_dcids=[],
                 member_facts=member_facts,
@@ -904,7 +905,7 @@ def _default_scope_short_circuit(
                 sv_dcids=[representative_sv],
                 has_data=False,
                 coverage=CoverageBare(
-                    has_data=False, window=date_request.window if date_request else None
+                    has_data=False, window=date_request.asked_window if date_request else None
                 ),
                 available_at_place=False,
                 family_total_absent=family.total_absent(representative_sv, ()),
@@ -942,7 +943,7 @@ def _no_entity_disambiguation(
     from search.engine.retrieval.retrieve import Materialised, MemberPopulation
     from search.models import CoverageBare
 
-    no_entity_window = date_request.window if date_request is not None else None
+    no_entity_window = date_request.asked_window if date_request is not None else None
     if not family.members:
         return Materialised(
             sv_dcids=[representative_sv],
@@ -1138,6 +1139,9 @@ class _Probe(NamedTuple):
     confirmed: list[_ConfirmedMember]
     # The members read holding data at their places in other years only.
     outside_years: list[_ConfirmedMember]
+    # The confirmed members holding a point in the years the request judges by
+    # (`extract.DateRequest.judged`), all of them unless the request trails.
+    judged: frozenset[str]
     # Whether every member was read, so `confirmed` counts every member holding a point.
     read_all: bool
 
@@ -1156,6 +1160,7 @@ def _probe_and_scan(
     needs_dates: bool,
     graph: EngineGraphClient,
     years: PlanYears,
+    judged_years: PlanYears,
     datasets: ElectedDatasets,
     minted: Collection[str],
     elects: Sequence[str] | None = None,
@@ -1165,11 +1170,13 @@ def _probe_and_scan(
     scan the members read for points in `years`, each at its own places. With `facet_batch`
     the probe is one of the reads a settling Spec shares (`FacetBatch.facets`).
 
-    `elects` is the election order of an answer that names one member: the first of them
-    holding a point in `years` answers. Its reads stop once they settle that member, the
-    first holding a point with every member before it read, or once they have read every one
-    of them, so a family the tables hold whole is read only as far as its answer. "Latest
-    life expectancy data" at the default scope elects the family's total from its first
+    `elects` is the election order of an answer that names one member: the first of them holding
+    a point in `judged_years`, the years the request judges by, answers. A request that trails
+    confirms members over its wider `years`, so the span its answer settles on was confirmed in
+    full, and judges over the years its newest year may lie in. Its reads stop once they settle
+    that member, the first holding a point with every member before it read, or once they have
+    read every one of them, so a family the tables hold whole is read only as far as its answer.
+    "Latest life expectancy data" at the default scope elects the family's total from its first
     read, where reading all 351 members of the held family takes 27 reads of 2 to 3 s each.
     Without `elects`, as for a set binding, a family keeping several members, which the
     answer serves together, or a family whose `minted` members carry an elected dataset,
@@ -1198,7 +1205,7 @@ def _probe_and_scan(
             if _positive_entities(
                 {entity: published(datasets, sv, facets) for entity, facets in read[sv].items()},
                 places_of[sv],
-                years,
+                judged_years,
             ):
                 return True
         return True
@@ -1239,10 +1246,16 @@ def _probe_and_scan(
             confirmed.append((sv, facets, positive_entities if plural else None))
         elif any(f.obs_count > 0 for f in facets):
             outside_years.append((sv, facets, None))
+    judged = frozenset(
+        sv
+        for sv, _facets, _entities in confirmed
+        if _positive_entities(facets_by_sv_batch.get(sv, {}), places_of[sv], judged_years)
+    )
     return _Probe(
         facets_by_sv=facets_by_sv_batch,
         confirmed=confirmed,
         outside_years=outside_years,
+        judged=judged,
         read_all=all(sv in own for sv in probe_members),
     )
 
@@ -1294,7 +1307,9 @@ def _no_data_at_place(
     return Materialised(
         sv_dcids=[representative_sv],
         has_data=False,
-        coverage=CoverageBare(has_data=False, window=date_request.window if date_request else None),
+        coverage=CoverageBare(
+            has_data=False, window=date_request.asked_window if date_request else None
+        ),
         available_at_place=False,
         family_total_absent=family_total_absent,
         scope_member_dcids=[] if default_scope_probe else None,
@@ -1374,7 +1389,9 @@ def _no_data_in_years(
     return Materialised(
         sv_dcids=[sv],
         has_data=False,
-        coverage=CoverageBare(has_data=False, window=date_request.window if date_request else None),
+        coverage=CoverageBare(
+            has_data=False, window=date_request.asked_window if date_request else None
+        ),
         facets_by_sv={sv: list(facets)},
         available_at_place=True,
         window_gap=window_gap(dateless_plan, years),
@@ -1385,9 +1402,32 @@ def _no_data_in_years(
     )
 
 
+def _newest_year_ahead(
+    served: Sequence[str],
+    winner: str,
+    data_by_sv: Mapping[str, _ConfirmedMember],
+    *,
+    before: int,
+) -> int | None:
+    """The newest year before `before`, the first judged year, that any member ahead of
+    `winner` in election order (`served`) holds at its places, None when none of them holds
+    one (`Materialised.passed_over_newest_year`). Years from `before` on are left out: such
+    a member holds no point in the judged years, so any later year lies past them, and a
+    floor taken from it could pass the winner's newest year."""
+    years: list[int] = []
+    for sv in served[: served.index(winner)]:
+        if sv not in data_by_sv or (held := observed_years(data_by_sv[sv][1])) is None:
+            continue
+        known = held.years if held.years is not None else (held.first, held.last)
+        years.extend(year for year in known if year is not None and year < before)
+    return max(years, default=None)
+
+
 def _materialise_collected(
     collected: list[_ConfirmedMember],
     *,
+    passed_over_newest_year: int | None,
+    confirmed_facets: Mapping[str, list[Facet]],
     facets_by_sv_batch: dict[str, dict[str, list[Facet]]],
     places_of: Mapping[str, Sequence[str]],
     is_plural: bool,
@@ -1443,6 +1483,8 @@ def _materialise_collected(
         coverage_form=form,
         facets_by_sv={sv: facets for sv, facets, _ in collected},
         read_plan=plan,
+        passed_over_newest_year=passed_over_newest_year,
+        confirmed_facets=confirmed_facets,
         facets_by_entity=(
             {
                 e: [f for sv in collected_svs for f in facets_by_sv_batch.get(sv, {}).get(e, [])]
@@ -1592,6 +1634,7 @@ def standard_resolve(
     )
 
     years = plan_years(date_request)
+    judged_years = plan_years(date_request.judged if date_request is not None else None)
     if default_presence is not None and scope_check.active:
         read_places = {place for places in places_of.values() for place in places}
     datasets = elected_datasets(member_facts)
@@ -1601,6 +1644,7 @@ def standard_resolve(
         needs_dates=needs_dates,
         graph=graph,
         years=years,
+        judged_years=judged_years,
         datasets=datasets,
         minted=family.order,
         # The mint checks every kept member's elected dataset, so such a family is read
@@ -1616,34 +1660,53 @@ def standard_resolve(
         probe.outside_years,
     )
 
+    # The members confirmed in the years the request judges by, the members it states.
     population = MemberPopulation(
         admitted=len(member_facts),
         admitted_dcids=tuple(member_facts),
-        confirmed=len(confirmed),
+        confirmed=len(probe.judged),
         exact=exact,
         confirmed_exact=probe.read_all,
     )
     # The answer serves the `served` members holding a point in the years read, every one
-    # of them or the first in election order; a member holding data at the place in other
-    # years only makes an empty answer one for the window. Both lists keep only the members
-    # the datasets mint keeps, a set binding's in probe order and any other's in election
-    # order.
+    # of them, or the first in election order holding one in the years the request judges
+    # by. An answer none of whose members holds a point in those judged years is one for the
+    # window, naming a member holding data at the place in other years. Both lists keep
+    # only the members the datasets mint keeps, a set binding's in probe order and any
+    # other's in election order.
+    judged = probe.judged
+    passed_over_newest_year: int | None = None
     if multi_collect:
         collected = [member for member in confirmed if member[0] in kept]
-        held = [member for member in outside_years if member[0] in kept]
+        held = [m for m in (*confirmed, *outside_years) if m[0] in kept and m[0] not in judged]
     else:
         by_sv = {member[0]: member for member in confirmed}
-        outside_by_sv = {member[0]: member for member in outside_years}
+        data_by_sv = {member[0]: member for member in (*outside_years, *confirmed)}
         collected = [by_sv[sv] for sv in served if sv in by_sv]
-        held = [outside_by_sv[sv] for sv in served if sv in outside_by_sv]
+        held = [data_by_sv[sv] for sv in served if sv in data_by_sv and sv not in judged]
         if not serves_every:
-            collected, held = collected[:1], held[:1]
+            collected, held = [m for m in collected if m[0] in judged][:1], held[:1]
+            # Only a trailing span settles its years, the one reader of the floor.
+            if (
+                collected
+                and date_request is not None
+                and date_request.trailing_years is not None
+                and isinstance(judged_years, TimeWindow)
+                and judged_years.start_year is not None
+            ):
+                passed_over_newest_year = _newest_year_ahead(
+                    served, collected[0][0], data_by_sv, before=judged_years.start_year
+                )
+    if not any(member[0] in judged for member in collected):
+        collected = []
     # A window answer with no point names its first held member alone.
     named_members = collected or held[:1]
     family_total_absent: FamilyTotalAbsent | None = None
     if family.order and len(named_members) <= 1:
         named = named_members[0][0] if named_members else family.order[0]
-        family_total_absent = family.total_absent(named, places_of[family.order[0]], years=years)
+        family_total_absent = family.total_absent(
+            named, places_of[family.order[0]], years=judged_years
+        )
     coverage_facet_label, is_plural = _coverage_label(
         tuple(dict.fromkeys(e for sv, _, _ in named_members for e in places_of[sv])),
         place_dcids=place_dcids,
@@ -1689,6 +1752,8 @@ def standard_resolve(
     return scoped(
         _materialise_collected(
             collected,
+            passed_over_newest_year=passed_over_newest_year,
+            confirmed_facets={sv: facets for sv, facets, _ in confirmed},
             facets_by_sv_batch=facets_by_sv_batch,
             places_of=places_of,
             is_plural=is_plural,

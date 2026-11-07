@@ -5,6 +5,7 @@ check name. ``test_materialisation.py`` covers materialisation."""
 from __future__ import annotations
 
 import copy
+import dataclasses
 from typing import Any
 
 import pytest
@@ -299,6 +300,23 @@ def test_groundedness_reads_a_renamed_field_as_unverifiable():
 )
 def test_task_outcome(response, verdict, ctx: ScoreContext):
     assert CHECKS["task_outcome"](make_case({"definite": {}}), response, ctx).verdict == verdict
+
+
+@pytest.mark.parametrize(
+    ("repeat", "run_agreement", "verdict"),
+    [
+        pytest.param(None, (3, 5), NA, id="no-repeat"),
+        pytest.param(5, None, NA, id="scored-alone"),
+        pytest.param(5, (5, 5), PASS, id="every-run-agrees"),
+        pytest.param(5, (6, 6), PASS, id="more-runs-agree"),
+        pytest.param(5, (4, 5), FAIL, id="one-run-differs"),
+        pytest.param(5, (3, 3), FAIL, id="too-few-runs"),
+    ],
+)
+def test_agreement(repeat, run_agreement, verdict, ctx: ScoreContext):
+    case = make_case({"definite": {}}).model_copy(update={"repeat": repeat})
+    scored = dataclasses.replace(ctx, run_agreement=run_agreement)
+    assert CHECKS["agreement"](case, panel("crs-032"), scored).verdict == verdict
 
 
 def test_score_skips_the_modal_only_checks_on_other_samples():

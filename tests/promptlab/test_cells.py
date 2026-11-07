@@ -36,7 +36,9 @@ from promptlab.store import (
     ExtractRecord,
     StoreError,
 )
+from search.engine.clients.llm import LLM, SupportsLLM
 from search.engine.errors import EngineInputError
+from search.engine.extract import Extraction
 from search.eval.cases import Case, load_cases, validate_case
 from search.models import DatasetResubmitInput, RawTextInput
 from tests.engine._fake_sdmx import FakeSdmxClient
@@ -86,7 +88,9 @@ def _capture_manifest() -> CaptureManifest:
     )
 
 
-async def _run_capture(tmp_path: Path, cases: list[Case], *, name: str = "capture") -> CaptureStore:
+async def _run_capture(
+    tmp_path: Path, cases: list[Case], *, name: str = "capture", llm: SupportsLLM | None = None
+) -> CaptureStore:
     store = CaptureStore.create(tmp_path / name, manifest=_capture_manifest())
     with patch("search.engine.extract.date") as mock_date:
         mock_date.today.return_value = PINNED_DATE
@@ -94,7 +98,7 @@ async def _run_capture(tmp_path: Path, cases: list[Case], *, name: str = "captur
         await run_capture(
             cases,
             out=store,
-            llm=FakeLLM(),
+            llm=llm or FakeLLM(),
             graph=FakeGraph(),
             sdmx=FakeSdmxClient(),
             concurrency=4,
@@ -451,6 +455,35 @@ def test_run_capture_completes_end_to_end(tmp_path: Path):
     conj_binds = {r.leg: r.variable for r in store.bind_records() if r.case_id == "conj-01"}
     assert conj_binds[0] == variable_text[0]
     assert conj_binds[1] == variable_text[1]
+
+
+class _ServedSampleLast(LLM):
+    """Replays the recorded answers under seed 1; the extraction sample under another seed
+    answers first and names one more variable, so the two samples differ."""
+
+    def __init__(self) -> None:
+        super().__init__(seed=1)
+        self._fake = FakeLLM()
+
+    async def generate_structured(self, *, prompt: str, system: str, schema):
+        parsed, usage = await self._fake.generate_structured(
+            prompt=prompt, system=system, schema=schema
+        )
+        if schema is not Extraction:
+            return parsed, usage
+        if self._seed == 1:
+            await asyncio.sleep(0.01)
+            return parsed, usage
+        return parsed.model_copy(update={"variables": [*parsed.variables, "other"]}), usage
+
+
+def test_run_capture_keeps_the_extraction_sample_production_serves(tmp_path: Path):
+    """The capture keeps the sample under the client's own seed, which production serves,
+    though the other sample finished first."""
+    store = asyncio.run(_run_capture(tmp_path, _cases("life-expectancy"), llm=_ServedSampleLast()))
+
+    (record,) = store.extract_records()
+    assert "other" not in record.output["variables"]
 
 
 def test_run_capture_records_the_extract_of_a_catalogue_or_declined_answer(tmp_path: Path):

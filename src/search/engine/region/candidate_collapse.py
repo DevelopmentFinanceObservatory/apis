@@ -573,6 +573,7 @@ async def _assemble_definite(
             measure_partition=_entry.measure_partition,
             places=_survivor.place.roles.roles,
             arcs=_survivor.shape.sv_arc_facts,
+            date_request=_entry.date_request,
         )
         if state.bound_unit_outcome is not None:
             # State the unit lexicon version. A streamed answer also states its preview's
@@ -599,7 +600,10 @@ async def _assemble_definite(
             state, grounded, _survivor_spec
         )
         state.timing["options"] = now_ms() - _options_t0
-        _family = state.family_total_absent_departures((_survivor_spec,))
+        _family = [
+            *state.family_total_absent_departures((_survivor_spec,)),
+            *state.stale_trailing_departures((_survivor_spec,)),
+        ]
         # Place-option tasks run only when `materialise_graph` is available.
         _place_options_materialise_graph = state.materialise_graph
         # Each launch reads the identity of the Spec it is given, a merged one included.
@@ -857,7 +861,10 @@ async def _assemble_candidate_set(
         for spec in _candidate_specs
         if (omitted := _unit_omitted_warning(grounded, spec.spec_id)) is not None
     )
-    _family = state.family_total_absent_departures(_candidate_specs)
+    _family = [
+        *state.family_total_absent_departures(_candidate_specs),
+        *state.stale_trailing_departures(_candidate_specs),
+    ]
     return RegionResult(
         variable_text=state.variable,
         status="candidates",
@@ -917,9 +924,11 @@ async def assemble_candidates(
         dataclasses.replace(cand, uncovered=own)
         for cand, own in zip(admission.admitted, uncovered, strict=True)
     )
-    if state.elected_has_data:
+    trailing = state.date_request is not None and state.date_request.trailing_years is not None
+    if state.elected_has_data and not trailing:
         # The elected shape most often survives, so its related measures are read beside
-        # the grounding and assembly of every candidate (`related_read_for`).
+        # the grounding and assembly of every candidate (`related_read_for`). A trailing
+        # request reads them once the survivor has settled its years.
         start_elected_related_read(state, cast(Materialised, state.mat_result))
     if not candidates and (
         isinstance(state.mat_result, Materialised) and state.mat_result.available_at_place is False

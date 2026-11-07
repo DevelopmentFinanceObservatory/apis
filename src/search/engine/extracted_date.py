@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Literal
 
 from pydantic import BaseModel, Field
+from pydantic.json_schema import SkipJsonSchema
 
 
 def _is_none(value: object) -> bool:
@@ -48,3 +49,21 @@ class ExtractedDate(BaseModel):
             "'last year', 'this year', 'los últimos 10 años'); leave start and end null."
         ),
     )
+    # Set by `time_bind.parse_time_text` after the model's reading, so the response schema
+    # omits it. A dump states it only when set, so a trailing span and the same years named
+    # outright key apart.
+    trailing_years: SkipJsonSchema[int | None] = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "On a span counted back from now ('the last five years', 'the past year'), the "
+            "number of newest years it asks for; `start` and `end` hold the calendar years "
+            "ending at the current one."
+        ),
+    )
+
+    def restated(self) -> ExtractedDate:
+        """This date as the interpretation event states it: the calendar years its words
+        cover, without the count of newest years a span counted back from now asks for,
+        which the event's wire shape does not carry."""
+        return self.model_copy(update={"trailing_years": None})

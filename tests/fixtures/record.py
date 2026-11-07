@@ -1,4 +1,9 @@
-"""Record Search LLM, graph, and SDMX fixtures from live services with credentials stripped."""
+"""Record Search LLM, graph, and SDMX fixtures from live services with credentials stripped.
+
+Run it as `just record-fixtures --file <corpus stem> --ids <ids>`, which supplies the resolver
+cache directory. A case whose every attempt fails stops the run with a non-zero exit before any
+fixture file is written.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +12,7 @@ import os
 import re
 import sys
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
 
@@ -27,6 +32,7 @@ from tests.origin_catalogue.fake_catalogue import FakeCatalogue
 if TYPE_CHECKING:
     from graph_generation import GenerationStamp
     from origin_catalogue.graph import UnAvailabilityClient
+    from search.eval.cases import Case
 
 _FIXTURES_DIR = Path(__file__).parent
 
@@ -792,12 +798,51 @@ def _write_json(path: Path, data: dict) -> None:
     print(f"  Wrote {path}")
 
 
+# Attempts per case before the run gives up on it; the wait doubles from 2 seconds.
+_MAX_ATTEMPTS = 5
+
+
+def record_cases(
+    cases: Sequence[Case],
+    resolve: Callable[[Case], None],
+    *,
+    attempts: int = _MAX_ATTEMPTS,
+) -> dict[str, Exception]:
+    """Resolve each of `cases` through the recording clients, retrying a failed case with a
+    doubling wait. Returns the last error of each case whose every attempt failed, by id."""
+    failures: dict[str, Exception] = {}
+    for case in cases:
+        print(f"  Recording {case.id}: {case.query!r}")
+        for attempt in range(1, attempts + 1):
+            try:
+                resolve(case)
+                break
+            except Exception as exc:
+                if attempt == attempts:
+                    failures[case.id] = exc
+                    break
+                wait = 2**attempt
+                print(f"    attempt {attempt} FAIL ({exc}); retrying in {wait}s")
+                time.sleep(wait)
+    return failures
+
+
+def failure_report(failures: Mapping[str, Exception]) -> str:
+    """The message a run with failed cases exits with: each case and its last error, and that
+    no fixture file was written."""
+    lines = [f"  {case_id}: {exc!r}" for case_id, exc in failures.items()]
+    return "\n".join(
+        [f"Recording failed for {len(failures)} case(s); no fixture file was written:", *lines]
+    )
+
+
 def main() -> None:
     import argparse
 
     from search.engine.clients.graph_client import LiveGraphClient
     from search.engine.clients.llm import LLM
     from search.eval.cases import load_case_files
+    from search.eval.live_clients import bind_run_catalogue
     from search.eval.runner import build_request
     from search.models import ResolveRequest
 
@@ -813,6 +858,11 @@ def main() -> None:
         help="Comma-separated case ids to record (intersected with --file).",
     )
     args = parser.parse_args()
+    if not os.environ.get("RESOLVEKIT_CACHE_DIR"):
+        raise SystemExit(
+            "RESOLVEKIT_CACHE_DIR is unset: the entity resolver needs a cache directory. "
+            "Run `just record-fixtures` (which defaults it), or export it."
+        )
     stem = args.file
     only_ids = {i.strip() for i in args.ids.split(",")} if args.ids else None
 
@@ -846,8 +896,11 @@ def main() -> None:
     sdmx_obs_store: dict = _load_existing("sdmx_obs.json")
     sdmx_availability_store: dict = _load_existing("sdmx_availability.json")
 
-    # Recording binds the permissive catalogue replay binds, so every read replay makes is
-    # recorded, and each resolve is recorded before admission.
+    # The engine reads the code index from the bound graph release, so the run binds the served
+    # release (and the served catalogue) as the eval scripts do. Each resolve then binds the
+    # permissive catalogue replay binds, so every read replay makes is recorded, and each
+    # resolve is recorded before admission.
+    bind_run_catalogue()
     catalogue = FakeCatalogue()
     live_graph = LiveGraphClient.from_search_settings()
     live_llm = LLM()
@@ -869,40 +922,23 @@ def main() -> None:
     live_sdmx = LiveSdmxClient()
     rec_sdmx = _RecordingSdmx(live_sdmx, sdmx_obs_store, sdmx_availability_store)
 
-    try:
-        import asyncio
-        from datetime import date
-        from unittest.mock import patch
+    import asyncio
+    from datetime import date
+    from unittest.mock import patch
 
-        from search.engine.core import resolve_async
+    from search.engine.core import resolve_async
 
+    def resolve(case: Case) -> None:
+        request = ResolveRequest.model_validate(build_request(case))
         # Pin the current year so recorded relative dates and forecast years match replay.
+        with bound_catalogue(catalogue), patch("search.engine.extract.date") as mock_date:
+            mock_date.today.return_value = PINNED_DATE
+            mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+            asyncio.run(resolve_async(request, graph=rec_graph, llm=rec_llm, sdmx=rec_sdmx))
 
-        for case in cases:
-            print(f"  Recording {case.id}: {case.query!r}")
-            _max_attempts = 5
-            for _attempt in range(1, _max_attempts + 1):
-                try:
-                    request = ResolveRequest.model_validate(build_request(case))
-                    with (
-                        bound_catalogue(catalogue),
-                        patch("search.engine.extract.date") as mock_date,
-                    ):
-                        mock_date.today.return_value = PINNED_DATE
-                        mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
-                        asyncio.run(
-                            resolve_async(request, graph=rec_graph, llm=rec_llm, sdmx=rec_sdmx)
-                        )
-                    break
-                except Exception as exc:
-                    if _attempt < _max_attempts:
-                        _wait = 2**_attempt
-                        print(f"    attempt {_attempt} FAIL ({exc}); retrying in {_wait}s")
-                        time.sleep(_wait)
-                    else:
-                        print(f"    ERROR on {case.id} (all {_max_attempts} attempts): {exc}")
-    except ImportError:
-        print("  search.engine.core not yet available; recording graph probes only.")
+    failures = record_cases(cases, resolve)
+    if failures:
+        raise SystemExit(failure_report(failures))
 
     print("\nWriting fixture files...")
     _write_json(_FIXTURES_DIR / "llm_responses.json", llm_store)

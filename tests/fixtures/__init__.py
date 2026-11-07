@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import itertools
 import json
 import os
@@ -337,6 +338,9 @@ class FakeLLM:
         system: str,
         schema: type[_T],
     ) -> tuple[_T, dict | None]:
+        # A live call waits on I/O, so a replayed one yields once and concurrent calls
+        # interleave as they do in production.
+        await asyncio.sleep(0)
         schema_name = schema.__name__
         key = fixture_key(schema, _recorded_system(system), prompt)
         harvest_path = os.environ.get(HARVEST_MISS_PATH_ENV)

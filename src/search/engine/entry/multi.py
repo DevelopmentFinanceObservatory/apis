@@ -11,11 +11,12 @@ from contextlib import aclosing
 from dfo_platform.build import build_commit
 from dfo_platform.trace import get_trace_id
 from search.engine.clients.graph import EngineGraphClient
+from search.engine.clients.llm import sum_usage
 from search.engine.conjoin import combine_regions
 from search.engine.deadline import _await_bounded, _cancel_and_await
 from search.engine.enrichment import _reconcile_after_collapse, _stream_slot_options
 from search.engine.entry.params import EntryParams
-from search.engine.envelope import _sum_usage, now_ms
+from search.engine.envelope import now_ms
 from search.engine.events import DoneEvent, DoneTelemetry, Event, LateDepartures
 from search.engine.region import RegionResult, detect_set_ref
 from search.engine.region.composite_answer import ComponentReads
@@ -62,7 +63,7 @@ async def _stream_combined_regions(
     try:
         total_usage = initial_llm_usage
         for region in regions:
-            total_usage = _sum_usage(total_usage, region.llm_usage)
+            total_usage = sum_usage(total_usage, region.llm_usage)
 
         combine_call = asyncio.to_thread(
             combine_regions,

@@ -46,6 +46,7 @@ from search.engine.clients.graph import EngineGraphClient
 from search.engine.config import settings
 from search.engine.degraded_reads import ReadBudget, note_lost_read
 from search.engine.errors import GraphInfraError
+from search.engine.extract import DateRequest
 from search.engine.region.grounding import requested_window_from_date_request
 from search.engine.region.state import ResolveState
 from search.engine.related import Related, read_related, related_measures
@@ -98,10 +99,11 @@ class LostRelated:
 
 @dataclass(frozen=True, slots=True)
 class RelatedRead:
-    """The related-measures reads started in a task for `stat_var`. `task` settles to the
-    loss that ended them when a read failed or ran past its budget."""
+    """The related-measures reads started in a task for `stat_var` over `window`. `task`
+    settles to the loss that ended them when a read failed or ran past its budget."""
 
     stat_var: str
+    window: RequestedWindow | None
     task: asyncio.Task[Related | LostRelated]
 
 
@@ -117,8 +119,8 @@ class PendingRelated:
 
 def start_elected_related_read(state: ResolveState, mat_result: Materialised) -> None:
     """Read the measure family the elected shape's served members exhibit into
-    `state.measure_family`, and start their related-measures reads into `state.related_read`
-    (`start_related_read`), replacing one the pass started before."""
+    `state.measure_family`, and start their related-measures reads over the request's years
+    into `state.related_read` (`start_related_read`), replacing one the pass started before."""
     served_member_facts = mat_result.member_facts or {}
     role_keys = entity_role_keys(
         state.place.roles.resolved_entities,
@@ -144,6 +146,7 @@ def start_elected_related_read(state: ResolveState, mat_result: Materialised) ->
         measure_partition=state.measure_family[0],
         places=state.place.roles.roles,
         arcs=state.shape_draft.sv_arc_facts,
+        date_request=state.date_request,
     )
 
 
@@ -154,20 +157,23 @@ def start_related_read(
     measure_partition: MeasurePartition | None,
     places: Sequence[tuple[str, EntityRoleKey]],
     arcs: Mapping[str, Mapping] | None,
+    date_request: DateRequest | None,
 ) -> RelatedRead | None:
     """Start the reads in a task for an answer that qualifies, None for any other answer,
     which reads nothing.
 
     Args:
-        state: The pass, whose graph, date request and deadline the reads use.
+        state: The pass, whose graph and deadline the reads use.
         stat_vars: The StatVars the answer serves.
         measure_partition: The measure partition they exhibit, None outside a family.
         places: The answer's places with their roles.
         arcs: Full arcs by StatVar, as recall read them (`ShapeDraft.sv_arc_facts`).
+        date_request: The answer's own date request, a trailing one once settled.
     """
     if not _qualifies(stat_vars, measure_partition, places):
         return None
     stat_var = stat_vars[0]
+    window = requested_window_from_date_request(date_request)
     budget = _read_budget(state.deadline)
     read = read_runner.start(
         functools.partial(
@@ -175,13 +181,15 @@ def start_related_read(
             stat_var=stat_var,
             arcs=(arcs or {}).get(stat_var),
             places=[dcid for dcid, _role in places],
-            window=requested_window_from_date_request(state.date_request),
+            window=window,
             graph=state.graph,
             deadline=budget.deadline,
         )
     )
     started = RelatedRead(
-        stat_var=stat_var, task=asyncio.create_task(_within(read, stat_var=stat_var, budget=budget))
+        stat_var=stat_var,
+        window=window,
+        task=asyncio.create_task(_within(read, stat_var=stat_var, budget=budget)),
     )
     state.related_reads.append(started)
     return started
@@ -207,11 +215,18 @@ def related_read_for(
     measure_partition: MeasurePartition | None,
     places: Sequence[tuple[str, EntityRoleKey]],
     arcs: Mapping[str, Mapping] | None,
+    date_request: DateRequest | None,
 ) -> RelatedRead | None:
-    """The pass's read when it reads the answer's one StatVar, else a read started for the
-    answer (`start_related_read`), replacing the pass's."""
+    """The pass's read when it reads the answer's one StatVar over the answer's years
+    (`date_request`), else a read started for the answer (`start_related_read`), replacing
+    the pass's."""
     held = state.related_read
-    if held is not None and list(stat_vars) == [held.stat_var] and measure_partition is None:
+    if (
+        held is not None
+        and list(stat_vars) == [held.stat_var]
+        and measure_partition is None
+        and held.window == requested_window_from_date_request(date_request)
+    ):
         return held
     state.related_read = start_related_read(
         state,
@@ -219,6 +234,7 @@ def related_read_for(
         measure_partition=measure_partition,
         places=places,
         arcs=arcs,
+        date_request=date_request,
     )
     return state.related_read
 

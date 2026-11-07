@@ -15,6 +15,7 @@ from unittest.mock import patch
 import pytest
 
 from entity_resolution import Admission
+from search.engine.clients.llm import FixedAgreement
 from search.engine.concurrency import scoped_concurrency
 from search.engine.entry import raw_text
 from search.engine.exclusion_read import Exclusion, ExclusionRead
@@ -296,7 +297,7 @@ async def _legs_unclaimed(
         return ExtractionResult(extraction=extraction, qualifiers={}), None
 
     async def _read_exclusions(query, *, llm):
-        return ExclusionRead(exclusions=[excluded] if excluded else []), None
+        return ExclusionRead(exclusions=[excluded] if excluded else []), None, FixedAgreement(True)
 
     async def _resolve_variable(variable, **kwargs):
         legs.append(kwargs["unclaimed"])
@@ -381,6 +382,9 @@ class _RecordingScope:
     async def lookup_parsed(self, **kwargs):
         self.separate = list(kwargs["separate"])
         return None
+
+    def note_extraction(self, *, agreed: bool) -> None:
+        pass
 
     def note_health(self, *, timed_out: bool, degraded_leg: bool) -> None:
         pass

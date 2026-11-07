@@ -90,3 +90,50 @@ def test_date_request_post_init_rejects_window_and_latest() -> None:
     """Both a window and ``latest=True`` raise ``ValueError``."""
     with pytest.raises(ValueError, match="window or latest"):
         DateRequest(window=TimeWindow(start_year=2010, end_year=2020), latest=True)
+
+
+@pytest.mark.parametrize(
+    ("dates", "window", "trailing"),
+    [
+        # "the last five years" in 2026: its newest year may lie three years before the span,
+        # and the window holds the five years ending at each such year.
+        (
+            [ExtractedDate(kind="range", start="2022", end="2026", trailing_years=5)],
+            (2015, 2026),
+            5,
+        ),
+        # "the past year" asks for one year.
+        (
+            [ExtractedDate(kind="range", start="2026", end="2026", trailing_years=1)],
+            (2023, 2026),
+            1,
+        ),
+        # The same years named outright trail nothing.
+        ([_range("2022", "2026")], (2022, 2026), None),
+        # A trailing span beside another date combines as named years.
+        (
+            [
+                ExtractedDate(kind="range", start="2022", end="2026", trailing_years=5),
+                _point("2010"),
+            ],
+            (2010, 2026),
+            None,
+        ),
+    ],
+)
+def test_trailing_span_widens_its_window(
+    dates: list[ExtractedDate], window: tuple[int, int], trailing: int | None
+) -> None:
+    """A lone span counted back from now asks for its newest years: its window holds every
+    span ending in its judged years, `trailing_stale_years` before the calendar years its
+    words cover (`asked_window`), and its judgement reads those judged years alone."""
+    req = dates_to_request(dates)
+    assert req is not None
+    assert (req.window, req.trailing_years) == (
+        TimeWindow(start_year=window[0], end_year=window[1]),
+        trailing,
+    )
+    if trailing is not None:
+        assert req.asked_window == TimeWindow(start_year=2026 - trailing + 1, end_year=2026)
+        assert req.judged.window == TimeWindow(start_year=2026 - trailing - 2, end_year=2026)
+        assert req.judged.trailing_years is None

@@ -239,7 +239,10 @@ class CacheScope:
     not read the coverage service again. The revision of the conversion catalogue and the
     build and UN System setting of the origin catalogue the request bound join the scope
     too, so an answer computed under one catalogue is never served once another is live.
-    Cache clearing belongs to app wiring.
+    Layer 1 stores an answer only when two samples of its query's exclusion read and two
+    of its extraction each agreed on the reading (`note_extraction`), so layer 1 holds no
+    reading that rests on one sample. The LLM memo replays each sample of a wording for
+    `llm_memo_ttl_s` whether or not they agreed. Cache clearing belongs to app wiring.
     """
 
     def __init__(
@@ -312,6 +315,7 @@ class CacheScope:
         self._layer1_lease: Lease | None = None
         self._layer2_lease: Lease | None = None
         self._layer2_key: str | None = None
+        self._extraction_agreed: bool | None = None
         self._timed_out = False
         self._degraded_leg = False
         self._trailing_incomplete = False
@@ -517,6 +521,21 @@ class CacheScope:
             step="response_cache_layer2",
         )
 
+    def note_extraction(self, *, agreed: bool) -> None:
+        """Record whether this request's reading was agreed: the two samples of its exclusion
+        read and the two of its extraction each agreed (`entry.raw_text._DoorRead.agreed`).
+        An answer whose samples disagreed still reaches layer-1 followers, and layer 2
+        stores it as usual, keyed on the reading itself. Layer 1 stores nothing under the
+        query, so the next caller of the wording misses layer 1. Within `llm_memo_ttl_s`
+        its two samples come back from the LLM memo, so it gets the same reading."""
+        self._extraction_agreed = agreed
+
+    @property
+    def extraction_agreed(self) -> bool | None:
+        """Whether this request's reading was agreed (`note_extraction`), `None` when
+        it extracted nothing: a parsed request, or one a cache hit answered."""
+        return self._extraction_agreed
+
     def note_health(
         self,
         *,
@@ -594,7 +613,8 @@ class CacheScope:
         """Publish an entry to any leases this request owns.
 
         Cache errors are logged and never reach the pipeline. Both leases share one
-        encoding and verdict. Entry lifetime comes from the generation stamp captured
+        encoding and verdict, and layer 1 also needs an agreed reading
+        (`note_extraction`). Entry lifetime comes from the generation stamp captured
         before lookup.
         """
         if not self.active:
@@ -613,13 +633,16 @@ class CacheScope:
             timed_out = self._timed_out or self._served_timed_out
             degraded_leg = self._degraded_leg or self._served_degraded_leg
             entry, size = encode()
-            for lease in (self._layer1_lease, self._layer2_lease):
+            for lease, lease_storable in (
+                (self._layer1_lease, verdict and self._extraction_agreed is not False),
+                (self._layer2_lease, verdict),
+            ):
                 if lease is not None:
                     await self._cache.publish(
                         lease,
                         entry,
                         size,
-                        storable=verdict,
+                        storable=lease_storable,
                         timed_out=timed_out,
                         degraded_leg=degraded_leg,
                         max_age_s=self._stamp.max_age_s,

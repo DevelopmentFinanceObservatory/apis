@@ -638,6 +638,43 @@ def test_admit_qualifier_ties_passes_through_when_two_or_more_rows_survive():
     assert admitted_ties[0].matched_text == "budget support"
 
 
+def test_admit_qualifier_ties_promotes_the_row_every_other_row_nests_under():
+    """ "Grants" ties the grants finance type and the standard grant under it. Nested rows
+    are one reading, so the grants code promotes and the model is shown no tie."""
+    ties = _crs_ties("grants")
+    assert {row.code_dcid for tie in ties for row in tie.rows} == {
+        "CRSTypeOfFinance100",
+        "CRSTypeOfFinance110",
+    }
+    promoted, admitted_ties, _unheld = _admit_qualifier_ties(
+        [_CRS_SHAPE], {shape_vocabulary(_CRS_SHAPE): ties}, holds=held_codes
+    )
+    assert admitted_ties == ()
+    assert [match.code_dcid for match in promoted] == ["CRSTypeOfFinance100"]
+
+
+@pytest.mark.parametrize(
+    "query_text",
+    [
+        pytest.param("budget support", id="same-case"),
+        pytest.param("Budget Support", id="other-case"),
+    ],
+)
+def test_admit_qualifier_ties_keeps_a_tie_the_variable_and_the_query_text_both_carry_once(
+    query_text: str,
+):
+    """ "Germany budget support to low income countries" reads the "budget support" tie from
+    the variable and from the query text, in whatever case each spells it. It is one
+    question, so the bind model is asked it once."""
+    ties = _crs_ties("budget support")
+    _promoted, admitted_ties, _unheld = _admit_qualifier_ties(
+        [_CRS_SHAPE],
+        {shape_vocabulary(_CRS_SHAPE): (*ties, *_crs_ties(query_text))},
+        holds=held_codes,
+    )
+    assert admitted_ties == ties
+
+
 def test_admit_qualifier_ties_drops_when_no_shape_declares_either_property():
     ties = match_qualifier_ties("budget support", _REAL_INDEX)
     promoted, admitted_ties, _unheld = _admit_qualifier_ties(
@@ -2077,12 +2114,12 @@ def test_e2e_qualifier_not_bound_refuses_while_a_bound_control_still_answers(cap
 
 
 # ---------------------------------------------------------------------------
-# A query-text-only tie reaches the unbound-qualifier guard
+# A query-text-only tie of nested codes binds the broadest
 # ---------------------------------------------------------------------------
 
 
-class _TieElectingLLM:
-    """Elect the shape and bind the query-text-only "grants" tie to row 110."""
+class _StandardGrantLLM:
+    """Elect the shape and bind the finance type to the standard grant, row 110."""
 
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
@@ -2105,35 +2142,34 @@ class _TieElectingLLM:
         )
 
 
-def test_e2e_query_text_only_tie_elects_cleanly_and_answers(caplog, monkeypatch):
-    """A resolved query-text-only tie passes the guard."""
+@pytest.mark.parametrize(
+    "llm",
+    [
+        pytest.param(_StandardGrantLLM(), id="reply-binds-the-nested-row"),
+        pytest.param(_PermissiveNoBindingLLM(), id="reply-binds-neither"),
+    ],
+)
+def test_e2e_query_text_only_nested_tie_binds_the_broadest_row(caplog, monkeypatch, llm):
+    """ "Grants" in the query text alone names the grants finance type and the standard
+    grant under it. Nested rows are one reading, so the grants code binds as an ordinary
+    match whatever the reply bound, and the part answers."""
     result = _run_e2e(
         caplog,
         monkeypatch,
         variable="ODA to Kenya",
         query_text="ODA grants to Kenya",
-        llm=_TieElectingLLM(),
+        llm=llm,
     )
     assert result.status == "definite"
-    spec = result.specs[0]
-    grants = next(q for q in spec.resolved.trace.query_qualifiers if q.text == "grants")
-    assert grants.disposition == "bound"
-    assert {ref.ref for ref in grants.named} == {"CRSTypeOfFinance100", "CRSTypeOfFinance110"}
-
-
-def test_e2e_query_text_only_tie_left_unresolved_refuses(caplog, monkeypatch):
-    """An unresolved query-text-only tie triggers `qualifier_not_bound`."""
-    result = _run_e2e(
-        caplog,
-        monkeypatch,
-        variable="ODA to Kenya",
-        query_text="ODA grants to Kenya",
-        llm=_PermissiveNoBindingLLM(),
-    )
-    assert result.status == "no_data"
-    assert result.no_data_reason == "qualifier_not_bound"
-    assert [q.text for q in result.unbound_qualifiers] == ["grants"]
-    assert result.unbound_qualifiers[0].disposition == "unbound"
+    (spec,) = result.specs
+    assert [
+        slot.binding.value.ref.ref
+        for slot in spec.resolved.slots
+        if slot.key.property is not None
+        and slot.key.property.ref == "crsTypeOfFinance"
+        and slot.binding.kind == "value"
+        and slot.binding.value.ref is not None
+    ] == ["CRSTypeOfFinance100"]
 
 
 _CRS_GROSS_SV = (

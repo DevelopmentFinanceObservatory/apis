@@ -1,4 +1,4 @@
-"""Read, in one small LLM call beside extraction, the stretches of a raw-text query that ask
+"""Read, in a small LLM call beside extraction, the stretches of a raw-text query that ask
 to leave something out, and blank them before the query's words reach any other reader.
 
 The call sees the query alone and answers `ExclusionRead`: each stretch verbatim and the words
@@ -7,9 +7,10 @@ fields as something asked for. Blanking each admitted stretch (`admit_exclusions
 of every field by construction: the parse that counts never sees it. A query with no admitted
 stretch reaches extraction byte-identical, so its answer does not move.
 
-`stored_exclusion_read` and `read_exclusions` put the read behind the extraction store under
-its own key, so a repeated query spends neither call. The door runs the read beside extraction
-and cancels the speculative parse on a hit (`entry.raw_text._read_and_extract`).
+`read_exclusions` takes two samples of the read and `stored_exclusion_read` serves an agreed one
+from the extraction store under its own key, so a repeated query spends no call. The door runs
+the read beside extraction and cancels the speculative parse on a hit
+(`entry.raw_text._read_and_extract`).
 """
 
 from __future__ import annotations
@@ -26,7 +27,13 @@ from pydantic import BaseModel, Field
 
 from code_index.shared import get_index, get_measure_index
 from code_index.tokens import Token, word_tokens
-from search.engine.clients.llm import LLM, SupportsLLM, for_stage, generate_structured_async
+from search.engine.clients.llm import (
+    LLM,
+    SupportsLLM,
+    for_stage,
+    generate_structured_async,
+    two_samples,
+)
 from search.engine.extract import _extract_version
 from search.engine.extraction_store import extraction_key
 from search.engine.qualifier_match import label_runs
@@ -121,20 +128,33 @@ def stored_exclusion_read(query: str, *, llm: SupportsLLM) -> ExclusionRead | No
     return ExclusionRead.model_validate_json(stored)
 
 
-async def read_exclusions(query: str, *, llm: SupportsLLM) -> tuple[ExclusionRead, dict | None]:
-    """The stretches of `query` that ask to leave something out, and the call's token usage.
+async def read_exclusions(
+    query: str, *, llm: SupportsLLM
+) -> tuple[ExclusionRead, dict | None, bool]:
+    """The stretches of `query` that ask to leave something out, the calls' token usage, and
+    whether two samples of the read agreed on them.
 
-    The call runs with minimal thinking and the read is stored as it came (`admit_exclusions`
-    reads it against the current index). A call that fails or whose output fails validation
-    raises as extraction does, and stores nothing.
+    Two samples run concurrently with minimal thinking, the second under another seed
+    (`clients.llm.two_samples`). They agree when they blank and disclose the same stretches
+    (`admit_exclusions`), and only an agreed read is stored, as it came (`admit_exclusions`
+    reads it against the current index). A disagreeing pair serves the first sample, as does
+    a second sample that fails or outlasts its wait, and neither is agreed. A first call that
+    fails or whose output fails validation raises as extraction does, and stores nothing.
     """
     staged = for_stage(llm, "exclusion_read")
-    read, usage = await generate_structured_async(
-        staged, prompt=query, system=EXCLUSION_READ_SYSTEM_PROMPT, schema=ExclusionRead
+    read, second, usage = await two_samples(
+        lambda sampler: generate_structured_async(
+            sampler, prompt=query, system=EXCLUSION_READ_SYSTEM_PROMPT, schema=ExclusionRead
+        ),
+        staged,
+        stage="exclusion_read",
     )
-    if isinstance(staged, LLM) and staged.extraction_store is not None:
+    agreed = second is not None and admit_exclusions(query, second) == admit_exclusions(query, read)
+    if not agreed:
+        logger.info("Exclusion read samples disagree; the read is served unstored")
+    elif isinstance(staged, LLM) and staged.extraction_store is not None:
         staged.extraction_store.put(_stored_key(query, staged), read.model_dump_json())
-    return read, usage
+    return read, usage, agreed
 
 
 def _normalised(query: str) -> tuple[str, list[int], list[int]] | None:

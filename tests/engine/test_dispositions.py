@@ -194,10 +194,10 @@ def test_a_declining_kind_answers_declined_with_its_reason(reason: str):
     assert response.query_echo.raw_query == query
     assert response.query_echo.extract_skipped is False
     assert response.diagnostics.llm_usage == {
-        "input_tokens": 11,
-        "output_tokens": 7,
+        "input_tokens": 22,
+        "output_tokens": 14,
         "cached_tokens": 0,
-    }
+    }, "both extraction samples count"
     assert response.diagnostics.timing_ms.by_step is not None
     assert set(response.diagnostics.timing_ms.by_step) == {
         "coverage",
@@ -205,7 +205,9 @@ def test_a_declining_kind_answers_declined_with_its_reason(reason: str):
         "exclusion_read",
         "entity_check",
     }
-    assert llm.schemas == ["Extraction"], "only extract ran: no bind or other LLM call"
+    assert llm.schemas == ["Extraction"] * 2, (
+        "only extract's two samples ran: no bind or other LLM call"
+    )
     assert graph.reads == [], "a question naming no place reads nothing from the graph"
     assert _done(events).timed_out is False
 
@@ -220,7 +222,7 @@ def test_the_catalogue_kind_answers_catalogue():
     response = _response(events)
     assert isinstance(response, CatalogueAnswer)
     assert response.scope.place is None
-    assert llm.schemas == ["Extraction"]
+    assert llm.schemas == ["Extraction"] * 2
     assert graph.reads == []
 
 
@@ -245,7 +247,7 @@ def test_a_question_naming_a_place_reads_the_graph_only_through_the_resolver(
     assert isinstance(response, CatalogueAnswer)
     assert response.scope.place == expected_place
     assert graph.reads == expected_reads
-    assert llm.schemas == ["Extraction"]
+    assert llm.schemas == ["Extraction"] * 2
 
 
 def test_the_sse_wire_carries_step_response_done_and_nothing_else():
@@ -359,7 +361,7 @@ def test_a_repeated_catalogue_question_is_a_layer1_hit():
     second = _events("What can I find  on Kenya?", llm, resolver, response_cache=cache)
 
     assert _shape(second) == ["ResponseEvent", "DoneEvent"], "a hit emits what any hit emits"
-    assert llm.schemas == ["Extraction"], "the hit ran no extract"
+    assert llm.schemas == ["Extraction"] * 2, "the hit ran no extract"
     assert resolver.calls == [["Kenya"]], "the hit made no resolver call"
     stored, served = _response(first), _response(second)
     assert isinstance(served, CatalogueAnswer)
@@ -387,7 +389,7 @@ def test_a_repeated_declined_question_is_a_layer1_hit():
     served = _response(second)
     assert isinstance(served, DeclinedAnswer)
     assert served.reason == "requires_analysis"
-    assert llm.schemas == ["Extraction"]
+    assert llm.schemas == ["Extraction"] * 2
 
 
 # ---------------------------------------------------------------------------

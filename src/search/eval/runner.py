@@ -229,7 +229,8 @@ async def run_cases(
     client: httpx.AsyncClient | None = None,
     backoff_s: float = 2.0,
 ) -> dict[str, CaseRun]:
-    """Post every case ``samples`` times to ``<url>/api/search/resolve``.
+    """Post every case ``samples`` times to ``<url>/api/search/resolve``, and a case that
+    sets ``repeat`` at least that many times.
 
     At most ``concurrency`` posts are in flight at once. A post that fails on transport,
     times out, returns 502, 503 or 504, or returns an unreadable body is retried, as is a
@@ -249,18 +250,18 @@ async def run_cases(
     gate = asyncio.Semaphore(concurrency)
     async with _client_scope(client) as http, asyncio.TaskGroup() as tasks:
         runs = {
-            case_id: tasks.create_task(
+            case.id: tasks.create_task(
                 _run_case(
                     http,
                     endpoint,
-                    case_id,
-                    request,
-                    samples=samples,
+                    case.id,
+                    requests[case.id],
+                    samples=max(samples, case.repeat or 1),
                     gate=gate,
                     backoff_s=backoff_s,
                 )
             )
-            for case_id, request in requests.items()
+            for case in cases
         }
     return {case_id: run.result() for case_id, run in runs.items()}
 

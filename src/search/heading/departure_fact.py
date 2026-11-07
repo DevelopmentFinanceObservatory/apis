@@ -20,6 +20,24 @@ source of the data (`region.source_choice.choose_reading`): the query names it a
 another source the query names, which lists it as a party; its words resolving to no single
 source; or none of its own data leading the recall of the source reading."""
 
+type UndirectedRule = Literal["complement", "operation", "declaration", "coverage"]
+"""Why a place named without a direction is read on one flow axis
+(`region.undirected.settle_undirected_axis`): the part names its other places on the other
+axis (`complement`), its operation runs over the other axis (`operation`), a dataset
+declares the place a provider (`declaration`), or only that axis holds data there
+(`coverage`)."""
+
+
+@dataclass(frozen=True, slots=True)
+class UndirectedReading:
+    """The flow axis a place named without a direction is read on, and the rule that settled
+    it (`region.undirected.settle_undirected_axis`). `listed_by` is the dataset that
+    declares the place a provider where `rule` is `declaration`, and `None` otherwise."""
+
+    axis: RoleAxis
+    rule: UndirectedRule
+    listed_by: str | None = None
+
 
 @dataclass(frozen=True)
 class UnservedMembers:
@@ -57,6 +75,10 @@ class DepartureFact:
       `whole_total_read`): the flow axis the request broke the answer down by, named the
       place on, the axis the answer reads a place named without a direction on, or the side
       the answer reads as its whole population.
+    - `read_by` (`direction_inferred`): why the answer reads the place on `over`.
+    - `listed_by` (`direction_inferred`): where `read_by` is `declaration`, the name of the
+      dataset that lists the place among its providers, which the text names and which
+      need not be the dataset the answer reads. The departure's `shown` stays `None`.
     - `entities` (`entity_unavailable`, `whole_total_read`): the names of the entities the
       data holds no values for, in the answer's entity order; or, for a whole population
       read as a union of totals, the names of those totals.
@@ -180,6 +202,8 @@ class DepartureFact:
     limits: tuple[str, ...] = ()
     values: tuple[str, ...] = ()
     left_out: bool = False
+    read_by: UndirectedRule | None = None
+    listed_by: str | None = None
 
 
 def ordered_facts(facts: Iterable[DepartureFact]) -> tuple[DepartureFact, ...]:

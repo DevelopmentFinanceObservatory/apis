@@ -32,7 +32,7 @@ from search.engine.exclusion_read import (
     QueryReading,
     admit_exclusions,
 )
-from search.engine.extract import ExtractedEntity, Extraction
+from search.engine.extract import EXTRACTION_CALLS, ExtractedEntity, Extraction
 from search.engine.extraction_store import MemoryExtractionStore
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import phase_election
@@ -450,7 +450,8 @@ class _Door:
     """The two calls the door makes, with the speculative parse of `query` under test control.
 
     `read` answers the reader. A parse of `hold` waits for ever. `order` records each call as
-    it starts and `cancelled` each parse cancelled while it ran."""
+    it starts and `cancelled` each parse cancelled while it ran. `parsed` is set once the
+    first extraction's samples have all answered."""
 
     read: ExclusionRead | Exception
     hold: str | None = None
@@ -458,6 +459,7 @@ class _Door:
     read_after_parse: bool = False
     calls: list[tuple[str, str]] = field(default_factory=list)
     cancelled: list[str] = field(default_factory=list)
+    answered: int = 0
     parsing: asyncio.Event = field(default_factory=asyncio.Event)
     parsed: asyncio.Event = field(default_factory=asyncio.Event)
 
@@ -466,6 +468,9 @@ class _Door:
         if schema is ExclusionRead:
             # The parse starts first in the event loop only when the door starts both.
             await (self.parsed if self.read_after_parse else self.parsing).wait()
+            if self.read_after_parse:
+                # The extraction compares its samples a loop turn after the last answers.
+                await asyncio.sleep(0)
             if isinstance(self.read, Exception):
                 raise self.read
             return self.read, {"input_tokens": 5, "output_tokens": 1, "cached_tokens": 0}
@@ -480,7 +485,9 @@ class _Door:
         if self.parse_error is not None:
             raise self.parse_error
         await asyncio.sleep(0)
-        self.parsed.set()
+        self.answered += 1
+        if self.answered == EXTRACTION_CALLS:
+            self.parsed.set()
         return Extraction(kind="resolution", variables=["ODA"]), {
             "input_tokens": 7,
             "output_tokens": 2,
@@ -509,17 +516,18 @@ def test_a_hit_parses_the_blanked_text_and_cancels_a_speculative_parse_still_run
 
     read = _door_read(_HIT_QUERY, door)
 
-    # The speculative parse is cancelled before the parse of the blanked text starts.
-    assert door.calls[-2:] == [("cancelled", _HIT_QUERY), ("Extraction", _BLANKED)]
+    # Both samples of the speculative parse are cancelled before the parse of the blanked
+    # text starts.
+    assert door.calls[-4:] == [("cancelled", _HIT_QUERY)] * 2 + [("Extraction", _BLANKED)] * 2
     assert read.reading.text == _BLANKED
     assert read.extract_result.extraction.variables == ["ODA"]
     assert set(read.timing) == {"extract", "exclusion_read"}
-    # The cancelled parse sent its request and no response reports its tokens.
+    # The cancelled parse sent its two requests and no response reports their tokens.
     assert read.usage == {
-        "input_tokens": 12,
-        "output_tokens": 3,
+        "input_tokens": 24,
+        "output_tokens": 6,
         "cached_tokens": 0,
-        "uncounted_calls": 1,
+        "uncounted_calls": 2,
     }
 
 
@@ -528,7 +536,7 @@ def test_a_hit_counts_the_tokens_of_a_speculative_parse_that_finished():
     read = _door_read(_HIT_QUERY, _Door(read=_read("excluding grants"), read_after_parse=True))
 
     assert read.reading.text == _BLANKED
-    assert read.usage == {"input_tokens": 19, "output_tokens": 5, "cached_tokens": 0}
+    assert read.usage == {"input_tokens": 38, "output_tokens": 10, "cached_tokens": 0}
 
 
 def test_a_read_kept_unblanked_keeps_the_speculative_parse():
@@ -536,7 +544,9 @@ def test_a_read_kept_unblanked_keeps_the_speculative_parse():
 
     read = _door_read(_HIT_QUERY, door)
 
-    assert sorted(door.calls) == [("ExclusionRead", _HIT_QUERY), ("Extraction", _HIT_QUERY)]
+    assert (
+        sorted(door.calls) == [("ExclusionRead", _HIT_QUERY)] * 2 + [("Extraction", _HIT_QUERY)] * 2
+    )
     assert read.reading.left_out == (
         LeftOut("excluding loans", ("loans",), None, "excluding loans"),
     )
@@ -547,7 +557,9 @@ def test_a_miss_keeps_the_speculative_parse_and_starts_no_second_one():
 
     read = _door_read(_HIT_QUERY, door)
 
-    assert sorted(door.calls) == [("ExclusionRead", _HIT_QUERY), ("Extraction", _HIT_QUERY)]
+    assert (
+        sorted(door.calls) == [("ExclusionRead", _HIT_QUERY)] * 2 + [("Extraction", _HIT_QUERY)] * 2
+    )
     assert read.reading.text == _HIT_QUERY
     assert read.extract_result.extraction.variables == ["ODA"]
 
@@ -558,7 +570,7 @@ def test_a_failed_read_fails_the_query_and_cancels_the_speculative_parse():
     with pytest.raises(LLMInfraError):
         _door_read(_HIT_QUERY, door)
 
-    assert door.cancelled == [_HIT_QUERY]
+    assert door.cancelled == [_HIT_QUERY] * 2
 
 
 def test_a_failed_speculative_parse_is_no_failure_of_the_parse_that_counts():
@@ -637,7 +649,7 @@ def test_a_repeated_query_makes_no_reader_call_and_no_speculative_parse(monkeypa
 
     first, second = asyncio.run(run())
 
-    assert models.reader_prompts == [_HIT_QUERY]
+    assert models.reader_prompts == [_HIT_QUERY] * 2
     assert parsed in models.parse_prompts
     assert second.reading == first.reading
     assert second.timing["exclusion_read"] == 0
@@ -658,7 +670,8 @@ def test_a_stored_read_with_no_stored_parse_runs_no_speculative_parse(monkeypatc
 
     asyncio.run(run())
 
-    assert models.parse_prompts == [_BLANKED]
+    # The two samples of the blanked text, and no parse of the query.
+    assert models.parse_prompts == [_BLANKED] * 2
 
 
 def test_a_failed_read_stores_nothing(monkeypatch):
@@ -819,8 +832,8 @@ def test_a_query_with_nothing_left_out_sends_extraction_its_own_bytes():
 
     _resolve(query, llm)
 
-    assert llm.prompts["Extraction"] == [query]
-    assert llm.prompts["ExclusionRead"] == [query]
+    assert llm.prompts["Extraction"] == [query] * 2
+    assert llm.prompts["ExclusionRead"] == [query] * 2
 
 
 _NETTING = "nettingBasis"

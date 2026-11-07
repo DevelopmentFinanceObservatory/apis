@@ -42,6 +42,7 @@ from dfo_platform.roles import role_key_axis
 from search.heading.departure_fact import (
     DepartureFact,
     PartyReason,
+    UndirectedRule,
     UnservedMembers,
     ordered_facts,
 )
@@ -268,10 +269,20 @@ def organisation_read_as_party(
     )
 
 
-def direction_inferred(name: str, axis: RoleAxis) -> DepartureFact:
+def direction_inferred(
+    name: str, axis: RoleAxis, *, read_by: UndirectedRule, listed_by: str | None = None
+) -> DepartureFact:
     """A place `name` the request named without a direction, which the answer reads on the
-    flow `axis`, the one direction that holds data (`region.status_rule`)."""
-    return DepartureFact(code="direction_inferred", binding_ref=WHERE_REF, asked=name, over=axis)
+    flow `axis` for the reason `read_by` names. `listed_by` names the dataset that declares
+    the place a provider where a declaration settled the axis, for the text alone."""
+    return DepartureFact(
+        code="direction_inferred",
+        binding_ref=WHERE_REF,
+        asked=name,
+        over=axis,
+        read_by=read_by,
+        listed_by=listed_by,
+    )
 
 
 def spec_departure_facts(
@@ -989,6 +1000,23 @@ def conversion_period_fact(
         data_years=served,
         converted_years=converted,
         limited_by=limited_by,
+    )
+
+
+def stale_trailing_fact(
+    *, asked: tuple[int, int], data_years: tuple[int, int], shown: tuple[int, int]
+) -> DepartureFact:
+    """`year_unavailable` for a span counted back from now that the answer reads from a
+    series whose newest year lies well before the current one (`region.trailing`): the
+    calendar years the words cover, the years the data holds, ending at that newest year,
+    and the newest years the answer shows."""
+    return DepartureFact(
+        code="year_unavailable",
+        binding_ref=WHEN_REF,
+        asked=_range_text(*asked),
+        shown=_span_text(shown),
+        requested_years=asked,
+        data_years=data_years,
     )
 
 

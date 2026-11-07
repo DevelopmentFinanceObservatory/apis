@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from materialise import GraphReader
 from search.engine.bind import SlotBindingDraft
 from search.engine.events import PlaceOptionsEvent
+from search.engine.extract import DateRequest
 from search.engine.region.codes import _OptionProbeResult
 from search.engine.region.facet_probe import FacetProbe
 from search.engine.region.option_coverage import _launch_slot_options_task
@@ -34,13 +35,14 @@ def _relaunch_slot_options(
     default_facet_probe: FacetProbe,
     facets_pinned: bool,
     variable_labels: Mapping[str, str],
+    date_request: DateRequest | None,
 ) -> asyncio.Task[_OptionProbeResult]:
     """Relaunch with this survivor's probe context and supplied spec id and slot options.
 
     A supplied facet probe overrides the survivor's own, letting a merged result judge its
     options over every member. Each caller binds the other context when building the result,
-    `facets_pinned` (whether the survivor's identity binds a facet) and `variable_labels`
-    (the survivor's member names) among it."""
+    `facets_pinned` (whether the survivor's identity binds a facet), `variable_labels`
+    (the survivor's member names) and `date_request` (the survivor's own) among it."""
     return _launch_slot_options_task(
         spec_id,
         shape_draft,
@@ -48,7 +50,7 @@ def _relaunch_slot_options(
         opts,
         entities=entities,
         open_axes=open_axes,
-        date_request=state.date_request,
+        date_request=date_request,
         graph=state.graph,
         sdmx=state.sdmx,
         materialise_graph=state.materialise_graph,

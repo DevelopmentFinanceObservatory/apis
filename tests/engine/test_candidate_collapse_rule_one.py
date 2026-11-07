@@ -66,6 +66,7 @@ def _entry(
         unit_refusals={},
         unit_coverage=UnitCoverage(),
         unit_gate_reason=None,
+        date_request=None,
     )
 
 
