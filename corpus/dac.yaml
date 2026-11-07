@@ -420,3 +420,14 @@
       measure: {family: dac2a.oda_gross_received}
       entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: DACAsia, role: destination}]
       window: {kind: range, start: 1990, end: 1999}
+
+- id: dq-dac-041
+  query: World Bank GNI of Denmark
+  why: The World Bank named before the indicator is a source mention, so a World Bank series answers or the part refuses naming the World Bank, never DAC1 silently.
+  tags: {theme: macro, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical, overlap: [dac1], probe: [source_election]}
+  expect:
+    definite:
+      measure: {family: base.gni}
+      provenance: {bound: true}
+      entities: [{dcid: country/DNK, role: observationAbout}]
+    no_data: {reason: [qualifier_not_bound, variable_not_resolved]}

@@ -18,6 +18,8 @@ ROLE_TEXT_NOT_RECOGNISED = "role_text_not_recognised"
 
 _DONOR_PREPS: frozenset[str] = frozenset({"from"})
 _RECIPIENT_PREPS: frozenset[str] = frozenset({"to"})
+# The prepositions that state a place's direction ("aid to Kenya", "loans from China").
+ROLE_PREPOSITIONS: frozenset[str] = _DONOR_PREPS | _RECIPIENT_PREPS
 _TOKEN_RE = re.compile(r"[a-z][a-z'\-]*[a-z]|[a-z]")
 
 # English caller synonyms and declared graph role names map to flow axes.

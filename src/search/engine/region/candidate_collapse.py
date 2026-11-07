@@ -7,12 +7,13 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import functools
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import cast
 
 from materialise import GraphReader
 from materialise.facets import nominal_currency
 from materialise.rate_tables import RateTableCache
+from search.engine.binders.election import unheld_mentioned
 from search.engine.clients.graph import Facet
 from search.engine.envelope import _emit_step, now_ms
 from search.engine.reading_coverage import covers
@@ -69,6 +70,7 @@ from search.engine.region.phase_place_materialise import (
     refuse_unserved_quantity,
     serves_leg_quantity,
 )
+from search.engine.region.phase_rank_bind import draft_value_labels, model_only_values
 from search.engine.region.phase_shared import (
     UNIT_CONVERSION_REFUSALS,
     UnitConversionRefusal,
@@ -92,18 +94,28 @@ from search.engine.region.requirements import (
 )
 from search.engine.region.result import RegionResult
 from search.engine.region.scope_decision import decide_spec_scope, guarded_scope_decision
-from search.engine.region.state import ResolveState, raised_facts
+from search.engine.region.state import (
+    Requirement,
+    ResolveState,
+    ValueRule,
+    raised_facts,
+    unapplied_departure,
+    with_requirement,
+)
 from search.engine.region.un_system import member_labels
 from search.engine.region.whole_totals import whole_total_warnings
 from search.engine.retrieval.read_plan import ReadPlan, plan_coverage, serves_nothing
 from search.engine.retrieval.retrieve import Materialised, NoDataDraft
 from search.engine.retrieval.standard import Narrow
+from search.engine.shape import ShapeDraft
 from search.engine.unit.bind import with_unit_lexicon_version
 from search.engine.unit.conversion import served_prices
 from search.engine.unit.conversion_catalogue import current_conversion_catalogue
 from search.models import (
     CandidateBasis,
+    GraphRef,
     IdentityUnitRequest,
+    ResolvedQualifier,
     Spec,
 )
 
@@ -689,6 +701,51 @@ async def _assemble_definite(
     )
 
 
+async def _record_unheld_values(state: ResolveState, shapes: Sequence[ShapeDraft]) -> None:
+    """Record in the part's ledger each value the request's words name, drafted on the
+    elected shape, that one of `shapes`, the candidate set's, cannot hold
+    (`unheld_mentioned`, which judges a set's values one by one): one requirement per
+    (property, value), however many candidates leave it unheld, judged as a value the
+    request names (`ValueRule`, origin ``unheld``) and named by the value's label
+    (`phase_rank_bind.draft_value_labels`). A value no recorded term supports is the bind
+    model's reading of the measure the phrase names, not a value the user typed
+    (`phase_rank_bind.model_only_values`), as LiveBirth is of "birth rate", and records
+    nothing. The requirement refuses nothing, so the set offers each candidate and departs
+    the value once unless every candidate applies it
+    (`requirements.settle_candidate_set`)."""
+    by_prop: dict[str, list[str]] = {}
+    for shape in shapes:
+        for draft in unheld_mentioned(state.shape_draft, shape, state.bindings):
+            if draft.property_dcid is not None:
+                by_prop.setdefault(draft.property_dcid, []).extend(draft.value_dcids)
+    if not by_prop:
+        return
+    labels = await draft_value_labels(state, [v for values in by_prop.values() for v in values])
+    for prop, drafted in by_prop.items():
+        values = list(dict.fromkeys(drafted))
+        model = model_only_values(state, prop, values, labels)
+        for value in values:
+            if value in model:
+                continue
+            label = labels[value]
+            state.requirements = with_requirement(
+                state.requirements,
+                Requirement(
+                    term=ResolvedQualifier(
+                        text=label,
+                        named=[GraphRef(ref=value, label=label)],
+                        slot=None,
+                        disposition="unbound",
+                        evidence="model",
+                    ),
+                    origin="unheld",
+                    rule=ValueRule(values=frozenset({(prop, value)})),
+                    departure=unapplied_departure(label, asked=label, property_dcid=prop),
+                    refuses=False,
+                ),
+            )
+
+
 async def _assemble_candidate_set(
     state: ResolveState,
     unique_specs: list[Spec],
@@ -716,6 +773,9 @@ async def _assemble_candidate_set(
     _offer_place_warnings(state, grounded, unique_specs)
     if not state.elected_has_data:
         state.warnings.append(_elected_no_data_warning(state, unique_specs))
+    await _record_unheld_values(
+        state, [grounded.cand_candidates[spec.spec_id].shape for spec in unique_specs]
+    )
     # Each survivor is judged on its own shape and bindings, the unit request its Spec is
     # served under and its own coverage records, and a requirement departs unless every
     # survivor meets it (`requirements.settle_candidate_set`).
@@ -913,6 +973,13 @@ async def assemble_candidates(
     )
     if len(unique_specs) == 1:
         _note_lone_breakdown(state, grounded, unique_specs[0])
+        # The lone reading, a twin or a nominated rival the quantity or unit filter left
+        # alone included, discloses each typed value its shape cannot hold, as a candidate
+        # set does. A reading that holds every typed value, as the elected shape and an
+        # installed stand-in hold their own drafts, records nothing and reads no labels.
+        await _record_unheld_values(
+            state, [grounded.cand_candidates[unique_specs[0].spec_id].shape]
+        )
         return await _assemble_definite(state, unique_specs, grounded, rate_cache)
     return await _assemble_candidate_set(
         state,

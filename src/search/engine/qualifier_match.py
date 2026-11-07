@@ -36,7 +36,7 @@ from code_index.tokens import (
     tokenize,
     word_tokens,
 )
-from code_index.types import CodeRow, MeasureIndex, MeasureValueRow
+from code_index.types import CodeRow, MeasureIndex, MeasurePartitionLabel, MeasureValueRow
 from search.engine.function_words import FUNCTION_WORDS
 
 MatchSource = Literal["code", "label", "synonym"]
@@ -360,6 +360,115 @@ def plural_forms(noun: str) -> frozenset[str]:
     if noun.endswith("y"):
         forms.add(f"{noun[:-1]}ies")
     return frozenset(forms)
+
+
+# A possessive ending, which a word token holds ("France's").
+_POSSESSIVE_RE = re.compile(r"['\u2019]s$", re.IGNORECASE)
+
+
+def token_occurrences(tokens: Sequence[Token], text: str) -> list[tuple[int, int]]:
+    """The character range of each span of `tokens` that `text` matches as a code label
+    matches a query span (`code_index.tokens.text_matches`): the same words, casefolded,
+    and each separator the span holds where `text` holds it, so "Hong Kong SAR, China"
+    holds the entity "Hong Kong SAR, China". The span's last word may add a possessive
+    ending: "France's" holds the entity "France"."""
+    count = len(word_tokens(text))
+    if not count:
+        return []
+    word_at = [position for position, token in enumerate(tokens) if token.kind == "word"]
+    occurrences: list[tuple[int, int]] = []
+    for first in range(len(word_at) - count + 1):
+        span = tokens[word_at[first] : word_at[first + count - 1] + 1]
+        last = span[-1]
+        bare = Token(
+            text=_POSSESSIVE_RE.sub("", last.text), kind="word", start=last.start, end=last.end
+        )
+        if text_matches(text, span) or text_matches(text, (*span[:-1], bare)):
+            occurrences.append((span[0].start, last.end))
+    return occurrences
+
+
+@dataclass(frozen=True, slots=True)
+class NamedMeasure:
+    """A name of declared measures a text holds (`declared_measures_named`):
+    `alternatives` are the measure nouns and partition labels the name stands for, every
+    declaration that shares it ("GDP" names WEO's nominal GDP, WEO's GDP at purchasing
+    power parity and WDI's GDP); `occurrences` are the character ranges where it stands
+    in the text outside every longer declared name."""
+
+    alternatives: tuple[MeasurePartitionLabel, ...]
+    occurrences: tuple[tuple[int, int], ...]
+
+
+def declared_measures_named(
+    text: str, measures: MeasureIndex, aliases: Mapping[str, str]
+) -> list[NamedMeasure]:
+    """The declared measures `text` names, one entry per span, in text order.
+
+    A measure noun's or partition label's names are its label and `also_called` entries,
+    and each declared acronym (`aliases`, `CodeIndex.variable_aliases`) whose expansion is
+    one of them: "GNI" names the noun "gross national income". An acronym whose expansion
+    names no declared measure ("PPG") names none. A name occurs where its words stand
+    whole in `text`, hyphens read as spaces and a last word's possessive allowed
+    (`token_occurrences`). The longest declared name wins its words: an occurrence inside
+    a longer occurrence names nothing, so "GDP growth" names "GDP growth" and not "GDP".
+    A declared name in parentheses straight after an occurrence, as an acronym restating it,
+    joins that occurrence (`_with_parenthesised_name`): "Potential gross domestic product
+    (GDP)" names potential GDP alone. Occurrences that name the same declarations form one
+    entry."""
+    entries = [
+        (entry, [entry.label, *entry.also_called])
+        for entry in (*measures.partition_labels, *measures.nouns)
+    ]
+    for acronym, expansion in aliases.items():
+        for _entry, names in entries:
+            if expansion.casefold() in {name.casefold() for name in names}:
+                names.append(acronym)
+    tokens = tokenize(text.replace("-", " "))
+    found = [
+        (entry, span)
+        for entry, names in entries
+        for name in names
+        for span in token_occurrences(tokens, name.replace("-", " "))
+    ]
+    spans = {span for _entry, span in found}
+    found = [(entry, _with_parenthesised_name(text, span, spans)) for entry, span in found]
+    by_span: dict[tuple[int, int], dict[MeasurePartitionLabel, None]] = {}
+    for entry, span in found:
+        if not any(
+            wider[0] <= span[0] and span[1] <= wider[1] and wider != span for _other, wider in found
+        ):
+            by_span.setdefault(span, {})[entry] = None
+    by_alternatives: dict[tuple[MeasurePartitionLabel, ...], list[tuple[int, int]]] = {}
+    for span, alternatives in sorted(by_span.items()):
+        by_alternatives.setdefault(tuple(alternatives), []).append(span)
+    return [
+        NamedMeasure(alternatives, tuple(spans)) for alternatives, spans in by_alternatives.items()
+    ]
+
+
+# A parenthesised run straight after a name, its inner words in group 1.
+_PARENTHESISED_RE = re.compile(r"\s*\(\s*([^()]*?)\s*\)")
+
+
+def _with_parenthesised_name(
+    text: str, span: tuple[int, int], spans: Collection[tuple[int, int]]
+) -> tuple[int, int]:
+    """`span` widened over the parentheses straight after it in `text` when their words are
+    one of `spans`, a declared name's occurrence: "gross domestic product (GDP)" is one
+    occurrence."""
+    match = _PARENTHESISED_RE.match(text, span[1])
+    if match is None or (match.start(1), match.end(1)) not in spans:
+        return span
+    return (span[0], match.end())
+
+
+def holds_words(text: str, phrase: str) -> bool:
+    """Whether `text` holds `phrase`'s words as a run, read as a code label reads a query
+    span (`token_occurrences`): "imputed multilateral aid" holds "multilateral", and
+    "non-concessional flows" holds no "concessional", since a hyphenated word is one
+    token."""
+    return bool(token_occurrences(tokenize(text), phrase))
 
 
 def names_plain_name(text: str, plain_name: str) -> bool:

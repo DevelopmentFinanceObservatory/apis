@@ -391,7 +391,6 @@ def late_departures(
     learned = definite_departures(
         read,
         variable_text=part.variable_text,
-        warnings=[*part.warnings, *late_warnings],
         raised=[*raised, *refused],
         operations=part.operations,
         entity_words=entity_words,

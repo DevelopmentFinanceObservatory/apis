@@ -144,8 +144,7 @@ def test_a_party_with_a_kind_per_dataset_counts_once_under_its_own_figures() -> 
             dcid=trust_funds,
             kind="party",
             party_class="official",
-            datasets=(crs, dac2a),
-            axes=("origin",),
+            published=((crs, "origin"), (dac2a, "origin")),
             dataset_kinds=((dac2a, "total"),),
         )
     }

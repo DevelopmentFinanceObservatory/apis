@@ -308,6 +308,27 @@
       entities:
       - dcid: country/BRA
         role: observationAbout
+- id: std-denom-03
+  query: Ghana's national income per person in 2019
+  why: National income per person names gross national income per capita, so Ghana's answer is GNI per capita at purchasing power parity and leads with no closest-match departure.
+  tags:
+    directional_flow: na
+    conjunction: none
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: EconomicActivity
+          measured_property: amount
+          stat_type: measuredValue
+          measurement_qualifier: PurchasingPowerParity
+          measurement_denominator: PerCapita
+        bound:
+          activitySource: GrossNationalIncome
+        stat_vars: [Amount_EconomicActivity_GrossNationalIncome_PurchasingPowerParity_PerCapita]
+      entities:
+      - dcid: country/GHA
+        role: observationAbout
 - id: nn-03
   query: child mortality rate Ethiopia
   why: Child mortality rate in Ethiopia answers from the UN System with CME_MR.AGE--Y0T4; every CME_MR member declares an age, so the slot stays open and the under-5 member answers.

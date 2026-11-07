@@ -7,7 +7,7 @@ from pydantic import Field, model_validator
 from .base import StrictModel
 from .grammar import GraphRef
 from .identity import IdentityString
-from .vocab import Confidence, EntityRoleKey, PartyClass, RoleAxis
+from .vocab import Confidence, EntityRoleKey, PartyClass, PartyKind, RoleAxis
 
 # ---------------------------------------------------------------------------
 # Entity and EntityRole
@@ -76,14 +76,35 @@ class ResolvedEntity(StrictModel):
     role: EntityRoleKey = Field(
         description="the role key this entity plays; observationAbout, origin, or destination"
     )
+    party_kind: PartyKind | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "for a party of a flow, what it is where the answer's datasets publish it: party, "
+            "total (it holds other parties' figures, such as DAC countries, total) or residual "
+            "(Africa, unallocated by country); absent for an entity that is no flow party and "
+            "for one the datasets publish as different kinds"
+        ),
+    )
+    party_class: PartyClass | None = Field(
+        default=None,
+        exclude_if=_is_none,
+        description=(
+            "for a party of a flow, whose money its figures count: official, private (a "
+            "private provider such as a foundation) or residual. A total states the one class "
+            "whose whole population it holds (official for Official Donors, Total) and omits "
+            "the field otherwise (DAC countries, total). Absent where party_kind is absent"
+        ),
+    )
     multilateral: bool | None = Field(
         default=None,
         exclude_if=_is_none,
         description=(
-            "true for an origin entity that is a multilateral organisation, an official "
-            "organisation such as IDA or the EU institutions, whose outflows spend the core "
-            "contributions its funders made to it, so a donor total counting those "
-            "contributions already holds them; absent for every other entity"
+            "for an origin entity that is a party of a flow, whether it is a multilateral "
+            "organisation, an official organisation such as IDA or the EU institutions, whose "
+            "outflows spend the core contributions its funders made to it, so a donor total "
+            "counting those contributions already holds them; false for a total, a country "
+            "and a private provider; absent for every other entity"
         ),
     )
     confidence: Confidence | None = Field(

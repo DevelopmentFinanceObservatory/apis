@@ -21,10 +21,7 @@ from search.engine.departures import (
     without_request_words,
 )
 from search.engine.qualifier_match import _normalize
-from search.engine.region.codes import (
-    ELECTED_SHAPE_NO_DATA,
-    RETRIEVAL_SCORE_WEAK,
-)
+from search.engine.region.codes import ELECTED_SHAPE_NO_DATA
 from search.engine.skills import match_spec_skills
 from search.heading.departure_fact import DepartureFact, ordered_facts
 from search.models import (
@@ -344,20 +341,14 @@ def _with_closest_match(
     *,
     measure_noun: str,
     variable_text: str | None,
-    warnings: Sequence[Warning],
 ) -> tuple[DepartureFact, ...]:
     """`facts` with the lexical `closest_match` fact of the reading `spec` shows under the
-    heading's `measure_noun` (`spec_closest_match_fact`), under a weak retrieval score. A
+    heading's `measure_noun` (`spec_closest_match_fact`), at any retrieval score. A
     part states one `closest_match`, so `facts` holding one already, such as an answer on
     the elected shape's measure sibling, take none."""
     if variable_text is None or any(fact.code == "closest_match" for fact in facts):
         return ordered_facts(facts)
-    closest = spec_closest_match_fact(
-        spec,
-        variable_text=variable_text,
-        retrieval_score_weak=any(w.code == RETRIEVAL_SCORE_WEAK for w in warnings),
-        measure_noun=measure_noun,
-    )
+    closest = spec_closest_match_fact(spec, variable_text=variable_text, measure_noun=measure_noun)
     return ordered_facts([*facts, closest] if closest is not None else facts)
 
 
@@ -392,7 +383,6 @@ def _definite_departure_facts(
     *,
     heading: HeadingPlan,
     variable_text: str | None,
-    warnings: Sequence[Warning],
     raised: Sequence[DepartureFact],
     operations: Sequence[Operation],
     entity_words: Mapping[str, str] | None,
@@ -416,7 +406,6 @@ def _definite_departure_facts(
         spec,
         measure_noun=heading.heading.noun.inline_text,
         variable_text=variable_text,
-        warnings=warnings,
     )
 
 
@@ -499,7 +488,6 @@ def build_definite_part(
         departures=definite_departures(
             spec,
             variable_text=variable_text,
-            warnings=warnings,
             raised=departure_facts,
             operations=operations,
             entity_words=entity_words,
@@ -520,7 +508,6 @@ def definite_departures(
     spec: Spec,
     *,
     variable_text: str | None,
-    warnings: Sequence[Warning],
     raised: Sequence[DepartureFact],
     operations: Sequence[Operation],
     entity_words: Mapping[str, str] | None = NO_ENTITY_WORDS,
@@ -536,7 +523,6 @@ def definite_departures(
             spec,
             heading=heading,
             variable_text=variable_text,
-            warnings=warnings,
             raised=raised,
             operations=operations,
             entity_words=entity_words,
@@ -677,7 +663,6 @@ def build_no_data_part(
             shown_alternate,
             measure_noun=_heading(shown_alternate).heading.noun.inline_text,
             variable_text=variable_text,
-            warnings=warnings,
         )
     departures = part_departures(
         facts,

@@ -353,11 +353,11 @@ def test_a_merged_answer_states_the_places_no_part_serves(
             _stating_unserved(
                 _spec(_PERSON_SHAPE, value, sv_dcid=f"sv_{value}", entities=places()), *unserved
             ),
-            value,
+            words,
             earliest_index=index,
         )
-        for index, (value, unserved) in enumerate(
-            zip(("ValA", "ValB"), unserved_by_part, strict=True)
+        for index, (value, words, unserved) in enumerate(
+            zip(("ValA", "ValB"), ("val a", "val b"), unserved_by_part, strict=True)
         )
     ]
 

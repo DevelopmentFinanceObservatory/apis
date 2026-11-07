@@ -196750,5 +196750,5339 @@
   "undata/who/SERIES-ODA_1_3": {
     "label": "Donor commitments and disbursements in official development assistance",
     "type": null
+  },
+  "undata/topic/undphdro/HDI_gnipc": {
+    "label": null,
+    "type": null,
+    "arcs": {
+      "typeOf": {
+        "nodes": [
+          {
+            "name": "Topic",
+            "types": [
+              "Class"
+            ],
+            "dcid": "Topic",
+            "provenanceId": "undata/p/UNData"
+          }
+        ]
+      },
+      "name": {
+        "nodes": [
+          {
+            "provenanceId": "undata/p/UNData",
+            "value": "Gross national income per capita"
+          }
+        ]
+      },
+      "relevantVariable": {
+        "nodes": [
+          {
+            "name": "Gross national income per capita, total",
+            "types": [
+              "Topic"
+            ],
+            "dcid": "undata/topic/undphdro/HDI_gnipc.000",
+            "provenanceId": "undata/p/UNData"
+          },
+          {
+            "name": "Gross national income per capita, by Sex",
+            "types": [
+              "Topic"
+            ],
+            "dcid": "undata/topic/undphdro/HDI_gnipc.001",
+            "provenanceId": "undata/p/UNData"
+          }
+        ]
+      },
+      "relevantVariableList": {
+        "nodes": [
+          {
+            "provenanceId": "generated/TopicHierarchyLists",
+            "value": "undata/topic/undphdro/HDI_gnipc.000,undata/topic/undphdro/HDI_gnipc.001"
+          }
+        ]
+      }
+    }
+  },
+  "undata/topic/undphdro/HDI_gnipc.000": {
+    "label": null,
+    "type": null,
+    "arcs": {
+      "typeOf": {
+        "nodes": [
+          {
+            "name": "Topic",
+            "types": [
+              "Class"
+            ],
+            "dcid": "Topic",
+            "provenanceId": "undata/p/UNData"
+          }
+        ]
+      },
+      "undataShortName": {
+        "nodes": [
+          {
+            "provenanceId": "undata/p/UNData",
+            "value": "Total"
+          }
+        ]
+      },
+      "name": {
+        "nodes": [
+          {
+            "provenanceId": "undata/p/UNData",
+            "value": "Gross national income per capita, total"
+          }
+        ]
+      },
+      "relevantVariable": {
+        "nodes": [
+          {
+            "name": "Gross national income per capita, total",
+            "types": [
+              "StatVarPeerGroup"
+            ],
+            "dcid": "undata/svpg/undphdro/HDI_gnipc.000",
+            "provenanceId": "undata/p/UNData"
+          }
+        ]
+      },
+      "relevantVariableList": {
+        "nodes": [
+          {
+            "provenanceId": "generated/TopicHierarchyLists",
+            "value": "undata/svpg/undphdro/HDI_gnipc.000"
+          }
+        ]
+      }
+    }
+  },
+  "undata/topic/undphdro/HDI_gnipc.001": {
+    "label": null,
+    "type": null,
+    "arcs": {
+      "typeOf": {
+        "nodes": [
+          {
+            "name": "Topic",
+            "types": [
+              "Class"
+            ],
+            "dcid": "Topic",
+            "provenanceId": "undata/p/UNData"
+          }
+        ]
+      },
+      "undataShortName": {
+        "nodes": [
+          {
+            "provenanceId": "undata/p/UNData",
+            "value": "by Sex"
+          }
+        ]
+      },
+      "name": {
+        "nodes": [
+          {
+            "provenanceId": "undata/p/UNData",
+            "value": "Gross national income per capita, by Sex"
+          }
+        ]
+      },
+      "relevantVariable": {
+        "nodes": [
+          {
+            "name": "Gross national income per capita, by Sex",
+            "types": [
+              "StatVarPeerGroup"
+            ],
+            "dcid": "undata/svpg/undphdro/HDI_gnipc.001",
+            "provenanceId": "undata/p/UNData"
+          }
+        ]
+      },
+      "relevantVariableList": {
+        "nodes": [
+          {
+            "provenanceId": "generated/TopicHierarchyLists",
+            "value": "undata/svpg/undphdro/HDI_gnipc.001"
+          }
+        ]
+      }
+    }
+  },
+  "undata/svpg/undphdro/HDI_gnipc.000": {
+    "label": null,
+    "type": null,
+    "arcs": {
+      "member": {
+        "nodes": [
+          {
+            "name": "Gross national income per capita",
+            "types": [
+              "StatisticalVariable"
+            ],
+            "dcid": "undata/undphdro/HDI_gnipc",
+            "provenanceId": "undata/p/UNDP_HDRO"
+          }
+        ]
+      },
+      "memberList": {
+        "nodes": [
+          {
+            "provenanceId": "generated/TopicHierarchyLists",
+            "value": "undata/undphdro/HDI_gnipc"
+          }
+        ]
+      },
+      "name": {
+        "nodes": [
+          {
+            "provenanceId": "undata/p/UNDP_HDRO",
+            "value": "Gross national income per capita, total"
+          }
+        ]
+      },
+      "typeOf": {
+        "nodes": [
+          {
+            "name": "StatVarPeerGroup",
+            "types": [
+              "Class"
+            ],
+            "dcid": "StatVarPeerGroup",
+            "provenanceId": "undata/p/UNDP_HDRO"
+          }
+        ]
+      },
+      "undataShortName": {
+        "nodes": [
+          {
+            "provenanceId": "undata/p/UNDP_HDRO",
+            "value": "Total"
+          }
+        ]
+      }
+    }
+  },
+  "undata/svpg/undphdro/HDI_gnipc.001": {
+    "label": null,
+    "type": null,
+    "arcs": {
+      "typeOf": {
+        "nodes": [
+          {
+            "name": "StatVarPeerGroup",
+            "types": [
+              "Class"
+            ],
+            "dcid": "StatVarPeerGroup",
+            "provenanceId": "undata/p/UNDP_HDRO"
+          }
+        ]
+      },
+      "undataShortName": {
+        "nodes": [
+          {
+            "provenanceId": "undata/p/UNDP_HDRO",
+            "value": "by Sex"
+          }
+        ]
+      },
+      "member": {
+        "nodes": [
+          {
+            "name": "Gross national income per capita [Sex=Female]",
+            "types": [
+              "StatisticalVariable"
+            ],
+            "dcid": "undata/undphdro/HDI_gnipc.SEX--F",
+            "provenanceId": "undata/p/UNDP_HDRO"
+          },
+          {
+            "name": "Gross national income per capita [Sex=Male]",
+            "types": [
+              "StatisticalVariable"
+            ],
+            "dcid": "undata/undphdro/HDI_gnipc.SEX--M",
+            "provenanceId": "undata/p/UNDP_HDRO"
+          }
+        ]
+      },
+      "memberList": {
+        "nodes": [
+          {
+            "provenanceId": "generated/TopicHierarchyLists",
+            "value": "undata/undphdro/HDI_gnipc.SEX--F,undata/undphdro/HDI_gnipc.SEX--M"
+          }
+        ]
+      },
+      "name": {
+        "nodes": [
+          {
+            "provenanceId": "undata/p/UNDP_HDRO",
+            "value": "Gross national income per capita, by Sex"
+          }
+        ]
+      }
+    }
+  },
+  "PrimaryIncome_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal": {
+    "label": null,
+    "type": null,
+    "arcs": {
+      "constraintProperties": {
+        "nodes": [
+          {
+            "name": "fixed capital consumption basis",
+            "types": [
+              "Property"
+            ],
+            "dcid": "fixedCapitalConsumptionBasis",
+            "provenanceId": "provenance/WorldBankInternationalDebtStatistics"
+          }
+        ]
+      },
+      "fixedCapitalConsumptionBasis": {
+        "nodes": [
+          {
+            "name": "gross of fixed capital consumption",
+            "types": [
+              "FixedCapitalConsumptionBasisEnum"
+            ],
+            "dcid": "GrossOfFixedCapitalConsumption",
+            "provenanceId": "provenance/WorldBankInternationalDebtStatistics"
+          }
+        ]
+      },
+      "measurementQualifier": {
+        "nodes": [
+          {
+            "name": "Nominal",
+            "types": [
+              "EconomicMetricEnum"
+            ],
+            "dcid": "Nominal",
+            "provenanceId": "provenance/WorldBankInternationalDebtStatistics"
+          }
+        ]
+      },
+      "sourceIndicatorCode": {
+        "nodes": [
+          {
+            "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+            "value": "NY.GNP.MKTP.CD"
+          }
+        ]
+      },
+      "statType": {
+        "nodes": [
+          {
+            "name": "measuredValue",
+            "types": [
+              "Property"
+            ],
+            "dcid": "measuredValue",
+            "provenanceId": "provenance/WorldBankInternationalDebtStatistics"
+          }
+        ]
+      },
+      "description": {
+        "nodes": [
+          {
+            "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+            "value": "GNI"
+          }
+        ]
+      },
+      "measuredProperty": {
+        "nodes": [
+          {
+            "name": "primary income",
+            "types": [
+              "Property"
+            ],
+            "dcid": "primaryIncome",
+            "provenanceId": "provenance/WorldBankInternationalDebtStatistics"
+          }
+        ]
+      },
+      "name": {
+        "nodes": [
+          {
+            "provenanceId": "provenance/WorldBankInternationalDebtStatistics",
+            "value": "Gross national income"
+          }
+        ]
+      },
+      "populationType": {
+        "nodes": [
+          {
+            "name": "economic unit",
+            "types": [
+              "Class"
+            ],
+            "dcid": "EconomicUnit",
+            "provenanceId": "provenance/WorldBankInternationalDebtStatistics"
+          }
+        ]
+      },
+      "typeOf": {
+        "nodes": [
+          {
+            "name": "StatisticalVariable",
+            "types": [
+              "Class"
+            ],
+            "dcid": "StatisticalVariable",
+            "provenanceId": "provenance/WorldBankInternationalDebtStatistics"
+          }
+        ]
+      }
+    }
+  },
+  "Median_Income_Person_25OrMoreYears_EducationalAttainmentGraduateOrProfessionalDegree_WithIncome": {
+    "label": null,
+    "type": null,
+    "arcs": {
+      "age": {
+        "nodes": [
+          {
+            "name": "Years 25 Onwards",
+            "types": [
+              "QuantityRange"
+            ],
+            "dcid": "Years25Onwards",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      },
+      "incomeStatus": {
+        "nodes": [
+          {
+            "name": "WithIncome",
+            "types": [
+              "IncomeStatusEnum"
+            ],
+            "dcid": "WithIncome",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      },
+      "memberOf": {
+        "nodes": [
+          {
+            "name": "Person With Educational Attainment = Graduate Or Professional Degree",
+            "types": [
+              "StatVarGroup"
+            ],
+            "dcid": "dc/g/Person_EducationalAttainment-GraduateOrProfessionalDegree",
+            "provenanceId": "dc/base/generated/StatVarGroupsByConstraint"
+          }
+        ]
+      },
+      "name": {
+        "nodes": [
+          {
+            "provenanceId": "dc/base/Schema",
+            "value": "Median Income Of Person: Years 25 Onwards, Graduate Or Professional Degree, With Income"
+          }
+        ]
+      },
+      "populationType": {
+        "nodes": [
+          {
+            "name": "Person",
+            "types": [
+              "Class"
+            ],
+            "dcid": "Person",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      },
+      "typeOf": {
+        "nodes": [
+          {
+            "name": "StatisticalVariable",
+            "types": [
+              "Class"
+            ],
+            "dcid": "StatisticalVariable",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      },
+      "constraintProperties": {
+        "nodes": [
+          {
+            "name": "age",
+            "types": [
+              "Property"
+            ],
+            "dcid": "age",
+            "provenanceId": "dc/base/Schema"
+          },
+          {
+            "name": "educationalAttainment",
+            "types": [
+              "Property"
+            ],
+            "dcid": "educationalAttainment",
+            "provenanceId": "dc/base/Schema"
+          },
+          {
+            "name": "incomeStatus",
+            "types": [
+              "Property"
+            ],
+            "dcid": "incomeStatus",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      },
+      "definition": {
+        "nodes": [
+          {
+            "provenanceId": "dc/base/Schema",
+            "value": "st=medianValue,mp=income,pt=Person,age=Years25Onwards,educationalAttainment=GraduateOrProfessionalDegree,incomeStatus=WithIncome"
+          }
+        ]
+      },
+      "educationalAttainment": {
+        "nodes": [
+          {
+            "name": "GraduateOrProfessionalDegree",
+            "types": [
+              "USC_EducationalAttainmentEnum"
+            ],
+            "dcid": "GraduateOrProfessionalDegree",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      },
+      "measuredProperty": {
+        "nodes": [
+          {
+            "name": "income",
+            "types": [
+              "Property"
+            ],
+            "dcid": "income",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      },
+      "statType": {
+        "nodes": [
+          {
+            "name": "medianValue",
+            "types": [
+              "Property"
+            ],
+            "dcid": "medianValue",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      }
+    }
+  },
+  "Mean_Earnings_Household_ForeignBorn_PlaceOfBirthNorthamerica": {
+    "label": null,
+    "type": null,
+    "arcs": {
+      "name": {
+        "nodes": [
+          {
+            "provenanceId": "dc/base/Schema",
+            "value": "Mean Earnings Of Household: USC Foreign Born, Northamerica"
+          }
+        ]
+      },
+      "populationType": {
+        "nodes": [
+          {
+            "name": "Household",
+            "types": [
+              "Class",
+              "USC_ResidenceTypeEnum"
+            ],
+            "dcid": "Household",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      },
+      "statType": {
+        "nodes": [
+          {
+            "name": "meanValue",
+            "types": [
+              "Property"
+            ],
+            "dcid": "meanValue",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      },
+      "constraintProperties": {
+        "nodes": [
+          {
+            "name": "nativity",
+            "types": [
+              "Property"
+            ],
+            "dcid": "nativity",
+            "provenanceId": "dc/base/Schema"
+          },
+          {
+            "name": "placeOfBirth",
+            "types": [
+              "Property"
+            ],
+            "dcid": "placeOfBirth",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      },
+      "definition": {
+        "nodes": [
+          {
+            "provenanceId": "dc/base/Schema",
+            "value": "st=meanValue,mp=earnings,pt=Household,nativity=USC_ForeignBorn,placeOfBirth=northamerica"
+          }
+        ]
+      },
+      "memberOf": {
+        "nodes": [
+          {
+            "name": "Household With Nativity = USC Foreign Born, Place Of Birth = Northamerica",
+            "types": [
+              "StatVarGroup"
+            ],
+            "dcid": "dc/g/Household_Nativity-USCForeignBorn_PlaceOfBirth-Northamerica",
+            "provenanceId": "dc/base/generated/StatVarGroupsByConstraint"
+          }
+        ]
+      },
+      "nativity": {
+        "nodes": [
+          {
+            "name": "USC_ForeignBorn",
+            "types": [
+              "NativityEnum"
+            ],
+            "dcid": "USC_ForeignBorn",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      },
+      "placeOfBirth": {
+        "nodes": [
+          {
+            "name": "North America",
+            "types": [
+              "Continent"
+            ],
+            "dcid": "northamerica",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      },
+      "typeOf": {
+        "nodes": [
+          {
+            "name": "StatisticalVariable",
+            "types": [
+              "Class"
+            ],
+            "dcid": "StatisticalVariable",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      },
+      "measuredProperty": {
+        "nodes": [
+          {
+            "name": "earnings",
+            "types": [
+              "Property"
+            ],
+            "dcid": "earnings",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      }
+    }
+  },
+  "Median_Income_Household_ForeignBorn_PlaceOfBirthNorthamerica": {
+    "label": null,
+    "type": null,
+    "arcs": {
+      "name": {
+        "nodes": [
+          {
+            "provenanceId": "dc/base/Schema",
+            "value": "Median Income Of Household: USC Foreign Born, Northamerica"
+          }
+        ]
+      },
+      "statType": {
+        "nodes": [
+          {
+            "name": "medianValue",
+            "types": [
+              "Property"
+            ],
+            "dcid": "medianValue",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      },
+      "memberOf": {
+        "nodes": [
+          {
+            "name": "Household With Nativity = USC Foreign Born, Place Of Birth = Northamerica",
+            "types": [
+              "StatVarGroup"
+            ],
+            "dcid": "dc/g/Household_Nativity-USCForeignBorn_PlaceOfBirth-Northamerica",
+            "provenanceId": "dc/base/generated/StatVarGroupsByConstraint"
+          }
+        ]
+      },
+      "populationType": {
+        "nodes": [
+          {
+            "name": "Household",
+            "types": [
+              "Class",
+              "USC_ResidenceTypeEnum"
+            ],
+            "dcid": "Household",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      },
+      "placeOfBirth": {
+        "nodes": [
+          {
+            "name": "North America",
+            "types": [
+              "Continent"
+            ],
+            "dcid": "northamerica",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      },
+      "typeOf": {
+        "nodes": [
+          {
+            "name": "StatisticalVariable",
+            "types": [
+              "Class"
+            ],
+            "dcid": "StatisticalVariable",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      },
+      "constraintProperties": {
+        "nodes": [
+          {
+            "name": "nativity",
+            "types": [
+              "Property"
+            ],
+            "dcid": "nativity",
+            "provenanceId": "dc/base/Schema"
+          },
+          {
+            "name": "placeOfBirth",
+            "types": [
+              "Property"
+            ],
+            "dcid": "placeOfBirth",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      },
+      "nativity": {
+        "nodes": [
+          {
+            "name": "USC_ForeignBorn",
+            "types": [
+              "NativityEnum"
+            ],
+            "dcid": "USC_ForeignBorn",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      },
+      "definition": {
+        "nodes": [
+          {
+            "provenanceId": "dc/base/Schema",
+            "value": "st=medianValue,mp=income,pt=Household,nativity=USC_ForeignBorn,placeOfBirth=northamerica"
+          }
+        ]
+      },
+      "measuredProperty": {
+        "nodes": [
+          {
+            "name": "income",
+            "types": [
+              "Property"
+            ],
+            "dcid": "income",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      }
+    }
+  },
+  "Median_Income_Person_25OrMoreYears_EducationalAttainmentBachelorsDegree_WithIncome": {
+    "label": null,
+    "type": null,
+    "arcs": {
+      "name": {
+        "nodes": [
+          {
+            "provenanceId": "dc/base/Schema",
+            "value": "Median Income Of Person: Years 25 Onwards, Bachelors Degree, With Income"
+          }
+        ]
+      },
+      "definition": {
+        "nodes": [
+          {
+            "provenanceId": "dc/base/Schema",
+            "value": "st=medianValue,mp=income,pt=Person,age=Years25Onwards,educationalAttainment=BachelorsDegree,incomeStatus=WithIncome"
+          }
+        ]
+      },
+      "incomeStatus": {
+        "nodes": [
+          {
+            "name": "WithIncome",
+            "types": [
+              "IncomeStatusEnum"
+            ],
+            "dcid": "WithIncome",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      },
+      "typeOf": {
+        "nodes": [
+          {
+            "name": "StatisticalVariable",
+            "types": [
+              "Class"
+            ],
+            "dcid": "StatisticalVariable",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      },
+      "age": {
+        "nodes": [
+          {
+            "name": "Years 25 Onwards",
+            "types": [
+              "QuantityRange"
+            ],
+            "dcid": "Years25Onwards",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      },
+      "constraintProperties": {
+        "nodes": [
+          {
+            "name": "age",
+            "types": [
+              "Property"
+            ],
+            "dcid": "age",
+            "provenanceId": "dc/base/Schema"
+          },
+          {
+            "name": "educationalAttainment",
+            "types": [
+              "Property"
+            ],
+            "dcid": "educationalAttainment",
+            "provenanceId": "dc/base/Schema"
+          },
+          {
+            "name": "incomeStatus",
+            "types": [
+              "Property"
+            ],
+            "dcid": "incomeStatus",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      },
+      "educationalAttainment": {
+        "nodes": [
+          {
+            "name": "BachelorsDegree",
+            "types": [
+              "USC_EducationalAttainmentEnum"
+            ],
+            "dcid": "BachelorsDegree",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      },
+      "memberOf": {
+        "nodes": [
+          {
+            "name": "Person With Educational Attainment = Bachelors Degree",
+            "types": [
+              "StatVarGroup"
+            ],
+            "dcid": "dc/g/Person_EducationalAttainment-BachelorsDegree",
+            "provenanceId": "dc/base/generated/StatVarGroupsByConstraint"
+          }
+        ]
+      },
+      "measuredProperty": {
+        "nodes": [
+          {
+            "name": "income",
+            "types": [
+              "Property"
+            ],
+            "dcid": "income",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      },
+      "populationType": {
+        "nodes": [
+          {
+            "name": "Person",
+            "types": [
+              "Class"
+            ],
+            "dcid": "Person",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      },
+      "statType": {
+        "nodes": [
+          {
+            "name": "medianValue",
+            "types": [
+              "Property"
+            ],
+            "dcid": "medianValue",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      }
+    }
+  },
+  "Median_Earnings_Person_Male": {
+    "label": null,
+    "type": null,
+    "arcs": {
+      "definition": {
+        "nodes": [
+          {
+            "provenanceId": "dc/base/Schema",
+            "value": "st=medianValue,mp=earnings,pt=Person,gender=Male,incomeStatus=WithEarnings"
+          }
+        ]
+      },
+      "gender": {
+        "nodes": [
+          {
+            "name": "Male",
+            "types": [
+              "GenderType"
+            ],
+            "dcid": "Male",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      },
+      "name": {
+        "nodes": [
+          {
+            "provenanceId": "dc/base/Schema",
+            "value": "Median Earnings for Male Population"
+          }
+        ]
+      },
+      "populationType": {
+        "nodes": [
+          {
+            "name": "Person",
+            "types": [
+              "Class"
+            ],
+            "dcid": "Person",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      },
+      "statType": {
+        "nodes": [
+          {
+            "name": "medianValue",
+            "types": [
+              "Property"
+            ],
+            "dcid": "medianValue",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      },
+      "typeOf": {
+        "nodes": [
+          {
+            "name": "StatisticalVariable",
+            "types": [
+              "Class"
+            ],
+            "dcid": "StatisticalVariable",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      },
+      "constraintProperties": {
+        "nodes": [
+          {
+            "name": "gender",
+            "types": [
+              "Property"
+            ],
+            "dcid": "gender",
+            "provenanceId": "dc/base/Schema"
+          },
+          {
+            "name": "incomeStatus",
+            "types": [
+              "Property"
+            ],
+            "dcid": "incomeStatus",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      },
+      "incomeStatus": {
+        "nodes": [
+          {
+            "name": "WithEarnings",
+            "types": [
+              "IncomeStatusEnum"
+            ],
+            "dcid": "WithEarnings",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      },
+      "memberOf": {
+        "nodes": [
+          {
+            "name": "Person With Gender = Male, Income Status = With Earnings",
+            "types": [
+              "StatVarGroup"
+            ],
+            "dcid": "dc/g/Person_Gender-Male_IncomeStatus-WithEarnings",
+            "provenanceId": "dc/base/generated/StatVarGroupsByConstraint"
+          }
+        ]
+      },
+      "measuredProperty": {
+        "nodes": [
+          {
+            "name": "earnings",
+            "types": [
+              "Property"
+            ],
+            "dcid": "earnings",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      }
+    }
+  },
+  "Amount_FinancialFlow_Net_Disbursement_DAC1AidType5_Nominal_AsAFractionOf_PrimaryIncome_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal": {
+    "label": null,
+    "type": null,
+    "arcs": {
+      "constraintProperties": {
+        "nodes": [
+          {
+            "name": "DAC 1 aid type",
+            "types": [
+              "Property"
+            ],
+            "dcid": "dac1AidType",
+            "provenanceId": "provenance/OECDDAC1"
+          },
+          {
+            "name": "financial flow type",
+            "types": [
+              "Property"
+            ],
+            "dcid": "financialFlowType",
+            "provenanceId": "provenance/OECDDAC1"
+          },
+          {
+            "name": "netting basis",
+            "types": [
+              "Property"
+            ],
+            "dcid": "nettingBasis",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "financialFlowType": {
+        "nodes": [
+          {
+            "name": "disbursement",
+            "types": [
+              "FinancialFlowTypeEnum"
+            ],
+            "dcid": "Disbursement",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "measurementQualifier": {
+        "nodes": [
+          {
+            "name": "Nominal",
+            "types": [
+              "EconomicMetricEnum"
+            ],
+            "dcid": "Nominal",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "name": {
+        "nodes": [
+          {
+            "provenanceId": "provenance/OECDDAC1",
+            "value": "Official and private flow (net disbursements, % of GNI)"
+          }
+        ]
+      },
+      "observationProperties": {
+        "nodes": [
+          {
+            "name": "financing provider",
+            "types": [
+              "Property"
+            ],
+            "dcid": "financingProvider",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "statType": {
+        "nodes": [
+          {
+            "name": "measuredValue",
+            "types": [
+              "Property"
+            ],
+            "dcid": "measuredValue",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "dac1AidType": {
+        "nodes": [
+          {
+            "name": "official and private flow (DAC 1 aid type)",
+            "types": [
+              "DAC1AidTypeEnum"
+            ],
+            "dcid": "DAC1AidType5",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "measuredProperty": {
+        "nodes": [
+          {
+            "name": "amount",
+            "types": [
+              "Property"
+            ],
+            "dcid": "amount",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "measurementDenominator": {
+        "nodes": [
+          {
+            "name": "Gross national income",
+            "types": [
+              "StatisticalVariable"
+            ],
+            "dcid": "PrimaryIncome_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "nettingBasis": {
+        "nodes": [
+          {
+            "name": "net",
+            "types": [
+              "NettingBasisEnum"
+            ],
+            "dcid": "Net",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "populationType": {
+        "nodes": [
+          {
+            "name": "financial flow",
+            "types": [
+              "Class"
+            ],
+            "dcid": "FinancialFlow",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "typeOf": {
+        "nodes": [
+          {
+            "name": "StatisticalVariable",
+            "types": [
+              "Class"
+            ],
+            "dcid": "StatisticalVariable",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      }
+    }
+  },
+  "GrantEquivalent_FinancialFlow_Disbursement_DAC1AidType1010_Nominal_AsAFractionOf_PrimaryIncome_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal": {
+    "label": null,
+    "type": null,
+    "arcs": {
+      "observationProperties": {
+        "nodes": [
+          {
+            "name": "financing provider",
+            "types": [
+              "Property"
+            ],
+            "dcid": "financingProvider",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "typeOf": {
+        "nodes": [
+          {
+            "name": "StatisticalVariable",
+            "types": [
+              "Class"
+            ],
+            "dcid": "StatisticalVariable",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "constraintProperties": {
+        "nodes": [
+          {
+            "name": "DAC 1 aid type",
+            "types": [
+              "Property"
+            ],
+            "dcid": "dac1AidType",
+            "provenanceId": "provenance/OECDDAC1"
+          },
+          {
+            "name": "financial flow type",
+            "types": [
+              "Property"
+            ],
+            "dcid": "financialFlowType",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "financialFlowType": {
+        "nodes": [
+          {
+            "name": "disbursement",
+            "types": [
+              "FinancialFlowTypeEnum"
+            ],
+            "dcid": "Disbursement",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "measuredProperty": {
+        "nodes": [
+          {
+            "name": "grant equivalent",
+            "types": [
+              "Property"
+            ],
+            "dcid": "grantEquivalent",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "measurementDenominator": {
+        "nodes": [
+          {
+            "name": "Gross national income",
+            "types": [
+              "StatisticalVariable"
+            ],
+            "dcid": "PrimaryIncome_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "name": {
+        "nodes": [
+          {
+            "provenanceId": "provenance/OECDDAC1",
+            "value": "Official development assistance (grant equivalents, % of GNI)"
+          }
+        ]
+      },
+      "populationType": {
+        "nodes": [
+          {
+            "name": "financial flow",
+            "types": [
+              "Class"
+            ],
+            "dcid": "FinancialFlow",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "statType": {
+        "nodes": [
+          {
+            "name": "measuredValue",
+            "types": [
+              "Property"
+            ],
+            "dcid": "measuredValue",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "dac1AidType": {
+        "nodes": [
+          {
+            "name": "official development assistance (DAC 1 aid type)",
+            "types": [
+              "DAC1AidTypeEnum"
+            ],
+            "dcid": "DAC1AidType1010",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "measurementQualifier": {
+        "nodes": [
+          {
+            "name": "Nominal",
+            "types": [
+              "EconomicMetricEnum"
+            ],
+            "dcid": "Nominal",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      }
+    }
+  },
+  "Amount_FinancialFlow_Net_Disbursement_DAC1AidType1010_Nominal_AsAFractionOf_PrimaryIncome_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal": {
+    "label": null,
+    "type": null,
+    "arcs": {
+      "populationType": {
+        "nodes": [
+          {
+            "name": "financial flow",
+            "types": [
+              "Class"
+            ],
+            "dcid": "FinancialFlow",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "statType": {
+        "nodes": [
+          {
+            "name": "measuredValue",
+            "types": [
+              "Property"
+            ],
+            "dcid": "measuredValue",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "dac1AidType": {
+        "nodes": [
+          {
+            "name": "official development assistance (DAC 1 aid type)",
+            "types": [
+              "DAC1AidTypeEnum"
+            ],
+            "dcid": "DAC1AidType1010",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "measuredProperty": {
+        "nodes": [
+          {
+            "name": "amount",
+            "types": [
+              "Property"
+            ],
+            "dcid": "amount",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "measurementDenominator": {
+        "nodes": [
+          {
+            "name": "Gross national income",
+            "types": [
+              "StatisticalVariable"
+            ],
+            "dcid": "PrimaryIncome_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "name": {
+        "nodes": [
+          {
+            "provenanceId": "provenance/OECDDAC1",
+            "value": "Official development assistance (net disbursements, % of GNI)"
+          }
+        ]
+      },
+      "nettingBasis": {
+        "nodes": [
+          {
+            "name": "net",
+            "types": [
+              "NettingBasisEnum"
+            ],
+            "dcid": "Net",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "typeOf": {
+        "nodes": [
+          {
+            "name": "StatisticalVariable",
+            "types": [
+              "Class"
+            ],
+            "dcid": "StatisticalVariable",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "constraintProperties": {
+        "nodes": [
+          {
+            "name": "DAC 1 aid type",
+            "types": [
+              "Property"
+            ],
+            "dcid": "dac1AidType",
+            "provenanceId": "provenance/OECDDAC1"
+          },
+          {
+            "name": "financial flow type",
+            "types": [
+              "Property"
+            ],
+            "dcid": "financialFlowType",
+            "provenanceId": "provenance/OECDDAC1"
+          },
+          {
+            "name": "netting basis",
+            "types": [
+              "Property"
+            ],
+            "dcid": "nettingBasis",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "financialFlowType": {
+        "nodes": [
+          {
+            "name": "disbursement",
+            "types": [
+              "FinancialFlowTypeEnum"
+            ],
+            "dcid": "Disbursement",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "measurementQualifier": {
+        "nodes": [
+          {
+            "name": "Nominal",
+            "types": [
+              "EconomicMetricEnum"
+            ],
+            "dcid": "Nominal",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "observationProperties": {
+        "nodes": [
+          {
+            "name": "financing provider",
+            "types": [
+              "Property"
+            ],
+            "dcid": "financingProvider",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      }
+    }
+  },
+  "Amount_FinancialFlow_Net_Disbursement_DAC1AidType1410_Nominal": {
+    "label": null,
+    "type": null,
+    "arcs": {
+      "dac1AidType": {
+        "nodes": [
+          {
+            "name": "donor country personnel (DAC 1 aid type)",
+            "types": [
+              "DAC1AidTypeEnum"
+            ],
+            "dcid": "DAC1AidType1410",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "measuredProperty": {
+        "nodes": [
+          {
+            "name": "amount",
+            "types": [
+              "Property"
+            ],
+            "dcid": "amount",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "name": {
+        "nodes": [
+          {
+            "provenanceId": "provenance/OECDDAC1",
+            "value": "Donor country personnel (net disbursements)"
+          }
+        ]
+      },
+      "statType": {
+        "nodes": [
+          {
+            "name": "measuredValue",
+            "types": [
+              "Property"
+            ],
+            "dcid": "measuredValue",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "typeOf": {
+        "nodes": [
+          {
+            "name": "StatisticalVariable",
+            "types": [
+              "Class"
+            ],
+            "dcid": "StatisticalVariable",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "constraintProperties": {
+        "nodes": [
+          {
+            "name": "DAC 1 aid type",
+            "types": [
+              "Property"
+            ],
+            "dcid": "dac1AidType",
+            "provenanceId": "provenance/OECDDAC1"
+          },
+          {
+            "name": "financial flow type",
+            "types": [
+              "Property"
+            ],
+            "dcid": "financialFlowType",
+            "provenanceId": "provenance/OECDDAC1"
+          },
+          {
+            "name": "netting basis",
+            "types": [
+              "Property"
+            ],
+            "dcid": "nettingBasis",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "financialFlowType": {
+        "nodes": [
+          {
+            "name": "disbursement",
+            "types": [
+              "FinancialFlowTypeEnum"
+            ],
+            "dcid": "Disbursement",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "measurementQualifier": {
+        "nodes": [
+          {
+            "name": "Nominal",
+            "types": [
+              "EconomicMetricEnum"
+            ],
+            "dcid": "Nominal",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "nettingBasis": {
+        "nodes": [
+          {
+            "name": "net",
+            "types": [
+              "NettingBasisEnum"
+            ],
+            "dcid": "Net",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "observationProperties": {
+        "nodes": [
+          {
+            "name": "financing provider",
+            "types": [
+              "Property"
+            ],
+            "dcid": "financingProvider",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "populationType": {
+        "nodes": [
+          {
+            "name": "financial flow",
+            "types": [
+              "Class"
+            ],
+            "dcid": "FinancialFlow",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      }
+    }
+  },
+  "GrantEquivalent_FinancialFlow_Disbursement_DAC1AidType1010_Nominal": {
+    "label": null,
+    "type": null,
+    "arcs": {
+      "constraintProperties": {
+        "nodes": [
+          {
+            "name": "DAC 1 aid type",
+            "types": [
+              "Property"
+            ],
+            "dcid": "dac1AidType",
+            "provenanceId": "provenance/OECDDAC1"
+          },
+          {
+            "name": "financial flow type",
+            "types": [
+              "Property"
+            ],
+            "dcid": "financialFlowType",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "measuredProperty": {
+        "nodes": [
+          {
+            "name": "grant equivalent",
+            "types": [
+              "Property"
+            ],
+            "dcid": "grantEquivalent",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "measurementQualifier": {
+        "nodes": [
+          {
+            "name": "Nominal",
+            "types": [
+              "EconomicMetricEnum"
+            ],
+            "dcid": "Nominal",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "populationType": {
+        "nodes": [
+          {
+            "name": "financial flow",
+            "types": [
+              "Class"
+            ],
+            "dcid": "FinancialFlow",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "dac1AidType": {
+        "nodes": [
+          {
+            "name": "official development assistance (DAC 1 aid type)",
+            "types": [
+              "DAC1AidTypeEnum"
+            ],
+            "dcid": "DAC1AidType1010",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "financialFlowType": {
+        "nodes": [
+          {
+            "name": "disbursement",
+            "types": [
+              "FinancialFlowTypeEnum"
+            ],
+            "dcid": "Disbursement",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "name": {
+        "nodes": [
+          {
+            "provenanceId": "provenance/OECDDAC1",
+            "value": "Official development assistance (grant equivalents)"
+          }
+        ]
+      },
+      "observationProperties": {
+        "nodes": [
+          {
+            "name": "financing provider",
+            "types": [
+              "Property"
+            ],
+            "dcid": "financingProvider",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "statType": {
+        "nodes": [
+          {
+            "name": "measuredValue",
+            "types": [
+              "Property"
+            ],
+            "dcid": "measuredValue",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "typeOf": {
+        "nodes": [
+          {
+            "name": "StatisticalVariable",
+            "types": [
+              "Class"
+            ],
+            "dcid": "StatisticalVariable",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      }
+    }
+  },
+  "Amount_FinancialFlow_Net_Disbursement_CRSTypeOfFlow30_CRSTypeOfFinance110_CRSCooperationModalityD01_CRSPurposeCode16010_Nominal": {
+    "label": null,
+    "type": null,
+    "arcs": {
+      "statType": {
+        "nodes": [
+          {
+            "name": "measuredValue",
+            "types": [
+              "Property"
+            ],
+            "dcid": "measuredValue",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "crsCooperationModality": {
+        "nodes": [
+          {
+            "name": "donor country personnel (CRS Modality)",
+            "types": [
+              "CRSCooperationModalityEnum"
+            ],
+            "dcid": "CRSCooperationModalityD01",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "crsPurpose": {
+        "nodes": [
+          {
+            "name": "social protection (CRS Purpose)",
+            "types": [
+              "CRSPurposeCodeEnum"
+            ],
+            "dcid": "CRSPurposeCode16010",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "crsTypeOfFinance": {
+        "nodes": [
+          {
+            "name": "standard grant (CRS Finance)",
+            "types": [
+              "CRSTypeOfFinanceEnum"
+            ],
+            "dcid": "CRSTypeOfFinance110",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "measuredProperty": {
+        "nodes": [
+          {
+            "name": "amount",
+            "types": [
+              "Property"
+            ],
+            "dcid": "amount",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "observationProperties": {
+        "nodes": [
+          {
+            "name": "financing provider",
+            "types": [
+              "Property"
+            ],
+            "dcid": "financingProvider",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "financing recipient",
+            "types": [
+              "Property"
+            ],
+            "dcid": "financingRecipient",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "typeOf": {
+        "nodes": [
+          {
+            "name": "StatisticalVariable",
+            "types": [
+              "Class"
+            ],
+            "dcid": "StatisticalVariable",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "constraintProperties": {
+        "nodes": [
+          {
+            "name": "CRS cooperation modality",
+            "types": [
+              "Property"
+            ],
+            "dcid": "crsCooperationModality",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "CRS purpose",
+            "types": [
+              "Property"
+            ],
+            "dcid": "crsPurpose",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "CRS type of finance",
+            "types": [
+              "Property"
+            ],
+            "dcid": "crsTypeOfFinance",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "CRS type of flow",
+            "types": [
+              "Property"
+            ],
+            "dcid": "crsTypeOfFlow",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "financial flow type",
+            "types": [
+              "Property"
+            ],
+            "dcid": "financialFlowType",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "netting basis",
+            "types": [
+              "Property"
+            ],
+            "dcid": "nettingBasis",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "crsTypeOfFlow": {
+        "nodes": [
+          {
+            "name": "private development finance (CRS Flow)",
+            "types": [
+              "CRSTypeOfFlowEnum"
+            ],
+            "dcid": "CRSTypeOfFlow30",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "financialFlowType": {
+        "nodes": [
+          {
+            "name": "disbursement",
+            "types": [
+              "FinancialFlowTypeEnum"
+            ],
+            "dcid": "Disbursement",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "measurementQualifier": {
+        "nodes": [
+          {
+            "name": "Nominal",
+            "types": [
+              "EconomicMetricEnum"
+            ],
+            "dcid": "Nominal",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "name": {
+        "nodes": [
+          {
+            "provenanceId": "provenance/OECDCreditorReportingSystem",
+            "value": "Private development finance net disbursements for social protection (standard grant, donor country personnel)"
+          }
+        ]
+      },
+      "nettingBasis": {
+        "nodes": [
+          {
+            "name": "net",
+            "types": [
+              "NettingBasisEnum"
+            ],
+            "dcid": "Net",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "populationType": {
+        "nodes": [
+          {
+            "name": "financial flow",
+            "types": [
+              "Class"
+            ],
+            "dcid": "FinancialFlow",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      }
+    }
+  },
+  "Amount_FinancialFlow_Net_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityD01_CRSPurposeCode13010_Nominal": {
+    "label": null,
+    "type": null,
+    "arcs": {
+      "crsTypeOfFinance": {
+        "nodes": [
+          {
+            "name": "standard grant (CRS Finance)",
+            "types": [
+              "CRSTypeOfFinanceEnum"
+            ],
+            "dcid": "CRSTypeOfFinance110",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "financialFlowType": {
+        "nodes": [
+          {
+            "name": "disbursement",
+            "types": [
+              "FinancialFlowTypeEnum"
+            ],
+            "dcid": "Disbursement",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "name": {
+        "nodes": [
+          {
+            "provenanceId": "provenance/OECDCreditorReportingSystem",
+            "value": "Official development assistance net disbursements for population policy and administrative management (standard grant, donor country personnel)"
+          }
+        ]
+      },
+      "nettingBasis": {
+        "nodes": [
+          {
+            "name": "net",
+            "types": [
+              "NettingBasisEnum"
+            ],
+            "dcid": "Net",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "observationProperties": {
+        "nodes": [
+          {
+            "name": "financing provider",
+            "types": [
+              "Property"
+            ],
+            "dcid": "financingProvider",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "financing recipient",
+            "types": [
+              "Property"
+            ],
+            "dcid": "financingRecipient",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "constraintProperties": {
+        "nodes": [
+          {
+            "name": "CRS cooperation modality",
+            "types": [
+              "Property"
+            ],
+            "dcid": "crsCooperationModality",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "CRS purpose",
+            "types": [
+              "Property"
+            ],
+            "dcid": "crsPurpose",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "CRS type of finance",
+            "types": [
+              "Property"
+            ],
+            "dcid": "crsTypeOfFinance",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "CRS type of flow",
+            "types": [
+              "Property"
+            ],
+            "dcid": "crsTypeOfFlow",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "financial flow type",
+            "types": [
+              "Property"
+            ],
+            "dcid": "financialFlowType",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "netting basis",
+            "types": [
+              "Property"
+            ],
+            "dcid": "nettingBasis",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "crsTypeOfFlow": {
+        "nodes": [
+          {
+            "name": "official development assistance (CRS Flow)",
+            "types": [
+              "CRSTypeOfFlowEnum"
+            ],
+            "dcid": "CRSTypeOfFlow10",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "measuredProperty": {
+        "nodes": [
+          {
+            "name": "amount",
+            "types": [
+              "Property"
+            ],
+            "dcid": "amount",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "measurementQualifier": {
+        "nodes": [
+          {
+            "name": "Nominal",
+            "types": [
+              "EconomicMetricEnum"
+            ],
+            "dcid": "Nominal",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "populationType": {
+        "nodes": [
+          {
+            "name": "financial flow",
+            "types": [
+              "Class"
+            ],
+            "dcid": "FinancialFlow",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "statType": {
+        "nodes": [
+          {
+            "name": "measuredValue",
+            "types": [
+              "Property"
+            ],
+            "dcid": "measuredValue",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "typeOf": {
+        "nodes": [
+          {
+            "name": "StatisticalVariable",
+            "types": [
+              "Class"
+            ],
+            "dcid": "StatisticalVariable",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "crsCooperationModality": {
+        "nodes": [
+          {
+            "name": "donor country personnel (CRS Modality)",
+            "types": [
+              "CRSCooperationModalityEnum"
+            ],
+            "dcid": "CRSCooperationModalityD01",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "crsPurpose": {
+        "nodes": [
+          {
+            "name": "population policy and administrative management (CRS Purpose)",
+            "types": [
+              "CRSPurposeCodeEnum"
+            ],
+            "dcid": "CRSPurposeCode13010",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      }
+    }
+  },
+  "Amount_FinancialFlow_Net_Disbursement_CRSTypeOfFlow30_CRSTypeOfFinance110_CRSCooperationModalityH01_CRSPurposeCode13010_Nominal": {
+    "label": null,
+    "type": null,
+    "arcs": {
+      "observationProperties": {
+        "nodes": [
+          {
+            "name": "financing provider",
+            "types": [
+              "Property"
+            ],
+            "dcid": "financingProvider",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "financing recipient",
+            "types": [
+              "Property"
+            ],
+            "dcid": "financingRecipient",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "statType": {
+        "nodes": [
+          {
+            "name": "measuredValue",
+            "types": [
+              "Property"
+            ],
+            "dcid": "measuredValue",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "crsPurpose": {
+        "nodes": [
+          {
+            "name": "population policy and administrative management (CRS Purpose)",
+            "types": [
+              "CRSPurposeCodeEnum"
+            ],
+            "dcid": "CRSPurposeCode13010",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "measuredProperty": {
+        "nodes": [
+          {
+            "name": "amount",
+            "types": [
+              "Property"
+            ],
+            "dcid": "amount",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "measurementQualifier": {
+        "nodes": [
+          {
+            "name": "Nominal",
+            "types": [
+              "EconomicMetricEnum"
+            ],
+            "dcid": "Nominal",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "name": {
+        "nodes": [
+          {
+            "provenanceId": "provenance/OECDCreditorReportingSystem",
+            "value": "Private development finance net disbursements for population policy and administrative management (standard grant, development awareness)"
+          }
+        ]
+      },
+      "populationType": {
+        "nodes": [
+          {
+            "name": "financial flow",
+            "types": [
+              "Class"
+            ],
+            "dcid": "FinancialFlow",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "typeOf": {
+        "nodes": [
+          {
+            "name": "StatisticalVariable",
+            "types": [
+              "Class"
+            ],
+            "dcid": "StatisticalVariable",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "constraintProperties": {
+        "nodes": [
+          {
+            "name": "CRS cooperation modality",
+            "types": [
+              "Property"
+            ],
+            "dcid": "crsCooperationModality",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "CRS purpose",
+            "types": [
+              "Property"
+            ],
+            "dcid": "crsPurpose",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "CRS type of finance",
+            "types": [
+              "Property"
+            ],
+            "dcid": "crsTypeOfFinance",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "CRS type of flow",
+            "types": [
+              "Property"
+            ],
+            "dcid": "crsTypeOfFlow",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "financial flow type",
+            "types": [
+              "Property"
+            ],
+            "dcid": "financialFlowType",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "netting basis",
+            "types": [
+              "Property"
+            ],
+            "dcid": "nettingBasis",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "crsCooperationModality": {
+        "nodes": [
+          {
+            "name": "development awareness (CRS Modality)",
+            "types": [
+              "CRSCooperationModalityEnum"
+            ],
+            "dcid": "CRSCooperationModalityH01",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "crsTypeOfFinance": {
+        "nodes": [
+          {
+            "name": "standard grant (CRS Finance)",
+            "types": [
+              "CRSTypeOfFinanceEnum"
+            ],
+            "dcid": "CRSTypeOfFinance110",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "crsTypeOfFlow": {
+        "nodes": [
+          {
+            "name": "private development finance (CRS Flow)",
+            "types": [
+              "CRSTypeOfFlowEnum"
+            ],
+            "dcid": "CRSTypeOfFlow30",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "financialFlowType": {
+        "nodes": [
+          {
+            "name": "disbursement",
+            "types": [
+              "FinancialFlowTypeEnum"
+            ],
+            "dcid": "Disbursement",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "nettingBasis": {
+        "nodes": [
+          {
+            "name": "net",
+            "types": [
+              "NettingBasisEnum"
+            ],
+            "dcid": "Net",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      }
+    }
+  },
+  "Amount_FinancialFlow_Net_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityD01_CRSPurposeCode32120_Nominal": {
+    "label": null,
+    "type": null,
+    "arcs": {
+      "measuredProperty": {
+        "nodes": [
+          {
+            "name": "amount",
+            "types": [
+              "Property"
+            ],
+            "dcid": "amount",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "observationProperties": {
+        "nodes": [
+          {
+            "name": "financing provider",
+            "types": [
+              "Property"
+            ],
+            "dcid": "financingProvider",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "financing recipient",
+            "types": [
+              "Property"
+            ],
+            "dcid": "financingRecipient",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "typeOf": {
+        "nodes": [
+          {
+            "name": "StatisticalVariable",
+            "types": [
+              "Class"
+            ],
+            "dcid": "StatisticalVariable",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "constraintProperties": {
+        "nodes": [
+          {
+            "name": "CRS cooperation modality",
+            "types": [
+              "Property"
+            ],
+            "dcid": "crsCooperationModality",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "CRS purpose",
+            "types": [
+              "Property"
+            ],
+            "dcid": "crsPurpose",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "CRS type of finance",
+            "types": [
+              "Property"
+            ],
+            "dcid": "crsTypeOfFinance",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "CRS type of flow",
+            "types": [
+              "Property"
+            ],
+            "dcid": "crsTypeOfFlow",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "financial flow type",
+            "types": [
+              "Property"
+            ],
+            "dcid": "financialFlowType",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "netting basis",
+            "types": [
+              "Property"
+            ],
+            "dcid": "nettingBasis",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "crsPurpose": {
+        "nodes": [
+          {
+            "name": "industrial development (CRS Purpose)",
+            "types": [
+              "CRSPurposeCodeEnum"
+            ],
+            "dcid": "CRSPurposeCode32120",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "crsTypeOfFinance": {
+        "nodes": [
+          {
+            "name": "standard grant (CRS Finance)",
+            "types": [
+              "CRSTypeOfFinanceEnum"
+            ],
+            "dcid": "CRSTypeOfFinance110",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "measurementQualifier": {
+        "nodes": [
+          {
+            "name": "Nominal",
+            "types": [
+              "EconomicMetricEnum"
+            ],
+            "dcid": "Nominal",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "name": {
+        "nodes": [
+          {
+            "provenanceId": "provenance/OECDCreditorReportingSystem",
+            "value": "Official development assistance net disbursements for industrial development (standard grant, donor country personnel)"
+          }
+        ]
+      },
+      "nettingBasis": {
+        "nodes": [
+          {
+            "name": "net",
+            "types": [
+              "NettingBasisEnum"
+            ],
+            "dcid": "Net",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "populationType": {
+        "nodes": [
+          {
+            "name": "financial flow",
+            "types": [
+              "Class"
+            ],
+            "dcid": "FinancialFlow",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "statType": {
+        "nodes": [
+          {
+            "name": "measuredValue",
+            "types": [
+              "Property"
+            ],
+            "dcid": "measuredValue",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "crsCooperationModality": {
+        "nodes": [
+          {
+            "name": "donor country personnel (CRS Modality)",
+            "types": [
+              "CRSCooperationModalityEnum"
+            ],
+            "dcid": "CRSCooperationModalityD01",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "crsTypeOfFlow": {
+        "nodes": [
+          {
+            "name": "official development assistance (CRS Flow)",
+            "types": [
+              "CRSTypeOfFlowEnum"
+            ],
+            "dcid": "CRSTypeOfFlow10",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "financialFlowType": {
+        "nodes": [
+          {
+            "name": "disbursement",
+            "types": [
+              "FinancialFlowTypeEnum"
+            ],
+            "dcid": "Disbursement",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      }
+    }
+  },
+  "Amount_FinancialFlow_Net_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityD01_CRSPurposeCode32110_Nominal": {
+    "label": null,
+    "type": null,
+    "arcs": {
+      "statType": {
+        "nodes": [
+          {
+            "name": "measuredValue",
+            "types": [
+              "Property"
+            ],
+            "dcid": "measuredValue",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "typeOf": {
+        "nodes": [
+          {
+            "name": "StatisticalVariable",
+            "types": [
+              "Class"
+            ],
+            "dcid": "StatisticalVariable",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "constraintProperties": {
+        "nodes": [
+          {
+            "name": "CRS cooperation modality",
+            "types": [
+              "Property"
+            ],
+            "dcid": "crsCooperationModality",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "CRS purpose",
+            "types": [
+              "Property"
+            ],
+            "dcid": "crsPurpose",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "CRS type of finance",
+            "types": [
+              "Property"
+            ],
+            "dcid": "crsTypeOfFinance",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "CRS type of flow",
+            "types": [
+              "Property"
+            ],
+            "dcid": "crsTypeOfFlow",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "financial flow type",
+            "types": [
+              "Property"
+            ],
+            "dcid": "financialFlowType",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "netting basis",
+            "types": [
+              "Property"
+            ],
+            "dcid": "nettingBasis",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "financialFlowType": {
+        "nodes": [
+          {
+            "name": "disbursement",
+            "types": [
+              "FinancialFlowTypeEnum"
+            ],
+            "dcid": "Disbursement",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "measurementQualifier": {
+        "nodes": [
+          {
+            "name": "Nominal",
+            "types": [
+              "EconomicMetricEnum"
+            ],
+            "dcid": "Nominal",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "name": {
+        "nodes": [
+          {
+            "provenanceId": "provenance/OECDCreditorReportingSystem",
+            "value": "Official development assistance net disbursements for industrial policy and administrative management (standard grant, donor country personnel)"
+          }
+        ]
+      },
+      "nettingBasis": {
+        "nodes": [
+          {
+            "name": "net",
+            "types": [
+              "NettingBasisEnum"
+            ],
+            "dcid": "Net",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "populationType": {
+        "nodes": [
+          {
+            "name": "financial flow",
+            "types": [
+              "Class"
+            ],
+            "dcid": "FinancialFlow",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "crsCooperationModality": {
+        "nodes": [
+          {
+            "name": "donor country personnel (CRS Modality)",
+            "types": [
+              "CRSCooperationModalityEnum"
+            ],
+            "dcid": "CRSCooperationModalityD01",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "crsPurpose": {
+        "nodes": [
+          {
+            "name": "industrial policy and administrative management (CRS Purpose)",
+            "types": [
+              "CRSPurposeCodeEnum"
+            ],
+            "dcid": "CRSPurposeCode32110",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "crsTypeOfFinance": {
+        "nodes": [
+          {
+            "name": "standard grant (CRS Finance)",
+            "types": [
+              "CRSTypeOfFinanceEnum"
+            ],
+            "dcid": "CRSTypeOfFinance110",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "crsTypeOfFlow": {
+        "nodes": [
+          {
+            "name": "official development assistance (CRS Flow)",
+            "types": [
+              "CRSTypeOfFlowEnum"
+            ],
+            "dcid": "CRSTypeOfFlow10",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "measuredProperty": {
+        "nodes": [
+          {
+            "name": "amount",
+            "types": [
+              "Property"
+            ],
+            "dcid": "amount",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "observationProperties": {
+        "nodes": [
+          {
+            "name": "financing provider",
+            "types": [
+              "Property"
+            ],
+            "dcid": "financingProvider",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "financing recipient",
+            "types": [
+              "Property"
+            ],
+            "dcid": "financingRecipient",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      }
+    }
+  },
+  "Amount_FinancialFlow_Net_Disbursement_CRSTypeOfFlow21_CRSTypeOfFinance510_CRSPurposeCode32110_Nominal": {
+    "label": null,
+    "type": null,
+    "arcs": {
+      "crsTypeOfFlow": {
+        "nodes": [
+          {
+            "name": "non-export credit official flow (CRS Flow)",
+            "types": [
+              "CRSTypeOfFlowEnum"
+            ],
+            "dcid": "CRSTypeOfFlow21",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "measuredProperty": {
+        "nodes": [
+          {
+            "name": "amount",
+            "types": [
+              "Property"
+            ],
+            "dcid": "amount",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "measurementQualifier": {
+        "nodes": [
+          {
+            "name": "Nominal",
+            "types": [
+              "EconomicMetricEnum"
+            ],
+            "dcid": "Nominal",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "name": {
+        "nodes": [
+          {
+            "provenanceId": "provenance/OECDCreditorReportingSystem",
+            "value": "Non-export credit official flow net disbursements for industrial policy and administrative management (common equity)"
+          }
+        ]
+      },
+      "nettingBasis": {
+        "nodes": [
+          {
+            "name": "net",
+            "types": [
+              "NettingBasisEnum"
+            ],
+            "dcid": "Net",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "typeOf": {
+        "nodes": [
+          {
+            "name": "StatisticalVariable",
+            "types": [
+              "Class"
+            ],
+            "dcid": "StatisticalVariable",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "crsPurpose": {
+        "nodes": [
+          {
+            "name": "industrial policy and administrative management (CRS Purpose)",
+            "types": [
+              "CRSPurposeCodeEnum"
+            ],
+            "dcid": "CRSPurposeCode32110",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "crsTypeOfFinance": {
+        "nodes": [
+          {
+            "name": "common equity (CRS Finance)",
+            "types": [
+              "CRSTypeOfFinanceEnum"
+            ],
+            "dcid": "CRSTypeOfFinance510",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "financialFlowType": {
+        "nodes": [
+          {
+            "name": "disbursement",
+            "types": [
+              "FinancialFlowTypeEnum"
+            ],
+            "dcid": "Disbursement",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "observationProperties": {
+        "nodes": [
+          {
+            "name": "financing provider",
+            "types": [
+              "Property"
+            ],
+            "dcid": "financingProvider",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "financing recipient",
+            "types": [
+              "Property"
+            ],
+            "dcid": "financingRecipient",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "populationType": {
+        "nodes": [
+          {
+            "name": "financial flow",
+            "types": [
+              "Class"
+            ],
+            "dcid": "FinancialFlow",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "statType": {
+        "nodes": [
+          {
+            "name": "measuredValue",
+            "types": [
+              "Property"
+            ],
+            "dcid": "measuredValue",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "constraintProperties": {
+        "nodes": [
+          {
+            "name": "CRS purpose",
+            "types": [
+              "Property"
+            ],
+            "dcid": "crsPurpose",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "CRS type of finance",
+            "types": [
+              "Property"
+            ],
+            "dcid": "crsTypeOfFinance",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "CRS type of flow",
+            "types": [
+              "Property"
+            ],
+            "dcid": "crsTypeOfFlow",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "financial flow type",
+            "types": [
+              "Property"
+            ],
+            "dcid": "financialFlowType",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "netting basis",
+            "types": [
+              "Property"
+            ],
+            "dcid": "nettingBasis",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      }
+    }
+  },
+  "Amount_FinancialFlow_Net_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityH01_CRSPurposeCode13010_Nominal": {
+    "label": null,
+    "type": null,
+    "arcs": {
+      "constraintProperties": {
+        "nodes": [
+          {
+            "name": "CRS cooperation modality",
+            "types": [
+              "Property"
+            ],
+            "dcid": "crsCooperationModality",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "CRS purpose",
+            "types": [
+              "Property"
+            ],
+            "dcid": "crsPurpose",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "CRS type of finance",
+            "types": [
+              "Property"
+            ],
+            "dcid": "crsTypeOfFinance",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "CRS type of flow",
+            "types": [
+              "Property"
+            ],
+            "dcid": "crsTypeOfFlow",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "financial flow type",
+            "types": [
+              "Property"
+            ],
+            "dcid": "financialFlowType",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "netting basis",
+            "types": [
+              "Property"
+            ],
+            "dcid": "nettingBasis",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "crsCooperationModality": {
+        "nodes": [
+          {
+            "name": "development awareness (CRS Modality)",
+            "types": [
+              "CRSCooperationModalityEnum"
+            ],
+            "dcid": "CRSCooperationModalityH01",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "measuredProperty": {
+        "nodes": [
+          {
+            "name": "amount",
+            "types": [
+              "Property"
+            ],
+            "dcid": "amount",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "measurementQualifier": {
+        "nodes": [
+          {
+            "name": "Nominal",
+            "types": [
+              "EconomicMetricEnum"
+            ],
+            "dcid": "Nominal",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "name": {
+        "nodes": [
+          {
+            "provenanceId": "provenance/OECDCreditorReportingSystem",
+            "value": "Official development assistance net disbursements for population policy and administrative management (standard grant, development awareness)"
+          }
+        ]
+      },
+      "observationProperties": {
+        "nodes": [
+          {
+            "name": "financing provider",
+            "types": [
+              "Property"
+            ],
+            "dcid": "financingProvider",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "financing recipient",
+            "types": [
+              "Property"
+            ],
+            "dcid": "financingRecipient",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "populationType": {
+        "nodes": [
+          {
+            "name": "financial flow",
+            "types": [
+              "Class"
+            ],
+            "dcid": "FinancialFlow",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "statType": {
+        "nodes": [
+          {
+            "name": "measuredValue",
+            "types": [
+              "Property"
+            ],
+            "dcid": "measuredValue",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "crsPurpose": {
+        "nodes": [
+          {
+            "name": "population policy and administrative management (CRS Purpose)",
+            "types": [
+              "CRSPurposeCodeEnum"
+            ],
+            "dcid": "CRSPurposeCode13010",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "crsTypeOfFinance": {
+        "nodes": [
+          {
+            "name": "standard grant (CRS Finance)",
+            "types": [
+              "CRSTypeOfFinanceEnum"
+            ],
+            "dcid": "CRSTypeOfFinance110",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "crsTypeOfFlow": {
+        "nodes": [
+          {
+            "name": "official development assistance (CRS Flow)",
+            "types": [
+              "CRSTypeOfFlowEnum"
+            ],
+            "dcid": "CRSTypeOfFlow10",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "financialFlowType": {
+        "nodes": [
+          {
+            "name": "disbursement",
+            "types": [
+              "FinancialFlowTypeEnum"
+            ],
+            "dcid": "Disbursement",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "nettingBasis": {
+        "nodes": [
+          {
+            "name": "net",
+            "types": [
+              "NettingBasisEnum"
+            ],
+            "dcid": "Net",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "typeOf": {
+        "nodes": [
+          {
+            "name": "StatisticalVariable",
+            "types": [
+              "Class"
+            ],
+            "dcid": "StatisticalVariable",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      }
+    }
+  },
+  "Amount_FinancialFlow_Net_Disbursement_DAC2aAidType206_Nominal_AsAFractionOf_PrimaryIncome_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal": {
+    "label": null,
+    "type": null,
+    "arcs": {
+      "populationType": {
+        "nodes": [
+          {
+            "name": "financial flow",
+            "types": [
+              "Class"
+            ],
+            "dcid": "FinancialFlow",
+            "provenanceId": "provenance/OECDDAC2A"
+          }
+        ]
+      },
+      "typeOf": {
+        "nodes": [
+          {
+            "name": "StatisticalVariable",
+            "types": [
+              "Class"
+            ],
+            "dcid": "StatisticalVariable",
+            "provenanceId": "provenance/OECDDAC2A"
+          }
+        ]
+      },
+      "dac2aAidType": {
+        "nodes": [
+          {
+            "name": "official development assistance (DAC 2a aid type)",
+            "types": [
+              "DAC2aAidTypeEnum"
+            ],
+            "dcid": "DAC2aAidType206",
+            "provenanceId": "provenance/OECDDAC2A"
+          }
+        ]
+      },
+      "financialFlowType": {
+        "nodes": [
+          {
+            "name": "disbursement",
+            "types": [
+              "FinancialFlowTypeEnum"
+            ],
+            "dcid": "Disbursement",
+            "provenanceId": "provenance/OECDDAC2A"
+          }
+        ]
+      },
+      "nettingBasis": {
+        "nodes": [
+          {
+            "name": "net",
+            "types": [
+              "NettingBasisEnum"
+            ],
+            "dcid": "Net",
+            "provenanceId": "provenance/OECDDAC2A"
+          }
+        ]
+      },
+      "statType": {
+        "nodes": [
+          {
+            "name": "measuredValue",
+            "types": [
+              "Property"
+            ],
+            "dcid": "measuredValue",
+            "provenanceId": "provenance/OECDDAC2A"
+          }
+        ]
+      },
+      "constraintProperties": {
+        "nodes": [
+          {
+            "name": "DAC 2a aid type",
+            "types": [
+              "Property"
+            ],
+            "dcid": "dac2aAidType",
+            "provenanceId": "provenance/OECDDAC2A"
+          },
+          {
+            "name": "financial flow type",
+            "types": [
+              "Property"
+            ],
+            "dcid": "financialFlowType",
+            "provenanceId": "provenance/OECDDAC2A"
+          },
+          {
+            "name": "netting basis",
+            "types": [
+              "Property"
+            ],
+            "dcid": "nettingBasis",
+            "provenanceId": "provenance/OECDDAC2A"
+          }
+        ]
+      },
+      "measuredProperty": {
+        "nodes": [
+          {
+            "name": "amount",
+            "types": [
+              "Property"
+            ],
+            "dcid": "amount",
+            "provenanceId": "provenance/OECDDAC2A"
+          }
+        ]
+      },
+      "measurementDenominator": {
+        "nodes": [
+          {
+            "name": "Gross national income",
+            "types": [
+              "StatisticalVariable"
+            ],
+            "dcid": "PrimaryIncome_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal",
+            "provenanceId": "provenance/OECDDAC2A"
+          }
+        ]
+      },
+      "measurementQualifier": {
+        "nodes": [
+          {
+            "name": "Nominal",
+            "types": [
+              "EconomicMetricEnum"
+            ],
+            "dcid": "Nominal",
+            "provenanceId": "provenance/OECDDAC2A"
+          }
+        ]
+      },
+      "name": {
+        "nodes": [
+          {
+            "provenanceId": "provenance/OECDDAC2A",
+            "value": "Official development assistance (net disbursements, % of recipient GNI)"
+          }
+        ]
+      },
+      "observationProperties": {
+        "nodes": [
+          {
+            "name": "financing provider",
+            "types": [
+              "Property"
+            ],
+            "dcid": "financingProvider",
+            "provenanceId": "provenance/OECDDAC2A"
+          },
+          {
+            "name": "financing recipient",
+            "types": [
+              "Property"
+            ],
+            "dcid": "financingRecipient",
+            "provenanceId": "provenance/OECDDAC2A"
+          }
+        ]
+      }
+    }
+  },
+  "Amount_FinancialFlow_Gross_Disbursement_DAC1AidType1410_Nominal": {
+    "label": null,
+    "type": null,
+    "arcs": {
+      "constraintProperties": {
+        "nodes": [
+          {
+            "name": "DAC 1 aid type",
+            "types": [
+              "Property"
+            ],
+            "dcid": "dac1AidType",
+            "provenanceId": "provenance/OECDDAC1"
+          },
+          {
+            "name": "financial flow type",
+            "types": [
+              "Property"
+            ],
+            "dcid": "financialFlowType",
+            "provenanceId": "provenance/OECDDAC1"
+          },
+          {
+            "name": "netting basis",
+            "types": [
+              "Property"
+            ],
+            "dcid": "nettingBasis",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "financialFlowType": {
+        "nodes": [
+          {
+            "name": "disbursement",
+            "types": [
+              "FinancialFlowTypeEnum"
+            ],
+            "dcid": "Disbursement",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "measuredProperty": {
+        "nodes": [
+          {
+            "name": "amount",
+            "types": [
+              "Property"
+            ],
+            "dcid": "amount",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "measurementQualifier": {
+        "nodes": [
+          {
+            "name": "Nominal",
+            "types": [
+              "EconomicMetricEnum"
+            ],
+            "dcid": "Nominal",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "nettingBasis": {
+        "nodes": [
+          {
+            "name": "gross",
+            "types": [
+              "NettingBasisEnum"
+            ],
+            "dcid": "Gross",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "populationType": {
+        "nodes": [
+          {
+            "name": "financial flow",
+            "types": [
+              "Class"
+            ],
+            "dcid": "FinancialFlow",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "statType": {
+        "nodes": [
+          {
+            "name": "measuredValue",
+            "types": [
+              "Property"
+            ],
+            "dcid": "measuredValue",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "typeOf": {
+        "nodes": [
+          {
+            "name": "StatisticalVariable",
+            "types": [
+              "Class"
+            ],
+            "dcid": "StatisticalVariable",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "dac1AidType": {
+        "nodes": [
+          {
+            "name": "donor country personnel (DAC 1 aid type)",
+            "types": [
+              "DAC1AidTypeEnum"
+            ],
+            "dcid": "DAC1AidType1410",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      },
+      "name": {
+        "nodes": [
+          {
+            "provenanceId": "provenance/OECDDAC1",
+            "value": "Donor country personnel (gross disbursements)"
+          }
+        ]
+      },
+      "observationProperties": {
+        "nodes": [
+          {
+            "name": "financing provider",
+            "types": [
+              "Property"
+            ],
+            "dcid": "financingProvider",
+            "provenanceId": "provenance/OECDDAC1"
+          }
+        ]
+      }
+    }
+  },
+  "Amount_FinancialFlow_Net_Disbursement_CRSTypeOfFlow30_CRSTypeOfFinance110_CRSCooperationModalityB01_CRSPurposeCode13010_Nominal": {
+    "label": null,
+    "type": null,
+    "arcs": {
+      "observationProperties": {
+        "nodes": [
+          {
+            "name": "financing provider",
+            "types": [
+              "Property"
+            ],
+            "dcid": "financingProvider",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "financing recipient",
+            "types": [
+              "Property"
+            ],
+            "dcid": "financingRecipient",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "populationType": {
+        "nodes": [
+          {
+            "name": "financial flow",
+            "types": [
+              "Class"
+            ],
+            "dcid": "FinancialFlow",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "typeOf": {
+        "nodes": [
+          {
+            "name": "StatisticalVariable",
+            "types": [
+              "Class"
+            ],
+            "dcid": "StatisticalVariable",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "crsTypeOfFlow": {
+        "nodes": [
+          {
+            "name": "private development finance (CRS Flow)",
+            "types": [
+              "CRSTypeOfFlowEnum"
+            ],
+            "dcid": "CRSTypeOfFlow30",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "financialFlowType": {
+        "nodes": [
+          {
+            "name": "disbursement",
+            "types": [
+              "FinancialFlowTypeEnum"
+            ],
+            "dcid": "Disbursement",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "measuredProperty": {
+        "nodes": [
+          {
+            "name": "amount",
+            "types": [
+              "Property"
+            ],
+            "dcid": "amount",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "measurementQualifier": {
+        "nodes": [
+          {
+            "name": "Nominal",
+            "types": [
+              "EconomicMetricEnum"
+            ],
+            "dcid": "Nominal",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "name": {
+        "nodes": [
+          {
+            "provenanceId": "provenance/OECDCreditorReportingSystem",
+            "value": "Private development finance net disbursements for population policy and administrative management (standard grant, core support to non-governmental organisations, other private bodies, public-private partnerships, and research institutes)"
+          }
+        ]
+      },
+      "nettingBasis": {
+        "nodes": [
+          {
+            "name": "net",
+            "types": [
+              "NettingBasisEnum"
+            ],
+            "dcid": "Net",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "statType": {
+        "nodes": [
+          {
+            "name": "measuredValue",
+            "types": [
+              "Property"
+            ],
+            "dcid": "measuredValue",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "constraintProperties": {
+        "nodes": [
+          {
+            "name": "CRS cooperation modality",
+            "types": [
+              "Property"
+            ],
+            "dcid": "crsCooperationModality",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "CRS purpose",
+            "types": [
+              "Property"
+            ],
+            "dcid": "crsPurpose",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "CRS type of finance",
+            "types": [
+              "Property"
+            ],
+            "dcid": "crsTypeOfFinance",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "CRS type of flow",
+            "types": [
+              "Property"
+            ],
+            "dcid": "crsTypeOfFlow",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "financial flow type",
+            "types": [
+              "Property"
+            ],
+            "dcid": "financialFlowType",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          },
+          {
+            "name": "netting basis",
+            "types": [
+              "Property"
+            ],
+            "dcid": "nettingBasis",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "crsCooperationModality": {
+        "nodes": [
+          {
+            "name": "core support to non-governmental organisations, other private bodies, public-private partnerships, and research institutes (CRS Modality)",
+            "types": [
+              "CRSCooperationModalityEnum"
+            ],
+            "dcid": "CRSCooperationModalityB01",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "crsPurpose": {
+        "nodes": [
+          {
+            "name": "population policy and administrative management (CRS Purpose)",
+            "types": [
+              "CRSPurposeCodeEnum"
+            ],
+            "dcid": "CRSPurposeCode13010",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      },
+      "crsTypeOfFinance": {
+        "nodes": [
+          {
+            "name": "standard grant (CRS Finance)",
+            "types": [
+              "CRSTypeOfFinanceEnum"
+            ],
+            "dcid": "CRSTypeOfFinance110",
+            "provenanceId": "provenance/OECDCreditorReportingSystem"
+          }
+        ]
+      }
+    }
+  },
+  "undata/undphdro/HDI_gnipc.SEX--M": {
+    "label": null,
+    "type": null,
+    "arcs": {
+      "populationType": {
+        "nodes": [
+          {
+            "name": "Gross national income per capita",
+            "types": [
+              "undata/undphdro/SERIES"
+            ],
+            "dcid": "undata/undphdro/SERIES-HDI_gnipc",
+            "provenanceId": "undata/p/UNDP_HDRO"
+          }
+        ]
+      },
+      "statType": {
+        "nodes": [
+          {
+            "name": "measuredValue",
+            "types": [
+              "Property"
+            ],
+            "dcid": "measuredValue",
+            "provenanceId": "undata/p/UNDP_HDRO"
+          }
+        ]
+      },
+      "typeOf": {
+        "nodes": [
+          {
+            "name": "StatisticalVariable",
+            "types": [
+              "Class"
+            ],
+            "dcid": "StatisticalVariable",
+            "provenanceId": "undata/p/UNDP_HDRO"
+          }
+        ]
+      },
+      "undataSex": {
+        "nodes": [
+          {
+            "name": "Male",
+            "types": [
+              "undata/SEX"
+            ],
+            "dcid": "undata/SEX-M",
+            "provenanceId": "undata/p/UNDP_HDRO"
+          }
+        ]
+      },
+      "constraintProperties": {
+        "nodes": [
+          {
+            "name": "Sex",
+            "types": [
+              "Property"
+            ],
+            "dcid": "undataSex",
+            "provenanceId": "undata/p/UNDP_HDRO"
+          }
+        ]
+      },
+      "measuredProperty": {
+        "nodes": [
+          {
+            "name": "value",
+            "types": [
+              "Property"
+            ],
+            "dcid": "value",
+            "provenanceId": "undata/p/UNDP_HDRO"
+          }
+        ]
+      },
+      "memberOf": {
+        "nodes": [
+          {
+            "name": "Gross national income per capita, by Sex",
+            "types": [
+              "StatVarGroup"
+            ],
+            "dcid": "undata/g/undphdro/HDI_gnipc.001",
+            "provenanceId": "undata/p/UNDP_HDRO"
+          }
+        ]
+      },
+      "name": {
+        "nodes": [
+          {
+            "provenanceId": "undata/p/UNDP_HDRO",
+            "value": "Gross national income per capita [Sex=Male]"
+          }
+        ]
+      }
+    }
+  },
+  "undata/undphdro/HDI_gnipc.SEX--F": {
+    "label": null,
+    "type": null,
+    "arcs": {
+      "measuredProperty": {
+        "nodes": [
+          {
+            "name": "value",
+            "types": [
+              "Property"
+            ],
+            "dcid": "value",
+            "provenanceId": "undata/p/UNDP_HDRO"
+          }
+        ]
+      },
+      "memberOf": {
+        "nodes": [
+          {
+            "name": "Gross national income per capita, by Sex",
+            "types": [
+              "StatVarGroup"
+            ],
+            "dcid": "undata/g/undphdro/HDI_gnipc.001",
+            "provenanceId": "undata/p/UNDP_HDRO"
+          }
+        ]
+      },
+      "name": {
+        "nodes": [
+          {
+            "provenanceId": "undata/p/UNDP_HDRO",
+            "value": "Gross national income per capita [Sex=Female]"
+          }
+        ]
+      },
+      "populationType": {
+        "nodes": [
+          {
+            "name": "Gross national income per capita",
+            "types": [
+              "undata/undphdro/SERIES"
+            ],
+            "dcid": "undata/undphdro/SERIES-HDI_gnipc",
+            "provenanceId": "undata/p/UNDP_HDRO"
+          }
+        ]
+      },
+      "statType": {
+        "nodes": [
+          {
+            "name": "measuredValue",
+            "types": [
+              "Property"
+            ],
+            "dcid": "measuredValue",
+            "provenanceId": "undata/p/UNDP_HDRO"
+          }
+        ]
+      },
+      "typeOf": {
+        "nodes": [
+          {
+            "name": "StatisticalVariable",
+            "types": [
+              "Class"
+            ],
+            "dcid": "StatisticalVariable",
+            "provenanceId": "undata/p/UNDP_HDRO"
+          }
+        ]
+      },
+      "undataSex": {
+        "nodes": [
+          {
+            "name": "Female",
+            "types": [
+              "undata/SEX"
+            ],
+            "dcid": "undata/SEX-F",
+            "provenanceId": "undata/p/UNDP_HDRO"
+          }
+        ]
+      },
+      "constraintProperties": {
+        "nodes": [
+          {
+            "name": "Sex",
+            "types": [
+              "Property"
+            ],
+            "dcid": "undataSex",
+            "provenanceId": "undata/p/UNDP_HDRO"
+          }
+        ]
+      }
+    }
+  },
+  "undata/unicef/SPP_HSLD_INCOME_SHARE": {
+    "label": null,
+    "type": null,
+    "arcs": {
+      "typeOf": {
+        "nodes": [
+          {
+            "name": "StatisticalVariable",
+            "types": [
+              "Class"
+            ],
+            "dcid": "StatisticalVariable",
+            "provenanceId": "undata/p/UNICEF"
+          }
+        ]
+      },
+      "measuredProperty": {
+        "nodes": [
+          {
+            "name": "value",
+            "types": [
+              "Property"
+            ],
+            "dcid": "value",
+            "provenanceId": "undata/p/UNICEF"
+          }
+        ]
+      },
+      "memberOf": {
+        "nodes": [
+          {
+            "name": "Share of household income (percent), total",
+            "types": [
+              "StatVarGroup"
+            ],
+            "dcid": "undata/g/unicef/SPP_HSLD_INCOME_SHARE.000",
+            "provenanceId": "undata/p/UNICEF"
+          }
+        ]
+      },
+      "name": {
+        "nodes": [
+          {
+            "provenanceId": "undata/p/UNICEF",
+            "value": "Share of household income (percent)"
+          }
+        ]
+      },
+      "populationType": {
+        "nodes": [
+          {
+            "name": "Share of household income (percent)",
+            "types": [
+              "undata/unicef/SERIES"
+            ],
+            "dcid": "undata/unicef/SERIES-SPP_HSLD_INCOME_SHARE",
+            "provenanceId": "undata/p/UNICEF"
+          }
+        ]
+      },
+      "statType": {
+        "nodes": [
+          {
+            "name": "measuredValue",
+            "types": [
+              "Property"
+            ],
+            "dcid": "measuredValue",
+            "provenanceId": "undata/p/UNICEF"
+          }
+        ]
+      }
+    }
+  },
+  "undata/unicef/SPP_HSLD_INCOME_SHARE.WEALTH_QUANTILE--BOTTOM40": {
+    "label": null,
+    "type": null,
+    "arcs": {
+      "typeOf": {
+        "nodes": [
+          {
+            "name": "StatisticalVariable",
+            "types": [
+              "Class"
+            ],
+            "dcid": "StatisticalVariable",
+            "provenanceId": "undata/p/UNICEF"
+          }
+        ]
+      },
+      "undataWealthQuantile": {
+        "nodes": [
+          {
+            "name": "Bottom 40%",
+            "types": [
+              "undata/WEALTH_QUANTILE"
+            ],
+            "dcid": "undata/WEALTH_QUANTILE-BOTTOM40",
+            "provenanceId": "undata/p/UNICEF"
+          }
+        ]
+      },
+      "constraintProperties": {
+        "nodes": [
+          {
+            "name": "Wealth quantile",
+            "types": [
+              "Property"
+            ],
+            "dcid": "undataWealthQuantile",
+            "provenanceId": "undata/p/UNICEF"
+          }
+        ]
+      },
+      "measuredProperty": {
+        "nodes": [
+          {
+            "name": "value",
+            "types": [
+              "Property"
+            ],
+            "dcid": "value",
+            "provenanceId": "undata/p/UNICEF"
+          }
+        ]
+      },
+      "memberOf": {
+        "nodes": [
+          {
+            "name": "Share of household income (percent), Wealth quantile: Bottom 40%",
+            "types": [
+              "StatVarGroup"
+            ],
+            "dcid": "undata/g/unicef/SPP_HSLD_INCOME_SHARE.001",
+            "provenanceId": "undata/p/UNICEF"
+          }
+        ]
+      },
+      "name": {
+        "nodes": [
+          {
+            "provenanceId": "undata/p/UNICEF",
+            "value": "Share of household income (percent) [Wealth quantile=Bottom 40%]"
+          }
+        ]
+      },
+      "populationType": {
+        "nodes": [
+          {
+            "name": "Share of household income (percent)",
+            "types": [
+              "undata/unicef/SERIES"
+            ],
+            "dcid": "undata/unicef/SERIES-SPP_HSLD_INCOME_SHARE",
+            "provenanceId": "undata/p/UNICEF"
+          }
+        ]
+      },
+      "statType": {
+        "nodes": [
+          {
+            "name": "measuredValue",
+            "types": [
+              "Property"
+            ],
+            "dcid": "measuredValue",
+            "provenanceId": "undata/p/UNICEF"
+          }
+        ]
+      }
+    }
+  },
+  "undata/sdg/SI_POV_NAHC": {
+    "label": null,
+    "type": null,
+    "arcs": {
+      "measuredProperty": {
+        "nodes": [
+          {
+            "name": "value",
+            "types": [
+              "Property"
+            ],
+            "dcid": "value",
+            "provenanceId": "undata/p/SDG"
+          }
+        ]
+      },
+      "memberOf": {
+        "nodes": [
+          {
+            "name": "Proportion of population living below the national poverty line, total",
+            "types": [
+              "StatVarGroup"
+            ],
+            "dcid": "undata/g/sdg/SI_POV_NAHC.000",
+            "provenanceId": "undata/p/SDG"
+          }
+        ]
+      },
+      "name": {
+        "nodes": [
+          {
+            "provenanceId": "undata/p/SDG",
+            "value": "Proportion of population living below the national poverty line"
+          }
+        ]
+      },
+      "populationType": {
+        "nodes": [
+          {
+            "name": "Proportion of population living below the national poverty line",
+            "types": [
+              "undata/sdg/SERIES"
+            ],
+            "dcid": "undata/sdg/SERIES-SI_POV_NAHC",
+            "provenanceId": "undata/p/SDG"
+          }
+        ]
+      },
+      "statType": {
+        "nodes": [
+          {
+            "name": "measuredValue",
+            "types": [
+              "Property"
+            ],
+            "dcid": "measuredValue",
+            "provenanceId": "undata/p/SDG"
+          }
+        ]
+      },
+      "typeOf": {
+        "nodes": [
+          {
+            "name": "StatisticalVariable",
+            "types": [
+              "Class"
+            ],
+            "dcid": "StatisticalVariable",
+            "provenanceId": "undata/p/SDG"
+          }
+        ]
+      }
+    }
+  },
+  "undata/ilo/EAR_EMTA_NB_PPP.ECONOMIC_ACTIVITY--ECO_SECTOR_TOTAL": {
+    "label": null,
+    "type": null,
+    "arcs": {
+      "statType": {
+        "nodes": [
+          {
+            "name": "measuredValue",
+            "types": [
+              "Property"
+            ],
+            "dcid": "measuredValue",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      },
+      "typeOf": {
+        "nodes": [
+          {
+            "name": "StatisticalVariable",
+            "types": [
+              "Class"
+            ],
+            "dcid": "StatisticalVariable",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      },
+      "undataEconomicActivity": {
+        "nodes": [
+          {
+            "name": "Total (broad sector)",
+            "types": [
+              "undata/ECONOMIC_ACTIVITY"
+            ],
+            "dcid": "undata/ECONOMIC_ACTIVITY-ECO_SECTOR_TOTAL",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      },
+      "constraintProperties": {
+        "nodes": [
+          {
+            "name": "Economic activity",
+            "types": [
+              "Property"
+            ],
+            "dcid": "undataEconomicActivity",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      },
+      "measuredProperty": {
+        "nodes": [
+          {
+            "name": "value",
+            "types": [
+              "Property"
+            ],
+            "dcid": "value",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      },
+      "memberOf": {
+        "nodes": [
+          {
+            "name": "Average monthly earnings of employees in international dollars at Purchasing Power Parity rates (PPP), Economic activity: Total (broad sector)",
+            "types": [
+              "StatVarGroup"
+            ],
+            "dcid": "undata/g/ilo/EAR_EMTA_NB_PPP.105",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      },
+      "name": {
+        "nodes": [
+          {
+            "provenanceId": "undata/p/ILO",
+            "value": "Average monthly earnings of employees in international dollars at Purchasing Power Parity rates (PPP) [Economic activity=Total (broad sector)]"
+          }
+        ]
+      },
+      "populationType": {
+        "nodes": [
+          {
+            "name": "Average monthly earnings of employees in international dollars at Purchasing Power Parity rates (PPP)",
+            "types": [
+              "undata/ilo/SERIES"
+            ],
+            "dcid": "undata/ilo/SERIES-EAR_EMTA_NB_PPP",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      }
+    }
+  },
+  "undata/unicef/SPP_HSLD_INCOME_SHARE.WEALTH_QUANTILE--Q1": {
+    "label": null,
+    "type": null,
+    "arcs": {
+      "constraintProperties": {
+        "nodes": [
+          {
+            "name": "Wealth quantile",
+            "types": [
+              "Property"
+            ],
+            "dcid": "undataWealthQuantile",
+            "provenanceId": "undata/p/UNICEF"
+          }
+        ]
+      },
+      "measuredProperty": {
+        "nodes": [
+          {
+            "name": "value",
+            "types": [
+              "Property"
+            ],
+            "dcid": "value",
+            "provenanceId": "undata/p/UNICEF"
+          }
+        ]
+      },
+      "memberOf": {
+        "nodes": [
+          {
+            "name": "Share of household income (percent), by Wealth quantile — Wealth quintiles",
+            "types": [
+              "StatVarGroup"
+            ],
+            "dcid": "undata/g/unicef/SPP_HSLD_INCOME_SHARE.002",
+            "provenanceId": "undata/p/UNICEF"
+          }
+        ]
+      },
+      "name": {
+        "nodes": [
+          {
+            "provenanceId": "undata/p/UNICEF",
+            "value": "Share of household income (percent) [Wealth quantile=Lowest quintile]"
+          }
+        ]
+      },
+      "populationType": {
+        "nodes": [
+          {
+            "name": "Share of household income (percent)",
+            "types": [
+              "undata/unicef/SERIES"
+            ],
+            "dcid": "undata/unicef/SERIES-SPP_HSLD_INCOME_SHARE",
+            "provenanceId": "undata/p/UNICEF"
+          }
+        ]
+      },
+      "statType": {
+        "nodes": [
+          {
+            "name": "measuredValue",
+            "types": [
+              "Property"
+            ],
+            "dcid": "measuredValue",
+            "provenanceId": "undata/p/UNICEF"
+          }
+        ]
+      },
+      "typeOf": {
+        "nodes": [
+          {
+            "name": "StatisticalVariable",
+            "types": [
+              "Class"
+            ],
+            "dcid": "StatisticalVariable",
+            "provenanceId": "undata/p/UNICEF"
+          }
+        ]
+      },
+      "undataWealthQuantile": {
+        "nodes": [
+          {
+            "name": "Lowest quintile",
+            "types": [
+              "undata/WEALTH_QUANTILE"
+            ],
+            "dcid": "undata/WEALTH_QUANTILE-Q1",
+            "provenanceId": "undata/p/UNICEF"
+          }
+        ]
+      }
+    }
+  },
+  "undata/ilo/EAR_EMTA_NB_PPP.ECONOMIC_ACTIVITY--ECO_SECTOR_TOTAL__SEX--O": {
+    "label": null,
+    "type": null,
+    "arcs": {
+      "measuredProperty": {
+        "nodes": [
+          {
+            "name": "value",
+            "types": [
+              "Property"
+            ],
+            "dcid": "value",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      },
+      "name": {
+        "nodes": [
+          {
+            "provenanceId": "undata/p/ILO",
+            "value": "Average monthly earnings of employees in international dollars at Purchasing Power Parity rates (PPP) [Economic activity=Total (broad sector), Sex=Other]"
+          }
+        ]
+      },
+      "populationType": {
+        "nodes": [
+          {
+            "name": "Average monthly earnings of employees in international dollars at Purchasing Power Parity rates (PPP)",
+            "types": [
+              "undata/ilo/SERIES"
+            ],
+            "dcid": "undata/ilo/SERIES-EAR_EMTA_NB_PPP",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      },
+      "undataSex": {
+        "nodes": [
+          {
+            "name": "Other",
+            "types": [
+              "undata/SEX"
+            ],
+            "dcid": "undata/SEX-O",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      },
+      "constraintProperties": {
+        "nodes": [
+          {
+            "name": "Economic activity",
+            "types": [
+              "Property"
+            ],
+            "dcid": "undataEconomicActivity",
+            "provenanceId": "undata/p/ILO"
+          },
+          {
+            "name": "Sex",
+            "types": [
+              "Property"
+            ],
+            "dcid": "undataSex",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      },
+      "memberOf": {
+        "nodes": [
+          {
+            "name": "Average monthly earnings of employees in international dollars at Purchasing Power Parity rates (PPP) [Economic activity=Total (broad sector)], by Sex",
+            "types": [
+              "StatVarGroup"
+            ],
+            "dcid": "undata/g/ilo/EAR_EMTA_NB_PPP.108",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      },
+      "statType": {
+        "nodes": [
+          {
+            "name": "measuredValue",
+            "types": [
+              "Property"
+            ],
+            "dcid": "measuredValue",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      },
+      "typeOf": {
+        "nodes": [
+          {
+            "name": "StatisticalVariable",
+            "types": [
+              "Class"
+            ],
+            "dcid": "StatisticalVariable",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      },
+      "undataEconomicActivity": {
+        "nodes": [
+          {
+            "name": "Total (broad sector)",
+            "types": [
+              "undata/ECONOMIC_ACTIVITY"
+            ],
+            "dcid": "undata/ECONOMIC_ACTIVITY-ECO_SECTOR_TOTAL",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      }
+    }
+  },
+  "undata/unicef/SPP_HSLD_INCOME_SHARE.WEALTH_QUANTILE--Q5": {
+    "label": null,
+    "type": null,
+    "arcs": {
+      "measuredProperty": {
+        "nodes": [
+          {
+            "name": "value",
+            "types": [
+              "Property"
+            ],
+            "dcid": "value",
+            "provenanceId": "undata/p/UNICEF"
+          }
+        ]
+      },
+      "memberOf": {
+        "nodes": [
+          {
+            "name": "Share of household income (percent), by Wealth quantile — Wealth quintiles",
+            "types": [
+              "StatVarGroup"
+            ],
+            "dcid": "undata/g/unicef/SPP_HSLD_INCOME_SHARE.002",
+            "provenanceId": "undata/p/UNICEF"
+          }
+        ]
+      },
+      "name": {
+        "nodes": [
+          {
+            "provenanceId": "undata/p/UNICEF",
+            "value": "Share of household income (percent) [Wealth quantile=Highest quintile]"
+          }
+        ]
+      },
+      "populationType": {
+        "nodes": [
+          {
+            "name": "Share of household income (percent)",
+            "types": [
+              "undata/unicef/SERIES"
+            ],
+            "dcid": "undata/unicef/SERIES-SPP_HSLD_INCOME_SHARE",
+            "provenanceId": "undata/p/UNICEF"
+          }
+        ]
+      },
+      "statType": {
+        "nodes": [
+          {
+            "name": "measuredValue",
+            "types": [
+              "Property"
+            ],
+            "dcid": "measuredValue",
+            "provenanceId": "undata/p/UNICEF"
+          }
+        ]
+      },
+      "typeOf": {
+        "nodes": [
+          {
+            "name": "StatisticalVariable",
+            "types": [
+              "Class"
+            ],
+            "dcid": "StatisticalVariable",
+            "provenanceId": "undata/p/UNICEF"
+          }
+        ]
+      },
+      "undataWealthQuantile": {
+        "nodes": [
+          {
+            "name": "Highest quintile",
+            "types": [
+              "undata/WEALTH_QUANTILE"
+            ],
+            "dcid": "undata/WEALTH_QUANTILE-Q5",
+            "provenanceId": "undata/p/UNICEF"
+          }
+        ]
+      },
+      "constraintProperties": {
+        "nodes": [
+          {
+            "name": "Wealth quantile",
+            "types": [
+              "Property"
+            ],
+            "dcid": "undataWealthQuantile",
+            "provenanceId": "undata/p/UNICEF"
+          }
+        ]
+      }
+    }
+  },
+  "undata/ilo/EAR_EMTA_NB_PPP.ECONOMIC_ACTIVITY--ECO_AGGREGATE_TOTAL__SEX--O": {
+    "label": null,
+    "type": null,
+    "arcs": {
+      "measuredProperty": {
+        "nodes": [
+          {
+            "name": "value",
+            "types": [
+              "Property"
+            ],
+            "dcid": "value",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      },
+      "memberOf": {
+        "nodes": [
+          {
+            "name": "Average monthly earnings of employees in international dollars at Purchasing Power Parity rates (PPP) [Economic activity=Total — aggregate economic activities], by Sex",
+            "types": [
+              "StatVarGroup"
+            ],
+            "dcid": "undata/g/ilo/EAR_EMTA_NB_PPP.110",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      },
+      "name": {
+        "nodes": [
+          {
+            "provenanceId": "undata/p/ILO",
+            "value": "Average monthly earnings of employees in international dollars at Purchasing Power Parity rates (PPP) [Economic activity=Total — aggregate economic activities, Sex=Other]"
+          }
+        ]
+      },
+      "statType": {
+        "nodes": [
+          {
+            "name": "measuredValue",
+            "types": [
+              "Property"
+            ],
+            "dcid": "measuredValue",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      },
+      "typeOf": {
+        "nodes": [
+          {
+            "name": "StatisticalVariable",
+            "types": [
+              "Class"
+            ],
+            "dcid": "StatisticalVariable",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      },
+      "undataSex": {
+        "nodes": [
+          {
+            "name": "Other",
+            "types": [
+              "undata/SEX"
+            ],
+            "dcid": "undata/SEX-O",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      },
+      "constraintProperties": {
+        "nodes": [
+          {
+            "name": "Economic activity",
+            "types": [
+              "Property"
+            ],
+            "dcid": "undataEconomicActivity",
+            "provenanceId": "undata/p/ILO"
+          },
+          {
+            "name": "Sex",
+            "types": [
+              "Property"
+            ],
+            "dcid": "undataSex",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      },
+      "populationType": {
+        "nodes": [
+          {
+            "name": "Average monthly earnings of employees in international dollars at Purchasing Power Parity rates (PPP)",
+            "types": [
+              "undata/ilo/SERIES"
+            ],
+            "dcid": "undata/ilo/SERIES-EAR_EMTA_NB_PPP",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      },
+      "undataEconomicActivity": {
+        "nodes": [
+          {
+            "name": "Total — aggregate economic activities",
+            "types": [
+              "undata/ECONOMIC_ACTIVITY"
+            ],
+            "dcid": "undata/ECONOMIC_ACTIVITY-ECO_AGGREGATE_TOTAL",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      }
+    }
+  },
+  "undata/ilo/EAR_EMTA_NB_PPP.ECONOMIC_ACTIVITY--ECO_AGGREGATE_TOTAL": {
+    "label": null,
+    "type": null,
+    "arcs": {
+      "constraintProperties": {
+        "nodes": [
+          {
+            "name": "Economic activity",
+            "types": [
+              "Property"
+            ],
+            "dcid": "undataEconomicActivity",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      },
+      "measuredProperty": {
+        "nodes": [
+          {
+            "name": "value",
+            "types": [
+              "Property"
+            ],
+            "dcid": "value",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      },
+      "memberOf": {
+        "nodes": [
+          {
+            "name": "Average monthly earnings of employees in international dollars at Purchasing Power Parity rates (PPP), Economic activity: Total — aggregate economic activities",
+            "types": [
+              "StatVarGroup"
+            ],
+            "dcid": "undata/g/ilo/EAR_EMTA_NB_PPP.109",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      },
+      "name": {
+        "nodes": [
+          {
+            "provenanceId": "undata/p/ILO",
+            "value": "Average monthly earnings of employees in international dollars at Purchasing Power Parity rates (PPP) [Economic activity=Total — aggregate economic activities]"
+          }
+        ]
+      },
+      "populationType": {
+        "nodes": [
+          {
+            "name": "Average monthly earnings of employees in international dollars at Purchasing Power Parity rates (PPP)",
+            "types": [
+              "undata/ilo/SERIES"
+            ],
+            "dcid": "undata/ilo/SERIES-EAR_EMTA_NB_PPP",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      },
+      "statType": {
+        "nodes": [
+          {
+            "name": "measuredValue",
+            "types": [
+              "Property"
+            ],
+            "dcid": "measuredValue",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      },
+      "typeOf": {
+        "nodes": [
+          {
+            "name": "StatisticalVariable",
+            "types": [
+              "Class"
+            ],
+            "dcid": "StatisticalVariable",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      },
+      "undataEconomicActivity": {
+        "nodes": [
+          {
+            "name": "Total — aggregate economic activities",
+            "types": [
+              "undata/ECONOMIC_ACTIVITY"
+            ],
+            "dcid": "undata/ECONOMIC_ACTIVITY-ECO_AGGREGATE_TOTAL",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      }
+    }
+  },
+  "undata/ilo/EAR_EMTA_NB_PPP.ECONOMIC_ACTIVITY--ECO_SECTOR_NAG": {
+    "label": null,
+    "type": null,
+    "arcs": {
+      "statType": {
+        "nodes": [
+          {
+            "name": "measuredValue",
+            "types": [
+              "Property"
+            ],
+            "dcid": "measuredValue",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      },
+      "typeOf": {
+        "nodes": [
+          {
+            "name": "StatisticalVariable",
+            "types": [
+              "Class"
+            ],
+            "dcid": "StatisticalVariable",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      },
+      "undataEconomicActivity": {
+        "nodes": [
+          {
+            "name": "Non-agriculture",
+            "types": [
+              "undata/ECONOMIC_ACTIVITY"
+            ],
+            "dcid": "undata/ECONOMIC_ACTIVITY-ECO_SECTOR_NAG",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      },
+      "constraintProperties": {
+        "nodes": [
+          {
+            "name": "Economic activity",
+            "types": [
+              "Property"
+            ],
+            "dcid": "undataEconomicActivity",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      },
+      "measuredProperty": {
+        "nodes": [
+          {
+            "name": "value",
+            "types": [
+              "Property"
+            ],
+            "dcid": "value",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      },
+      "memberOf": {
+        "nodes": [
+          {
+            "name": "Average monthly earnings of employees in international dollars at Purchasing Power Parity rates (PPP), Economic activity: Non-agriculture",
+            "types": [
+              "StatVarGroup"
+            ],
+            "dcid": "undata/g/ilo/EAR_EMTA_NB_PPP.008",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      },
+      "name": {
+        "nodes": [
+          {
+            "provenanceId": "undata/p/ILO",
+            "value": "Average monthly earnings of employees in international dollars at Purchasing Power Parity rates (PPP) [Economic activity=Non-agriculture]"
+          }
+        ]
+      },
+      "populationType": {
+        "nodes": [
+          {
+            "name": "Average monthly earnings of employees in international dollars at Purchasing Power Parity rates (PPP)",
+            "types": [
+              "undata/ilo/SERIES"
+            ],
+            "dcid": "undata/ilo/SERIES-EAR_EMTA_NB_PPP",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      }
+    }
+  },
+  "undata/ilo/EAR_EMTA_NB_PPP.ECONOMIC_ACTIVITY--ECO_AGGREGATE_TOTAL__SEX--M": {
+    "label": null,
+    "type": null,
+    "arcs": {
+      "constraintProperties": {
+        "nodes": [
+          {
+            "name": "Economic activity",
+            "types": [
+              "Property"
+            ],
+            "dcid": "undataEconomicActivity",
+            "provenanceId": "undata/p/ILO"
+          },
+          {
+            "name": "Sex",
+            "types": [
+              "Property"
+            ],
+            "dcid": "undataSex",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      },
+      "memberOf": {
+        "nodes": [
+          {
+            "name": "Average monthly earnings of employees in international dollars at Purchasing Power Parity rates (PPP) [Economic activity=Total — aggregate economic activities], by Sex",
+            "types": [
+              "StatVarGroup"
+            ],
+            "dcid": "undata/g/ilo/EAR_EMTA_NB_PPP.110",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      },
+      "name": {
+        "nodes": [
+          {
+            "provenanceId": "undata/p/ILO",
+            "value": "Average monthly earnings of employees in international dollars at Purchasing Power Parity rates (PPP) [Economic activity=Total — aggregate economic activities, Sex=Male]"
+          }
+        ]
+      },
+      "typeOf": {
+        "nodes": [
+          {
+            "name": "StatisticalVariable",
+            "types": [
+              "Class"
+            ],
+            "dcid": "StatisticalVariable",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      },
+      "undataEconomicActivity": {
+        "nodes": [
+          {
+            "name": "Total — aggregate economic activities",
+            "types": [
+              "undata/ECONOMIC_ACTIVITY"
+            ],
+            "dcid": "undata/ECONOMIC_ACTIVITY-ECO_AGGREGATE_TOTAL",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      },
+      "undataSex": {
+        "nodes": [
+          {
+            "name": "Male",
+            "types": [
+              "undata/SEX"
+            ],
+            "dcid": "undata/SEX-M",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      },
+      "measuredProperty": {
+        "nodes": [
+          {
+            "name": "value",
+            "types": [
+              "Property"
+            ],
+            "dcid": "value",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      },
+      "populationType": {
+        "nodes": [
+          {
+            "name": "Average monthly earnings of employees in international dollars at Purchasing Power Parity rates (PPP)",
+            "types": [
+              "undata/ilo/SERIES"
+            ],
+            "dcid": "undata/ilo/SERIES-EAR_EMTA_NB_PPP",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      },
+      "statType": {
+        "nodes": [
+          {
+            "name": "measuredValue",
+            "types": [
+              "Property"
+            ],
+            "dcid": "measuredValue",
+            "provenanceId": "undata/p/ILO"
+          }
+        ]
+      }
+    }
+  },
+  "finalExpenditureType": {
+    "label": "final expenditure type",
+    "type": null
+  },
+  "cyclicalAdjustment": {
+    "label": "cyclical adjustment",
+    "type": null
+  },
+  "DAC1AidType1410": {
+    "label": "donor country personnel",
+    "type": null
+  },
+  "DAC1AidType5": {
+    "label": "official and private flow",
+    "type": null
+  },
+  "CapitalFormation": {
+    "label": "capital formation",
+    "type": null
+  },
+  "CRSCooperationModalityH01": {
+    "label": "development awareness",
+    "type": null
+  },
+  "WithIncome": {
+    "label": "WithIncome",
+    "type": null
+  },
+  "DAC1AidType1010": {
+    "label": "official development assistance",
+    "type": null
+  },
+  "CRSPurposeCode16010": {
+    "label": "social protection",
+    "type": null
+  },
+  "NAICS/JOLTS_000000": {
+    "label": "Total nonfarm",
+    "type": null
+  },
+  "CRSTypeOfFlow30": {
+    "label": "private development finance",
+    "type": null
+  },
+  "GraduateOrProfessionalDegree": {
+    "label": "GraduateOrProfessionalDegree",
+    "type": null
+  },
+  "Energy": {
+    "label": "Energy",
+    "type": null
+  },
+  "CRSPurposeCode32120": {
+    "label": "industrial development",
+    "type": null
+  },
+  "MarriedCoupleFamilyHousehold": {
+    "label": "MarriedCoupleFamilyHousehold",
+    "type": null
+  },
+  "CRSPurposeCode32110": {
+    "label": "industrial policy and administrative management",
+    "type": null
+  },
+  "CyclicallyAdjusted": {
+    "label": "cyclically adjusted",
+    "type": null
+  },
+  "ForeignBorn": {
+    "label": "ForeignBorn",
+    "type": null
+  },
+  "NAICS/10": {
+    "label": "Total, all industries",
+    "type": null
+  },
+  "EconomicUnit": {
+    "label": "economic unit",
+    "type": null
+  },
+  "FinalExpenditure": {
+    "label": "final expenditure",
+    "type": null
+  },
+  "Stock": {
+    "label": "Stock",
+    "type": null
+  },
+  "BLSWorker": {
+    "label": "BLSWorker",
+    "type": null
+  },
+  "EconomicProduction": {
+    "label": "economic production",
+    "type": null
+  },
+  "undataSex": {
+    "label": "Sex",
+    "type": null
+  },
+  "undataWealthQuantile": {
+    "label": "Wealth quantile",
+    "type": null
+  },
+  "undata/WEALTH_QUANTILE-Q1": {
+    "label": "Lowest quintile",
+    "type": null
+  },
+  "undata/WEALTH_QUANTILE-Q5": {
+    "label": "Highest quintile",
+    "type": null
+  },
+  "undata/ECONOMIC_ACTIVITY-ECO_AGGREGATE_TOTAL": {
+    "label": "Total — aggregate economic activities",
+    "type": null
+  },
+  "undata/ECONOMIC_ACTIVITY-ECO_SECTOR_TOTAL": {
+    "label": "Total (broad sector)",
+    "type": null
+  },
+  "undata/SEX-M": {
+    "label": "Male",
+    "type": null
+  },
+  "undata/WEALTH_QUANTILE-BOTTOM40": {
+    "label": "Bottom 40%",
+    "type": null
+  },
+  "undata/SEX-O": {
+    "label": "Other",
+    "type": null
+  },
+  "undata/ECONOMIC_ACTIVITY-ECO_SECTOR_NAG": {
+    "label": "Non-agriculture",
+    "type": null
+  },
+  "undata/SEX-F": {
+    "label": "Female",
+    "type": null
+  },
+  "undata/unicef/SERIES-SPP_HSLD_INCOME_SHARE": {
+    "label": "Share of household income (percent)",
+    "type": null
+  },
+  "undata/sdg/SERIES-SI_POV_NAHC": {
+    "label": "Proportion of population living below the national poverty line",
+    "type": null
+  },
+  "undata/ilo/SERIES-EAR_EMTA_NB_PPP": {
+    "label": "Average monthly earnings of employees in international dollars at Purchasing Power Parity rates (PPP)",
+    "type": null
+  },
+  "dc/g/EconomicActivity_ActivitySource-GrossNationalIncome": {
+    "label": null,
+    "type": null,
+    "arcs": {
+      "typeOf": {
+        "nodes": [
+          {
+            "name": "StatVarGroup",
+            "types": [
+              "Class"
+            ],
+            "dcid": "StatVarGroup",
+            "provenanceId": "dc/base/generated/StatVarGroupsByConstraint"
+          }
+        ]
+      },
+      "name": {
+        "nodes": [
+          {
+            "provenanceId": "dc/base/generated/StatVarGroupsByConstraint",
+            "value": "Economic Activity With Activity Source = Gross National Income"
+          }
+        ]
+      },
+      "specializationOf": {
+        "nodes": [
+          {
+            "name": "Economic Activity With Activity Source",
+            "types": [
+              "StatVarGroup"
+            ],
+            "dcid": "dc/g/EconomicActivity_ActivitySource",
+            "provenanceId": "dc/base/generated/StatVarGroupsByConstraint"
+          }
+        ]
+      }
+    }
+  },
+  "dc/d/WorldBank_WorldDevelopmentIndicators": {
+    "label": "World Development Indicators",
+    "type": "Dataset"
   }
 }

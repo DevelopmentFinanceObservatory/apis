@@ -11,6 +11,7 @@ import gzip
 import json
 import re
 from dataclasses import dataclass, field
+from itertools import product
 from pathlib import Path
 
 import pytest
@@ -1320,6 +1321,7 @@ _MEASURE_NOUNS_FOR_TEST = (
     MeasurePartitionLabel(
         axis_values=(("populationType", "EconomicProduction"), ("measuredProperty", "valueAdded")),
         label="GDP",
+        also_called=("gross domestic product",),
     ),
 )
 
@@ -1591,6 +1593,7 @@ def test_export_index_wires_measure_axes_into_the_document(tmp_path):
             "label": "commitments",
             "named_values": [],
             "definition": None,
+            "also_called": [],
         },
         {
             "axis_values": [
@@ -1601,6 +1604,7 @@ def test_export_index_wires_measure_axes_into_the_document(tmp_path):
             "label": "disbursements",
             "named_values": [],
             "definition": None,
+            "also_called": [],
         },
         {
             "axis_values": [
@@ -1612,6 +1616,7 @@ def test_export_index_wires_measure_axes_into_the_document(tmp_path):
             "label": "gross disbursements",
             "named_values": [["sysFlat", "SysFlatA"]],
             "definition": "The total amount released before any repayments are subtracted.",
+            "also_called": [],
         },
     ]
     assert document["measure_nouns"] == [
@@ -1623,6 +1628,7 @@ def test_export_index_wires_measure_axes_into_the_document(tmp_path):
             "label": "GDP",
             "named_values": [],
             "definition": None,
+            "also_called": ["gross domestic product"],
         }
     ]
     # The loader reads both blocks back into the authored values.
@@ -2997,8 +3003,7 @@ def _export_parties(
     )
     published = frozenset(types_by_party) if parties is None else parties
     publication = PartyPublication(
-        datasets=published_in,
-        axes=axes or frozenset({axis}),
+        pairs=frozenset(product(published_in, axes or {axis})),
         years=dict.fromkeys(published_in, published_years),
     )
     coverage = dataclasses.replace(_covered(graph), parties=dict.fromkeys(published, publication))
@@ -3051,18 +3056,19 @@ def test_export_index_writes_each_partys_kind_label_and_the_group_a_total_holds(
             kind="party",
             party_class="official",
             label="France",
-            datasets=published,
-            axes=recipient,
+            published=tuple(product(published, recipient)),
         ),
         "country/IND": PartyRow(
             dcid="country/IND",
             kind="party",
             party_class="official",
-            datasets=published,
-            axes=recipient,
+            published=tuple(product(published, recipient)),
         ),
         "IDA": PartyRow(
-            dcid="IDA", kind="party", party_class="official", datasets=published, axes=recipient
+            dcid="IDA",
+            kind="party",
+            party_class="official",
+            published=tuple(product(published, recipient)),
         ),
         "DACAfrica": PartyRow(
             dcid="DACAfrica",
@@ -3070,27 +3076,24 @@ def test_export_index_writes_each_partys_kind_label_and_the_group_a_total_holds(
             totals="africa",
             residuals=("DACAfricaUnallocated",),
             label="Africa (DAC)",
-            datasets=published,
-            axes=recipient,
+            published=tuple(product(published, recipient)),
         ),
         "DACAllRecipients": PartyRow(
-            dcid="DACAllRecipients", kind="total", datasets=published, axes=recipient
+            dcid="DACAllRecipients", kind="total", published=tuple(product(published, recipient))
         ),
         "DACCountriesTotal": PartyRow(
             dcid="DACCountriesTotal",
             kind="total",
             totals="groups/OECD.DAC",
             sums_members=False,
-            datasets=published,
-            axes=recipient,
+            published=tuple(product(published, recipient)),
         ),
         "DACAfricaUnallocated": PartyRow(
             dcid="DACAfricaUnallocated",
             kind="residual",
             party_class="residual",
             label="Africa, unallocated by country (DAC)",
-            datasets=published,
-            axes=recipient,
+            published=tuple(product(published, recipient)),
         ),
     }
     assert index.totals_by_group == {
@@ -3183,22 +3186,19 @@ def test_a_kind_override_replaces_the_kind_the_types_give(tmp_path: Path):
             dcid="WorldBankGroup",
             kind="total",
             totals="groups/WB",
-            datasets=published,
-            axes=recipient,
+            published=tuple(product(published, recipient)),
         ),
         "InternationalFinanceCorporation": PartyRow(
             dcid="InternationalFinanceCorporation",
             kind="party",
             party_class="official",
-            datasets=published,
-            axes=recipient,
+            published=tuple(product(published, recipient)),
         ),
         "Mystery": PartyRow(
             dcid="Mystery",
             kind="residual",
             party_class="residual",
-            datasets=published,
-            axes=recipient,
+            published=tuple(product(published, recipient)),
         ),
     }
 
@@ -3230,8 +3230,7 @@ def test_a_kind_override_scoped_to_a_dataset_holds_there_and_nowhere_else(tmp_pa
         dcid="TrustFund",
         kind="party",
         party_class="official",
-        datasets=published,
-        axes=donor,
+        published=tuple(product(published, donor)),
         dataset_kinds=((_TEST_PROVENANCE, "total"),),
     )
     assert [parties["TrustFund"].kind_in(dataset) for dataset in published] == ["party", "total"]
@@ -3599,8 +3598,15 @@ def test_export_index_refuses_a_party_other_than_official_on_both_axes(
 
 def test_export_index_accepts_an_official_party_on_both_axes():
     document = _export_parties({"Canada": ("Country",)}, axes=frozenset({"origin", "destination"}))
-    assert [(row["kind"], row["party_class"], row["axes"]) for row in document["parties"]] == [
-        ("party", "official", ["destination", "origin"])
+    assert [(row["kind"], row["party_class"], row["published"]) for row in document["parties"]] == [
+        (
+            "party",
+            "official",
+            [
+                {"dataset": _TEST_PROVENANCE, "axis": "destination"},
+                {"dataset": _TEST_PROVENANCE, "axis": "origin"},
+            ],
+        )
     ]
 
 

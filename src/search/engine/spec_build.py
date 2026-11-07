@@ -265,26 +265,32 @@ def inapplicable_property_dcid(
 
 
 def _resolved_entities(
-    entities: list[Entity], *, multilateral_dcids: Collection[str] = ()
+    entities: list[Entity], *, parties: Mapping[str, PartyRow], datasets: Collection[str]
 ) -> list[ResolvedEntity]:
-    """Project entities with the shared role mapping, marking the origin entities whose
-    dcids are among `multilateral_dcids` (`ResolvedEntity.multilateral`). Confidence is
-    unset."""
-    return [
-        ResolvedEntity(
-            ref=e.ref.ref,
-            label=e.ref.label,
-            entity_type=e.entity_type.ref if e.entity_type else None,
-            role=(role := entity_role_key(e)),
-            multilateral=(
-                True
-                if role_key_axis(role) == "origin" and e.ref.ref in multilateral_dcids
-                else None
-            ),
-            confidence=None,
+    """Project entities with the shared role mapping. An entity on a flow role with a
+    `parties` row states its kind and class where `datasets` publish it, and on the origin
+    role whether it is a multilateral (`multilaterals.party_facts`). Confidence is unset."""
+    resolved = []
+    for e in entities:
+        role = entity_role_key(e)
+        axis = role_key_axis(role)
+        row = parties.get(e.ref.ref) if axis is not None else None
+        facts = multilaterals.party_facts(row, datasets=datasets) if row is not None else None
+        resolved.append(
+            ResolvedEntity(
+                ref=e.ref.ref,
+                label=e.ref.label,
+                entity_type=e.entity_type.ref if e.entity_type else None,
+                role=role,
+                party_kind=facts.kind if facts is not None else None,
+                party_class=facts.party_class if facts is not None else None,
+                multilateral=(
+                    facts.multilateral if facts is not None and axis == "origin" else None
+                ),
+                confidence=None,
+            )
         )
-        for e in entities
-    ]
+    return resolved
 
 
 @dataclass(frozen=True)
@@ -1539,18 +1545,7 @@ def build_spec(
                 identity=identity_doc,
                 provenance=provenance.ref if provenance is not None else None,
             ),
-            entities=_resolved_entities(
-                entities,
-                multilateral_dcids={
-                    dcid
-                    for role, dcids in identity_doc.entities.items()
-                    if role_key_axis(role) == "origin"
-                    for dcid in dcids
-                    if multilaterals.is_multilateral(
-                        index.parties.get(dcid), datasets=served_datasets
-                    )
-                },
-            ),
+            entities=_resolved_entities(entities, parties=index.parties, datasets=served_datasets),
             entity_groups=entity_groups or None,
             coverage=coverage,
             headline=headline,

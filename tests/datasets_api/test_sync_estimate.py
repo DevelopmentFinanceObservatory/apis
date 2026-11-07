@@ -416,12 +416,12 @@ _ORIGIN_AND_TOTAL = {"entities": {"origin": ["country/GBR", "DACDonors"]}}
 # GBR and FRA are parties on both axes; the only total, `DACDonors`, is a donor in `p1`.
 _PARTIES = {
     "country/GBR": PartyRow(
-        dcid="country/GBR", kind="party", datasets=("p1",), axes=("destination", "origin")
+        dcid="country/GBR", kind="party", published=(("p1", "destination"), ("p1", "origin"))
     ),
     "country/FRA": PartyRow(
-        dcid="country/FRA", kind="party", datasets=("p1",), axes=("destination", "origin")
+        dcid="country/FRA", kind="party", published=(("p1", "destination"), ("p1", "origin"))
     ),
-    "DACDonors": PartyRow(dcid="DACDonors", kind="total", datasets=("p1",), axes=("origin",)),
+    "DACDonors": PartyRow(dcid="DACDonors", kind="total", published=(("p1", "origin"),)),
 }
 
 

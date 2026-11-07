@@ -14,10 +14,17 @@ The extraction's entities and measures decide which hits are sources:
   dataset's label.
 - A hit inside a longer code label the query writes is that code's words: "UN" in "UN
   peacekeeping", a CRS channel.
-- A hit that names an organisation (a Source, or a collection such as the DAC) and is an
-  entity, or lies inside a measure's words, is a party to the flow: "ODA from the World
-  Bank", "World Bank core contributions". A data word just after it ("OECD data on aid")
-  or "according to" just before it makes it the source of the numbers.
+- A hit that names an organisation (a Source, or a collection such as the DAC) that the
+  entity pack does not name, and is an entity or lies inside a measure's words, is a party
+  to the flow: "OECD core contributions". A data word just after it ("OECD data on aid") or
+  "according to" just before it makes it the source of the numbers.
+- A hit the entity pack also names as an organisation (`entity_resolution.pack`) that no
+  data word or source cue marks is contested (`SourceHit.contested`), whether or not the
+  extraction returned it as an entity: "Ghana debt service to the World Bank", "World Bank
+  GNI of Denmark", "World Bank core contributions". The scan reads it as a source, and the
+  raw-text door also builds the part's reading with the organisation as an entity, which
+  scans the query with the organisation among `parties`; before the part's pass the data
+  decide how it reads each organisation (`region.source_choice.read_organisations`).
 - A hit that names a table (a provenance or Dataset: CRS, WEO, IDS, DAC2a, imputed
   multilateral sectors) is a source wherever it stands. A table gives and receives nothing.
 
@@ -40,16 +47,22 @@ Each source qualifies the measures whose words hold its words ("CRS education ai
 the measure whose words it directly precedes, else the nearest measure before it ("GDP
 from the WEO"), else the nearest after it. A question with one measure gives it every
 source, and a source no rule places qualifies every measure.
+
+An organisation the entity pack names and the source dictionary does not ("Global Fund")
+is no source. Where no entity covers it, `find_organisations` finds it for the raw-text
+door to add as an entity, attached to measures by the same rule.
 """
 
 from __future__ import annotations
 
 import unicodedata
 from collections.abc import Sequence
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, get_args
 
 from code_index.query import CodeIndex
+from entity_resolution.pack import is_organisation_name, longest_name_words, written_as_stored
 from search.engine.qualifier_match import read_by_vocabulary
 from search.engine.source_scope import (
     SourceCollection,
@@ -57,6 +70,7 @@ from search.engine.source_scope import (
     match_source_words,
     normalise_source_text,
 )
+from search.heading.departure_fact import DirectionWord
 from search.models import _PARSED_MAX_PART_SOURCES, _PARSED_MAX_SOURCE_MENTION_CHARS, SourceMention
 
 if TYPE_CHECKING:
@@ -72,6 +86,12 @@ _COORDINATORS = frozenset({"and", "or", "nor"})
 """Words that end one item of a stretch's list and start the next."""
 
 _ARTICLES = frozenset({"the", "a", "an", "le", "la", "el"})
+
+_DIRECTION_WORDS: frozenset[DirectionWord] = frozenset(get_args(DirectionWord))
+"""The words that, before an organisation, name it a party to a flow when it is one."""
+
+_LIST_FILLERS = _ARTICLES | _COORDINATORS
+"""The words a list of names holds beside the names themselves."""
 
 _FILLER_BEFORE_SOURCE = _ARTICLES | {"from"}
 """Words that may stand between a cue and the source it introduces."""
@@ -114,12 +134,27 @@ class SourceHit:
     """A source the query names: the text's characters `start` to `end`, its own words for
     the source, whether it asks for the source's numbers or leaves them out, and the
     positions of the measures it qualifies (`targets`). A source a stretch leaves out sits at
-    the stretch's blank."""
+    the stretch's blank. `contested` marks an included organisation the entity pack names
+    that no data word or source cue marks, which may be a party instead, whether or not an
+    entity of the same words covers it."""
 
     start: int
     end: int
     text: str
     polarity: Literal["include", "exclude"]
+    targets: tuple[int, ...]
+    contested: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class OrganisationMention:
+    """An organisation the query names that no entity covers and no source key holds: the
+    text's characters `start` to `end`, its words, and the positions of the measures it
+    qualifies (`targets`)."""
+
+    start: int
+    end: int
+    text: str
     targets: tuple[int, ...]
 
 
@@ -232,6 +267,31 @@ def _keys_by_first_word(dictionary: SourceDictionary) -> dict[str, list[tuple[st
     return keys
 
 
+def _key_runs(
+    words: Sequence[_Word], dictionary: SourceDictionary
+) -> list[tuple[int, tuple[str, ...]]]:
+    """Each dictionary key `words` write, as the position of its first word and the key: at
+    each word the longest key that starts there and runs over whole words, then past it."""
+    keys = _keys_by_first_word(dictionary)
+    runs: list[tuple[int, tuple[str, ...]]] = []
+    cursor = 0
+    while cursor < len(words):
+        key = next(
+            (
+                key
+                for key in keys.get(words[cursor].folded, ())
+                if _key_matches(key, words[cursor : cursor + len(key)])
+            ),
+            None,
+        )
+        if key is None:
+            cursor += 1
+            continue
+        runs.append((cursor, key))
+        cursor += len(key)
+    return runs
+
+
 def find_source_hits(
     query: str,
     *,
@@ -239,15 +299,17 @@ def find_source_hits(
     entity_spans: Sequence[str],
     measures: Sequence[str],
     index: CodeIndex,
+    codes: Sequence[tuple[int, int]] | None = None,
+    parties: AbstractSet[str] = frozenset(),
 ) -> list[SourceHit]:
     """The sources `query` names, in query order, read against the extraction's entities
     (`entity_spans`, the query's words for each), its `measures` and the code labels
     `index` reads in it, each with the measures it qualifies, as the module describes. Each
-    asks for its source."""
+    asks for its source. A hit that would be contested and whose words, normalised
+    (`normalise_source_text`), are among `parties` is read as a party and is no source: the
+    raw-text door's reading of a contested organisation as a party."""
     words = _words(query)
-    (reading,) = read_by_vocabulary([query], index, vocabularies=())
-    codes = [(span.start, span.end) for span in reading.everywhere.spans]
-    keys = _keys_by_first_word(dictionary)
+    codes = code_spans(query, index) if codes is None else codes
     entities = [
         (span, normalise_source_text(phrase))
         for phrase, spans in _entity_occurrences(entity_spans, words).items()
@@ -257,22 +319,9 @@ def find_source_hits(
     measure_spans = [next(iter(_occurrences(measure, words)), None) for measure in measures]
 
     hits: list[SourceHit] = []
-    cursor = 0
-    while cursor < len(words):
-        first = cursor
-        key = next(
-            (
-                key
-                for key in keys.get(words[first].folded, ())
-                if _key_matches(key, words[first : first + len(key)])
-            ),
-            None,
-        )
-        if key is None:
-            cursor += 1
-            continue
-        cursor = first + len(key)
-        start, end = words[first].start, words[cursor - 1].end
+    for first, key in _key_runs(words, dictionary):
+        after = first + len(key)
+        start, end = words[first].start, words[after - 1].end
         text = query[start:end]
 
         overlapping = [name for (s, e), name in entities if s < end and start < e]
@@ -280,16 +329,144 @@ def find_source_hits(
             continue
         if key in measure_words:
             continue
-        if any(s <= start and end <= e and e - s > end - start for s, e in codes):
+        if _inside_longer(start, end, codes):
             continue
-        in_measure = any(_holds(held, key) for held in measure_words)
-        if (overlapping or in_measure) and not _names_a_table(dictionary, text):
-            data_word = cursor < len(words) and words[cursor].folded in _DATA_WORDS
-            if not data_word and not _cued(words, first, _SOURCE_CUES):
+        contested = False
+        if not _names_a_table(dictionary, text):
+            data_word = after < len(words) and words[after].folded in _DATA_WORDS
+            cued = data_word or _cued(words, first, _SOURCE_CUES)
+            contested = not cued and is_organisation_name(text)
+            if contested and normalise_source_text(text) in parties:
+                continue
+            in_measure = any(_holds(held, key) for held in measure_words)
+            if (overlapping or in_measure) and not cued and not contested:
                 continue
         targets = _attach(key, start, end, measure_words, measure_spans)
-        hits.append(SourceHit(start, end, text, "include", targets))
+        hits.append(SourceHit(start, end, text, "include", targets, contested=contested))
     return hits
+
+
+def code_spans(query: str, index: CodeIndex) -> list[tuple[int, int]]:
+    """The character spans of the code labels `index` reads in `query`. A caller scanning one
+    query twice reads them once and passes them on as `codes`."""
+    (reading,) = read_by_vocabulary([query], index, vocabularies=())
+    return [(span.start, span.end) for span in reading.everywhere.spans]
+
+
+def _inside_longer(start: int, end: int, spans: Sequence[tuple[int, int]]) -> bool:
+    """Whether the characters `start` to `end` lie inside one of `spans` longer than they are."""
+    return any(s <= start and end <= e and e - s > end - start for s, e in spans)
+
+
+def find_organisations(
+    query: str,
+    *,
+    dictionary: SourceDictionary,
+    entity_spans: Sequence[str],
+    measures: Sequence[str],
+    index: CodeIndex,
+    codes: Sequence[tuple[int, int]] | None = None,
+) -> list[OrganisationMention]:
+    """The organisations `query` names that are no source and no entity, in query order,
+    each with the measures it qualifies (`_attach`).
+
+    At each word the longest run of whole words the entity pack stores as an
+    organisation's name or alias (`entity_resolution.pack.organisations_named`) is one,
+    then the scan moves past it, where the query writes it as a name
+    (`_names_an_organisation`). A run is passed over where it overlaps a source key the
+    query writes (`_key_runs`) or an entity's words, lies inside a longer code label, or is a
+    whole measure: "Global Fund" in "Global Fund disbursements to Kenya" is one, "World
+    Bank" is a source key and "IDA" in the entity "World Bank IDA" is that entity's."""
+    words = _words(query)
+    taken = [
+        (words[first].start, words[first + len(key) - 1].end)
+        for first, key in _key_runs(words, dictionary)
+    ]
+    taken += [span for spans in _entity_occurrences(entity_spans, words).values() for span in spans]
+    codes = code_spans(query, index) if codes is None else codes
+    measure_words = [_folded(measure) for measure in measures]
+    measure_spans = [next(iter(_occurrences(measure, words)), None) for measure in measures]
+    longest = longest_name_words()
+
+    found: list[OrganisationMention] = []
+    cursor = 0
+    while cursor < len(words):
+        width = next(
+            (
+                width
+                for width in range(min(longest, len(words) - cursor), 0, -1)
+                if _names_an_organisation(query, words[cursor : cursor + width])
+            ),
+            0,
+        )
+        if not width:
+            cursor += 1
+            continue
+        run = words[cursor : cursor + width]
+        cursor += width
+        start, end = run[0].start, run[-1].end
+        key = tuple(word.folded for word in run)
+        if (
+            any(s < end and start < e for s, e in taken)
+            or _inside_longer(start, end, codes)
+            or key in measure_words
+        ):
+            continue
+        targets = _attach(key, start, end, measure_words, measure_spans)
+        found.append(OrganisationMention(start, end, query[start:end], targets))
+    return found
+
+
+def _names_an_organisation(query: str, run: Sequence[_Word]) -> bool:
+    """Whether the words `run` of `query` are an organisation's name in the entity pack,
+    written as a name. A one-word name of at most five characters is an acronym and must be
+    written in capitals ("WHO", "IFC") or, capital first, as a word of a name the pack
+    stores for it ("Gavi", "AfDB", "IsDB"; `entity_resolution.pack.written_as_stored`).
+    Any other run must start and end with a capital ("Global Fund", "International Finance
+    Corporation"), so a generic phrase the pack holds as an alias, as "international
+    finance" or "multilateral fund", names nothing."""
+    first, last = run[0].text, run[-1].text
+    if len(run) == 1 and len(first) <= _ABBREVIATION_MAX_CHARS:
+        stored = first[:1].isupper() and written_as_stored(first)
+        if not (stored or _written_in_capitals(first)):
+            return False
+    elif not (first[:1].isupper() and last[:1].isupper()):
+        return False
+    return is_organisation_name(query[run[0].start : run[-1].end])
+
+
+def direction_word(
+    query: str, hit: SourceHit, *, entity_spans: Sequence[str]
+) -> DirectionWord | None:
+    """The word naming a party to a flow ("to", "from") that governs `hit`, or None: the word
+    before it, past articles, as "to" in "Ghana debt service to the World Bank". A hit that
+    closes a list (a coordinator before it) takes the word that governs the list, stepping
+    back over the list's items, each a name written capital first or an occurrence of one
+    of the extraction's `entity_spans` (a group such as "low-income countries"), and their
+    articles and coordinators: "to" in "to Norway and the World Bank", "to Norway, Sweden and
+    the IMF" and "to low-income countries and the World Bank". Any other word, a
+    preposition ("by") or a verb, ends the list and governs nothing."""
+    before = _words(query[: hit.start])
+    entities = [
+        span for spans in _entity_occurrences(entity_spans, before).values() for span in spans
+    ]
+
+    def in_list(word: _Word) -> bool:
+        return (
+            word.text[:1].isupper()
+            or word.folded in _LIST_FILLERS
+            or any(s <= word.start and word.end <= e for s, e in entities)
+        )
+
+    at = len(before) - 1
+    while at >= 0 and before[at].folded in _ARTICLES:
+        at -= 1
+    if at >= 0 and before[at].folded in _COORDINATORS:
+        at -= 1
+        while at >= 0 and in_list(before[at]):
+            at -= 1
+    word = before[at].folded if at >= 0 else None
+    return next((direction for direction in _DIRECTION_WORDS if direction == word), None)
 
 
 def _attach(
@@ -452,6 +629,8 @@ def scan_sources(
     entity_spans: Sequence[str],
     index: CodeIndex,
     left_out: Sequence[LeftOut] = (),
+    codes: Sequence[tuple[int, int]] | None = None,
+    parties: AbstractSet[str] = frozenset(),
 ) -> SourceScan:
     """The sources `find_source_hits` finds in `query`, the text with each of the `left_out`
     stretches blanked, and those each stretch leaves out (`left_out_sources`), attached to the
@@ -459,9 +638,16 @@ def scan_sources(
     to the measures of the clause its blank lies in (`_stretch_attach`). A measure keeps one
     mention per wording and polarity, at most `_PARSED_MAX_PART_SOURCES`, and an entity span
     leaves the entities only when every occurrence of it that lies inside no longer entity
-    span's lies under a source."""
+    span's lies under a source. `parties` are organisation words read as parties
+    (`find_source_hits`)."""
     hits = find_source_hits(
-        query, dictionary=dictionary, entity_spans=entity_spans, measures=measures, index=index
+        query,
+        dictionary=dictionary,
+        entity_spans=entity_spans,
+        measures=measures,
+        index=index,
+        codes=codes,
+        parties=parties,
     )
     source_stretches: set[str] = set()
     stretch_targets: list[tuple[int, ...]] = []
@@ -473,7 +659,8 @@ def scan_sources(
         stretch_targets.append(targets)
         found, whole = left_out_sources(stretch, dictionary=dictionary, index=index)
         hits += [
-            replace(hit, start=at, end=at + 1, polarity="exclude", targets=targets) for hit in found
+            replace(hit, start=at, end=at + 1, polarity="exclude", targets=targets, contested=False)
+            for hit in found
         ]
         if whole:
             source_stretches.add(stretch.phrase)

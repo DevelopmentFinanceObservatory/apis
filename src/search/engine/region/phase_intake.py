@@ -96,7 +96,8 @@ _UN_READS_FAILED: Final = (
 async def _phase_recall(state: ResolveState) -> None:
     """Run recall and record its candidates for place-set resolution. Recall searches the
     part's text without each word that names a party on an axis the request leaves unnamed
-    (`place_roles.stated_party_words`)."""
+    (`place_roles.stated_party_words`). A detection the door made of the part's text under
+    its scope (`ResolveState.detected`) stands in for recall's own (`interpret.recall`)."""
     t0 = now_ms()
     rcl: Recall = await recall(
         state.variable,
@@ -108,6 +109,7 @@ async def _phase_recall(state: ResolveState) -> None:
         entity_surfaces=state.entity_surfaces,
         members=None if state.source_code is None else state.source_code.dcids,
         party_words=frozenset(named.word for named in stated_party_words(state)),
+        detected=state.detected,
     )
     state.rcl = rcl
     state.timing["recall"] = now_ms() - t0

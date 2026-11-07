@@ -127,7 +127,9 @@ DepartureCode = Literal[
     "whole_total_read",
     "whole_total_unpublished",
     "direction_discarded",
+    "organisation_read_as_source",
     "direction_inferred",
+    "organisation_read_as_party",
     "scope_limited",
 ]
 """Every way an answer can differ from what its request asked (see
