@@ -851,3 +851,27 @@
       measure: {family: [crs.disbursement_gross, dac2a.oda_gross_received]}
       entities: [{dcid: GlobalFund, role: origin}, {dcid: country/MWI, role: destination}]
       window: {kind: range, start: 2015}
+
+- id: dq-crs-072
+  query: Low income countries budget support from Germany 2020 to 2024
+  why: Germany is the donor, so the low income countries take the free side. Gemini binds purpose 510 until the graph names it general budget support, and fails here till then.
+  tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: range, operation: none, breakdown: modality, door: raw_text, phrasing: casual, probe: [income_group]}
+  expect:
+    definite:
+      measure:
+        family: crs.disbursement_any
+        bound: {crsCooperationModality: CRSCooperationModalityA}
+      entities: [{dcid: country/DEU, role: origin}, {label: low income, role: destination, expands: true}]
+      window: {kind: range, start: 2020, end: 2024}
+
+- id: dq-crs-073
+  query: Germany budget support to low income countries 2020 to 2024
+  why: The directed twin of dq-crs-072. Gemini binds purpose 510 until the graph names it general budget support, and fails here till then.
+  tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: range, operation: none, breakdown: modality, door: raw_text, phrasing: casual, probe: [income_group]}
+  expect:
+    definite:
+      measure:
+        family: crs.disbursement_any
+        bound: {crsCooperationModality: CRSCooperationModalityA}
+      entities: [{dcid: country/DEU, role: origin}, {label: low income, role: destination, expands: true}]
+      window: {kind: range, start: 2020, end: 2024}

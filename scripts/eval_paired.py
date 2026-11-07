@@ -34,7 +34,9 @@ sample is not settled, since a later sample may reach it and fail.
 ``materialisation`` is scored on the modal sample of the samples taken. A case that stops
 after one sample scores it on that sample, where a run of every sample scores it on the
 modal sample of all of them, so its verdict can differ when the other samples agree on
-another answer. A case that stops after one sample is not reported unstable.
+another answer. A case that stops after one sample is not reported unstable. A case that sets
+``repeat`` takes at least that many samples in every round (``runner.run_cases``), and its
+``agreement`` check fails on each of them unless all give one answer.
 
 Beside the per-check verdicts, each case is judged on the derived ``answer`` check
 (``search.eval.checks.base.answer_result``): per sample, a failure when any check outside
@@ -74,7 +76,7 @@ import tempfile
 import traceback
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -390,15 +392,18 @@ def _git(repo: Path, *args: str) -> str:
 
 def score_run(case: Case, run: CaseRun, ctx: ScoreContext) -> list[SampleScore]:
     """Score every sample of ``run``, with the derived ``answer`` check; checks in
-    ``MODAL_ONLY_CHECKS`` run on the modal sample alone.
+    ``MODAL_ONLY_CHECKS`` run on the modal sample alone. Every sample reads the run's
+    agreement (``ScoreContext.run_agreement``), so ``agreement`` scores the run on each.
 
     A run that failed on infrastructure adds one failed sample after its completed ones:
     ``task_outcome`` scores its error and fails, every other check is n/a, and ``answer``
     follows from them. Its completed samples vote for their own modal sample.
     """
     modal = run.modal
-    if modal is None and run.samples:
-        modal = run.samples[modal_sample(run.samples)[0]]
+    if run.samples:
+        index, agreeing = modal_sample(run.samples)
+        modal = modal or run.samples[index]
+        ctx = replace(ctx, run_agreement=(agreeing, len(run.samples)))
     scores = [
         SampleScore(
             sample=sample,

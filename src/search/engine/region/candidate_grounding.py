@@ -20,6 +20,7 @@ from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import Facet
 from search.engine.envelope import now_ms
 from search.engine.errors import EngineInfraError
+from search.engine.extract import DateRequest
 from search.engine.region.arcs import (
     inapplicable_slots_from_member_facts,
     unresolved_slots_from_member_facts,
@@ -57,6 +58,7 @@ from search.engine.region.grounding import (
     requested_window_from_date_request,
     restate_role_scope_warnings,
 )
+from search.engine.region.materialise_step import Departed
 from search.engine.region.observations.bulk_scope import BulkScope, bulk_scope_for
 from search.engine.region.observations.entities import (
     _flat_obs_entities,
@@ -82,6 +84,7 @@ from search.engine.region.scope import (
     stated_scope_members,
 )
 from search.engine.region.state import ResolveState
+from search.engine.region.trailing import settle_trailing
 from search.engine.retrieval.bound_values import (
     MeasureFamilyCacheKey,
     MeasurePartition,
@@ -154,6 +157,11 @@ class _CandidatePrep:
     scope_types: dict[str, str]
     # Each candidate's unit filter as a twin cluster member (`_twin_unit_filters`), else None.
     twin_unit_filters: list[Mapping[str, FacetAxisFilter] | None]
+    # Each candidate's date request: a trailing request settled on the newest years its
+    # filtered plan serves (`trailing.settle_trailing`), else the request's own.
+    date_requests: list[DateRequest | None]
+    # The departure each candidate's stale newest year raises (`trailing.stale_departure`).
+    trailing_departures: list[Departed | None]
 
 
 def _twin_unit_filters(
@@ -176,6 +184,8 @@ def _prepare_candidate_context(state: ResolveState, candidates: list[_Candidate]
     preview's read plan take that filter once per candidate, before any election
     (`filter_answer`). Under a bound unit each candidate's conversion then runs over its
     filtered plan (`_candidate_conversions`), and all three leave out the rows it omits.
+    Before that, a trailing request reads each candidate over the newest years its own
+    filtered plan serves (`_settled_trailing`).
     Each scope lists the members its candidate's filtered plan serves, then one label/type
     batch covers their union.
 
@@ -280,10 +290,16 @@ def _prepare_candidate_context(state: ResolveState, candidates: list[_Candidate]
             )
         )
 
+    candidates, _cand_filtered, _cand_date_requests, _cand_trailing_departures = _settled_trailing(
+        state, candidates, _cand_filtered
+    )
+
     _cand_unit_coverage = [UnitCoverage() for _ in candidates]
     _cand_gate_plans = [filtered.plan for filtered in _cand_filtered]
     if state.bound_unit_outcome is not None:
-        converted = _candidate_conversions(state, candidates, _cand_filtered, _cand_elected_raw)
+        converted = _candidate_conversions(
+            state, candidates, _cand_filtered, _cand_elected_raw, _cand_date_requests
+        )
         _cand_filtered = [c.answer for c in converted]
         _cand_unit_coverage = [c.coverage for c in converted]
         _cand_gate_plans = [c.gate_plan for c in converted]
@@ -310,7 +326,40 @@ def _prepare_candidate_context(state: ResolveState, candidates: list[_Candidate]
         scope_labels=_cand_scope_labels,
         scope_types=_cand_scope_types,
         twin_unit_filters=_cand_twin_unit_filters,
+        date_requests=_cand_date_requests,
+        trailing_departures=_cand_trailing_departures,
     )
+
+
+def _settled_trailing(
+    state: ResolveState, candidates: list[_Candidate], filtered: list[FilteredAnswer]
+) -> tuple[list[_Candidate], list[FilteredAnswer], list[DateRequest | None], list[Departed | None]]:
+    """Each candidate read over the newest years its own filtered plan serves under a
+    trailing request (`trailing.settle_trailing`), so each Spec states its own range, with
+    its date request and the departure a stale newest year raises. A candidate the request
+    does not settle keeps its answer and the request's own date request. The elected
+    shape's result stays the state's (`ResolveState.mat_result`)."""
+    kept: list[_Candidate] = []
+    answers: list[FilteredAnswer] = []
+    requests: list[DateRequest | None] = []
+    departures: list[Departed | None] = []
+    for cand, answer in zip(candidates, filtered, strict=True):
+        settled = settle_trailing(
+            cand.mat, answer, date_request=state.date_request, coverage_index=state.coverage.index
+        )
+        if settled is None:
+            kept.append(cand)
+            answers.append(answer)
+            requests.append(state.date_request)
+            departures.append(None)
+            continue
+        if cand.mat is state.mat_result:
+            state.mat_result = settled.mat
+        kept.append(replace(cand, mat=settled.mat))
+        answers.append(settled.filtered)
+        requests.append(settled.date_request)
+        departures.append(settled.departure)
+    return kept, answers, requests, departures
 
 
 def _candidate_observation_entities(
@@ -343,6 +392,7 @@ def _candidate_conversions(
     candidates: Sequence[_Candidate],
     filtered: Sequence[FilteredAnswer],
     elected: Sequence[Mapping[str, tuple[Mapping[str, FacetSelection], ...]]],
+    date_requests: Sequence[DateRequest | None],
 ) -> list[_CandidateConversion]:
     """Each candidate's conversion (`_CandidateConversion`), in input order.
 
@@ -377,7 +427,7 @@ def _candidate_conversions(
             rate_cache=state.rate_cache,
             dated_facets=state.graph,
             deadline=state.deadline,
-            date_request=state.date_request,
+            date_request=date_requests[index],
             coverage_index=state.coverage.index,
         )
         gate_plan = answer.plan if answer is not filtered[index] else gate.plan
@@ -741,7 +791,7 @@ def _finish_candidate(
         slot_options=groundwork.slot_options_raw,
         available_at_place=cand_available_at_place,
         confidence=cand_confidence,
-        requested_window=requested_window_from_date_request(state.date_request),
+        requested_window=requested_window_from_date_request(prep.date_requests[cand_index]),
         identity_entities=groundwork.identity_entities,
         open_roles=cand_mat.open_axes,
         inapplicable_slots=groundwork.inapplicable_slots,
@@ -866,6 +916,10 @@ class _GroundedCandidates:
     """The roles each Spec answers under: those its candidate shape declares."""
     # Each candidate's place context, settled on its materialised result.
     cand_places: dict[str, PlaceContext]
+    # Each Spec's own date request (`_CandidatePrep.date_requests`): a trailing request
+    # settled on the newest years its plan serves, which its option coverage and related
+    # measures read, as a resubmit of the Spec does.
+    cand_date_requests: dict[str, DateRequest | None]
     answer_t0: int
     # Each candidate's carrier and the scope its Spec lists (`_CandidateContext.scope_members`),
     # which the discovered-scope warning counts for the candidates a response keeps.
@@ -992,6 +1046,7 @@ def ground_candidates(state: ResolveState, candidates: list[_Candidate]) -> _Gro
     cand_plans: dict[str, ReadPlan] = {}
     cand_scopes: dict[str, tuple[Materialised, list[str] | None]] = {}
     cand_places: dict[str, PlaceContext] = {}
+    cand_date_requests: dict[str, DateRequest | None] = {}
     cand_candidates: dict[str, _Candidate] = {}
     cand_unit_refusals: dict[str, Mapping[str, MaterialisationError]] = {}
     cand_unit_coverage: dict[str, UnitCoverage] = {}
@@ -1034,6 +1089,8 @@ def ground_candidates(state: ResolveState, candidates: list[_Candidate]) -> _Gro
             cand_answered_roles[spec_id] = answered_roles(cand.shape)
             if cand.mat.family_total_absent is not None:
                 state.family_total_absent[spec_id] = cand.mat.family_total_absent
+            if (stale := prep.trailing_departures[cand_index]) is not None:
+                state.stale_trailing[spec_id] = stale
         cand_scores[spec_id] = grounded.score
         cand_retrieved[spec_id] = grounded.retrieved
         cand_populations[spec_id] = grounded.population
@@ -1053,6 +1110,7 @@ def ground_candidates(state: ResolveState, candidates: list[_Candidate]) -> _Gro
             cand_plans[spec_id] = grounded.plan
         cand_scopes[spec_id] = (cand.mat, prep.scope_members[cand_index])
         cand_places[spec_id] = grounded.place
+        cand_date_requests[spec_id] = prep.date_requests[cand_index]
         cand_candidates[spec_id] = cand
         cand_unit_refusals[spec_id] = prep.unit_refusals[cand_index]
         cand_unit_coverage[spec_id] = prep.unit_coverage[cand_index]
@@ -1092,6 +1150,7 @@ def ground_candidates(state: ResolveState, candidates: list[_Candidate]) -> _Gro
         cand_confirmed_facets=cand_confirmed_facets,
         cand_answered_roles=cand_answered_roles,
         cand_places=cand_places,
+        cand_date_requests=cand_date_requests,
         answer_t0=answer_t0,
         cand_scopes=cand_scopes,
         cand_candidates=cand_candidates,

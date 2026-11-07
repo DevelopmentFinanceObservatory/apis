@@ -356,6 +356,19 @@ def test_posts_in_flight_never_exceed_the_concurrency_bound():
     assert all(len(run.samples) == 3 and run.n_agreeing == 3 for run in runs.values())
 
 
+@pytest.mark.parametrize(("samples", "posted"), [(1, 4), (6, 12)])
+def test_a_repeated_case_takes_at_least_its_repeat_in_samples(samples: int, posted: int):
+    """A case that sets `repeat` runs that many times where the run asks fewer samples, and
+    the asked samples where it asks more; a case without `repeat` runs the asked samples."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_definite())
+
+    runs = _run([_case("once"), _case("repeated", repeat=3)], handler, samples=samples)
+
+    assert len(runs["once"].samples) + len(runs["repeated"].samples) == posted
+
+
 def test_samples_below_one_are_refused():
     with pytest.raises(ValueError, match="samples"):
         _run([_case()], _Script(), samples=0)

@@ -242,7 +242,9 @@ class TestForStageWiring:
 
         recorder = _RecordingLLM()
         offline_resolve(make_request("total population India"), llm=recorder)
+        # Both extraction samples, the reseeded one too, keep extract's own level.
         assert recorder.calls == [
+            ("Extraction", None),
             ("Extraction", None),
             ("QuantityOutput", "minimal"),
             ("_UniversalBindOutput", "minimal"),

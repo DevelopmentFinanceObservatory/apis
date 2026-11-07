@@ -452,7 +452,11 @@ async def _test_layer2_follower_deadline_shorter_than_leaders_run_proceeds_unlea
     assert await _new_scope_hits_layer1(cache, query_1)
 
 
-async def _test_store_publishes_both_leases_when_this_request_holds_both(base: ResolveResponse):
+async def _test_store_publishes_both_leases_when_this_request_holds_both(
+    base: ResolveResponse, *, agreed: bool
+):
+    """Layer 2 stores the answer either way; layer 1 stores it under the query only when two
+    extraction samples agreed on its reading, and a layer-1 waiter receives it either way."""
     cache = _new_cache()
     extraction = _population_india_extraction()
     query = "total population india"
@@ -461,12 +465,17 @@ async def _test_store_publishes_both_leases_when_this_request_holds_both(base: R
     assert await scope.lookup_parsed(query=query, **extraction) is None
     assert scope._layer1_lease is not None
     assert scope._layer2_lease is not None
+    scope.note_extraction(agreed=agreed)
+    waiter = _make_scope(cache)
+    waiting = asyncio.ensure_future(waiter.lookup_raw(query))
+    await asyncio.sleep(0)
 
     await scope.store(base)
 
+    assert await waiting is not None
     assert scope._layer1_lease is None
     assert scope._layer2_lease is None
-    assert await _new_scope_hits_layer1(cache, query)
+    assert await _new_scope_hits_layer1(cache, query) is agreed
 
     other = _make_scope(cache)
     assert await other.lookup_raw("a wording that is not the one stored above") is None
@@ -780,8 +789,13 @@ def test_layer2_follower_deadline_shorter_than_leaders_run_proceeds_unleased_on_
     )
 
 
-def test_store_publishes_both_leases_when_this_request_holds_both():
-    asyncio.run(_test_store_publishes_both_leases_when_this_request_holds_both(_base_response()))
+@pytest.mark.parametrize("agreed", [True, False], ids=["agreed", "samples-disagreed"])
+def test_store_publishes_both_leases_when_this_request_holds_both(agreed):
+    asyncio.run(
+        _test_store_publishes_both_leases_when_this_request_holds_both(
+            _base_response(), agreed=agreed
+        )
+    )
 
 
 def test_release_abandons_both_leases_when_this_request_holds_both():

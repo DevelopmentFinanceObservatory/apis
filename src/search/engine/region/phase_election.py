@@ -25,10 +25,10 @@ from search.engine.bind_repair import (
 )
 from search.engine.binders import StatedWordsRequest
 from search.engine.binders.house_policy import slot_values
+from search.engine.clients.llm import sum_usage
 from search.engine.config import settings
 from search.engine.degraded_reads import note_degraded_read
 from search.engine.departures import whole_total_ended_fact
-from search.engine.envelope import _sum_usage
 from search.engine.errors import LLMInfraError
 from search.engine.extract import slot_default_answers
 from search.engine.qualifier_match import (
@@ -1100,7 +1100,10 @@ async def _repair_bindings(state: ResolveState) -> RegionResult | None:
     # Apply a declared default when the variable, raw query, or bindings trigger it. Raw
     # query text is available only for a single-variable request and participates in the
     # response cache key. Engine-authored defaults add no warning. Defaults bind before the
-    # measure vote, so a default code published at one basis elects that basis.
+    # measure vote, so a default code published at one basis elects that basis. A reply's
+    # value above the default that neither an admitted qualifier nor a menu choice names
+    # gives way to the default where it fires ("total aid" read as official and private
+    # flows binds total ODA).
     bindings, _defaulted_bindings = apply_declared_defaults(
         bindings,
         state.shape_draft,
@@ -1111,6 +1114,9 @@ async def _repair_bindings(state: ResolveState) -> RegionResult | None:
         query_qualifier_ties=for_shape(state.query_qualifier_ties, state.shape_draft),
         engine_authored_properties=state.measure_elected_properties,
         pinned_properties=pinned,
+        named_codes=frozenset(
+            match.code_dcid for match in (*state.admitted_qualifiers, *state.menu_choices)
+        ),
     )
     if _defaulted_bindings:
         state.bindings = with_sampled_claims(bindings, claims)
@@ -1119,7 +1125,8 @@ async def _repair_bindings(state: ResolveState) -> RegionResult | None:
         )
         # A default on a slot the query names by its plain name ("top 5 aid flows") warns,
         # and answers each dropped phrase that asked for no more than that slot. A default
-        # that declares a note states it whenever it fires. Each default's statements are
+        # that replaced the reply's broader value names that value, and any other default
+        # that declares a note states it, whenever it fires. Each default's statements are
         # kept under its property, so unbinding it takes them back (`ResolveState.forget_bound`).
         texts = [
             text
@@ -1387,7 +1394,7 @@ async def _rated_words(state: ResolveState, answer: ResolveState) -> dict[str, f
         note_degraded_read("stated words read")
         return {}
     rated = {word: ratings[word] for word in words if word in ratings}
-    state.var_usage = _sum_usage(state.var_usage, usage)
+    state.var_usage = sum_usage(state.var_usage, usage)
     if len(rated) < len(words):
         note_degraded_read("stated words unrated")
     return rated
@@ -1487,28 +1494,15 @@ def _bind_query_places(
     assignment = bind_place_roles(state, shape)
     place_roles, settled = _settle_places(state, shape, assignment, bindings, claims, basis)
     if basis is not None and basis.entry is None:
-        ranked = _ranked_roles(state, shape, place_roles)
-        rank = _coverage_rank(state, ranked, settled)
+        rank = _coverage_rank(state, place_roles, settled)
         if rank < _HELD:
             default_roles, default = _settle_places(
                 state, shape, assignment, bindings, claims, None
             )
-            ranked = _ranked_roles(state, shape, default_roles)
-            if _coverage_rank(state, ranked, default) > rank:
+            if _coverage_rank(state, default_roles, default) > rank:
                 place_roles, settled = default_roles, default
     state.query_place_roles = place_roles
     return _install_settled(state, settled, basis=basis)
-
-
-def _ranked_roles(
-    state: ResolveState, shape: ShapeDraft, place_roles: PlaceAssignment | PlaceRoleRefusal
-) -> PlaceAssignment | PlaceRoleRefusal:
-    """The roles `_coverage_rank` judges settled bindings at: `place_roles`, or where they
-    refuse only for a place named without a direction, that place on the axis read for it
-    (`ResolveState.undirected_axis`), the reading the answer serves when it holds data."""
-    if place_roles != "role_not_resolved" or state.undirected_axis is None:
-        return place_roles
-    return bind_place_roles(state, shape, direction=state.undirected_axis)
 
 
 def _settle_places(
@@ -1572,8 +1566,11 @@ def _settle_places(
         return whole, total
     reading = whole.whole
     assert reading is not None  # `whole_total_candidates` sets every candidate's reading
+    # The fact names the years the words ask for, which a trailing `window` reaches past.
+    assert state.date_request is not None  # `window` is its window
+    asked = state.date_request.asked_window or window
     fact = whole_total_ended_fact(
-        requested=(window.start_year, window.end_year),
+        requested=(asked.start_year, asked.end_year),
         total_years=span,
         over=reading.axis,
         whole_of=reading.whole_of,

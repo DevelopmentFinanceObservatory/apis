@@ -1489,3 +1489,27 @@ def test_a_resubmit_binding_more_dcids_than_the_bound_is_refused(
     assert refused.value.code == "request_invalid"
     assert refused.value.pointer is not None
     assert refused.value.pointer.endswith(pointer)
+
+
+def test_a_set_named_first_without_a_direction_answers_as_its_directed_twin(
+    doors: Doors,
+) -> None:
+    """#47: "Africa aid from Germany" names Africa first, with no direction, beside Germany
+    as the donor. Africa takes the recipient side Germany leaves free, where Germany's aid
+    to Nigeria holds data (`undirected.settle_undirected_axis`, the complement rule), so
+    the answer's identity is the one "aid from Germany to Africa" mints."""
+    undirected = the_spec(doors.first_answer(AID, "Africa", origin("Germany")))
+    directed = the_spec(doors.first_answer(AID, origin("Germany"), destination("Africa")))
+
+    assert undirected.definition.identity == directed.definition.identity
+    assert bound(undirected)["origin"] == [DEU]
+    assert set(bound(undirected)["destination"]) <= {AFRICA, *EXPANSION[AFRICA]}
+
+
+def test_a_place_beside_a_rank_over_the_donors_reads_as_the_recipient(doors: Doors) -> None:
+    """ "Kenya's top donors" names Kenya with no direction beside a rank over the donors. The
+    rank takes the donor side, so Kenya reads as the recipient and the donors stay open to
+    rank."""
+    spec = the_spec(doors.first_answer(AID, "Kenya", operations=[_OVER_ORIGIN]))
+
+    assert bound(spec) == {"destination": [KEN]}

@@ -159,6 +159,17 @@ class Materialised:
     also_defaulted_axis: RoleAxis | None = None
     # Open origin members from the destination confirmation's coverage index.
     open_origin_dcids: frozenset[str] | None = None
+    # Standard path, one member elected: the newest year any member ahead of it in
+    # election order holds at its places, a year before the years the request judges by,
+    # since such a member holds no point in them. A trailing answer's range starts after
+    # it, so a resubmit of the range elects the same member (`region.trailing`). None when
+    # no member ahead holds data.
+    passed_over_newest_year: int | None = None
+    # Standard path: each member the probe confirmed in the years read, with its facets at
+    # its own places, so a trailing answer counts the members holding a point in the range
+    # it settles on (`region.trailing`), as a resubmit of the range confirms them. None on
+    # other paths, whose `population.confirmed` counts `sv_dcids`.
+    confirmed_facets: Mapping[str, list[Facet]] | None = None
     # Role path: the flow axes the request left open that the elected members declare,
     # which the minted identity states as its open roles. Empty when none was asked.
     open_axes: frozenset[RoleAxis] = frozenset()

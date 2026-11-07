@@ -49,6 +49,7 @@ from search.engine.region.phase_rank_bind import _elected_index, _HousePolicySte
 from search.engine.region.state import ResolveState
 from search.engine.role_text import DoorRole
 from search.engine.shape import Pool, ShapeDraft, SlotKeyDraft
+from search.heading.departure_fact import UndirectedReading
 from tests.engine._binders import FakeAsk
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._quantity import NO_QUANTITY
@@ -635,12 +636,15 @@ def test_a_move_to_a_shape_without_a_named_value_refuses_the_part():
 def test_each_bind_call_logs_one_bind_decision_line(caplog: pytest.LogCaptureFixture):
     """Our pass and the UN pass are a bind call each, and each logs its own line: the
     binder, the menu, the pick before and after the house policies, the pool, the rating
-    flag, the policies that fired, the reply's ratings and the facts of each pool shape."""
+    flag, the policies that fired, the reply's ratings, the facts of each pool shape, and
+    the axis a place named without a direction is read on with the rule that settled it."""
     reply = _reply(0, _value("crsChannel", "ChannelA", "sole_option"), rated=(0, 1))
     caplog.set_level(logging.INFO, logger="search.engine.region.phase_rank_bind")
 
     for pool in ("ours", "un_system"):
         state = _state([_CRS, _DAC2A], llm=_StubLLM(reply), pool=pool, frame=_TO_UGANDA)
+        if pool == "ours":
+            state.undirected = UndirectedReading("destination", "complement")
         asyncio.run(_phase_bind(state))
 
     decisions = _decisions(caplog)
@@ -658,6 +662,8 @@ def test_each_bind_call_logs_one_bind_decision_line(caplog: pytest.LogCaptureFix
             "ratings": [{"index": 0, "rating": 1.0}, {"index": 1, "rating": 1.0}],
             "scores": {},
             "verdicts": [],
+            "undirected_axis": "destination" if pool == "ours" else None,
+            "undirected_rule": "complement" if pool == "ours" else None,
             "refused": False,
         }
         for pool in ("ours", "un_system")
@@ -688,6 +694,8 @@ def test_a_schema_refusal_logs_a_refused_bind_decision(caplog: pytest.LogCapture
         "scores": {},
         "verdicts": [],
         "facts": [],
+        "undirected_axis": None,
+        "undirected_rule": None,
         "refused": True,
     }
 

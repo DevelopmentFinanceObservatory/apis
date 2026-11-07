@@ -47,8 +47,8 @@ from search.engine.binders.jev_menu import jev_menu
 from search.engine.binders.jev_request import bind_request, quantity_request, restated_request
 from search.engine.binders.jev_split import RequestTooLarge
 from search.engine.clients import llm as llm_client
+from search.engine.clients.llm import sum_usage
 from search.engine.degraded_reads import note_degraded_read, recording_degraded_reads
-from search.engine.envelope import _sum_usage
 from search.engine.errors import LLMInfraError
 from search.engine.quantity_read import (
     _QUANTITY_SYSTEM_PROMPT,
@@ -1211,7 +1211,7 @@ def test_the_gemini_quantity_read_sends_what_it_sent_before_the_request_type():
 
 
 def test_gemini_usage_sums_to_the_same_three_keys():
-    total = _sum_usage(_GEMINI_USAGE, {"input_tokens": 5, "output_tokens": 1, "cached_tokens": 2})
+    total = sum_usage(_GEMINI_USAGE, {"input_tokens": 5, "output_tokens": 1, "cached_tokens": 2})
 
     assert json.dumps(total) == ('{"input_tokens": 12, "output_tokens": 4, "cached_tokens": 2}')
 
@@ -1221,11 +1221,11 @@ def test_jev_tokens_survive_a_sum_with_a_gemini_read():
     Jev's under its own keys."""
     jev = JevCall(ms=200, questions=40, chunks=1, input_tokens=120, output_tokens=4).usage
 
-    assert _sum_usage(_GEMINI_USAGE, jev) == {
+    assert sum_usage(_GEMINI_USAGE, jev) == {
         "input_tokens": 7,
         "output_tokens": 3,
         "cached_tokens": 0,
         "jev_input_tokens": 120,
         "jev_output_tokens": 4,
     }
-    assert _sum_usage(_sum_usage(jev, _GEMINI_USAGE), jev)["jev_input_tokens"] == 240
+    assert sum_usage(sum_usage(jev, _GEMINI_USAGE), jev)["jev_input_tokens"] == 240

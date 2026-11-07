@@ -37,7 +37,7 @@ from search.engine.assemble import (
     unapplied_qualifier_warnings,
 )
 from search.engine.clients.graph import EngineGraphClient
-from search.engine.clients.llm import SupportsLLM
+from search.engine.clients.llm import UNCOUNTED_CALLS, SupportsLLM, sum_usage
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.config import settings
 from search.engine.conjoin import VARIABLES_CLAMPED, assemble_region
@@ -54,7 +54,6 @@ from search.engine.enrichment import _stream_slot_options
 from search.engine.entry.multi import _stream_combined_regions
 from search.engine.entry.params import EntryParams
 from search.engine.envelope import (
-    _sum_usage,
     _terminal_events,
     make_diagnostics,
     make_query_echo,
@@ -77,6 +76,7 @@ from search.engine.exclusion_read import (
     stored_exclusion_read,
 )
 from search.engine.extract import (
+    EXTRACTION_CALLS,
     DateRequest,
     ExtractedEntity,
     Extraction,
@@ -649,30 +649,29 @@ async def _run_extract_phase(
 @dataclasses.dataclass(frozen=True)
 class _DoorRead:
     """What the door reads of a query before the parts: its extraction with the usage of both
-    calls, what the query leaves out (`reading`), and the time each call took, by step."""
+    calls, what the query leaves out (`reading`), the time each call took, by step, and
+    whether the samples of both the read and the extraction agreed (`agreed`), which alone
+    lets layer 1 store the answer under the query (`CacheScope.note_extraction`)."""
 
     extract_result: ExtractionResult
     usage: dict | None
     reading: QueryReading
     timing: dict[str, int]
-
-
-# The `llm_usage` key counting the model calls a request sent whose tokens it cannot count.
-UNCOUNTED_CALLS = "uncounted_calls"
+    agreed: bool
 
 
 async def _discarded_usage(
     task: asyncio.Task[tuple[ExtractionResult, dict | None, int]],
 ) -> dict | None:
     """The usage of a speculative parse the door discards: its token counts when it finished
-    with an answer, else one uncounted call (`UNCOUNTED_CALLS`), since a parse cancelled in
-    flight or failed had sent its request and reports no counts. One still running is
-    cancelled."""
+    with an answer, else one uncounted call (`UNCOUNTED_CALLS`) for each of the
+    `EXTRACTION_CALLS` requests a parse sends, since a parse cancelled in flight or failed
+    had sent them and reports no counts. One still running is cancelled."""
     if not task.done():
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
     if task.cancelled() or task.exception() is not None:
-        return {UNCOUNTED_CALLS: 1}
+        return {UNCOUNTED_CALLS: EXTRACTION_CALLS}
     return task.result()[1]
 
 
@@ -686,10 +685,14 @@ async def _read_and_extract(query: str, *, llm: SupportsLLM, deadline: float) ->
 
     A hit cancels the speculative parse when the read is admitted, before the parse of the
     blanked text starts, so no second extraction runs to its end. Its tokens count in the
-    usage when it had already finished, else it counts as one uncounted call
-    (`_discarded_usage`): its request was sent, and no response reports its tokens. A read
+    usage when it had already finished, else it counts as uncounted calls
+    (`_discarded_usage`): its requests were sent, and no response reports their tokens. A read
     whose every stretch is kept unblanked (`LeftOut.at` `None`) leaves the text as it was,
     so the speculative parse stands.
+
+    The read and the extraction each take two samples (`read_exclusions`, `extract`). A read
+    whose samples disagree still decides the text from its first sample, and the reading as a
+    whole is agreed only when both the read and the extraction agreed (`_DoorRead.agreed`).
 
     A failed read raises as a failed extraction does and fails the query, and the speculative
     parse goes with it: a query the read could not check for what it leaves out gets no
@@ -701,12 +704,14 @@ async def _read_and_extract(query: str, *, llm: SupportsLLM, deadline: float) ->
             reading.text, llm=llm, deadline=deadline
         )
         timing = {"extract": timing_extract, "exclusion_read": 0}
-        return _DoorRead(result, usage, reading, timing)
+        return _DoorRead(result, usage, reading, timing, agreed=result.agreed)
 
     t0 = now_ms()
     speculative = asyncio.create_task(_run_extract_phase(query, llm=llm, deadline=deadline))
     try:
-        read, read_usage = await _await_bounded(read_exclusions(query, llm=llm), deadline=deadline)
+        read, read_usage, read_agreed = await _await_bounded(
+            read_exclusions(query, llm=llm), deadline=deadline
+        )
         timing_read = now_ms() - t0
         reading = admit_exclusions(query, read)
         if reading.text == query:
@@ -716,12 +721,13 @@ async def _read_and_extract(query: str, *, llm: SupportsLLM, deadline: float) ->
             result, usage, timing_extract = await _run_extract_phase(
                 reading.text, llm=llm, deadline=deadline
             )
-            usage = _sum_usage(usage, discarded)
+            usage = sum_usage(usage, discarded)
     finally:
         speculative.cancel()
         await asyncio.gather(speculative, return_exceptions=True)
     timing = {"extract": timing_extract, "exclusion_read": timing_read}
-    return _DoorRead(result, _sum_usage(read_usage, usage), reading, timing)
+    agreed = read_agreed and result.agreed
+    return _DoorRead(result, sum_usage(read_usage, usage), reading, timing, agreed=agreed)
 
 
 async def _no_variables_response(
@@ -1828,7 +1834,7 @@ async def _handle_single_variable(
     # Record run health. `is_storable` decides cache eligibility.
     if scope is not None:
         scope.note_health(timed_out=out.timed_out, degraded_leg=any_degraded(out.regions))
-    total_usage = _sum_usage(extract_usage, region.llm_usage)
+    total_usage = sum_usage(extract_usage, region.llm_usage)
     # The part and its late departures read the same facts and entity words.
     answered = prep.onto(region, 0)
     response = assemble_region(
@@ -2036,6 +2042,8 @@ async def handle(
         door_read.timing,
     )
     text, left_out = door_read.reading.text, door_read.reading.left_out
+    if scope is not None:
+        scope.note_extraction(agreed=door_read.agreed)
     # Record extraction once before the per-variable fan-out.
     yield StepEvent(variable_index=None, step="extract", ran=True, ms=timing["extract"])
     extraction = extract_result.extraction
@@ -2107,7 +2115,7 @@ async def handle(
     yield InterpretationEvent(
         variables=prep.interpretation_variables,
         entities=prep.entities,
-        dates=extraction.dates,
+        dates=[date.restated() for date in extraction.dates],
         expected_results=len(prep.unique),
     )
 

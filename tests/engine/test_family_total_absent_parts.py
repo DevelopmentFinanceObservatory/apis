@@ -14,12 +14,13 @@ import pytest
 from search.engine.binders import Binder
 from search.engine.conjoin import assemble_region
 from search.engine.envelope import now_ms
-from search.engine.extract import DateRequest
+from search.engine.extract import DateRequest, dates_to_request
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.region.codes import FAMILY_TOTAL_ABSENT, ONLY_ALTERNATE_HAS_DATA
 from search.engine.retrieval import standard
 from search.engine.stated_words_read import StatedWordsOutput
+from search.engine.time_bind import parse_time_text
 from search.models import TimeWindow
 from tests.engine import test_equivalent_readings_divert as twins
 from tests.engine import test_zero_observation_election as reelection
@@ -146,13 +147,32 @@ def test_a_definite_part_warns_and_its_sentence_does_not(status_reads_not_declar
     assert _RATE_NOTE not in _sentence(result, "deaths")
 
 
-def _resolve_rate_in(date_request: DateRequest | None):
-    """The rate shape alone: its total holds Kenya 2000 to 2010 and the narrower member
-    2015 to 2022."""
+def _resolve_rate_in(
+    date_request: DateRequest | None,
+    *,
+    total: tuple[int, int] = (2000, 2010),
+    narrower: tuple[int, int] = (2015, 2022),
+    total_years: tuple[int, ...] | None = None,
+):
+    """The rate shape alone: its total holds Kenya over `total`, by default 2000 to 2010,
+    or in `total_years` alone, each dated, and the narrower member over `narrower`, by
+    default 2015 to 2022."""
     obs = {
-        f"{_RATE}|{_KEN}": [{"earliestDate": "2000", "latestDate": "2010", "obsCount": 11}],
-        f"{_RATE_DISABLED}|{_KEN}": [{"earliestDate": "2015", "latestDate": "2022", "obsCount": 8}],
+        f"{sv}|{_KEN}": [
+            {"earliestDate": str(first), "latestDate": str(last), "obsCount": last - first + 1}
+        ]
+        for sv, (first, last) in ((_RATE, total), (_RATE_DISABLED, narrower))
     }
+    if total_years is not None:
+        obs[f"{_RATE}|{_KEN}"] = [
+            {
+                "earliestDate": str(min(total_years)),
+                "latestDate": str(max(total_years)),
+                "obsCount": len(total_years),
+                "dates": [str(y) for y in total_years],
+                "values": [1.0] * len(total_years),
+            }
+        ]
     graph = FakeGraph(
         nodes={**_KEN_NODE, **_RATE_NODES},
         detect={"deaths": {"svs": list(_RATE_NODES), "cosine_scores": [0.9, 0.85]}},
@@ -205,6 +225,31 @@ def test_a_total_with_data_only_outside_the_years_asked_is_said_to_lack_data_in_
     assert (between.status, between.no_data_reason) == ("no_data", "no_observations")
     assert between.window_gap_fact is not None
     assert _family_notes(between) == []
+
+
+@pytest.mark.parametrize(
+    "total_years",
+    [None, (*range(2000, 2019), 2030)],
+    ids=["recorded", "recorded_and_projected"],
+)
+def test_a_trailing_span_starts_after_the_years_of_the_total_it_passed_over(
+    status_reads_not_declared, total_years: tuple[int, ...] | None
+):
+    """The total holds Kenya 2000 to 2018, or those years and a projected 2030, and the
+    narrower member 2000 to 2022. "The last five years" in 2026 finds no total point from
+    2019 to 2026, so the narrower member answers and its newest year is 2022. Its range
+    starts in 2019, after the total's last year before the judged years, so the plain range
+    its Spec states elects the same member and resolves to the same Spec."""
+    dates, _warning = parse_time_text("the last five years", current_year=2026)
+    held = {"total": (2000, 2018), "narrower": (2000, 2022), "total_years": total_years}
+    trailing = _resolve_rate_in(dates_to_request(dates), **held)
+    assert trailing.status == "definite", trailing
+    window = trailing.specs[0].definition.identity.requested_window
+    plain = _resolve_rate_in(_years(window.start_year, window.end_year), **held)
+
+    assert trailing.specs[0] == plain.specs[0]
+    assert _stat_vars(trailing.specs[0]) == [_RATE_DISABLED]
+    assert (window.start_year, window.end_year) == (2019, 2022)
 
 
 def test_an_alternate_candidate_whose_total_has_no_data_warns(status_reads_not_declared):

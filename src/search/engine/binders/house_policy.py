@@ -273,7 +273,7 @@ def context_of(
     part's own convention where they include its dataset, else the convention of the first
     of them a convention reads. `basis_entries`, the part's measure-basis entries with explicit first
     (`ScopeState.entries_on`), win over the convention. A place named without a direction
-    is read on `undirected_axis` where one is given (`availability.undirected_axis`), so the
+    is read on `undirected_axis` where one is given (`undirected.settle_undirected_axis`), so the
     part is the question its directed twin asks.
     """
     window = frame.window.value

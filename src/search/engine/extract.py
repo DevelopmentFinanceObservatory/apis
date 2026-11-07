@@ -15,7 +15,7 @@ import re
 import unicodedata
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from typing import Literal
 
@@ -25,12 +25,14 @@ from code_index.shared import get_index, get_measure_index
 from dfo_platform.trace import get_trace_id
 from entity_resolution.pack import is_organisation_name
 from search.engine.clients.llm import (
+    AGREEMENT_SAMPLES,
     LLM,
     MEMO_HIT_USAGE,
     SupportsLLM,
     for_stage,
     generate_structured_async,
     schema_digest,
+    two_samples,
 )
 from search.engine.config import settings
 from search.engine.errors import EngineInputError
@@ -65,6 +67,7 @@ from search.models import (
     TimeWindow,
     Warning,
 )
+from search.scope_window import scope_window_settings
 
 logger = logging.getLogger(__name__)
 
@@ -268,15 +271,59 @@ class Extraction(BaseModel):
 
 @dataclass(frozen=True)
 class DateRequest:
-    """A date window or a request for the latest year present in facets."""
+    """A date window or a request for the latest year present in facets.
+
+    A span counted back from now ("the last five years") asks for the `trailing_years`
+    newest years the answer's data holds, which only its admitted series settle. The newest
+    year Y may lie up to `trailing_stale_years` before the asked span (`judged_window`), so
+    the answer reads `[Y - N + 1, Y]` for some Y there. Until Y is known, `window` holds
+    every such span: the judged window widened back by `trailing_years - 1` more. The reads
+    that confirm members, decide units and admit facets read `window`, so the span the
+    answer settles on was confirmed in full. Every judgement of whether a series or shape
+    holds data in the years asked reads `judged` instead, so a series that ended before the
+    judged window answers as it would to the asked span. The answer then reads the newest
+    years its series hold and states them as a plain range
+    (`region.trailing.settle_trailing`).
+    """
 
     window: TimeWindow | None
     latest: bool
+    trailing_years: int | None = None
 
     def __post_init__(self) -> None:
         # A request carries exactly one of `window` or `latest`.
         if self.window is not None and self.latest:
             raise ValueError("DateRequest: set either window or latest=True, not both")
+        if self.trailing_years is not None and (
+            self.window is None or self.window.end_year is None or self.trailing_years < 1
+        ):
+            raise ValueError("DateRequest: a trailing span needs a window that ends")
+
+    @property
+    def asked_window(self) -> TimeWindow | None:
+        """The years the request names: for a trailing span, its count of years ending at
+        `window`'s end, the calendar years the words cover; otherwise `window`."""
+        if self.trailing_years is None or self.window is None or self.window.end_year is None:
+            return self.window
+        end = self.window.end_year
+        return TimeWindow(start_year=end - self.trailing_years + 1, end_year=end)
+
+    @property
+    def judged(self) -> DateRequest:
+        """The request whose years a judgement of where data is held reads: for a trailing
+        span, the asked years widened back by `trailing_stale_years`, the years its newest
+        year may lie in (`judged_window`); otherwise the request itself."""
+        if self.trailing_years is None:
+            return self
+        return DateRequest(window=judged_window(self.asked_window), latest=False)
+
+
+def judged_window(asked: TimeWindow | None) -> TimeWindow:
+    """The years a trailing span's newest year may lie in: the `asked` span widened back by
+    `trailing_stale_years`."""
+    assert asked is not None and asked.start_year is not None
+    reach = scope_window_settings().trailing_stale_years
+    return TimeWindow(start_year=asked.start_year - reach, end_year=asked.end_year)
 
 
 def _parse_year(s: str | None) -> int | None:
@@ -291,10 +338,15 @@ def _parse_year(s: str | None) -> int | None:
 def dates_to_request(dates: list[ExtractedDate]) -> DateRequest | None:
     """Combine extracted dates. Bounds take precedence over `latest`.
 
-    Return `None` when no date bound parses and no `latest` entry exists.
+    A lone span counted back from now (`ExtractedDate.trailing_years`) yields a trailing
+    request, whose window holds every span its answer can settle on (`DateRequest`). Return
+    `None` when no date bound parses and no `latest` entry exists.
     """
     if not dates:
         return None
+    bounded = [d for d in dates if d.kind != "latest"]
+    if len(bounded) == 1 and (trailing := _trailing_request(bounded[0])) is not None:
+        return trailing
     starts: list[int] = []
     ends: list[int] = []
     has_latest = False
@@ -325,6 +377,21 @@ def dates_to_request(dates: list[ExtractedDate]) -> DateRequest | None:
     if has_latest:
         return DateRequest(window=None, latest=True)
     return None
+
+
+def _trailing_request(extracted: ExtractedDate) -> DateRequest | None:
+    """The trailing request for a span counted back from now, or None for any other date."""
+    start, end = _parse_year(extracted.start), _parse_year(extracted.end)
+    if extracted.trailing_years is None or start is None or end is None:
+        return None
+    years = extracted.trailing_years
+    judged = judged_window(TimeWindow(start_year=start, end_year=end))
+    assert judged.start_year is not None
+    return DateRequest(
+        window=TimeWindow(start_year=judged.start_year - (years - 1), end_year=end),
+        latest=False,
+        trailing_years=years,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1851,7 +1918,10 @@ class ExtractionResult:
     clamp warning. `raw_dropped_qualifier_count` records the model's phrase count
     before its cap, for the overflow warning. Both default to zero for manually
     constructed results. `warnings` holds the `time_text_not_parsed` warning of each
-    relative date `_resolve_relative_dates` could not read.
+    relative date `_resolve_relative_dates` could not read. `agreed` says whether two samples
+    of the model read the query the same way (`_model_extraction`); a disagreeing reading is
+    served and neither stored nor cached under its wording. A result built outside
+    `extract()` holds one fixed reading and counts as agreed.
     """
 
     extraction: Extraction
@@ -1862,35 +1932,108 @@ class ExtractionResult:
     dates_by_variable: Mapping[str, list[ExtractedDate]] = field(default_factory=dict)
     unit_texts: Mapping[str, str] = field(default_factory=dict)
     warnings: tuple[Warning, ...] = ()
+    agreed: bool = True
+
+
+# The model calls an extraction that misses the store sends: one per agreement sample
+# (`_model_extraction`).
+EXTRACTION_CALLS = AGREEMENT_SAMPLES
 
 
 async def _model_extraction(
     query: str, *, llm: SupportsLLM, year: int
-) -> tuple[Extraction, dict | None]:
-    """The model's reading of `query` in `year`, before any post-processing, and its token
-    usage.
+) -> tuple[ExtractionResult, dict | None]:
+    """The reading of `query` in `year`, post-processed (`_read_extraction`), with its token
+    usage and whether two samples of the model agreed on it (`ExtractionResult.agreed`).
 
     An `LLM` carrying an extraction store answers a query it holds for `year` with no call
-    and zero usage, and stores each valid reading it fetches, so a stored reading lives for
-    one calendar year. A refused or failed call raises and stores nothing. Memoising
-    clients coalesce identical concurrent queries.
+    and zero usage, and the stored reading is agreed: the store holds only agreed readings.
+    Otherwise two samples run concurrently, the second under another seed (`two_samples`),
+    and their usage adds up. Both are post-processed and agree when the two
+    `ExtractionResult`s are equal, every field included. An agreed reading is stored; a
+    disagreeing pair serves the first sample, stores nothing and is marked not agreed. A
+    refused or failed first sample raises and stores nothing; a second sample that is
+    refused, fails or outlasts its wait (`two_samples`), or whose reading post-processing
+    refuses (`_second_reading`), leaves the first not agreed.
+    Memoising clients coalesce identical concurrent queries, and the seed keeps the two
+    samples' memo keys apart.
     """
     system = _extraction_system(year)
-    if not isinstance(llm, LLM) or llm.extraction_store is None:
-        return await generate_structured_async(llm, prompt=query, system=system, schema=Extraction)
-    store = llm.extraction_store
-    key = extraction_key(
-        query, version=EXTRACT_VERSION, year=year, identity=llm.sampling_identity()
+    store = llm.extraction_store if isinstance(llm, LLM) else None
+    key = None
+    if store is not None:
+        assert isinstance(llm, LLM)
+        key = extraction_key(
+            query, version=EXTRACT_VERSION, year=year, identity=llm.sampling_identity()
+        )
+        if (stored := store.get(key)) is not None:
+            logger.info("Extraction store hit")
+            reading = _read_extraction(query, Extraction.model_validate_json(stored), year=year)
+            return reading, dict(MEMO_HIT_USAGE)
+    first, second, usage = await two_samples(
+        lambda sampler: generate_structured_async(
+            sampler, prompt=query, system=system, schema=Extraction
+        ),
+        llm,
+        stage="extraction",
     )
-    stored = store.get(key)
-    if stored is not None:
-        logger.info("Extraction store hit")
-        return Extraction.model_validate_json(stored), dict(MEMO_HIT_USAGE)
-    extraction, usage = await generate_structured_async(
-        llm, prompt=query, system=system, schema=Extraction
+    reading = _read_extraction(query, first, year=year)
+    if second is None or reading != _second_reading(query, second, year=year):
+        logger.info("Extraction samples disagree; the reading is served unstored")
+        return replace(reading, agreed=False), usage
+    if store is not None and key is not None:
+        store.put(key, first.model_dump_json())
+    return reading, usage
+
+
+def _second_reading(query: str, second: Extraction, *, year: int) -> ExtractionResult | None:
+    """The second sample's reading (`_read_extraction`), None when post-processing refuses
+    it (`EngineInputError`): the second sample only votes on the first, so a reading it
+    cannot make disagrees and never fails the request."""
+    try:
+        return _read_extraction(query, second, year=year)
+    except EngineInputError:
+        return None
+
+
+def _read_extraction(query: str, extraction: Extraction, *, year: int) -> ExtractionResult:
+    """Post-process the model's `extraction` of `query`, with relative dates read against
+    `year` (`extract`)."""
+    extraction, date_warnings, date_wording = _resolve_relative_dates(extraction, current_year=year)
+    extraction, unit_texts = _peel_unit_phrases(
+        _restore_query_word_order(query, _enforce_kind(extraction))
     )
-    store.put(key, extraction.model_dump_json())
-    return extraction, usage
+    extraction = _bound_entities(extraction)
+    extraction, operations = _admit_operations(query, extraction, today_year=year)
+    operations = _target_forecasts(extraction, operations, today_year=year)
+    extraction, dates_by_variable = _drop_forecast_years(extraction, operations, today_year=year)
+    clamped_variables, positions = _clamped_variables(extraction.variables)
+    entities = _entities_on_admitted_measures(extraction, positions=positions)
+    extraction = extraction.model_copy(
+        update={"entities": _ground_roles(query, entities, clamped_variables)}
+    )
+    extraction = _disclose_lost_words(
+        query, extraction, date_wording=date_wording, unit_texts=unit_texts.values()
+    )
+    extraction = _trim_qualifiers_to_what_operations_leave(
+        query, extraction, date_wording=date_wording
+    )
+    extraction, raw_variable_count, raw_dropped_qualifier_count, admitted_variables = (
+        _bound_extraction(extraction)
+    )
+    extraction, qualifiers = _reattach_coded_qualifiers(query, extraction)
+    extraction, qualifiers = _clamp_variables(extraction, qualifiers, admitted_variables)
+    extraction = _truncate_dropped_qualifiers_for_display(extraction)
+    return ExtractionResult(
+        extraction=extraction,
+        qualifiers=qualifiers,
+        raw_variable_count=raw_variable_count,
+        raw_dropped_qualifier_count=raw_dropped_qualifier_count,
+        operations=operations,
+        dates_by_variable=dates_by_variable,
+        unit_texts={v: text for v, text in unit_texts.items() if v in admitted_variables},
+        warnings=date_warnings,
+    )
 
 
 async def extract(
@@ -1916,52 +2059,8 @@ async def extract(
     before the qualifier cap counts them. It is then bounded, reattached, clamped, and
     display-truncated in that order. Qualifier checks use full phrases and variables before
     caps can change their meaning. Usage is `None` when the client does not provide it. The stage
-    wrapper applies extract-specific settings. An extraction store on the LLM serves a
-    repeated query the reading it stored (`_model_extraction`).
+    wrapper applies extract-specific settings. The reading is drawn from two samples
+    and `result.agreed` says whether they matched; an extraction store on the LLM serves a
+    repeated query the agreed reading it stored (`_model_extraction`).
     """
-    today_year = date.today().year
-    extraction, usage = await _model_extraction(
-        query, llm=for_stage(llm, "extract"), year=today_year
-    )
-    extraction, date_warnings, date_wording = _resolve_relative_dates(
-        extraction, current_year=today_year
-    )
-    extraction, unit_texts = _peel_unit_phrases(
-        _restore_query_word_order(query, _enforce_kind(extraction))
-    )
-    extraction = _bound_entities(extraction)
-    extraction, operations = _admit_operations(query, extraction, today_year=today_year)
-    operations = _target_forecasts(extraction, operations, today_year=today_year)
-    extraction, dates_by_variable = _drop_forecast_years(
-        extraction, operations, today_year=today_year
-    )
-    clamped_variables, positions = _clamped_variables(extraction.variables)
-    entities = _entities_on_admitted_measures(extraction, positions=positions)
-    extraction = extraction.model_copy(
-        update={"entities": _ground_roles(query, entities, clamped_variables)}
-    )
-    extraction = _disclose_lost_words(
-        query, extraction, date_wording=date_wording, unit_texts=unit_texts.values()
-    )
-    extraction = _trim_qualifiers_to_what_operations_leave(
-        query, extraction, date_wording=date_wording
-    )
-    extraction, raw_variable_count, raw_dropped_qualifier_count, admitted_variables = (
-        _bound_extraction(extraction)
-    )
-    extraction, qualifiers = _reattach_coded_qualifiers(query, extraction)
-    extraction, qualifiers = _clamp_variables(extraction, qualifiers, admitted_variables)
-    extraction = _truncate_dropped_qualifiers_for_display(extraction)
-    return (
-        ExtractionResult(
-            extraction=extraction,
-            qualifiers=qualifiers,
-            raw_variable_count=raw_variable_count,
-            raw_dropped_qualifier_count=raw_dropped_qualifier_count,
-            operations=operations,
-            dates_by_variable=dates_by_variable,
-            unit_texts={v: text for v, text in unit_texts.items() if v in admitted_variables},
-            warnings=date_warnings,
-        ),
-        usage,
-    )
+    return await _model_extraction(query, llm=for_stage(llm, "extract"), year=date.today().year)

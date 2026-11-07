@@ -126,8 +126,10 @@ from search.engine.region.place_roles import (
     names_a_place,
     request_named_groups,
     undirected_place_name,
+    undirected_set,
     whole_total_candidates,
 )
+from search.engine.region.refs import provenance_labels
 from search.engine.region.requirements import record_reading, settle_answer, stray_values
 from search.engine.region.result import FacetAxisFilter, RegionResult
 from search.engine.region.state import (
@@ -147,6 +149,7 @@ from search.engine.region.status_rule import (
     plan_status,
     shares_role_class,
 )
+from search.engine.region.undirected import declaring_dataset
 from search.engine.region.unrealisable import unbind_unrealisable
 from search.engine.retrieval.bound_values import (
     RoleKeys,
@@ -179,6 +182,7 @@ from search.engine.shape import (
 from search.engine.unit.base_year import declared_base_year
 from search.engine.unit.bind import UnitDefaultPolicy, bind_unit_text
 from search.engine.unit.refs import satisfies as _unit_satisfies
+from search.heading.departure_fact import UndirectedReading
 from search.models import (
     CandidateBasis,
     FacetBasis,
@@ -436,16 +440,36 @@ def _election_refusal(
 
 
 def _state_read_direction(state: ResolveState, bound: PlaceAssignment) -> None:
-    """State the direction a place named without one is read on where the data settled it
+    """State the direction a place named without one is read on where a rule settled it
     before election (`ResolveState.undirected_axis`) and the elected shape binds the place
     on that axis as named, as DAC1 binds "ODA in Germany" to the donor. The answer states
-    it as `_settle_direction` states a direction it settles (`departures.direction_inferred`)."""
-    axis = state.undirected_axis
+    it, with the rule that settled it, as `_settle_direction` states a direction it settles
+    (`departures.direction_inferred`)."""
     name = undirected_place_name(state)
-    if axis is None or name is None:
+    if state.undirected is None or name is None:
         return
-    if any(state.words_of(place_set.name) == name for place_set in bound.sets.get(axis, ())):
-        state.inferred_facts.append(direction_inferred(name, axis))
+    reading = state.undirected
+    if any(
+        state.words_of(place_set.name) == name for place_set in bound.sets.get(reading.axis, ())
+    ):
+        state.inferred_facts.append(
+            direction_inferred(
+                name, reading.axis, read_by=reading.rule, listed_by=_listing_source(state, reading)
+            )
+        )
+
+
+def _listing_source(state: ResolveState, reading: UndirectedReading) -> str | None:
+    """The name of the dataset a declaration reading cites: the elected shape's own where it
+    declares the place (`undirected.declaring_dataset`), else the one the reading settled
+    on (`UndirectedReading.listed_by`), which a declaration reading always carries. `None`
+    for another rule."""
+    if reading.listed_by is None:
+        return None
+    place_set = undirected_set(state)
+    own = None if place_set is None else declaring_dataset(place_set, [state.shape_draft])
+    dataset = own or reading.listed_by
+    return provenance_labels([dataset], state.graph, deadline=state.deadline).get(dataset, dataset)
 
 
 def _settle_direction(
@@ -461,7 +485,7 @@ def _settle_direction(
     empty (`False`) the places refuse ``no_direction_holds``, a ``role_not_resolved`` that
     offers no reading, since each is known empty. A read the coverage index cannot answer
     (`None`) is unknown. Otherwise they refuse ``role_not_resolved``, as a question
-    whose direction no data settles. The served assignment binds the first whole total a
+    whose direction no rule settles. The served assignment binds the first whole total a
     side it leaves unnamed offers where the bindings hold its series
     (`place_roles.holds_whole_total`); each rival decides its own when it is walked
     (`_walked_alternates`)."""
@@ -479,7 +503,7 @@ def _settle_direction(
         return "role_not_resolved"
     (axis, served), *others = held
     if not others:
-        state.inferred_facts.append(direction_inferred(name, axis))
+        state.inferred_facts.append(direction_inferred(name, axis, read_by="coverage"))
     for _axis, assignment in others:
         state.direction_rivals[len(state.capped_shapes)] = assignment
         state.capped_shapes.append(shape)
