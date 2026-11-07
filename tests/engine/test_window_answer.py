@@ -271,6 +271,7 @@ def _role_answer(
         provenance_labels={"dc/base/Ids": "IDS"},
         date_request=date_request,
         coverage=FakeCoverageService(index).snapshot(),
+        variable_text="test flow",
     )
 
 
