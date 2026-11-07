@@ -229,7 +229,7 @@ _PARTIES = {
     "DACGroup/EU": PartyRow(
         dcid="DACGroup/EU",
         kind="party",
-        datasets=(_CRS, _DAC),
+        published=((_CRS, "origin"), (_DAC, "origin")),
         dataset_kinds=((_CRS, "party"), (_DAC, "total")),
     ),
 }

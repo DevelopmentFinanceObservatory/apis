@@ -138,8 +138,7 @@ def _scoped_party(**fields: object) -> dict[str, object]:
         "kind": "party",
         "party_class": "official",
         "totals": None,
-        "datasets": [_CRS, _DAC2A],
-        "axes": ["origin"],
+        "published": [{"dataset": _CRS, "axis": "origin"}, {"dataset": _DAC2A, "axis": "origin"}],
         **fields,
     }
 
@@ -157,7 +156,14 @@ def _scoped_party(**fields: object) -> dict[str, object]:
         ([], [{"dcid": "X", "kind": "aggregate", "totals": None}], IndexFormatError, "aggregate"),
         (
             [],
-            [{"dcid": "X", "kind": "party", "totals": None, "axes": ["recipient"]}],
+            [
+                {
+                    "dcid": "X",
+                    "kind": "party",
+                    "totals": None,
+                    "published": [{"dataset": "provenance/P", "axis": "recipient"}],
+                }
+            ],
             IndexFormatError,
             "recipient",
         ),

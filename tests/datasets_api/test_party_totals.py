@@ -282,8 +282,7 @@ def test_a_party_that_is_a_total_in_one_dataset_leaves_that_datasets_rows_alone(
             dcid=_TRUST_FUNDS,
             kind="party",
             party_class="official",
-            datasets=(_CRS, _DAC2A),
-            axes=("origin",),
+            published=((_CRS, "origin"), (_DAC2A, "origin")),
             dataset_kinds=((_DAC2A, "total"),),
         ),
     }

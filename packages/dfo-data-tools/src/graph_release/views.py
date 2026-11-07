@@ -30,7 +30,7 @@ from typing import Final, cast
 import pyarrow as pa
 import pyarrow.compute as pc
 
-from code_index.loader import parse_index, parse_measure_axes
+from code_index.loader import check_content_hash, parse_index, parse_measure_axes
 from code_index.query import CodeIndex
 from code_index.types import MeasureIndex
 from dfo_platform.roles import RoleAxis
@@ -100,9 +100,11 @@ def _facet_metadata(facets: pa.Table, rows: pa.Table) -> dict[str, FacetMetadata
 def code_indexes(document: Mapping[str, object]) -> tuple[CodeIndex, MeasureIndex]:
     """The code index and measure index of a code index `document`.
 
-    Raises `ViewRefused` where `parse_index` or `parse_measure_axes` refuses it.
+    Raises `ViewRefused` where its data blocks do not hash to the `content_hash` its stamp
+    states (`check_content_hash`), or where `parse_index` or `parse_measure_axes` refuses it.
     """
     try:
+        check_content_hash(document, source=CODE_INDEX_PART)
         return parse_index(document, source=CODE_INDEX_PART), parse_measure_axes(
             document, source=CODE_INDEX_PART
         )

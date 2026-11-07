@@ -532,8 +532,7 @@ def _regions(declare_regions):
         _NORDIA: PartyRow(
             dcid=_NORDIA,
             kind="party",
-            datasets=("provenance/WorldBankInternationalDebtStatistics",),
-            axes=("origin",),
+            published=(("provenance/WorldBankInternationalDebtStatistics", "origin"),),
         ),
     }
     with serving_index(index):

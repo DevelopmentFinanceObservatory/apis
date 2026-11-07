@@ -120,9 +120,9 @@ def _code_index() -> CodeIndex:
             ),
         ),
         parties=(
-            PartyRow(dcid=_DAC_TOTAL, kind="total", datasets=(_PROVENANCE,), axes=("origin",)),
-            PartyRow(dcid=_FRANCE, kind="party", datasets=(_PROVENANCE,), axes=("origin",)),
-            PartyRow(dcid=_KENYA, kind="party", datasets=(_PROVENANCE,), axes=("destination",)),
+            PartyRow(dcid=_DAC_TOTAL, kind="total", published=((_PROVENANCE, "origin"),)),
+            PartyRow(dcid=_FRANCE, kind="party", published=((_PROVENANCE, "origin"),)),
+            PartyRow(dcid=_KENYA, kind="party", published=((_PROVENANCE, "destination"),)),
         ),
     )
 

@@ -15,6 +15,7 @@ import dataclasses
 import logging
 import re
 from collections.abc import AsyncGenerator, Collection, Sequence
+from collections.abc import Set as AbstractSet
 from contextlib import aclosing
 
 from code_index.shared import get_index
@@ -23,9 +24,10 @@ from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from dfo_platform.build import build_commit
 from dfo_platform.trace import get_trace_id
 from entity_resolution import Admission, EntityResolver, Resolved
+from entity_resolution.pack import organisations_named
 from materialise import GraphReader
 from materialise.rate_tables import RateTableCache
-from origin_catalogue import current_catalogue
+from origin_catalogue import Catalogue, current_catalogue
 from search.engine.assemble import (
     _surviving_qualifier_warnings,
     build_no_data_part,
@@ -79,6 +81,7 @@ from search.engine.extract import (
     Extraction,
     ExtractionResult,
     _dedupe_stripped,
+    _ground_roles,
     _grounding_form,
     cue_grounded_in_form,
     cue_is_its_span,
@@ -88,6 +91,8 @@ from search.engine.extract import (
     veto_words,
 )
 from search.engine.fanout import (
+    LegReading,
+    PartyReading,
     _FanOutResult,
     _resolve_entities_bounded,
     _run_variables_streaming,
@@ -113,6 +118,7 @@ from search.engine.region.result import (
     with_entity_words,
 )
 from search.engine.region.sentence_events import answer_events
+from search.engine.region.source_choice import ContestedOrganisation
 from search.engine.region.state import (
     PartExclusions,
     exclusion_requirements,
@@ -126,11 +132,22 @@ from search.engine.role_text import (
     role_axis_for_text,
 )
 from search.engine.source_code import PartCode, compile_part_code, scan_source_codes
-from search.engine.source_scan import left_out_sources, scan_sources, source_phrases
+from search.engine.source_scan import (
+    SourceHit,
+    SourceScan,
+    code_spans,
+    direction_word,
+    find_organisations,
+    left_out_sources,
+    scan_sources,
+    source_phrases,
+)
 from search.engine.source_scope import (
+    SourceDictionary,
     SourceRefusal,
     SourceScope,
     compile_sources,
+    normalise_source_text,
     source_dictionary,
 )
 from search.engine.source_spans import read_sources, unclaimed_words
@@ -911,6 +928,11 @@ class _ExtractionPrep:
     the scope entries and total intent each part's words state
     (`stated_scope.part_scope_intakes`), read from the query when it asks for one variable
     and from each variable's own text when it asks for several.
+    `per_variable_party_readings` runs parallel to `unique` too: for a part whose sources
+    hold a contested organisation (`source_scan.SourceHit.contested`), its reading with the
+    organisation as an entity in place of a source (`_party_readings`), which the part runs
+    in place of its own where the data reads the organisation as a party
+    (`source_choice.read_organisation`), and `None` for any other part.
     """
 
     date_request: DateRequest | None
@@ -947,6 +969,7 @@ class _ExtractionPrep:
     exclusion_targets: tuple[tuple[int, ...], ...] = ()
     per_variable_exclusions: list[PartExclusions] | None = None
     name_corrections: tuple[NameCorrection, ...] = ()
+    per_variable_party_readings: list[PartyReading | None] | None = None
 
     def _unmet_exclusions(
         self, regions: Sequence[RegionResult], *, parts: Sequence[int]
@@ -1154,20 +1177,44 @@ def _prepare_extraction(
     """Prepare deduped extraction fields, qualifiers, and warnings for `handle`.
     ``query`` is the text with each of the ``left_out`` stretches blanked.
     ``name_corrections`` are the names the extraction read in place of the query's words
-    (`_name_corrections`), which every part receives (`_ExtractionPrep.onto`)."""
+    (`_name_corrections`), which every part receives (`_ExtractionPrep.onto`).
+
+    An organisation the query names that is no source and that no entity covers
+    (`source_scan.find_organisations`) joins the extraction's entities first, as if the
+    model had returned it (`_with_organisations`). A contested source
+    (`source_scan.SourceHit.contested`) gives its parts a reading with it as a party
+    (`_party_readings`)."""
     date_request = dates_to_request(extraction.dates)
     unique: list[str] = _dedupe_stripped(extraction.variables)
 
     # The sources the query names, each attached to the variables it qualifies. An entity
     # whose every occurrence a source covers is that source, and no entity of the part.
     catalogue = current_catalogue()
-    scan = scan_sources(
-        query,
-        dictionary=source_dictionary(catalogue),
-        measures=unique,
-        entity_spans=[entity.span or entity.text for entity in extraction.entities],
-        index=get_index(),
+    dictionary = source_dictionary(catalogue)
+    codes = code_spans(query, get_index())
+    extraction = _with_organisations(
+        extraction,
+        [
+            (mention.text, mention.targets)
+            for mention in find_organisations(
+                query,
+                dictionary=dictionary,
+                entity_spans=[entity.span or entity.text for entity in extraction.entities],
+                measures=unique,
+                index=get_index(),
+                codes=codes,
+            )
+        ],
+        query=query,
+        unique=unique,
+    )
+    scan = _scan(
+        extraction,
+        query=query,
+        unique=unique,
         left_out=left_out,
+        codes=codes,
+        dictionary=dictionary,
     )
     per_variable_sources = scan.per_measure
     # Each stretch qualifies the measures of the clause its blank lies in, else every one.
@@ -1196,29 +1243,16 @@ def _prepare_extraction(
     # "across donors") names no place (`role_text.breakdown_axis`): it is a breakdown
     # phrase, which opens that role as a dropped one does (`_breakdown_under`), on the
     # parts it scopes.
-    entity_breakdowns: list[tuple[str, frozenset[str]]] = []
-    extracted_entities: list[ExtractedEntity] = []
-    for entity in extraction.entities:
-        words = entity.span or entity.text
-        if words in scan.source_entities:
-            continue
-        if breakdown_axis(words, query=query) is None:
-            extracted_entities.append(entity)
-        else:
-            entity_breakdowns.append((words, scoped_measures(entity, extraction.variables)))
+    extracted_entities, entity_breakdowns = _split_entities(extraction, scan, query=query)
     entities: list[str] = list(dict.fromkeys(_entity_key(e) for e in extracted_entities))
-    part_positions = _part_positions(
-        extracted_entities, measures=unique, variables=extraction.variables
+    legs = _leg_readings(
+        extracted_entities,
+        scan,
+        query=query,
+        unique=unique,
+        variables=extraction.variables,
+        catalogue=catalogue,
     )
-    per_part_entities = [[extracted_entities[i] for i in part] for part in part_positions]
-    # Every part reads the same query, so the readings of the entities that carry a role are
-    # made once for the request, on the query folded once.
-    folded_query = _grounding_form(query)
-    stated = [
-        bool(entity.role) and _states_direction(entity, folded_query=folded_query)
-        for entity in extracted_entities
-    ]
-    preceding = veto_words(extracted_entities, query=query)
 
     # A relative date the extraction could not read is gone from `dates`; its warning says so.
     clamp_warnings: list[Warning] = list(extract_result.warnings)
@@ -1349,25 +1383,9 @@ def _prepare_extraction(
 
     reading = read_sources(query, interpretation_variables)
 
-    # A raw-text mention has no field of its own, so a refusal points at the query, and
-    # mentions that leave a part no source refuse that part alone.
-    per_variable_source_scopes = [
-        compile_sources(
-            list(mentions),
-            catalogue=catalogue,
-            pointers=["/input/query"] * len(mentions),
-            refuse_empty=False,
-        )
-        if mentions
-        else None
-        for mentions in per_variable_sources
-    ]
-    per_variable_compiled_codes: list[PartCode | None] = [
-        compile_part_code(
-            code, scope=scope if isinstance(scope, SourceScope) else None, index=get_index()
-        )
-        if code is not None
-        else None
+    per_variable_source_scopes = [leg.source_scope for leg in legs]
+    per_variable_compiled_codes = [
+        _compiled_code(code, scope)
         for code, scope in zip(per_variable_source_codes, per_variable_source_scopes, strict=True)
     ]
 
@@ -1375,18 +1393,9 @@ def _prepare_extraction(
         date_request=date_request,
         unique=unique,
         entities=entities,
-        per_variable_entities=[
-            list(dict.fromkeys(_entity_key(e) for e in part)) for part in per_part_entities
-        ],
-        per_variable_entity_roles=[
-            _entity_roles(part, entities=extracted_entities, stated=stated, preceding=preceding)
-            for part in part_positions
-        ],
-        # A text any mention of the part asks the members of. A directed mention asks on
-        # its own end (`DoorRole.members`).
-        per_variable_member_entities=[
-            frozenset(_entity_key(e) for e in part if e.members) for part in per_part_entities
-        ],
+        per_variable_entities=[leg.entities for leg in legs],
+        per_variable_entity_roles=[leg.entity_roles for leg in legs],
+        per_variable_member_entities=[leg.member_entities for leg in legs],
         per_variable_qualifiers=per_variable_qualifiers,
         per_variable_operations=per_variable_operations,
         per_variable_open_axes=per_variable_open_axes,
@@ -1417,7 +1426,227 @@ def _prepare_extraction(
         exclusion_targets=exclusion_targets,
         per_variable_exclusions=per_variable_exclusions,
         name_corrections=name_corrections,
+        per_variable_party_readings=_party_readings(
+            [hit for hit in scan.hits if hit.contested],
+            extraction,
+            query=query,
+            unique=unique,
+            left_out=left_out,
+            codes=codes,
+            source_codes=per_variable_source_codes,
+            catalogue=catalogue,
+            dictionary=dictionary,
+        ),
     )
+
+
+def _compiled_code(code: str | None, scope: SourceScope | SourceRefusal | None) -> PartCode | None:
+    """What the series `code` a part names compiles to within `scope`
+    (`source_code.compile_part_code`), `None` where the part names none."""
+    if code is None:
+        return None
+    return compile_part_code(
+        code, scope=scope if isinstance(scope, SourceScope) else None, index=get_index()
+    )
+
+
+def _with_organisations(
+    extraction: Extraction,
+    named: Sequence[tuple[str, tuple[int, ...]]],
+    *,
+    query: str,
+    unique: Sequence[str],
+) -> Extraction:
+    """`extraction` with an entity for each organisation of `named` it does not already hold,
+    its words and the positions in `unique` of the measures it qualifies, its role grounded
+    as a returned entity's is (`extract._ground_roles`): "Global Fund" in "Global Fund
+    disbursements to Kenya" stands straight before a measure word, so it is the provider
+    (origin). Each scopes the extraction's variables that are those measures, every one when
+    it qualifies them all. An organisation whose words, normalised
+    (`normalise_source_text`), are an extracted entity's keeps that entity and its role."""
+    held = {normalise_source_text(entity.span or entity.text) for entity in extraction.entities}
+    named = [
+        (words, targets) for words, targets in named if normalise_source_text(words) not in held
+    ]
+    if not named:
+        return extraction
+    added = [
+        ExtractedEntity(
+            text=words,
+            span=words,
+            variables=(
+                []
+                if len(targets) == len(unique)
+                else [
+                    position
+                    for position, variable in enumerate(extraction.variables)
+                    if variable.strip() in {unique[target] for target in targets}
+                ]
+            ),
+        )
+        for words, targets in dict.fromkeys(named)
+    ]
+    grounded = _ground_roles(query, added, extraction.variables)
+    return extraction.model_copy(update={"entities": [*extraction.entities, *grounded]})
+
+
+def _party_readings(
+    contested: Sequence[SourceHit],
+    extraction: Extraction,
+    *,
+    query: str,
+    unique: Sequence[str],
+    left_out: Sequence[LeftOut],
+    codes: Sequence[tuple[int, int]],
+    source_codes: Sequence[str | None],
+    catalogue: Catalogue,
+    dictionary: SourceDictionary,
+) -> list[PartyReading | None] | None:
+    """Each part's reading with the `contested` sources it holds as entities, parallel to
+    `unique`, or `None` when no source is contested.
+
+    The reading adds an entity for each contested organisation the extraction did not
+    return (`_with_organisations`) and scans the query again with the organisations among
+    the scan's `parties`, so the scan reads each as a party; its entities, their roles and
+    its source scope follow from that scan as the source reading's do (`_leg_readings`), and
+    the part's series code, of `source_codes`, compiles within that scope. A part none of
+    whose measures a contested source qualifies has no party reading. The contest names the organisations' words, the
+    dcids the entity pack names them (`entity_resolution.pack.organisations_named`) and the
+    word naming a party to a flow before them (`source_scan.direction_word`), "to" over
+    "from"."""
+    if not contested:
+        return None
+    party = _with_organisations(
+        extraction, [(hit.text, hit.targets) for hit in contested], query=query, unique=unique
+    )
+    scan = _scan(
+        party,
+        query=query,
+        unique=unique,
+        left_out=left_out,
+        codes=codes,
+        dictionary=dictionary,
+        parties=frozenset(normalise_source_text(hit.text) for hit in contested),
+    )
+    extracted, _ = _split_entities(party, scan, query=query)
+    legs = _leg_readings(
+        extracted,
+        scan,
+        query=query,
+        unique=unique,
+        variables=party.variables,
+        catalogue=catalogue,
+    )
+    spans = [entity.span or entity.text for entity in extraction.entities]
+    readings: list[PartyReading | None] = []
+    for i, (leg, code) in enumerate(zip(legs, source_codes, strict=True)):
+        hits = [hit for hit in contested if i in hit.targets]
+        if not hits:
+            readings.append(None)
+            continue
+        words = tuple(dict.fromkeys(hit.text for hit in hits))
+        directions = {direction_word(query, hit, entity_spans=spans) for hit in hits}
+        contest = ContestedOrganisation(
+            words=words,
+            parties=frozenset().union(*(organisations_named(hit.text) for hit in hits)),
+            direction="to" if "to" in directions else "from" if "from" in directions else None,
+        )
+        reading = dataclasses.replace(leg, source_code=_compiled_code(code, leg.source_scope))
+        readings.append(PartyReading(contested=contest, reading=reading))
+    return readings
+
+
+def _scan(
+    extraction: Extraction,
+    *,
+    query: str,
+    unique: Sequence[str],
+    left_out: Sequence[LeftOut],
+    codes: Sequence[tuple[int, int]],
+    dictionary: SourceDictionary,
+    parties: AbstractSet[str] = frozenset(),
+) -> SourceScan:
+    """The sources `query` names, read against `extraction`'s entities, with the contested
+    organisations whose normalised words are among `parties` read as parties
+    (`scan_sources`)."""
+    return scan_sources(
+        query,
+        dictionary=dictionary,
+        measures=unique,
+        entity_spans=[entity.span or entity.text for entity in extraction.entities],
+        index=get_index(),
+        left_out=left_out,
+        codes=codes,
+        parties=parties,
+    )
+
+
+def _split_entities(
+    extraction: Extraction, scan: SourceScan, *, query: str
+) -> tuple[list[ExtractedEntity], list[tuple[str, frozenset[str]]]]:
+    """`extraction`'s entities that name places or parties, and those that only ask for one
+    value per member of a flow role ("every donor", "across donors"), each with the measures
+    it scopes. An entity whose every occurrence a source covers is that source
+    (`SourceScan.source_entities`), and neither."""
+    extracted: list[ExtractedEntity] = []
+    breakdowns: list[tuple[str, frozenset[str]]] = []
+    for entity in extraction.entities:
+        words = entity.span or entity.text
+        if words in scan.source_entities:
+            continue
+        if breakdown_axis(words, query=query) is None:
+            extracted.append(entity)
+        else:
+            breakdowns.append((words, scoped_measures(entity, extraction.variables)))
+    return extracted, breakdowns
+
+
+def _leg_readings(
+    extracted: Sequence[ExtractedEntity],
+    scan: SourceScan,
+    *,
+    query: str,
+    unique: Sequence[str],
+    variables: Sequence[str],
+    catalogue: Catalogue,
+) -> list[LegReading]:
+    """Each part's entities of `extracted`, their roles, those asked for as their members,
+    and its source scope compiled from `scan`, parallel to `unique`."""
+    extracted = list(extracted)
+    part_positions = _part_positions(extracted, measures=unique, variables=variables)
+    # Every part reads the same query, so the readings of the entities that carry a role are
+    # made once for the request, on the query folded once.
+    folded_query = _grounding_form(query)
+    stated = [
+        bool(entity.role) and _states_direction(entity, folded_query=folded_query)
+        for entity in extracted
+    ]
+    preceding = veto_words(extracted, query=query)
+    legs: list[LegReading] = []
+    for positions, mentions in zip(part_positions, scan.per_measure, strict=True):
+        part = [extracted[i] for i in positions]
+        legs.append(
+            LegReading(
+                entities=list(dict.fromkeys(_entity_key(e) for e in part)),
+                entity_roles=_entity_roles(
+                    positions, entities=extracted, stated=stated, preceding=preceding
+                ),
+                # A text any mention of the part asks the members of. A directed mention
+                # asks on its own end (`DoorRole.members`).
+                member_entities=frozenset(_entity_key(e) for e in part if e.members),
+                # A raw-text mention has no field of its own, so a refusal points at the
+                # query, and mentions that leave a part no source refuse that part alone.
+                source_scope=compile_sources(
+                    list(mentions),
+                    catalogue=catalogue,
+                    pointers=["/input/query"] * len(mentions),
+                    refuse_empty=False,
+                )
+                if mentions
+                else None,
+            )
+        )
+    return legs
 
 
 def _disclosed_exclusions(left_out: Sequence[LeftOut]) -> tuple[LeftOut, ...]:
@@ -1523,6 +1752,7 @@ async def _handle_single_variable(
             per_variable_source_scopes=prep.per_variable_source_scopes,
             per_variable_source_codes=prep.per_variable_compiled_codes,
             per_variable_scope_intakes=prep.per_variable_scope_intakes,
+            per_variable_party_readings=prep.per_variable_party_readings,
             unit_text_best_effort=True,
             door="raw_text",
             include_option_coverage=params.include_option_coverage,
@@ -1667,6 +1897,7 @@ async def _handle_multi_variable(
             per_variable_source_scopes=prep.per_variable_source_scopes,
             per_variable_source_codes=prep.per_variable_compiled_codes,
             per_variable_scope_intakes=prep.per_variable_scope_intakes,
+            per_variable_party_readings=prep.per_variable_party_readings,
             unit_text_best_effort=True,
             per_variable_separate=prep.separate,
             door="raw_text",

@@ -13,6 +13,7 @@ import time
 import zipfile
 from collections import Counter
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from itertools import product
 
 import openpyxl
 import pyarrow.parquet as pq
@@ -125,12 +126,12 @@ _GRAPH = FakeMintGraphReader(arcs=_ARCS)
 _PARTIES = {
     "country/USA": PartyRow(dcid="country/USA", kind="party", party_class="official"),
     "country/KEN": PartyRow(dcid="country/KEN", kind="party", party_class="official"),
-    "DACAfrica": PartyRow(dcid="DACAfrica", kind="total", datasets=("p1",), axes=("destination",)),
+    "DACAfrica": PartyRow(dcid="DACAfrica", kind="total", published=(("p1", "destination"),)),
     "DACAfricaUnallocated": PartyRow(
         dcid="DACAfricaUnallocated", kind="residual", party_class="residual"
     ),
     "DACDevelopingCountries": PartyRow(
-        dcid="DACDevelopingCountries", kind="total", datasets=("p1",), axes=("destination",)
+        dcid="DACDevelopingCountries", kind="total", published=(("p1", "destination"),)
     ),
 }
 _BY_PURPOSE = GroupbyOptions(by=["financingProvider", "financingRecipient", "crsPurpose"], op="sum")
@@ -855,7 +856,9 @@ def _totals_published(
     return {
         **_PARTIES,
         **{
-            dcid: PartyRow(dcid=dcid, kind="total", datasets=datasets, axes=axes, whole=whole)
+            dcid: PartyRow(
+                dcid=dcid, kind="total", published=tuple(product(datasets, axes)), whole=whole
+            )
             for dcid in _TOTAL_ROWS
         },
     }
@@ -1239,16 +1242,14 @@ _DAC_PARTIES = {
     "DACAllRecipients": PartyRow(
         dcid="DACAllRecipients",
         kind="total",
-        datasets=(_DAC2A, _DAC2B),
-        axes=("destination",),
+        published=((_DAC2A, "destination"), (_DAC2B, "destination")),
         party_class="official",
         whole=(WholeMarker(dataset=_DAC2A, covers=("official", "residual"), years=(2020, 2021)),),
     ),
     "DACOfficialDonors": PartyRow(
         dcid="DACOfficialDonors",
         kind="total",
-        datasets=(_DAC2A, _DAC2B),
-        axes=("origin",),
+        published=((_DAC2A, "origin"), (_DAC2B, "origin")),
         party_class="official",
         whole=(
             WholeMarker(dataset=_DAC2A, covers=("official",)),

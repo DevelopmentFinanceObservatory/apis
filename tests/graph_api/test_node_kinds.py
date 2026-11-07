@@ -102,8 +102,7 @@ def test_a_node_takes_the_first_kind_the_rule_gives(dcid, types, kind):
             PartyRow(
                 dcid="dc/o/Foundation",
                 kind="total",
-                datasets=("provenance/P",),
-                axes=("origin",),
+                published=(("provenance/P", "origin"),),
                 party_class="official",
                 whole=(WholeMarker(dataset="provenance/P", covers=("official",)),),
             ),

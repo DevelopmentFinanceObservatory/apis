@@ -46,6 +46,7 @@ from dfo_platform.roles import ROLE_AXES, RoleAxis
 from graph_release.authored import AUTHORED, Authored
 
 _MODULE_TABLES: Final[tuple[tuple[ModuleType, str], ...]] = (
+    (code_index_declarations, "CODE_ALSO_CALLED"),
     (code_index_declarations, "CODE_SHORT_NAMES"),
     (code_index_declarations, "CODE_SYNONYMS"),
     (code_index_declarations, "COMPOSITES"),

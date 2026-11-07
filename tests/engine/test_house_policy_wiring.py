@@ -42,6 +42,7 @@ from search.engine.errors import LLMOutputRefused
 from search.engine.frame import Frame, door_frame
 from search.engine.interpret import Recall
 from search.engine.qualifier_match import QualifierMatch
+from search.engine.quantity import NamedDenominator
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import phase_rank_bind
 from search.engine.region.phase_rank_bind import _elected_index, _HousePolicyStep, _phase_bind
@@ -656,6 +657,7 @@ def test_each_bind_call_logs_one_bind_decision_line(caplog: pytest.LogCaptureFix
             "fired": ["default_dataset"],
             "ratings": [{"index": 0, "rating": 1.0}, {"index": 1, "rating": 1.0}],
             "scores": {},
+            "verdicts": [],
             "refused": False,
         }
         for pool in ("ours", "un_system")
@@ -684,9 +686,36 @@ def test_a_schema_refusal_logs_a_refused_bind_decision(caplog: pytest.LogCapture
         "fired": [],
         "ratings": None,
         "scores": {},
+        "verdicts": [],
         "facts": [],
         "refused": True,
     }
+
+
+def test_the_bind_decision_line_logs_the_verdicts_rule_4_read(
+    caplog: pytest.LogCaptureFixture,
+):
+    """Beside the binder's scores, the line holds for each menu shape the verdict rule 4
+    read on each of the names it judged (`ResolveState.named_measures`,
+    `admissibility.rule_four_verdicts`), so "GDP", the base the quantity read quoted,
+    gets none: a shape whose label names "health expenditure" holds it, and one that names
+    no declared measure leaves it unknown."""
+    caplog.set_level(logging.INFO, logger="search.engine.region.phase_rank_bind")
+    state = _state(
+        [_shape("health expenditure"), _shape("aid flows")],
+        llm=_StubLLM(_reply(0, rated=(0, 1))),
+    )
+    state.variable = "health expenditure as a share of GDP"
+    state.named_denominator = NamedDenominator(ref=None, base_words="GDP")
+    state.named_measures = phase_rank_bind._named_measure_nouns(state)
+
+    asyncio.run(_phase_bind(state))
+
+    [decision] = _decisions(caplog)
+    assert decision["verdicts"] == [
+        {"health expenditure": "holds"},
+        {"health expenditure": "unknown"},
+    ]
 
 
 # -- The rated pool ------------------------------------------------------------------------

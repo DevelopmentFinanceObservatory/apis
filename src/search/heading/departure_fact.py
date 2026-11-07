@@ -13,6 +13,16 @@ from typing import Literal
 
 from search.models import DEPARTURE_ORDER, DepartureCode, OperationVerb, PartyClass, RoleAxis
 
+DirectionWord = Literal["to", "from"]
+"""The word before an organisation the query names that makes it a party to a flow."""
+
+PartyReason = Literal["direction", "named_source", "source_unresolved", "no_own_data"]
+"""Why a part reads an organisation the query names as a party to the flow and not as the
+source of the data (`region.source_choice.choose_reading`): the direction word before it,
+where the source reading was possible; another source the query names, which lists it as a
+party; its words resolving to no single source; or none of its own data leading the recall
+of the source reading."""
+
 
 @dataclass(frozen=True)
 class UnservedMembers:
@@ -43,6 +53,11 @@ class DepartureFact:
     on every other code:
 
     - `verb` (`operation_not_applied`): the operation the request named.
+    - `direction` (`organisation_read_as_source`, `organisation_read_as_party`): the word
+      the request wrote before the organisation ("to", "from"), `None` where it wrote none.
+    - `party_reason` (`organisation_read_as_party`): why the answer reads the organisation
+      as a party (`PartyReason`); `shown` then names, for `named_source`, the other sources
+      the request named that list it as a party, in the request's words.
     - `over` (`breakdown_not_applied`, `direction_discarded`, `direction_inferred`,
       `whole_total_read`): the flow axis the request broke the answer down by, named the
       place on, the axis the answer reads a place named without a direction on, or the side
@@ -134,6 +149,8 @@ class DepartureFact:
     asked: str | None = None
     shown: str | None = None
     verb: OperationVerb | None = None
+    direction: DirectionWord | None = None
+    party_reason: PartyReason | None = None
     over: RoleAxis | None = None
     entities: tuple[str, ...] = ()
     sets: tuple[UnservedMembers, ...] = ()

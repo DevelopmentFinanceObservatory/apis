@@ -73,7 +73,14 @@ def _party(
     whole: tuple[WholeMarker, ...] = (),
 ):
     """A total's index row; `_index` gives it the dcid it is keyed by."""
-    return PartyRow(dcid="", kind="total", axes=axes, totals=totals, label=label, whole=whole)
+    return PartyRow(
+        dcid="",
+        kind="total",
+        published=tuple(("provenance/P", axis) for axis in axes),
+        totals=totals,
+        label=label,
+        whole=whole,
+    )
 
 
 def _index(**parties: PartyRow):

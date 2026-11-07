@@ -42,6 +42,7 @@ from search.engine.qualifier_match import (
     match_qualifier_ties,
     match_qualifiers,
 )
+from search.engine.quantity import DenominatorRead
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import RegionResult
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
@@ -2503,3 +2504,81 @@ def test_e2e_a_menu_choice_binds_and_the_confirmation_sentence_names_it(
         if f.key.property is not None and f.key.property.ref == "crsPurpose"
     )
     assert purpose_filter.provenance == "binder"
+
+
+_GNI_SHAPE = ShapeDraft(
+    shape_id="economicunit_primaryincome_measuredvalue_nominal",
+    label="Gross national income",
+    pop_type_dcid="EconomicUnit",
+    meas_prop_dcid="primaryIncome",
+    stat_type_dcid="measuredValue",
+    meas_qual_dcid="Nominal",
+    meas_denom_dcid=None,
+    slot_keys=(
+        SlotKeyDraft(
+            axis="how",
+            property_dcid="fixedCapitalConsumptionBasis",
+            label="fixed capital consumption basis",
+        ),
+    ),
+)
+_ODA_PER_GNI_SHAPE = ShapeDraft(
+    shape_id="financialflow_amount_measuredvalue_gni",
+    label="ODA disbursements as a share of gross national income",
+    pop_type_dcid="FinancialFlow",
+    meas_prop_dcid="amount",
+    stat_type_dcid="measuredValue",
+    meas_qual_dcid="Nominal",
+    meas_denom_dcid="Amount_EconomicActivity_GrossNationalIncome_Nominal",
+    slot_keys=(SlotKeyDraft(axis="how", property_dcid="nettingBasis", label="netting basis"),),
+    sv_arc_facts={
+        "sv_oda_gni": {
+            "constraintProperties": {"nodes": [{"dcid": "financialFlowType"}]},
+            "financialFlowType": {"nodes": [{"dcid": "Disbursement"}]},
+        }
+    },
+)
+
+
+_GNI_READ = DenominatorRead(
+    kind="other",
+    name="Gross national income",
+    pairs=(("populationType", "EconomicActivity"), ("measuredProperty", "amount")),
+)
+
+
+@pytest.mark.parametrize(
+    ("variable", "shape", "denominators", "refused"),
+    [
+        ("GNI", _GNI_SHAPE, {}, []),
+        ("gross national income", _GNI_SHAPE, {}, []),
+        ("ODA as a share of GNI", _GNI_SHAPE, {}, ["ODA as a share of GNI"]),
+        ("GNI", _ODA_PER_GNI_SHAPE, {}, ["GNI"]),
+        (
+            "GNI",
+            _ODA_PER_GNI_SHAPE,
+            {"Amount_EconomicActivity_GrossNationalIncome_Nominal": _GNI_READ},
+            [],
+        ),
+    ],
+    ids=["acronym", "expansion", "other-words", "named-only-in-the-label", "the-shape-s-base"],
+)
+def test_a_term_naming_the_elected_measure_is_no_unread_qualifier(
+    variable, shape, denominators, refused
+):
+    """ "GNI" names `CRSTypeOfFinance1` and `CRSTypeOfFlow40`, which no gross national income
+    row holds, yet it names the declared measure the shape holds or divides by
+    (`measure_verdict.measure_verdicts`). A term holding other words stays a qualifier the
+    part refuses on, and so does "GNI" on a disbursement shape whose label alone names
+    gross national income: its pairs hold a declared measure, so its label names none. Once
+    the denominator read names the StatVar it divides by gross national income, "GNI" is
+    its base and read."""
+    spans = read_text(variable, _REAL_INDEX, get_measure_index()).everywhere.spans
+    state = _part_state(variable, [shape])
+    state.denominator_reads = denominators
+
+    undeclared = _undeclared_qualifiers(
+        variable, spans, [shape], own_variable_spans(variable, shape), state=state
+    )
+
+    assert [record.text for record in undeclared] == refused

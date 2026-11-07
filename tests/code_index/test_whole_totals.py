@@ -42,8 +42,11 @@ def _total(
         "kind": kind,
         "party_class": party_class,
         "totals": None,
-        "datasets": [_DAC2A, _DAC2B] if datasets is None else datasets,
-        "axes": ["origin"] if axes is None else axes,
+        "published": [
+            {"dataset": dataset, "axis": axis}
+            for dataset in ([_DAC2A, _DAC2B] if datasets is None else datasets)
+            for axis in (["origin"] if axes is None else axes)
+        ],
         "whole": whole,
     }
 
