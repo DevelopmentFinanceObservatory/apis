@@ -193,7 +193,9 @@ class Words:
             self.gap(f"{path}.label")
             words = {"label": ref or currency}
         members = {
-            key: held[key] for key in ("ref", "currency", "prices", "base_year") if key in held
+            key: held[key]
+            for key in ("ref", "currency", "prices", "base_year", "deflation_basis")
+            if key in held
         }
         return {**members, **words}
 

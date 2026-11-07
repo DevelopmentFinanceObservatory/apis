@@ -636,27 +636,21 @@ def test_a_two_member_latest_headline_counts_the_member_serving_its_year(
 
 
 @pytest.mark.parametrize("bulk", [False, True], ids=["per_pair", "bulk"])
-@pytest.mark.parametrize(
-    ("period", "build_year"),
-    [pytest.param("P1M", None, id="sub_annual"), pytest.param("P1Y", 2022, id="projected")],
-)
 def test_a_member_the_index_cannot_elect_for_serves_its_newest_year(
-    search_settings, bulk: bool, period: str, build_year: int | None
+    search_settings, bulk: bool
 ) -> None:
-    """Five debtors hold 2025, nine 2024 and eleven 2023, counts that elect 2024. A facet
-    stating months, or an index built in 2022, before every year held, elects no year. The
-    preview reads `LATEST` and the answer serves, heads and counts the five series at
-    2025, on both routes. A per-pair read fetches the latest row of all eleven to find
-    that period, and a bulk read the five pairs coverage dates in it."""
+    """Five debtors hold 2025, nine 2024 and eleven 2023, counts that elect 2024. An index
+    built in 2022, before every year held, elects no year. The
+    preview reads `LATEST` and the answer serves, heads and counts the five series at 2025,
+    on both routes. A per-pair read fetches the latest row of all eleven to find that
+    period, and a bulk read the five pairs coverage dates in it."""
     if bulk:
         search_settings(obs_preview_max_pairs=1)
     index = build_coverage_index(
         _election_rows(_TOTAL, {2025: 5, 2024: 9, 2023: 11}),
         role_names={_TOTAL: RoleNames(donor=None, recipient="debtor")},
-        facet_metadata={
-            "f1": FacetMetadata(provenance_id="dc/base/Ids", observation_period=period)
-        },
-        build_year=build_year,
+        facet_metadata={"f1": FacetMetadata(provenance_id="dc/base/Ids", observation_period="P1Y")},
+        build_year=2022,
     )
     plan = _election_plan(index, [_TOTAL], _LATEST)
     assert isinstance(plan, BulkPlan if bulk else PairPlan)
@@ -1132,8 +1126,9 @@ def test_a_latest_bulk_plan_reads_the_member_s_year_under_every_facet_it_selects
     source and unit under another method, at `_BBB` to 2021. An index-resolved family's
     group selects both, so under `latest` the member's year is the newest either reaches,
     2021, its dates are that year, and the facets its series state are those holding a pair
-    there: `fM2` alone. Both state a monthly period, so coverage elects the member no year
-    (`CoverageIndex.elected_years`) and it serves its own latest period."""
+    there: `fM2` alone. The index is built in 2014, before every year held, so coverage
+    elects the member no year (`CoverageIndex.elected_years`) and it serves its own latest
+    period."""
     search_settings(obs_preview_max_pairs=1)
     rows = [
         *((_FLOW, "fM1", ABSENT_ENTITY, place, list(range(2015, 2020))) for place in (_AAA, _CCC)),
@@ -1147,10 +1142,11 @@ def test_a_latest_bulk_plan_reads_the_member_s_year_under_every_facet_it_selects
                 provenance_id="dc/base/Shared",
                 measurement_method=method,
                 unit="CurrencyUSD",
-                observation_period="P1M",
+                observation_period="P1Y",
             )
             for facet_id, method in (("fM1", "Commitment"), ("fM2", "Disbursement"))
         },
+        build_year=2014,
     )
     plan = _role_plan(
         [_FLOW],

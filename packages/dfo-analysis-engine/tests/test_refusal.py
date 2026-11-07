@@ -4,22 +4,25 @@ and the composite rewrite of a `stat_var_unresolved` refusal."""
 from __future__ import annotations
 
 import pytest
-from dfo_frame_grammar.grammar import ComposedUnit, StatVarPart
+from dfo_frame_grammar.grammar import ComposedUnit, StatVarPart, UnitRequest
 
 from dfo_analysis_engine.engine.aggregate import ComposedUnitSumError
 from dfo_analysis_engine.engine.common import StatVarUnresolvedError
-from dfo_analysis_engine.engine.compare import CompareAmbiguousSliceError
+from dfo_analysis_engine.engine.compare import CompareAmbiguousSliceError, CompareUnitMismatchError
 from dfo_analysis_engine.engine.paired import PairedNoKeyMatchedError, PairedUnknownColumnError
 from dfo_analysis_engine.engine.two_sided import NonFiniteCellError
 from dfo_analysis_engine.refusal import (
     CompositeComponent,
     Refusal,
     RefusalCode,
+    _deflated_apart,
     composite_refusal,
     refusal_for_engine_error,
 )
 
 _PER_HEAD = ComposedUnit(numerator="dcid:USDollar", denominator=StatVarPart("dcid:Count_Person"))
+_NGN_DONOR = UnitRequest("NGN", "constant", 2024, deflation_basis="donor")
+_NGN_RECIPIENT = UnitRequest("NGN", "constant", 2024, deflation_basis="recipient")
 
 
 @pytest.mark.parametrize(
@@ -91,6 +94,13 @@ _PER_HEAD = ComposedUnit(numerator="dcid:USDollar", denominator=StatVarPart("dci
             },
             id="compare-paired-member-ambiguous",
         ),
+        pytest.param(
+            "compare",
+            CompareUnitMismatchError(left_unit=_NGN_DONOR, right_unit=_NGN_RECIPIENT),
+            "cross_frame_unit_mismatch",
+            {"left": _NGN_DONOR.as_json(), "right": _NGN_RECIPIENT.as_json()},
+            id="compare-deflation-bases-differ",
+        ),
         pytest.param("join", ValueError("not an engine refusal"), None, None, id="other-exception"),
     ],
 )
@@ -104,6 +114,41 @@ def test_each_verb_refuses_its_own_exceptions(
         return
     assert refusal is not None
     assert (refusal.as_json()["code"], refusal.fix) == (code, fix)
+
+
+@pytest.mark.parametrize(
+    ("left", "right", "apart"),
+    [
+        pytest.param(_NGN_DONOR, _NGN_RECIPIENT, True, id="one-recipe-two-bases"),
+        pytest.param(
+            UnitRequest("NGN", "constant", 2024, "ConversionRecipeDAC", "donor"),
+            UnitRequest("NGN", "constant", 2024, "ConversionRecipeIDS", "recipient"),
+            True,
+            id="dac2a-donor-beside-ids-recipient",
+        ),
+        pytest.param(
+            UnitRequest("NGN", "constant", 2024, "ConversionRecipeDAC", "donor"),
+            UnitRequest("NGN", "constant", 2024, "ConversionRecipeIMF", "donor"),
+            False,
+            id="two-recipes-one-basis",
+        ),
+        pytest.param(
+            _NGN_DONOR,
+            UnitRequest("NGN", "constant", 2020, deflation_basis="recipient"),
+            False,
+            id="two-base-years",
+        ),
+        pytest.param(
+            _NGN_DONOR, UnitRequest("NGN", "constant", 2024), False, id="one-basis-stated"
+        ),
+    ],
+)
+def test_two_units_are_deflated_apart_when_only_their_stated_bases_differ(
+    left: UnitRequest, right: UnitRequest, apart: bool
+) -> None:
+    """The recipe a cell names plays no part, as in dfo-ai's analysis-mcp, so a DAC2a
+    donor-priced side and an IDS recipient-priced side get the current-prices retry."""
+    assert _deflated_apart(left, right) is apart
 
 
 _FAMILY = StatVarUnresolvedError(reason="several", distinct_stat_vars=["dcid:A", "dcid:B"])

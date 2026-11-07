@@ -55,6 +55,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from assembler.catalogue import BakedReleaseRegistry
 from assembler.errors import (
+    AssemblerRefusal,
     BindingInvalid,
     ConstraintViolation,
     DraftNotFound,
@@ -114,6 +115,7 @@ from presentation_api.doors.component_data import (
 from presentation_api.doors.render import (
     RENDER_EXCEPTION_EXEMPLARS,
     RENDER_EXCEPTION_TYPES,
+    StoredIntentRefused,
     build_render_router,
     classify_render_exception,
     replayed,
@@ -294,8 +296,9 @@ def classify_components_exception(exc: BaseException) -> ProblemSpec | None:
     if isinstance(exc, ResourceExhausted):
         return refused(
             "resource_exhausted",
-            detail=f"{exc.detail} (limit: {exc.limit_name})",
+            detail=exc.detail,
             pointer=exc.pointer,
+            limit_name=exc.limit_name,
             retryable=retryable_for("resource_exhausted"),
         )
     if isinstance(exc, ReleaseMismatch):
@@ -778,7 +781,13 @@ def build_components_door(
             RENDER_ENDPOINT: (
                 *LOOKUP_EXEMPLARS,
                 *STORE_EXEMPLARS,
-                *DRAW_EXEMPLARS,
+                # The replay raises a refusal of the stored intent as `StoredIntentRefused`.
+                *(
+                    StoredIntentRefused(exemplar)
+                    if isinstance(exemplar, AssemblerRefusal)
+                    else exemplar
+                    for exemplar in DRAW_EXEMPLARS
+                ),
                 *FRAME_UNAVAILABLE_EXEMPLARS,
                 *COMPONENT_DATA_EXCEPTION_EXEMPLARS,
                 *RENDER_EXCEPTION_EXEMPLARS,

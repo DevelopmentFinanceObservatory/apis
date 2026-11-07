@@ -11,7 +11,10 @@ the part a preview delivers (`read_plan`):
   place.
 - A bulk role plan (`BulkPlan`) serves its elected facet across every pair of each member
   in that member's years (`BulkPlan.member_years`). Under `latest` those are the member's
-  own latest year alone, the newest any of its pairs reaches.
+  own latest year alone, the newest any of its pairs reaches. It counts each pair's years
+  with data (`n_obs`), which are its observations, since the graph release refuses a facet
+  whose period is not `P1Y` and a role-bearing series with two observations in a year
+  (`graph_release.platform.build_platform_parts`).
 
 The window a range or `latest` answer states spans the years of the dates the plan serves
 (`read_plan.served_dates`), the dates each StatVar is dated from.

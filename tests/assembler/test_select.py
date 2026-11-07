@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from assembler.errors import BindingInvalid
+from assembler.ports import DimensionView, StructuralView
 from assembler.select import (
     check_select_nonempty,
     check_single_arrayed_dimension,
@@ -40,14 +41,31 @@ def test_normalize_produces_exactly_one_selector():
     assert len(normalized[0]["bindings"]) == 3
 
 
+_VIEW = StructuralView(
+    dimensions=(
+        DimensionView(
+            name="stat_var", values=("dcid:X",), total_count=1, truncated=False, plural=False
+        ),
+        DimensionView(
+            name="recipient", values=("country/KEN",), total_count=26, truncated=True, plural=True
+        ),
+    ),
+    period_grain="year",
+    coverage=("2020", "2021"),
+    span=None,
+    series_count=26,
+)
+
+
 def test_check_select_nonempty_passes_a_populated_map():
-    check_select_nonempty(select={"statvar": "x"})  # must not raise
+    check_select_nonempty(select={"statvar": "x"}, view=_VIEW)  # must not raise
 
 
-def test_check_select_nonempty_refuses_an_empty_map():
+def test_check_select_nonempty_refuses_an_empty_map_naming_the_frames_dimensions():
     with pytest.raises(BindingInvalid) as excinfo:
-        check_select_nonempty(select={})
+        check_select_nonempty(select={}, view=_VIEW)
     assert excinfo.value.pointer == "/select"
+    assert "stat_var (1 value), recipient (26 values)" in excinfo.value.detail
 
 
 def test_check_single_arrayed_dimension_passes_zero_or_one_array():

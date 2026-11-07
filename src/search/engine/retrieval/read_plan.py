@@ -69,7 +69,6 @@ from search.models import TimeWindow, in_window
 from search.observations import PreviewMode, preview_mode
 from search.scope_window import read_range as _read_range
 from search.scope_window import role_read_years
-from series_coverage.schema import is_sub_annual
 from statvar_members import AbsentReading, antichain_minimal_ids
 
 if TYPE_CHECKING:
@@ -974,7 +973,11 @@ class BulkPlan:
     @property
     def observation_count(self) -> int:
         """The observations the read serves across every pair in its member's years
-        (`member_pairs`, or `counted_pairs` when its pairs read several facets)."""
+        (`member_pairs`, or `counted_pairs` when its pairs read several facets).
+
+        The coverage index counts years with data, one per observation because the graph
+        release refuses a facet whose period is not `P1Y` and a role-bearing series with
+        two observations in a year (`graph_release.platform.build_platform_parts`)."""
         if self.merges:
             return sum(sum(counts.values()) for counts in self.counted_pairs.values())
         return sum(
@@ -1150,24 +1153,12 @@ def _collapsed_counts(
 ) -> dict[RoleTuple, int]:
     """`_tuple_counts` across facets a mint collapses (`materialise.facet_collapse`), which
     keeps one row per date of facets sharing a unit, method and provenance; facets of
-    different methods add. Coverage holds counts by year and no dates, so annual facets of
-    one identity count a tuple's year once, at the larger of their counts there, which is
-    exact, since each dates a year once. A sub-annual facet
-    (`series_coverage.schema.is_sub_annual`) adds its own count (`_tuple_counts`): its
-    dates within a year may or may not repeat another facet's, so the sum is an upper
-    bound, the safe side of the row gate (`role_bulk_rank_max_rows`). Inside a window the
-    index counts a row's years alone (`CoverageIndex.pairs`), for one facet as for
-    several, so a sub-annual count there is the index's year count."""
+    different methods add. Coverage holds counts by year and no dates, so facets of one
+    identity count a tuple's year once, at the larger of their counts there, which is
+    exact, since every facet the index holds is annual and dates a year once."""
     tuples: dict[RoleTuple, int] = {}
-    annual: list[RoleFacetCandidate] = []
-    for c in candidates:
-        if is_sub_annual(c.observation_period):
-            for role_tuple, n_obs in _tuple_counts([c], first, last).items():
-                tuples[role_tuple] = tuples.get(role_tuple, 0) + n_obs
-        else:
-            annual.append(c)
     by_year: dict[tuple[RoleTuple, tuple[str | None, ...], int], int] = {}
-    for c in annual:
+    for c in candidates:
         identity = (c.unit, c.measurement_method, c.provenance_id)
         for role_tuple, counts in c.pairs.year_counts(first_year=first, last_year=last):
             for year, n_obs in counts:

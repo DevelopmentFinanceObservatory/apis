@@ -23,6 +23,7 @@ import pytest
 
 from code_index.scope_conventions import BASIS_MEASURES
 from code_index.shared import get_index
+from materialise.recipe_bodies import RECIPE_BODIES
 from origin_catalogue import BASE
 from search.engine.bind import SlotBindingDraft
 from search.engine.binders import JevBinder, StatedWordsRequest
@@ -38,6 +39,7 @@ from search.models import (
     Entry,
     IdentityBindingSet,
     IdentityBindingValue,
+    IdentityFacetValueRequest,
     IdentityShapeSchema,
     IdentityWindowRange,
     ParsedEntity,
@@ -53,18 +55,22 @@ from search.scope.basis import (
     applicable_convention,
     basis_binding,
     basis_label,
+    basis_rule,
     identity_basis_record,
     window_class,
 )
 from search.scope.edits import apply_binding
+from search.scope.tables import PartFacts, ScopeFacts
+from search.scope.vocabulary import measure_basis_option_id
 from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from tests.engine._binders import FakeAsk, MenuRecordingBinder, elected_reply
-from tests.engine._fake_coverage import patch_coverage
+from tests.engine._fake_coverage import empty_coverage_snapshot, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import offline_resolve
 from tests.engine._quantity import NO_QUANTITY, NO_RATING
 from tests.fixtures import FakeGraph
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue, provenance_row
+from tests.scope.test_option_labels import _DAC1_TOTAL
 
 _USA = "country/USA"
 _KEN = "country/KEN"
@@ -949,6 +955,57 @@ def test_a_basis_label_states_the_prices_and_currency_the_part_is_served_in(
     net = next(row for row in BASIS_MEASURES if row.basis == "net")
 
     assert basis_label(net, _net_identity(qualifier, unit_request)) == expected
+
+
+@pytest.mark.parametrize(
+    ("recipe_id", "unit_request", "expected"),
+    [
+        pytest.param(
+            "ConversionRecipeDAC",
+            {"currency": "NGN", "prices": "constant", "base_year": 2024},
+            "net disbursements, constant 2024 NGN, donor prices",
+            id="constant-names-the-donor",
+        ),
+        pytest.param(
+            "ConversionRecipeDAC",
+            {"currency": "NGN", "prices": "current"},
+            "net disbursements, current NGN",
+            id="current-deflates-by-no-one",
+        ),
+        pytest.param(
+            None,
+            {"currency": "NGN", "prices": "constant", "base_year": 2024},
+            "net disbursements, constant 2024 NGN",
+            id="no-recipe-names-no-one",
+        ),
+    ],
+)
+def test_a_basis_option_names_whose_prices_deflate_the_part(
+    recipe_id: str | None, unit_request: dict, expected: str
+):
+    """The DAC recipe deflates by the donor the family's rows declare, as the conversion does."""
+    identity = _DAC1_TOTAL.model_copy(
+        update={
+            "facets": {
+                "unit": IdentityFacetValueRequest.model_validate(
+                    {"state": "value", "request": unit_request}
+                )
+            }
+        }
+    )
+    facts = ScopeFacts(
+        index=get_index(),
+        coverage=empty_coverage_snapshot(),
+        part=PartFacts(
+            conversion_recipe=RECIPE_BODIES[recipe_id] if recipe_id is not None else None
+        ),
+    )
+
+    table = basis_rule(identity, None, facts)
+
+    assert table is not None
+    labels = {option.option_id: option.label for option in table.options}
+    assert labels[measure_basis_option_id("net")] == expected
 
 
 @pytest.mark.parametrize("cell", ["sector", "donor-only-2016"])

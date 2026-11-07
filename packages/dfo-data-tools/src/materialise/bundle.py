@@ -341,20 +341,24 @@ def assemble_bundle(
 def assemble_component_bundle(
     *,
     export: ComponentExport,
-    member: MemberProvenance,
+    members: Sequence[MemberProvenance],
     reproducing_call: ReproducingCall | None,
     context: BundleContext,
     codes: Sequence[CodeEntry],
 ) -> dict[str, bytes]:
     """Assembles the bundle for one component revision's exported rows.
 
-    `member` carries the one rendered file and the frame's sources. The descriptor's `dfo`
+    `members` carries the rendered files and their sources, the rows the card shows first
+    and then, for a card that shows some members of its frame, every member's rows. The README's
+    instructions for opening the data name the first. The descriptor's `dfo`
     property holds `component` (`component_id`, `revision`, `frame_ref`, `select`, `window`),
     `prepared_at`, `links`, and `reproducing_call`, the export route itself. The README names
     the frame's `spec_id` and `content_version`, the Datasets identity of the rows.
     `reproducing_call=None` omits `dfo.reproducing_call`, for rows no public route serves again.
     The README then offers `links.version` as the card's saved export. Raises
     `MaterialisationUsageError` as `assemble_bundle` does."""
+    if not members:
+        raise MaterialisationUsageError("assemble_component_bundle requires at least one member")
     dfo_property: dict[str, object] = {
         "component": {
             "component_id": export.component_id,
@@ -364,12 +368,12 @@ def assemble_component_bundle(
             "window": dict(export.window) if export.window is not None else None,
         },
         "prepared_at": _rfc3339(context.prepared_at),
-        "links": _links_entry(context, (member,)),
+        "links": _links_entry(context, members),
     }
     if reproducing_call is not None:
         dfo_property["reproducing_call"] = _reproducing_call_entry(reproducing_call, context)
     return _assemble(
-        members=(member,),
+        members=members,
         context=context,
         codes=codes,
         dfo_property=dfo_property,

@@ -7,19 +7,21 @@ from __future__ import annotations
 import csv
 import dataclasses
 import io
+import logging
 import zipfile
 from collections.abc import Callable, Iterator, Mapping
 from datetime import UTC, date, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 import openpyxl
 import pyarrow.parquet as pq
 import pytest
+from dfo_frame_grammar.grammar import UnitRequest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
 import presentation_api.retention as presentation_retention
-from assembler.errors import FrameUnavailable, ReleaseMismatch
+from assembler.errors import ConstraintViolation, FrameUnavailable, ReleaseMismatch
 from assembler.fakes import FakeFrameStore, FakeReleaseRegistry, FakeRevisionStore
 from assembler.ports import FrameRef, ResolvedFrame
 from assembler.testing import (
@@ -29,7 +31,9 @@ from assembler.testing import (
 )
 from assembler.write_token import SHARE_WRITE_TOKEN_PREFIX, mint_write_token
 from datasets_api.retention import RetentionUnreadable
+from dfo_analysis_engine.refusal import AnalysisRefused, Refusal
 from dfo_platform.app import create_app
+from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
 from dfo_platform.config import CallerSettings
 from presentation_api.app import presentation_surface
 from presentation_api.doors.shares import SHARES_DEPS_SLOT
@@ -565,6 +569,69 @@ def test_a_live_slot_whose_card_cannot_draw_the_newer_frame_serves_its_own_as_st
 
     assert _stated(first) == _stated(second) == ("stale", _STORED.content_version, "live")
     assert door.newest.asked == [_STORED]
+
+
+def _deflated_apart() -> AnalysisRefused:
+    def usd(basis: str) -> UnitRequest:
+        return UnitRequest(
+            currency="USD", prices="constant", base_year=2024, recipe=None, deflation_basis=basis
+        )
+
+    return AnalysisRefused(
+        Refusal.cross_frame_unit_mismatch(
+            left_label="aid",
+            left_unit=usd("donor"),
+            right_label="debt",
+            right_unit=usd("recipient"),
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    ("newest", "drawn", "line", "fields"),
+    [
+        pytest.param(
+            _deflated_apart(),
+            None,
+            "newer-data check",
+            {"code": "cross_frame_unit_mismatch"},
+            id="derived-frame-refused",
+        ),
+        pytest.param(
+            _UNREADABLE,
+            ConstraintViolation(
+                constraint_id="comparable_units_required",
+                pointer="/select",
+                detail="exemplar",
+                fix="exemplar fix",
+            ),
+            "cannot draw",
+            {"code": "constraint_violation", "constraint_id": "comparable_units_required"},
+            id="card-refused-on-the-newer-frame",
+        ),
+    ],
+)
+def test_a_live_slot_logs_the_code_of_the_refusal_that_left_it_stale(
+    door: _Door,
+    caplog: pytest.LogCaptureFixture,
+    newest: object,
+    drawn: Exception | None,
+    line: str,
+    fields: dict[str, str],
+):
+    """A refusal on refresh is found by its code in the slot's warning, a derived frame's by
+    the analysis refusal's own code and a card's by its constraint id."""
+    share = door.share(door.card(), latest=True)
+    door.newest.answer = cast("FrameRef | Exception", newest)
+    if drawn is not None:
+        door.frame_store.refusals[_UNREADABLE] = drawn
+
+    with caplog.at_level(logging.WARNING, logger="presentation_api.share_slots"):
+        resp = door.data(share["id"])
+
+    assert _stated(resp)[0] == "stale"
+    (record,) = [one for one in caplog.records if line in one.getMessage()]
+    assert getattr(record, JSON_FIELDS_ATTR) == fields
 
 
 @pytest.mark.parametrize(

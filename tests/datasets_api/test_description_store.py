@@ -68,7 +68,7 @@ def _record(*, title: str = "Gross ODA per capita", **overrides: Any) -> Descrip
     fields: dict[str, Any] = {
         "id": _OPS_ID,
         "content_version": _OCV,
-        "schema_version": 2,
+        "schema_version": SCHEMA_VERSION,
         "basis": "publish",
         "index_stamp": None,
         "variables": None,
@@ -242,7 +242,7 @@ _VERSION_1_RECORD = _record(
 )
 
 
-def test_a_version_1_row_reads_as_version_2_and_is_not_rewritten(
+def test_a_version_1_row_reads_as_the_latest_version_and_is_not_rewritten(
     dataset_store: FakeVersionRecordDatasetStore, store: LiveDescriptionStore
 ) -> None:
     """A record an earlier image wrote reads whole, its basis, label evidence and late fields
@@ -255,7 +255,7 @@ def test_a_version_1_row_reads_as_version_2_and_is_not_rewritten(
 
     assert read == _VERSION_1_RECORD
     assert batched == {(_OPS_ID, _OCV): _VERSION_1_RECORD}
-    assert describe_version(read, _words())["built_from"]["facts_schema"] == 2
+    assert describe_version(read, _words())["built_from"]["facts_schema"] == SCHEMA_VERSION
     assert _stored_row(dataset_store) == (1, stored)
 
 
@@ -287,7 +287,7 @@ def test_a_stored_record_reads_on_the_shape_of_the_version_it_is_stamped(
     an image of version 1 validates; a record narrowing a dimension to a set is stored at
     version 2, whose shape reads it and version 1's refuses it. Both read back here whole, and
     a fill keeps the stamp."""
-    record = _mint(family_raw_bound(binding)).model_copy(update={"schema_version": 2})
+    record = _mint(family_raw_bound(binding)).model_copy(update={"schema_version": SCHEMA_VERSION})
 
     assert _insert(dataset_store, record) is True
     column, stored = _stored_row(dataset_store)
@@ -310,16 +310,18 @@ def test_a_stored_record_reads_on_the_shape_of_the_version_it_is_stamped(
 _RECORD_SCHEMA_DIGESTS = {
     1: "0bb8f26a863e0a7ed2a4a5500a078dcb45e96133bf78700fae694df77d640b42",
     2: "d23afdaef1a2f273b0145014153dc85f16d96a9266b652f298b94f9827cf2148",
+    3: "af5d6e71ebe944ef6340910dc519b1db475424034eeda786015e792987844332",
 }
 
 # The members each schema version added to the record's models, by model name.
-_ADDED_IN = {2: (("DimensionFacts", "within_set"),)}
+_ADDED_IN = {2: (("DimensionFacts", "within_set"),), 3: (("SimpleUnit", "deflation_basis"),)}
 
 # The digest of each schema version's record shape (`_record_shape`). Version 1's is that of
 # the version 1 image's own model, descriptions aside.
 _RECORD_SHAPE_DIGESTS = {
     1: "e3197940e10137db6cf5e84378cc620b245468c7a176dc0e19e87e97b3b8aa66",
     2: "f4e469419b8dccce899ed42093ff5c21a009e879af0838f48bfde403fd366af0",
+    3: "9a08b1a7da7df70b92bea03a305ec7fe8302209e9023f1ceb4842535df063be2",
 }
 
 
@@ -365,7 +367,7 @@ def test_the_record_model_is_the_one_its_schema_version_names() -> None:
     )
 
 
-@pytest.mark.parametrize("version", [1, 2])
+@pytest.mark.parametrize("version", [1, 2, 3])
 def test_each_schema_version_reads_the_shape_its_image_validates(version: int) -> None:
     """A record stamped `version` is one an image of that version reads: this model at
     `version` keeps the shape that version's model had, so a change to the record's models

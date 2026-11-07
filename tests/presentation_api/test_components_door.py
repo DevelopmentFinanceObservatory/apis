@@ -946,8 +946,30 @@ def test_a_create_into_an_unknown_composition_id_is_not_found(client: TestClient
     assert body["retryable"] is False
 
 
-def test_a_window_exceeding_the_points_cap_is_resource_exhausted(release: CatalogueRelease):
-    """A 500-point cap rejects a wide daily window before materialization."""
+@pytest.mark.parametrize(
+    ("recipient_ids", "select", "window", "limit_name"),
+    [
+        pytest.param(
+            ["country/ETH"],
+            {"recipient": "country/ETH"},
+            {"start": "2020-01-01", "end": "2030-01-01"},
+            "MAX_POINTS_PER_SERIES",
+            id="points-cap",
+        ),
+        pytest.param(
+            [f"country/C{index:02d}" for index in range(9)],
+            {"stat_var": "dcid:X"},
+            None,
+            "MAX_LINE_CHART_SERIES",
+            id="series-cap",
+        ),
+    ],
+)
+def test_a_line_chart_over_a_cap_is_resource_exhausted_and_names_the_limit(
+    release: CatalogueRelease, recipient_ids, select, window, limit_name
+):
+    """A 500-point cap rejects a wide daily window before materialization, and a line chart
+    resolving to more than 8 series is refused. Each answers `limit_name` as a member."""
     from assembler.fakes import FakeFrameStore, FakeReleaseRegistry, FakeRevisionStore
     from assembler.ports import FrameRef
     from assembler.testing import build_resolved_frame
@@ -961,13 +983,14 @@ def test_a_window_exceeding_the_points_cap_is_resource_exhausted(release: Catalo
         rows=[
             {
                 "stat_var": "dcid:X",
-                "recipient": "country/ETH",
+                "recipient": recipient,
                 "time_period": "2020-01-01",
                 "value": 1.0,
                 "unit": None,
                 "measurementMethod": None,
                 "provenance": "src_a",
             }
+            for recipient in recipient_ids
         ],
     )
     frame_store = FakeFrameStore()
@@ -980,8 +1003,8 @@ def test_a_window_exceeding_the_points_cap_is_resource_exhausted(release: Catalo
     intent = {
         "type": "line_chart",
         "frame_ref": {"spec_id": ref.spec_id, "content_version": ref.content_version},
-        "select": {"recipient": "country/ETH"},
-        "window": {"start": "2020-01-01", "end": "2030-01-01"},
+        "select": select,
+        **({} if window is None else {"window": window}),
     }
     with TestClient(create_app([surface]), raise_server_exceptions=False) as client:
         resp = _create(client, intent=intent)
@@ -990,6 +1013,9 @@ def test_a_window_exceeding_the_points_cap_is_resource_exhausted(release: Catalo
     assert body["code"] == "resource_exhausted"
     assert body["type"] == "/codes/resource_exhausted"
     assert body["retryable"] is False
+    assert body["limit_name"] == limit_name
+    # The select or window crossed the limit, so changing it lets a write draw.
+    assert body["retry_mode"] == "correct_and_retry"
 
 
 class _BlockingFrameStore(FakeFrameStore):
@@ -1033,6 +1059,36 @@ def test_an_executor_timeout_renders_code_timeout_retryable_at_504(
     body = resp.json()
     assert body["code"] == "timeout"
     assert body["retryable"] is True
+    # The platform's default refusal states its mode through the surface's `finish`.
+    assert body["retry_mode"] == "retry_after_delay"
+
+
+def _raise_uncaught(**_kwargs: object) -> None:
+    raise RuntimeError("an error no classifier names")
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "code"),
+    [
+        pytest.param("POST", "/api/presentation/components", "internal_error", id="uncaught"),
+        pytest.param("GET", "/api/presentation/nowhere", "not_found", id="routing-404"),
+        pytest.param(
+            "DELETE", "/api/presentation/components", "method_not_allowed", id="routing-405"
+        ),
+    ],
+)
+def test_a_platform_default_refusal_states_its_retry_mode(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, method, path, code
+):
+    """A refusal no surface classifier names takes the platform default, and still states
+    `retry_mode`; none of these can succeed unchanged or corrected."""
+    monkeypatch.setattr(components_door, "write_component", _raise_uncaught)
+
+    resp = client.request(method, path, json={"intent": _LINE_CHART_INTENT})
+
+    body = resp.json()
+    assert body["code"] == code
+    assert body["retry_mode"] == "do_not_retry"
 
 
 def test_the_backpressure_permit_covers_encoding_the_reply(

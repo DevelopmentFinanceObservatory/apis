@@ -17,6 +17,7 @@ from code_index.flow_family import flow_family
 from code_index.labels import PRICE_BASIS_AXIS
 from code_index.shared import get_index
 from dfo_platform.roles import FlowFamily, RoleNoun, RoleWording, role_wording
+from materialise.recipe_bodies import DeflationBasis
 from search.heading.pins import identity_pinned_properties
 from search.models import (
     UNIT_REF,
@@ -273,7 +274,8 @@ def heading_for(
     (`declared_axis_names`) when None. ``keep_how_properties`` keeps
     sibling-distinguishing constraints visible. The slots the identity's five-tuple pins
     (`identity_pinned_properties`) state no how clause. The byline states the
-    measurement method the identity binds (`_bound_method_text`).
+    measurement method the identity binds (`_bound_method_text`), and a unit converted to
+    constant prices whose prices deflated it (`UnitConversion.deflation_basis`).
     """
     resolved = spec.resolved
     plan = heading_from_parts(
@@ -298,6 +300,11 @@ def heading_for(
         measure_label_axes=resolved.measure_label_axes,
         measure_label_named_values=resolved.measure_label_named_values,
         unit_request=_unit_request(spec),
+        deflated_by=(
+            resolved.unit_conversion.deflation_basis
+            if resolved.unit_conversion is not None
+            else None
+        ),
         entity_groups=resolved.entity_groups,
         role_axis_facts=resolved.role_axis_facts or (),
     )
@@ -398,6 +405,7 @@ def heading_from_parts(
     measure_label_axes: Sequence[str] = (),
     measure_label_named_values: Sequence[tuple[str, str]] = (),
     unit_request: IdentityUnitRequest | None = None,
+    deflated_by: DeflationBasis | None = None,
     entity_groups: Mapping[str, EntityGroup] | None = None,
     role_axis_facts: Sequence[RoleAxisFact] = (),
     member_dcids: Sequence[str] = (),
@@ -429,7 +437,7 @@ def heading_from_parts(
     on one door would speak on the other. A unit that changes the magnitude follows the
     noun (`_unit_heading_phrase`). A currency and other units stay out. ``unit_request`` is
     the identity's unit request, whose currency and price basis belong to the byline's
-    unit.
+    unit, and ``deflated_by`` whose prices deflated its conversion to constant prices.
 
     The period is the span the answer serves (`served_period`). The byline states "Latest
     year with data" when ``latest`` marks a request for the latest year, the currency
@@ -512,6 +520,7 @@ def heading_from_parts(
         facets,
         constraints,
         unit_request=unit_request,
+        deflated_by=deflated_by,
         graph_measure_name=None if noun.stated else noun.text,
         wording=wording,
     )
@@ -903,6 +912,7 @@ def _byline_unit(
     constraints: Mapping[str, str],
     *,
     unit_request: IdentityUnitRequest | None,
+    deflated_by: DeflationBasis | None,
     graph_measure_name: str | None,
     wording: RoleWording,
 ) -> tuple[str, PriceBasis | None]:
@@ -917,7 +927,9 @@ def _byline_unit(
     the heading when they change the magnitude (`_unit_heading_phrase`) or needed by no
     reader. A unit whose series disagree (``per_series``) reads nothing. The price basis
     is the unit request's, the unit's base year, or the ``measurementQualifier`` of the
-    shape or of every member (`price_basis`).
+    shape or of every member (`price_basis`). A unit request's constant prices also name
+    ``deflated_by``, whose prices deflated the conversion: "constant 2024 Nigerian naira,
+    donor prices".
 
     ``graph_measure_name`` is the graph name the heading states for the measure, None
     when an authored noun or measure label states it. Only a graph name is read as text.
@@ -947,7 +959,11 @@ def _byline_unit(
     qualifier = shape.measurement_qualifier
     basis = price_basis(
         requested=(
-            PriceBasis(prices=unit_request.prices, base_year=unit_request.base_year)
+            PriceBasis(
+                prices=unit_request.prices,
+                base_year=unit_request.base_year,
+                deflated_by=deflated_by,
+            )
             if unit_request is not None
             else None
         ),

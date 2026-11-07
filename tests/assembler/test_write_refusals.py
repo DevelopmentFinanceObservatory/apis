@@ -344,6 +344,7 @@ def test_comparable_units_required_is_still_reachable_from_the_write_path(
 
 _PER_PERSON = {"numerator": "USDollar", "denominator": {"stat_var": "dcid:Count_Person"}}
 _PER_WOMAN = {"numerator": "USDollar", "denominator": {"stat_var": "dcid:Count_Person_Female"}}
+_CONSTANT_NGN = {"currency": "NGN", "prices": "constant", "base_year": 2024}
 
 
 @pytest.mark.parametrize(
@@ -352,14 +353,28 @@ _PER_WOMAN = {"numerator": "USDollar", "denominator": {"stat_var": "dcid:Count_P
         pytest.param("line_chart", ("USDollar", None), id="line_chart-set-and-null"),
         pytest.param("bar_chart", ("USDollar", None), id="bar_chart-set-and-null"),
         pytest.param("line_chart", (_PER_PERSON, _PER_WOMAN), id="line_chart-composed"),
+        pytest.param(
+            "line_chart",
+            (
+                {**_CONSTANT_NGN, "deflation_basis": "donor"},
+                {**_CONSTANT_NGN, "deflation_basis": "recipient"},
+            ),
+            id="donor-and-recipient-deflated",
+        ),
+        pytest.param(
+            "bar_chart",
+            ({**_CONSTANT_NGN, "deflation_basis": "donor"}, _CONSTANT_NGN),
+            id="a-basis-beside-none",
+        ),
     ],
 )
 def test_a_chart_over_series_with_different_units_refuses_comparable_units(
     member, units, frame_store, revision_store, release_registry
 ):
-    """Issue #953: GDP in USDollar beside population with a null unit resolves as two series.
-    A chart over them refuses on its units, after resolution lets them through. Two composed
-    units that differ in one side refuse the same way."""
+    """GDP in USDollar beside population with a null unit resolves as two series. A chart over
+    them refuses on its units, after resolution lets them through. Two composed units that
+    differ in one side refuse the same way, and so do aid deflated by the donor's prices beside
+    debt deflated by the recipient's, in one currency and base year."""
     rf = _stored_resolved_frame(
         frame_ref=FrameRef(spec_id="spec_" + "6" * 32, content_version="cv_" + "7" * 32),
         role_keys=("recipient",),
@@ -414,6 +429,12 @@ def test_a_chart_over_series_with_different_units_refuses_comparable_units(
         ),
         pytest.param(
             ("USDollar", "USDollar"), {"USDollar": "US Dollar"}, "US Dollar", id="one-unit-control"
+        ),
+        pytest.param(
+            ({**_CONSTANT_NGN, "deflation_basis": "donor"},) * 2,
+            {},
+            {**_CONSTANT_NGN, "deflation_basis": "donor"},
+            id="one-deflation-basis-control",
         ),
     ],
 )

@@ -134,23 +134,10 @@ def _build_bar_chart(
         bound_series=bound_series, y_label=y_label, stat_var_labels=stat_var_labels
     )
     select = cast(Mapping[str, object], merged_intent["select"])
-    if has_arrayed_dimension(select=select):
-        category_dimension = next(name for name, value in select.items() if isinstance(value, list))
-        _require_no_other_varying_dimension(
-            category_dimension=category_dimension,
-            select=select,
-            resolved_frame=resolved_frame,
-            series=series,
-        )
-        series_and_axis = _bar_chart_entity_mode(
-            category_dimension=category_dimension,
-            labels=resolved_frame.labels,
-            series=series,
-            bound_series=bound_series,
-            source_id_by_raw_ref=source_id_by_raw_ref,
-            largest_first=False,
-        )
-    elif len(bound_series) == 1:
+    category_dimension = bar_chart_category(
+        select=select, resolved_frame=resolved_frame, series=series, bound_series=bound_series
+    )
+    if category_dimension is None:
         series_and_axis = _bar_chart_period_mode(
             merged_intent=merged_intent,
             resolved_frame=resolved_frame,
@@ -159,17 +146,12 @@ def _build_bar_chart(
         )
     else:
         series_and_axis = _bar_chart_entity_mode(
-            category_dimension=_default_category_dimension(
-                select=select,
-                resolved_frame=resolved_frame,
-                series=series,
-                bound_series=bound_series,
-            ),
+            category_dimension=category_dimension,
             labels=resolved_frame.labels,
             series=series,
             bound_series=bound_series,
             source_id_by_raw_ref=source_id_by_raw_ref,
-            largest_first=True,
+            largest_first=not has_arrayed_dimension(select=select),
         )
     payload_series, category_axis, observed_periods = series_and_axis
     scale, range_ = _value_axis_scale_and_range(merged_intent=merged_intent)
@@ -185,6 +167,37 @@ def _build_bar_chart(
         },
     }
     return component, observed_periods
+
+
+def bar_chart_category(
+    *,
+    select: Mapping[str, object],
+    resolved_frame: ResolvedFrame,
+    series: Sequence[ResolvedSeries],
+    bound_series: Sequence[BoundSeries],
+) -> str | None:
+    """The dimension a bar chart of `select` draws one bar per value of, or `None` when it
+    draws its one series across periods. A select that lists values compares them, and no
+    other dimension may vary; otherwise several series compare the one dimension they vary
+    on (`_default_category_dimension`). Bars of several series stand at the latest period
+    every series holds a value in (`_shared_observed_period`). A select a bar chart cannot
+    draw refuses `binding_invalid`."""
+    if has_arrayed_dimension(select=select):
+        category_dimension = next(name for name, value in select.items() if isinstance(value, list))
+        _require_no_other_varying_dimension(
+            category_dimension=category_dimension,
+            select=select,
+            resolved_frame=resolved_frame,
+            series=series,
+        )
+    elif len(bound_series) == 1:
+        return None
+    else:
+        category_dimension = _default_category_dimension(
+            select=select, resolved_frame=resolved_frame, series=series, bound_series=bound_series
+        )
+    _shared_observed_period(bound_series=bound_series)
+    return category_dimension
 
 
 def _bar_chart_entity_mode(

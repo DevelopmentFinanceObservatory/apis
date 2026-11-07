@@ -23,7 +23,14 @@ import json
 from collections.abc import Iterable, Mapping, Sequence, Sized
 from typing import Annotated, Literal, Protocol, Self
 
-from dfo_frame_grammar.grammar import ComposedUnit, StatVarPart, UnitCell, UnitPart, UnitRequest
+from dfo_frame_grammar.grammar import (
+    ComposedUnit,
+    DeflationBasis,
+    StatVarPart,
+    UnitCell,
+    UnitPart,
+    UnitRequest,
+)
 from pydantic import (
     AfterValidator,
     BaseModel,
@@ -127,13 +134,14 @@ StepInput = StepId | VersionRef
 
 class SimpleUnit(_Step):
     """A unit by reference, by currency, or both. `ref` is the unit's bare
-    dcid; `currency`, `prices` and `base_year` name a converted unit."""
+    dcid; `currency`, `prices`, `base_year` and `deflation_basis` name a converted unit."""
 
     ref: Text | MISSING = MISSING
     currency: Annotated[str, StringConstraints(pattern=r"^[A-Z]{3}$")] | MISSING = MISSING
     label: Text | MISSING = MISSING
     prices: Name | MISSING = MISSING
     base_year: Annotated[int, Field(ge=1900, le=2100, strict=True)] | MISSING = MISSING
+    deflation_basis: DeflationBasis | MISSING = MISSING
 
     @model_validator(mode="after")
     def _ref_or_currency(self) -> Self:
@@ -276,9 +284,12 @@ def _bare(ref: str) -> str:
 def _simple_unit(unit: str | UnitRequest) -> SimpleUnit:
     if isinstance(unit, str):
         return SimpleUnit(ref=_bare(unit))
-    if unit.base_year is None:
-        return SimpleUnit(currency=unit.currency, prices=unit.prices)
-    return SimpleUnit(currency=unit.currency, prices=unit.prices, base_year=unit.base_year)
+    return SimpleUnit(
+        currency=unit.currency,
+        prices=unit.prices,
+        base_year=MISSING if unit.base_year is None else unit.base_year,
+        deflation_basis=MISSING if unit.deflation_basis is None else unit.deflation_basis,
+    )
 
 
 def _unit_side(part: UnitPart) -> SimpleUnit | VariableSide:

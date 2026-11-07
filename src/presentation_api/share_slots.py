@@ -66,6 +66,10 @@ from assembler.pipeline.export_component import (
 )
 from assembler.pipeline.stored_revision import read_stored_revision
 from assembler.ports import FRAME_UNAVAILABLE_OUTCOME, FrameRef, FrameUnavailable, RevisionRecord
+from datasets_api.app import classify_datasets_exception
+from datasets_api.exports import resolve_endpoint
+from dfo_platform import ProblemSpec
+from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
 from dfo_platform.codes import bound_registry_endpoint
 from materialise.formats import ExcelIllegalCharacterError
 from presentation_api.config import PRESENTATION_COMPONENTS_TIMEOUT_SECONDS
@@ -253,6 +257,7 @@ def serve_on_slot_frame[T](
                 check.frame,
                 "" if wait is None else f" for {wait:g} s",
                 exc_info=True,
+                extra={JSON_FIELDS_ATTR: _drawing_refusal_fields(exc)},
             )
             try:
                 drawn = draw(check.frame)
@@ -506,6 +511,36 @@ def _transient_wait(exc: Exception) -> float | None:
     return min(max(wait, _MIN_RETRY_S), FRESHNESS_WINDOW.total_seconds())
 
 
+def _drawing_refusal_fields(exc: Exception) -> dict[str, str]:
+    """The log fields naming the refusal `exc` a draw raised, as the components door classifies
+    it: `code`, and `constraint_id` for a constraint violation. None for a failure no refusal
+    names."""
+    # The draw runs off the request's task, where no registry endpoint is bound.
+    with bound_registry_endpoint(SHARES_ENDPOINT):
+        return _refusal_fields(classify_components_exception(exc))
+
+
+def _newest_refusal_fields(exc: Exception) -> dict[str, str]:
+    """The log fields naming the refusal `exc` a newer-data check raised, as the Datasets route
+    that raises it classifies it (`datasets_api.exports.resolve_endpoint`): `code`, the
+    analysis refusal's own code for a derived frame's run, such as `unit_not_present` or
+    `cross_frame_unit_mismatch`. None for a failure no Datasets route names."""
+    endpoint = resolve_endpoint(exc)
+    if endpoint is None:
+        return {}
+    with bound_registry_endpoint(endpoint):
+        return _refusal_fields(classify_datasets_exception(exc))
+
+
+def _refusal_fields(spec: ProblemSpec | None) -> dict[str, str]:
+    if spec is None:
+        return {}
+    fields = {"code": spec.code}
+    if spec.constraint_id is not None:
+        fields["constraint_id"] = spec.constraint_id
+    return fields
+
+
 def _live_check(
     *,
     share: ShareRecord,
@@ -564,10 +599,16 @@ def _check(
         return SlotCheck(frame=last, freshness="stale", checked_at=now, next_check_at=due)
     try:
         answer = deps.newest.newest(frame, rendering=rendering)
-    except Exception:
+    except Exception as exc:
         # Every refusal and failure of the refresh or the run leaves the slot on its last frame,
         # which the reply states as stale, until the next check.
-        logger.warning("Share %s newer-data check of %s failed", label, frame, exc_info=True)
+        logger.warning(
+            "Share %s newer-data check of %s failed",
+            label,
+            frame,
+            exc_info=True,
+            extra={JSON_FIELDS_ATTR: _newest_refusal_fields(exc)},
+        )
         return SlotCheck(frame=last, freshness="stale", checked_at=now, next_check_at=due)
     if isinstance(answer, NewestPending):
         retry = min(max(answer.retry_after_s, _MIN_RETRY_S), FRESHNESS_WINDOW.total_seconds())

@@ -12,6 +12,7 @@ from collections.abc import Mapping
 from typing import cast
 
 from assembler.errors import BindingInvalid, escape_pointer_segment
+from assembler.ports import StructuralView
 
 __all__ = [
     "canonical_select",
@@ -19,6 +20,7 @@ __all__ = [
     "check_single_arrayed_dimension",
     "has_arrayed_dimension",
     "normalize_select",
+    "select_values",
 ]
 
 
@@ -32,6 +34,19 @@ def canonical_select(*, select: Mapping[str, object]) -> dict[str, object]:
     }
 
 
+def select_values(*, select: Mapping[str, object]) -> dict[str, list[str]]:
+    """`select`'s normal form: each dimension's values as a sorted list without repeats, a
+    scalar promoted to a one-value list. Two selects naming the same values compare equal
+    whatever their key order, as a `jsonb` column returns them, and whether a value is
+    written as a scalar or a one-value list."""
+    return {
+        dimension: sorted(set(cast("list[str]", value)))
+        if isinstance(value, list)
+        else [cast(str, value)]
+        for dimension, value in select.items()
+    }
+
+
 def normalize_select(*, select: Mapping[str, object]) -> list[dict[str, object]]:
     """Converts each dimension into a binding, promoting scalar values to one-item lists."""
     bindings = [
@@ -41,16 +56,22 @@ def normalize_select(*, select: Mapping[str, object]) -> list[dict[str, object]]
     return [{"bindings": bindings}]
 
 
-def check_select_nonempty(*, select: Mapping[str, object]) -> None:
+def check_select_nonempty(*, select: Mapping[str, object], view: StructuralView) -> None:
     """Requires at least one dimension. An empty map is schema-valid and would resolve to
-    every frame series."""
+    every frame series. The refusal names each of the frame's dimensions (`view`) with the
+    count of values it holds."""
     if not select:
+        held = ", ".join(
+            f"{dimension.name} ({dimension.total_count} "
+            f"{'value' if dimension.total_count == 1 else 'values'})"
+            for dimension in view.dimensions
+        )
         raise BindingInvalid(
             pointer="/select",
             dimension="",
             legal_values=(),
             truncated=False,
-            detail="select must name at least one dimension",
+            detail=(f"select must name at least one dimension; this frame's dimensions are {held}"),
         )
 
 

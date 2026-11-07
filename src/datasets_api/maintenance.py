@@ -256,6 +256,30 @@ one whose new replay key another frame's recipe holds (`RecipeSkip`), with one
 with the counts and exits 1 when it skipped any. `--dry-run` counts and changes nothing, and a
 second run changes nothing. It reads the runtime database settings of both stores.
 
+`count-pinned-units` runs on every deploy, as an execution of the maintenance job once the job
+moves to the new image and before the services do (`.github/workflows/deploy.yml`), so it counts
+for an image whose converted unit keys name their deflation basis
+(`materialise.unit_cells.unit_key_text`). It changes nothing. It lists the live recipes
+(`superseded_at` unset) that pin a unit with a constant-price side and no basis in an op-spec's
+`unit`, `left_unit`, `right_unit`, `numerator_unit` or `denominator_unit`
+(`dfo_analysis_engine.op_spec.PinnedUnit`), read as the grammar reads a unit cell. The pin
+equals no rebuilt root's cell, so the recipe refuses `unit_not_present` and its derived frame
+stops refreshing until it is minted again. It also counts the cards drawing such a frame, over
+the card revisions that are a component's head or that a live share shows
+(`presentation_store.store.derived_frame_revisions`), by the recipe of the pair each holds,
+superseded or not. A card whose `select` binds `unit` to a constant-price key with no basis is
+not counted: on a rebuilt frame holding one unit the binding follows that unit
+(`assembler.rolling.StoredSelect` rule 4), and only a frame holding several refuses it, as
+`binding_invalid`. Nor are two refusals that only the rows decide: a recipe whose two sides
+read constant-price roots deflated on different bases, as a DAC side beside an IDS side,
+refuses `cross_frame_unit_mismatch`, and a line or bar chart whose series span bases refuses
+`comparable_units_required`. Each of these surfaces on its next live refresh as a share slot's
+warning carrying `code` (`presentation_api.share_slots`). It writes one
+`datasets_pinned_units_counted` line with `pinned_heads`, `pinned_live_slots`,
+`pinned_components`, `pinned_recipe_count` and `pinned_recipes` to the maintenance job's logs, at
+`WARNING` when any count is above 0. It exits 0 whatever it counts, so the counts never fail the
+deploy. It reads the runtime database settings of both stores.
+
 `take-down-share SHARE_ID` runs by hand to take a share down for its owner, as for the ids the
 website's `share_cleanup` table holds. It takes the share down as the owner's delete with its
 write token does (`ShareStore.delete_share`) and needs no token. It writes one
@@ -284,11 +308,17 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TextIO, cast
+from typing import TYPE_CHECKING, Any, TextIO, cast, get_args
 
 import pg8000.exceptions
 import pyarrow as pa
 import pyarrow.parquet as pq
+from dfo_frame_grammar.grammar import (
+    ComposedUnit,
+    UnitCell,
+    UnitRequest,
+    unit_cell_from_json,
+)
 from google.api_core.exceptions import RetryError, ServerError, TooManyRequests
 from google.auth.exceptions import TransportError
 from pydantic import Field, ValidationError
@@ -387,7 +417,14 @@ from datasets_api.warning_backfill import (
 )
 from dc_sdmx import SdmxClient
 from description.facts import SCHEMA_VERSION, DescriptionRecord, VariableFacts
-from dfo_analysis_engine.recipe import normal_form, normal_form_hash, replay_key, root_identity
+from dfo_analysis_engine.op_spec import OpSpec, PinnedUnit
+from dfo_analysis_engine.recipe import (
+    derived_nodes,
+    normal_form,
+    normal_form_hash,
+    replay_key,
+    root_identity,
+)
 from dfo_platform.store_errors import extract_sqlstate, store_failure_is_permanent
 from graph_release.context import bound_served_release
 from graph_release.service import get_release_service
@@ -2010,6 +2047,137 @@ def _normalise_recipes(dry_run: bool) -> int:
     return 1 if skipped else 0
 
 
+def _constant_without_basis(cell: UnitCell) -> bool:
+    """Whether `cell`, or a side of it when composed, is a converted unit at constant prices
+    that names no deflation basis."""
+    sides = (cell.numerator, cell.denominator) if isinstance(cell, ComposedUnit) else (cell,)
+    return any(
+        isinstance(side, UnitRequest) and side.prices == "constant" and side.deflation_basis is None
+        for side in sides
+    )
+
+
+# The op-spec parameters that pin a unit (`dfo_analysis_engine.op_spec.PinnedUnit`), read off
+# every verb's model.
+_PIN_PARAMETERS = frozenset(
+    name
+    for model in get_args(get_args(OpSpec)[0])
+    for name, field in model.model_fields.items()
+    if field.annotation == PinnedUnit | None
+)
+
+
+def _pins_unsuffixed_constant_unit(recipe: Mapping[str, Any]) -> bool:
+    """Whether an op-spec of `recipe`'s tree pins a unit with a constant-price side and no
+    deflation basis, which stops matching a root's unit cells once they name their basis. A
+    pin reads as the grammar reads a unit cell (`unit_cell_from_json`), as the verb read it."""
+    for node in derived_nodes(recipe["tree"]):
+        parameters = cast("Mapping[str, object]", node["op_spec"]["parameters"])
+        for name in _PIN_PARAMETERS & parameters.keys():
+            pin = unit_cell_from_json(parameters[name])
+            if pin is not None and _constant_without_basis(pin):
+                return True
+    return False
+
+
+def _held_recipe(
+    datasets: DatasetStore, *, spec_id: str, content_version: str
+) -> Mapping[str, Any] | None:
+    """The stored recipe of the derived frame `spec_id`, `content_version`, superseded or not,
+    since a refresh replays the recipe of the pair it holds. `None` when none is held."""
+    with datasets.transaction() as tx:
+        row = tx.fetch_one(
+            "SELECT recipe FROM datasets.frame_recipe "
+            "WHERE subject_id = %s AND content_version = %s",
+            (spec_id, content_version),
+        )
+    return None if row is None else cast("Mapping[str, Any]", row["recipe"])
+
+
+RECIPE_SCAN_PAGE = 200
+"""Live recipes `_pinned_recipe_frames` reads per query."""
+
+
+def _pinned_recipe_frames(datasets: DatasetStore) -> list[str]:
+    """The `spec_id@content_version` of every live recipe (`superseded_at` unset) that pins a
+    unit with a constant-price side and no basis (`_pins_unsuffixed_constant_unit`), sorted.
+    It reads `RECIPE_SCAN_PAGE` recipes at a time, in key order."""
+    pinned: list[str] = []
+    after = ("", "")
+    while True:
+        with datasets.transaction() as tx:
+            page = tx.fetch_all(
+                "SELECT subject_id, content_version, recipe FROM datasets.frame_recipe "
+                "WHERE superseded_at IS NULL AND (subject_id, content_version) > (%s, %s) "
+                "ORDER BY subject_id, content_version LIMIT %s",
+                (*after, RECIPE_SCAN_PAGE),
+            )
+        pinned.extend(
+            f"{row['subject_id']}@{row['content_version']}"
+            for row in page
+            if _pins_unsuffixed_constant_unit(cast("Mapping[str, Any]", row["recipe"]))
+        )
+        if len(page) < RECIPE_SCAN_PAGE:
+            return sorted(pinned)
+        after = (str(page[-1]["subject_id"]), str(page[-1]["content_version"]))
+
+
+def run_count_pinned_units(*, presentation: DatasetStore, datasets: DatasetStore) -> None:
+    """Count the derived frames that stop refreshing once converted unit keys name their
+    deflation basis, and write one `datasets_pinned_units_counted` line, `WARNING` when any
+    count is above 0. It counts the live recipes that pin a unit with a constant-price side and
+    no basis (`_pins_unsuffixed_constant_unit`, `pinned_recipes`), which no rebuilt root
+    declares, so each replay refuses `unit_not_present`. It also counts the cards drawing a
+    derived frame whose recipe pins one (`pinned_*`), whatever their `select`.
+
+    A card whose `select` binds `unit` to such a key is not counted. On a rebuilt frame holding
+    one unit the binding follows it (`assembler.rolling.StoredSelect` rule 4), and only a frame
+    holding several refuses it, as `binding_invalid`. Neither is a recipe whose two sides read
+    roots deflated on different bases (`cross_frame_unit_mismatch`) or a line or bar chart whose
+    series span bases (`comparable_units_required`). Each refuses only on its next live
+    refresh."""
+    # Presentation is another surface's store, so its modules load for this task alone.
+    from presentation_store.store import derived_frame_revisions
+
+    recipes: dict[tuple[str, str], Mapping[str, Any] | None] = {}
+    pinned: list[tuple[str, bool, int]] = []
+    for revision in derived_frame_revisions(presentation):
+        frame = (revision.spec_id, revision.content_version)
+        if frame not in recipes:
+            recipes[frame] = _held_recipe(
+                datasets, spec_id=revision.spec_id, content_version=revision.content_version
+            )
+        recipe = recipes[frame]
+        if recipe is not None and _pins_unsuffixed_constant_unit(recipe):
+            pinned.append((revision.component_id, revision.head, revision.live_slots))
+    pinned_recipes = _pinned_recipe_frames(datasets)
+    emit(
+        "datasets_pinned_units_counted",
+        severity="WARNING" if pinned or pinned_recipes else "INFO",
+        pinned_heads=sum(head for _, head, _ in pinned),
+        pinned_live_slots=sum(slots for _, _, slots in pinned),
+        pinned_components=sorted({component_id for component_id, _, _ in pinned}),
+        pinned_recipe_count=len(pinned_recipes),
+        pinned_recipes=pinned_recipes,
+    )
+
+
+def _count_pinned_units() -> int:
+    # Presentation is another surface's store, so its modules load for this task alone.
+    from presentation_store import provider as presentation_provider
+
+    datasets = LiveDatasetStore(connections=shared_pool())
+    try:
+        presentation = LiveDatasetStore(connections=presentation_provider.shared_pool())
+        try:
+            run_count_pinned_units(presentation=presentation, datasets=datasets)
+        finally:
+            presentation_provider.close_shared_pool()
+    finally:
+        close_shared_pool()
+    return 0
+
+
 def run_take_down_share(*, share_store: ShareStore, share_id: str) -> None:
     """Take the share `share_id` down as its owner's delete does, and log whether one was up."""
     # Presentation is another surface's store, so its modules load for this task alone.
@@ -2115,6 +2283,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     normalise.add_argument("--dry-run", action="store_true")
     normalise.set_defaults(run=_normalise_recipes)
+    tasks.add_parser(
+        "count-pinned-units",
+        help="count the recipes, and the cards drawing them, that pin a unit without its basis",
+    ).set_defaults(run=_count_pinned_units)
     take_down = tasks.add_parser(
         "take-down-share", help="take a share down as its owner's delete does, with no token"
     )

@@ -35,9 +35,9 @@ records its key. Under `RefuseProjected` a projected base-year term refuses with
 The output preserves columns and the order of the rows it keeps, changing only `OBS_VALUE`
 and `unit`. Values are
 stored as strings using `repr()`, which round-trips exactly through `observed_values`. Unit
-is a per-row `{currency, prices, base_year}` struct, allowing
-role-shaped targets. `convert_scalar` replays the formula with Python
-floats in the same order."""
+is a per-row `{currency, prices, base_year, deflation_basis}` struct (`deflation_basis` set at
+constant prices, `recipe_bodies.DEFLATION_BASES`), which allows role-shaped targets.
+`convert_scalar` replays the formula with Python floats in the same order."""
 
 from __future__ import annotations
 
@@ -52,6 +52,7 @@ from dc_sdmx.results import VALUE_COLUMN
 from materialise.columnar import leading_years, observed_values
 from materialise.errors import MaterialisationUsageError, UpstreamResponseError
 from materialise.rate_tables import RateTable
+from materialise.recipe_bodies import DeflationBasis, basis_of_role
 from materialise.recipes import (
     _MAX_NAMED_ENTITIES,
     ConversionRecipe,
@@ -63,10 +64,16 @@ from materialise.recipes import (
 
 _UNIT_COLUMN = "unit"
 
-# Mirrors `dfo_frame_grammar.grammar.UnitRequest`'s field set, defined here
-# to keep this module independent of `dfo_frame_grammar`.
+# Mirrors `dfo_frame_grammar.grammar.UnitRequest`'s field set less `recipe`, which a
+# conversion here does not write, defined here to keep this module independent of
+# `dfo_frame_grammar`.
 _UNIT_STRUCT_TYPE = pa.struct(
-    [("currency", pa.string()), ("prices", pa.string()), ("base_year", pa.int64())]
+    [
+        ("currency", pa.string()),
+        ("prices", pa.string()),
+        ("base_year", pa.int64()),
+        ("deflation_basis", pa.string()),
+    ]
 )
 
 _DEFLATOR_UNKEYED = "deflator_unkeyed"
@@ -507,7 +514,8 @@ def _pc_divide(left: pa.Array, right: pa.Array) -> pa.Array:
 @dataclass(frozen=True)
 class _GatheredTerms:
     """Every term one member's rows read, with the fallback and gap bookkeeping. Current
-    prices fill `x_target_t`; constant prices fill `d_r_b`, `d_r_t` and `x_target_b`."""
+    prices fill `x_target_t`. Constant prices fill `d_r_b`, `d_r_t`, `x_target_b` and
+    `deflation_basis`, whose prices the deflator role's entities are."""
 
     terms: _Terms
     target_currencies: Sequence[str]
@@ -517,6 +525,7 @@ class _GatheredTerms:
     d_r_t: list[float | None] | None = None
     x_target_b: list[float | None] | None = None
     fallback: list[tuple[int, tuple[str, str]]] = field(default_factory=list)
+    deflation_basis: DeflationBasis | None = None
 
 
 def _gather_terms(
@@ -649,6 +658,7 @@ def _gather_rows(
         rows, request.target, declared_roles=inputs.declared_roles, skip=skip
     )
     deflator_entities = None
+    r_role = None
     if request.prices == "constant" and inputs.deflator_table is not None:
         r_role = resolve_deflator_role(inputs.recipe, declared_roles=inputs.declared_roles)
         deflator_entities = rows[r_role].to_pylist()
@@ -664,6 +674,8 @@ def _gather_rows(
         exchange_rate_table=inputs.exchange_rate_table,
         deflator_table=inputs.deflator_table,
     )
+    if r_role is not None:
+        gathered = replace(gathered, deflation_basis=basis_of_role(inputs.recipe, r_role))
     return gathered, deflator_entities, years
 
 
@@ -756,6 +768,7 @@ def convert_member_marked(
         result=result,
         prices=unit_request.prices,
         base_year=unit_request.base_year,
+        basis=gathered.deflation_basis,
         target_currencies=[_iso_currency(currency) for currency in target_currencies],
     )
     record = ConversionRecord(
@@ -786,17 +799,27 @@ def _apply_conversion(
     result: pa.Array,
     prices: str,
     base_year: int | None,
+    basis: str | None,
     target_currencies: Sequence[str],
 ) -> pa.Table:
     """Replaces `OBS_VALUE` with the result's `repr()` (`""` for null) and `unit` with a
-    per-row `{currency, prices, base_year}` struct, null when the value is null. Other columns
-    and row order stay unchanged."""
+    per-row `{currency, prices, base_year, deflation_basis}` struct, null when the value is
+    null. `basis` is whose prices deflated a constant-price row
+    (`recipe_bodies.DEFLATION_BASES`), `None` at current prices. Other columns and row order
+    stay unchanged."""
     values = result.to_pylist()
     value_strings = pa.array(
         ["" if value is None else repr(value) for value in values], type=pa.string()
     )
     unit_cells = [
-        None if value is None else {"currency": currency, "prices": prices, "base_year": base_year}
+        None
+        if value is None
+        else {
+            "currency": currency,
+            "prices": prices,
+            "base_year": base_year,
+            "deflation_basis": basis,
+        }
         for value, currency in zip(values, target_currencies, strict=True)
     ]
     unit_array = pa.array(unit_cells, type=_UNIT_STRUCT_TYPE)

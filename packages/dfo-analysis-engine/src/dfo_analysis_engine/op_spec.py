@@ -447,11 +447,13 @@ PredicateAdapter: TypeAdapter[Predicate] = TypeAdapter(Predicate)
 class ConvertedUnit(TypedDict):
     """A converted unit, as `get_data` writes it into a frame's `unit` cells:
     `currency` is an upper-case ISO 4217 code, `prices` is `current` or
-    `constant`, and `base_year` is present exactly when prices are constant."""
+    `constant`, `base_year` is present exactly when prices are constant, and
+    `deflation_basis`, whose prices deflated the values, may be present only then."""
 
     currency: Annotated[str, Field(pattern=r"^[A-Z]{3}$")]
     prices: Literal["current", "constant"]
     base_year: NotRequired[int]
+    deflation_basis: NotRequired[Literal["donor", "recipient", "national"]]
 
 
 # A composed pin as a tool's input schema advertises it. A caller copies one

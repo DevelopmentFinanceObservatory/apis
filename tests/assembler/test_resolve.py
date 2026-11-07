@@ -375,6 +375,67 @@ def test_series_count_estimate_refuses_before_touching_frame_rows():
     assert excinfo.value.limit_name == "MAX_SERIES_PER_COMPONENT"
 
 
+@pytest.mark.parametrize(
+    ("line_chart_cap", "limit_name", "listed"),
+    [
+        pytest.param(None, "MAX_SERIES_PER_COMPONENT", 24, id="component"),
+        pytest.param(8, "MAX_LINE_CHART_SERIES", 8, id="line-chart"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("stat_vars", "selectors", "named"),
+    [
+        pytest.param(
+            5,
+            [{"bindings": []}],
+            ["stat_var (5 values) and recipient (6 values) multiply", "at most {listed} values"],
+            id="two-unbound",
+        ),
+        pytest.param(
+            1,
+            [{"bindings": [{"dimension": "stat_var", "values": ["dcid:X00"]}]}],
+            ["recipient (26 values) is the series dimension", "at most {listed} values"],
+            id="one-unbound",
+        ),
+        # A listed dimension stays the series; the unbound one is bound.
+        pytest.param(
+            5,
+            [
+                {
+                    "bindings": [
+                        {"dimension": "stat_var", "values": [f"dcid:X{i:02d}" for i in range(5)]}
+                    ]
+                }
+            ],
+            ["bind recipient (6 values) to one value, keeping stat_var (5 values) as the series"],
+            id="listed-and-unbound",
+        ),
+    ],
+)
+def test_the_estimate_refusal_names_the_dimensions_it_multiplies(
+    line_chart_cap, limit_name, listed, stat_vars, selectors, named
+):
+    """Five variables at six recipients estimate 30 series; one variable at 26 recipients
+    estimates 26. The refusal names each dimension with the count the estimate gives it,
+    and the number of values the chart takes."""
+    recipients = 6 if stat_vars > 1 else 26
+    rows = [
+        _row(stat_var=f"dcid:X{index:02d}", recipient=f"country/{place:03d}", period="2020")
+        for index in range(stat_vars)
+        for place in range(recipients)
+    ]
+    with pytest.raises(ResourceExhausted) as excinfo:
+        resolve_selectors(
+            resolved_frame=_resolved_frame(rows),
+            selectors=selectors,
+            window=None,
+            line_chart_cap=line_chart_cap,
+        )
+    assert (excinfo.value.pointer, excinfo.value.limit_name) == ("/select", limit_name)
+    for words in named:
+        assert words.format(listed=listed) in excinfo.value.detail
+
+
 def test_series_count_estimate_runs_before_any_row_grouping(monkeypatch):
     """The structural estimate refuses before `_group_by_coordinate` reads frame rows."""
     import assembler.resolve as resolve_module

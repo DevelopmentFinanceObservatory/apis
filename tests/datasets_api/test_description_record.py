@@ -596,6 +596,45 @@ def test_a_conversion_is_a_step_and_its_estimates_and_gaps_are_caveats(
     assert record.caveats == caveats
 
 
+def _constant_usd(basis: str) -> dict[str, object]:
+    return {"currency": "USD", "prices": "constant", "base_year": 2023, "deflation_basis": basis}
+
+
+@pytest.mark.parametrize(
+    ("units", "converted_into"),
+    [
+        pytest.param(
+            [("OECD_DAC2A", _constant_usd("donor"))],
+            "US dollars in constant 2023 donor prices",
+            id="dac2a-aid-in-donor-prices",
+        ),
+        pytest.param(
+            [("WB_IDS", _constant_usd("recipient"))],
+            "US dollars in constant 2023 recipient prices",
+            id="ids-debt-in-recipient-prices",
+        ),
+        pytest.param(
+            [("OECD_DAC2A", _constant_usd("donor")), ("WB_IDS", _constant_usd("recipient"))],
+            "US dollars in constant 2023 prices",
+            id="two-bases-name-none",
+        ),
+    ],
+)
+def test_a_conversion_step_names_whose_prices_its_converted_units_share(
+    units: list[tuple[str, dict[str, object]]], converted_into: str
+) -> None:
+    figures = replace(
+        _figures(),
+        by_source_unit=tuple(
+            SourceUnitFigure(source=source, unit=unit, series=1) for source, unit in units
+        ),
+    )
+
+    served = _described(_mint(_converted(_family_raw(), projected=0), figures=figures))
+
+    assert [step["text"] for step in served["steps"]] == [f"Converted euros to {converted_into}."]
+
+
 _GAP_PLACES = [f"dcid:country/C{index:02d}" for index in range(51)]
 
 
