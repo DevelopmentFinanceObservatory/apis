@@ -61,6 +61,7 @@ from assembler.errors import (
     ReleaseMismatch,
     ResourceExhausted,
     SchemaInvalid,
+    escape_pointer_segment,
     pointer_from_path,
 )
 from assembler.frame_view import dimension_columns, facet_dimension_names, hashable_cell
@@ -217,11 +218,7 @@ def _build_candidate(
     held_to_line_chart_cap = member == "line_chart" and (
         current is None or select != _stored_select(current=current)
     )
-    series_limit = (
-        SeriesLimit(name="MAX_LINE_CHART_SERIES", cap=release.line_chart_max_series)
-        if held_to_line_chart_cap
-        else COMPONENT_SERIES_LIMIT
-    )
+    series_limit = _line_chart_limit(release) if held_to_line_chart_cap else COMPONENT_SERIES_LIMIT
     if member == "line_chart" and resolved_frame.structural_view.span is not None:
         # The refusal reads the selected series, before the window, which a span frame's
         # line chart never reaches.
@@ -299,9 +296,7 @@ def _build_candidate(
             series=series,
             selectors=selectors,
             limit=series_limit,
-            others=lambda: _other_types_drawing(
-                drawn=drawn, series=series, selectors=selectors, draw=draw
-            ),
+            others=lambda: _other_types_drawing(drawn=drawn, series=series, draw=draw),
         )
     return draw(as_member=member, intent=drawn, stored_intent=merged, described=described)
 
@@ -634,12 +629,12 @@ def _check_line_chart_series(
     """Refuses a line chart that resolves to more series than `limit.cap`
     (`check_resolved_series`).
 
-    The schema caps a listed array at the cap (`_validate_intent`). This counts the
-    resolved series, so it also holds for a select that leaves a dimension unbound. A write
-    is held to the cap when it creates a line chart or changes its select. A revision that
-    keeps the stored select, a title edit say, and a render of a stored revision skip the
-    check, so a line chart stored over the cap renders and takes edits that leave its series
-    alone.
+    A listed array past the cap refuses before this (`_refuse_line_chart_list_past_cap`).
+    This counts the resolved series, so it also holds for a select that leaves a dimension
+    unbound. A write is held to the cap when it creates a line chart or changes its select.
+    A revision that keeps the stored select, a title edit say, and a render of a stored
+    revision skip the check, so a line chart stored over the cap renders and takes edits that
+    leave its series alone.
 
     The detail offers the types `others` returns, those whose own write passes on the same
     select (`_other_types_drawing`)."""
@@ -676,14 +671,12 @@ def _other_types_drawing(
     *,
     drawn: Mapping[str, object],
     series: Sequence[ResolvedSeries],
-    selectors: Sequence[Mapping[str, object]],
     draw: _Draw,
 ) -> list[str]:
     """`a bar_chart` and `a table`, each where that type's write passes on the same resolved
-    `series` and window and keeps every one: the series limit its resolution holds it to
-    (`check_resolved_series` under `COMPONENT_SERIES_LIMIT`), then `draw`, the write's own
-    draw (`_draw`), for an intent of that type with `drawn`'s `frame_ref`, `select` and
-    `window`."""
+    `series` and window and keeps every one: `draw`, the write's own draw (`_draw`), for an
+    intent of that type with `drawn`'s `frame_ref`, `select` and `window`. The series estimate
+    that resolved `series` is the one that type's write passes (`resolve_selectors`)."""
     drawing = []
     for member in _OTHER_TYPES:
         intent = {
@@ -691,7 +684,6 @@ def _other_types_drawing(
             **{key: drawn[key] for key in ("frame_ref", "select", "window") if key in drawn},
         }
         try:
-            check_resolved_series(series=series, selectors=selectors, limit=COMPONENT_SERIES_LIMIT)
             candidate = draw(as_member=member, intent=intent, stored_intent=intent, described=None)
         except AssemblerRefusal:
             continue
@@ -871,15 +863,16 @@ def _validate_intent(
 ) -> None:
     """Validates an intent and raises `SchemaInvalid` for the first violation.
 
-    Missing required fields carry the member's minimal intent. Other errors
-    carry its legal field names."""
+    A line chart's select list past its series cap refuses first, whatever else the intent
+    gets wrong (`_refuse_line_chart_list_past_cap`). Missing required fields carry the
+    member's minimal intent. Other errors carry its legal field names."""
+    if member == "line_chart":
+        _refuse_line_chart_list_past_cap(intent=intent, limit=_line_chart_limit(release))
     validator = jsonschema.Draft202012Validator(schema)
     errors = sorted(validator.iter_errors(intent), key=jsonschema.exceptions.relevance)
     if not errors:
         return
     error = errors[0]
-    if member == "line_chart":
-        _refuse_line_chart_list_past_cap(error=error)
     legal_top_level = tuple(sorted(cast("Mapping[str, object]", schema.get("properties", {}))))
     if error.validator == "required":
         missing = sorted(set(cast("Sequence[str]", error.validator_value)) - set(intent.keys()))
@@ -900,25 +893,31 @@ def _validate_intent(
     )
 
 
-def _refuse_line_chart_list_past_cap(*, error: jsonschema.ValidationError) -> None:
-    """Refuses a line chart's select list longer than the schema's `maxItems` as the line
-    chart's series cap, `MAX_LINE_CHART_SERIES`, the limit its resolved series are held to
-    (`_check_line_chart_series`), at the list's pointer."""
-    path = tuple(error.absolute_path)
-    if len(path) != 2 or path[0] != "select" or not isinstance(error.instance, list):
+def _line_chart_limit(release: CatalogueRelease) -> SeriesLimit:
+    """The line chart's series cap, the `maxItems` of the catalogue's `line_chart` select
+    array."""
+    return SeriesLimit(name="MAX_LINE_CHART_SERIES", cap=release.line_chart_max_series)
+
+
+def _refuse_line_chart_list_past_cap(*, intent: Mapping[str, object], limit: SeriesLimit) -> None:
+    """Refuses the first of a line chart's select lists longer than `limit.cap` at that list's
+    pointer, with the advice a select resolving past the cap gets (`series_limit_exhausted`,
+    as `check_resolved_series` raises it): the list's dimension, one series per value, stays
+    the series and is to be bound to at most the cap. It runs before schema validation, which
+    leaves any other shape the intent's select has to the schema."""
+    select = intent.get("select")
+    if not isinstance(select, Mapping):
         return
-    caps = [sub.validator_value for sub in error.context or () if sub.validator == "maxItems"]
-    if not caps:
-        return
-    dimension = str(path[1])
-    count = len(error.instance)
-    raise series_limit_exhausted(
-        limit=SeriesLimit(name="MAX_LINE_CHART_SERIES", cap=cast(int, caps[0])),
-        found=f"select lists {count} values on {dimension!r}, one series each",
-        counts={dimension: count},
-        kept=dimension,
-        pointer=pointer_from_path(error.absolute_path),
-    )
+    for dimension, values in cast("Mapping[str, object]", select).items():
+        if not isinstance(values, list) or len(values) <= limit.cap:
+            continue
+        raise series_limit_exhausted(
+            limit=limit,
+            found=f"select lists {len(values)} values on {dimension!r}, one series each",
+            counts={dimension: len(values)},
+            kept=dimension,
+            pointer=f"/select/{escape_pointer_segment(dimension)}",
+        )
 
 
 def _translate_pointer(*, component_pointer: str) -> str:

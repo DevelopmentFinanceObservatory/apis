@@ -113,19 +113,13 @@ def _revision(spec_id: str, content_version: str, normal_hash: str, revision: in
     }
 
 
+_COUNTS = ("normalised", "revisions", "replay_key_held", "unreproducible", "basis_undetermined")
+
+
 def _summary(capsys: pytest.CaptureFixture[str]) -> dict[str, Any]:
     lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     (summary,) = [line for line in lines if line["event"] == "datasets_recipes_normalised"]
-    return {
-        key: summary[key]
-        for key in (
-            "normalised",
-            "revisions",
-            "replay_key_held",
-            "unreproducible",
-            "basis_undetermined",
-        )
-    }
+    return {key: summary[key] for key in _COUNTS}
 
 
 @pytest.mark.parametrize(
@@ -270,6 +264,10 @@ _DAC = "spec_" + "d" * 32
 _IDS = "spec_" + "e" * 32
 _POP = "spec_" + "f" * 32
 _UNRECORDED = "spec_" + "0" * 32
+_UNKNOWN_RECIPE = "spec_" + "1" * 32
+_NO_DEFLATOR_ROLE = "spec_" + "2" * 32
+# A root whose version the store does not hold.
+_UNHELD = "spec_" + "3" * 32
 _CV = "cv_" + "9" * 32
 _CONSTANT = {"currency": "NGN", "prices": "constant", "base_year": 2024}
 # What each root's mint converted: the recipe and the declared roles of each series.
@@ -278,6 +276,9 @@ _ROOT_SERIES: dict[str, tuple[str | None, list[tuple[str, str]]]] = {
     _IDS: ("ConversionRecipeIDS", [("financingRecipient", "country/NGA")]),
     _POP: (None, []),
     _UNRECORDED: ("", []),
+    _UNKNOWN_RECIPE: ("ConversionRecipeRetired", [("financingProvider", "country/DEU")]),
+    # The IDS recipe deflates on the recipient alone.
+    _NO_DEFLATOR_ROLE: ("ConversionRecipeIDS", [("financingProvider", "country/DEU")]),
 }
 
 
@@ -343,7 +344,8 @@ def _pinned(stores: Stores, tree: dict[str, Any], roots: list[str]) -> dict[str,
     """Store, under `ops_pinned`, the recipe of `tree` over the `_CV` versions of `roots`,
     recording each root, and return it."""
     for spec_id in roots:
-        _store_root(stores, spec_id)
+        if spec_id != _UNHELD:
+            _store_root(stores, spec_id)
     recipe = {
         "tree": tree,
         "roots": [
@@ -470,16 +472,46 @@ def test_a_pin_without_its_basis_gets_the_basis_of_the_roots_feeding_it(
 
 
 @pytest.mark.parametrize(
-    ("roots", "inputs"),
+    ("roots", "inputs", "cause", "named"),
     [
-        ([_DAC, _IDS], {"frame_ref": _root(0), "right_frame_ref": _root(1)}),
-        ([_UNRECORDED], {"frame_ref": _root(0)}),
-        ([_POP], {"frame_ref": _root(0)}),
+        (
+            [_DAC, _IDS],
+            {"frame_ref": _root(0), "right_frame_ref": _root(1)},
+            "several_bases",
+            [_DAC, _IDS],
+        ),
+        ([_UNRECORDED], {"frame_ref": _root(0)}, "no_series_record", [_UNRECORDED]),
+        ([_POP], {"frame_ref": _root(0)}, "no_basis", [_POP]),
+        # A root whose version cannot tell is named alone.
+        (
+            [_DAC, _UNHELD],
+            {"frame_ref": _root(0), "right_frame_ref": _root(1)},
+            "root_unread",
+            [_UNHELD],
+        ),
+        ([_UNKNOWN_RECIPE], {"frame_ref": _root(0)}, "unknown_recipe", [_UNKNOWN_RECIPE]),
+        (
+            [_NO_DEFLATOR_ROLE],
+            {"frame_ref": _root(0)},
+            "no_single_deflator_role",
+            [_NO_DEFLATOR_ROLE],
+        ),
     ],
-    ids=["two-bases", "no-series-record", "no-basis"],
+    ids=[
+        "two-bases",
+        "no-series-record",
+        "no-basis",
+        "root-unread",
+        "unknown-recipe",
+        "no-single-deflator-role",
+    ],
 )
 def test_a_pin_whose_roots_give_no_single_basis_is_reported_and_left_as_it_is(
-    capsys: pytest.CaptureFixture[str], roots: list[str], inputs: dict[str, Any]
+    capsys: pytest.CaptureFixture[str],
+    roots: list[str],
+    inputs: dict[str, Any],
+    cause: str,
+    named: list[str],
 ):
     stores = Stores()
     # `unit` reads every root under its op-spec.
@@ -494,7 +526,10 @@ def test_a_pin_whose_roots_give_no_single_basis_is_reported_and_left_as_it_is(
 
     skipped = run_normalise_recipes(datasets=stores.store, presentation=presentation)
 
-    assert (skipped, _summary(capsys)) == (
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    (summary,) = [line for line in lines if line["event"] == "datasets_recipes_normalised"]
+    (skip,) = [line for line in lines if line["event"] == "datasets_recipe_normalise_skipped"]
+    assert (skipped, {key: summary[key] for key in _COUNTS}) == (
         1,
         {
             "normalised": 0,
@@ -504,6 +539,12 @@ def test_a_pin_whose_roots_give_no_single_basis_is_reported_and_left_as_it_is(
             "basis_undetermined": 1,
         },
     )
+    assert {key: skip[key] for key in ("reason", "parameter", "roots", "cause")} == {
+        "reason": "basis_undetermined",
+        "parameter": "unit",
+        "roots": [f"{spec_id}@{_CV}" for spec_id in named],
+        "cause": cause,
+    }
     assert (_stored(stores), json.dumps(presentation.state.component_revisions)) == before
 
 

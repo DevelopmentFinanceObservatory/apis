@@ -28,8 +28,14 @@ from typing import Literal
 
 from code_index.composites import provenance_datasets
 from code_index.labels import PRICES_BY_QUALIFIER
-from code_index.members import identity_family_query, query_family
-from code_index.query import CodeIndex, IndexFamily
+from code_index.members import (
+    FamilyQuery,
+    SourceNotInFamily,
+    family_for_five_tuple,
+    identity_family_query,
+    query_family,
+)
+from code_index.query import CodeIndex
 from code_index.scope_conventions import (
     BASIS_MEASURES,
     BASIS_RESTRICTIONS,
@@ -457,39 +463,50 @@ def basis_dataset(identity: BaseIdentity, index: CodeIndex) -> str | None:
     return found[0] if found is not None else None
 
 
-def _basis_family(identity: BaseIdentity, index: CodeIndex) -> tuple[str, IndexFamily] | None:
-    """`basis_dataset` with the family the identity reads, None where it gives None."""
+def _basis_family(identity: BaseIdentity, index: CodeIndex) -> tuple[str, FamilyQuery] | None:
+    """`basis_dataset` with the query of the family the identity reads, None where it gives
+    None."""
     if held_measure(identity) is None or identity_part_shape(identity, index) is None:
         return None
     document = table_document(identity, index)
     if document is None:
         return None
-    family = query_family(index, identity_family_query(index, document))
+    query = identity_family_query(index, document)
+    family = query_family(index, query)
     if family is None:
         return None
     dataset = next((dataset for dataset in family.datasets if dataset in CONVENTION_DATASETS), None)
-    return None if dataset is None else (dataset, family)
+    return None if dataset is None else (dataset, query)
 
 
 def _deflated_by(
-    identity: BaseIdentity, family: IndexFamily, dataset: str
+    identity: BaseIdentity, query: FamilyQuery, facts: ScopeFacts
 ) -> DeflationBasis | None:
-    """Whose prices deflate `identity`'s conversion to constant prices under the recipe
-    `dataset` names in the bound conversion catalogue (`conversion_catalogue.served_recipe`),
-    from the roles `family`'s rows declare (`StatVarRow.observation_properties`), by the
-    rule the conversion of an answer's members follows (`materialise.recipes.deflation_basis`).
-    None without a constant-price unit request, a bound catalogue or a recipe."""
+    """Whose prices deflate `identity`'s conversion to constant prices, as an answer's
+    conversion states it (`search.engine.unit.conversion`): under the one recipe the datasets
+    the part is served from name in the bound conversion catalogue
+    (`conversion_catalogue.served_recipe`), from the roles the identity's served members
+    declare (`materialise.recipes.deflation_basis`). The served members are the rows of the
+    dataset the index elects for `query` (`code_index.members.family_for_five_tuple`), and
+    that dataset serves the part when its facts name none (`PartFacts.datasets`). None
+    without a constant-price unit request, a bound catalogue, one recipe or one basis."""
     unit = (identity.facets or {}).get("unit")
     if not (isinstance(unit, IdentityFacetValueRequest) and unit.request.prices == "constant"):
         return None
+    try:
+        served = family_for_five_tuple(facts.index, query)
+    except SourceNotInFamily:
+        return None
+    datasets = facts.part.datasets or (() if served.provenance is None else (served.provenance,))
     # The conversion catalogue imports the graph client, which imports this module.
     from search.engine.unit.conversion_catalogue import served_recipe
 
-    recipe = served_recipe((dataset,))
+    recipe = served_recipe(datasets)
     if recipe is None:
         return None
-    role_sets = {declared_roles(row.observation_properties) for row in family.rows}
-    return deflation_basis(recipe, role_sets=role_sets)
+    return deflation_basis(
+        recipe, role_sets=(declared_roles(row.observation_properties) for row in served.rows)
+    )
 
 
 def offers_basis_of(scope: PartScope, identity: BaseIdentity) -> bool:
@@ -541,8 +558,8 @@ def basis_rule(
     held_id = held_option(base)
     if found is None or held_id is None:
         return None
-    dataset, family = found
-    deflated_by = _deflated_by(base, family, dataset)
+    dataset, query = found
+    deflated_by = _deflated_by(base, query, facts)
     headline = _offers_headline(base, dataset)
     measures = [basis_binding(row) for row in BASIS_MEASURES]
     bindings = [*measures, *((HEADLINE_BINDING,) if headline else ())]

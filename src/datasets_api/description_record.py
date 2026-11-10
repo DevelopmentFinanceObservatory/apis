@@ -1422,18 +1422,24 @@ def shared_deflation_basis(series: SeriesFacts) -> DeflationBasis | None:
     return None if basis is MISSING else basis
 
 
-def _conversion_target(
-    definition: Mapping[str, object], *, deflation_basis: DeflationBasis | None
-) -> SimpleUnit | None:
-    """The unit the definition asks values converted into, where it names an ISO 4217
-    currency, deflated by `deflation_basis`'s prices when they are constant. A currency keyed
-    by role names no one unit."""
+def stored_unit_request(definition: Mapping[str, object]) -> Mapping[str, object] | None:
+    """The unit request a stored definition's identity binds on its `unit` facet, `None`
+    when it binds none."""
     identity = cast("Mapping[str, object]", definition.get("identity", {}))
     facets = cast("Mapping[str, Mapping[str, object]]", identity.get("facets", {}))
     request = facets.get("unit", {}).get("request")
-    if not isinstance(request, Mapping):
+    return cast("Mapping[str, object]", request) if isinstance(request, Mapping) else None
+
+
+def _conversion_target(
+    definition: Mapping[str, object], *, deflation_basis: DeflationBasis | None
+) -> SimpleUnit | None:
+    """The unit the definition asks values converted into (`stored_unit_request`), where it
+    names an ISO 4217 currency, deflated by `deflation_basis`'s prices when they are
+    constant. A currency keyed by role names no one unit."""
+    request = stored_unit_request(definition)
+    if request is None:
         return None
-    request = cast("Mapping[str, object]", request)
     currency = request.get("currency")
     if not (isinstance(currency, str) and len(currency) == 3 and currency.isupper()):
         return None

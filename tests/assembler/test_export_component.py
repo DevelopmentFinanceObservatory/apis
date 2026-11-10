@@ -574,7 +574,7 @@ def test_a_cut_bar_chart_bundles_every_member_of_its_frame_beside_the_shown_rows
 
 
 @pytest.mark.parametrize(
-    ("role", "cell_column", "member_cell", "aggregate", "aggregate_cell", "counted"),
+    ("role", "cell_column", "member_cell", "aggregate", "aggregate_cell", "counted", "excluded"),
     [
         pytest.param(
             "financingRecipient",
@@ -583,7 +583,19 @@ def test_a_cut_bar_chart_bundles_every_member_of_its_frame_beside_the_shown_rows
             "dac/AfricaTotal",
             "total",
             12,
+            True,
             id="party-total",
+        ),
+        # An aggregate with no row at the shown period is left out of no file.
+        pytest.param(
+            "financingRecipient",
+            "financingRecipient_party_kind",
+            "party",
+            "dac/AfricaTotal@2023",
+            "total",
+            12,
+            False,
+            id="party-total-at-another-period",
         ),
         pytest.param(
             "observationAbout",
@@ -592,6 +604,7 @@ def test_a_cut_bar_chart_bundles_every_member_of_its_frame_beside_the_shown_rows
             "wb/LowIncome",
             "ProvisionalNode",
             12,
+            True,
             id="place-aggregate",
         ),
         # A mint whose options.columns name the party role's type column alone carries no
@@ -603,6 +616,7 @@ def test_a_cut_bar_chart_bundles_every_member_of_its_frame_beside_the_shown_rows
             "dac/AfricaTotal",
             "Place",
             13,
+            False,
             id="party-type-column-alone",
         ),
     ],
@@ -614,6 +628,7 @@ def test_a_cut_card_counts_the_members_a_ranking_compares(
     aggregate,
     aggregate_cell,
     counted,
+    excluded,
     tmp_path,
     frame_store,
     revision_store,
@@ -623,22 +638,27 @@ def test_a_cut_card_counts_the_members_a_ranking_compares(
     members dfo-ai's harness ranks a cut from, so the bundle's "8 of 12" agrees with the card's
     "8 largest of 12", and the all-members file leaves the aggregate out and says so. A party
     frame with no kind cells counts all 13, as an untyped frame does, and its file states no
-    exclusion."""
+    exclusion. An aggregate `@`-suffixed with a period holds its one row there, outside the
+    card's window."""
     members = tuple(f"country/C{number:02d}" for number in range(12))
+    aggregate, _, aggregate_period = aggregate.partition("@")
     rows = [
         {
             "stat_var": _STAT_VAR,
             role: member,
             cell_column: cell,
-            "time_period": "2024",
+            "time_period": period,
             "value": value,
             "unit": None,
             "measurementMethod": None,
             "provenance": "src_oecd_dac",
         }
-        for member, cell, value in (
-            *((member, member_cell, float(number)) for number, member in enumerate(members)),
-            (aggregate, aggregate_cell, 1000.0),
+        for member, cell, value, period in (
+            *(
+                (member, member_cell, float(number), "2024")
+                for number, member in enumerate(members)
+            ),
+            (aggregate, aggregate_cell, 1000.0, aggregate_period or "2024"),
         )
     ]
     frame_store.put(
@@ -671,7 +691,7 @@ def test_a_cut_card_counts_the_members_a_ranking_compares(
 
     assert {row[role] for row in every} == set(members) | ({aggregate} if counted == 13 else set())
     assert f"The card shows 8 of {counted}" in files["README.md"].decode("utf-8")
-    assert ("less the group totals and aggregates" in description) is (counted == 12)
+    assert ("less the group totals and aggregates" in description) is excluded
 
 
 @pytest.mark.parametrize("member", ["bar_chart", "table", "stat_card"])

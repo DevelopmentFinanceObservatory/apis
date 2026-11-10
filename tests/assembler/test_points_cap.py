@@ -14,7 +14,6 @@ from assembler.fakes import FakeReleaseRegistry
 from assembler.limits import MAX_SERIES_PER_COMPONENT
 from assembler.pipeline import write_component
 from assembler.ports import FrameRef
-from assembler.resolve import SeriesLimit
 from assembler.testing import build_resolved_frame
 
 from ._pipeline_support import _multi_recipient_frame, computed_record
@@ -44,7 +43,7 @@ def _recipients_frame(*, count, stat_vars=("dcid:X",), periods=("2020", "2021"))
     )
 
 
-def _write_line_chart(*, frame, select, frame_store, revision_store, release_registry):
+def _write_line_chart(*, frame, select, frame_store, revision_store, release_registry, extra=None):
     frame_store.put(resolved_frame=frame)
     return write_component(
         intent={
@@ -54,6 +53,7 @@ def _write_line_chart(*, frame, select, frame_store, revision_store, release_reg
                 "content_version": frame.frame_ref.content_version,
             },
             "select": select,
+            **(extra or {}),
         },
         frame_store=frame_store,
         revision_store=revision_store,
@@ -369,33 +369,6 @@ def test_a_line_chart_refusal_offers_no_type_whose_own_write_refuses(
     assert refused.value.constraint_id == "blocked_type"
 
 
-def test_a_line_chart_refusal_offers_no_other_type_past_the_component_cap(
-    monkeypatch, frame_store, revision_store, release, release_registry
-):
-    """No other type draws more series than `MAX_SERIES_PER_COMPONENT`. The estimate
-    refuses such a select first on the write path, so the check runs here under a component
-    limit of the line chart's own cap against one series more, which a bar chart or a table
-    would otherwise draw."""
-    import assembler.pipeline.candidate as candidate_module
-
-    cap = release.line_chart_max_series
-    monkeypatch.setattr(
-        candidate_module,
-        "COMPONENT_SERIES_LIMIT",
-        SeriesLimit(name="MAX_SERIES_PER_COMPONENT", cap=cap),
-    )
-    with pytest.raises(ResourceExhausted) as excinfo:
-        _write_line_chart(
-            frame=_recipients_frame(count=cap + 1, periods=("2020",)),
-            select={"stat_var": "dcid:X"},
-            frame_store=frame_store,
-            revision_store=revision_store,
-            release_registry=release_registry,
-        )
-    assert excinfo.value.limit_name == "MAX_LINE_CHART_SERIES"
-    assert "draw the same select" not in excinfo.value.detail
-
-
 @pytest.mark.parametrize(
     ("count", "refusal", "limit_name"),
     [
@@ -552,28 +525,53 @@ def test_a_revision_of_a_stored_over_cap_line_chart_is_held_to_the_cap_when_it_c
         assert revise().resolved_payload["component"]["type"] == "line_chart"
 
 
+@pytest.mark.parametrize(
+    "extra",
+    [
+        pytest.param({}, id="alone"),
+        # A schema error that jsonschema ranks before the list's leaves the refusal as it is.
+        pytest.param(
+            {"frame_ref": {"spec_id": 5, "content_version": "cv_" + "4" * 32}},
+            id="beside-a-wrong-frame-ref",
+        ),
+    ],
+)
 def test_a_line_chart_listing_more_values_than_the_cap_refuses_as_the_series_cap(
-    frame_store, revision_store, release, release_registry
+    extra, frame_store, revision_store, release, release_registry
 ):
-    """The schema's `maxItems` on the list is the line chart's series cap, so the refusal is
-    the one a select resolving past it gets."""
+    """The schema's `maxItems` on the list is the line chart's series cap, so the refusal
+    names it and advises what a select resolving past it is advised, whatever else the intent
+    gets wrong."""
     over = release.line_chart_max_series + 1
-    with pytest.raises(ResourceExhausted) as excinfo:
+    stores = {
+        "frame_store": frame_store,
+        "revision_store": revision_store,
+        "release_registry": release_registry,
+    }
+    frame = _recipients_frame(count=over)
+    with pytest.raises(ResourceExhausted) as listed:
         _write_line_chart(
-            frame=_recipients_frame(count=over),
+            frame=frame,
             select={
                 "stat_var": "dcid:X",
                 "recipient": [f"country/C{index:02d}" for index in range(over)],
             },
-            frame_store=frame_store,
-            revision_store=revision_store,
-            release_registry=release_registry,
+            extra=extra,
+            **stores,
         )
-    assert (excinfo.value.pointer, excinfo.value.limit_name) == (
+    with pytest.raises(ResourceExhausted) as resolved:
+        _write_line_chart(frame=frame, select={"stat_var": "dcid:X"}, **stores)
+
+    assert (listed.value.pointer, listed.value.limit_name) == (
         "/select/recipient",
         "MAX_LINE_CHART_SERIES",
     )
-    assert f"bind it to at most {release.line_chart_max_series} values" in excinfo.value.detail
+    assert resolved.value.limit_name == "MAX_LINE_CHART_SERIES"
+    # The resolved refusal's advice ends with the types that draw the select, which the list
+    # refusal, raised before any frame is read, cannot name.
+    _found, advice = listed.value.detail.split("; ", 1)
+    assert resolved.value.detail.split("; ", 1)[1].startswith(advice)
+    assert f"bind it to at most {release.line_chart_max_series} values" in advice
 
 
 # -- points cap ----------------------------------------------------------------

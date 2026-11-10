@@ -61,7 +61,7 @@ from search.scope.basis import (
     window_class,
 )
 from search.scope.edits import apply_binding
-from search.scope.tables import ScopeFacts
+from search.scope.tables import PartFacts, ScopeFacts
 from search.scope.vocabulary import measure_basis_option_id
 from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from tests.engine._binders import FakeAsk, MenuRecordingBinder, elected_reply
@@ -958,34 +958,52 @@ def test_a_basis_label_states_the_prices_and_currency_the_part_is_served_in(
     assert basis_label(net, _net_identity(qualifier, unit_request)) == expected
 
 
+_CONSTANT_NGN = {"currency": "NGN", "prices": "constant", "base_year": 2024}
+# A dataset the part is served from beside DAC1, naming another recipe.
+_IMF_SERVED = "imf_served"
+
+
 @pytest.mark.parametrize(
-    ("recipe_id", "unit_request", "expected"),
+    ("recipes", "datasets", "unit_request", "expected"),
     [
         pytest.param(
-            "ConversionRecipeDAC",
-            {"currency": "NGN", "prices": "constant", "base_year": 2024},
+            {DAC1: "ConversionRecipeDAC"},
+            (),
+            _CONSTANT_NGN,
             "net disbursements, constant 2024 NGN, donor prices",
             id="constant-names-the-donor",
         ),
         pytest.param(
-            "ConversionRecipeDAC",
+            {DAC1: "ConversionRecipeDAC"},
+            (),
             {"currency": "NGN", "prices": "current"},
             "net disbursements, current NGN",
             id="current-deflates-by-no-one",
         ),
         pytest.param(
-            None,
-            {"currency": "NGN", "prices": "constant", "base_year": 2024},
+            {},
+            (),
+            _CONSTANT_NGN,
             "net disbursements, constant 2024 NGN",
             id="no-recipe-names-no-one",
+        ),
+        # The answer's conversion takes one recipe over every dataset the part is served
+        # from, and two recipes give it none.
+        pytest.param(
+            {DAC1: "ConversionRecipeDAC", _IMF_SERVED: "ConversionRecipeIMF"},
+            (DAC1, _IMF_SERVED),
+            _CONSTANT_NGN,
+            "net disbursements, constant 2024 NGN",
+            id="datasets-naming-two-recipes-name-no-one",
         ),
     ],
 )
 def test_a_basis_option_names_whose_prices_deflate_the_part(
-    recipe_id: str | None, unit_request: dict, expected: str
+    recipes: dict[str, str], datasets: tuple[str, ...], unit_request: dict, expected: str
 ):
-    """The recipe DAC1 names in the bound catalogue deflates by the donor the family's rows
-    declare, as the conversion does."""
+    """The one recipe the datasets serving the part name in the bound catalogue, DAC1's
+    where the part's facts name none, deflates by the donor the served members declare, as
+    the conversion does."""
     identity = _DAC1_TOTAL.model_copy(
         update={
             "facets": {
@@ -996,12 +1014,11 @@ def test_a_basis_option_names_whose_prices_deflate_the_part(
         }
     )
     catalogue = ConversionCatalogue(
-        recipes={} if recipe_id is None else {DAC1: recipe_id},
-        tables={},
-        national_currencies={},
-        default_base_year=2024,
+        recipes=recipes, tables={}, national_currencies={}, default_base_year=2024
     )
-    facts = ScopeFacts(index=get_index(), coverage=empty_coverage_snapshot())
+    facts = ScopeFacts(
+        index=get_index(), coverage=empty_coverage_snapshot(), part=PartFacts(datasets=datasets)
+    )
 
     with bound_conversion_catalogue(catalogue):
         table = basis_rule(identity, None, facts)

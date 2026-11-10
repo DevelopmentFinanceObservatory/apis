@@ -97,8 +97,10 @@ def resolve_selectors(
     series_limit: SeriesLimit = COMPONENT_SERIES_LIMIT,
 ) -> tuple[ResolvedSeries, ...]:
     """An estimate over `MAX_SERIES_PER_COMPONENT` refuses naming `series_limit`, the limit a
-    caller has to meet: a line chart held to its own cap passes the line chart's. The resolved
-    series are then held to `COMPONENT_SERIES_LIMIT` (`check_resolved_series`)."""
+    caller has to meet: a line chart held to its own cap passes the line chart's. The estimate
+    is the only series gate here, so a render draws a stored component whatever its resolved
+    series count; a line chart's write holds its resolved series to its cap itself
+    (`check_resolved_series`)."""
     if len(selectors) > MAX_SELECTORS:
         raise ResourceExhausted(
             pointer="/select",
@@ -183,7 +185,6 @@ def resolve_selectors(
         for series_id, coordinates in zip(ids, order, strict=True)
     )
 
-    check_resolved_series(series=series, selectors=selectors, limit=COMPONENT_SERIES_LIMIT)
     _check_window(resolved_frame=resolved_frame, series=series, window=window)
     return series
 

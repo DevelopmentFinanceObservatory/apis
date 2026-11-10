@@ -531,7 +531,8 @@ class _AllMembers:
     """The frame rows of every member of the one dimension a card's `select` lists, at the
     periods the card shows. `shown` and `members` count the dimension's distinct values on
     the card and in `rows`. `aggregates_left_out` says the ranked population
-    (`_ranked_population`) left out a member, a group total or aggregate."""
+    (`_ranked_population`) left out a member, a group total or aggregate, that holds a row
+    at a period the card shows."""
 
     dimension: str
     rows: tuple[_ExportRow, ...]
@@ -633,12 +634,12 @@ def _all_members(
     for row, (own, continued) in zip(keyed.rows, keyed.keys, strict=True):
         if STATUS_COLUMN in index and row[index[STATUS_COLUMN]] is not None:
             continue
+        period = cast(str, row[index[TIME_PERIOD_COLUMN]])
+        if fixed(own, period) not in wanted and fixed(continued, period) not in wanted:
+            continue
         member = dict(own)[dimension]
         if population is not None and member not in population and member not in shown_members:
             aggregates_left_out = True
-            continue
-        period = cast(str, row[index[TIME_PERIOD_COLUMN]])
-        if fixed(own, period) not in wanted and fixed(continued, period) not in wanted:
             continue
         label = label_of.get((own, period), label_of.get((continued, period)))
         kept.append((label, row))

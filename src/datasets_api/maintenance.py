@@ -266,7 +266,8 @@ recipe row. Each database commits on its own, revisions first, so a run stopped 
 leaves the recipe to the next run. It skips a recipe whose stored hashes the stored recipe does
 not reproduce, one whose new replay key another frame's recipe holds, and one with a pin whose
 roots give no basis or several, or whose version cannot tell (`RecipeSkip`), with one
-`datasets_recipe_normalise_skipped` line each. It writes one `datasets_recipes_normalised` line
+`datasets_recipe_normalise_skipped` line each, which for an undetermined basis also names the
+pin's parameter, its roots and the cause (`BasisCause`). It writes one `datasets_recipes_normalised` line
 with the counts and exits 1 when it skipped any. `--dry-run` counts and changes nothing, and a
 second run changes nothing. Once a pin carries `deflation_basis`, an image from before the basis
 refuses the recipe, since its frame grammar knows no such member. It reads the runtime database
@@ -357,6 +358,7 @@ from datasets_api.config import (
 from datasets_api.description_record import (
     backfill_record,
     computed_inputs,
+    stored_unit_request,
     unrecorded_sets,
 )
 from datasets_api.description_store import (
@@ -1904,6 +1906,23 @@ class RecipeSkip(StrEnum):
     BASIS_UNDETERMINED = "basis_undetermined"
 
 
+class BasisCause(StrEnum):
+    """Why a pin's roots give it no one deflation basis (`RecipeSkip.BASIS_UNDETERMINED`)."""
+
+    # A root's version, or the base version of a derived one, is not held as a mint's.
+    ROOT_UNREAD = "root_unread"
+    # A root asks constant prices and stores no per-series conversion record.
+    NO_SERIES_RECORD = "no_series_record"
+    # A root's series record names a recipe this build lacks.
+    UNKNOWN_RECIPE = "unknown_recipe"
+    # A root's series declares no single deflator role of its recipe.
+    NO_SINGLE_DEFLATOR_ROLE = "no_single_deflator_role"
+    # No root converted at constant prices.
+    NO_BASIS = "no_basis"
+    # The roots deflated on more than one basis.
+    SEVERAL_BASES = "several_bases"
+
+
 def _recipe_hashes(recipe: Mapping[str, Any]) -> tuple[str, str]:
     """The `normal_form_hash` and `replay_key` of `recipe`, computed as the analysis route
     computes them for the frame it runs (`datasets_api.analysis._recipe_hashes`)."""
@@ -1969,10 +1988,16 @@ def run_normalise_recipes(
         old_hash, old_key = str(row["normal_form_hash"]), str(row["replay_key"])
         new_key: str | None = None
         skip: RecipeSkip | None = None
+        undetermined: dict[str, object] = {}
         try:
             rewritten = _normalised_recipe(stored, root_bases=root_bases)
-        except _BasisUndetermined:
+        except _BasisUndetermined as error:
             rewritten, skip = None, RecipeSkip.BASIS_UNDETERMINED
+            undetermined = {
+                "parameter": error.parameter,
+                "roots": [f"{spec_id}@{version}" for spec_id, version in error.roots],
+                "cause": error.cause.value,
+            }
         if rewritten is not None:
             new_hash, new_key = _recipe_hashes(rewritten)
             if _recipe_hashes(stored) != (old_hash, old_key):
@@ -1995,6 +2020,7 @@ def run_normalise_recipes(
                 content_version=content_version,
                 reason=skip.value,
                 replay_key=new_key,
+                **undetermined,
             )
             continue
         if rewritten is None:
@@ -2053,13 +2079,23 @@ def _normalise_recipes(dry_run: bool) -> int:
     return 1 if skipped else 0
 
 
-type _RootBases = Callable[[str, str], frozenset[DeflationBasis] | None]
+type _RootBases = Callable[[str, str], frozenset[DeflationBasis] | BasisCause]
 """The bases a root version's constant-price conversion deflated on (`_root_bases`), by its
-`spec_id` and `content_version`."""
+`spec_id` and `content_version`, or why its stored version cannot tell."""
 
 
 class _BasisUndetermined(Exception):
-    """A pin of a constant-price unit without its basis whose roots give no basis or several."""
+    """A pin of a constant-price unit without its basis, on op-spec parameter `parameter`,
+    whose roots give no basis or several: `roots` the `(spec_id, content_version)` of the one
+    root whose version cannot tell, or of every root feeding the pin, and `cause` why."""
+
+    def __init__(
+        self, *, parameter: str, roots: Sequence[tuple[str, str]], cause: BasisCause
+    ) -> None:
+        super().__init__(parameter, cause)
+        self.parameter = parameter
+        self.roots = tuple(roots)
+        self.cause = cause
 
 
 def _normalised_recipe(
@@ -2118,15 +2154,22 @@ def _basis_pinned(
             if slot is None
             else [node["inputs"].get(slot, node["inputs"]["frame_ref"])]
         )
+        datasets = [roots[index]["dataset"] for child in fed for index in _root_indexes(child)]
+        fed_roots = sorted(
+            {(str(dataset["spec_id"]), str(dataset["content_version"])) for dataset in datasets}
+        )
         bases: set[DeflationBasis] = set()
-        for index in {index for child in fed for index in _root_indexes(child)}:
-            dataset = roots[index]["dataset"]
-            found = root_bases(dataset["spec_id"], dataset["content_version"])
-            if found is None:
-                raise _BasisUndetermined
+        for root in fed_roots:
+            found = root_bases(*root)
+            if isinstance(found, BasisCause):
+                raise _BasisUndetermined(parameter=name, roots=(root,), cause=found)
             bases |= found
         if len(bases) != 1:
-            raise _BasisUndetermined
+            raise _BasisUndetermined(
+                parameter=name,
+                roots=fed_roots,
+                cause=BasisCause.SEVERAL_BASES if bases else BasisCause.NO_BASIS,
+            )
         pinned[name] = unit_cell_to_json(_with_basis(pin, bases.pop()))
     if not pinned and all(inputs[slot] is node["inputs"][slot] for slot in inputs):
         return node
@@ -2179,46 +2222,35 @@ def _side_with_basis[T](side: T, basis: DeflationBasis) -> T:
 
 def _root_bases(
     snapshots: LiveSnapshotReader, spec_id: str, content_version: str
-) -> frozenset[DeflationBasis] | None:
+) -> frozenset[DeflationBasis] | BasisCause:
     """The bases the root version `spec_id`, `content_version` deflated its series on at
     constant prices, from the recipe and declared roles its version stores per series
     (`stored_series_conversions`), as the conversion labels each converted cell
     (`materialise.recipes.deflation_basis`). A derived version reads its base's. Empty for a
-    version whose definition asks no constant prices. `None` when the version is not held,
-    stores no series record, names a recipe this build lacks, or holds a series whose declared
-    roles give no single deflator role."""
+    version whose definition asks no constant prices. The `BasisCause` when the version is not
+    held, stores no series record, names a recipe this build lacks, or holds a series whose
+    declared roles give no single deflator role."""
     version = snapshots.read_version(spec_id, content_version)
     if version is not None and version.base_content_version is not None:
         version = snapshots.read_version(spec_id, version.base_content_version)
     if version is None or not isinstance(version.facts, ManifestFacts):
-        return None
-    if _requested_prices(version.facts.definition) != "constant":
+        return BasisCause.ROOT_UNREAD
+    request = stored_unit_request(version.facts.definition)
+    if request is None or request.get("prices") != "constant":
         return frozenset()
     conversions = stored_series_conversions(version.facts)
+    if not conversions:
+        return BasisCause.NO_SERIES_RECORD
     bases: set[DeflationBasis] = set()
     for (_stat_var, roles), conversion in conversions.items():
         recipe = RECIPE_BODIES.get(conversion.recipe_id)
-        basis = (
-            None
-            if recipe is None
-            else deflation_basis(recipe, role_sets=[tuple(role for role, _ in roles)])
-        )
+        if recipe is None:
+            return BasisCause.UNKNOWN_RECIPE
+        basis = deflation_basis(recipe, role_sets=[tuple(role for role, _ in roles)])
         if basis is None:
-            return None
+            return BasisCause.NO_SINGLE_DEFLATOR_ROLE
         bases.add(basis)
-    return frozenset(bases) or None
-
-
-def _requested_prices(definition: Mapping[str, object]) -> object:
-    """The `prices` of the unit request `definition` holds, `None` when it holds none."""
-    identity = cast("Mapping[str, object]", definition.get("identity", {}))
-    facets = cast("Mapping[str, Mapping[str, object]]", identity.get("facets", {}))
-    request = facets.get("unit", {}).get("request")
-    return (
-        cast("Mapping[str, object]", request).get("prices")
-        if isinstance(request, Mapping)
-        else None
-    )
+    return frozenset(bases)
 
 
 def run_take_down_share(*, share_store: ShareStore, share_id: str) -> None:
