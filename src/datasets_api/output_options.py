@@ -9,7 +9,7 @@ from __future__ import annotations
 import dataclasses
 from collections.abc import Collection, Mapping, Sequence
 
-from code_index.types import PartyRow
+from code_index.types import ANY_DATASET, PartyRow
 from datasets_api.capabilities import Capabilities
 from datasets_api.manifest_models import (
     BundleOptionModel,
@@ -115,27 +115,26 @@ def movable_totals_roles(
 
     A role bound to several entities qualifies when one of them is a total in one of `datasets`
     (`PartyRow.kinds_over` over `parties`). An open role qualifies when `parties` lists a party
-    on its axis that is a total in one of `datasets` that publishes it (`PartyRow.axes`,
-    `PartyRow.datasets`, `PartyRow.kind_in`), or any total on its axis when `datasets` is empty,
-    as for a definition whose read selected no provenance. The index builds those rows from the
+    that one of `datasets` publishes on its axis and that is a total in one of them
+    (`PartyRow.publishes`, `PartyRow.kinds_over`), or any total some dataset publishes on its
+    axis when `datasets` is empty, as for a definition whose read selected no provenance. The index builds those rows from the
     coverage that lists each provenance's parties, so a total an open role can hold in a covered
     provenance is one this rule names."""
     axes = totals_axes(identity)
     read = set(datasets)
+    publishing = read or ANY_DATASET
 
     def holds_total(party: PartyRow | None) -> bool:
         return party is not None and "total" in party.kinds_over(read)
 
     def movable(role: str) -> bool:
         axis = role_key_axis(role)
-        bound = axes[axis] if axis is not None else ()
-        if bound:
+        if axis is None:
+            return False
+        if bound := axes[axis]:
             return any(holds_total(parties.get(entity)) for entity in bound)
         return any(
-            axis in party.axes
-            and (not read or not read.isdisjoint(party.datasets))
-            and holds_total(party)
-            for party in parties.values()
+            party.publishes(axis, publishing) and holds_total(party) for party in parties.values()
         )
 
     return tuple(role for role in totals_roles(identity, role_columns) if movable(role))

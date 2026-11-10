@@ -30,6 +30,7 @@ from graph_release.views import (
     read_document,
     release_code_indexes,
     release_coverage_index,
+    staged_code_indexes,
 )
 from origin_catalogue.arc_tables import ArcTablesBuilder
 from origin_catalogue.families import summarise_table
@@ -111,9 +112,10 @@ def test_the_code_index_view_is_the_fixture_index_stamped_with_the_release(
     assert measures == load_measure_axes(INDEX_FIXTURE)
 
 
-def test_a_code_index_edited_after_export_refuses_to_open(tmp_path: Path) -> None:
+def test_a_code_index_edited_after_export_fails_the_gate_read_alone(tmp_path: Path) -> None:
     """The fixture index with its last party row cut still parses, but its blocks no longer
-    hash to the stamp's `content_hash`, so the release refuses the view and names both."""
+    hash to the stamp's `content_hash`, so the gate's read refuses it and names both. A
+    serving process opens it: the part's bytes match the manifest, so it rehashes no blocks."""
     manifest = build_fixture_index_release(tmp_path.as_uri())
     release = _open(tmp_path, manifest.release_id)
     document = read_document(release.blobs[CODE_INDEX_PART])
@@ -123,8 +125,9 @@ def test_a_code_index_edited_after_export_refuses_to_open(tmp_path: Path) -> Non
         release, blobs={**release.blobs, CODE_INDEX_PART: index_bytes(document)}
     )
 
+    release_code_indexes(edited)
     with pytest.raises(ViewRefused) as refused:
-        release_code_indexes(edited)
+        staged_code_indexes(read_document(index_bytes(document)))
 
     mismatch = refused.value.__cause__
     assert isinstance(mismatch, ContentHashMismatch)

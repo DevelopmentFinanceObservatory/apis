@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import pytest
 
+from code_index.types import PartyRow
+from search.engine.multilaterals import PartyFacts, is_multilateral, party_facts
 from search.models import (
     DatasetResubmitInput,
     DefinitePart,
@@ -174,6 +176,21 @@ def test_each_bound_party_states_its_kind_class_and_whether_it_is_multilateral(
     multilateral; every other origin party is marked false, and a recipient carries no
     marker. Each party states its kind and class."""
     assert _facts(_health_aid(donor, recipient)) == dict(facts)
+
+
+def test_a_party_the_datasets_give_different_kinds_states_no_facts():
+    """A trust fund that is a party in one dataset and a total in another has no one kind
+    across both, so it states no kind, no class and no multilateral marker."""
+    row = PartyRow(
+        dcid="IMFConcessionalTrustFunds",
+        kind="party",
+        party_class="official",
+        published=(("A", "origin"), ("B", "origin")),
+        dataset_kinds=(("B", "total"),),
+    )
+
+    assert party_facts(row, datasets=("A", "B")) == PartyFacts(None, None, None)
+    assert not is_multilateral(row, datasets=("A", "B"))
 
 
 def test_a_field_ignoring_consumer_reads_the_entities_as_before():

@@ -53,6 +53,7 @@ from dfo_platform.roles import AXIS_LABELS, FlowAccount
 _ABSENT_OBSERVATION_VALUES: frozenset[AbsentObservation] = frozenset({"zero", "unknown"})
 _FLOW_ACCOUNTS: frozenset[FlowAccount] = frozenset(get_args(FlowAccount.__value__))
 _HOUSE_DEFAULT_CASES: frozenset[HouseDefaultCase] = frozenset(get_args(HouseDefaultCase))
+_LEGACY_PARTY_KEYS = frozenset({"datasets", "axes"})
 
 
 class IndexFormatError(ValueError):
@@ -377,14 +378,22 @@ def _parse_party_types(rows: Sequence[Mapping]) -> dict[str, PartyKind | None]:
 
 
 def _parse_party(row: Mapping) -> PartyRow:
-    """One `parties` row, refusing a kind outside `PartyKind`, an axis outside the flow axes,
-    a `totals` or `residuals` on a party that is not a total, and a false `sums_members` on a
+    """One `parties` row, refusing a row without `published` or with the `datasets` and `axes`
+    keys of release format 1, a kind outside `PartyKind`, an axis outside the flow axes, a
+    `totals` or `residuals` on a party that is not a total, and a false `sums_members` on a
     party that holds no group or that counts residuals. `whole` markers are parsed by
     `_parse_whole_marker` and checked by `_check_whole_markers`, the dataset kinds by
-    `_check_dataset_kinds`, and the class by `_check_party_class`. `residuals`,
-    `sums_members`, `label`, `published`, `whole` and `dataset_kinds` are optional, and
-    a row without `sums_members` reads it as true. `party_class` is required on a `party` and a
-    residual and may be absent on a total."""
+    `_check_dataset_kinds`, and the class by `_check_party_class`. `published` is required and
+    may be empty. `residuals`, `sums_members`, `label`, `whole` and `dataset_kinds` are
+    optional, and a row without `sums_members` reads it as true. `party_class` is required on a
+    `party` and a residual and may be absent on a total."""
+    if legacy := sorted(_LEGACY_PARTY_KEYS & row.keys()):
+        raise IndexFormatError(
+            f"party {row.get('dcid')!r} carries {legacy!r}, which release format 1 wrote; "
+            "a party row lists its `published` dataset and axis pairs"
+        )
+    if "published" not in row:
+        raise IndexFormatError(f"party {row.get('dcid')!r} carries no `published` list")
     party = PartyRow(
         dcid=row["dcid"],
         kind=row["kind"],
@@ -393,9 +402,7 @@ def _parse_party(row: Mapping) -> PartyRow:
         residuals=tuple(row.get("residuals", ())),
         sums_members=row.get("sums_members", True),
         label=row.get("label"),
-        published=tuple(
-            sorted((entry["dataset"], entry["axis"]) for entry in row.get("published", ()))
-        ),
+        published=tuple(sorted((entry["dataset"], entry["axis"]) for entry in row["published"])),
         whole=tuple(
             sorted(
                 (_parse_whole_marker(marker) for marker in row.get("whole", ())),
@@ -410,7 +417,7 @@ def _parse_party(row: Mapping) -> PartyRow:
         raise IndexFormatError(
             f"party {party.dcid!r} carries kind {party.kind!r}, outside {sorted(PARTY_KINDS)!r}"
         )
-    if unknown := sorted(set(party.axes) - AXIS_LABELS):
+    if unknown := sorted({axis for _, axis in party.published} - AXIS_LABELS):
         raise IndexFormatError(
             f"party {party.dcid!r} names axes {unknown!r}, outside {sorted(AXIS_LABELS)!r}"
         )
@@ -436,6 +443,7 @@ def _check_dataset_kinds(party: PartyRow) -> None:
     twice, entries naming every dataset that publishes the party, whose kind is then one kind
     and belongs in `kind`, or any entry on a total that holds a group or counts residuals, whose
     group holds in every dataset."""
+    publishing = {dataset for dataset, _ in party.published}
     named: set[str] = set()
     for dataset, kind in party.dataset_kinds:
         if kind not in PARTY_KINDS or kind == party.kind:
@@ -443,14 +451,14 @@ def _check_dataset_kinds(party: PartyRow) -> None:
                 f"party {party.dcid!r} takes kind {kind!r} in {dataset!r}; a dataset kind is one "
                 f"of {sorted(PARTY_KINDS)!r} other than the row's kind {party.kind!r}"
             )
-        if dataset not in party.datasets:
+        if dataset not in publishing:
             raise IndexFormatError(
                 f"party {party.dcid!r} takes a kind in {dataset!r}, which does not publish it"
             )
         if dataset in named:
             raise IndexFormatError(f"party {party.dcid!r} takes two kinds in {dataset!r}")
         named.add(dataset)
-    if named and named >= set(party.datasets):
+    if named and named >= publishing:
         raise IndexFormatError(
             f"party {party.dcid!r} takes a dataset kind in every dataset that publishes it; "
             "one kind in every dataset is its kind"
@@ -487,14 +495,16 @@ def _check_whole_markers(party: PartyRow) -> None:
             f"party {party.dcid!r} of kind {party.kind!r} carries a whole marker; only a total "
             "holds a population"
         )
-    if len(party.axes) != 1:
+    try:
+        axis = party.sole_axis()
+    except ValueError as error:
         raise IndexFormatError(
-            f"party {party.dcid!r} carries a whole marker but is published on "
-            f"{list(party.axes)!r}; a whole total stands on exactly one published axis"
-        )
+            f"party {party.dcid!r} carries a whole marker; a whole total stands on exactly one "
+            f"published axis: {error}"
+        ) from error
     marked: set[str] = set()
     for marker in party.whole:
-        if marker.dataset not in party.datasets:
+        if not party.publishes(axis, (marker.dataset,)):
             raise IndexFormatError(
                 f"party {party.dcid!r} is marked whole in {marker.dataset!r}, which does not "
                 "publish it"
@@ -940,7 +950,7 @@ def _check_whole_totals(parties: Sequence[PartyRow], sets: Sequence[WholeTotalSe
     held: dict[tuple[str, str], list[tuple[PartyRow, WholeMarker]]] = {}
     for party in parties:
         for marker in party.whole:
-            held.setdefault((marker.dataset, party.axes[0]), []).append((party, marker))
+            held.setdefault((marker.dataset, party.sole_axis()), []).append((party, marker))
     for (dataset, axis), rows in held.items():
         for index, (first, first_marker) in enumerate(rows):
             for second, second_marker in rows[index + 1 :]:
@@ -956,7 +966,7 @@ def _check_whole_totals(parties: Sequence[PartyRow], sets: Sequence[WholeTotalSe
         phrases.add(phrase)
         members = [by_dcid.get(dcid) for dcid in whole_set.members]
         for dcid, member in zip(whole_set.members, members, strict=True):
-            if member is None or not member.whole or member.axes != (whole_set.axis,):
+            if member is None or not member.whole or member.sole_axis() != whole_set.axis:
                 raise IndexFormatError(
                     f"whole total set {whole_set.phrase!r} names {dcid!r}, which is no whole "
                     f"total on {whole_set.axis!r}"

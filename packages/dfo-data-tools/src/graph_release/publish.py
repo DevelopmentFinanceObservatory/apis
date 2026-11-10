@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence, Set
 from dataclasses import dataclass
 from enum import StrEnum
@@ -216,14 +217,17 @@ def prune_releases(root_uri: str, *, now: float) -> tuple[str, ...]:
     """Deletes the manifests pruning does not keep and the parts no kept
     manifest names, and returns their paths under `root_uri`, sorted.
 
-    Kept: the `KEEP_RELEASES` most recently written manifests of `FORMAT`,
-    any younger than `KEEP_SECONDS`, the pointer's release, which is the held
-    one when the pointer is held, and every manifest of another format, whose
-    revisions read their own pointer.
+    Each format prunes on its own, since the revisions of each image read
+    their own format's pointer. Kept, per format: the `KEEP_RELEASES` most
+    recently written manifests of that format and the release its pointer
+    (`format-<N>/current.json`) names, which is the held one when the pointer
+    is held. Every manifest younger than `KEEP_SECONDS` stays, and so does
+    every manifest of a format other than `FORMAT` that has no pointer.
     Each delete is conditional on the token listed, so an object rewritten
-    since stays. A missing or unreadable pointer, a manifest of `FORMAT` this
-    reader cannot parse, or a manifest of another format whose part names do
-    not read, deletes nothing.
+    since stays. A missing or unreadable pointer of `FORMAT`, an unreadable
+    pointer of another format, a manifest of `FORMAT` this reader cannot
+    parse, or a manifest of another format whose part names do not read,
+    deletes nothing.
 
     Run it while holding the build lease. A publish running beside it could
     reuse an old part this deletes before its manifest names it.
@@ -238,32 +242,43 @@ def prune_releases(root_uri: str, *, now: float) -> tuple[str, ...]:
 
     manifests = list_uri_object_generations(join_uri(root_uri, MANIFESTS_DIR))
     parts_by_manifest: dict[str, frozenset[str]] = {}
-    foreign: set[str] = set()
+    by_format: dict[int, list[str]] = defaultdict(list)
     for name in manifests:
         try:
             data = read_uri_bytes(join_uri(root_uri, MANIFESTS_DIR, name))
-            foreign_parts = _foreign_part_names(data)
-            if foreign_parts is None:
+            foreign = _foreign_manifest(data)
+            if foreign is None:
                 manifest = Manifest.from_json(data)
-                parts_by_manifest[name] = frozenset(ref.file_name for ref in manifest.parts)
+                version, parts = FORMAT, frozenset(ref.file_name for ref in manifest.parts)
             else:
-                foreign.add(name)
-                parts_by_manifest[name] = foreign_parts
+                version, parts = foreign
         except (FileNotFoundError, ReleaseFormatError):
             logger.warning(
                 "prune: manifest %r does not parse; pruning nothing", name, exc_info=True
             )
             return ()
+        by_format[version].append(name)
+        parts_by_manifest[name] = parts
 
-    newest_first = sorted(
-        manifests.keys() - foreign, key=lambda name: manifests[name][0], reverse=True
-    )
-    kept = {
-        *newest_first[:KEEP_RELEASES],
-        *(name for name, (written, _) in manifests.items() if now - written < KEEP_SECONDS),
-        f"{pointer.release_id}.json",
-        *foreign,
-    }
+    kept = {name for name, (written, _) in manifests.items() if now - written < KEEP_SECONDS}
+    for version, names in by_format.items():
+        try:
+            current = (
+                pointer if version == FORMAT else read_pointer(root_uri, format_version=version)
+            )
+        except ReleaseFormatError:
+            logger.warning(
+                "prune: the format %d pointer does not parse; pruning nothing",
+                version,
+                exc_info=True,
+            )
+            return ()
+        if current is None:
+            kept.update(names)
+            continue
+        newest_first = sorted(names, key=lambda name: manifests[name][0], reverse=True)
+        kept.update(newest_first[:KEEP_RELEASES])
+        kept.add(f"{current.release_id}.json")
     named = {part for name in kept & manifests.keys() for part in parts_by_manifest[name]}
 
     # Manifests go first, so no manifest left behind names a deleted part.
@@ -272,10 +287,11 @@ def prune_releases(root_uri: str, *, now: float) -> tuple[str, ...]:
     return (*deleted, *_delete_unkept(root_uri, PARTS_DIR, parts, kept=named))
 
 
-def _foreign_part_names(data: bytes) -> frozenset[str] | None:
-    """The part file names a manifest of another format lists, read from each
-    entry's `sha256` and `suffix` alone, or `None` when `data` is not a JSON
-    object whose `format` is an integer other than `FORMAT`.
+def _foreign_manifest(data: bytes) -> tuple[int, frozenset[str]] | None:
+    """The format of a manifest of another format and the part file names it
+    lists, read from each entry's `sha256` and `suffix` alone, or `None` when
+    `data` is not a JSON object whose `format` is an integer other than
+    `FORMAT`.
 
     Raises `ReleaseFormatError` when a foreign manifest's part names do not
     read."""
@@ -289,7 +305,7 @@ def _foreign_part_names(data: bytes) -> frozenset[str] | None:
     if not isinstance(version, int) or isinstance(version, bool) or version == FORMAT:
         return None
     try:
-        return frozenset(
+        return version, frozenset(
             f"{_string(entry['sha256'])}{_string(entry['suffix'])}" for entry in payload["parts"]
         )
     except (KeyError, TypeError) as exc:

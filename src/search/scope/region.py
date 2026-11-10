@@ -81,9 +81,7 @@ def published_residuals(
         sorted(
             dcid
             for dcid in total.residuals
-            if (party := index.parties.get(dcid)) is not None
-            and _AXIS in party.axes
-            and served.intersection(party.datasets)
+            if (party := index.parties.get(dcid)) is not None and party.publishes(_AXIS, served)
         )
     )
 
@@ -140,7 +138,7 @@ def policy_members_between(ref: str, first: date, last: date) -> frozenset[str]:
 def counts_oecd_region(total: PartyRow, *, datasets: Collection[str], index: CodeIndex) -> bool:
     """Whether one of `datasets` counts the OECD's region `total` sums: it publishes the
     total itself (DAC2a) or one of its residuals on the recipient axis (the CRS)."""
-    return not set(datasets).isdisjoint(total.datasets) or bool(
+    return total.publishes(_AXIS, set(datasets)) or bool(
         published_residuals(total, datasets=datasets, index=index)
     )
 

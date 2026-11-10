@@ -280,33 +280,6 @@ def _check_whole_population_totals(
             )
 
 
-def _check_classes_on_one_axis(
-    rows: Sequence[Mapping], parties: Mapping[str, PartyPublication]
-) -> None:
-    """Raises `ExportRefused` for a party of any class but `official`, or a total, published on
-    more than one axis.
-
-    `datasets_api.output_options` reads the totals a side holds in a dataset from
-    `axis in party.axes and dataset in party.datasets`, and search reads the classes a side
-    holds the same way. That is exact for a one-axis party and for an `official` party, because
-    every side a two-axis party reaches already holds an `official` row. A private party, a
-    residual or a total on both axes would count on both axes in every dataset. `rows` are the
-    exported `parties` rows, each with its `kind`, `party_class` and any `dataset_kinds`; a
-    row taking another kind in some dataset is no official party there."""
-    ambiguous = sorted(
-        (row["dcid"], row["kind"], row["party_class"], sorted(parties[row["dcid"]].axes))
-        for row in rows
-        if ((row["kind"], row["party_class"]) != ("party", "official") or "dataset_kinds" in row)
-        and len(parties[row["dcid"]].axes) > 1
-    )
-    if ambiguous:
-        raise ExportRefused(
-            f"parties other than official parties are published on more than one axis: "
-            f"{ambiguous!r} (party, kind, class, axes) -- the index's readers do not tell which "
-            "dataset holds which axis"
-        )
-
-
 def export_parties(
     reader: ExportReader,
     parties: Mapping[str, PartyPublication],
@@ -340,9 +313,8 @@ def export_parties(
     whose types give it no single kind, a `total_groups` row naming a party that is not a total
     of `parties`, a `total_groups` residual that is not a residual of `parties`, a
     `private_providers` row the graph contradicts (`_check_private_providers`) or whose party the
-    types give a kind other than `party`, a party of a class other than `official` or a total
-    published on more than one axis (`_check_classes_on_one_axis`), and a `whole_totals` row the
-    parties contradict (`_check_whole_population_totals`).
+    types give a kind other than `party`, and a `whole_totals` row the parties contradict
+    (`_check_whole_population_totals`).
     """
     published = frozenset(parties)
     unpublished = sorted(kind_overrides.keys() - published)
@@ -420,7 +392,6 @@ def export_parties(
             f"TOTAL_GROUPS counts {not_residuals!r} as residuals, which no declared or listed dataset "
             "publishes as a residual"
         )
-    _check_classes_on_one_axis(rows, parties)
     _check_whole_population_totals(whole_totals, kinds, dataset_kinds, parties)
     for row in rows:
         if (whole := whole_totals.get(row["dcid"])) is not None:

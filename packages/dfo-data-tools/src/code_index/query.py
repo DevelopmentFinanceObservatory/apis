@@ -544,20 +544,19 @@ class CodeIndex:
         side_classes: dict[tuple[RoleAxis, str], set[PartyClass]] = defaultdict(set)
         population_totals_by_axis: dict[RoleAxis, list[str]] = defaultdict(list)
         for party in self.parties.values():
-            for dataset in party.datasets:
+            for dataset, axis in party.published:
                 kind = party.kind_in(dataset)
                 party_class = party.class_of(kind)
                 if kind != "total" and party_class is not None:
-                    for axis in party.axes:
-                        side_classes[axis, dataset].add(party_class)
+                    side_classes[axis, dataset].add(party_class)
             if any(POPULATION_CLASS in marker.covers for marker in party.whole):
-                population_totals_by_axis[party.axes[0]].append(party.dcid)
+                population_totals_by_axis[party.sole_axis()].append(party.dcid)
         self.side_classes: dict[tuple[RoleAxis, str], frozenset[PartyClass]] = {
             side: frozenset(classes) for side, classes in side_classes.items()
         }
         """The classes of party, totals aside, each dataset publishes on each
-        flow axis, by `(axis, dataset)`. A `PartyRow` keeps its axes and datasets apart, so a
-        party published on both axes counts on each in every dataset that publishes it."""
+        flow axis, by `(axis, dataset)`. A party counts on an axis only in the datasets that
+        publish it there (`PartyRow.published`)."""
         self.population_totals_by_axis: dict[RoleAxis, tuple[str, ...]] = {
             axis: tuple(sorted(dcids)) for axis, dcids in population_totals_by_axis.items()
         }

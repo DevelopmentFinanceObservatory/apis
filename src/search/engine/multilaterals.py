@@ -28,12 +28,12 @@ from entity_resolution.pack import organisation_dcids
 
 class PartyFacts(NamedTuple):
     """What one party is where some datasets publish it: its kind (`PartyRow.kind_over`), its
-    class (`PartyRow.class_of`), each `None` where the datasets give it different kinds, and
-    whether it is a multilateral."""
+    class (`PartyRow.class_of`), and whether it is a multilateral, each `None` where the
+    datasets give it different kinds."""
 
     kind: PartyKind | None
     party_class: PartyClass | None
-    multilateral: bool
+    multilateral: bool | None
 
 
 def party_facts(row: PartyRow, *, datasets: Collection[str] = ()) -> PartyFacts:
@@ -41,7 +41,9 @@ def party_facts(row: PartyRow, *, datasets: Collection[str] = ()) -> PartyFacts:
     is an official party there; a total, such as the World Bank Group beside its members in
     DAC2a, is none."""
     kind = row.kind_over(datasets)
-    party_class = row.class_of(kind) if kind is not None else None
+    if kind is None:
+        return PartyFacts(None, None, None)
+    party_class = row.class_of(kind)
     multilateral = (
         kind == "party" and party_class == "official" and row.dcid in organisation_dcids()
     )
@@ -50,7 +52,7 @@ def party_facts(row: PartyRow, *, datasets: Collection[str] = ()) -> PartyFacts:
 
 def is_multilateral(row: PartyRow | None, *, datasets: Collection[str] = ()) -> bool:
     """Whether `row` is a multilateral where `datasets` publish it (`party_facts`)."""
-    return row is not None and party_facts(row, datasets=datasets).multilateral
+    return row is not None and party_facts(row, datasets=datasets).multilateral is True
 
 
 def holds_multilaterals(
@@ -74,7 +76,6 @@ def _multilateral_sides(index: CodeIndex) -> frozenset[tuple[RoleAxis, str]]:
     return frozenset(
         (axis, dataset)
         for row in index.parties.values()
-        for dataset in row.datasets
+        for dataset, axis in row.published
         if is_multilateral(row, datasets=(dataset,))
-        for axis in row.axes
     )

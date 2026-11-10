@@ -424,8 +424,9 @@ class LoadedRelease:
     file_names: frozenset[str]
 
 
-def pointer_uri(root_uri: str) -> str:
-    return join_uri(root_uri, POINTER_PATH)
+def pointer_uri(root_uri: str, *, format_version: int = FORMAT) -> str:
+    """The pointer of `format_version`, `format-<format_version>/current.json`."""
+    return join_uri(root_uri, f"format-{format_version}", "current.json")
 
 
 def manifest_uri(root_uri: str, release_id: str) -> str:
@@ -719,10 +720,11 @@ def _stage(data: bytes | pa.Buffer, suffix: str, staging_dir: Path) -> tuple[Pat
 # ---------------------------------------------------------------- reading
 
 
-def read_pointer(root_uri: str) -> Pointer | None:
-    """The format's pointer, or `None` when no release is published."""
+def read_pointer(root_uri: str, *, format_version: int = FORMAT) -> Pointer | None:
+    """The pointer of `format_version`, this reader's format by default, or `None` when no
+    release of that format is published."""
     try:
-        data = read_uri_bytes(pointer_uri(root_uri))
+        data = read_uri_bytes(pointer_uri(root_uri, format_version=format_version))
     except FileNotFoundError:
         return None
     return Pointer.from_json(data)

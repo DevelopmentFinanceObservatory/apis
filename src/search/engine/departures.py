@@ -450,8 +450,8 @@ def members_left_out(spec: Spec, role: str, group: str | None) -> tuple[tuple[st
     code index: the labels of the residuals the total counts beside them
     (`PartyRow.residuals`) that the role does not bind beside them, and whether the total is
     a figure that can differ from their sum (`PartyRow.sums_members` false). Each counts only
-    where a dataset `spec` serves publishes the party (`PartyRow.datasets`) on the flow axis
-    of `role` (`PartyRow.axes`).
+    where a dataset `spec` serves publishes the party on the flow axis of `role`
+    (`PartyRow.publishes`).
 
     The total is the one the role keeps for the group it reads as members
     (`ResolvedSpec.group_totals`), which a group with no node of its own, such as a resolver
@@ -470,7 +470,7 @@ def members_left_out(spec: Spec, role: str, group: str | None) -> tuple[tuple[st
     bound = {entity.ref for entity in spec.resolved.entities if entity.role == role}
 
     def published(party: PartyRow) -> bool:
-        return axis in party.axes and bool(served.intersection(party.datasets))
+        return party.publishes(axis, served)
 
     residuals = (index.parties.get(dcid) for dcid in total.residuals if dcid not in bound)
     excluded = tuple(

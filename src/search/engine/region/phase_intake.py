@@ -172,7 +172,7 @@ async def _phase_resolve_places(state: ResolveState) -> None:
     resolved = {name: entity for name, entity in resolved.items() if name not in whole_named}
     parties = get_index().parties
     over = {operation.over for operation in state.operations}
-    sides = {name: parties[dcids[0]].axes[0] for name, dcids in whole_named.items()}
+    sides = {name: parties[dcids[0]].sole_axis() for name, dcids in whole_named.items()}
     # A population's side is the one axis the code index publishes its parties on, so a text
     # the request directs to the other side ("from France to official donors") is refused
     # `role_incompatible` however it is asked (`_phase_check_entities`).

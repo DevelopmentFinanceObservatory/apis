@@ -398,6 +398,48 @@ def test_pruning_keeps_the_newest_ten_and_the_held_release_and_their_parts(bucke
     assert prune_releases(bucket.root, now=now) == ()
 
 
+def test_pruning_keeps_each_format_s_pointer_release_and_newest_ten(bucket, tmp_path):
+    """A format other than this one prunes as this one does, under its own pointer: the
+    frozen previous-format pointer's release and that format's newest ten stay with their
+    parts, the older ones go, and both pointers stay."""
+    now = time.time()
+    old = now - KEEP_SECONDS - 3600
+    staged, current = _release(tmp_path / "current", revision="rev", blocks="current")
+    assert _publish(bucket.root, staged, current) is PublishStatus.PUBLISHED
+    foreign: list[Manifest] = []
+    for index in range(KEEP_RELEASES + 3):
+        parts, manifest = _release(tmp_path / f"f{index}", revision=f"f{index}", blocks=f"f{index}")
+        payload = {**json.loads(manifest.to_json()), "format": FORMAT - 1}
+        path = f"manifests/{manifest.release_id}.json"
+        write_uri_bytes(f"{bucket.root}/{path}", json.dumps(payload).encode())
+        bucket.backdate(path, old + index)
+        for part in parts:
+            write_uri_bytes(part_uri(bucket.root, part.ref), part.path.read_bytes())
+            bucket.backdate(f"parts/{part.ref.file_name}", old)
+        foreign.append(manifest)
+    frozen = pointer_uri(bucket.root, format_version=FORMAT - 1)
+    write_uri_bytes(frozen, Pointer(foreign[0].release_id).to_json())
+    bucket.backdate(f"manifests/{current.release_id}.json", old)
+
+    deleted = prune_releases(bucket.root, now=now)
+
+    kept = {0, *range(len(foreign) - KEEP_RELEASES, len(foreign))}
+    dropped = [foreign[index] for index in range(len(foreign)) if index not in kept]
+    assert len(dropped) == 2
+    assert deleted == tuple(
+        sorted(
+            [f"manifests/{manifest.release_id}.json" for manifest in dropped]
+            + [f"parts/{manifest.parts[0].file_name}" for manifest in dropped]
+        )
+    )
+    remaining = _objects(bucket.root)
+    for manifest in [current, *(foreign[index] for index in kept)]:
+        assert f"manifests/{manifest.release_id}.json" in remaining
+        assert {f"parts/{ref.file_name}" for ref in manifest.parts} <= remaining
+    assert {f"format-{FORMAT}/current.json", f"format-{FORMAT - 1}/current.json"} <= remaining
+    assert read_pointer(bucket.root, format_version=FORMAT - 1) == Pointer(foreign[0].release_id)
+
+
 def test_pruning_keeps_every_manifest_younger_than_a_day(bucket, tmp_path):
     for index in range(KEEP_RELEASES + 2):
         staged, manifest = _release(tmp_path / str(index), revision=f"rev-{index}", blocks=index)

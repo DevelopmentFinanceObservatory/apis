@@ -1113,14 +1113,14 @@ def _named_wholes(
     parties = get_index().parties
     covered: dict[RoleAxis, bool] = {}
     for dcids in state.whole_named.values():
-        axis = parties[dcids[0]].axes[0]
+        axis = parties[dcids[0]].sole_axis()
         if axis in declared and axis not in assignment.sets:
             covered[axis] = covered.get(axis, True) and covers_unpublished(dcids, datasets=datasets)
     unnamed = frozenset(axis for axis, covers in covered.items() if covers)
     sets = dict(assignment.sets)
     named: dict[RoleAxis, list[tuple[str, ...]]] = {}
     for dcids in dict.fromkeys(state.whole_named.values()):
-        axis = parties[dcids[0]].axes[0]
+        axis = parties[dcids[0]].sole_axis()
         if axis not in declared or axis in unnamed:
             continue
         named.setdefault(axis, []).append(dcids)
@@ -1170,7 +1170,7 @@ def named_whole_axes(state: ResolveState) -> frozenset[RoleAxis]:
     """The side of each whole population a text of the part names (`ResolveState.whole_named`),
     the one axis the code index publishes its parties on."""
     parties = get_index().parties
-    return frozenset(parties[dcids[0]].axes[0] for dcids in state.whole_named.values())
+    return frozenset(parties[dcids[0]].sole_axis() for dcids in state.whole_named.values())
 
 
 def whole_total_candidates(

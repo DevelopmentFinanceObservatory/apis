@@ -8,7 +8,8 @@ from __future__ import annotations
 import re
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Literal, get_args
+from enum import Enum
+from typing import Final, Literal, get_args
 
 from dfo_platform.roles import FlowAccount, RoleAxis
 
@@ -559,9 +560,10 @@ total whose markers cover it stands for a population (`CodeIndex.population_tota
 class WholeMarker:
     """What a total holds in one dataset: every party of the classes in `covers` on its axis.
 
-    `dataset` is a provenance among `PartyRow.datasets`, and `covers` a non-empty, sorted
-    subset of `PartyClass`. `years` is the first and last year, inclusive, in which the total
-    holds that population in `dataset`, or `None` for every year the dataset publishes it.
+    `dataset` is a provenance that publishes the party (`PartyRow.published`), and `covers` a
+    non-empty, sorted subset of `PartyClass`. `years` is the first and last year, inclusive, in
+    which the total holds that population in `dataset`, or `None` for every year the dataset
+    publishes it.
     "All Recipients, Total" (`DACAllRecipients`) covers every `official` and `residual`
     recipient in DAC2A from the year its composition check starts, and in DAC2B it holds
     nothing of the kind, so it has no marker there.
@@ -597,6 +599,17 @@ def party_kind(
     return kinds.pop() if len(kinds) == 1 else None
 
 
+class AnyDataset(Enum):
+    """The type of `ANY_DATASET`."""
+
+    ANY = "any"
+
+
+ANY_DATASET: Final = AnyDataset.ANY
+"""Every dataset, as `PartyRow.publishes` reads it: a party some dataset publishes on an axis.
+An empty collection of datasets publishes nothing."""
+
+
 @dataclass(frozen=True, slots=True)
 class PartyRow:
     """One party a declared dataset publishes, as donor or recipient, and its kind.
@@ -614,8 +627,9 @@ class PartyRow:
     graph name ("Africa, unallocated by country (DAC)"), `None` when the graph gives it none.
     `published` holds each `(dataset, axis)` pair that publishes the party, sorted: the
     provenance of a declared or listed dataset and the flow axis it publishes the party on
-    (`origin` as a donor, `destination` as a recipient). `datasets` and `axes` are its
-    datasets and its axes, each sorted.
+    (`origin` as a donor, `destination` as a recipient). A reader asks it through
+    `publishes`, so a party published as a donor in one dataset and a recipient in another
+    reads as each only where it is. A whole total stands on one axis (`sole_axis`).
 
     `party_class` is `private` for a party the export's `PRIVATE_PROVIDERS` lists and
     `official` for every other party, on every axis, and `residual` for a residual. A total
@@ -649,15 +663,24 @@ class PartyRow:
     whole: tuple[WholeMarker, ...] = ()
     dataset_kinds: tuple[tuple[str, PartyKind], ...] = ()
 
-    @property
-    def datasets(self) -> tuple[str, ...]:
-        """The datasets of `published`, sorted."""
-        return tuple(sorted({dataset for dataset, _ in self.published}))
+    def publishes(self, axis: RoleAxis, datasets: Collection[str] | AnyDataset) -> bool:
+        """Whether one of `datasets` publishes the party on `axis`, or any dataset does for
+        `ANY_DATASET`. Empty `datasets` publish nothing."""
+        return any(
+            published_axis == axis and (datasets is ANY_DATASET or dataset in datasets)
+            for dataset, published_axis in self.published
+        )
 
-    @property
-    def axes(self) -> tuple[RoleAxis, ...]:
-        """The axes of `published`, sorted."""
-        return tuple(sorted({axis for _, axis in self.published}))
+    def sole_axis(self) -> RoleAxis:
+        """The one axis the party is published on, as a whole total is (`whole`). Raises
+        `ValueError` for a party published on no axis or on both, whose side the row cannot
+        name."""
+        axes = {axis for _, axis in self.published}
+        if len(axes) != 1:
+            raise ValueError(
+                f"party {self.dcid!r} is published on {sorted(axes)!r}, not on one axis"
+            )
+        return axes.pop()
 
     def marker(self, dataset: str) -> WholeMarker | None:
         """The marker for `dataset`, or `None` where the party is an ordinary total."""
@@ -673,7 +696,8 @@ class PartyRow:
         A row without `dataset_kinds` takes `kind` alone."""
         if not self.dataset_kinds:
             return frozenset((self.kind,))
-        named = [dataset for dataset in self.datasets if dataset in datasets] or self.datasets
+        publishing = {dataset for dataset, _ in self.published}
+        named = (publishing & set(datasets)) or publishing
         return frozenset(self.kind_in(dataset) for dataset in named)
 
     def kind_over(self, datasets: Collection[str] = ()) -> PartyKind | None:

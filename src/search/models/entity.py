@@ -104,7 +104,9 @@ class ResolvedEntity(StrictModel):
             "organisation, an official organisation such as IDA or the EU institutions, whose "
             "outflows spend the core contributions its funders made to it, so a donor total "
             "counting those contributions already holds them; false for a total, a country "
-            "and a private provider; absent for every other entity"
+            "and a private provider. Stated on the origin role alone, where a donor total "
+            "can hold the multilateral's outflows twice; absent on every other role, and "
+            "where party_kind is absent"
         ),
     )
     confidence: Confidence | None = Field(

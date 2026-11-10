@@ -626,7 +626,7 @@ def test_a_period_has_a_year_only_when_it_lies_in_one(cell: object, year: int | 
 
 def test_a_recorded_facets_provenance_has_the_form_a_party_rows_datasets_hold():
     """A frame's `provenance` cell is its facet's `provenanceId`, the dataset the mint elected
-    (`ElectedDataset.publishes`), which is also what `PartyRow.datasets` lists. Every provenance
+    (`ElectedDataset.publishes`), which is also how `PartyRow.published` names a dataset. Every provenance
     in the recorded SDMX facets is such a dcid, and the DAC datasets a whole total is marked in
     are spelled the same way."""
     recorded = json.loads((_FIXTURES / "sdmx_obs.json").read_text())
@@ -637,11 +637,12 @@ def test_a_recorded_facets_provenance_has_the_form_a_party_rows_datasets_hold():
         for facet in facets
     }
     parties = get_index().parties
-    listed = {dataset for party in parties.values() for dataset in party.datasets}
+    listed = {dataset for party in parties.values() for dataset, _ in party.published}
 
     assert provenances
     assert provenances <= listed
-    assert {_DAC2A, _DAC2B} <= set(parties["DACAllRecipients"].datasets)
+    assert parties["DACAllRecipients"].publishes("destination", {_DAC2A})
+    assert parties["DACAllRecipients"].publishes("destination", {_DAC2B})
 
 
 @pytest.mark.parametrize(

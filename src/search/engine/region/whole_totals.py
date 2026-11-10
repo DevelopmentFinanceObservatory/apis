@@ -181,7 +181,7 @@ def whole_reading(
             whole_of=tuple(sorted(covered)),
         )
     return WholeReading(
-        axis=first.axes[0],
+        axis=first.sole_axis(),
         members=(first.dcid,),
         total=first.dcid,
         label=first.label or first.dcid,
@@ -191,13 +191,20 @@ def whole_reading(
 
 def containing_reading(dcid: str, *, datasets: Sequence[str]) -> WholeReading | None:
     """The side `dcid` holds when every one of `datasets` serves it as the containing total of
-    its flow axis (`code_index.declarations.CONTAINING_TOTALS`), or `None`. The reading names
+    one flow axis (`code_index.declarations.CONTAINING_TOTALS`), or `None`. The reading names
     the registry group the total holds (`PartyRow.totals`) where the membership policy lists
     that group, and covers no class."""
     row = get_index().parties.get(dcid)
-    if row is None or not datasets or len(row.axes) != 1:
+    if row is None or not datasets:
         return None
-    axis = row.axes[0]
+    axes = {
+        axis
+        for (dataset, axis), held in CONTAINING_TOTALS.items()
+        if dataset in datasets and held.total == dcid
+    }
+    if len(axes) != 1:
+        return None
+    (axis,) = axes
     if any(
         (held := CONTAINING_TOTALS.get((dataset, axis))) is None or held.total != dcid
         for dataset in datasets
@@ -270,8 +277,8 @@ def with_containing_total(identity: BaseIdentity, *, coverage: CoverageIndex) ->
 
 def covers_unpublished(dcids: Collection[str], *, datasets: Sequence[str]) -> bool:
     """Whether the whole population `dcids` names reads, on a shape answered from
-    `datasets`, as its side left unnamed: none of `datasets` publishes any of its parties
-    (`PartyRow.datasets`), with a whole marker or without one, those datasets hold some
+    `datasets`, as its side left unnamed: none of `datasets` publishes any of its parties on
+    its side (`PartyRow.publishes`), with a whole marker or without one, those datasets hold some
     party on its side, and every one, totals aside, is of a class its markers elsewhere say
     it covers. The CRS publishes no total of its recipients and holds `official` and
     `residual` ones, so "all recipients" (`DACAllRecipients`, `official` and `residual`)
@@ -284,10 +291,11 @@ def covers_unpublished(dcids: Collection[str], *, datasets: Sequence[str]) -> bo
     if not datasets or not rows or any(row is None for row in rows):
         return False
     parties = cast(list[PartyRow], rows)
-    if any(dataset in row.datasets for row in parties for dataset in datasets):
+    axis = parties[0].sole_axis()
+    if any(row.publishes(axis, datasets) for row in parties):
         return False
     covers = {cls for row in parties for marker in row.whole for cls in marker.covers}
-    classes = side_classes(parties[0].axes[0], datasets=datasets)
+    classes = side_classes(axis, datasets=datasets)
     return bool(classes) and set(classes) <= covers
 
 
@@ -322,7 +330,7 @@ def whole_total_unpublished_facts(
     parties = get_index().parties
     facts: list[DepartureFact] = []
     for text, dcids in whole_named.items():
-        axis = parties[dcids[0]].axes[0]
+        axis = parties[dcids[0]].sole_axis()
         if axis in bound or not covers_unpublished(dcids, datasets=(dataset,)):
             continue
         facts.append(

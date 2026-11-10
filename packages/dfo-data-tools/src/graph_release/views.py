@@ -7,7 +7,11 @@ these functions, so a release the gate passes is one a serving process can open.
 `coverage_index` builds the coverage rows of `series` under the role map `edges` and the
 declared role axes give (`graph_release.coverage`), takes each covered facet's metadata from
 `facets`, and checks the rows as `series_coverage.loader` checks a published coverage build.
-`code_indexes` parses the `code_index_blocks` document with `code_index.loader`.
+`code_indexes` parses the `code_index_blocks` document with `code_index.loader`. The gate
+reads a staged document through `staged_code_indexes`, which first checks that its blocks hash
+to the `content_hash` its stamp states, so an exporter that stamps the wrong hash fails the
+gate. A serving process skips that check: `graph_release.format` already checks each part it
+downloads against the manifest's SHA-256, and the manifest names the part the gate passed.
 
 For a published release, `release_coverage_index` takes the role axes from the `declarations`
 part and the build year from the manifest's `read_timestamp`. `release_code_indexes` stamps the
@@ -98,18 +102,25 @@ def _facet_metadata(facets: pa.Table, rows: pa.Table) -> dict[str, FacetMetadata
 
 
 def code_indexes(document: Mapping[str, object]) -> tuple[CodeIndex, MeasureIndex]:
-    """The code index and measure index of a code index `document`.
-
-    Raises `ViewRefused` where its data blocks do not hash to the `content_hash` its stamp
-    states (`check_content_hash`), or where `parse_index` or `parse_measure_axes` refuses it.
-    """
+    """The code index and measure index of a code index `document`. Raises `ViewRefused` where
+    `parse_index` or `parse_measure_axes` refuses it."""
     try:
-        check_content_hash(document, source=CODE_INDEX_PART)
         return parse_index(document, source=CODE_INDEX_PART), parse_measure_axes(
             document, source=CODE_INDEX_PART
         )
     except ValueError as exc:
         raise ViewRefused(f"the code index does not load: {exc}") from exc
+
+
+def staged_code_indexes(document: Mapping[str, object]) -> tuple[CodeIndex, MeasureIndex]:
+    """`code_indexes` of a staged `document`, the gate's read. Raises `ViewRefused` where its
+    data blocks do not hash to the `content_hash` its stamp states (`check_content_hash`), and
+    where `code_indexes` refuses it."""
+    try:
+        check_content_hash(document, source=CODE_INDEX_PART)
+    except ValueError as exc:
+        raise ViewRefused(f"the code index does not load: {exc}") from exc
+    return code_indexes(document)
 
 
 def read_document(data: bytes) -> dict[str, object]:
@@ -213,4 +224,5 @@ __all__ = [
     "read_document",
     "release_code_indexes",
     "release_coverage_index",
+    "staged_code_indexes",
 ]
