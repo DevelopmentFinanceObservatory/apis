@@ -37,7 +37,14 @@ from search.engine.assemble import (
     unapplied_qualifier_warnings,
 )
 from search.engine.clients.graph import EngineGraphClient
-from search.engine.clients.llm import UNCOUNTED_CALLS, Agreement, SupportsLLM, sum_usage
+from search.engine.clients.llm import (
+    UNCOUNTED_CALLS,
+    Agreement,
+    SecondSamples,
+    SupportsLLM,
+    held_by,
+    sum_usage,
+)
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.config import settings
 from search.engine.conjoin import VARIABLES_CLAMPED, assemble_region
@@ -662,17 +669,22 @@ class _DoorRead:
 
 async def _discarded_usage(
     task: asyncio.Task[tuple[ExtractionResult, dict | None, int]],
+    samples: SecondSamples | None,
 ) -> dict | None:
-    """The usage of a speculative parse the door discards: its token counts when it finished
-    with an answer, else one uncounted call (`UNCOUNTED_CALLS`) for each of the
-    `EXTRACTION_CALLS` requests a parse sends, since a parse cancelled in flight or failed
-    had sent them and reports no counts. One still running is cancelled."""
+    """The usage of a speculative parse the door discards, which is cancelled if still
+    running, with the second samples it left in `samples`, its own holder, which is closed.
+    A parse that finished with an answer counts its token counts and its second sample's
+    (`SecondSamples.usage`). One cancelled in flight or failed counts one uncounted call
+    (`UNCOUNTED_CALLS`) for each of the `EXTRACTION_CALLS` requests a parse sends, its
+    second included, since it had sent them and reports no counts."""
     if not task.done():
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+    if samples is not None:
+        await samples.aclose()
     if task.cancelled() or task.exception() is not None:
         return {UNCOUNTED_CALLS: EXTRACTION_CALLS}
-    return task.result()[1]
+    return sum_usage(task.result()[1], samples.usage() if samples is not None else None)
 
 
 async def _read_and_extract(query: str, *, llm: SupportsLLM, deadline: float) -> _DoorRead:
@@ -684,9 +696,12 @@ async def _read_and_extract(query: str, *, llm: SupportsLLM, deadline: float) ->
     cancels it and extraction takes the blanked text, so a hit costs the read plus one parse.
 
     A hit cancels the speculative parse when the read is admitted, before the parse of the
-    blanked text starts, so no second extraction runs to its end. Its tokens count in the
-    usage when it had already finished, else it counts as uncounted calls
-    (`_discarded_usage`): its requests were sent, and no response reports their tokens. A read
+    blanked text starts, so no second extraction runs to its end. The speculative parse
+    holds its second sample apart from the request's holder, which adopts it when the parse
+    stands; a discarded parse's second sample is cancelled with it. The discarded parse's
+    tokens, its second sample's included, count in the usage when it had already finished,
+    else it counts as uncounted calls (`_discarded_usage`): its requests were sent, and no
+    response reports their tokens. A read
     whose every stretch is kept unblanked (`LeftOut.at` `None`) leaves the text as it was,
     so the speculative parse stands.
 
@@ -709,7 +724,13 @@ async def _read_and_extract(query: str, *, llm: SupportsLLM, deadline: float) ->
         return _DoorRead(result, usage, reading, timing, agreed=(result.agreed,))
 
     t0 = now_ms()
-    speculative = asyncio.create_task(_run_extract_phase(query, llm=llm, deadline=deadline))
+    holder = held_by(llm)
+    speculative_samples = SecondSamples() if holder is not None else None
+    speculative_llm = speculative_samples.bind(llm) if speculative_samples is not None else llm
+    speculative = asyncio.create_task(
+        _run_extract_phase(query, llm=speculative_llm, deadline=deadline)
+    )
+    stands = False
     try:
         read, read_usage, read_agreed = await _await_bounded(
             read_exclusions(query, llm=llm), deadline=deadline
@@ -718,8 +739,9 @@ async def _read_and_extract(query: str, *, llm: SupportsLLM, deadline: float) ->
         reading = admit_exclusions(query, read)
         if reading.text == query:
             result, usage, timing_extract = await speculative
+            stands = True
         else:
-            discarded = await _discarded_usage(speculative)
+            discarded = await _discarded_usage(speculative, speculative_samples)
             result, usage, timing_extract = await _run_extract_phase(
                 reading.text, llm=llm, deadline=deadline
             )
@@ -727,6 +749,11 @@ async def _read_and_extract(query: str, *, llm: SupportsLLM, deadline: float) ->
     finally:
         speculative.cancel()
         await asyncio.gather(speculative, return_exceptions=True)
+        if holder is not None and speculative_samples is not None:
+            if stands:
+                holder.adopt(speculative_samples)
+            else:
+                await speculative_samples.aclose()
     timing = {"extract": timing_extract, "exclusion_read": timing_read}
     agreed = (read_agreed, result.agreed)
     return _DoorRead(result, sum_usage(read_usage, usage), reading, timing, agreed=agreed)

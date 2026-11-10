@@ -1078,7 +1078,8 @@ def test_resolve_logs_one_line_with_caller_flags_transport_cache_and_timing(tran
     assert "include_skills" not in logged
     assert logged["transport"] == transport
     assert logged["cache"] in {"inactive", "miss", "hit layer1", "hit layer2"}
-    assert logged["extraction_agreed"] is True
+    # With neither the response cache nor an extraction store, nothing judges the samples.
+    assert logged["extraction_agreed"] is None
     timing = body["diagnostics"]["timing_ms"]
     assert logged["total_ms"] == timing["total"]
     assert logged["by_step"] == timing.get("by_step")

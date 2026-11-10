@@ -24,7 +24,7 @@ from search.engine.bind_repair import (
     declared_default_words_named,
 )
 from search.engine.binders import Binder, Fallbacks
-from search.engine.clients.llm import Agreement, SecondSamples, SupportsLLM
+from search.engine.clients.llm import LLM, Agreement, SecondSamples, SupportsLLM, settle
 from search.engine.deadline import _await_bounded
 from search.engine.degraded_reads import DegradedReads
 from search.engine.enrichment import stream_place_options
@@ -244,8 +244,8 @@ class CacheScope:
     of its extraction each agreed on the reading (`note_extraction`), so layer 1 holds no
     reading that rests on one sample. The request's reads serve their first sample at once
     and leave the second to the scope's holder (`hold_samples`); the scope settles their
-    agreement when it publishes, within the request deadline, and `release` cancels and
-    awaits any second sample still running. The LLM memo replays each sample of a wording for
+    agreement at `done`, waiting at most `llm_second_sample_settle_s` for a second still
+    running, and `release` cancels and awaits any second sample still running. The LLM memo replays each sample of a wording for
     `llm_memo_ttl_s` whether or not they agreed. Cache clearing belongs to app wiring.
     """
 
@@ -322,6 +322,9 @@ class CacheScope:
         # The second samples of this request's reads, closed by `release`.
         self._samples = SecondSamples()
         self._agreements: tuple[Agreement, ...] = ()
+        # Whether the request's reads write agreed readings to an extraction store.
+        self._stores_readings = False
+        self._settled = False
         self._extraction_agreed: bool | None = None
         self._timed_out = False
         self._degraded_leg = False
@@ -534,6 +537,7 @@ class CacheScope:
         """`llm` handing its reads' second samples to this scope (`SecondSamples.bind`), so
         each read serves its first sample without waiting and no second sample outlives
         the request (`release`)."""
+        self._stores_readings = isinstance(llm, LLM) and llm.extraction_store is not None
         return self._samples.bind(llm)
 
     def note_extraction(self, *agreed: Agreement) -> None:
@@ -552,24 +556,25 @@ class CacheScope:
         return self._samples.usage()
 
     async def _settle_extraction(self) -> None:
-        """Settle every noted agreement, each within the request deadline, which writes each
-        agreed read to the extraction store. The reading is agreed when all agreed; one the
-        deadline cut is not. Settles once; a request that noted none stays unsettled."""
-        if not self._agreements or self._extraction_agreed is not None:
+        """Settle the noted agreements once (`clients.llm.settle`), which writes each agreed
+        read to the extraction store, waiting at most `llm_second_sample_settle_s` for a
+        second sample still running. A request with neither the response cache nor an
+        extraction store has nothing to write and settles nothing."""
+        if self._settled or not self._agreements:
             return
-        verdicts: list[bool] = []
-        for agreement in self._agreements:
-            try:
-                verdicts.append(await _await_bounded(agreement.settled(), deadline=self._deadline))
-            except TimeoutError:
-                verdicts.append(False)
-        self._extraction_agreed = all(verdicts)
+        self._settled = True
+        if not self.active and not self._stores_readings:
+            return
+        self._extraction_agreed = await settle(
+            self._agreements, wait_s=config.settings().llm_second_sample_settle_s
+        )
 
     @property
     def extraction_agreed(self) -> bool | None:
         """Whether this request's reading was agreed (`note_extraction`), `None` when
-        it extracted nothing (a parsed request, or one a cache hit answered) or ended
-        before it published."""
+        it extracted nothing (a parsed request, or one a cache hit answered), ended before
+        it published, settled nothing (no response cache and no extraction store), or a
+        second sample outlasted the settle bound (`clients.llm.settle`)."""
         return self._extraction_agreed
 
     def note_health(
@@ -592,8 +597,8 @@ class CacheScope:
         """Take one event of the live stream; publish the answer once it is complete.
 
         Every request publishes at `done`, which the pipeline sends after `response`, so the
-        settling of the reads' second samples (`_settle_extraction`) never holds a streamed
-        response back. A bundle request records events from `response` on, leaving out
+        settling of the reads' second samples (`_settle_extraction`) never holds the response
+        back. A bundle request records events from `response` on, leaving out
         place options, which a hit runs again. Any other request publishes its response.
         """
         if not self._bundle:
@@ -676,7 +681,7 @@ class CacheScope:
             degraded_leg = self._degraded_leg or self._served_degraded_leg
             entry, size = encode()
             for lease, lease_storable in (
-                (self._layer1_lease, verdict and self._extraction_agreed is not False),
+                (self._layer1_lease, verdict and self._reading_agreed()),
                 (self._layer2_lease, verdict),
             ):
                 if lease is not None:
@@ -693,6 +698,11 @@ class CacheScope:
             self._layer2_lease = None
         except Exception:
             logger.exception("response cache store failed; serving the fresh answer uncached")
+
+    def _reading_agreed(self) -> bool:
+        """Whether layer 1 may store under the query: no agreement was noted, or all
+        settled agreed."""
+        return not self._agreements or self._extraction_agreed is True
 
     async def release(self) -> None:
         """Cancel and await every second sample still running, then abandon unpublished

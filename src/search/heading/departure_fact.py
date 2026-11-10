@@ -148,7 +148,8 @@ class DepartureFact:
     - `limited_by` `passed_over` (`year_unavailable`): on an answer to a span counted back
       from now that shows fewer years than the span counts, since a range reaching further
       back would elect a different member; `shown` is the years it shows, and `data_years`
-      stays `None`.
+      the years the data holds when its newest year lies over `trailing_stale_years` before
+      now, else `None`.
     - `omitted_years` (`year_unavailable`): on an answer a constant-price unit request
       converts, each entity whose rows a missing deflator leaves out, by name, with the
       years it leaves out and the years it keeps, in the order the text names them.

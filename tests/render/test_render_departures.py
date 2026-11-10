@@ -373,6 +373,21 @@ _CASES: list[tuple[DepartureFact, str | None, str]] = [
         "You asked for 2022 to 2026. The series shown holds nothing newer, and earlier years "
         "would read a different series, so this shows 2019 to 2022.",
     ),
+    # The same, from data whose newest year is stale.
+    (
+        DepartureFact(
+            code="year_unavailable",
+            binding_ref="when:",
+            asked="2022 to 2026",
+            shown="2019 to 2022",
+            requested_years=(2022, 2026),
+            data_years=(2000, 2022),
+            limited_by="passed_over",
+        ),
+        "aid",
+        "You asked for 2022 to 2026. The data ends in 2022, and earlier years would read a "
+        "different series, so this shows 2019 to 2022.",
+    ),
     # Deflators that leave out some donors' rows: before, after and inside the years kept,
     # every year, and a count past the third.
     (

@@ -952,9 +952,9 @@ class _HeldTask:
 def test_a_definite_answer_joins_its_related_read_only_over_its_own_years(
     monkeypatch, asked: tuple[int, int], restarted: bool
 ):
-    """A definite answer whose request narrowed after its related read started, as a
-    conversion's period narrows it, reads its related measures again over the narrowed
-    years and cancels the read over the old ones; a read over its own years is joined."""
+    """A definite answer whose request narrowed after the pass started its related read, as
+    a conversion's period narrows it, reads its related measures again over the narrowed
+    years and cancels the read over the old ones; a read over its own years stands."""
     held = related_read.RelatedRead(
         stat_var=_INFLATION,
         window=TimeWindow(start_year=2015, end_year=2020),
@@ -963,6 +963,7 @@ def test_a_definite_answer_joins_its_related_read_only_over_its_own_years(
     fresh = related_read.RelatedRead(stat_var=_INFLATION, window=None, task=cast(Any, None))
     state = SimpleNamespace(
         related_read=held,
+        measure_family=(None, ()),
         date_request=DateRequest(
             window=TimeWindow(start_year=asked[0], end_year=asked[1]), latest=False
         ),
@@ -973,6 +974,9 @@ def test_a_definite_answer_joins_its_related_read_only_over_its_own_years(
 
     monkeypatch.setattr(related_read, "start_elected_related_read", _start)
 
-    joined = related_read.elected_related_read(cast(Any, state), cast(Any, None))
+    related_read.start_answer_related_read(cast(Any, state), cast(Any, None))
 
-    assert (joined is fresh, cast(_HeldTask, held.task).cancelled) == (restarted, restarted)
+    assert (state.related_read is fresh, cast(_HeldTask, held.task).cancelled) == (
+        restarted,
+        restarted,
+    )

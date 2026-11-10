@@ -205,9 +205,9 @@ def stale_departure(
     trailing request answered from data whose newest year lies more than
     `trailing_stale_years` before the current year, or whose range a member passed over in
     election shortened (`shortened`): the years the words cover, the years shown, and for a
-    stale year alone the years the data holds up to `newest`. A shortened range states no
-    data years (`departures.shortened_trailing_fact`), since the years before it can hold
-    data. None for a newer year a full range shows."""
+    stale year the years the data holds up to `newest`. A shortened range that is not stale
+    states no data years (`departures.shortened_trailing_fact`), since the years before it
+    can hold data. None for a newer year a full range shows."""
     now = current_year()
     stale = now - newest > scope_window_settings().trailing_stale_years
     if not stale and not shortened:
@@ -218,11 +218,13 @@ def stale_departure(
     firsts = [year for first, _last in served if (year := year_of(first)) is not None]
     shown = (min(firsts, default=newest), newest)
     requested = (asked.start_year, asked.end_year)
+    held = data_years(plan)
+    first = min(held[0], shown[0]) if held is not None else shown[0]
     if shortened:
-        fact = shortened_trailing_fact(asked=requested, shown=shown)
+        fact = shortened_trailing_fact(
+            asked=requested, shown=shown, data_years=(first, newest) if stale else None
+        )
     else:
-        held = data_years(plan)
-        first = min(held[0], shown[0]) if held is not None else shown[0]
         fact = stale_trailing_fact(asked=requested, data_years=(first, newest), shown=shown)
     reasons: list[str] = []
     if stale:

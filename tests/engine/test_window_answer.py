@@ -761,24 +761,29 @@ def test_a_trailing_role_answer_keeps_a_member_its_unit_admission_empties():
 
 
 @pytest.mark.parametrize(
-    ("passed_over", "window", "limited_by", "data_years"),
+    ("now", "passed_over", "window", "limited_by", "data_years"),
     [
-        pytest.param(2018, (2019, 2022), "passed_over", None, id="shortened"),
-        pytest.param(2016, (2018, 2022), None, (2000, 2022), id="full-span"),
+        pytest.param(2025, 2018, (2019, 2022), "passed_over", None, id="shortened"),
+        pytest.param(
+            2026, 2018, (2019, 2022), "passed_over", (2000, 2022), id="shortened-and-stale"
+        ),
+        pytest.param(2026, 2016, (2018, 2022), None, (2000, 2022), id="full-span"),
     ],
 )
 def test_a_trailing_span_a_passed_over_member_shortens_says_so(
     monkeypatch,
+    now: int,
     passed_over: int,
     window: tuple[int, int],
     limited_by: str | None,
     data_years: tuple[int, int] | None,
 ):
-    """Flows held 2000 to 2022 answer "the last five years" in 2026 with 2018 to 2022, past
-    a member passed over in election that holds 2016 at the latest. One that holds 2018
-    floors the range at 2019, so it shows four years, and the year fact says an earlier
-    start would read another series, naming no data years, which 2018 holds."""
-    monkeypatch.setattr(trailing_module, "current_year", lambda: 2026)
+    """Flows held 2000 to 2022 answer "the last five years" with 2018 to 2022, past a member
+    passed over in election that holds 2016 at the latest; in 2026 that newest year is
+    stale, and the year fact names the data's years. One that holds 2018 floors the range at
+    2019, so it shows four years, and the year fact says an earlier start would read another
+    series. It names no data years, which 2018 holds, unless the newest year is stale."""
+    monkeypatch.setattr(trailing_module, "current_year", lambda: now)
     mat = dataclasses.replace(_two_flows(range(2000, 2023)), passed_over_newest_year=passed_over)
     assert mat.read_plan is not None
 
@@ -929,3 +934,40 @@ def test_a_trailing_answer_states_the_years_its_words_cover_once(
     assert [(f.code, f.requested_years, f.shown, f.limited_by) for f in facts] == [
         ("year_unavailable", (2022, 2026), shown, limited_by)
     ]
+
+
+def test_a_narrowed_answer_starts_one_related_read_over_its_final_years(monkeypatch):
+    """ "The last five years" in constant dollars, in 2026, settles on 2020 to 2024, and
+    deflators ending in 2023 narrow it to 2020 to 2023. The answer starts its one
+    related-measures read once, over 2020 to 2023."""
+    monkeypatch.setattr(trailing_module, "current_year", lambda: 2026)
+    mat = _two_flows(range(2000, 2025))
+    assert mat.read_plan is not None
+    period = ConversionPeriod(served=(2020, 2024), years=(2020, 2023), limited_by="deflators")
+    monkeypatch.setattr(phase_answer, "current_conversion_catalogue", lambda: None)
+    monkeypatch.setattr(phase_answer, "survivor_declared_roles", lambda _mat: None)
+    monkeypatch.setattr(phase_answer, "unit_request_period", lambda *_a, **_k: period)
+    monkeypatch.setattr(phase_answer, "deflator_omission_departure", lambda *_a, **_k: None)
+    windows: list[TimeWindow | None] = []
+
+    def start(state: SimpleNamespace, _mat: Materialised) -> None:
+        windows.append(state.date_request.window)
+        state.measure_family = (None, ())
+
+    monkeypatch.setattr(related_read_module, "start_elected_related_read", start)
+    state = SimpleNamespace(
+        unit_request=object(),
+        unit_elected_selections={},
+        date_request=_trailing("the last five years"),
+        mat_result=mat,
+        coverage=SimpleNamespace(index=empty_coverage_snapshot().index),
+        depart=lambda _warning, _fact: None,
+        related_read=None,
+        measure_family=None,
+    )
+
+    phase_answer._over_answer_years(
+        state, mat, FilteredAnswer(mat.coverage, None, mat.read_plan), FacetAdmission()
+    )
+
+    assert windows == [TimeWindow(start_year=2020, end_year=2023)]

@@ -302,13 +302,16 @@ def _year_unavailable(fact: DepartureFact, _family: FlowFamily | None, shows_dat
 
 def _passed_over_years(fact: DepartureFact) -> str:
     """The years a span counted back from now shows where an earlier start would read
-    another series (`DepartureFact.limited_by` `passed_over`)."""
+    another series (`DepartureFact.limited_by` `passed_over`), naming the year the data
+    ends in when it is stale (`data_years`)."""
     if fact.shown is None:
         raise ValueError("year_unavailable on a shortened span needs the years shown")
-    return (
-        "The series shown holds nothing newer, and earlier years would read a different "
-        f"series, so this shows {fact.shown}."
+    newest = (
+        "The series shown holds nothing newer"
+        if fact.data_years is None
+        else f"The data ends in {fact.data_years[1]}"
     )
+    return f"{newest}, and earlier years would read a different series, so this shows {fact.shown}."
 
 
 _CONVERSION_TABLES: Final[Mapping[str, str]] = MappingProxyType(

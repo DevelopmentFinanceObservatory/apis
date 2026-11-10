@@ -8,6 +8,7 @@ import time
 
 import pytest
 
+import search.engine.clients.llm as llm_module
 from graph_generation import UNKNOWN_GENERATION, FakeGeneration, GenerationProvider
 from origin_catalogue import bound_catalogue
 from search.engine import config
@@ -878,6 +879,134 @@ def test_release_cancels_and_awaits_a_second_sample_still_running():
         return [second.cancelled() for second in seconds]
 
     assert asyncio.run(run()) == [True]
+
+
+async def _never() -> tuple[None, None]:
+    await asyncio.Event().wait()
+    raise AssertionError("unreachable")
+
+
+async def _agreeing() -> tuple[str, None]:
+    return "second", None
+
+
+def test_a_second_sample_that_never_finishes_delays_done_by_the_settle_bound_and_stores_nothing(
+    search_settings,
+):
+    """`done` waits `llm_second_sample_settle_s` for a second sample that never answers,
+    then cancels and awaits it. The reading is cut: neither agreed nor disagreed, judged by
+    nobody, and layer 1 stores nothing under the query."""
+    search_settings(llm_second_sample_settle_s=0.05)
+    base = _base_response()
+
+    async def run() -> tuple[float, bool, list[object], bool | None, bool]:
+        cache = _new_cache()
+        query = "total population india"
+        scope = _make_scope(cache)
+        assert await scope.lookup_raw(query) is None
+        judged: list[object] = []
+        second = asyncio.create_task(_never())
+        scope.note_extraction(
+            Agreement(second, lambda answer: judged.append(answer) or True, stage="extraction")
+        )
+        response, done = _terminal_events(base, start_ms=now_ms(), degraded_leg=False)
+        await scope.observe(response)
+        started = time.monotonic()
+        await asyncio.wait_for(scope.observe(done), 5)
+        return (
+            time.monotonic() - started,
+            second.cancelled(),
+            judged,
+            scope.extraction_agreed,
+            await _new_scope_hits_layer1(cache, query),
+        )
+
+    elapsed, cancelled, judged, agreed, layer1 = asyncio.run(run())
+
+    assert elapsed < 1.0
+    assert (cancelled, judged, agreed, layer1) == (True, [], None, False)
+
+
+def test_a_request_without_cache_or_extraction_store_settles_nothing_at_done():
+    """With no response cache and no extraction store, `done` does not wait for a second
+    sample still running: nothing would keep its verdict."""
+    base = _base_response()
+
+    async def run() -> tuple[bool, bool | None]:
+        scope = _make_scope(None)
+        scope.hold_samples(LLM(seed=1))
+        second = asyncio.create_task(_never())
+        scope.note_extraction(Agreement(second, lambda _answer: True, stage="extraction"))
+        response, done = _terminal_events(base, start_ms=now_ms(), degraded_leg=False)
+        await scope.observe(response)
+        # Well under the default 1 s settle bound.
+        await asyncio.wait_for(scope.observe(done), 0.5)
+        running = not second.done()
+        await scope.release()
+        return running, scope.extraction_agreed
+
+    assert asyncio.run(run()) == (True, None)
+
+
+def test_a_finished_agreeing_sample_is_stored_past_the_soft_deadline():
+    """A request that reaches `done` after its soft deadline settles a second sample that
+    already answered: the agreed reading is judged, which stores it, and layer 1 stores the
+    answer under the query."""
+    base = _base_response()
+
+    async def run() -> tuple[list[object], bool | None, bool]:
+        cache = _new_cache()
+        query = "total population india"
+        scope = _make_scope(cache, deadline=time.monotonic() - 1)
+        assert await scope.lookup_raw(query) is None
+        judged: list[object] = []
+        second = asyncio.create_task(_agreeing())
+        await asyncio.wait([second])
+        scope.note_extraction(
+            Agreement(second, lambda answer: judged.append(answer) or True, stage="extraction")
+        )
+        await scope.store(base)
+        return judged, scope.extraction_agreed, await _new_scope_hits_layer1(cache, query)
+
+    assert asyncio.run(run()) == (["second"], True, True)
+
+
+def test_an_extraction_store_write_that_fails_does_not_fail_the_request(caplog):
+    """A judge whose extraction-store write raises `OSError` is logged. The request
+    publishes its answer: layer 2 keeps it, a waiter receives it, and layer 1, whose reading
+    is not agreed, stores nothing under the query."""
+    base = _base_response()
+
+    def judge(_answer: object) -> bool:
+        raise OSError("disk full")
+
+    async def run() -> tuple[bool | None, bool, bool, bool]:
+        cache = _new_cache()
+        extraction = _population_india_extraction()
+        query = "total population india"
+        scope = _make_scope(cache)
+        assert await scope.lookup_raw(query) is None
+        assert await scope.lookup_parsed(query=query, **extraction) is None
+        second = asyncio.create_task(_agreeing())
+        scope.note_extraction(Agreement(second, judge, stage="extraction"))
+        waiter = _make_scope(cache)
+        waiting = asyncio.ensure_future(waiter.lookup_raw(query))
+        await asyncio.sleep(0)
+        await scope.store(base)
+        other = _make_scope(cache)
+        layer2 = await other.lookup_parsed(query="another wording", **extraction) is not None
+        await other.release()
+        return (
+            scope.extraction_agreed,
+            await waiting is not None,
+            layer2,
+            await _new_scope_hits_layer1(cache, query),
+        )
+
+    assert asyncio.run(run()) == (False, True, True, False)
+    assert [
+        record.levelname for record in caplog.records if record.name == llm_module.__name__
+    ] == ["ERROR"]
 
 
 def test_release_abandons_both_leases_when_this_request_holds_both():

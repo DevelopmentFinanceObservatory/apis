@@ -19,7 +19,7 @@ import hashlib
 import json
 import logging
 import re
-from collections.abc import Callable, Coroutine, Iterator
+from collections.abc import Callable, Coroutine, Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar
@@ -294,11 +294,10 @@ class SecondSamples:
     this holder and serve their first at once; `aclose` cancels every second sample still
     running and awaits it, so no model call outlives the request. `usage` sums what the
     second samples of served first samples cost. `CacheScope` holds one per request and
-    closes it on every exit (`CacheScope.release`). The scope settles the agreements at
-    `done`, after a streamed response has left; the buffered route sends its response only
-    once the stream ends, so there the answer waits for a second sample that outlasts the
-    whole rest of the pipeline, which the 0.36 s 95th-percentile gap between two samples
-    makes rare."""
+    closes it on every exit (`CacheScope.release`). The response never waits for a second
+    sample. The scope settles the agreements at `done` (`settle`), which waits at most
+    `llm_second_sample_settle_s` for a second sample still running, so a stalled one delays
+    `done`, and the buffered route's response, by that bound at most."""
 
     def __init__(self) -> None:
         self._tasks: set[asyncio.Task[Any]] = set()
@@ -339,6 +338,20 @@ class SecondSamples:
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+
+    def adopt(self, other: SecondSamples) -> None:
+        """Hold `other`'s second samples here, the counted ones included, so this holder's
+        `aclose` and `usage` cover them."""
+        for task in other._tasks:
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
+        self._served.extend(other._served)
+
+
+def held_by(llm: SupportsLLM) -> SecondSamples | None:
+    """The request holder `llm` hands its reads' second samples to (`SecondSamples.bind`),
+    None when it settles each read before returning."""
+    return llm._second_samples if isinstance(llm, LLM) else None
 
 
 class Agreement:
@@ -388,6 +401,43 @@ class Agreement:
         return self._verdict
 
 
+async def settle(agreements: Sequence[Agreement], *, wait_s: float) -> bool | None:
+    """The joint verdict of `agreements`, waiting at most `wait_s` for the second samples
+    still running. One still running past it is cancelled and awaited, and its read is cut:
+    neither judged nor stored. The verdict is False when any judged read disagreed, None when
+    none did and a read was cut, else True. A read whose settling raises, such as an
+    extraction store whose write fails, logs the error and counts as disagreed, so settling
+    never fails the request."""
+    running = {
+        second
+        for agreement in agreements
+        if agreement._verdict is None
+        and (second := agreement._second) is not None
+        and not second.done()
+    }
+    cut: set[asyncio.Task[Any]] = set()
+    if running:
+        _, late = await asyncio.wait(running, timeout=wait_s)
+        for second in late:
+            second.cancel()
+        await asyncio.gather(*late, return_exceptions=True)
+        cut = {second for second in late if second.cancelled()}
+    verdicts: list[bool] = []
+    for agreement in agreements:
+        if agreement._second in cut:
+            continue
+        try:
+            verdicts.append(await agreement.settled())
+        except Exception:
+            logger.exception(
+                "%s: settling the agreement failed; the read is not agreed", agreement._stage
+            )
+            verdicts.append(False)
+    if not all(verdicts):
+        return False
+    return None if cut else True
+
+
 async def two_samples[T, R](
     sample: Callable[[SupportsLLM], Coroutine[Any, Any, tuple[T, dict | None]]],
     llm: SupportsLLM,
@@ -407,7 +457,7 @@ async def two_samples[T, R](
     verdict. Any other `llm` settles the agreement before returning, and the usage adds the
     second's (`_sample_usage`). `stage` names the call in the warning a failed second logs.
     The second ends by `llm_timeout_s` from its start (`_within_model_timeout`)."""
-    held = llm._second_samples if isinstance(llm, LLM) else None
+    held = held_by(llm)
     samples = held if held is not None else SecondSamples()
     try:
         second_task = samples.start(lambda: sample(reseeded(llm)))

@@ -270,6 +270,16 @@ class SearchSettings(BaseSettings):
     # pipeline deadline handling can proceed.
     llm_timeout_s: float = 30
 
+    # Seconds a request waits at `done` for the second of two samples
+    # (`clients.llm.two_samples`) still running before it settles their agreement
+    # (`clients.llm.settle`); the response never waits for it. Past the bound the second is
+    # cancelled and awaited, and the reading counts as cut: not agreed, nothing stored. Both
+    # samples go out at the same moment. Over 120 such pairs of extraction and exclusion-read
+    # calls against gemini-3.5-flash-lite, the second answered at most 0.66 s after the
+    # first, 0.36 s at the 95th percentile, so 1 s waits out a healthy second and caps what a
+    # stalled one adds to `done`.
+    llm_second_sample_settle_s: float = 1.0
+
     # clients/llm.py limits each event loop to this many HTTP/1.1 connections.
     # Requests over the cap wait for a free connection up to llm_timeout_s.
     llm_max_concurrency: int = 32
@@ -840,6 +850,11 @@ class SearchSettings(BaseSettings):
             )
         if self.llm_timeout_s <= 0:
             raise ValueError(f"SEARCH_LLM_TIMEOUT_S must be > 0; got {self.llm_timeout_s!r}")
+        if self.llm_second_sample_settle_s <= 0:
+            raise ValueError(
+                "SEARCH_LLM_SECOND_SAMPLE_SETTLE_S must be > 0; got "
+                f"{self.llm_second_sample_settle_s!r}"
+            )
         if self.llm_max_concurrency < 1:
             raise ValueError(
                 f"SEARCH_LLM_MAX_CONCURRENCY must be >= 1; got {self.llm_max_concurrency!r}"

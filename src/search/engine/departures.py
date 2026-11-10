@@ -1020,11 +1020,14 @@ def stale_trailing_fact(
     )
 
 
-def shortened_trailing_fact(*, asked: tuple[int, int], shown: tuple[int, int]) -> DepartureFact:
+def shortened_trailing_fact(
+    *, asked: tuple[int, int], shown: tuple[int, int], data_years: tuple[int, int] | None
+) -> DepartureFact:
     """`year_unavailable` for a span counted back from now whose range starts after the
     newest year a member ahead of the served one in election order holds
     (`region.trailing.settle_trailing`), so it shows fewer years than the span counts: the
-    calendar years the words cover and the years the answer shows. It states no data years,
+    calendar years the words cover and the years the answer shows. `data_years` is the
+    years the data holds when its newest year is stale (`stale_trailing_fact`), else None,
     since the years before the range can hold data."""
     return DepartureFact(
         code="year_unavailable",
@@ -1032,6 +1035,7 @@ def shortened_trailing_fact(*, asked: tuple[int, int], shown: tuple[int, int]) -
         asked=_range_text(*asked),
         shown=_span_text(shown),
         requested_years=asked,
+        data_years=data_years,
         limited_by="passed_over",
     )
 

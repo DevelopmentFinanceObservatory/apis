@@ -292,6 +292,9 @@ def parse_time_text(text: str, *, current_year: int) -> tuple[list[ExtractedDate
             if count is None:
                 return [], _not_parsed_warning(text)
             span = span_years(count, current_year)
+            if span.start < 1:
+                # A span reaching back before year 1 names no year a request can hold.
+                return [], _not_parsed_warning(text)
             date = ExtractedDate(
                 kind="range",
                 start=str(span.start),
