@@ -21,7 +21,7 @@ from pydantic import BaseModel, create_model
 
 import search.engine.clients.llm as llm_module
 import search.engine.extract as extract_module
-from search.engine.clients.llm import LLM, for_stage
+from search.engine.clients.llm import LLM, Agreement, SecondSamples, for_stage
 from search.engine.errors import LLMInfraError, LLMOutputRefused
 from search.engine.exclusion_read import (
     EXCLUSION_READ_VERSION,
@@ -87,6 +87,11 @@ def _extract(query: str, llm: LLM):
     return asyncio.run(extract(query, llm=llm))
 
 
+def _agreed(agreement: Agreement) -> bool:
+    """The verdict of an agreement an unheld read settled before it returned."""
+    return asyncio.run(agreement.settled())
+
+
 def test_a_repeated_query_calls_the_model_once_and_another_spelling_reads_afresh(monkeypatch):
     """`extract()` post-processes a reading against the query text it was made from, so a
     reading is stored under that exact text. A miss samples the model twice, under its own
@@ -103,7 +108,7 @@ def test_a_repeated_query_calls_the_model_once_and_another_spelling_reads_afresh
     assert first_usage is not None and first_usage["input_tokens"] == 22
     assert second_usage == _NO_USAGE
     assert second == first
-    assert first.agreed and second.agreed
+    assert _agreed(first.agreed) and _agreed(second.agreed)
 
 
 # A second sample naming one distinct entity past the cap, which post-processing refuses.
@@ -137,7 +142,7 @@ def test_samples_that_disagree_serve_the_first_store_nothing_and_read_again(
     second, _ = _extract(_QUERY, llm)
 
     assert first.extraction.variables == ["GDP"]
-    assert not first.agreed
+    assert not _agreed(first.agreed)
     assert first_usage is not None and first_usage["input_tokens"] == 22
     assert second == first
     assert models.prompts == [_QUERY] * 4
@@ -225,13 +230,13 @@ def test_a_refused_or_failed_sample_is_not_stored(
     else:
         served, usage = _extract(_QUERY, llm)
         assert served.extraction.variables == ["GDP"]
-        assert not served.agreed
+        assert not _agreed(served.agreed)
         assert usage == second_usage
         assert [r.levelname for r in caplog.records if r.exc_info] == ["WARNING"]
     again, _ = _extract(_QUERY, llm)
     _extract(_QUERY, llm)
 
-    assert again.agreed
+    assert _agreed(again.agreed)
     assert outcomes == {1: [], 2: []}
 
 
@@ -254,49 +259,66 @@ class _GatedModels(_CountingModels):
             self.in_flight -= 1
 
 
-@pytest.mark.parametrize("stage", ["extraction", "exclusion_read"])
-def test_a_second_sample_that_outlasts_its_wait_is_cancelled_and_releases_its_call(
-    monkeypatch, stage
-):
-    """A second sample still running `llm_second_sample_wait_s` after the first answered is
-    cancelled before the first is served: the read returns with no model call in flight,
-    serves the first not agreed with the second counted as one uncounted call, and memoises
-    nothing for the second, so the same request again calls the model for it."""
-    settings = llm_module.config.settings()
-    monkeypatch.setattr(
-        llm_module.config,
-        "_SETTINGS",
-        settings.model_copy(update={"llm_second_sample_wait_s": 0.01, "llm_timeout_s": 5.0}),
+async def _held_read(stage: str, llm: LLM) -> tuple[Agreement, dict | None]:
+    if stage == "exclusion_read":
+        _read, usage, agreement = await read_exclusions(_READ_QUERY, llm=llm)
+        return agreement, usage
+    served, usage = await extract(_QUERY, llm=llm)
+    return served.agreed, usage
+
+
+def _stored(stage: str, llm: LLM) -> bool:
+    if stage == "exclusion_read":
+        return stored_exclusion_read(_READ_QUERY, llm=llm) is not None
+    key = extraction_key(
+        _QUERY,
+        version=EXTRACT_VERSION,
+        year=extract_module.date.today().year,
+        identity=for_stage(llm, "extract").sampling_identity(),
     )
-    models = _GatedModels({1: _READ, 2: _READ} if stage == "exclusion_read" else None)
+    assert llm.extraction_store is not None
+    return llm.extraction_store.get(key) is not None
+
+
+@pytest.mark.parametrize("agrees", [True, False], ids=["agree", "disagree"])
+@pytest.mark.parametrize("stage", ["extraction", "exclusion_read"])
+def test_a_held_read_serves_its_first_sample_while_the_second_runs(monkeypatch, stage, agrees):
+    """A read whose LLM a request's `SecondSamples` holds returns its first sample, with
+    that sample's usage alone, while the second is still in flight; the holder counts the
+    second's. Settling the agreement waits for the second, and only an agreed pair is
+    stored."""
+    first, other = (
+        (_READ, ExclusionRead(exclusions=[]))
+        if stage == "exclusion_read"
+        else (
+            _ANSWER,
+            _OTHER_ANSWER,
+        )
+    )
+    models = _GatedModels({1: first, 2: first if agrees else other})
     monkeypatch.setattr(
         llm_module, "_get_client", lambda: SimpleNamespace(aio=SimpleNamespace(models=models))
     )
-    memo = llm_module.LLMMemo(max_bytes=1024 * 1024, max_entry_bytes=256 * 1024, ttl_s=3600.0)
-    # No extraction store, so the repeat reaches the model calls and only the memo serves it.
-    llm = LLM(memo=memo)
-
-    async def read() -> tuple[bool | None, dict | None]:
-        if stage == "exclusion_read":
-            _read, usage, agreed = await read_exclusions(_READ_QUERY, llm=llm)
-            return agreed, usage
-        served, usage = await extract(_QUERY, llm=llm)
-        return served.agreed, usage
+    llm = LLM(extraction_store=MemoryExtractionStore(max_bytes=1024 * 1024))
 
     async def run():
-        first = await read()
-        in_flight = models.in_flight
-        models.gate.set()
-        return first, in_flight, await read()
+        samples = SecondSamples()
+        try:
+            # Bounded, so a read that waited for the gated second fails here and never hangs.
+            agreement, usage = await asyncio.wait_for(_held_read(stage, samples.bind(llm)), 5)
+            served_with = (models.in_flight, _stored(stage, llm))
+            models.gate.set()
+            return served_with, usage, await agreement.settled(), samples.usage()
+        finally:
+            await samples.aclose()
 
-    (first_agreed, first_usage), in_flight, (again_agreed, again_usage) = asyncio.run(run())
+    (in_flight, stored_when_served), usage, verdict, second_usage = asyncio.run(run())
 
-    assert in_flight == 0
-    assert first_agreed is False
-    assert first_usage is not None and first_usage["uncounted_calls"] == 1
-    assert again_agreed is True
-    assert models.seeds == [1, 2]
-    assert again_usage is not None and again_usage["input_tokens"] == 11
+    assert (in_flight, stored_when_served) == (1, False)
+    assert usage is not None and usage["input_tokens"] == 11
+    assert second_usage is not None and second_usage["input_tokens"] == 11
+    assert verdict is agrees
+    assert _stored(stage, llm) is agrees
 
 
 _READ_QUERY = "ODA to Kenya excluding grants"
@@ -327,7 +349,7 @@ def test_an_exclusion_read_is_stored_only_when_its_samples_agree(monkeypatch, se
     read, usage, read_agreed = asyncio.run(read_exclusions(_READ_QUERY, llm=llm))
 
     assert read == _READ
-    assert read_agreed is agreed
+    assert _agreed(read_agreed) is agreed
     assert sorted(models.seeds) == [1, 2]
     assert usage is not None and usage["input_tokens"] == 22
     assert stored_exclusion_read(_READ_QUERY, llm=llm) == (_READ if agreed else None)
@@ -359,7 +381,7 @@ def test_an_extraction_stored_before_agreement_is_a_miss_and_reads_the_model(mon
 
     assert models.prompts == [_QUERY] * 2
     assert result.extraction.variables == ["GDP"]
-    assert result.agreed
+    assert _agreed(result.agreed)
 
 
 def test_an_exclusion_read_stored_before_agreement_is_not_found(monkeypatch):

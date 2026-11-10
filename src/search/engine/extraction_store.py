@@ -1,7 +1,8 @@
 """Stores of the model's extraction of a query, so a repeated query reads the same way.
 
 `extract()` consults the store before it calls the model and writes the model's
-`Extraction` JSON to it after a valid parse, before any post-processing. A key
+`Extraction` JSON to it, before any post-processing, once two samples agree on its
+reading; a request settles that agreement before it ends (`clients.llm.SecondSamples`). A key
 (`extraction_key`) hashes the query as sent, the extract version (the system
 prompt and the `Extraction` schema), the model id, seed and thinking level, and the
 number of samples whose agreement a stored reading passed (`AGREEMENT_SAMPLES`), so any
@@ -20,9 +21,12 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Protocol
 
-from search.engine.clients.llm import AGREEMENT_SAMPLES
-
 logger = logging.getLogger(__name__)
+
+# The samples whose agreement a stored reading passed: `clients.llm.two_samples` draws this
+# many, and `extraction_key` carries it, so a reading stored under another sampling policy
+# is a miss.
+AGREEMENT_SAMPLES = 2
 
 # The in-process store's byte budget. An extraction is under 1 KiB of JSON, so it
 # holds over 16,000 queries.

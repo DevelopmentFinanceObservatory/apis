@@ -24,6 +24,7 @@ from search.engine.bind_repair import (
     declared_default_words_named,
 )
 from search.engine.binders import Binder, Fallbacks
+from search.engine.clients.llm import Agreement, SecondSamples, SupportsLLM
 from search.engine.deadline import _await_bounded
 from search.engine.degraded_reads import DegradedReads
 from search.engine.enrichment import stream_place_options
@@ -241,7 +242,10 @@ class CacheScope:
     too, so an answer computed under one catalogue is never served once another is live.
     Layer 1 stores an answer only when two samples of its query's exclusion read and two
     of its extraction each agreed on the reading (`note_extraction`), so layer 1 holds no
-    reading that rests on one sample. The LLM memo replays each sample of a wording for
+    reading that rests on one sample. The request's reads serve their first sample at once
+    and leave the second to the scope's holder (`hold_samples`); the scope settles their
+    agreement when it publishes, within the request deadline, and `release` cancels and
+    awaits any second sample still running. The LLM memo replays each sample of a wording for
     `llm_memo_ttl_s` whether or not they agreed. Cache clearing belongs to app wiring.
     """
 
@@ -315,6 +319,9 @@ class CacheScope:
         self._layer1_lease: Lease | None = None
         self._layer2_lease: Lease | None = None
         self._layer2_key: str | None = None
+        # The second samples of this request's reads, closed by `release`.
+        self._samples = SecondSamples()
+        self._agreements: tuple[Agreement, ...] = ()
         self._extraction_agreed: bool | None = None
         self._timed_out = False
         self._degraded_leg = False
@@ -326,6 +333,8 @@ class CacheScope:
         self._recorded: list[Event] = []
         # The stored bundle a hit replays.
         self._replay: StoredBundle | None = None
+        # The response a request without trailing events publishes at `done`.
+        self._response: ResolveResponse | None = None
         self._outcome: str = "inactive" if not self.active else "miss"
 
     @property
@@ -521,19 +530,46 @@ class CacheScope:
             step="response_cache_layer2",
         )
 
-    def note_extraction(self, *, agreed: bool) -> None:
-        """Record whether this request's reading was agreed: the two samples of its exclusion
-        read and the two of its extraction each agreed (`entry.raw_text._DoorRead.agreed`).
-        An answer whose samples disagreed still reaches layer-1 followers, and layer 2
-        stores it as usual, keyed on the reading itself. Layer 1 stores nothing under the
-        query, so the next caller of the wording misses layer 1. Within `llm_memo_ttl_s`
-        its two samples come back from the LLM memo, so it gets the same reading."""
-        self._extraction_agreed = agreed
+    def hold_samples(self, llm: SupportsLLM) -> SupportsLLM:
+        """`llm` handing its reads' second samples to this scope (`SecondSamples.bind`), so
+        each read serves its first sample without waiting and no second sample outlives
+        the request (`release`)."""
+        return self._samples.bind(llm)
+
+    def note_extraction(self, *agreed: Agreement) -> None:
+        """Record the agreements this request's reading rests on: the two samples of its
+        exclusion read and the two of its extraction (`entry.raw_text._DoorRead.agreed`).
+        The scope settles them when it publishes (`_settle_extraction`). An answer whose
+        samples disagreed still reaches layer-1 followers, and layer 2 stores it as usual,
+        keyed on the reading itself. Layer 1 stores nothing under the query, so the next
+        caller of the wording misses layer 1. Within `llm_memo_ttl_s` its two samples come
+        back from the LLM memo, so it gets the same reading."""
+        self._agreements = agreed
+
+    def second_sample_usage(self) -> dict | None:
+        """What the second samples of this request's served reads cost, which the response's
+        `llm_usage` leaves out (`SecondSamples.usage`); complete once `release` returns."""
+        return self._samples.usage()
+
+    async def _settle_extraction(self) -> None:
+        """Settle every noted agreement, each within the request deadline, which writes each
+        agreed read to the extraction store. The reading is agreed when all agreed; one the
+        deadline cut is not. Settles once; a request that noted none stays unsettled."""
+        if not self._agreements or self._extraction_agreed is not None:
+            return
+        verdicts: list[bool] = []
+        for agreement in self._agreements:
+            try:
+                verdicts.append(await _await_bounded(agreement.settled(), deadline=self._deadline))
+            except TimeoutError:
+                verdicts.append(False)
+        self._extraction_agreed = all(verdicts)
 
     @property
     def extraction_agreed(self) -> bool | None:
         """Whether this request's reading was agreed (`note_extraction`), `None` when
-        it extracted nothing: a parsed request, or one a cache hit answered."""
+        it extracted nothing (a parsed request, or one a cache hit answered) or ended
+        before it published."""
         return self._extraction_agreed
 
     def note_health(
@@ -555,15 +591,20 @@ class CacheScope:
     async def observe(self, event: Event) -> None:
         """Take one event of the live stream; publish the answer once it is complete.
 
-        A bundle request records events from `response` and publishes at `done`, leaving
-        out place options, which a hit runs again. Any other request publishes its response
-        at `response`.
+        Every request publishes at `done`, which the pipeline sends after `response`, so the
+        settling of the reads' second samples (`_settle_extraction`) never holds a streamed
+        response back. A bundle request records events from `response` on, leaving out
+        place options, which a hit runs again. Any other request publishes its response.
         """
-        if not self.active:
-            return
         if not self._bundle:
             if isinstance(event, ResponseEvent):
-                await self.store(event.response)
+                self._response = event.response
+            elif isinstance(event, DoneEvent) and self._response is not None:
+                await self.store(self._response)
+            return
+        if isinstance(event, DoneEvent):
+            await self._settle_extraction()
+        if not self.active:
             return
         if isinstance(event, PlaceOptionsEvent):
             return
@@ -595,6 +636,7 @@ class CacheScope:
         flags.
         """
         assert not self._bundle, "a streamed request publishes its bundle through observe()"
+        await self._settle_extraction()
         await self._publish(
             lambda: to_entry(response),
             lambda: is_storable(
@@ -653,10 +695,17 @@ class CacheScope:
             logger.exception("response cache store failed; serving the fresh answer uncached")
 
     async def release(self) -> None:
-        """Abandon unpublished leases, usually from `finally`, to wake all waiters.
+        """Cancel and await every second sample still running, then abandon unpublished
+        leases to wake all waiters. Called from `finally`, so it runs on every exit.
 
         Safe after `store()`, which clears published leases.
         """
+        try:
+            await self._samples.aclose()
+        finally:
+            await self._abandon_leases()
+
+    async def _abandon_leases(self) -> None:
         if not self.active or self._cache is None:
             return
         if self._layer1_lease is not None:

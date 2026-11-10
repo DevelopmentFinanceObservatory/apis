@@ -49,7 +49,7 @@ from search.engine.assemble import (
 from search.engine.binders import Binder, Fallbacks, configured_binder, recording_fallbacks
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.graph_client import LiveGraphClient
-from search.engine.clients.llm import LLM, SupportsLLM
+from search.engine.clients.llm import LLM, SupportsLLM, sum_usage
 from search.engine.clients.sdmx import EngineSdmxClient, LiveSdmxClient
 from search.engine.concurrency import scoped_concurrency
 from search.engine.degraded_reads import DegradedReads, recording_degraded_reads
@@ -118,7 +118,10 @@ class ResolveRecord:
     the SSE route's last frame has left, so nothing after it can end the request.
     `extraction_agreed` says whether the samples of a raw_text request's exclusion read and
     of its extraction each agreed on its reading (`CacheScope.note_extraction`), None when the
-    request extracted nothing.
+    request extracted nothing or ended before it published its answer. `second_sample_usage`
+    is what the second samples of its exclusion read and extraction cost
+    (`CacheScope.second_sample_usage`), which the response does not wait for and the log
+    line's `llm_usage` adds.
     """
 
     cache: str = "inactive"
@@ -129,6 +132,7 @@ class ResolveRecord:
     error_code: str | None = None
     delivered: bool = False
     extraction_agreed: bool | None = None
+    second_sample_usage: dict | None = None
 
 
 @contextmanager
@@ -217,7 +221,8 @@ def _log_resolve(
     `outcome` is the response's `status` for a resolution and its `kind` otherwise.
     `part_statuses` lists each part's status in order, `no_data_reasons` each no_data part's
     `reason` and `unsupported_codes` each unsupported part's `code`. `llm_usage` is
-    `diagnostics.llm_usage`, so it leaves out tokens spent by cut or aborted legs.
+    `diagnostics.llm_usage` plus the second samples' cost (`ResolveRecord.second_sample_usage`),
+    so it leaves out tokens spent by cut or aborted legs.
 
     `error_code` says how a request that did not run to its end ended (`resolve_line`): the
     problem code the route served, or `cancelled`. `timeout` covers the hard cap and any
@@ -280,7 +285,11 @@ def _log_resolve(
                 "unsupported_codes": [
                     part.unsupported.code for part in parts if isinstance(part, UnsupportedPart)
                 ],
-                "llm_usage": response.diagnostics.llm_usage if response is not None else None,
+                "llm_usage": (
+                    sum_usage(response.diagnostics.llm_usage, record.second_sample_usage)
+                    if response is not None
+                    else None
+                ),
                 "error_code": record.error_code,
                 "timed_out": timed_out,
                 "degraded_leg": done.degraded_leg if done is not None else None,
@@ -825,7 +834,10 @@ async def _resolve_pipeline_events(
     finally:
         record.cache = scope.outcome
         record.extraction_agreed = scope.extraction_agreed
-        await scope.release()
+        try:
+            await scope.release()
+        finally:
+            record.second_sample_usage = scope.second_sample_usage()
 
 
 async def resolve_async(

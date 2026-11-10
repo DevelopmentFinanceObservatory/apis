@@ -37,7 +37,7 @@ from search.engine.assemble import (
     unapplied_qualifier_warnings,
 )
 from search.engine.clients.graph import EngineGraphClient
-from search.engine.clients.llm import UNCOUNTED_CALLS, SupportsLLM, sum_usage
+from search.engine.clients.llm import UNCOUNTED_CALLS, Agreement, SupportsLLM, sum_usage
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.config import settings
 from search.engine.conjoin import VARIABLES_CLAMPED, assemble_region
@@ -649,14 +649,15 @@ async def _run_extract_phase(
 class _DoorRead:
     """What the door reads of a query before the parts: its extraction with the usage of both
     calls, what the query leaves out (`reading`), the time each call took, by step, and
-    whether the samples of both the read and the extraction agreed (`agreed`), which alone
-    lets layer 1 store the answer under the query (`CacheScope.note_extraction`)."""
+    the agreements of the samples of the read and of the extraction (`agreed`), which must
+    all settle agreed before layer 1 stores the answer under the query
+    (`CacheScope.note_extraction`)."""
 
     extract_result: ExtractionResult
     usage: dict | None
     reading: QueryReading
     timing: dict[str, int]
-    agreed: bool
+    agreed: tuple[Agreement, ...]
 
 
 async def _discarded_usage(
@@ -689,9 +690,11 @@ async def _read_and_extract(query: str, *, llm: SupportsLLM, deadline: float) ->
     whose every stretch is kept unblanked (`LeftOut.at` `None`) leaves the text as it was,
     so the speculative parse stands.
 
-    The read and the extraction each take two samples (`read_exclusions`, `extract`). A read
-    whose samples disagree still decides the text from its first sample, and the reading as a
-    whole is agreed only when both the read and the extraction agreed (`_DoorRead.agreed`).
+    The read and the extraction each take two samples (`read_exclusions`, `extract`) and
+    serve the first. A read whose samples disagree still decides the text from its first
+    sample, and the reading as a whole is agreed only when both the read and the extraction
+    agreed (`_DoorRead.agreed`). A read the store holds is agreed, so only the
+    extraction's agreement is noted.
 
     A failed read raises as a failed extraction does and fails the query, and the speculative
     parse goes with it: a query the read could not check for what it leaves out gets no
@@ -703,7 +706,7 @@ async def _read_and_extract(query: str, *, llm: SupportsLLM, deadline: float) ->
             reading.text, llm=llm, deadline=deadline
         )
         timing = {"extract": timing_extract, "exclusion_read": 0}
-        return _DoorRead(result, usage, reading, timing, agreed=result.agreed)
+        return _DoorRead(result, usage, reading, timing, agreed=(result.agreed,))
 
     t0 = now_ms()
     speculative = asyncio.create_task(_run_extract_phase(query, llm=llm, deadline=deadline))
@@ -725,7 +728,7 @@ async def _read_and_extract(query: str, *, llm: SupportsLLM, deadline: float) ->
         speculative.cancel()
         await asyncio.gather(speculative, return_exceptions=True)
     timing = {"extract": timing_extract, "exclusion_read": timing_read}
-    agreed = read_agreed and result.agreed
+    agreed = (read_agreed, result.agreed)
     return _DoorRead(result, sum_usage(read_usage, usage), reading, timing, agreed=agreed)
 
 
@@ -2080,7 +2083,8 @@ async def handle(
                 yield ev
         return
 
-    door_read = await _read_and_extract(query, llm=llm, deadline=params.deadline)
+    door_llm = scope.hold_samples(llm) if scope is not None else llm
+    door_read = await _read_and_extract(query, llm=door_llm, deadline=params.deadline)
     extract_result, extract_usage, timing = (
         door_read.extract_result,
         door_read.usage,
@@ -2088,7 +2092,7 @@ async def handle(
     )
     text, left_out = door_read.reading.text, door_read.reading.left_out
     if scope is not None:
-        scope.note_extraction(agreed=door_read.agreed)
+        scope.note_extraction(*door_read.agreed)
     # Record extraction once before the per-variable fan-out.
     yield StepEvent(variable_index=None, step="extract", ran=True, ms=timing["extract"])
     extraction = extract_result.extraction

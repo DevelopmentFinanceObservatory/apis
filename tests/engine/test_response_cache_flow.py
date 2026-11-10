@@ -12,8 +12,9 @@ from graph_generation import UNKNOWN_GENERATION, FakeGeneration, GenerationProvi
 from origin_catalogue import bound_catalogue
 from search.engine import config
 from search.engine.binders import Binder, Fallbacks, configured_binder
+from search.engine.clients.llm import LLM, Agreement, SupportsLLM, two_samples
 from search.engine.degraded_reads import DegradedReads
-from search.engine.envelope import now_ms
+from search.engine.envelope import _terminal_events, now_ms
 from search.engine.events import DoneEvent
 from search.engine.extract import ExtractedEntity
 from search.engine.response_cache import ResponseCache
@@ -453,10 +454,11 @@ async def _test_layer2_follower_deadline_shorter_than_leaders_run_proceeds_unlea
 
 
 async def _test_store_publishes_both_leases_when_this_request_holds_both(
-    base: ResolveResponse, *, agreed: bool
+    base: ResolveResponse, *, agreed: bool, pending: bool
 ):
     """Layer 2 stores the answer either way; layer 1 stores it under the query only when two
-    extraction samples agreed on its reading, and a layer-1 waiter receives it either way."""
+    extraction samples agreed on its reading, and a layer-1 waiter receives it either way.
+    A second sample still running when the answer is published is awaited first."""
     cache = _new_cache()
     extraction = _population_india_extraction()
     query = "total population india"
@@ -465,7 +467,16 @@ async def _test_store_publishes_both_leases_when_this_request_holds_both(
     assert await scope.lookup_parsed(query=query, **extraction) is None
     assert scope._layer1_lease is not None
     assert scope._layer2_lease is not None
-    scope.note_extraction(agreed=agreed)
+    if pending:
+
+        async def second() -> tuple[None, None]:
+            await asyncio.sleep(0.01)
+            return None, None
+
+        task = asyncio.create_task(second())
+        scope.note_extraction(Agreement(task, lambda _second: agreed, stage="extraction"))
+    else:
+        scope.note_extraction(Agreement.fixed(agreed))
     waiter = _make_scope(cache)
     waiting = asyncio.ensure_future(waiter.lookup_raw(query))
     await asyncio.sleep(0)
@@ -789,13 +800,84 @@ def test_layer2_follower_deadline_shorter_than_leaders_run_proceeds_unleased_on_
     )
 
 
+@pytest.mark.parametrize("pending", [False, True], ids=["settled", "second-pending"])
 @pytest.mark.parametrize("agreed", [True, False], ids=["agreed", "samples-disagreed"])
-def test_store_publishes_both_leases_when_this_request_holds_both(agreed):
+def test_store_publishes_both_leases_when_this_request_holds_both(agreed, pending):
     asyncio.run(
         _test_store_publishes_both_leases_when_this_request_holds_both(
-            _base_response(), agreed=agreed
+            _base_response(), agreed=agreed, pending=pending
         )
     )
+
+
+def test_an_unstreamed_response_passes_before_its_second_sample_and_publishes_at_done():
+    """A request without trailing events takes its `response` without waiting on a second
+    sample still running, and publishes at `done`, once that sample has settled."""
+
+    base = _base_response()
+
+    async def run() -> tuple[bool, bool, bool]:
+        cache = _new_cache()
+        query = "total population india"
+        scope = _make_scope(cache)
+        assert await scope.lookup_raw(query) is None
+        gate = asyncio.Event()
+
+        async def second() -> tuple[None, None]:
+            await gate.wait()
+            return None, None
+
+        task = asyncio.create_task(second())
+        scope.note_extraction(Agreement(task, lambda _second: True, stage="extraction"))
+        response, done = _terminal_events(base, start_ms=now_ms(), degraded_leg=False)
+        await asyncio.wait_for(scope.observe(response), 5)
+        published_at_response = scope._layer1_lease is None
+        gate.set()
+        await scope.observe(done)
+        return (
+            published_at_response,
+            scope._layer1_lease is None,
+            await _new_scope_hits_layer1(cache, query),
+        )
+
+    assert asyncio.run(run()) == (False, True, True)
+
+
+def test_release_cancels_and_awaits_a_second_sample_still_running():
+    """A request cancelled after its read served the first sample releases its scope in
+    `finally`, which cancels the second sample its holder owns and awaits it."""
+
+    async def sample(sampler: SupportsLLM) -> tuple[str, None]:
+        assert isinstance(sampler, LLM)
+        if sampler._seed == 2:
+            await asyncio.Event().wait()
+        return "first", None
+
+    async def run() -> list[bool]:
+        scope = _make_scope(_new_cache())
+        llm = scope.hold_samples(LLM(seed=1))
+        served = asyncio.Event()
+
+        async def request() -> None:
+            try:
+                await two_samples(
+                    sample, llm, stage="extraction", read=lambda a: a, judge=lambda *_: True
+                )
+                served.set()
+                await asyncio.Event().wait()
+            finally:
+                await scope.release()
+
+        task = asyncio.create_task(request())
+        await served.wait()
+        seconds = list(scope._samples._tasks)
+        assert [second.done() for second in seconds] == [False]
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        # Read before `asyncio.run` returns, since it cancels whatever task is left.
+        return [second.cancelled() for second in seconds]
+
+    assert asyncio.run(run()) == [True]
 
 
 def test_release_abandons_both_leases_when_this_request_holds_both():

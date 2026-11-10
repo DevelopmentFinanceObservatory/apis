@@ -29,6 +29,7 @@ from code_index.shared import get_index, get_measure_index
 from code_index.tokens import Token, word_tokens
 from search.engine.clients.llm import (
     LLM,
+    Agreement,
     SupportsLLM,
     for_stage,
     generate_structured_async,
@@ -130,31 +131,38 @@ def stored_exclusion_read(query: str, *, llm: SupportsLLM) -> ExclusionRead | No
 
 async def read_exclusions(
     query: str, *, llm: SupportsLLM
-) -> tuple[ExclusionRead, dict | None, bool]:
+) -> tuple[ExclusionRead, dict | None, Agreement]:
     """The stretches of `query` that ask to leave something out, the calls' token usage, and
-    whether two samples of the read agreed on them.
+    the agreement of two samples of the read on them.
 
     Two samples run concurrently with minimal thinking, the second under another seed
-    (`clients.llm.two_samples`). They agree when they blank and disclose the same stretches
-    (`admit_exclusions`), and only an agreed read is stored, as it came (`admit_exclusions`
-    reads it against the current index). A disagreeing pair serves the first sample, as does
-    a second sample that fails or outlasts its wait, and neither is agreed. A first call that
-    fails or whose output fails validation raises as extraction does, and stores nothing.
+    (`clients.llm.two_samples`), and the first is served. They agree when they blank and
+    disclose the same stretches (`admit_exclusions`), and settling the agreement stores an
+    agreed read as it came (`admit_exclusions` reads it against the current index). A
+    disagreeing pair, or a second sample that fails, stores nothing and is not agreed. A
+    first call that fails or whose output fails validation raises as extraction does, and
+    stores nothing. An `LLM` bound to a request's `SecondSamples` serves the first without
+    waiting for the second, as extraction does (`extract._model_extraction`).
     """
     staged = for_stage(llm, "exclusion_read")
-    read, second, usage = await two_samples(
+
+    def judge(read: ExclusionRead, _served: ExclusionRead, second: ExclusionRead) -> bool:
+        if admit_exclusions(query, second) != admit_exclusions(query, read):
+            logger.info("Exclusion read samples disagree; the read is served unstored")
+            return False
+        if isinstance(staged, LLM) and staged.extraction_store is not None:
+            staged.extraction_store.put(_stored_key(query, staged), read.model_dump_json())
+        return True
+
+    return await two_samples(
         lambda sampler: generate_structured_async(
             sampler, prompt=query, system=EXCLUSION_READ_SYSTEM_PROMPT, schema=ExclusionRead
         ),
         staged,
         stage="exclusion_read",
+        read=lambda read: read,
+        judge=judge,
     )
-    agreed = second is not None and admit_exclusions(query, second) == admit_exclusions(query, read)
-    if not agreed:
-        logger.info("Exclusion read samples disagree; the read is served unstored")
-    elif isinstance(staged, LLM) and staged.extraction_store is not None:
-        staged.extraction_store.put(_stored_key(query, staged), read.model_dump_json())
-    return read, usage, agreed
 
 
 def _normalised(query: str) -> tuple[str, list[int], list[int]] | None:

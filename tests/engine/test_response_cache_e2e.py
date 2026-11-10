@@ -14,7 +14,7 @@ from search.engine import binders, response_cache_flow
 from search.engine.bind import _UniversalBindOutput
 from search.engine.binders import JevBinder, jev_client
 from search.engine.clients.llm import LLM
-from search.engine.core import resolve_async, resolve_events
+from search.engine.core import ResolveRecord, resolve_async, resolve_events
 from search.engine.degraded_reads import fail_open_reads, note_degraded_read
 from search.engine.errors import GraphInfraError, LLMInfraError
 from search.engine.events import DoneEvent, ResponseEvent
@@ -85,6 +85,7 @@ def _run(
     sdmx=EMPTY_SDMX,
     generation: GenerationProvider = UNKNOWN_GENERATION,
     materialise_graph: FakeMintGraphReader | None = None,
+    record: ResolveRecord | None = None,
 ):
     """Run `resolve_async` with offline fakes and a pinned date. The mint's member walk reads
     `graph` unless `materialise_graph` replaces it."""
@@ -100,6 +101,7 @@ def _run(
                 sdmx=sdmx,
                 response_cache=cache,
                 generation=generation,
+                record=record,
                 materialise_graph=(
                     materialise_graph
                     if materialise_graph is not None
@@ -142,12 +144,16 @@ def test_differently_worded_single_variable_queries_keep_separate_results():
     assert r1.rendered_sentence == r2.rendered_sentence
 
 
+_SECOND_USAGE = {"input_tokens": 7, "output_tokens": 3, "cached_tokens": 0}
+
+
 class _SeededLLM(LLM):
     """The recorded bank answered under this client's seed. With `disagreeing` set, a sample
     under any seed but 1 reads the measure as `disagreeing`. The exclusion read finds nothing
     left out, and with `read_disagreeing` set a sample under any seed but 1 reads a stretch
-    the query does not hold, which is disclosed and so changes the reading. Records each
-    extraction's and each read's seed, in lists its reseeded copies share."""
+    the query does not hold, which is disclosed and so changes the reading. Every sample under
+    a seed but 1 reports `_SECOND_USAGE`. Records each extraction's and each read's seed, in
+    lists its reseeded copies share."""
 
     def __init__(
         self,
@@ -166,15 +172,18 @@ class _SeededLLM(LLM):
     async def generate_structured(self, *, prompt: str, system: str, schema):
         if schema is ExclusionRead:
             self.read_seeds.append(self._seed)
+            usage = None if self._seed == 1 else dict(_SECOND_USAGE)
             if self._read_disagreeing and self._seed != 1:
                 stretch = Exclusion(phrase="excluding grants", left_out=["grants"])
-                return ExclusionRead(exclusions=[stretch]), None
-            return ExclusionRead(exclusions=[]), None
+                return ExclusionRead(exclusions=[stretch]), usage
+            return ExclusionRead(exclusions=[]), usage
         answer, usage = await self._bank.generate_structured(
             prompt=prompt, system=system, schema=schema
         )
         if schema is Extraction:
             self.extraction_seeds.append(self._seed)
+            if self._seed != 1:
+                usage = dict(_SECOND_USAGE)
             if self._disagreeing is not None and self._seed != 1:
                 answer = answer.model_copy(update={"variables": [self._disagreeing]})
         return answer, usage
@@ -192,12 +201,16 @@ def test_samples_that_disagree_publish_no_layer1_entry_and_store_no_reading():
     store = MemoryExtractionStore(max_bytes=1024 * 1024)
     llm = _SeededLLM(disagreeing="birth rate", store=store)
     cache = ResponseCache()
+    record = ResolveRecord()
 
-    first = _run(make_request(_QUERY_A), llm=llm, cache=cache)
+    first = _run(make_request(_QUERY_A), llm=llm, cache=cache, record=record)
     second = _run(make_request(_QUERY_A), llm=llm, cache=cache)
 
     assert sorted(llm.extraction_seeds) == [1, 1, 2, 2]
     assert store._entries == {}
+    # The response leaves the second samples out; the request's record carries them.
+    assert record.second_sample_usage == _SECOND_USAGE
+    assert record.extraction_agreed is False
     assert _served_from(first) is None
     assert _served_from(second) == "response_cache_layer2"
     assert second.parts == first.parts

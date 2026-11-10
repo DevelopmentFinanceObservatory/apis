@@ -25,9 +25,9 @@ from code_index.shared import get_index, get_measure_index
 from dfo_platform.trace import get_trace_id
 from entity_resolution.pack import is_organisation_name
 from search.engine.clients.llm import (
-    AGREEMENT_SAMPLES,
     LLM,
     MEMO_HIT_USAGE,
+    Agreement,
     SupportsLLM,
     for_stage,
     generate_structured_async,
@@ -37,7 +37,7 @@ from search.engine.clients.llm import (
 from search.engine.config import settings
 from search.engine.errors import EngineInputError
 from search.engine.extracted_date import ExtractedDate
-from search.engine.extraction_store import extraction_key
+from search.engine.extraction_store import AGREEMENT_SAMPLES, extraction_key
 from search.engine.function_words import (
     FUNCTION_WORDS,
     JOINING_PREPOSITIONS,
@@ -1946,10 +1946,11 @@ class ExtractionResult:
     clamp warning. `raw_dropped_qualifier_count` records the model's phrase count
     before its cap, for the overflow warning. Both default to zero for manually
     constructed results. `warnings` holds the `time_text_not_parsed` warning of each
-    relative date `_resolve_relative_dates` could not read. `agreed` says whether two samples
-    of the model read the query the same way (`_model_extraction`); a disagreeing reading is
-    served and neither stored nor cached under its wording. A result built outside
-    `extract()` holds one fixed reading and counts as agreed.
+    relative date `_resolve_relative_dates` could not read. `agreed` settles whether two
+    samples of the model read the query the same way (`_model_extraction`); a disagreeing
+    reading is served and neither stored nor cached under its wording. A result built
+    outside `extract()` holds one fixed reading and counts as agreed. `agreed` takes no part
+    in equality, so a reading equals the same reading however it was judged.
     """
 
     extraction: Extraction
@@ -1960,7 +1961,7 @@ class ExtractionResult:
     dates_by_variable: Mapping[str, list[ExtractedDate]] = field(default_factory=dict)
     unit_texts: Mapping[str, str] = field(default_factory=dict)
     warnings: tuple[Warning, ...] = ()
-    agreed: bool = True
+    agreed: Agreement = field(default=Agreement.fixed(True), compare=False)
 
 
 # The model calls an extraction that misses the store sends: one per agreement sample
@@ -1972,17 +1973,18 @@ async def _model_extraction(
     query: str, *, llm: SupportsLLM, year: int
 ) -> tuple[ExtractionResult, dict | None]:
     """The reading of `query` in `year`, post-processed (`_read_extraction`), with its token
-    usage and whether two samples of the model agreed on it (`ExtractionResult.agreed`).
+    usage and the agreement of two samples of the model on it (`ExtractionResult.agreed`).
 
     An `LLM` carrying an extraction store answers a query it holds for `year` with no call
     and zero usage, and the stored reading is agreed: the store holds only agreed readings.
     Otherwise two samples run concurrently, the second under another seed (`two_samples`),
-    and their usage adds up. Both are post-processed and agree when the two
-    `ExtractionResult`s are equal, every field included. An agreed reading is stored; a
-    disagreeing pair serves the first sample, stores nothing and is marked not agreed. A
-    refused or failed first sample raises and stores nothing; a second sample that is
-    refused, fails or outlasts its wait (`two_samples`), or whose reading post-processing
-    refuses (`_second_reading`), leaves the first not agreed.
+    and the first is served. Both are post-processed and agree when the two
+    `ExtractionResult`s are equal, every field included. Settling the agreement stores an
+    agreed reading; a disagreeing pair stores nothing. A refused or failed first sample
+    raises and stores nothing; a second sample that is refused or fails, or whose reading
+    post-processing refuses (`_second_reading`), leaves the first not agreed. An `LLM` bound
+    to a request's `SecondSamples` serves the first without waiting for the second and
+    settles when the request needs the verdict; any other settles before it returns.
     Memoising clients coalesce identical concurrent queries, and the seed keeps the two
     samples' memo keys apart.
     """
@@ -1998,20 +2000,25 @@ async def _model_extraction(
             logger.info("Extraction store hit")
             reading = _read_extraction(query, Extraction.model_validate_json(stored), year=year)
             return reading, dict(MEMO_HIT_USAGE)
-    first, second, usage = await two_samples(
+
+    def judge(first: Extraction, reading: ExtractionResult, second: Extraction) -> bool:
+        if reading != _second_reading(query, second, year=year):
+            logger.info("Extraction samples disagree; the reading is served unstored")
+            return False
+        if store is not None and key is not None:
+            store.put(key, first.model_dump_json())
+        return True
+
+    reading, usage, agreed = await two_samples(
         lambda sampler: generate_structured_async(
             sampler, prompt=query, system=system, schema=Extraction
         ),
         llm,
         stage="extraction",
+        read=lambda first: _read_extraction(query, first, year=year),
+        judge=judge,
     )
-    reading = _read_extraction(query, first, year=year)
-    if second is None or reading != _second_reading(query, second, year=year):
-        logger.info("Extraction samples disagree; the reading is served unstored")
-        return replace(reading, agreed=False), usage
-    if store is not None and key is not None:
-        store.put(key, first.model_dump_json())
-    return reading, usage
+    return replace(reading, agreed=agreed), usage
 
 
 def _second_reading(query: str, second: Extraction, *, year: int) -> ExtractionResult | None:
@@ -2087,8 +2094,8 @@ async def extract(
     before the qualifier cap counts them. It is then bounded, reattached, clamped, and
     display-truncated in that order. Qualifier checks use full phrases and variables before
     caps can change their meaning. Usage is `None` when the client does not provide it. The stage
-    wrapper applies extract-specific settings. The reading is drawn from two samples
-    and `result.agreed` says whether they matched; an extraction store on the LLM serves a
+    wrapper applies extract-specific settings. The reading is the first of two samples
+    and `result.agreed` settles whether they matched; an extraction store on the LLM serves a
     repeated query the agreed reading it stored (`_model_extraction`).
     """
     return await _model_extraction(query, llm=for_stage(llm, "extract"), year=date.today().year)

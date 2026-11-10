@@ -383,7 +383,10 @@ class _RecordingScope:
         self.separate = list(kwargs["separate"])
         return None
 
-    def note_extraction(self, *, agreed: bool) -> None:
+    def hold_samples(self, llm):
+        return llm
+
+    def note_extraction(self, *agreed) -> None:
         pass
 
     def note_health(self, *, timed_out: bool, degraded_leg: bool) -> None:
