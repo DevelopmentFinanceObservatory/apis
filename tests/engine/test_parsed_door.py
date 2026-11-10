@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 import origin_catalogue.service as catalogue_service_module
 import search.engine.schema as schema_module
+from code_index.declarations import DATASETS
 from code_index.shared import get_index
 from code_index.types import DatasetDeclaration
 from materialise.errors import UpstreamVersionChangedError
@@ -307,13 +308,13 @@ class TestPartProvenance:
             },
         ]
 
-    def test_the_served_schema_lists_the_fixture_index_datasets(self):
+    def test_the_served_schema_lists_the_declared_datasets(self):
         client = make_client()
         body = client.get("/api/search/schema").json()
         field = body["request"]["$defs"]["ParsedPart"]["properties"]["provenance"]
         (named,) = [branch for branch in field["anyOf"] if branch.get("type") == "string"]
         assert {(value["const"], value["x-opt-in"]) for value in named["oneOf"]} == {
-            (dataset.provenance, dataset.opt_in) for dataset in get_index().datasets.values()
+            (dataset.provenance, dataset.opt_in) for dataset in DATASETS
         }
 
     @pytest.mark.parametrize("provenance", [None, "declared"], ids=["absent", "declared"])

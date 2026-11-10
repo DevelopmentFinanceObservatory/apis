@@ -54,10 +54,16 @@ class Credentials(Protocol):
     def refresh(self, request: object) -> None: ...
 
 
+_CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
+
+
 def _default_credentials_factory() -> Credentials:
+    """ADC scoped to `cloud-platform`. The metadata server scopes Cloud Run's token itself, but
+    impersonated ADC, as the local run in `deploy/graph-release.md` uses, asks for a token with
+    the scopes it is given and the IAM Credentials API refuses an empty list."""
     import google.auth
 
-    credentials, _project = google.auth.default()
+    credentials, _project = google.auth.default(scopes=[_CLOUD_PLATFORM_SCOPE])
     return credentials
 
 

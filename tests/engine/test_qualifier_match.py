@@ -530,6 +530,24 @@ def test_bare_root_letter_code_needs_the_marker_even_when_unambiguous():
     assert marked[0].code_dcid == "SyntheticAxisRootA"
 
 
+def test_a_word_after_the_marker_of_a_system_without_codes_reads_only_its_labels():
+    # `climatePolicyObjective` publishes no codes, and its marker words ("climate") precede
+    # most words of a climate question, so the bare-code scan must pass over its rows.
+    index = _synthetic_index(
+        CodeRow(
+            dcid="SyntheticAxisAdaptation",
+            code_system="syntheticAxis",
+            code=None,
+            label="adaptation only",
+            synonyms=(),
+            parent=None,
+        )
+    )
+    assert match_qualifiers("synthetic axis finance to Kenya", index) == ()
+    matches = match_qualifiers("synthetic axis adaptation only to Kenya", index)
+    assert [(m.code_dcid, m.source) for m in matches] == [("SyntheticAxisAdaptation", "label")]
+
+
 def test_mixed_alnum_code_still_needs_a_marker():
     # A letter-and-digit shape ("D02") is no longer trusted on its own --
     # it needs the same marker-word signal as any other bare code.

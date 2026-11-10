@@ -37,7 +37,7 @@ from artifact_publication.uri import (
 from dc_graph.client import SubjectPage
 from dc_graph.errors import GraphReadError
 from dc_sdmx.results import SdmxDataResult, SdmxObservation
-from graph_release import job
+from graph_release import job, serving_revision
 from graph_release.format import Manifest, manifest_uri, pointer_uri, read_pointer
 from graph_release.gate import (
     MAX_PART_BYTES,
@@ -653,6 +653,22 @@ def test_the_oldest_serving_revision_decides_step_two() -> None:
     )
     with pytest.raises(ServingRevisionError):
         naive.created_at("b")
+
+
+def test_the_admin_api_asks_adc_for_the_cloud_platform_scope(monkeypatch) -> None:
+    """Impersonated ADC mints a token with the scopes asked for, and none is refused."""
+    import google.auth
+
+    asked: list[object] = []
+
+    def default(*, scopes=None):
+        asked.append(scopes)
+        return FakeCredentials(), "dev-fin-observatory"
+
+    monkeypatch.setattr(google.auth, "default", default)
+    serving_revision._default_credentials_factory()
+
+    assert asked == [["https://www.googleapis.com/auth/cloud-platform"]]
 
 
 # ---------------------------------------------------------------- gate outcomes

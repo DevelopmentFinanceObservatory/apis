@@ -18,7 +18,9 @@ class CodeRow:
     """One classification code.
 
     `code_system` is the constraint-property key. The graph enum dcid is separate.
-    `label` comes from `name` without its parenthetical system suffix.
+    `code` is the graph `classificationCode` arc, the publisher's code, or `None` in a
+    system whose enum publishes none (`CodeSystemConfig.classification_codes`), such as
+    `climatePolicyObjective`. `label` comes from `name` without its parenthetical system suffix.
     `synonyms` comes from `alternateName` without the label. `parent` is the
     same-system `specializationOf` dcid, or `None` for roots and flat systems.
     `short_name` is the graph `shortName` arc when the code has one, else the
@@ -29,7 +31,7 @@ class CodeRow:
 
     dcid: str
     code_system: str
-    code: str
+    code: str | None
     label: str
     synonyms: tuple[str, ...]
     parent: str | None

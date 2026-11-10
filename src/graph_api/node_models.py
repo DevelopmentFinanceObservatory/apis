@@ -129,7 +129,9 @@ class CodeBlock(ResponseModel):
         description="the system's graph node, such as `CRSPurposeCodeEnum`"
     )
     property: str = Field(description="the constraint property the code is a value of")
-    code: str
+    code: str | None = Field(
+        description="the publisher's code; null in a system whose values carry none"
+    )
     parent: NodeRef | None = Field(description="the code it specialises; null for a root")
     synonyms: list[str]
 
