@@ -20,29 +20,17 @@ __all__ = [
     "check_single_arrayed_dimension",
     "has_arrayed_dimension",
     "normalize_select",
-    "select_values",
 ]
 
 
 def canonical_select(*, select: Mapping[str, object]) -> dict[str, object]:
     """`select` with each list of values sorted and its repeats dropped. A scalar value stays
-    as it is."""
+    as it is, since a scalar and a one-value list draw differently (`has_arrayed_dimension`).
+    Two selects naming the same values the same way compare equal in this form whatever their
+    key order, as a `jsonb` column returns them."""
     return {
         # The intent schema holds a dimension's values as strings.
         dimension: sorted(set(cast("list[str]", value))) if isinstance(value, list) else value
-        for dimension, value in select.items()
-    }
-
-
-def select_values(*, select: Mapping[str, object]) -> dict[str, list[str]]:
-    """`select`'s normal form: each dimension's values as a sorted list without repeats, a
-    scalar promoted to a one-value list. Two selects naming the same values compare equal
-    whatever their key order, as a `jsonb` column returns them, and whether a value is
-    written as a scalar or a one-value list."""
-    return {
-        dimension: sorted(set(cast("list[str]", value)))
-        if isinstance(value, list)
-        else [cast(str, value)]
         for dimension, value in select.items()
     }
 

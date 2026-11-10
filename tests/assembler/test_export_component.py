@@ -621,8 +621,9 @@ def test_a_cut_card_counts_the_members_a_ranking_compares(
 ):
     """A frame holding 12 members and an aggregate larger than any of them counts 12, the
     members dfo-ai's harness ranks a cut from, so the bundle's "8 of 12" agrees with the card's
-    "8 largest of 12", and the all-members file leaves the aggregate out. A party frame with
-    no kind cells counts all 13, as an untyped frame does."""
+    "8 largest of 12", and the all-members file leaves the aggregate out and says so. A party
+    frame with no kind cells counts all 13, as an untyped frame does, and its file states no
+    exclusion."""
     members = tuple(f"country/C{number:02d}" for number in range(12))
     rows = [
         {
@@ -662,9 +663,15 @@ def test_a_cut_card_counts_the_members_a_ranking_compares(
         _export(created, frame_store=frame_store, revision_store=revision_store, bundle=True).data
     )
     every = _csv_rows(files["data/largest-members-all-members.csv"])
+    (description,) = (
+        resource["description"]
+        for resource in _validated(tmp_path, files)["resources"]
+        if resource["path"] == "data/largest-members-all-members.csv"
+    )
 
     assert {row[role] for row in every} == set(members) | ({aggregate} if counted == 13 else set())
     assert f"The card shows 8 of {counted}" in files["README.md"].decode("utf-8")
+    assert ("less the group totals and aggregates" in description) is (counted == 12)
 
 
 @pytest.mark.parametrize("member", ["bar_chart", "table", "stat_card"])

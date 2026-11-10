@@ -14,7 +14,7 @@ frame and lists every distinct provenance ref."""
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import cast
+from typing import NamedTuple, cast
 
 from dfo_frame_grammar import STAT_VAR_COLUMN, TIME_PERIOD_COLUMN, UNIT_COLUMN, VALUE_COLUMN
 
@@ -134,10 +134,10 @@ def _build_bar_chart(
         bound_series=bound_series, y_label=y_label, stat_var_labels=stat_var_labels
     )
     select = cast(Mapping[str, object], merged_intent["select"])
-    category_dimension = bar_chart_category(
+    category = _bar_chart_category(
         select=select, resolved_frame=resolved_frame, series=series, bound_series=bound_series
     )
-    if category_dimension is None:
+    if category is None:
         series_and_axis = _bar_chart_period_mode(
             merged_intent=merged_intent,
             resolved_frame=resolved_frame,
@@ -146,7 +146,7 @@ def _build_bar_chart(
         )
     else:
         series_and_axis = _bar_chart_entity_mode(
-            category_dimension=category_dimension,
+            category=category,
             labels=resolved_frame.labels,
             series=series,
             bound_series=bound_series,
@@ -169,19 +169,27 @@ def _build_bar_chart(
     return component, observed_periods
 
 
-def bar_chart_category(
+class _BarCategory(NamedTuple):
+    """The dimension an entity-mode bar chart draws one bar per value of, and the period its
+    bars stand at."""
+
+    dimension: str
+    period: str
+
+
+def _bar_chart_category(
     *,
     select: Mapping[str, object],
     resolved_frame: ResolvedFrame,
     series: Sequence[ResolvedSeries],
     bound_series: Sequence[BoundSeries],
-) -> str | None:
-    """The dimension a bar chart of `select` draws one bar per value of, or `None` when it
-    draws its one series across periods. A select that lists values compares them, and no
-    other dimension may vary; otherwise several series compare the one dimension they vary
-    on (`_default_category_dimension`). Bars of several series stand at the latest period
-    every series holds a value in (`_shared_observed_period`). A select a bar chart cannot
-    draw refuses `binding_invalid`."""
+) -> _BarCategory | None:
+    """What a bar chart of `select` compares, or `None` when it draws its one series across
+    periods. A select that lists values compares them, and no other dimension may vary;
+    otherwise several series compare the one dimension they vary on
+    (`_default_category_dimension`). Bars of several series stand at the latest period every
+    series holds a value in (`_shared_observed_period`). A select a bar chart cannot draw
+    refuses `binding_invalid`."""
     if has_arrayed_dimension(select=select):
         category_dimension = next(name for name, value in select.items() if isinstance(value, list))
         _require_no_other_varying_dimension(
@@ -196,23 +204,24 @@ def bar_chart_category(
         category_dimension = _default_category_dimension(
             select=select, resolved_frame=resolved_frame, series=series, bound_series=bound_series
         )
-    _shared_observed_period(bound_series=bound_series)
-    return category_dimension
+    return _BarCategory(
+        dimension=category_dimension, period=_shared_observed_period(bound_series=bound_series)
+    )
 
 
 def _bar_chart_entity_mode(
     *,
-    category_dimension: str,
+    category: _BarCategory,
     labels: Mapping[str, str],
     series: Sequence[ResolvedSeries],
     bound_series: Sequence[BoundSeries],
     source_id_by_raw_ref: Mapping[str | None, str],
     largest_first: bool,
 ) -> tuple[list[dict[str, object]], dict[str, object], frozenset[str]]:
-    """Builds one bar per value of `category_dimension` at the latest shared observed period,
-    in series order or, with `largest_first`, by value from largest to smallest. Each bar
-    carries its value's label on that dimension, which is what tells the bars apart."""
-    shared_period = _shared_observed_period(bound_series=bound_series)
+    """Builds one bar per value of `category.dimension` at `category.period`, in series order
+    or, with `largest_first`, by value from largest to smallest. Each bar carries its value's
+    label on that dimension, which is what tells the bars apart."""
+    category_dimension, shared_period = category
     payload_series: list[dict[str, object]] = [
         {
             "id": bound.id,

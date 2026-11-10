@@ -8,14 +8,13 @@ from typing import cast
 
 import pytest
 
-from assembler.errors import BindingInvalid, ResourceExhausted, SchemaInvalid
+from assembler.catalogue.constraints import ConstraintFailure, ConstraintSpec
+from assembler.errors import BindingInvalid, ConstraintViolation, ResourceExhausted
 from assembler.fakes import FakeReleaseRegistry
 from assembler.limits import MAX_SERIES_PER_COMPONENT
 from assembler.pipeline import write_component
-from assembler.pipeline.candidate import _check_line_chart_series
 from assembler.ports import FrameRef
-from assembler.resolve import resolve_selectors
-from assembler.select import normalize_select
+from assembler.resolve import SeriesLimit
 from assembler.testing import build_resolved_frame
 
 from ._pipeline_support import _multi_recipient_frame, computed_record
@@ -294,25 +293,80 @@ def test_a_line_chart_refusals_advice_draws_when_followed(
     assert component["type"] == "line_chart"
 
 
-def test_a_line_chart_refusal_offers_nothing_when_the_window_refuses(release):
+def test_a_line_chart_refusal_offers_nothing_when_the_window_refuses(
+    frame_store, revision_store, release, release_registry
+):
     """A window past `MAX_POINTS_PER_SERIES` draws no other type either, so none is offered."""
-    cap = release.line_chart_max_series
-    frame = _recipients_frame(count=cap + 1)
+    frame = _recipients_frame(count=release.line_chart_max_series + 1)
+    frame_store.put(resolved_frame=frame)
     with pytest.raises(ResourceExhausted) as excinfo:
-        _check_line_chart_series(
-            series=resolve_selectors(
-                resolved_frame=frame,
-                selectors=normalize_select(select={"stat_var": "dcid:X"}),
-                window=None,
-            ),
-            cap=cap,
-            select={"stat_var": "dcid:X"},
-            resolved_frame=frame,
-            window={"start": "1000", "end": "2021"},
-            release=release,
+        write_component(
+            intent={
+                "type": "line_chart",
+                "frame_ref": {
+                    "spec_id": frame.frame_ref.spec_id,
+                    "content_version": frame.frame_ref.content_version,
+                },
+                "select": {"stat_var": "dcid:X"},
+                "window": {"start": "1000", "end": "2021"},
+            },
+            frame_store=frame_store,
+            revision_store=revision_store,
+            release_registry=release_registry,
         )
     assert excinfo.value.limit_name == "MAX_LINE_CHART_SERIES"
     assert "draw the same select" not in excinfo.value.detail
+
+
+@pytest.mark.parametrize("blocked", ["bar_chart", "table"])
+def test_a_line_chart_refusal_offers_no_type_whose_own_write_refuses(
+    blocked, frame_store, revision_store, release
+):
+    """At one period a bar chart and a table each draw the series a line chart cannot. A
+    release constraint on one of them takes that type out of the offer, and its write
+    refuses, since the offer runs that type's own write checks."""
+
+    def refuse(_context):
+        return ConstraintFailure(pointer="/component", detail="blocked", fix="none")
+
+    registry = FakeReleaseRegistry(
+        release=dataclasses.replace(
+            release,
+            constraints=(
+                *release.constraints,
+                ConstraintSpec(
+                    constraint_id="blocked_type",
+                    encoding_classes=(),
+                    component_types=(blocked,),
+                    check=refuse,
+                ),
+            ),
+        )
+    )
+    frame = _recipients_frame(count=release.line_chart_max_series + 1, periods=("2020",))
+    stores = {
+        "frame_store": frame_store,
+        "revision_store": revision_store,
+        "release_registry": registry,
+    }
+    with pytest.raises(ResourceExhausted) as excinfo:
+        _write_line_chart(frame=frame, select={"stat_var": "dcid:X"}, **stores)
+    offered = [m for m in ("bar_chart", "table") if f"as a {m}" in excinfo.value.detail]
+    assert offered == [m for m in ("bar_chart", "table") if m != blocked]
+
+    with pytest.raises(ConstraintViolation) as refused:
+        write_component(
+            intent={
+                "type": blocked,
+                "frame_ref": {
+                    "spec_id": frame.frame_ref.spec_id,
+                    "content_version": frame.frame_ref.content_version,
+                },
+                "select": {"stat_var": "dcid:X"},
+            },
+            **stores,
+        )
+    assert refused.value.constraint_id == "blocked_type"
 
 
 def test_a_line_chart_refusal_offers_no_other_type_past_the_component_cap(
@@ -320,12 +374,16 @@ def test_a_line_chart_refusal_offers_no_other_type_past_the_component_cap(
 ):
     """No other type draws more series than `MAX_SERIES_PER_COMPONENT`. The estimate
     refuses such a select first on the write path, so the check runs here under a component
-    cap of the line chart's own cap against one series more, which a bar chart or a table
+    limit of the line chart's own cap against one series more, which a bar chart or a table
     would otherwise draw."""
     import assembler.pipeline.candidate as candidate_module
 
     cap = release.line_chart_max_series
-    monkeypatch.setattr(candidate_module, "MAX_SERIES_PER_COMPONENT", cap)
+    monkeypatch.setattr(
+        candidate_module,
+        "COMPONENT_SERIES_LIMIT",
+        SeriesLimit(name="MAX_SERIES_PER_COMPONENT", cap=cap),
+    )
     with pytest.raises(ResourceExhausted) as excinfo:
         _write_line_chart(
             frame=_recipients_frame(count=cap + 1, periods=("2020",)),
@@ -431,8 +489,10 @@ _STORED_TWO_KEYS = {"stat_var": "dcid:X", "provenance": "src_a"}
     ("stored", "patch", "refused"),
     [
         pytest.param(_STORED, {"title": "Grants by recipient"}, False, id="title-keeps-select"),
+        # A one-value list draws differently from a scalar (`has_arrayed_dimension`), so it
+        # changes the select.
         pytest.param(
-            _STORED, {"select": {"stat_var": ["dcid:X"]}}, False, id="same-select-restated"
+            _STORED, {"select": {"stat_var": ["dcid:X"]}}, True, id="scalar-restated-as-a-list"
         ),
         pytest.param(
             _STORED_TWO_KEYS,
@@ -492,11 +552,13 @@ def test_a_revision_of_a_stored_over_cap_line_chart_is_held_to_the_cap_when_it_c
         assert revise().resolved_payload["component"]["type"] == "line_chart"
 
 
-def test_a_line_chart_listing_more_values_than_the_cap_fails_its_schema(
+def test_a_line_chart_listing_more_values_than_the_cap_refuses_as_the_series_cap(
     frame_store, revision_store, release, release_registry
 ):
+    """The schema's `maxItems` on the list is the line chart's series cap, so the refusal is
+    the one a select resolving past it gets."""
     over = release.line_chart_max_series + 1
-    with pytest.raises(SchemaInvalid):
+    with pytest.raises(ResourceExhausted) as excinfo:
         _write_line_chart(
             frame=_recipients_frame(count=over),
             select={
@@ -507,6 +569,11 @@ def test_a_line_chart_listing_more_values_than_the_cap_fails_its_schema(
             revision_store=revision_store,
             release_registry=release_registry,
         )
+    assert (excinfo.value.pointer, excinfo.value.limit_name) == (
+        "/select/recipient",
+        "MAX_LINE_CHART_SERIES",
+    )
+    assert f"bind it to at most {release.line_chart_max_series} values" in excinfo.value.detail
 
 
 # -- points cap ----------------------------------------------------------------

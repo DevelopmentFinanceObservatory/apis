@@ -13,9 +13,9 @@ the estimates alone."""
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import cast
+from typing import NamedTuple, cast
 
 from dfo_frame_grammar import TIME_PERIOD_COLUMN
 
@@ -26,7 +26,14 @@ from assembler.ports import Continuation, DimensionView, ResolvedFrame, Structur
 from assembler.series_id import Coordinates, mint_series_ids
 from materialise.bundle_columns import MEASUREMENT_METHOD_COLUMN
 
-__all__ = ["ResolvedSeries", "resolve_selectors"]
+__all__ = [
+    "COMPONENT_SERIES_LIMIT",
+    "ResolvedSeries",
+    "SeriesLimit",
+    "check_resolved_series",
+    "resolve_selectors",
+    "series_limit_exhausted",
+]
 
 Row = Mapping[str, object]
 
@@ -48,16 +55,49 @@ class ResolvedSeries:
     rows: tuple[Row, ...]
 
 
+class SeriesLimit(NamedTuple):
+    """The most series a component draws, and the `limit_name` a refusal of it names."""
+
+    name: str
+    cap: int
+
+
+COMPONENT_SERIES_LIMIT = SeriesLimit(name="MAX_SERIES_PER_COMPONENT", cap=MAX_SERIES_PER_COMPONENT)
+
+
+def series_limit_exhausted(
+    *,
+    limit: SeriesLimit,
+    found: str,
+    counts: Mapping[str, int],
+    kept: str | None,
+    offer: str = "",
+    pointer: str = "/select",
+) -> ResourceExhausted:
+    """`resource_exhausted` at `pointer` naming `limit`. `found` states the series count the
+    select reaches, and the advice that follows says what brings it within `limit.cap`
+    (`multiplying_advice` over `counts` and `kept`). `offer` ends the detail."""
+    return ResourceExhausted(
+        pointer=pointer,
+        limit_name=limit.name,
+        detail=(
+            f"{found}, over the maximum of {limit.cap}; "
+            + multiplying_advice(counts, listed=limit.cap, kept=kept)
+            + offer
+        ),
+    )
+
+
 def resolve_selectors(
     *,
     resolved_frame: ResolvedFrame,
     selectors: Sequence[Mapping[str, object]],
     window: Mapping[str, object] | None,
-    line_chart_cap: int | None = None,
+    series_limit: SeriesLimit = COMPONENT_SERIES_LIMIT,
 ) -> tuple[ResolvedSeries, ...]:
-    """`line_chart_cap` is set when a line chart's write is held to its series cap: an
-    estimate over `MAX_SERIES_PER_COMPONENT` then refuses as `MAX_LINE_CHART_SERIES`, naming
-    the line chart's cap, the limit a caller has to meet."""
+    """An estimate over `MAX_SERIES_PER_COMPONENT` refuses naming `series_limit`, the limit a
+    caller has to meet: a line chart held to its own cap passes the line chart's. The resolved
+    series are then held to `COMPONENT_SERIES_LIMIT` (`check_resolved_series`)."""
     if len(selectors) > MAX_SELECTORS:
         raise ResourceExhausted(
             pointer="/select",
@@ -77,7 +117,7 @@ def resolve_selectors(
         coordinate_columns=coordinate_columns,
         facet_names=facet_names,
         dimension_by_name=dimension_by_name,
-        line_chart_cap=line_chart_cap,
+        series_limit=series_limit,
     )
 
     continuation = resolved_frame.continuation
@@ -142,8 +182,51 @@ def resolve_selectors(
         for series_id, coordinates in zip(ids, order, strict=True)
     )
 
+    check_resolved_series(series=series, selectors=selectors, limit=COMPONENT_SERIES_LIMIT)
     _check_window(resolved_frame=resolved_frame, series=series, window=window)
     return series
+
+
+def _no_offer() -> str:
+    return ""
+
+
+def check_resolved_series(
+    *,
+    series: Sequence[ResolvedSeries],
+    selectors: Sequence[Mapping[str, object]],
+    limit: SeriesLimit,
+    offer: Callable[[], str] = _no_offer,
+) -> None:
+    """Refuses `series`, resolved from `selectors`, when they number more than `limit.cap`.
+
+    The detail names the dimensions the series vary on with their counts, a facet only when
+    a selector binds it, and keeps the one dimension the selectors list as the series
+    (`series_limit_exhausted`). `offer`, called only on a refusal, ends the detail."""
+    if len(series) <= limit.cap:
+        return
+    bindings = [
+        binding for selector in selectors if "id" not in selector for binding in _bindings(selector)
+    ]
+    bound = {str(binding["dimension"]) for binding in bindings}
+    listed = sorted(
+        {str(binding["dimension"]) for binding in bindings if len(_binding_values(binding)) > 1}
+    )
+    facets = facet_dimension_names()
+    counts: dict[str, set[object]] = {}
+    for one in series:
+        for name, value in one.coordinates:
+            # An unbound facet varies only beside another dimension, so it never counts. A facet
+            # a selector binds is a series dimension like any other.
+            if name not in facets or name in bound:
+                counts.setdefault(name, set()).add(value)
+    raise series_limit_exhausted(
+        limit=limit,
+        found=f"the selection resolves to {len(series)} series",
+        counts={name: len(values) for name, values in counts.items()},
+        kept=listed[0] if len(listed) == 1 else None,
+        offer=offer(),
+    )
 
 
 def _group_by_coordinate(
@@ -177,16 +260,16 @@ def _check_series_estimate(
     coordinate_columns: Sequence[str],
     facet_names: frozenset[str],
     dimension_by_name: Mapping[str, DimensionView],
-    line_chart_cap: int | None,
+    series_limit: SeriesLimit,
 ) -> None:
     """Estimates the series upper bound from selector shapes and dimension counts before
     grouping rows. Bound dimensions use their requested value count. Unbound facets count
     1, because a facet that splits a series is refused separately. Other unbound
     dimensions use their frame-wide count (minimum 1).
 
-    A refusal names the dimensions that multiply the largest selector's estimate past one,
-    each with the count it contributes, and says what brings the select within the limit
-    (`multiplying_advice`)."""
+    A refusal names `series_limit` and the dimensions that multiply the largest selector's
+    estimate past one, each with the count it contributes, and says what brings the select
+    within the limit (`series_limit_exhausted`)."""
     estimate = 0
     widest: dict[str, int] = {}
     widest_listed: list[str] = []
@@ -211,25 +294,11 @@ def _check_series_estimate(
             widest_listed = [name for name, values in bound.items() if len(values) > 1]
     if estimate <= MAX_SERIES_PER_COMPONENT:
         return
-    kept = widest_listed[0] if len(widest_listed) == 1 else None
-    if line_chart_cap is not None:
-        raise ResourceExhausted(
-            pointer="/select",
-            limit_name="MAX_LINE_CHART_SERIES",
-            detail=(
-                f"selectors expand to an estimated {estimate} series, and a line chart draws "
-                f"at most {line_chart_cap}; "
-                + multiplying_advice(widest, listed=line_chart_cap, kept=kept)
-            ),
-        )
-    raise ResourceExhausted(
-        pointer="/select",
-        limit_name="MAX_SERIES_PER_COMPONENT",
-        detail=(
-            f"selectors expand to an estimated {estimate} series, over the maximum of "
-            f"{MAX_SERIES_PER_COMPONENT}: "
-            + multiplying_advice(widest, listed=MAX_SERIES_PER_COMPONENT, kept=kept)
-        ),
+    raise series_limit_exhausted(
+        limit=series_limit,
+        found=f"selectors expand to an estimated {estimate} series",
+        counts=widest,
+        kept=widest_listed[0] if len(widest_listed) == 1 else None,
     )
 
 

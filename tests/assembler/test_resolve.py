@@ -8,7 +8,12 @@ import assembler.series_id as series_id_module
 from assembler.errors import BindingInvalid, ResourceExhausted
 from assembler.frame_view import compute_structural_view
 from assembler.ports import FrameRef, ResolvedFrame
-from assembler.resolve import _group_by_coordinate, resolve_selectors
+from assembler.resolve import (
+    COMPONENT_SERIES_LIMIT,
+    SeriesLimit,
+    _group_by_coordinate,
+    resolve_selectors,
+)
 from assembler.series_id import mint_series_id
 from assembler.testing import FIXTURE_RETRIEVED_ON, build_resolved_frame
 
@@ -376,10 +381,15 @@ def test_series_count_estimate_refuses_before_touching_frame_rows():
 
 
 @pytest.mark.parametrize(
-    ("line_chart_cap", "limit_name", "listed"),
+    ("series_limit", "limit_name", "listed"),
     [
-        pytest.param(None, "MAX_SERIES_PER_COMPONENT", 24, id="component"),
-        pytest.param(8, "MAX_LINE_CHART_SERIES", 8, id="line-chart"),
+        pytest.param(COMPONENT_SERIES_LIMIT, "MAX_SERIES_PER_COMPONENT", 24, id="component"),
+        pytest.param(
+            SeriesLimit(name="MAX_LINE_CHART_SERIES", cap=8),
+            "MAX_LINE_CHART_SERIES",
+            8,
+            id="line-chart",
+        ),
     ],
 )
 @pytest.mark.parametrize(
@@ -413,7 +423,7 @@ def test_series_count_estimate_refuses_before_touching_frame_rows():
     ],
 )
 def test_the_estimate_refusal_names_the_dimensions_it_multiplies(
-    line_chart_cap, limit_name, listed, stat_vars, selectors, named
+    series_limit, limit_name, listed, stat_vars, selectors, named
 ):
     """Five variables at six recipients estimate 30 series; one variable at 26 recipients
     estimates 26. The refusal names each dimension with the count the estimate gives it,
@@ -429,7 +439,7 @@ def test_the_estimate_refusal_names_the_dimensions_it_multiplies(
             resolved_frame=_resolved_frame(rows),
             selectors=selectors,
             window=None,
-            line_chart_cap=line_chart_cap,
+            series_limit=series_limit,
         )
     assert (excinfo.value.pointer, excinfo.value.limit_name) == ("/select", limit_name)
     for words in named:

@@ -376,10 +376,15 @@ def export_component_data(
                     description=(
                         "Every frame row for the card's measure at the periods it shows, "
                         f"across all {all_members.members} {all_members.dimension} values the "
-                        "frame holds, less the group totals and aggregates its kind or type "
-                        f"cells name. The {series_column} column holds the card's label on "
-                        "the rows the card shows. A download without the bundle holds only the "
-                        "shown rows."
+                        "frame holds"
+                        + (
+                            ", less the group totals and aggregates its kind or type cells name"
+                            if all_members.aggregates_left_out
+                            else ""
+                        )
+                        + f". The {series_column} column holds the card's label on the rows "
+                        "the card shows. A download without the bundle holds only the shown "
+                        "rows."
                     ),
                     partly_shown=True,
                 )
@@ -525,12 +530,14 @@ type _ExportRow = tuple[str | None, Sequence[object]]
 class _AllMembers:
     """The frame rows of every member of the one dimension a card's `select` lists, at the
     periods the card shows. `shown` and `members` count the dimension's distinct values on
-    the card and in `rows`."""
+    the card and in `rows`. `aggregates_left_out` says the ranked population
+    (`_ranked_population`) left out a member, a group total or aggregate."""
 
     dimension: str
     rows: tuple[_ExportRow, ...]
     shown: int
     members: int
+    aggregates_left_out: bool
 
 
 @dataclass(frozen=True)
@@ -622,11 +629,13 @@ def _all_members(
     index = keyed.index
     kept: list[_ExportRow] = []
     members: set[object] = set()
+    aggregates_left_out = False
     for row, (own, continued) in zip(keyed.rows, keyed.keys, strict=True):
         if STATUS_COLUMN in index and row[index[STATUS_COLUMN]] is not None:
             continue
         member = dict(own)[dimension]
         if population is not None and member not in population and member not in shown_members:
+            aggregates_left_out = True
             continue
         period = cast(str, row[index[TIME_PERIOD_COLUMN]])
         if fixed(own, period) not in wanted and fixed(continued, period) not in wanted:
@@ -637,7 +646,11 @@ def _all_members(
     if len(members) <= len(shown_members):
         return None
     return _AllMembers(
-        dimension=dimension, rows=tuple(kept), shown=len(shown_members), members=len(members)
+        dimension=dimension,
+        rows=tuple(kept),
+        shown=len(shown_members),
+        members=len(members),
+        aggregates_left_out=aggregates_left_out,
     )
 
 
