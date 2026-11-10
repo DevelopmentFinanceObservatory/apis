@@ -687,7 +687,9 @@ def _lookup_code_in_systems(
     """
     folded = token.casefold()
     matches = [
-        row for row in index.codes if row.code_system in systems and row.code.casefold() == folded
+        row
+        for row in index.codes
+        if row.code_system in systems and row.code is not None and row.code.casefold() == folded
     ]
     if len(matches) == 1:
         return matches[0]
@@ -1198,7 +1200,7 @@ def qualifier_occurrences(
         codes = [
             _row_key(row)
             for row in index.codes
-            if row.code_system in systems and row.code.casefold() == folded
+            if row.code_system in systems and row.code is not None and row.code.casefold() == folded
         ]
         if codes:
             found.append((i, 1, {"text": word, "code_rows": codes}))

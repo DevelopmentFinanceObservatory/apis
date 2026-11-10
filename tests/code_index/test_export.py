@@ -363,6 +363,114 @@ def test_hierarchical_code_row_carries_stripped_label_and_synonyms():
     assert child["parent"] == "SysHierRoot"
 
 
+@pytest.mark.parametrize(
+    ("classification_codes", "codes", "expected"),
+    [
+        (True, ("10",), "10"),
+        (True, (), ExportRefused),
+        (False, (), None),
+        (False, ("10",), ExportRefused),
+    ],
+)
+def test_a_code_row_carries_a_classification_code_exactly_when_its_system_declares_them(
+    classification_codes: bool, codes: tuple[str, ...], expected: str | type | None
+):
+    graph = _FakeGraph(
+        forward_arcs={
+            "SysFlatA": {
+                "typeOf": ("SysFlatEnum",),
+                "classificationCode": codes,
+                "name": ("flat alpha",),
+            },
+        }
+    )
+    config = dataclasses.replace(_FLAT, classification_codes=classification_codes)
+    if expected is ExportRefused:
+        with pytest.raises(ExportRefused, match="SysFlatA"):
+            export_code_system(graph, config)
+    else:
+        _, rows = export_code_system(graph, config)
+        assert [row["code"] for row in rows] == [expected]
+
+
+_OBJECTIVE_PROVENANCE = "provenance/ObjectiveDataset"
+_OBJECTIVE = CodeSystemConfig(
+    code_system="objective",
+    enum_dcid="ObjectiveEnum",
+    expected_hierarchical=True,
+    disjoint_from_children=False,
+    summable=False,
+    absent_reading="not_declared",
+    declared_by_every_statvar_of=(_OBJECTIVE_PROVENANCE,),
+    plain_name="objective",
+    classification_codes=False,
+)
+
+
+def test_a_system_without_codes_round_trips_beside_coded_systems_on_one_five_tuple():
+    """The objective rows share the disbursement five-tuple with the coded systems' rows and
+    carry no code, as the climate policy objectives do. The index orders them by dcid, finds
+    none by code, and reads the total alone for a binding of it."""
+    graph = _two_system_graph()
+    objective_shape = {
+        **graph.forward_arcs["SV_Disbursement_Gross"],
+        "constraintProperties": ("objective", "financialFlowType", "nettingBasis"),
+    }
+    del objective_shape["sysHier"], objective_shape["sysFlat"]
+    graph.forward_arcs |= {
+        "ObjectiveTotal": {"typeOf": ("ObjectiveEnum",), "name": ("all objectives",)},
+        **{
+            dcid: {
+                "typeOf": ("ObjectiveEnum",),
+                "name": (name,),
+                "specializationOf": ("ObjectiveTotal",),
+            }
+            for dcid, name in (("ObjectiveB", "adaptation only"), ("ObjectiveA", "mitigation"))
+        },
+        **{
+            f"SV_Objective_{value}": {**objective_shape, "objective": (value,)}
+            for value in ("ObjectiveTotal", "ObjectiveA", "ObjectiveB")
+        },
+    }
+    covered = _covered(graph)
+    provenances = {
+        dcid: (_OBJECTIVE_PROVENANCE,) if dcid.startswith("SV_Objective_") else held
+        for dcid, held in covered.provenances.items()
+    }
+    document = export_index(
+        graph,
+        party_reader=graph,
+        coverage=CoverageJoin(provenances=provenances, parties={}),
+        datasets=(
+            *_TEST_DATASETS,
+            dataclasses.replace(_TEST_DATASETS[0], provenance=_OBJECTIVE_PROVENANCE, rank=1),
+        ),
+        partly_stated_values=(),
+        graph_endpoint="https://fake.example",
+        code_systems=(_HIERARCHICAL, _FLAT, _OBJECTIVE),
+        measure_axes=(),
+        total_groups={},
+        whole_totals={},
+        whole_total_sets=(),
+        party_kind_overrides={},
+    )
+    index = parse_index(document)
+
+    assert [row.code for row in index.codes_by_system["objective"]] == [None, None, None]
+    assert [row.dcid for row in index.codes_by_system["objective"]] == [
+        "ObjectiveA",
+        "ObjectiveB",
+        "ObjectiveTotal",
+    ]
+    assert [row.dcid for row in index.children("ObjectiveTotal")] == ["ObjectiveA", "ObjectiveB"]
+    assert index.expansion("ObjectiveTotal") == ("ObjectiveTotal",)
+    assert {row.dcid for row in index.statvars if _OBJECTIVE_PROVENANCE in row.provenances} == {
+        "SV_Objective_ObjectiveTotal",
+        "SV_Objective_ObjectiveA",
+        "SV_Objective_ObjectiveB",
+    }
+
+
 # --- The flat system's false case ---
 
 
@@ -2377,7 +2485,7 @@ def test_a_broad_reading_is_refused_where_a_row_of_its_value_lacks_the_value_it_
 
 def test_the_aid_tables_declare_whose_base_a_ratio_divides_by():
     """DAC1 states ODA as a share of the donor's GNI and DAC2a as a share of the recipient's."""
-    crs, imputed, dac1, dac2a, dac2b = (dataset.provenance for dataset in DATASETS)
+    crs, imputed, dac1, dac2a, dac2b, *climate = (dataset.provenance for dataset in DATASETS)
 
     assert {dataset.provenance: dataset.ratio_base_axis for dataset in DATASETS} == {
         crs: None,
@@ -2385,7 +2493,7 @@ def test_the_aid_tables_declare_whose_base_a_ratio_divides_by():
         dac1: "origin",
         dac2a: "destination",
         dac2b: None,
-    }
+    } | dict.fromkeys(climate)
 
 
 def test_an_export_with_a_row_without_its_datasets_declared_invariant_does_not_load():
@@ -2790,8 +2898,19 @@ def test_a_dataset_no_code_system_lists_refuses_enumeration():
 
 
 def test_the_fixture_configuration_lists_each_system_under_the_datasets_that_always_declare_it():
-    crs, imputed, dac1, dac2a, dac2b = (dataset.provenance for dataset in DATASETS)
-    assert [dataset.opt_in for dataset in DATASETS] == [False, True, False, False, False]
+    crs, imputed, dac1, dac2a, dac2b, one_climate, crdf, btr = (
+        dataset.provenance for dataset in DATASETS
+    )
+    assert [dataset.opt_in for dataset in DATASETS] == [
+        False,
+        True,
+        False,
+        False,
+        False,
+        False,
+        True,
+        True,
+    ]
 
     assert {
         config.code_system: set(config.declared_by_every_statvar_of) for config in CODE_SYSTEMS
@@ -2803,7 +2922,11 @@ def test_the_fixture_configuration_lists_each_system_under_the_datasets_that_alw
         "dac2aAidType": {imputed, dac2a},
         "dac1AidType": {dac1},
         "dac2bAidType": {dac2b},
+        "climatePolicyObjective": {one_climate, crdf, btr},
     }
+    assert [config.code_system for config in CODE_SYSTEMS if not config.classification_codes] == [
+        "climatePolicyObjective"
+    ]
 
 
 # --- A StatVar the index would decide must be an exported row ---
@@ -3307,6 +3430,21 @@ _REVIEWED_DATASET_KIND_OVERRIDES = {
     "IMFConcessionalTrustFunds": ("InternationalMonetaryFund", "provenance/OECDDAC2A"),
     "IMFResilienceAndSustainabilityTrust": ("InternationalMonetaryFund", "provenance/OECDDAC2B"),
 }
+# The datasets each trust fund's override was reviewed against. The recorded fixture index
+# predates the climate finance tables, which publish the Resilience and Sustainability Trust
+# and never the IMF.
+_REVIEWED_AGAINST = {
+    "IMFConcessionalTrustFunds": {
+        "provenance/OECDCreditorReportingSystem",
+        "provenance/OECDDAC2A",
+    },
+    "IMFResilienceAndSustainabilityTrust": {
+        "provenance/OECDCreditorReportingSystem",
+        "provenance/OECDDAC2B",
+        "provenance/ONEClimateFinance",
+        "provenance/OECDClimateRelatedDevelopmentFinance",
+    },
+}
 
 
 def test_party_kind_overrides_holds_only_reviewed_total_rows():
@@ -3335,7 +3473,8 @@ def test_the_fixture_index_reads_each_imf_trust_fund_a_total_only_beside_the_imf
         name: "total" if name == dataset else "party" for name in row.datasets
     }
     assert row.kind_in("provenance/OECDCreditorReportingSystem") == "party"
-    assert PARTY_KIND_OVERRIDES[trust].reviewed == frozenset(row.datasets)
+    assert PARTY_KIND_OVERRIDES[trust].reviewed == _REVIEWED_AGAINST[trust]
+    assert set(row.datasets) <= _REVIEWED_AGAINST[trust]
 
 
 @pytest.mark.parametrize(("group", "members"), sorted(_REVIEWED_KIND_OVERRIDES.items()))

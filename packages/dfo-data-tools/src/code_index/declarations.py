@@ -59,6 +59,11 @@ class CodeSystemConfig:
     the lowercase words naming a distinction of this axis no code expresses
     (`CodeSystemDeclaration.no_vocabulary_terms`). `house_case` is the kind of question an
     admitted code makes a part (`CodeSystemDeclaration.house_case`).
+
+    `classification_codes` says whether the enum's values carry a `classificationCode` arc,
+    the publisher's code. The export refuses a value that breaks the declaration either way,
+    so a system's rows all carry a code (`CodeRow.code`) or none do. The climate policy
+    objectives are DFO's own values and no publisher codes them.
     """
 
     code_system: str
@@ -72,6 +77,7 @@ class CodeSystemConfig:
     default: DeclaredDefault | None = None
     no_vocabulary_terms: tuple[str, ...] = ()
     house_case: HouseDefaultCase | None = None
+    classification_codes: bool = True
 
 
 CRS = "provenance/OECDCreditorReportingSystem"
@@ -80,6 +86,9 @@ DAC1 = "provenance/OECDDAC1"
 DAC2A = "provenance/OECDDAC2A"
 _DAC2B = "provenance/OECDDAC2B"
 _IDS = "provenance/WorldBankInternationalDebtStatistics"
+_ONE_CLIMATE_FINANCE = "provenance/ONEClimateFinance"
+_OECD_CRDF = "provenance/OECDClimateRelatedDevelopmentFinance"
+_UNFCCC_BTR = "provenance/UNFCCCBiennialTransparencyReports"
 
 # Codes only one dataset carries, which the scope conventions name through these constants.
 CRS_PURPOSE_HEALTH = "CRSPurposeCode120"
@@ -231,6 +240,32 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
             ),
         ),
     ),
+    # Every climate finance StatVar states its objective: the total
+    # (`ClimateChangePolicyObjective`) or one of the parts under it, adaptation only,
+    # mitigation only, cross-cutting and unspecified, which add up to it. A total holds its
+    # parts, so siblings neither exclude the parent nor sum in a rollup beside it. DFO mints
+    # the objectives, so no publisher codes them.
+    CodeSystemConfig(
+        code_system="climatePolicyObjective",
+        enum_dcid="ClimateChangePolicyObjectiveEnum",
+        expected_hierarchical=True,
+        disjoint_from_children=False,
+        summable=False,
+        absent_reading="not_declared",
+        declared_by_every_statvar_of=(_ONE_CLIMATE_FINANCE, _OECD_CRDF, _UNFCCC_BTR),
+        plain_name="climate objective",
+        # A climate finance question that names no objective asks about the total.
+        default=DeclaredDefault(
+            code="ClimateChangePolicyObjective",
+            when_bound_under=(),
+            when_open=True,
+            note=(
+                "No climate objective was named, so the answer covers all climate finance,"
+                " whatever its objective."
+            ),
+        ),
+        classification_codes=False,
+    ),
 )
 
 
@@ -258,7 +293,12 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
 # (`DatasetDeclaration.party_words`): their provider `DACMultilaterals` is the DAC's published
 # total of the multilateral organisations' own outflows, so a DAC2a or DAC2b `amount` row to a
 # country is multilateral where its provider is that total. DAC1, whose aid type 2000 codes the
-# word as donors' contributions, the CRS and the imputed table name no party.
+# word as donors' contributions, the CRS and the imputed table name no party. The three
+# climate finance tables declare `climatePolicyObjective`, so they form families of their own
+# and their ranks order them against each other alone. ONE Data Climate Finance answers a
+# climate question that names no table. The OECD's CRDF figures are a second facet of ONE
+# Data's commitment series, and the UNFCCC reports give each party's own totals by its own
+# method, so each answers only a question that names it.
 _MULTILATERAL_PROVIDER = PartyWord(
     word="multilateral",
     measured_property="amount",
@@ -349,6 +389,42 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
             ),
         ),
         party_words=(_MULTILATERAL_PROVIDER,),
+    ),
+    DatasetDeclaration(
+        provenance=_ONE_CLIMATE_FINANCE,
+        label="ONE Data Climate Finance",
+        description=(
+            "Climate finance each provider committed and paid out, by recipient, as ONE Data"
+            " estimates it from the OECD's CRS and climate-related development finance data."
+        ),
+        opt_in=False,
+        absent_observation="unknown",
+        account="provider",
+        rank=50,
+    ),
+    DatasetDeclaration(
+        provenance=_OECD_CRDF,
+        label="OECD Climate-related Development Finance",
+        description=(
+            "Climate-related development finance commitments the OECD publishes by provider"
+            " and recipient, counting every Rio-marked project at full value."
+        ),
+        opt_in=True,
+        absent_observation="unknown",
+        account="provider",
+        rank=60,
+    ),
+    DatasetDeclaration(
+        provenance=_UNFCCC_BTR,
+        label="UNFCCC Biennial Transparency Reports",
+        description=(
+            "Bilateral climate finance each party reports to the UNFCCC in its Biennial"
+            " Transparency Report, as totals by party without a breakdown by recipient."
+        ),
+        opt_in=True,
+        absent_observation="unknown",
+        account="provider",
+        rank=70,
     ),
 )
 
@@ -520,10 +596,10 @@ PARTY_KIND_OVERRIDES: Mapping[str, KindOverride] = {
     "IMFResilienceAndSustainabilityTrust": KindOverride(
         "total",
         "InternationalMonetaryFund in DAC2B: equal to the dollar in gross disbursements in the "
-        "one year it reports (Kenya 2024: 180.2m); a party in the CRS, which never publishes "
-        "the IMF",
+        "one year it reports (Kenya 2024: 180.2m); a party in the CRS and the climate finance "
+        "tables, which never publish the IMF",
         datasets=frozenset({_DAC2B}),
-        reviewed=frozenset({CRS, _DAC2B}),
+        reviewed=frozenset({CRS, _DAC2B, _ONE_CLIMATE_FINANCE, _OECD_CRDF}),
     ),
     "InterAmericanDevelopmentBankGroup": KindOverride(
         "total", "InterAmericanDevelopmentBank plus IDBInvest"

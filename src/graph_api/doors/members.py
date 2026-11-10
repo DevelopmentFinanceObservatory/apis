@@ -77,7 +77,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Query, Request, Response
 from pydantic import ConfigDict, Field
 
-from code_index.query import CodeIndex
+from code_index.query import CodeIndex, code_order
 from code_index.shared import get_index
 from code_index.types import CodeRow
 from dc_graph import display_name
@@ -158,7 +158,9 @@ class CodeItem(MemberItem):
 
     model_config = ConfigDict(title="GraphCodeItem")
 
-    code: str
+    code: str | None = Field(
+        description="the publisher's code; null in a system whose values carry none"
+    )
     parent: str | None = Field(description="the parent code's dcid; null for a top-level code")
 
 
@@ -303,7 +305,7 @@ def _by_dcid(dcid: str) -> SortKey:
 
 
 def _by_code(row: CodeRow) -> SortKey:
-    return (row.code, row.dcid)
+    return code_order(row)
 
 
 def _code_item(row: CodeRow) -> CodeItem:

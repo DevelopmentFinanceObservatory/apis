@@ -87,6 +87,12 @@ def row_five_tuple(row: StatVarRow) -> FiveTuple:
     )
 
 
+def code_order(row: CodeRow) -> tuple[str, str]:
+    """The order of one system's code rows: by `CodeRow.code` as a string, and by dcid in a
+    system whose rows carry no code."""
+    return (row.code or "", row.dcid)
+
+
 def _datasets_by_five_tuple(
     statvars: Iterable[StatVarRow], datasets: Mapping[str, DatasetDeclaration]
 ) -> dict[FiveTuple, tuple[str, ...]]:
@@ -578,12 +584,13 @@ class CodeIndex:
             if row.dcid in codes_by_dcid:
                 raise DuplicateDcid(f"code dcid {row.dcid!r} appears more than once")
             codes_by_dcid[row.dcid] = row
-            system_code = (row.code_system, row.code)
-            if system_code in codes_by_system_code:
-                raise DuplicateDcid(
-                    f"code system {row.code_system!r} code {row.code!r} appears more than once"
-                )
-            codes_by_system_code[system_code] = row
+            if row.code is not None:
+                system_code = (row.code_system, row.code)
+                if system_code in codes_by_system_code:
+                    raise DuplicateDcid(
+                        f"code system {row.code_system!r} code {row.code!r} appears more than once"
+                    )
+                codes_by_system_code[system_code] = row
             if row.parent is not None:
                 children_by_parent[row.parent].append(row.dcid)
             for text in (row.label, *row.synonyms):
@@ -649,7 +656,7 @@ class CodeIndex:
             code_system: tuple(
                 sorted(
                     (row for row in self.codes if row.code_system == code_system),
-                    key=lambda row: row.code,
+                    key=code_order,
                 )
             )
             for code_system in sorted({row.code_system for row in self.codes})
@@ -784,7 +791,8 @@ class CodeIndex:
 
     def code_by_code(self, code_system: str, code: str) -> CodeRow | None:
         """Returns the row for `code` in `code_system`. Code strings may recur across systems,
-        so pass both fields to identify the row."""
+        so pass both fields to identify the row. A system whose rows carry no code
+        (`CodeRow.code`) returns `None` for every code."""
         return self._codes_by_system_code.get((code_system, code))
 
     def codes_by_text(self, text: str) -> tuple[CodeRow, ...]:
@@ -956,12 +964,12 @@ class CodeIndex:
         return bool(self._children_by_parent.get(dcid))
 
     def children(self, dcid: str) -> tuple[CodeRow, ...]:
-        """The rows whose `parent` is `dcid`, ordered by `CodeRow.code` as a string. Empty
-        for a leaf, a code of a flat system, and an unknown dcid."""
+        """The rows whose `parent` is `dcid`, in `code_order`. Empty for a leaf, a code of a
+        flat system, and an unknown dcid."""
         return tuple(
             sorted(
                 (self._codes_by_dcid[child] for child in self._children_by_parent.get(dcid, ())),
-                key=lambda row: row.code,
+                key=code_order,
             )
         )
 

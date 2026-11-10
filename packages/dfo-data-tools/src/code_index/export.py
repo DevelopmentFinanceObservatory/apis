@@ -566,8 +566,20 @@ def _fetch_arcs_many(
     return reader.node_arcs_many(dcids, properties=list(properties))
 
 
-def _build_code_row(dcid: str, code_system: str, arcs: dict[str, tuple[str, ...]]) -> dict:
-    code = _single_value(dcid, "classificationCode", arcs.get("classificationCode", ()))
+def _build_code_row(config: CodeSystemConfig, dcid: str, arcs: dict[str, tuple[str, ...]]) -> dict:
+    """One code row of `config`'s system. A value of a system declaring classification codes
+    must carry one, and a value of a system declaring none must carry none
+    (`CodeSystemConfig.classification_codes`)."""
+    codes = arcs.get("classificationCode", ())
+    if config.classification_codes:
+        code = _single_value(dcid, "classificationCode", codes)
+    elif codes:
+        raise ExportRefused(
+            f"{dcid} carries classificationCode {codes[0]!r} but {config.code_system} declares "
+            "no classification codes -- set classification_codes on its CodeSystemConfig"
+        )
+    else:
+        code = None
     name = _required_name(dcid, arcs)
     label = strip_system_suffix(name)
     synonyms = sorted(
@@ -578,7 +590,7 @@ def _build_code_row(dcid: str, code_system: str, arcs: dict[str, tuple[str, ...]
     short_name = _first_or_none(arcs.get("shortName", ())) or CODE_SHORT_NAMES.get(dcid)
     return {
         "dcid": dcid,
-        "code_system": code_system,
+        "code_system": config.code_system,
         "code": code,
         "label": label,
         "synonyms": synonyms,
@@ -882,7 +894,7 @@ def export_code_system(
                 f"{dcid} was enumerated via <-typeOf on {config.enum_dcid} but the graph "
                 "holds no node for it"
             )
-        rows.append(_build_code_row(dcid, config.code_system, arcs))
+        rows.append(_build_code_row(config, dcid, arcs))
     rows.sort(key=lambda row: row["dcid"])
     _reject_cross_system_parents(config, set(dcids), rows)
 
