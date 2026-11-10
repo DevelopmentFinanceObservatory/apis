@@ -392,8 +392,9 @@ def test_a_nominated_reading_that_cannot_hold_a_typed_value_departs_it(binder, l
     sets it aside but its rating keeps the nomination, and Jev's dataset-named pool leaves
     it out while its election keeps it plausible. The candidate set discloses "Public
     sector" as a departure (`candidate_collapse._record_unheld_values`). A set whose
-    readings hold every typed value, in a slot or on each member under another property,
-    records and departs nothing, as does a value the request's words do not name."""
+    readings hold every typed value, in a slot or on each member under the value's own
+    property, records and departs nothing, as does a value the request's words do not
+    name. A member carrying the value under another property holds nothing of it."""
     state = _state(llm=llm, binder=binder)
     state.variable = state.detect_query = "public sector PPG debt"
     state.capped_shapes = list(_DEBT_MENU)
@@ -412,26 +413,34 @@ def test_a_nominated_reading_that_cannot_hold_a_typed_value_departs_it(binder, l
     def settle(answers):
         state.shape_draft, state.bindings = elected
         state.requirements = ()
-        asyncio.run(_record_unheld_values(state, [shape for shape, _ in answers]))
+        asyncio.run(_record_unheld_values(state, answers))
         settle_candidate_set(state, answers)
         assert state.judgement is not None
         return [fact.asked for _warning, fact in state.judgement.departures()]
 
     assert settle([elected, nominated]) == ["Public sector"]
-    # Each member of a public-sector commitments series carries the debtor type on a
-    # property of its own, so the reading holds it without a debtor-type slot.
-    public_commitments = dataclasses.replace(
-        _DEBT_MENU[1],
-        shape_id="public_commitments",
-        sv_arc_facts={
-            "sv_public_commitments": {
-                "constraintProperties": {"nodes": [{"dcid": "debtorSector"}]},
-                "debtorSector": {"nodes": [{"dcid": "IDSDebtorTypePS"}]},
-            }
-        },
-    )
-    assert settle([elected, (public_commitments, nominated[1])]) == []
+
+    # Each member of a public-sector commitments series carries the debtor type beside the
+    # guarantee status its slot binds, so the reading holds it without a debtor-type slot.
+    def commitments(debtor_property: str) -> ShapeDraft:
+        return dataclasses.replace(
+            _DEBT_MENU[1],
+            shape_id="public_commitments",
+            sv_arc_facts={
+                "sv_public_commitments": {
+                    "constraintProperties": {
+                        "nodes": [{"dcid": "guaranteeStatus"}, {"dcid": debtor_property}]
+                    },
+                    "guaranteeStatus": {"nodes": [{"dcid": "PublicOrPubliclyGuaranteed"}]},
+                    debtor_property: {"nodes": [{"dcid": "IDSDebtorTypePS"}]},
+                }
+            },
+        )
+
+    assert settle([elected, (commitments("idsDebtorType"), nominated[1])]) == []
     assert state.requirements == ()
+    # The same code under a property of another name is no debtor type.
+    assert settle([elected, (commitments("debtorSector"), nominated[1])]) == ["Public sector"]
     assert (
         settle([elected, (dataclasses.replace(_DEBT_MENU[0], shape_id="flows"), elected[1])]) == []
     )
@@ -455,7 +464,7 @@ def _member(sv: str, prop: str, value: str) -> dict[str, dict]:
 _SECTOR = SlotKeyDraft(axis="how", property_dcid="crsPurpose", label="sector")
 _HEALTH, _EDUCATION = "CRSPurposeCode120", "CRSPurposeCode110"
 # Aid by CRS sector, and an imputed multilateral health series with no sector slot whose
-# member carries health under a property of its own.
+# member carries the health sector.
 _AID_MENU = [
     dataclasses.replace(
         _shape("aid_by_sector", _SECTOR),
@@ -463,7 +472,7 @@ _AID_MENU = [
         value_labels={_EDUCATION: "Education", _HEALTH: "Health"},
     ),
     dataclasses.replace(
-        _shape("imputed_health"), sv_arc_facts=_member("sv_health", "aidPurpose", _HEALTH)
+        _shape("imputed_health"), sv_arc_facts=_member("sv_health", "crsPurpose", _HEALTH)
     ),
 ]
 _AID_JEV_ANSWERS = {
@@ -507,8 +516,9 @@ _AID_JEV_ANSWERS = {
 def test_a_nominated_reading_holding_part_of_a_typed_set_departs_the_rest(binder, llm):
     """The phrase "aid to health and education" elects aid by sector, binding both sectors
     as a set, and nominates an imputed health series whose members carry health alone. The
-    candidate set departs "Education" and not "Health" (`election.unheld_mentioned`). A
-    reading whose members carry each of the two departs nothing. Beside a reading holding
+    candidate set departs "Education" and not "Health"
+    (`phase_rank_bind.judge_value_requirements`). A reading whose members carry each of the
+    two departs nothing. Beside a reading holding
     neither, each value is one requirement and departs once."""
     state = _state(llm=llm, binder=binder)
     state.variable = state.detect_query = "aid to health and education"
@@ -526,7 +536,7 @@ def test_a_nominated_reading_holding_part_of_a_typed_set_departs_the_rest(binder
     def settle(shape):
         state.shape_draft, state.bindings = elected
         state.requirements = ()
-        asyncio.run(_record_unheld_values(state, [elected[0], shape]))
+        asyncio.run(_record_unheld_values(state, [elected, (shape, [])]))
         settle_candidate_set(state, [elected, (shape, [])])
         assert state.judgement is not None
         return [fact.asked for _warning, fact in state.judgement.departures()]
@@ -536,8 +546,8 @@ def test_a_nominated_reading_holding_part_of_a_typed_set_departs_the_rest(binder
         _AID_MENU[1],
         shape_id="imputed_health_and_education",
         sv_arc_facts={
-            **_member("sv_health", "aidPurpose", _HEALTH),
-            **_member("sv_education", "aidPurpose", _EDUCATION),
+            **_member("sv_health", "crsPurpose", _HEALTH),
+            **_member("sv_education", "crsPurpose", _EDUCATION),
         },
     )
     assert settle(both) == []
@@ -547,7 +557,7 @@ def test_a_nominated_reading_holding_part_of_a_typed_set_departs_the_rest(binder
     state.shape_draft, state.bindings = elected
     state.requirements = ()
     answers = [elected, (both, []), (_AID_MENU[1], []), (neither, [])]
-    asyncio.run(_record_unheld_values(state, [shape for shape, _ in answers]))
+    asyncio.run(_record_unheld_values(state, answers))
     settle_candidate_set(state, answers)
     assert state.judgement is not None
     assert [fact.asked for _warning, fact in state.judgement.departures()] == [
@@ -650,7 +660,13 @@ def test_a_lone_twin_is_judged_on_the_typed_values_as_any_reading_is(
     slots = {slot.property_dcid for slot in twin.slot_keys}
     held = [b for b in state.bindings if b.property_dcid in slots]
 
-    specs, state = _settle(monkeypatch, state, _grounded((twin_spec, _TWIN_SV, twin, "twin")))
+    grounded = _grounded((twin_spec, _TWIN_SV, twin, "twin"))
+    # The twin answers on the drafts its slots hold, as grounding binds them.
+    grounded.cand_candidates[twin_spec.spec_id] = dataclasses.replace(
+        grounded.cand_candidates[twin_spec.spec_id], bindings=held
+    )
+
+    specs, state = _settle(monkeypatch, state, grounded)
 
     assert [spec.spec_id for spec in specs] == [twin_spec.spec_id]
     assert [r.term.text for r in state.requirements if r.origin == "unheld"] == departed

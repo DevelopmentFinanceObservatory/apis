@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import pytest
 
-from code_index.shared import get_index, get_measure_index
 from search.engine.measure_verdict import ReadingEvidence, Verdict, measure_verdicts
 from search.engine.qualifier_match import declared_measures_named
 
@@ -315,8 +314,6 @@ _GDP_NAME = "Gross domestic product (GDP)"
 def test_measure_verdicts(
     variable_text: str, evidence: ReadingEvidence, verdicts: list[Verdict]
 ) -> None:
-    named = declared_measures_named(
-        variable_text, get_measure_index(), get_index().variable_aliases
-    )
+    named = declared_measures_named(variable_text)
 
     assert measure_verdicts(named, evidence) == verdicts

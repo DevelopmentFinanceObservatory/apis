@@ -8,11 +8,25 @@ names). The rule reads no retrieval score.
 
 from __future__ import annotations
 
+import dataclasses
+import gzip
+import json
+from pathlib import Path
+
 import pytest
 
-from search.engine.closest_match import closest_match_fact
-from search.engine.measure_verdict import ReadingEvidence
+from scripts.sentence_golden import golden_parts
+from search.engine.closest_match import closest_match_fact, reading_inputs
+from search.engine.measure_verdict import ReadingEvidence, measure_verdicts
+from search.engine.qualifier_match import declared_measures_named
 from search.heading.departure_fact import DepartureFact
+from search.models import CandidatesPart, DefinitePart, GraphRef, Spec
+from search.models.spec import OpenAxisValueCount, OpenConstraintAxisFact
+
+_PANEL_DIR = Path(__file__).parents[1] / "fixtures" / "sentence_panel"
+_PRODUCT_TAX = "productTaxBasis"
+_INCLUDING_TAXES = GraphRef(ref="IncludingProductTaxes", label="Including product taxes")
+_GDP_PPP_SHAPE = "Gross domestic product (GDP), per capita, purchasing power parity (PPP)"
 
 
 @pytest.mark.parametrize(
@@ -371,3 +385,63 @@ def test_closest_match_fact_on_a_ratio(
         bound_codes=[value for prop, value in pairs if prop not in _SHAPE_KEYS],
     )
     assert (fact is not None) == fires
+
+
+def _panel_reading(query_id: str, shape_label: str) -> Spec:
+    """The reading of `query_id` in the recorded sentence panel whose shape `shape_label`
+    names."""
+    for path in sorted(_PANEL_DIR.glob("*.jsonl.gz")):
+        for text in gzip.decompress(path.read_bytes()).splitlines():
+            line = json.loads(text)
+            if line["id"] != query_id:
+                continue
+            for part in golden_parts(line["parts"]):
+                specs = (
+                    [part.spec]
+                    if isinstance(part, DefinitePart)
+                    else part.candidates.specs
+                    if isinstance(part, CandidatesPart)
+                    else []
+                )
+                for spec in specs:
+                    if spec.resolved.shape.label == shape_label:
+                        return spec
+    raise AssertionError(f"no {shape_label!r} reading of {query_id}")
+
+
+@pytest.mark.parametrize(("open_axis", "verdicts"), [(True, ["holds"]), (False, ["unknown"])])
+def test_a_value_every_member_holds_on_an_open_axis_reaches_the_pairs(
+    open_axis: bool, verdicts: list[str]
+) -> None:
+    """The weo-020 reading of GDP per capita at purchasing power parity binds its product
+    tax basis on a slot. Left on no slot, the value every served member holds on the open
+    axis (`ResolvedSpec.open_axis_facts`) is in the reading's pairs, as a shape's family
+    values are in rule 4's (`admissibility.draft_evidence`), so its pairs alone hold
+    "GDP"."""
+    spec = _panel_reading("weo-020", _GDP_PPP_SHAPE)
+    resolved = spec.resolved
+    slots = [
+        s for s in resolved.slots if s.key.property is None or s.key.property.ref != _PRODUCT_TAX
+    ]
+    facts = [
+        OpenConstraintAxisFact(
+            property=_PRODUCT_TAX,
+            varies=False,
+            value=_INCLUDING_TAXES,
+            distinct_count=1,
+            undeclared_count=0,
+            values=[OpenAxisValueCount(value=_INCLUDING_TAXES, count=1)],
+        )
+    ]
+    reading = spec.model_copy(
+        update={
+            "resolved": resolved.model_copy(
+                update={"slots": slots, "open_axis_facts": facts if open_axis else None}
+            )
+        }
+    )
+
+    evidence, _bound, _series = reading_inputs(reading, measure_noun="")
+    pairs_alone = dataclasses.replace(evidence, noun=None, member_names=())
+
+    assert measure_verdicts(declared_measures_named("GDP"), pairs_alone) == verdicts

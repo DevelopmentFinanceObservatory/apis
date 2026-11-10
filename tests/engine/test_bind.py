@@ -31,10 +31,11 @@ from search.engine.frame import door_frame, with_recall
 from search.engine.interpretation import Interpretation
 from search.engine.quantity import NamedDenominator, quantity_requirement, with_stated_form
 from search.engine.quantity_read import QuantityOutput
-from search.engine.region import phase_rank_bind
+from search.engine.region import value_labels
 from search.engine.region.phase_rank_bind import _stray_requirements
 from search.engine.region.place_set import PlaceNode, PlaceSet
 from search.engine.region.requirements import judge
+from search.engine.region.value_labels import model_only_values
 from search.engine.role_text import DoorRole
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.models import GraphRef, QuantityForm
@@ -744,7 +745,7 @@ def test_a_stray_value_is_met_by_an_answer_that_binds_it(monkeypatch, phrase, so
     its label or by a synonym the measure index holds for it, is judged as a value the
     request names (`_stray_requirements`): the elected population answer leaves "Female"
     unmet, and an answer by sex that binds it meets it."""
-    measure_index = phase_rank_bind.get_measure_index()
+    measure_index = value_labels.get_measure_index()
     female = MeasureValueRow(
         dcid="Female",
         axis="gender",
@@ -754,7 +755,7 @@ def test_a_stray_value_is_met_by_an_answer_that_binds_it(monkeypatch, phrase, so
         matchable=True,
     )
     monkeypatch.setattr(
-        phase_rank_bind,
+        value_labels,
         "get_measure_index",
         lambda: dataclasses.replace(measure_index, values=(*measure_index.values, female)),
     )
@@ -787,7 +788,7 @@ def test_a_value_name_cannot_span_request_text_sources():
         dropped_qualifier_phrases=("education",),
     )
 
-    assert phase_rank_bind.model_only_values(
+    assert model_only_values(
         state, "crsPurpose", ["CRSPurposeCode11220"], {"CRSPurposeCode11220": "primary education"}
     ) == ("CRSPurposeCode11220",)
 

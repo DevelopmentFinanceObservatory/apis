@@ -28,7 +28,7 @@ from itertools import pairwise
 from typing import Literal, Protocol
 
 from code_index.query import CodeIndex, fold_word
-from code_index.shared import per_index
+from code_index.shared import get_index, get_measure_index, per_index
 from code_index.tokens import (
     Token,
     TokenLookup,
@@ -40,6 +40,7 @@ from code_index.tokens import (
 from code_index.types import CodeRow, MeasureIndex, MeasurePartitionLabel, MeasureValueRow
 from dfo_platform.lru_memo import LruMemo
 from search.engine.function_words import FUNCTION_WORDS
+from search.engine.role_text import ROLE_PREPOSITIONS
 
 MatchSource = Literal["code", "label", "synonym"]
 
@@ -390,6 +391,74 @@ def token_occurrences(tokens: Sequence[Token], text: str) -> list[tuple[int, int
     return occurrences
 
 
+# The articles that may stand between a role preposition and its place ("to the
+# United States").
+_ARTICLES = frozenset({"the", "a", "an"})
+_APOSTROPHES = frozenset({"'", "\u2019"})
+
+
+def with_role_preposition(
+    spans: Sequence[tuple[int, int]], tokens: Sequence[Token]
+) -> list[tuple[int, int]]:
+    """Each of `spans` widened to the start of the role preposition
+    (`role_text.ROLE_PREPOSITIONS`) before it, read as `tokens`, with any article between
+    them, when only spaces separate those words: "debt service to the United States"
+    reads as "debt service". A span in the possessive keeps its preposition, since the
+    place owns the noun after it and is not the preposition's object; the span takes the
+    article before it and a trailing apostrophe with it (`_past_apostrophe`): "debt
+    relative to Ghana's GDP" and "debt relative to the United States' GDP" both read as
+    "debt relative to GDP"."""
+    words = [token for token in tokens if token.kind == "word"]
+    widened: list[tuple[int, int]] = []
+    for start, end in spans:
+        before = [token for token in words if token.end <= start]
+        article = None
+        while before and before[-1].text.casefold() in _ARTICLES:
+            article = before.pop()
+        if _possessive_at(end, tokens):
+            if article is not None:
+                start = article.start
+            widened.append((start, _past_apostrophe(end, tokens)))
+            continue
+        if (
+            before
+            and before[-1].text.casefold() in ROLE_PREPOSITIONS
+            and not any(
+                t.kind == "sep" and t.text.strip()
+                for t in tokens
+                if before[-1].end <= t.start < start
+            )
+        ):
+            start = before[-1].start
+        widened.append((start, end))
+    return widened
+
+
+def _past_apostrophe(end: int, tokens: Sequence[Token]) -> int:
+    """`end`, moved past an apostrophe that follows it straight after, so a possessive
+    place takes its marker with it: "United States'" in "the United States' GDP"."""
+    return next(
+        (
+            token.end
+            for token in tokens
+            if token.start == end and token.kind == "sep" and token.text in _APOSTROPHES
+        ),
+        end,
+    )
+
+
+def _possessive_at(end: int, tokens: Sequence[Token]) -> bool:
+    """Whether the span of `tokens` ending at character `end` is in the possessive: its
+    last word ends in "'s" ("Ghana's"), or an apostrophe follows it straight after
+    ("United States'")."""
+    for token in tokens:
+        if token.end == end and token.kind == "word" and _POSSESSIVE_RE.search(token.text):
+            return True
+        if token.start == end and token.kind == "sep" and token.text in _APOSTROPHES:
+            return True
+    return False
+
+
 @dataclass(frozen=True, slots=True)
 class NamedMeasure:
     """A name of declared measures a text holds (`declared_measures_named`):
@@ -402,36 +471,27 @@ class NamedMeasure:
     occurrences: tuple[tuple[int, int], ...]
 
 
-def declared_measures_named(
-    text: str, measures: MeasureIndex, aliases: Mapping[str, str]
-) -> list[NamedMeasure]:
-    """The declared measures `text` names, one entry per span, in text order.
+def declared_measures_named(text: str) -> list[NamedMeasure]:
+    """The declared measures `text` names in the bound release, one entry per span, in text
+    order.
 
     A measure noun's or partition label's names are its label and `also_called` entries,
-    and each declared acronym (`aliases`, `CodeIndex.variable_aliases`) whose expansion is
-    one of them: "GNI" names the noun "gross national income". An acronym whose expansion
-    names no declared measure ("PPG") names none. A name occurs where its words stand
-    whole in `text`, hyphens read as spaces and a last word's possessive allowed
+    and each declared acronym (`CodeIndex.variable_aliases`) whose expansion is one of
+    them, a table built once per code and measure index (`_measure_names`): "GNI" names
+    the noun "gross national income". An acronym whose expansion names no declared measure
+    ("PPG") names none. A name occurs where its words stand whole in `text`, hyphens read
+    as spaces and a last word's possessive allowed
     (`token_occurrences`). The longest declared name wins its words: an occurrence inside
     a longer occurrence names nothing, so "GDP growth" names "GDP growth" and not "GDP".
     A declared name in parentheses straight after an occurrence, as an acronym restating it,
     joins that occurrence (`_with_parenthesised_name`): "Potential gross domestic product
     (GDP)" names potential GDP alone. Occurrences that name the same declarations form one
     entry."""
-    entries = [
-        (entry, [entry.label, *entry.also_called])
-        for entry in (*measures.partition_labels, *measures.nouns)
-    ]
-    for acronym, expansion in aliases.items():
-        for _entry, names in entries:
-            if expansion.casefold() in {name.casefold() for name in names}:
-                names.append(acronym)
     tokens = tokenize(text.replace("-", " "))
     found = [
         (entry, span)
-        for entry, names in entries
-        for name in names
-        for span in token_occurrences(tokens, name.replace("-", " "))
+        for entry, name in _measure_names(get_index(), get_measure_index())
+        for span in token_occurrences(tokens, name)
     ]
     spans = {span for _entry, span in found}
     found = [(entry, _with_parenthesised_name(text, span, spans)) for entry, span in found]
@@ -447,6 +507,41 @@ def declared_measures_named(
     return [
         NamedMeasure(alternatives, tuple(spans)) for alternatives, spans in by_alternatives.items()
     ]
+
+
+def _measure_names(
+    index: CodeIndex, measures: MeasureIndex
+) -> tuple[tuple[MeasurePartitionLabel, str], ...]:
+    """Each name of each partition label and measure noun of `measures`, with the entry it
+    names, hyphens read as spaces: its label, its `also_called` entries, and each of
+    `index`'s declared acronyms (`CodeIndex.variable_aliases`) whose expansion is one of
+    them. Built once per pair of indexes (`_measure_name_tables`)."""
+    tables = _measure_name_tables(index)
+    held = tables.get(id(measures))
+    if held is not None and held[0] is measures:
+        return held[1]
+    names: list[tuple[MeasurePartitionLabel, str]] = []
+    for entry in (*measures.partition_labels, *measures.nouns):
+        own = [entry.label, *entry.also_called]
+        folded = {name.casefold() for name in own}
+        own += [
+            acronym
+            for acronym, expansion in index.variable_aliases.items()
+            if expansion.casefold() in folded
+        ]
+        names += [(entry, name.replace("-", " ")) for name in own]
+    table = tuple(names)
+    tables[id(measures)] = (measures, table)
+    return table
+
+
+@per_index
+def _measure_name_tables(
+    _index: CodeIndex,
+) -> dict[int, tuple[MeasureIndex, tuple[tuple[MeasurePartitionLabel, str], ...]]]:
+    """The name tables `_measure_names` built for `_index`, keyed by the measure index each
+    was built from, which each entry holds so its key stays its own."""
+    return {}
 
 
 # A parenthesised run straight after a name, its inner words in group 1.

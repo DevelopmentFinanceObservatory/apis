@@ -17,8 +17,6 @@ from search.engine.bind import (
 )
 from search.engine.bind_repair import _label_named_in_text
 from search.engine.binders.base import PolicyContractError
-from search.engine.retrieval.bound_values import shape_population_arcs
-from search.engine.retrieval.facts import read_constraints
 
 if TYPE_CHECKING:
     from search.engine.binders.house_policy import PolicyChoice
@@ -59,38 +57,6 @@ def holds_drafted_values(
     return {draft.property_dcid for draft in drafts} <= _slot_property_dcids(
         shape
     ) and reads_bound_values_alike(chosen, shape, drafts)
-
-
-def unheld_mentioned(
-    chosen: ShapeDraft, shape: ShapeDraft, bindings: Sequence[SlotBindingDraft]
-) -> list[SlotBindingDraft]:
-    """The drafts of `bindings`, drafted on `chosen`, that the phrase names
-    (`mentioned_drafts`), each narrowed to the values `shape` does not hold, judged one
-    value at a time. A value is held when `shape` holds it as `chosen` does
-    (`holds_drafted_values`), or when some member `shape` stands for
-    (`shape_population_arcs`) carries it on any constraint property and every member
-    carries one of the draft's values, as an IDS GNI series carries GrossNationalIncome
-    under economicActivityType where a PPP shape binds it on activitySource. A shape whose
-    members all carry health alone holds health of "health and education" and not
-    education. A shape with no members read holds no value through its members."""
-    members = [
-        frozenset(read_constraints(arcs).values()) for arcs in shape_population_arcs(shape).values()
-    ]
-    unheld: list[SlotBindingDraft] = []
-    for draft in mentioned_drafts(bindings):
-        drafted = set(draft.value_dcids)
-        spans_members = bool(members) and all(member & drafted for member in members)
-        values = [
-            value
-            for value in draft.value_dcids
-            if not holds_drafted_values(
-                chosen, shape, [draft.model_copy(update={"value_dcids": [value]})]
-            )
-            and not (spans_members and any(value in member for member in members))
-        ]
-        if values:
-            unheld.append(draft.model_copy(update={"value_dcids": values}))
-    return unheld
 
 
 def reelect(

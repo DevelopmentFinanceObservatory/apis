@@ -56,7 +56,12 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 
 from code_index.shared import get_measure_index
 from search.engine.interpretation import Interpretation
-from search.engine.measure_verdict import ReadingEvidence, Verdict, measure_verdicts, shape_pairs
+from search.engine.measure_verdict import (
+    ReadingEvidence,
+    Verdict,
+    measure_verdicts,
+    reading_evidence,
+)
 from search.engine.qualifier_match import NamedMeasure, QualifierMatch
 from search.engine.quantity import DenominatorRead, serves_every_form
 from search.engine.region.alternate_guard import measure_class, shape_measure_class
@@ -90,14 +95,14 @@ def judge_pinned_parts(
     interpretations: Iterable[Interpretation],
     matches: Mapping[frozenset[str], tuple[QualifierMatch, ...]],
     spans: Sequence[NamedMeasure],
-    own: Mapping[str, Sequence[Verdict]] | None = None,
+    verdicts: Mapping[str, Sequence[Verdict]] | None = None,
 ) -> list[Interpretation]:
     """`interpretations` with each admissible one judged on the form the question names, on
     the names of measure nouns it holds, `spans`, and on the codes it names (rules 3 to 5).
-    `matches` holds the question's codes read in each shape's vocabulary, and `own` rule 4's
-    verdicts on each shape's own members where the phase already read them
-    (`own_member_verdicts`). A part naming a source is judged on the form and the nouns
-    alone."""
+    `matches` holds the question's codes read in each shape's vocabulary, and `verdicts`
+    rule 4's verdicts on each shape by shape id where the phase already read them
+    (`rule_four_verdicts`, computed here for a shape it lacks). A part naming a source is
+    judged on the form and the nouns alone."""
     measure_axes = frozenset(axis.axis for axis in get_measure_index().axes)
     names_source = state.scope is not None and state.scope.named
 
@@ -109,8 +114,10 @@ def judge_pinned_parts(
             return Interpretation(
                 shape=shape, reason="denominator_not_available", pinned_failure="form"
             )
-        own_verdicts = own.get(shape.shape_id) if own is not None else None
-        if "contradicts" in rule_four_verdicts(shape, spans, state.denominator_reads, own_verdicts):
+        read = verdicts.get(shape.shape_id) if verdicts is not None else None
+        if read is None:
+            read = rule_four_verdicts(shape, spans, state.denominator_reads)
+        if "contradicts" in read:
             return Interpretation(shape=shape, reason="variable_not_resolved")
         if names_source:
             return interpretation
@@ -172,22 +179,20 @@ def rule_four_verdicts(
 def draft_evidence(
     shape: ShapeDraft, arcs: Mapping[str, dict], denominators: Mapping[str, DenominatorRead]
 ) -> ReadingEvidence:
-    """What `shape` states of its measure before bind: its five-tuple pairs
-    (`measure_verdict.shape_pairs`), the constraint values its family holds
-    (`shape_constraint_values`), the constraint properties of each member whose arcs `arcs`
-    holds, its label as its noun, and the pairs and name the graph gives the StatVar it
-    divides by, as `denominators` read them."""
+    """What `shape` states of its measure before bind (`measure_verdict.reading_evidence`):
+    its five-tuple, the constraint values its family holds (`shape_constraint_values`), the
+    constraint properties of each member whose arcs `arcs` holds, its label as its noun,
+    and the pairs and name the graph gives the StatVar it divides by, as `denominators`
+    read them."""
     read = denominators.get(shape.meas_denom_dcid) if shape.meas_denom_dcid else None
-    return ReadingEvidence(
-        pairs=frozenset(
-            [
-                *shape_pairs(shape.pop_type_dcid, shape.meas_prop_dcid, shape.stat_type_dcid),
-                *shape_constraint_values(shape),
-            ]
-        ),
-        member_properties=tuple(frozenset(read_constraints(member)) for member in arcs.values()),
+    return reading_evidence(
+        population_type=shape.pop_type_dcid,
+        measured_property=shape.meas_prop_dcid,
+        stat_type=shape.stat_type_dcid,
+        constraint_values=shape_constraint_values(shape),
         noun=shape.label,
-        denominator_pairs=frozenset(read.pairs) if read is not None else frozenset(),
+        member_properties=[frozenset(read_constraints(member)) for member in arcs.values()],
+        denominator_pairs=read.pairs if read is not None else (),
         denominator_name=read.name if read is not None else None,
     )
 

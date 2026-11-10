@@ -3,8 +3,8 @@
 `qualifier_match.declared_measures_named` reads the request's names of declared measures
 (measure nouns and partition labels), each with its alternatives, the declarations that
 share the name. `measure_verdicts` judges each name on a reading's `ReadingEvidence`,
-built once from a Spec (`closest_match.reading_inputs`) or from a shape draft
-(`admissibility.draft_evidence`), in this order:
+built by `reading_evidence` from a Spec (`closest_match.reading_inputs`) or from a shape
+draft (`admissibility.draft_evidence`), in this order:
 
 1. ``holds``: the reading's pairs hold an alternative's `axis_values`, each five-tuple key
    equal and each constraint value equal to the alternative's or related to it by ancestry
@@ -80,6 +80,34 @@ class ReadingEvidence:
     denominator_name: str | None = None
 
 
+def reading_evidence(
+    *,
+    population_type: str | None,
+    measured_property: str | None,
+    stat_type: str | None,
+    constraint_values: Iterable[tuple[str, str]],
+    noun: str | None,
+    member_names: Sequence[str] = (),
+    member_properties: Sequence[frozenset[str]] = (),
+    denominator_pairs: Iterable[tuple[str, str]] = (),
+    denominator_name: str | None = None,
+) -> ReadingEvidence:
+    """The evidence of a reading of the five-tuple `population_type`, `measured_property`
+    and `stat_type` whose members hold `constraint_values`, as (property, value) pairs: its
+    pairs are the five-tuple's (`shape_pairs`) and those values. The one builder both
+    judges read, so a value the members hold reaches rule 4 and closest match alike."""
+    return ReadingEvidence(
+        pairs=frozenset(
+            [*shape_pairs(population_type, measured_property, stat_type), *constraint_values]
+        ),
+        member_properties=tuple(member_properties),
+        noun=noun,
+        member_names=tuple(member_names),
+        denominator_pairs=frozenset(denominator_pairs),
+        denominator_name=denominator_name,
+    )
+
+
 def shape_pairs(
     population_type: str | None, measured_property: str | None, stat_type: str | None
 ) -> tuple[tuple[str, str], ...]:
@@ -107,7 +135,7 @@ def measure_verdicts(names: Sequence[NamedMeasure], evidence: ReadingEvidence) -
         return verdicts
 
     def declared(text: str | None) -> set[MeasurePartitionLabel]:
-        named = declared_measures_named(text or "", measures, index.variable_aliases)
+        named = declared_measures_named(text or "")
         return {alternative for name in named for alternative in name.alternatives}
 
     shown: set[MeasurePartitionLabel] = set()

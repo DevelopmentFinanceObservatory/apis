@@ -31228,6 +31228,14 @@
      "FakeGraph.node_labels_batch",
      {
       "dcids": [
+       "GrossNationalIncome"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_labels_batch",
+     {
+      "dcids": [
        "country/GHA",
        "country/NOR"
       ]
@@ -32245,6 +32253,14 @@
        "GrossNationalIncome",
        "activitySource",
        "economicActivityType"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_labels_batch",
+     {
+      "dcids": [
+       "GrossNationalIncome"
       ]
      }
     ],

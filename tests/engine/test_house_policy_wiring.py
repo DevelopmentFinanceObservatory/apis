@@ -45,6 +45,7 @@ from search.engine.qualifier_match import QualifierMatch
 from search.engine.quantity import NamedDenominator
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import phase_rank_bind
+from search.engine.region.admissibility import rule_four_verdicts
 from search.engine.region.phase_rank_bind import _elected_index, _HousePolicyStep, _phase_bind
 from search.engine.region.state import ResolveState
 from search.engine.role_text import DoorRole
@@ -693,13 +694,13 @@ def test_a_schema_refusal_logs_a_refused_bind_decision(caplog: pytest.LogCapture
 
 
 def test_the_bind_decision_line_logs_the_verdicts_rule_4_read(
-    caplog: pytest.LogCaptureFixture,
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ):
     """Beside the binder's scores, the line holds for each menu shape the verdict rule 4
-    read on each of the names it judged (`ResolveState.named_measures`,
-    `admissibility.rule_four_verdicts`), so "GDP", the base the quantity read quoted,
-    gets none: a shape whose label names "health expenditure" holds it, and one that names
-    no declared measure leaves it unknown."""
+    read on each of the names it judged (`ResolveState.named_measures`), as the phase kept
+    them (`ResolveState.measure_verdicts`), with no second judgement, so "GDP", the base
+    the quantity read quoted, gets none: a shape whose label names "health expenditure"
+    holds it, and one that names no declared measure leaves it unknown."""
     caplog.set_level(logging.INFO, logger="search.engine.region.phase_rank_bind")
     state = _state(
         [_shape("health expenditure"), _shape("aid flows")],
@@ -708,6 +709,16 @@ def test_the_bind_decision_line_logs_the_verdicts_rule_4_read(
     state.variable = "health expenditure as a share of GDP"
     state.named_denominator = NamedDenominator(ref=None, base_words="GDP")
     state.named_measures = phase_rank_bind._named_measure_nouns(state)
+    # Rule 4's verdicts, as the prune-and-rank phase keeps them.
+    state.measure_verdicts = {
+        shape.shape_id: rule_four_verdicts(shape, state.named_measures, state.denominator_reads)
+        for shape in state.capped_shapes
+    }
+
+    def _judged_again(*_args: object) -> list[str]:
+        raise AssertionError("the line re-judged rule 4")
+
+    monkeypatch.setattr(phase_rank_bind, "rule_four_verdicts", _judged_again)
 
     asyncio.run(_phase_bind(state))
 

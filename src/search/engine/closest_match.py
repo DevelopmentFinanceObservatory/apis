@@ -30,12 +30,12 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator, Sequence
 
-from code_index.shared import get_index, get_measure_index
-from search.engine.measure_verdict import ReadingEvidence, measure_verdicts, shape_pairs
+from code_index.shared import get_index
+from search.engine.measure_verdict import ReadingEvidence, measure_verdicts, reading_evidence
 from search.engine.qualifier_match import declared_measures_named, holds_words
 from search.heading.departure_fact import DepartureFact
 from search.heading.words import content_words
-from search.models import Binding, BindingSet, BindingValue, SlotValue, Spec
+from search.models import Binding, BindingSet, BindingValue, GraphRef, SlotValue, Spec
 
 
 def closest_match_fact(
@@ -69,7 +69,7 @@ def closest_match_fact(
     fact = DepartureFact(code="closest_match", binding_ref=None, asked=variable_text, shown=noun)
     bound_codes = tuple(bound_codes)
     index = get_index()
-    named = declared_measures_named(variable_text, get_measure_index(), index.variable_aliases)
+    named = declared_measures_named(variable_text)
     if named:
         verdicts = measure_verdicts(named, evidence)
         return None if all(verdict in ("holds", "base") for verdict in verdicts) else fact
@@ -115,10 +115,13 @@ def reading_inputs(
     Its member names are the served members' labels (`ResolvedSpec.sentence_facts`). Its
     bound codes are the values bound on its what and how slots, in slot order: every
     constraint value a member asserts on a bound slot is one of them
-    (`spec_build.build_stat_vars`). Its pairs are its shape's (`measure_verdict.shape_pairs`)
-    and each bound value under its slot's constraint property. Its series codes are the
-    publisher codes that stand for it (`ResolvedStatVars.source_codes`, `exact`). A Spec
-    states no member constraints and no denominator pairs, only the denominator's name."""
+    (`spec_build.build_stat_vars`). Its evidence (`measure_verdict.reading_evidence`, as
+    `admissibility.draft_evidence` builds a shape's) is its shape's five-tuple and the
+    constraint values its served members hold: each bound value under its slot's
+    constraint property, and each value a member declares on an axis the query left open
+    (`ResolvedSpec.open_axis_facts`). Its series codes are the publisher codes that stand
+    for it (`ResolvedStatVars.source_codes`, `exact`). A Spec states no member constraint
+    properties and no denominator pairs, only the denominator's name."""
     resolved = spec.resolved
     bound = [
         (slot.key.property.ref if slot.key.property is not None else None, value.ref.ref)
@@ -129,20 +132,20 @@ def reading_inputs(
     ]
     shape = resolved.shape
     denominator = shape.measurement_denominator
-    evidence = ReadingEvidence(
-        pairs=frozenset(
-            [
-                *shape_pairs(
-                    *(
-                        ref.ref if ref is not None else None
-                        for ref in (shape.population_type, shape.measured_property, shape.stat_type)
-                    )
-                ),
-                *((prop, code) for prop, code in bound if prop is not None),
-            ]
-        ),
+    evidence = reading_evidence(
+        population_type=_ref(shape.population_type),
+        measured_property=_ref(shape.measured_property),
+        stat_type=_ref(shape.stat_type),
+        constraint_values=[
+            *((prop, code) for prop, code in bound if prop is not None),
+            *(
+                (fact.property, count.value.ref)
+                for fact in resolved.open_axis_facts or ()
+                for count in fact.values
+            ),
+        ],
         noun=measure_noun,
-        member_names=tuple(m.label for m in resolved.sentence_facts.members if m.label),
+        member_names=[m.label for m in resolved.sentence_facts.members if m.label],
         denominator_name=denominator.label if denominator is not None else None,
     )
     bound_codes = tuple(dict.fromkeys(code for _property, code in bound))
@@ -161,6 +164,10 @@ def spec_closest_match_fact(
         bound_codes=bound_codes,
         series_codes=series_codes,
     )
+
+
+def _ref(ref: GraphRef | None) -> str | None:
+    return ref.ref if ref is not None else None
 
 
 def _bound_values(binding: Binding) -> list[SlotValue]:

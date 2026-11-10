@@ -43,6 +43,7 @@ from search.engine.frame import Frame, door_frame
 from search.engine.function_words import FUNCTION_WORDS
 from search.engine.interpret import Detected, PinnedResolved, Recall
 from search.engine.interpretation import Interpretation, InterpretationSet
+from search.engine.measure_verdict import Verdict
 from search.engine.place import ConsultedPresence, read_default_presence
 from search.engine.qualifier_match import (
     CodedQualifier,
@@ -461,6 +462,10 @@ class ValueRule:
 
     values: frozenset[tuple[str, str]]
     code_systems: frozenset[str] = frozenset()
+    # The values of the set the bind drafted `values` in, for a value the words name among
+    # others ("health and education"): an answer applies it when it applies the set by
+    # membership and a binding or some selected member holds the value. Empty otherwise.
+    drafted_set: frozenset[tuple[str, str]] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -990,9 +995,11 @@ class ResolveState:
     # holds the elected shape to it (`quantity.check_denominator`).
     named_denominator: NamedDenominator | None = None
     # The names of measure nouns the variable holds outside its places and quoted base,
-    # which admissibility rule 4 judges each shape on (`phase_rank_bind._named_measure_nouns`)
-    # and the `bind_decision` line logs the verdicts of.
+    # which admissibility rule 4 judges each shape on (`phase_rank_bind._named_measure_nouns`).
     named_measures: tuple[NamedMeasure, ...] = ()
+    # Rule 4's verdict on each of `named_measures` for each admissible shape it judged, by
+    # shape id (`admissibility.rule_four_verdicts`), which the `bind_decision` line logs.
+    measure_verdicts: dict[str, list[Verdict]] = field(default_factory=dict)
     # The admissible shapes the narrowing leaves before the measure-family collapse, less
     # those a source exclusion removes; written once the menu seats one of them or the
     # exclusion leaves none.
