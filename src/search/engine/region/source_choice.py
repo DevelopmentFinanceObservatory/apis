@@ -49,7 +49,6 @@ from search.engine.source_scope import (
     SourceCollection,
     SourceRefusal,
     SourceScope,
-    normalise_source_text,
     source_label,
 )
 from search.heading.departure_fact import DirectionWord, PartyReason
@@ -249,13 +248,18 @@ def allows_un_system(scope: SourceScope | None) -> bool:
 class ContestedOrganisation:
     """An organisation a part's query names that it may read as its source or as a party to
     the flow (`source_scan.SourceHit.contested`): its words, the dcids the entity pack names
-    it (`entity_resolution.pack.organisations_named`), and the word naming a party to a flow
+    it (`entity_resolution.pack.organisations_named`), the word naming a party to a flow
     that governs it, "to" where a mention of it follows "to", else "from" where one follows
-    "from", else `None` (`source_scan.direction_word`)."""
+    "from", else `None` (`source_scan.direction_word`), the position of its mention among
+    the part's source mentions in the reading with it as the source (`mention`,
+    `source_scan.SourceScan.hit_mentions`; `None` where the part's mentions were full), and
+    the entity its party reading names it by (`entity`, `raw_text._entity_key`)."""
 
     words: str
     parties: frozenset[str]
     direction: DirectionWord | None
+    mention: int | None
+    entity: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -333,9 +337,13 @@ def choose_reading(
     Bank, make one possible. A source reading is possible where a family of `scoped` with a
     publisher among `allowed` governs, so DAC1 families leading the scoped recall of "World
     Bank core contributions" leave a World Bank family recalled at 0.53 no source reading,
-    and none is possible where another source the part names publishes the organisation as
-    a party: that source says whose data the part reads, so "CRS World Bank disbursements
-    to Kenya", the CRS publishing IDA and IBRD as donors, reads the World Bank as a party.
+    and none is possible where the party reading is and another source the part names
+    publishes the organisation as a party: that source says whose data the part reads, so
+    "CRS World Bank disbursements to Kenya", the CRS publishing IDA and IBRD as donors,
+    reads the World Bank as a party. Where no party reading is possible the listing rules
+    out nothing, as `choose_readings` lists one organisation by another: "CRS World Bank
+    GDP of Kenya" reads the World Bank as the source, since GDP has no flow it can be a
+    party to.
 
     The part reads the organisation as a party when that is possible and either a
     direction word governs it or the source reading is impossible, else as its source
@@ -351,7 +359,7 @@ def choose_reading(
     listed_by = tuple(
         words
         for words, tables in (named or {}).items()
-        if any(dataset in tables for dataset, _ in published)
+        if party and any(dataset in tables for dataset, _ in published)
     )
     source = not listed_by and any(
         not family.datasets.isdisjoint(allowed) and governs(top=position == 0, score=family.score)
@@ -384,7 +392,16 @@ def party_possible(
     `published` publish as a party is possible against `measure`, the families the party
     reading's pass recalls (`choose_reading`): a flow family of `measure` governs, and a
     family of `measure` is published by a dataset that publishes the organisation on an axis
-    the family declares."""
+    the family declares.
+
+    The judgement is a forecast of the pass's. It reads the raw recall in recall order,
+    while the pass applies the same rule (`flow_governance.governs`) to the shapes it
+    admitted, in rank order (`phase_rank_bind._role_bearing_outranks`). Where the pass
+    admits no flow shape that governs, as when the recall's leading flow family is not
+    admitted and a subject-only shape ranks first, the party reading refuses
+    `entity_role_not_admitted` on the organisation's words, and the answer says it was read
+    as a party (`read_as_party`). The pass would cost a second recall and admission per
+    contested part to judge both readings."""
     return any(
         family.axes and governs(top=position == 0, score=family.score)
         for position, family in enumerate(measure)
@@ -574,16 +591,14 @@ async def read_organisations(
 def organisation_tables(
     contested: ContestedOrganisation, scope: SourceScope | SourceRefusal | None
 ) -> frozenset[str]:
-    """The provenances `scope` allows for `contested`'s own words: the expansions of its
-    included mentions whose words, normalised (`normalise_source_text`), are the
-    organisation's, within `scope.allowed`. None for a scope that refused or names none of
-    them."""
-    own = normalise_source_text(contested.words)
+    """The provenances `scope` allows for `contested`'s own mention
+    (`ContestedOrganisation.mention`): its expansion within `scope.allowed`. None for a
+    scope that refused or holds no mention of it."""
     return frozenset().union(
         *(
             tables
-            for words, tables in _included_tables(scope)
-            if normalise_source_text(words) == own
+            for position, _, tables in _included_tables(scope)
+            if position == contested.mention
         )
     )
 
@@ -593,27 +608,29 @@ def other_named_tables(
 ) -> dict[str, frozenset[str]]:
     """The provenances `scope` allows for each source the part names that is none of the
     `contested` organisations, by its words (`_mention_words`): the expansions of its
-    included mentions whose words are no organisation's, within `scope.allowed`."""
-    own = {normalise_source_text(organisation.words) for organisation in contested}
+    included mentions that are no organisation's mention (`ContestedOrganisation.mention`),
+    within `scope.allowed`."""
+    own = {organisation.mention for organisation in contested}
     named: dict[str, frozenset[str]] = {}
-    for words, tables in _included_tables(scope):
-        if normalise_source_text(words) not in own:
+    for position, words, tables in _included_tables(scope):
+        if position not in own:
             named[words] = named.get(words, frozenset()) | tables
     return named
 
 
 def _included_tables(
     scope: SourceScope | SourceRefusal | None,
-) -> list[tuple[str, frozenset[str]]]:
-    """Each included mention of `scope`, its words (`_mention_words`) and its expansion
-    within `scope.allowed`; none for a scope that refused."""
+) -> list[tuple[int, str, frozenset[str]]]:
+    """Each included mention of `scope`, its position among the scope's mentions, its words
+    (`_mention_words`) and its expansion within `scope.allowed`; none for a scope that
+    refused."""
     if not isinstance(scope, SourceScope):
         return []
     references = scope.references or (None,) * len(scope.mentions)
     return [
-        (_mention_words(mention, reference), expansion & scope.allowed)
-        for mention, reference, expansion in zip(
-            scope.mentions, references, scope.expansions, strict=True
+        (position, _mention_words(mention, reference), expansion & scope.allowed)
+        for position, (mention, reference, expansion) in enumerate(
+            zip(scope.mentions, references, scope.expansions, strict=True)
         )
         if mention.polarity == "include"
     ]
@@ -739,20 +756,20 @@ def read_as_party(
 
 
 def _reads_as_party(region: RegionResult, contested: ContestedOrganisation) -> bool:
-    """Whether `region` binds one of `contested`'s dcids or refuses on its words."""
+    """Whether `region` binds one of `contested`'s dcids or refuses on its entity
+    (`ContestedOrganisation.entity`)."""
     bound = any(
         dcid in contested.parties
         for spec in region.specs
         for dcids in spec.definition.identity.entities.values()
         for dcid in dcids
     )
-    words = contested.words.casefold()
     refused_on = (
         *(entity.text for entity in region.ambiguous_entities),
         *region.unresolved_entity_names,
         *(entity.text for entity in region.role_not_admitted_entities),
     )
-    return bound or any(text.casefold() == words for text in refused_on)
+    return bound or contested.entity in refused_on
 
 
 def _join_words(words: Sequence[str]) -> str:

@@ -1453,7 +1453,7 @@ def _prepare_extraction(
         per_variable_exclusions=per_variable_exclusions,
         name_corrections=name_corrections,
         per_variable_party_readings=_party_readings(
-            [hit for hit in scan.hits if hit.contested],
+            scan,
             extraction,
             query=query,
             unique=unique,
@@ -1489,8 +1489,9 @@ def _with_organisations(
     disbursements to Kenya" stands straight before a measure word, so it is the provider
     (origin). Each scopes the extraction's variables that are those measures, every one when
     it qualifies them all. An organisation whose words, normalised
-    (`normalise_source_text`), are an extracted entity's keeps that entity and its role."""
-    held = {normalise_source_text(entity.span or entity.text) for entity in extraction.entities}
+    (`normalise_source_text`), are an extracted entity's keeps that entity and its role
+    (`_held_entities`)."""
+    held = _held_entities(extraction)
     named = [
         (words, targets) for words, targets in named if normalise_source_text(words) not in held
     ]
@@ -1516,8 +1517,17 @@ def _with_organisations(
     return extraction.model_copy(update={"entities": [*extraction.entities, *grounded]})
 
 
+def _held_entities(extraction: Extraction) -> dict[str, str]:
+    """The key (`_entity_key`) of each of `extraction`'s entities by its words, normalised
+    (`normalise_source_text`), the first entity's where several share them."""
+    held: dict[str, str] = {}
+    for entity in extraction.entities:
+        held.setdefault(normalise_source_text(entity.span or entity.text), _entity_key(entity))
+    return held
+
+
 def _party_readings(
-    contested: Sequence[SourceHit],
+    scan: SourceScan,
     extraction: Extraction,
     *,
     query: str,
@@ -1528,18 +1538,28 @@ def _party_readings(
     catalogue: Catalogue,
     dictionary: SourceDictionary,
 ) -> list[PartyReading | None] | None:
-    """Each part's readings with the `contested` sources it holds as entities, parallel to
-    `unique`, or `None` when no source is contested. A part none of whose measures a
-    contested source qualifies has none.
+    """Each part's readings with the contested sources of `scan` (`SourceHit.contested`) it
+    holds as entities, parallel to `unique`, or `None` when no source is contested. A part
+    none of whose measures a contested source qualifies has none.
 
     A part's contest names each organisation it holds by its words, with the dcids the entity
-    pack names it (`entity_resolution.pack.organisations_named`) and the word naming a party
-    to a flow before a mention of it (`source_scan.direction_word`), "to" over "from". Its
+    pack names it (`entity_resolution.pack.organisations_named`), the word naming a party
+    to a flow before a mention of it (`source_scan.direction_word`), "to" over "from", the
+    position of its mention among the part's sources (`SourceScan.hit_mentions`), and the
+    entity a reading with it as a party names it by: the extracted entity of its words
+    where one holds them, else its own words (`_with_organisations`). Its
     readings read a set of the organisations as parties (`_readings_with`): every one of
     them (`PartyReading.reading`), or the set the part's data choose
     (`PartyReading.reading_with`)."""
+    contested = [hit for hit in scan.hits if hit.contested]
     if not contested:
         return None
+    mentions = {
+        hit: mentions
+        for hit, mentions in zip(scan.hits, scan.hit_mentions, strict=True)
+        if hit.contested
+    }
+    held = _held_entities(extraction)
 
     @functools.cache
     def legs(parties: frozenset[str]) -> list[LegReading]:
@@ -1573,6 +1593,11 @@ def _party_readings(
                         if hit.text == words
                     }
                 ),
+                mention=next(
+                    (mentions[hit][i] for hit in hits if hit.text == words and i in mentions[hit]),
+                    None,
+                ),
+                entity=held.get(normalise_source_text(words), words.strip()),
             )
             for words in dict.fromkeys(hit.text for hit in hits)
         )

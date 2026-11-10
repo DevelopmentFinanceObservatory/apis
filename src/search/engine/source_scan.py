@@ -56,7 +56,7 @@ door to add as an entity, attached to measures by the same rule.
 from __future__ import annotations
 
 import unicodedata
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal, get_args
@@ -424,7 +424,9 @@ def _names_an_organisation(query: str, run: Sequence[_Word]) -> bool:
     stores for it ("Gavi", "AfDB", "IsDB"; `entity_resolution.pack.written_as_stored`).
     Any other run must start and end with a capital ("Global Fund", "International Finance
     Corporation"), so a generic phrase the pack holds as an alias, as "international
-    finance" or "multilateral fund", names nothing."""
+    finance" or "multilateral fund", names nothing. A name written in lower case reaches
+    the part only as an entity the extraction returns: the scan adds what no entity
+    covers."""
     first, last = run[0].text, run[-1].text
     if len(run) == 1 and len(first) <= _ABBREVIATION_MAX_CHARS:
         stored = first[:1].isupper() and written_as_stored(first)
@@ -567,13 +569,17 @@ class SourceScan:
     occurs in the query and a source covers every occurrence of it that lies inside no longer
     entity span's. `stretch_targets` runs parallel to the stretches: the positions of the
     measures each qualifies, read from the clause its blank lies in (`_stretch_attach`),
-    every measure for a stretch with no blank."""
+    every measure for a stretch with no blank. `hit_mentions` runs parallel to `hits`: for
+    each measure a hit's mention qualifies, by its position, the position of that mention in
+    the measure's `per_measure`, which hits of one wording and polarity share. A measure
+    whose mentions were full when the hit came holds none of it."""
 
     per_measure: list[tuple[SourceMention, ...]]
     source_entities: frozenset[str]
     source_stretches: frozenset[str] = frozenset()
     stretch_targets: tuple[tuple[int, ...], ...] = ()
     hits: tuple[SourceHit, ...] = ()
+    hit_mentions: tuple[Mapping[int, int], ...] = ()
 
 
 def left_out_sources(
@@ -667,15 +673,20 @@ def scan_sources(
     hits.sort(key=lambda hit: hit.start)
     attached: list[dict[tuple[str, str], SourceMention]] = [{} for _ in measures]
     read: list[SourceHit] = []
+    hit_mentions: list[dict[int, int]] = []
     for hit in hits:
         if len(hit.text) > _PARSED_MAX_SOURCE_MENTION_CHARS:
             continue
         read.append(hit)
         key = (normalise_source_text(hit.text), hit.polarity)
+        mentions: dict[int, int] = {}
         for position in hit.targets:
             bucket = attached[position]
             if key not in bucket and len(bucket) < _PARSED_MAX_PART_SOURCES:
                 bucket[key] = SourceMention(text=hit.text, polarity=hit.polarity)
+            if key in bucket:
+                mentions[position] = list(bucket).index(key)
+        hit_mentions.append(mentions)
     occurrences = _entity_occurrences(entity_spans, _words(query))
     source_entities = frozenset(
         phrase
@@ -688,6 +699,7 @@ def scan_sources(
         source_stretches=frozenset(source_stretches),
         stretch_targets=tuple(stretch_targets),
         hits=tuple(read),
+        hit_mentions=tuple(hit_mentions),
     )
 
 

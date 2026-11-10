@@ -38,7 +38,8 @@ from search.engine.fanout import _FanOutResult, _run_variables_streaming
 from search.engine.interpret import Detected
 from search.engine.region import RegionResult, source_choice
 from search.engine.region.codes import ORGANISATION_READ_AS_PARTY, ORGANISATION_READ_AS_SOURCE
-from search.engine.region.result import AmbiguousEntity
+from search.engine.region.phase_rank_bind import _role_bearing_outranks
+from search.engine.region.result import AmbiguousEntity, RoleNotAdmittedEntity
 from search.engine.region.source_choice import (
     ContestedOrganisation,
     OrganisationEvidence,
@@ -47,10 +48,12 @@ from search.engine.region.source_choice import (
     RecalledFamily,
     choose_reading,
     choose_readings,
+    party_possible,
     read_as_party,
     read_as_source,
     read_organisations,
 )
+from search.engine.shape import ShapeDraft
 from search.engine.source_code import SeriesCodeMembers, SourceCodeRefusal
 from search.engine.source_scan import (
     direction_word,
@@ -522,6 +525,8 @@ def test_the_raw_text_door_reads_an_uncued_world_bank_both_ways_and_a_cued_one_a
                 }
             ),
             direction="to",
+            mention=0,
+            entity="World Bank",
         ),
     )
     assert party.reading.entities == ["Ghana", "World Bank"]
@@ -565,6 +570,36 @@ def test_the_raw_text_door_recovers_the_global_fund_as_the_provider(
 
     assert prep.entities == ["Kenya", "Global Fund"]
     assert [role.axis for role in prep.per_variable_entity_roles[0]["Global Fund"]] == ["origin"]
+    assert prep.per_variable_sources == [()]
+    assert prep.per_variable_party_readings is None
+
+
+def test_a_lower_case_organisation_reaches_the_part_through_the_extraction(
+    catalogue: CatalogueSnapshot, dictionary: SourceDictionary
+):
+    """ "global fund disbursements to kenya": a lower-case run names no organisation to the
+    scan (`source_scan._names_an_organisation`), so the Global Fund reaches the part as the
+    entity the extraction returns, once, and is no source."""
+    query = "global fund disbursements to kenya"
+    extraction = Extraction(
+        kind="resolution",
+        variables=["disbursements"],
+        entities=[
+            ExtractedEntity(text="global fund", span="global fund"),
+            ExtractedEntity(text="kenya", span="kenya", role="recipient", cue="to"),
+        ],
+    )
+    found = find_organisations(
+        query,
+        dictionary=dictionary,
+        entity_spans=[],
+        measures=extraction.variables,
+        index=get_index(),
+    )
+    prep = _prep(query, extraction, catalogue)
+
+    assert found == []
+    assert prep.entities == ["global fund", "kenya"]
     assert prep.per_variable_sources == [()]
     assert prep.per_variable_party_readings is None
 
@@ -916,29 +951,55 @@ def test_the_data_decide_whether_an_organisation_is_a_source_or_a_party(
         assert fact.party_reason == reading.reason
 
 
+_DISBURSEMENTS = ([_CRS_FLOW], [_IDS_DEBT, _CRS_FLOW])
+
+
 @pytest.mark.parametrize(
-    ("named", "role", "source_possible"),
+    ("named", "recalls", "role", "source_possible"),
     [
         # "CRS World Bank disbursements to Kenya": the CRS publishes IBRD and IDA as donors,
         # so naming it says whose data the part reads and the World Bank is a party in it,
         # though an IDS family, a World Bank table, leads the source reading's recall.
-        pytest.param({"CRS": frozenset({_CRS})}, "party", False, id="CRS World Bank disbursements"),
+        pytest.param(
+            {"CRS": frozenset({_CRS})},
+            _DISBURSEMENTS,
+            "party",
+            False,
+            id="CRS World Bank disbursements",
+        ),
         # The WDI publishes neither as a party, so the source reading stands as it does
         # with no other source named.
         pytest.param(
-            {"WDI": frozenset({_WDI})}, "source", True, id="WDI and World Bank disbursements"
+            {"WDI": frozenset({_WDI})},
+            _DISBURSEMENTS,
+            "source",
+            True,
+            id="WDI and World Bank disbursements",
         ),
-        pytest.param({}, "source", True, id="World Bank disbursements"),
+        pytest.param({}, _DISBURSEMENTS, "source", True, id="World Bank disbursements"),
+        # No flow family governs GDP, so the World Bank can be no party there, and the CRS
+        # listing it rules out nothing.
+        pytest.param(
+            {"CRS": frozenset({_CRS})},
+            ([_WEO_GDP], [_WDI_SERIES]),
+            "source",
+            True,
+            id="CRS World Bank GDP of Kenya",
+        ),
     ],
 )
 def test_another_named_source_that_publishes_the_organisation_makes_it_a_party(
-    named: dict[str, frozenset[str]], role: str, source_possible: bool
+    named: dict[str, frozenset[str]],
+    recalls: tuple[list[RecalledFamily], list[RecalledFamily]],
+    role: str,
+    source_possible: bool,
 ):
-    """Both recalls lead with a family that governs, and no direction word governs the World
+    """Each recall leads with a family that governs, and no direction word governs the World
     Bank."""
+    measure, scoped = recalls
     reading = choose_reading(
-        measure=[_CRS_FLOW],
-        scoped=[_IDS_DEBT, _CRS_FLOW],
+        measure=measure,
+        scoped=scoped,
         allowed=_WORLD_BANK_TABLES,
         named=named,
         published=_WORLD_BANK_PARTIES,
@@ -1208,7 +1269,8 @@ def test_only_the_organisations_own_tables_make_its_source_reading_possible(
     async def read() -> OrganisationReadings:
         with bound_catalogue(catalogue), patch.object(source_choice, "detect_measure", detect):
             return await read_organisations(
-                [dataclasses.replace(_WORLD_BANK, direction=None)],
+                # The World Bank's mention follows the CRS's in the source reading's scope.
+                [dataclasses.replace(_WORLD_BANK, direction=None, mention=1)],
                 party_text="World Bank disbursements",
                 party_variable="World Bank disbursements",
                 party_scope=party_scope,
@@ -1584,6 +1646,8 @@ _WORLD_BANK = ContestedOrganisation(
         {"InternationalBankForReconstructionAndDevelopment", "InternationalDevelopmentAssociation"}
     ),
     direction="to",
+    mention=0,
+    entity="World Bank",
 )
 
 
@@ -1621,7 +1685,7 @@ def _ida_spec() -> Any:
         (
             dataclasses.replace(
                 _refusal("debt service", "entity_not_resolved"),
-                unresolved_entity_names=("world bank",),
+                unresolved_entity_names=("World Bank",),
             ),
             True,
         ),
@@ -1645,6 +1709,72 @@ def test_a_party_reading_discloses_itself_only_where_it_reads_the_organisation(
     disclosed = read_as_party(answer, _WORLD_BANK, reading)
     codes = [warning.code for warning in disclosed.warnings]
     assert codes == ([ORGANISATION_READ_AS_PARTY] if discloses else [])
+
+
+def _gdp_or_debt_shape(shape_id: str, *, roles: tuple[str, ...], score: float) -> ShapeDraft:
+    """A shape the pass admitted, declaring `roles` beside its subject, recalled at
+    `score`."""
+    return ShapeDraft(
+        shape_id=shape_id,
+        label=shape_id,
+        pop_type_dcid="EconomicActivity",
+        meas_prop_dcid="amount",
+        stat_type_dcid="measuredValue",
+        meas_qual_dcid=None,
+        meas_denom_dcid=None,
+        slot_keys=(),
+        slot_taxonomy={},
+        declared_roles=("observationAbout", *roles),
+        representative_score=score,
+    )
+
+
+def test_a_party_reading_the_pass_admits_no_flow_for_refuses_and_says_so(
+    monkeypatch: pytest.MonkeyPatch, catalogue: CatalogueSnapshot
+):
+    """The pre-pass forecasts the pass (`source_choice.party_possible`): a debt family
+    leading the recall at 0.60 governs it, so "to" reads the World Bank as a party. The
+    pass admits only the GDP shape recalled at 0.58 and a debt shape at 0.50, which no
+    longer governs, so no flow outranks the subject (`_role_bearing_outranks`). The part
+    refuses `entity_role_not_admitted` on the World Bank and says it read it as a party."""
+    monkeypatch.setattr(
+        config, "_SETTINGS", config.settings().model_copy(update={"unknown_score_threshold": 0.65})
+    )
+    recall = [
+        dataclasses.replace(_IDS_DEBT, score=0.60),
+        dataclasses.replace(_WDI_SERIES, score=0.58),
+        dataclasses.replace(_IDS_DEBT, score=0.50),
+    ]
+    admitted = [
+        _gdp_or_debt_shape("gdp", roles=(), score=0.58),
+        _gdp_or_debt_shape("debt", roles=("creditor",), score=0.50),
+    ]
+    reading = choose_reading(
+        measure=recall,
+        scoped=[_WDI_SERIES],
+        allowed=_WORLD_BANK_TABLES,
+        published=_WORLD_BANK_PARTIES,
+        direction="to",
+    )
+    with bound_catalogue(catalogue):
+        outranks = _role_bearing_outranks(admitted)
+    refused = dataclasses.replace(
+        _refusal("debt service", "entity_role_not_admitted"),
+        role_not_admitted_entities=(
+            RoleNotAdmittedEntity(
+                text="World Bank",
+                dcid="InternationalDevelopmentAssociation",
+                graph_type="Organization",
+            ),
+        ),
+    )
+
+    disclosed = read_as_party(refused, _WORLD_BANK, reading)
+
+    assert party_possible(recall, _WORLD_BANK_PARTIES)
+    assert (reading.role, reading.reason) == ("party", "direction")
+    assert not outranks
+    assert [warning.code for warning in disclosed.warnings] == [ORGANISATION_READ_AS_PARTY]
 
 
 def _left_out(query: str, *stretches: str, things: Sequence[str] = ()) -> QueryReading:
