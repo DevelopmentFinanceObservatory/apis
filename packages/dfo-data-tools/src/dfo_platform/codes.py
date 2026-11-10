@@ -11,9 +11,9 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import cache
-from typing import Literal, get_args
+from typing import Literal
 
-from dfo_spec_kit.registry import LIMIT_NAMES, REGISTRY, Classification, CodeEntry, Lifecycle
+from dfo_spec_kit.registry import REGISTRY, Classification, CodeEntry, Lifecycle
 from pydantic import BaseModel
 
 # code -> (title, default_detail).
@@ -128,7 +128,7 @@ RetryMode = Literal["correct_and_retry", "refresh_then_retry", "retry_after_dela
 
 # The limit a `resource_exhausted` refusal crossed, stated on its problem body as `limit_name`:
 # the names `dfo_spec_kit.registry.LIMIT_NAMES` registers, spelled out so a type checker holds
-# every raise site to them. The check below fails the import when the two drift apart.
+# every raise site to them. `tests/assembler/test_limit_names.py` holds the two equal.
 RegisteredLimitName = Literal[
     "MAX_ENVELOPE_BYTES",
     "MAX_INTENT_BYTES",
@@ -138,12 +138,6 @@ RegisteredLimitName = Literal[
     "MAX_SERIES_PER_COMPONENT",
     "MAX_TABLE_ROWS",
 ]
-
-if frozenset(get_args(RegisteredLimitName)) != frozenset(LIMIT_NAMES):
-    raise AssertionError(
-        f"RegisteredLimitName {sorted(get_args(RegisteredLimitName))} does not match "
-        f"dfo_spec_kit.registry.LIMIT_NAMES {sorted(LIMIT_NAMES)}"
-    )
 
 
 class CodeRegistryEntry(BaseModel):

@@ -302,8 +302,12 @@ def test_an_intent_stored_under_the_first_release_renders_under_the_current_one(
     )
 
 
-def test_a_line_chart_stored_over_the_series_cap_renders(frame_store, revision_store, release):
-    """A line chart stored over the series cap renders every series it holds."""
+@pytest.mark.parametrize("listed", [False, True], ids=["unbound", "listed"])
+def test_a_line_chart_stored_over_the_series_cap_renders(
+    listed, frame_store, revision_store, release
+):
+    """A line chart stored over the series cap renders every series it holds, whether its
+    select leaves the series dimension unbound or lists more values than the cap."""
     recipients = tuple(
         f"country/C{index:02d}" for index in range(release.line_chart_max_series + 1)
     )
@@ -318,7 +322,10 @@ def test_a_line_chart_stored_over_the_series_cap_renders(frame_store, revision_s
                 "spec_id": frame.frame_ref.spec_id,
                 "content_version": frame.frame_ref.content_version,
             },
-            "select": {"stat_var": "dcid:MalariaGrantDisbursements"},
+            "select": {
+                "stat_var": "dcid:MalariaGrantDisbursements",
+                **({"recipient": list(recipients)} if listed else {}),
+            },
         },
         frame_store=frame_store,
         revision_store=revision_store,

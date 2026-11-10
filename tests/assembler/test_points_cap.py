@@ -9,7 +9,7 @@ from typing import cast
 import pytest
 
 from assembler.catalogue.constraints import ConstraintFailure, ConstraintSpec
-from assembler.errors import BindingInvalid, ConstraintViolation, ResourceExhausted
+from assembler.errors import BindingInvalid, ConstraintViolation, ResourceExhausted, SchemaInvalid
 from assembler.fakes import FakeReleaseRegistry
 from assembler.limits import MAX_SERIES_PER_COMPONENT
 from assembler.pipeline import write_component
@@ -43,7 +43,7 @@ def _recipients_frame(*, count, stat_vars=("dcid:X",), periods=("2020", "2021"))
     )
 
 
-def _write_line_chart(*, frame, select, frame_store, revision_store, release_registry, extra=None):
+def _write_line_chart(*, frame, select, frame_store, revision_store, release_registry):
     frame_store.put(resolved_frame=frame)
     return write_component(
         intent={
@@ -53,7 +53,6 @@ def _write_line_chart(*, frame, select, frame_store, revision_store, release_reg
                 "content_version": frame.frame_ref.content_version,
             },
             "select": select,
-            **(extra or {}),
         },
         frame_store=frame_store,
         revision_store=revision_store,
@@ -456,12 +455,17 @@ def test_a_line_chart_with_an_unbound_dimension_at_the_cap_draws_every_series(
 _STORED = {"stat_var": "dcid:X"}
 # A select of two dimensions, which a `jsonb` column returns in its own key order.
 _STORED_TWO_KEYS = {"stat_var": "dcid:X", "provenance": "src_a"}
+# A list one value longer than the cap, which `_recipients_frame` holds.
+_STORED_LISTED = "listed"
 
 
 @pytest.mark.parametrize(
     ("stored", "patch", "refused"),
     [
         pytest.param(_STORED, {"title": "Grants by recipient"}, False, id="title-keeps-select"),
+        pytest.param(
+            _STORED_LISTED, {"title": "Grants by recipient"}, False, id="title-keeps-a-long-list"
+        ),
         # A one-value list draws differently from a scalar (`has_arrayed_dimension`), so it
         # changes the select.
         pytest.param(
@@ -492,6 +496,11 @@ def test_a_revision_of_a_stored_over_cap_line_chart_is_held_to_the_cap_when_it_c
     """A chart stored over the cap takes edits that keep its select, and is refused when an
     edit changes its select to one that resolves over the cap."""
     cap = release.line_chart_max_series
+    if stored == _STORED_LISTED:
+        stored = {
+            "stat_var": "dcid:X",
+            "recipient": [f"country/C{i:02d}" for i in range(cap + 1)],
+        }
     if patch == "cut":
         patch = {
             "select": {"stat_var": "dcid:X", "recipient": [f"country/C{i:02d}" for i in range(cap)]}
@@ -525,23 +534,11 @@ def test_a_revision_of_a_stored_over_cap_line_chart_is_held_to_the_cap_when_it_c
         assert revise().resolved_payload["component"]["type"] == "line_chart"
 
 
-@pytest.mark.parametrize(
-    "extra",
-    [
-        pytest.param({}, id="alone"),
-        # A schema error that jsonschema ranks before the list's leaves the refusal as it is.
-        pytest.param(
-            {"frame_ref": {"spec_id": 5, "content_version": "cv_" + "4" * 32}},
-            id="beside-a-wrong-frame-ref",
-        ),
-    ],
-)
 def test_a_line_chart_listing_more_values_than_the_cap_refuses_as_the_series_cap(
-    extra, frame_store, revision_store, release, release_registry
+    frame_store, revision_store, release, release_registry
 ):
     """The schema's `maxItems` on the list is the line chart's series cap, so the refusal
-    names it and advises what a select resolving past it is advised, whatever else the intent
-    gets wrong."""
+    names it and advises what a select resolving past it is advised."""
     over = release.line_chart_max_series + 1
     stores = {
         "frame_store": frame_store,
@@ -556,7 +553,6 @@ def test_a_line_chart_listing_more_values_than_the_cap_refuses_as_the_series_cap
                 "stat_var": "dcid:X",
                 "recipient": [f"country/C{index:02d}" for index in range(over)],
             },
-            extra=extra,
             **stores,
         )
     with pytest.raises(ResourceExhausted) as resolved:
@@ -572,6 +568,41 @@ def test_a_line_chart_listing_more_values_than_the_cap_refuses_as_the_series_cap
     _found, advice = listed.value.detail.split("; ", 1)
     assert resolved.value.detail.split("; ", 1)[1].startswith(advice)
     assert f"bind it to at most {release.line_chart_max_series} values" in advice
+
+
+def test_a_line_chart_list_counts_its_distinct_values(
+    frame_store, revision_store, release, release_registry
+):
+    """A list one item over the cap that repeats a value names as many series as the cap,
+    so it draws them."""
+    cap = release.line_chart_max_series
+    recipients = [f"country/C{index:02d}" for index in range(cap)]
+    written = _write_line_chart(
+        frame=_recipients_frame(count=cap),
+        select={"stat_var": "dcid:X", "recipient": [*recipients, recipients[0]]},
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+    assert len(written.resolved_payload["component"]["series"]) == cap
+
+
+def test_a_line_chart_list_past_the_cap_holding_a_wrong_type_is_left_to_the_schema(
+    frame_store, revision_store, release, release_registry
+):
+    over = release.line_chart_max_series + 1
+    with pytest.raises(SchemaInvalid) as excinfo:
+        _write_line_chart(
+            frame=_recipients_frame(count=over),
+            select={
+                "stat_var": "dcid:X",
+                "recipient": [*(f"country/C{index:02d}" for index in range(over - 1)), 7],
+            },
+            frame_store=frame_store,
+            revision_store=revision_store,
+            release_registry=release_registry,
+        )
+    assert excinfo.value.pointer == "/select/recipient"
 
 
 # -- points cap ----------------------------------------------------------------

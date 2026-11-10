@@ -264,11 +264,12 @@ route does, moves the card revisions drawing that frame from the old hash to the
 Presentation database (`presentation_store.store.rehash_derived_rendering`), then rewrites the
 recipe row. Each database commits on its own, revisions first, so a run stopped between them
 leaves the recipe to the next run. It skips a recipe whose stored hashes the stored recipe does
-not reproduce, one whose new replay key another frame's recipe holds, and one with a pin whose
-roots give no basis or several, or whose version cannot tell (`RecipeSkip`), with one
-`datasets_recipe_normalise_skipped` line each, which for an undetermined basis also names the
-pin's parameter, its roots and the cause (`BasisCause`). It writes one `datasets_recipes_normalised` line
-with the counts and exits 1 when it skipped any. `--dry-run` counts and changes nothing, and a
+not reproduce and one whose new replay key another frame's recipe holds. It leaves the pins of a
+recipe as they are where a pin's roots give no basis or several, or a root's version cannot
+tell, and still sorts that recipe's root options. Each skip (`RecipeSkip`) gets one
+`datasets_recipe_normalise_skipped` line, which for an undetermined basis also names the pin's
+parameter, its roots and the cause (`BasisCause`). It writes one `datasets_recipes_normalised`
+line with the counts and exits 1 when it skipped any. `--dry-run` counts and changes nothing, and a
 second run changes nothing. Once a pin carries `deflation_basis`, an image from before the basis
 refuses the recipe, since its frame grammar knows no such member. It reads the runtime database
 settings of both stores.
@@ -302,7 +303,7 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 from functools import cache, partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TextIO, cast
+from typing import TYPE_CHECKING, Any, TextIO, cast, get_args
 
 import pg8000.exceptions
 import pyarrow as pa
@@ -414,6 +415,7 @@ from datasets_api.warning_backfill import (
 )
 from dc_sdmx import SdmxClient
 from description.facts import SCHEMA_VERSION, DescriptionRecord, VariableFacts
+from dfo_analysis_engine.op_spec import OpSpec, PinnedUnit
 from dfo_analysis_engine.recipe import (
     normal_form,
     normal_form_hash,
@@ -1988,16 +1990,21 @@ def run_normalise_recipes(
         old_hash, old_key = str(row["normal_form_hash"]), str(row["replay_key"])
         new_key: str | None = None
         skip: RecipeSkip | None = None
-        undetermined: dict[str, object] = {}
-        try:
-            rewritten = _normalised_recipe(stored, root_bases=root_bases)
-        except _BasisUndetermined as error:
-            rewritten, skip = None, RecipeSkip.BASIS_UNDETERMINED
-            undetermined = {
-                "parameter": error.parameter,
-                "roots": [f"{spec_id}@{version}" for spec_id, version in error.roots],
-                "cause": error.cause.value,
-            }
+        rewritten, undetermined = _normalised_recipe(stored, root_bases=root_bases)
+        if undetermined is not None:
+            # The pins stay as they are; the recipe still takes the sort it needs.
+            skipped[RecipeSkip.BASIS_UNDETERMINED] += 1
+            emit(
+                "datasets_recipe_normalise_skipped",
+                severity="WARNING",
+                spec_id=spec_id,
+                content_version=content_version,
+                reason=RecipeSkip.BASIS_UNDETERMINED.value,
+                replay_key=None,
+                parameter=undetermined.parameter,
+                roots=[f"{root}@{version}" for root, version in undetermined.roots],
+                cause=undetermined.cause.value,
+            )
         if rewritten is not None:
             new_hash, new_key = _recipe_hashes(rewritten)
             if _recipe_hashes(stored) != (old_hash, old_key):
@@ -2020,7 +2027,6 @@ def run_normalise_recipes(
                 content_version=content_version,
                 reason=skip.value,
                 replay_key=new_key,
-                **undetermined,
             )
             continue
         if rewritten is None:
@@ -2100,24 +2106,34 @@ class _BasisUndetermined(Exception):
 
 def _normalised_recipe(
     recipe: Mapping[str, Any], *, root_bases: _RootBases
-) -> dict[str, Any] | None:
+) -> tuple[dict[str, Any] | None, _BasisUndetermined | None]:
     """`recipe` with its root options sorted (`_with_sorted_options`) and each pin of a
     constant-price unit without its basis given its roots' basis (`_basis_pinned`), or `None`
-    when neither changes it.
-
-    Raises:
-        _BasisUndetermined: a pin's roots give no basis or several."""
+    when neither changes it, and the pin whose roots give no basis or several. Each rewrite
+    applies on its own: a recipe whose pins stay as they are still takes the sort."""
     sorted_recipe = _with_sorted_options(recipe)
     rewritten = dict(recipe) if sorted_recipe is None else sorted_recipe
-    tree = _basis_pinned(rewritten["tree"], roots=rewritten["roots"], root_bases=root_bases)
+    try:
+        tree = _basis_pinned(rewritten["tree"], roots=rewritten["roots"], root_bases=root_bases)
+    except _BasisUndetermined as undetermined:
+        return sorted_recipe, undetermined
     if tree is rewritten["tree"]:
-        return sorted_recipe
-    return {**rewritten, "tree": tree}
+        return sorted_recipe, None
+    return {**rewritten, "tree": tree}, None
 
 
-# Each op-spec parameter that pins a unit (`dfo_analysis_engine.op_spec.PinnedUnit`), with the
-# frame slot whose roots feed it, `None` for every slot. A slot left unset falls back to
-# `frame_ref`, which is then a second slice of the same frame.
+_PINNED_PARAMETERS = frozenset(
+    name
+    for model in get_args(get_args(OpSpec)[0])
+    for name, field in model.model_fields.items()
+    if field.annotation == PinnedUnit | None
+)
+"""Each op-spec parameter that pins a unit (`dfo_analysis_engine.op_spec.PinnedUnit`), read
+from the op-spec models."""
+
+# The frame slot whose roots feed each pinned parameter (`_PINNED_PARAMETERS`), `None` for
+# every slot. A slot left unset falls back to `frame_ref`, which is then a second slice of the
+# same frame.
 _PIN_SLOTS: Mapping[str, str | None] = {
     "unit": None,
     "left_unit": "frame_ref",
@@ -2144,7 +2160,7 @@ def _basis_pinned(
     }
     parameters = node["op_spec"]["parameters"]
     pinned: dict[str, object] = {}
-    for name in _PIN_SLOTS.keys() & parameters.keys():
+    for name in _PINNED_PARAMETERS & parameters.keys():
         pin = unit_cell_from_json(parameters[name])
         if pin is None or not _constant_without_basis(pin):
             continue

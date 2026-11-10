@@ -72,7 +72,7 @@ import zipfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, time
-from typing import Literal, cast
+from typing import Literal, NamedTuple, cast
 
 from dfo_frame_grammar import STAT_VAR_COLUMN, STATUS_COLUMN, TIME_PERIOD_COLUMN, VALUE_COLUMN
 from dfo_frame_grammar.grammar import unit_cell_from_json
@@ -86,6 +86,7 @@ from assembler.ports import FrameRef, FrameStore, ReleaseRegistry, ResolvedFrame
 from dfo_analysis_engine.place_type import (
     PARTY_ROLES,
     TYPED_ROLES,
+    UNTYPED,
     comparable_members,
     kind_column,
     type_column,
@@ -531,8 +532,8 @@ class _AllMembers:
     """The frame rows of every member of the one dimension a card's `select` lists, at the
     periods the card shows. `shown` and `members` count the dimension's distinct values on
     the card and in `rows`. `aggregates_left_out` says the ranked population
-    (`_ranked_population`) left out a member, a group total or aggregate, that holds a row
-    at a period the card shows."""
+    (`_ranked_population`) left out a member whose kind or type cell names a group total or
+    aggregate, and that holds a row at a period the card shows."""
 
     dimension: str
     rows: tuple[_ExportRow, ...]
@@ -638,8 +639,10 @@ def _all_members(
         if fixed(own, period) not in wanted and fixed(continued, period) not in wanted:
             continue
         member = dict(own)[dimension]
-        if population is not None and member not in population and member not in shown_members:
-            aggregates_left_out = True
+        left_out = population is not None and member not in population.compared
+        if left_out and member not in shown_members:
+            # A member whose cell is `UNTYPED` is not compared either, but names no aggregate.
+            aggregates_left_out = aggregates_left_out or member in population.typed
             continue
         label = label_of.get((own, period), label_of.get((continued, period)))
         kept.append((label, row))
@@ -655,11 +658,21 @@ def _all_members(
     )
 
 
-def _ranked_population(keyed: _KeyedFrame, *, dimension: str) -> frozenset[object] | None:
+class _RankedPopulation(NamedTuple):
+    """The members of a dimension one ranking compares (`compared`), and those whose kind or
+    type cell the ranking read (`typed`), the compared among them."""
+
+    compared: frozenset[object]
+    typed: frozenset[object]
+
+
+def _ranked_population(keyed: _KeyedFrame, *, dimension: str) -> _RankedPopulation | None:
     """The members of `dimension` one ranking compares (`place_type.comparable_members`),
     from the one cell that function reads for the role: a party role's kind cell, a place
-    role's type cell. `None`, every member, when `dimension` is no place or party role or
-    the frame carries no such cell for it, as a party frame minted with its type column
+    role's type cell, with the members whose cell names a kind or type. A frame writes an
+    empty cell as `UNTYPED`, which names neither, so its member is not compared and is not
+    counted as an aggregate. `None`, every member, when `dimension` is no place or party role
+    or the frame carries no such cell for it, as a party frame minted with its type column
     alone does."""
     if dimension not in TYPED_ROLES:
         return None
@@ -670,11 +683,13 @@ def _ranked_population(keyed: _KeyedFrame, *, dimension: str) -> frozenset[objec
     cells = {
         cast(str, row[position]): cast(str, row[cell_position])
         for row in keyed.rows
-        if row[position] is not None and row[cell_position] is not None
+        if row[position] is not None and row[cell_position] not in (None, UNTYPED)
     }
     if not cells:
         return None
-    return comparable_members(cells, dimension=dimension)
+    return _RankedPopulation(
+        compared=comparable_members(cells, dimension=dimension), typed=frozenset(cells)
+    )
 
 
 def _export_table(

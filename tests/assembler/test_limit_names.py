@@ -1,13 +1,16 @@
-"""The `limit_name`s the assembler raises are the spec-kit limit registry's, all of them."""
+"""The `limit_name`s the assembler raises are the spec-kit limit registry's, all of them, and
+the type the problem body states them under names the same set."""
 
 from __future__ import annotations
 
 import ast
 from pathlib import Path
+from typing import get_args
 
 from dfo_spec_kit.registry import LIMIT_NAMES
 
 import assembler
+from dfo_platform.codes import RegisteredLimitName
 
 _SOURCES = Path(assembler.__file__).parent
 
@@ -30,3 +33,7 @@ def _raised_limit_names() -> set[str]:
 
 def test_the_assembler_raises_every_registered_limit_name_and_no_other():
     assert _raised_limit_names() == set(LIMIT_NAMES)
+
+
+def test_the_limit_name_type_names_the_registry():
+    assert frozenset(get_args(RegisteredLimitName)) == frozenset(LIMIT_NAMES)

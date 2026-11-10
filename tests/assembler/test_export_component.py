@@ -33,6 +33,7 @@ from assembler.pipeline.export_component import (
 )
 from assembler.ports import FrameRef, ResolvedFrame
 from assembler.testing import FIXTURE_RETRIEVED_ON, build_resolved_frame
+from dfo_analysis_engine.place_type import UNTYPED
 from materialise.bundle_naming import card_slug
 from tests.presentation_store.test_frame_store import (
     _FakeGraphReader,
@@ -585,6 +586,18 @@ def test_a_cut_bar_chart_bundles_every_member_of_its_frame_beside_the_shown_rows
             12,
             True,
             id="party-total",
+        ),
+        # A party the code index gives no kind, whose empty cell the frame writes `untyped`,
+        # is not ranked and names no aggregate.
+        pytest.param(
+            "financingRecipient",
+            "financingRecipient_party_kind",
+            "party",
+            "dac/Unkinded",
+            UNTYPED,
+            12,
+            False,
+            id="member-without-a-kind",
         ),
         # An aggregate with no row at the shown period is left out of no file.
         pytest.param(

@@ -340,16 +340,18 @@ def _op(verb: str, inputs: dict[str, Any], **parameters: Any) -> dict[str, Any]:
     }
 
 
-def _pinned(stores: Stores, tree: dict[str, Any], roots: list[str]) -> dict[str, Any]:
+def _pinned(
+    stores: Stores, tree: dict[str, Any], roots: list[str], options: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Store, under `ops_pinned`, the recipe of `tree` over the `_CV` versions of `roots`,
-    recording each root, and return it."""
+    each root with `options`, recording each root, and return it."""
     for spec_id in roots:
         if spec_id != _UNHELD:
             _store_root(stores, spec_id)
     recipe = {
         "tree": tree,
         "roots": [
-            {"dataset": {"spec_id": spec_id, "content_version": _CV}, "options": {}}
+            {"dataset": {"spec_id": spec_id, "content_version": _CV}, "options": options or {}}
             for spec_id in roots
         ],
         "execution_identity": "engine-1",
@@ -548,12 +550,60 @@ def test_a_pin_whose_roots_give_no_single_basis_is_reported_and_left_as_it_is(
     assert (_stored(stores), json.dumps(presentation.state.component_revisions)) == before
 
 
+def test_a_recipe_whose_pin_basis_is_undetermined_still_takes_its_sort(
+    capsys: pytest.CaptureFixture[str],
+):
+    """The sort of a root's options and the pin's basis are separate rewrites, so a recipe
+    with unsorted columns and a pin its roots give two bases is sorted, and only its pin is
+    left as it is and counted."""
+    stores = Stores()
+    tree = _op(
+        "aggregate",
+        {"frame_ref": _op("compare", {"frame_ref": _root(0), "right_frame_ref": _root(1)})},
+        unit=_CONSTANT,
+    )
+    old = _pinned(stores, tree, [_DAC, _IDS], options={"columns": _COLUMNS})
+    presentation = FakePresentationStore()
+    presentation.state.component_revisions["cmp_drawn"] = [
+        _revision("ops_pinned", "ocv_pinned", old["normal_form_hash"], 1)
+    ]
+
+    skipped = run_normalise_recipes(datasets=stores.store, presentation=presentation)
+
+    assert (skipped, _summary(capsys)) == (
+        1,
+        {
+            "normalised": 1,
+            "revisions": 1,
+            "replay_key_held": 0,
+            "unreproducible": 0,
+            "basis_undetermined": 1,
+        },
+    )
+    (row,) = _stored(stores)
+    assert [root["options"] for root in row["recipe"]["roots"]] == [
+        {"columns": sorted(_COLUMNS)}
+    ] * 2
+    assert row["recipe"]["tree"] == tree
+    normal, key = _hashes({**old, "roots": row["recipe"]["roots"]})
+    assert (row["normal_form_hash"], row["replay_key"]) == (normal, key)
+    assert presentation.state.component_revisions["cmp_drawn"][0]["frame_rendering"] == {
+        "normal_form_hash": normal
+    }
+
+
 def test_every_unit_pin_of_an_op_spec_names_the_slot_feeding_it():
+    """The migration rewrites the pins the op-spec models declare, and each names a frame slot
+    the models that declare it hold, so a new `PinnedUnit` field fails here until it has one."""
     pins = {
-        name
+        (model, name)
         for model in get_args(get_args(OpSpec)[0])
         for name, field in model.model_fields.items()
         if field.annotation == PinnedUnit | None
     }
 
-    assert pins == set(maintenance._PIN_SLOTS)
+    assert {name for _, name in pins} == maintenance._PINNED_PARAMETERS
+    assert set(maintenance._PIN_SLOTS) == maintenance._PINNED_PARAMETERS
+    for model, name in pins:
+        slot = maintenance._PIN_SLOTS[name]
+        assert slot is None or slot in model.model_fields, (model.__name__, name, slot)
