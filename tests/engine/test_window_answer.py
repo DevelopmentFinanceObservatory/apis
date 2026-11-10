@@ -7,6 +7,7 @@ pin today to 2026, so an open end reads to 2026."""
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from types import SimpleNamespace
 
 import pytest
@@ -28,7 +29,7 @@ from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
 from search.engine.retrieval.read_plan import PairPlan, PlanSeries, plan_standard
 from search.engine.retrieval.retrieve import Materialised, MemberPopulation
 from search.engine.retrieval.role_resolve import _zero_observation_carrier
-from search.engine.retrieval.standard import _no_data_in_years
+from search.engine.retrieval.standard import _newest_year_ahead, _no_data_in_years
 from search.engine.time_bind import parse_time_text
 from search.engine.unit.conversion import ConversionPeriod
 from search.models import CoverageBare, Part, TimeWindow
@@ -757,6 +758,92 @@ def test_a_trailing_role_answer_keeps_a_member_its_unit_admission_empties():
     assert settled.date_request.window == TimeWindow(start_year=2020, end_year=2024)
     assert settled.mat.sv_dcids == [_FLOW, _FLOW_B]
     assert settled.mat.population is not None and settled.mat.population.confirmed == 2
+
+
+@pytest.mark.parametrize(
+    ("passed_over", "window", "limited_by", "data_years"),
+    [
+        pytest.param(2018, (2019, 2022), "passed_over", None, id="shortened"),
+        pytest.param(2016, (2018, 2022), None, (2000, 2022), id="full-span"),
+    ],
+)
+def test_a_trailing_span_a_passed_over_member_shortens_says_so(
+    monkeypatch,
+    passed_over: int,
+    window: tuple[int, int],
+    limited_by: str | None,
+    data_years: tuple[int, int] | None,
+):
+    """Flows held 2000 to 2022 answer "the last five years" in 2026 with 2018 to 2022, past
+    a member passed over in election that holds 2016 at the latest. One that holds 2018
+    floors the range at 2019, so it shows four years, and the year fact says an earlier
+    start would read another series, naming no data years, which 2018 holds."""
+    monkeypatch.setattr(trailing_module, "current_year", lambda: 2026)
+    mat = dataclasses.replace(_two_flows(range(2000, 2023)), passed_over_newest_year=passed_over)
+    assert mat.read_plan is not None
+
+    settled = settle_trailing(
+        mat,
+        FilteredAnswer(mat.coverage, None, mat.read_plan),
+        date_request=_trailing("the last five years"),
+        coverage_index=empty_coverage_snapshot().index,
+    )
+
+    assert settled is not None and settled.departure is not None
+    assert settled.date_request.window == TimeWindow(start_year=window[0], end_year=window[1])
+    _warning, fact = settled.departure
+    assert (fact.code, fact.binding_ref, fact.requested_years) == (
+        "year_unavailable",
+        "when:",
+        (2022, 2026),
+    )
+    assert (fact.shown, fact.limited_by, fact.data_years) == (
+        f"{window[0]} to {window[1]}",
+        limited_by,
+        data_years,
+    )
+
+
+@pytest.mark.parametrize(
+    ("facet", "newest"),
+    [
+        pytest.param(
+            Facet(
+                obs_count=3,
+                earliest_date="2000",
+                latest_date="2030",
+                dates=("2000", "2015", "2030"),
+            ),
+            2015,
+            id="complete-dates",
+        ),
+        pytest.param(
+            Facet(obs_count=9, earliest_date="2000", latest_date="2016", dates_complete=False),
+            2016,
+            id="incomplete-ending-before",
+        ),
+        pytest.param(
+            Facet(obs_count=9, earliest_date="2000", latest_date="2030", dates_complete=False),
+            2018,
+            id="incomplete-reaching-past",
+        ),
+        pytest.param(
+            Facet(obs_count=9, earliest_date="2025", latest_date="2030", dates_complete=False),
+            None,
+            id="incomplete-starting-after",
+        ),
+    ],
+)
+def test_the_newest_year_a_passed_over_member_holds_before_the_judged_years(
+    facet: Facet, newest: int | None
+):
+    """The floor a member passed over in election sets for a span whose judged years start
+    in 2019 (`standard._newest_year_ahead`): its newest year before 2019 where its dates
+    are complete or its last year lies before 2019, else 2018, the latest such a year can
+    be, unless its first year lies after them."""
+    data = {"AHEAD": ("AHEAD", [facet], None), "WINNER": ("WINNER", [], None)}
+
+    assert _newest_year_ahead(["AHEAD", "WINNER"], "WINNER", data, before=2019) == newest
 
 
 def _two_flows(years: range) -> Materialised:

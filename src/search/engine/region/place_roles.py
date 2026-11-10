@@ -65,7 +65,7 @@ from search.engine.retrieval.bound_values import (
     shape_five_tuple,
     shape_part_datasets,
 )
-from search.engine.retrieval.whole_reading import WholeReading, whole_reading
+from search.engine.retrieval.whole_reading import WholeReading, whole_population, whole_reading
 from search.engine.role_text import asks_members, role_contradicted
 from search.engine.series_declarations import declared_side
 from search.engine.shape import (
@@ -1093,9 +1093,11 @@ def _named_wholes(
     (`phase_intake._phase_check_entities`).
 
     A side that holds one population alone reads it whole where every dataset the shape
-    answers from (`bound_values.declared_datasets`) marks it whole over the part's period
-    (`whole_reading.whole_reading`), and the assignment carries that reading
-    (`PlaceAssignment.whole`). It is a label: the side binds the same parties either way. A
+    answers from (`bound_values.declared_datasets`) marks it whole
+    (`whole_reading.whole_population`), and the assignment carries that reading
+    (`PlaceAssignment.whole`). It is a label: the side binds the same parties either way. The
+    Spec reads it again over its own window (`spec_build.answer_identity`), as a resubmit of
+    the Spec does, so the label depends only on the identity and its roles. A
     side no place is named on stays unnamed where, for every population named on it, no
     dataset the shape answers from publishes its total and every party they hold there is
     of a class it covers (`whole_totals.covers_unpublished`), as the CRS's recipients do for
@@ -1126,14 +1128,12 @@ def _named_wholes(
         sets[axis] = (*sets.get(axis, ()), *(state.whole_sets[dcid] for dcid in dcids))
     if not named:
         return dataclasses.replace(assignment, unnamed_wholes=unnamed)
-    years = requested_years(state.date_request, horizon=state.coverage.index.horizon)
     whole = next(
         (
             reading
             for axis, populations in named.items()
             if axis not in assignment.sets and len(populations) == 1
-            if (reading := whole_reading(populations[0], datasets=datasets, years=years))
-            is not None
+            if (reading := whole_population(populations[0], datasets=datasets)) is not None
         ),
         None,
     )

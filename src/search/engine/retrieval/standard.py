@@ -1410,13 +1410,20 @@ def _newest_year_ahead(
     `winner` in election order (`served`) holds at its places, None when none of them holds
     one (`Materialised.passed_over_newest_year`). Years from `before` on are left out: such
     a member holds no point in the judged years, so any later year lies past them, and a
-    floor taken from it could pass the winner's newest year."""
+    floor taken from it could pass the winner's newest year. A member whose read lists no
+    complete years (`ObservedYears.years` None) counts its last year where that lies before
+    `before`, and otherwise `before - 1`, the newest year before `before` it may hold,
+    unless its first year lies at `before` or later."""
     years: list[int] = []
     for sv in served[: served.index(winner)]:
         if sv not in data_by_sv or (held := observed_years(data_by_sv[sv][1])) is None:
             continue
-        known = held.years if held.years is not None else (held.first, held.last)
-        years.extend(year for year in known if year is not None and year < before)
+        if held.years is not None:
+            years.extend(year for year in held.years if year < before)
+        elif held.last is not None and held.last < before:
+            years.append(held.last)
+        elif held.first is None or held.first < before:
+            years.append(before - 1)
     return max(years, default=None)
 
 

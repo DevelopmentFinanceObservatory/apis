@@ -88,6 +88,9 @@ class TestRelativeSpans:
             ("last one year", 1),
             ("last 20 years", 20),
             ("last twenty years", 20),
+            # Three digits parse, so the fan-out's `last N years` for a long span reaches
+            # the window cap rather than the parser.
+            ("last 100 years", 100),
         ],
     )
     def test_last_n_years(self, phrase: str, digits: int) -> None:

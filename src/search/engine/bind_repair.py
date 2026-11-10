@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from code_index.query import CodeIndex
@@ -238,6 +239,16 @@ def declared_default_words_named(text: str, *, index: CodeIndex) -> tuple[tuple[
     )
 
 
+@dataclass(frozen=True, slots=True)
+class FiredDefault:
+    """A slot a declared default fired on (`apply_declared_defaults`): the slot's entry
+    before the default, and the reply's values the default replaced
+    (`_above_default_unnamed`), empty where the slot was open."""
+
+    entry: SlotBindingDraft
+    replaced: tuple[str, ...] = ()
+
+
 def apply_declared_defaults(
     bindings: Sequence[SlotBindingDraft],
     shape_draft: ShapeDraft,
@@ -250,7 +261,7 @@ def apply_declared_defaults(
     engine_authored_properties: frozenset[str] = frozenset(),
     pinned_properties: frozenset[str] = frozenset(),
     named_codes: frozenset[str] = frozenset(),
-) -> tuple[list[SlotBindingDraft], list[SlotBindingDraft]]:
+) -> tuple[list[SlotBindingDraft], list[FiredDefault]]:
     """Apply declared defaults to open slots when query evidence triggers them.
 
     The release's code index defines each default and its ``when_bound_under`` scopes or
@@ -282,9 +293,8 @@ def apply_declared_defaults(
     one without warns only where the query names its slot (``defaulted_slots_named``).
 
     Returns the listified input and ``[]`` when unchanged. Otherwise returns the repaired
-    bindings and the pre-default entries, each an open slot's entry or, where the default
-    replaced reply values, the reply's entry holding only those values. Iteration follows
-    binding and declaration order.
+    bindings and each fired default (`FiredDefault`): the slot's pre-default entry and the
+    reply values the default replaced. Iteration follows binding and declaration order.
     """
     bindings = list(bindings)
 
@@ -335,14 +345,13 @@ def apply_declared_defaults(
         return bindings, []
 
     result = list(bindings)
-    defaulted: list[SlotBindingDraft] = []
+    defaulted: list[FiredDefault] = []
     for i, (code, replaces) in fire.items():
         binding = result[i]
+        defaulted.append(FiredDefault(entry=binding, replaced=replaces))
         if not replaces:
-            defaulted.append(binding)
             result[i] = binding.model_copy(update={"kind": "value", "value_dcids": [code]})
             continue
-        defaulted.append(binding.model_copy(update={"value_dcids": list(replaces)}))
         values = list(
             dict.fromkeys(code if value in replaces else value for value in binding.value_dcids)
         )
@@ -527,25 +536,25 @@ def _default_has_no_data(shape_draft: ShapeDraft, default: ShapeSlotDefault) -> 
 
 
 def defaulted_slots_named(
-    defaulted: Sequence[SlotBindingDraft], *, index: CodeIndex, texts: Sequence[str]
+    defaulted: Sequence[FiredDefault], *, index: CodeIndex, texts: Sequence[str]
 ) -> list[tuple[str, str]]:
     """Return ``(plain_name, default label)`` for each defaulted slot one of ``texts``
     names.
 
-    ``defaulted`` holds the pre-default entries ``apply_declared_defaults`` returns. A text
+    ``defaulted`` holds the fired defaults ``apply_declared_defaults`` returns. A text
     names a slot by its declared plain name, singular or plural (``names_plain_name``), so
     "top 5 aid flows" names the flow slot. A default fires only on a slot no operation and
     no ``requested_all`` claim opened, so each pair is a slot the query asked about and
     the answer fixed to one value. A default with a declared note, or one that replaced a
-    reply's value (``_replaced``), speaks through ``defaulted_slot_notes`` and is left out
-    here.
+    reply's value (``FiredDefault.replaced``), speaks through ``defaulted_slot_notes`` and is
+    left out here.
     """
     named: list[tuple[str, str]] = []
-    for binding in defaulted:
-        declaration = index.declarations.get(binding.property_dcid or "")
+    for fired in defaulted:
+        declaration = index.declarations.get(fired.entry.property_dcid or "")
         if declaration is None or declaration.default is None or declaration.default.note:
             continue
-        if _replaced(binding):
+        if fired.replaced:
             continue
         if not any(names_plain_name(text, declaration.plain_name) for text in texts):
             continue
@@ -553,19 +562,19 @@ def defaulted_slots_named(
     return named
 
 
-def defaulted_slot_notes(defaulted: Sequence[SlotBindingDraft], *, index: CodeIndex) -> list[str]:
-    """Return a note for each fired default, in the order of ``defaulted``, the pre-default
-    entries ``apply_declared_defaults`` returns, whatever the query's words: for a default
-    that replaced a reply's broader value (``_replaced``), a sentence naming the default and
-    the value it replaced, so an override the question meant to avoid shows; for any other,
-    its declared note (``DeclaredDefault.note``) where it carries one."""
+def defaulted_slot_notes(defaulted: Sequence[FiredDefault], *, index: CodeIndex) -> list[str]:
+    """Return a note for each fired default, in the order of ``defaulted``, the fired
+    defaults ``apply_declared_defaults`` returns, whatever the query's words: for a default
+    that replaced a reply's broader value (``FiredDefault.replaced``), a sentence naming the
+    default and the value it replaced, so an override the question meant to avoid shows; for
+    any other, its declared note (``DeclaredDefault.note``) where it carries one."""
     notes: list[str] = []
-    for binding in defaulted:
-        declaration = index.declarations.get(binding.property_dcid or "")
+    for fired in defaulted:
+        declaration = index.declarations.get(fired.entry.property_dcid or "")
         if declaration is None or declaration.default is None:
             continue
-        if _replaced(binding):
-            replaced = join_labels([_code_label(dcid, index=index) for dcid in binding.value_dcids])
+        if fired.replaced:
+            replaced = join_labels([_code_label(dcid, index=index) for dcid in fired.replaced])
             notes.append(
                 f"The answer covers {_code_label(declaration.default.code, index=index)}, the "
                 f"default {declaration.plain_name}, in place of {replaced}, a broader "
@@ -574,12 +583,6 @@ def defaulted_slot_notes(defaulted: Sequence[SlotBindingDraft], *, index: CodeIn
         elif declaration.default.note:
             notes.append(declaration.default.note)
     return notes
-
-
-def _replaced(binding: SlotBindingDraft) -> bool:
-    """Whether a pre-default entry bound a value its default replaced
-    (`_above_default_unnamed`); an open slot's entry binds none."""
-    return binding.kind in ("value", "set")
 
 
 def _code_label(dcid: str, *, index: CodeIndex) -> str:

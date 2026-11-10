@@ -1221,9 +1221,11 @@ class AnswerIdentity:
     """What `build_spec` derives from the answer before it reads any option: the identity
     and `spec_id` it mints, the slots and facets it states once the served provenance is
     pinned, the entities the identity hashes, the sources the answer names
-    (`elected_sources`) and the group each role stands for (`ResolvedSpec.entity_groups`,
-    before `with_members_left_out` states what their members leave out), and the datasets
-    that publish the answer's StatVars (`CodeIndex.statvar_provenances`)."""
+    (`elected_sources`), the groups the request named with each whole population read again
+    over the identity (`_restate_whole_groups`), the group each role stands for
+    (`ResolvedSpec.entity_groups`, before `with_members_left_out` states what their members
+    leave out), and the datasets that publish the answer's StatVars
+    (`CodeIndex.statvar_provenances`)."""
 
     spec_id: str
     identity: BaseIdentity
@@ -1231,19 +1233,23 @@ class AnswerIdentity:
     facets: dict[str, ResolvedFacet] | None
     hashed_entities: list[Entity]
     resolved_sources: list[ProvenanceRef]
+    named_groups: tuple[NamedGroup, ...]
     entity_groups: dict[str, EntityGroup]
     served_datasets: frozenset[str]
 
 
-def _whole_groups_over_identity(
+def _restate_whole_groups(
     named_groups: tuple[NamedGroup, ...], entities: list[Entity], identity: BaseIdentity
 ) -> tuple[NamedGroup, ...]:
     """`named_groups` with each whole population (`NamedGroup.whole_of`) read again over
     `identity`'s own dataset and window (`whole_reading.whole_groups_over_identity`), the reading
     a resubmit of the Spec restores: kept where the identity reads the role it stands for
-    as that whole population, and dropped where it does not. A request whose years settle
-    only once its series are read ("the last five years") so states the whole populations
-    of the range it settled on. No role the request did not read whole gains a reading, so
+    as that whole population, and dropped where it does not. The roles read are those the
+    request named as one whole population alone (`place_roles._named_wholes`) or was offered
+    one on (`place_roles.whole_total_candidates`), whatever the years the binding judged, so
+    the label depends only on the identity and its roles, as a resubmit's does. A request
+    whose years settle only once its series are read ("the last five years") so states the
+    whole populations of the range it settled on. No other role gains a reading, so
     "official donors" beside "private donors" stays two named parties."""
     whole_roles = set(
         role_entity_groups((group for group in named_groups if group.whole_of), entities)
@@ -1279,7 +1285,7 @@ def answer_identity(
 
     A role `named_groups` reads as a whole population (`NamedGroup.whole_of`) keeps that
     reading only where the minted identity reads it over its own window
-    (`_whole_groups_over_identity`)."""
+    (`_restate_whole_groups`)."""
     if pin_served_provenance and (served := served_provenances(plan)):
         slots = with_served_provenance(slots, served)
         if facets is not None and (provenance_facet := facets.get("provenance")) is not None:
@@ -1298,7 +1304,7 @@ def answer_identity(
         requested_window=requested_window,
         explicit_facets=facet_bindings,
     )
-    named_groups = _whole_groups_over_identity(tuple(named_groups), hashed_entities, identity_doc)
+    named_groups = _restate_whole_groups(tuple(named_groups), hashed_entities, identity_doc)
     index = get_index()
     served_datasets = index.statvar_provenances(sv.ref.ref for sv in stat_vars)
     entity_groups = with_multilateral_holdings(
@@ -1316,6 +1322,7 @@ def answer_identity(
         facets=facets,
         hashed_entities=hashed_entities,
         resolved_sources=elected_sources(resolved_sources or [], identity_doc),
+        named_groups=named_groups,
         entity_groups=entity_groups,
         served_datasets=served_datasets,
     )
@@ -1467,6 +1474,7 @@ def build_spec(
             named_groups=named_groups,
         )
     spec_id, identity_doc = answer.spec_id, answer.identity
+    named_groups = answer.named_groups
     slots, facets, hashed_entities = answer.slots, answer.facets, answer.hashed_entities
     entity_groups = answer.entity_groups
     index = get_index()

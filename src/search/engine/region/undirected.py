@@ -51,10 +51,11 @@ def settle_undirected_axis(
        (`availability.undirected_series`). "ODA in Ethiopia" reads Ethiopia as the
        recipient, and "Korea total aid in 1980" reads Korea as the recipient.
     4. `declaration`: where both axes hold a series, or neither does, a dataset that
-       declares the place a provider (`declared_providers`) and answers a shape that
-       declares a provider role makes the place the provider, and the reading names that
-       dataset (`declaring_dataset`, `UndirectedReading.listed_by`), which the answer's
-       `direction_inferred` departure cites. "Korea total aid" reads Korea
+       declares every place of the set a provider (`declared_providers`) and answers a
+       shape that declares a provider role makes the set the provider, and the reading
+       carries each such dataset (`declaring_datasets`, `UndirectedReading.listed_by`), one
+       of which the answer's `direction_inferred` departure cites. A set whose places only
+       different datasets declare settles no axis by declaration. "Korea total aid" reads Korea
        as the donor though Korea also receives aid, and "Turkey total aid", whose group's
        total declares no providers (`TotalGroup.declares_providers`), stays open.
 
@@ -82,8 +83,8 @@ def settle_undirected_axis(
     held = [axis for axis, found in reads.items() if True in found and axis in open_axes]
     if len(held) == 1:
         return UndirectedReading(held[0], "coverage")
-    if "origin" in open_axes and (dataset := declaring_dataset(place_set, shapes)) is not None:
-        return UndirectedReading("origin", "declaration", listed_by=dataset)
+    if "origin" in open_axes and (datasets := declaring_datasets(place_set, shapes)):
+        return UndirectedReading("origin", "declaration", listed_by=datasets)
     return None
 
 
@@ -119,24 +120,23 @@ def _complement_axis(
     )
 
 
-def declaring_dataset(place_set: PlaceSet, shapes: Sequence[ShapeDraft]) -> str | None:
-    """The dataset that declares every place of `place_set` a provider for the first
-    role-bearing shape of `shapes` with a provider role that answers from such datasets
-    (`declared_providers`, `shape_part_datasets`): the first by dcid of those declaring
-    every place, else of those declaring the first place. `None` when no shape does."""
+def declaring_datasets(place_set: PlaceSet, shapes: Sequence[ShapeDraft]) -> tuple[str, ...]:
+    """The datasets, by dcid, that each declare every place of `place_set` a provider
+    (`declared_providers`) and answer a role-bearing shape of `shapes` with a provider role
+    (`shape_part_datasets`). Empty when no one dataset declares them all."""
     places = place_set.dcids()
     if not places:
-        return None
+        return ()
     index = get_index()
     providers = declared_providers(index)
-    for shape in shapes:
-        if not is_role_bearing(shape) or "origin" not in role_names_by_axis(shape):
-            continue
-        datasets = frozenset(shape_part_datasets(shape, index))
-        declaring = [datasets & providers.get(place, frozenset()) for place in places]
-        if all(declaring):
-            return min(frozenset.intersection(*declaring) or declaring[0])
-    return None
+    answering = frozenset(
+        dataset
+        for shape in shapes
+        if is_role_bearing(shape) and "origin" in role_names_by_axis(shape)
+        for dataset in shape_part_datasets(shape, index)
+    )
+    declaring = answering.intersection(*(providers.get(place, frozenset()) for place in places))
+    return tuple(sorted(declaring))
 
 
 @per_index

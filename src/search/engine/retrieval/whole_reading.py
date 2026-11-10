@@ -5,14 +5,15 @@ on its one axis (`code_index.types.WholeMarker`), over the marker's years. `whol
 reads one total, or the members of one whole total set, against those markers, and
 `identity_whole_groups` reads each role of an identity over its own dataset and window, and
 `whole_groups_over_identity` restricts that reading to the roles a door reads: a first answer
-the roles its request read whole (`spec_build.answer_identity`), a resubmit the roles it
-posts a whole group or no group on (`resubmit_request.resubmit_named_groups`). The
-candidates, departures and warnings built on it live in `region.whole_totals`.
+the roles its request named or was offered a whole population on
+(`spec_build.answer_identity`), a resubmit the roles it posts a whole group or no group on
+(`resubmit_request.resubmit_named_groups`). The candidates, departures and warnings built on
+it live in `region.whole_totals`.
 """
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable, Sequence
+from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass
 
 from code_index.shared import get_index
@@ -128,6 +129,24 @@ def whole_reading(
     what it covers, which includes the `official` class. Several read whole when they are
     exactly the members of one whole total set and each member reads so in every dataset, its
     classes then the union of theirs. No dataset reads nothing whole."""
+    return _reading(dcids, datasets=datasets, within=lambda marker: _within(marker, years))
+
+
+def whole_population(dcids: Collection[str], *, datasets: Sequence[str]) -> WholeReading | None:
+    """The whole population `dcids` stand for in every one of `datasets` over whatever years
+    their markers hold (`whole_reading` with no years check), or `None`: the reading of a side
+    a request names as one whole population alone, which the Spec reads again over its own
+    window (`spec_build.answer_identity`)."""
+    return _reading(dcids, datasets=datasets, within=lambda _marker: True)
+
+
+def _reading(
+    dcids: Collection[str],
+    *,
+    datasets: Sequence[str],
+    within: Callable[[WholeMarker], bool],
+) -> WholeReading | None:
+    """`whole_reading` with each marker's years judged by `within`."""
     index = get_index()
     members = frozenset(dcids)
     if not datasets or not members:
@@ -147,7 +166,7 @@ def whole_reading(
             return None
         if len({marker.covers for marker in markers}) != 1:
             return None
-        if not all(_within(marker, years) for marker in markers):
+        if not all(within(marker) for marker in markers):
             return None
         covered.update(markers[0].covers)
     if POPULATION_CLASS not in covered:
@@ -179,10 +198,11 @@ def identity_whole_groups(identity: BaseIdentity) -> dict[str, NamedGroup]:
     identity whose dataset the code index does not elect.
 
     Each door reads it on the roles it picks (`whole_groups_over_identity`): a first answer on
-    the roles its request read whole, and a resubmit on the roles it posts a whole group or no
-    group on, so both label such a role alike, a span counted back from now included. An
-    identity naming every member of a whole total set reads as that set on a resubmit that
-    posts no group on the role, since the identity does not carry the request's words:
+    the roles its request named or was offered a whole population on, and a resubmit on the
+    roles it posts a whole group or no group on, so both label such a role alike, a span
+    counted back from now included. An identity naming every member of a whole total set
+    reads as that set on a resubmit that posts no group on the role, since the identity does
+    not carry the request's words:
     "official donors" beside "private donors" answers two named parties, and a resubmit of
     its identity reads "all donors including private"."""
     dataset = identity_dataset(identity)
@@ -202,8 +222,9 @@ def whole_groups_over_identity(
 ) -> dict[str, NamedGroup]:
     """The whole populations `identity_whole_groups` reads over `identity`, on `roles` only,
     by role key. Both doors read a role whole through it: a first answer on the roles its
-    request read whole (`spec_build.answer_identity`), and a resubmit on the roles it posts
-    a whole group on or posts no group on (`resubmit_request.resubmit_named_groups`). A role
-    outside `roles` gains no whole population."""
+    request named or was offered a whole population on (`spec_build.answer_identity`), and a
+    resubmit on the roles it posts a whole group on or posts no group on
+    (`resubmit_request.resubmit_named_groups`). A role outside `roles` gains no whole
+    population."""
     asked = set(roles)
     return {role: group for role, group in identity_whole_groups(identity).items() if role in asked}

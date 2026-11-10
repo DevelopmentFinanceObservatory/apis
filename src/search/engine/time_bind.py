@@ -147,7 +147,7 @@ _NUMBER_WORDS: dict[str, int] = {
     for words in _NUMBER_WORDS_BY_LANGUAGE
     for count, word in enumerate(words.split(), start=1)
 }
-_COUNT = rf"(?P<count>\d{{1,2}}|{'|'.join(_NUMBER_WORDS)})"
+_COUNT = rf"(?P<count>\d{{1,3}}|{'|'.join(_NUMBER_WORDS)})"
 
 # Words that may open a relative wording and add nothing to its years, in any number
 # and order: "in the last 5 years", "durante los últimos 10 años", "au cours des dix

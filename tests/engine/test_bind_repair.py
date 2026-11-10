@@ -19,6 +19,7 @@ from search.engine.bind import (
     SlotBindingDraft,
 )
 from search.engine.bind_repair import (
+    FiredDefault,
     _label_named_in_text,
     apply_declared_defaults,
     apply_named_exclusions,
@@ -356,8 +357,9 @@ class TestApplyDeclaredDefaultsFires:
         repaired, defaulted = apply_declared_defaults(bindings, shape, index=get_index())
 
         assert len(defaulted) == 1
-        assert defaulted[0].property_dcid == "crsTypeOfFlow"
-        assert defaulted[0].kind == "unbound"
+        assert defaulted[0].entry.property_dcid == "crsTypeOfFlow"
+        assert defaulted[0].entry.kind == "unbound"
+        assert defaulted[0].replaced == ()
         flow = next(b for b in repaired if b.property_dcid == "crsTypeOfFlow")
         assert flow.kind == "value"
         assert flow.value_dcids == ["CRSTypeOfFlow10"]
@@ -542,7 +544,7 @@ class TestApplyDeclaredDefaultsWhenNamed:
         )
 
         assert len(defaulted) == 1
-        assert defaulted[0].property_dcid == "crsTypeOfFlow"
+        assert defaulted[0].entry.property_dcid == "crsTypeOfFlow"
         flow = next(b for b in repaired if b.property_dcid == "crsTypeOfFlow")
         assert flow.kind == "value"
         assert flow.value_dcids == ["CRSTypeOfFlow10"]
@@ -560,7 +562,7 @@ class TestApplyDeclaredDefaultsWhenNamed:
             query_text="How much aid did Kenya get?",
         )
 
-        assert [b.property_dcid for b in defaulted] == ["crsTypeOfFlow"]
+        assert [fired.entry.property_dcid for fired in defaulted] == ["crsTypeOfFlow"]
 
     def test_negated_aid_in_query_text_does_not_fire(self):
         """The raw query uses the same negation check as the extracted variable."""
@@ -685,7 +687,7 @@ class TestApplyDeclaredDefaultsWhenNamed:
         )
 
         assert len(defaulted) == 1
-        assert defaulted[0].property_dcid == "crsTypeOfFlow"
+        assert defaulted[0].entry.property_dcid == "crsTypeOfFlow"
 
 
 class TestDefaultedSlotsNamed:
@@ -1029,10 +1031,9 @@ class TestAReplyValueAboveTheDefault:
         if binds is None:
             assert (repaired, defaulted) == ([binding], [])
         else:
-            # The default replaces the values above it alone, and the pre-default entry,
-            # which the note names, holds only those.
-            replaced = [value for value in binding.value_dcids if value not in binds]
-            assert defaulted == [binding.model_copy(update={"value_dcids": replaced})]
+            # The default replaces the values above it alone, which the note names.
+            replaced = tuple(value for value in binding.value_dcids if value not in binds)
+            assert defaulted == [FiredDefault(entry=binding, replaced=replaced)]
             assert repaired == [
                 binding.model_copy(
                     update={

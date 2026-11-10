@@ -2037,14 +2037,14 @@ _KOREA_GIVES_AND_RECEIVES = ((_DEU, _KOR), (_KOR, _GHA))
         pytest.param(
             (),
             _KOREA_GIVES_AND_RECEIVES,
-            UndirectedReading("origin", "declaration", listed_by="provenance/OECDDAC2A"),
+            UndirectedReading("origin", "declaration", listed_by=("provenance/OECDDAC2A",)),
             "origin",
             id="no-operation-coverage-on-both-sides",
         ),
         pytest.param(
             (),
             (),
-            UndirectedReading("origin", "declaration", listed_by="provenance/OECDDAC2A"),
+            UndirectedReading("origin", "declaration", listed_by=("provenance/OECDDAC2A",)),
             "origin",
             id="no-operation-no-coverage",
         ),
@@ -2084,6 +2084,46 @@ def test_a_declared_provider_takes_the_side_a_rank_over_one_flow_axis_leaves_fre
         korea_on: [_KOR],
         "destination" if korea_on == "origin" else "origin": [],
     }
+
+
+@pytest.mark.parametrize(
+    ("declared", "settled"),
+    [
+        pytest.param(
+            {_GHA: {"provenance/A"}, "country/KEN": {"provenance/B"}},
+            None,
+            id="each-place-declared-by-another-dataset",
+        ),
+        pytest.param(
+            {_GHA: {"provenance/A", "provenance/B"}, "country/KEN": {"provenance/B"}},
+            UndirectedReading("origin", "declaration", listed_by=("provenance/B",)),
+            id="one-dataset-declares-every-place",
+        ),
+    ],
+)
+def test_a_set_settles_by_declaration_only_where_one_dataset_declares_every_place(
+    monkeypatch: pytest.MonkeyPatch, declared, settled
+) -> None:
+    """A group named without a direction, with no coverage either way, reads as the provider
+    only where one dataset declares each of its places a provider, and the reading carries
+    that dataset alone: the answer's `direction_inferred` text says it lists the group among
+    its providers."""
+    monkeypatch.setattr(
+        undirected, "shape_part_datasets", lambda shape, index: ("provenance/A", "provenance/B")
+    )
+    monkeypatch.setattr(
+        undirected,
+        "declared_providers",
+        lambda index: {place: frozenset(datasets) for place, datasets in declared.items()},
+    )
+    shape = _shape_for(
+        _economic_activity_arcs("Nominal", {}, ("financingProvider", "financingRecipient"))
+    )
+    state = _state(names_and_roles={}, places={})
+    state.entities = ["Africa"]
+    state.place_sets = place_sets(groups=_GHA_KEN_GROUP)
+
+    assert settle_undirected_axis(state, [shape]) == settled
 
 
 _FRA = "country/FRA"

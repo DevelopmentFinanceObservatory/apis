@@ -31,12 +31,13 @@ declares the place a provider (`declaration`), or only that axis holds data ther
 @dataclass(frozen=True, slots=True)
 class UndirectedReading:
     """The flow axis a place named without a direction is read on, and the rule that settled
-    it (`region.undirected.settle_undirected_axis`). `listed_by` is the dataset that
-    declares the place a provider where `rule` is `declaration`, and `None` otherwise."""
+    it (`region.undirected.settle_undirected_axis`). `listed_by` is the datasets, by dcid,
+    that each declare every place of the set a provider where `rule` is `declaration`, and
+    empty otherwise."""
 
     axis: RoleAxis
     rule: UndirectedRule
-    listed_by: str | None = None
+    listed_by: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -144,6 +145,10 @@ class DepartureFact:
       that lists the members of a side because the source's total of the side, covering the
       `whole_of` classes, holds no point in the requested years, though the members do.
       `data_years` is then the years the total holds.
+    - `limited_by` `passed_over` (`year_unavailable`): on an answer to a span counted back
+      from now that shows fewer years than the span counts, since a range reaching further
+      back would elect a different member; `shown` is the years it shows, and `data_years`
+      stays `None`.
     - `omitted_years` (`year_unavailable`): on an answer a constant-price unit request
       converts, each entity whose rows a missing deflator leaves out, by name, with the
       years it leaves out and the years it keeps, in the order the text names them.
@@ -190,7 +195,12 @@ class DepartureFact:
     converted_years: tuple[int, int] | None = None
     limited_by: (
         Literal[
-            "exchange_rates", "deflators", "imputed_multilateral", "published_total", "whole_total"
+            "exchange_rates",
+            "deflators",
+            "imputed_multilateral",
+            "published_total",
+            "whole_total",
+            "passed_over",
         ]
         | None
     ) = None

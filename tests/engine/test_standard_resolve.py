@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 import pytest
 
 from search.engine.bind import SlotBindingDraft
+from search.engine.bind_repair import FiredDefault
 from search.engine.conjoin import assemble_region
 from search.engine.errors import GraphInfraError
 from search.engine.extract import DateRequest, dates_to_request
@@ -476,7 +477,7 @@ def _resolve_unemployment(
 
         def _defaults(bindings, *_args, **_kwargs):
             kept = [b for b in bindings if b.property_dcid != default.property_dcid]
-            return [*kept, default], [default]
+            return [*kept, default], [FiredDefault(entry=default)]
 
         monkeypatch.setattr(phase_election, "apply_declared_defaults", _defaults)
 

@@ -33,6 +33,7 @@ from search.engine.entry import parsed as parsed_entry
 from search.engine.extract import ExtractedEntity, ExtractedOperation
 from search.engine.region import (
     candidate_collapse,
+    phase_answer,
     phase_election,
     phase_place_materialise,
     place_roles,
@@ -3561,6 +3562,57 @@ def test_a_trailing_ask_and_the_resubmit_of_its_spec_read_the_whole_total_alike(
     assert resubmit.spec.definition.identity == ask.spec.definition.identity
     assert _group(resubmit.spec, "destination") == _group(ask.spec, "destination")
     assert (_whole_read(resubmit) is None) == (_whole_read(ask) is None)
+
+
+def test_a_trailing_ask_naming_all_recipients_reads_them_whole_as_its_resubmit_does(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """France's aid to "all recipients" over "the last 45 years" in 2026, the marker holding
+    1984 to 2024. Over the 45 years to 2024 the span would start in 1980, before the marker,
+    but a member passed over in election holds 1989, so the answer settles on 1990 to 2024,
+    inside the marker's years. The answer reads the side it named whole over the range it
+    settled on, whatever the binding judged of the span before, so it labels the side as a
+    resubmit of its Spec does."""
+    _with_recipients_marker(monkeypatch, (1984, 2024))
+    _in_2026(monkeypatch)
+    _coverage(monkeypatch, years=tuple(range(1960, 2025)))
+    settle = phase_answer.settle_trailing
+
+    def passed_over_in_1989(mat, filtered, **kwargs):
+        return settle(dataclasses.replace(mat, passed_over_newest_year=1989), filtered, **kwargs)
+
+    monkeypatch.setattr(phase_answer, "settle_trailing", passed_over_in_1989)
+
+    ask = _part(
+        _resolve(
+            {"entities": _ALL_RECIPIENTS_NAMED, "time": "last 45 years", "variable": _VARIABLE}
+        )
+    )
+    resubmit = _part(
+        offline_resolve(
+            ResolveRequest(
+                input=DatasetResubmitInput(
+                    entries=[
+                        ResubmitIdentityEntry(
+                            variable_text=_VARIABLE,
+                            identity=ask.spec.definition.identity,
+                            entity_groups=ask.spec.resolved.entity_groups,
+                        )
+                    ]
+                )
+            ),
+            graph=_graph(),
+            llm=_ScriptedLLM(_VARIABLE),
+            sdmx=FakeSdmxClient(observations={}, availability={}),
+        )
+    )
+
+    window = ask.spec.definition.identity.requested_window
+    assert (window.start_year, window.end_year) == (1990, 2024)
+    whole = _group(ask.spec, "destination")
+    assert whole is not None and whole["whole_of"] == ["official", "residual"]
+    assert _group(resubmit.spec, "destination") == whole
+    assert _whole_read(ask) is not None and _whole_read(resubmit) is not None
 
 
 def _with_recipients_marker(monkeypatch: pytest.MonkeyPatch, years: tuple[int, int]) -> None:

@@ -137,8 +137,8 @@ class Provenance(_CaseModel):
 
     @model_serializer(mode="wrap")
     def _serialise(self, handler: SerializerFunctionWrapHandler) -> Any:
-        # An unasserted bound stays out of the dump, so the expectation hash of a case that
-        # asserts none matches the one it had before the field existed.
+        # An unasserted bound stays out of the dump, so a case that asserts none keeps the
+        # expectation hash it has without the field.
         dumped = handler(self)
         if self.bound is None:
             dumped.pop("bound", None)
@@ -734,8 +734,7 @@ def load_cases(corpus_dir: Path = DEFAULT_CORPUS_DIR) -> list[Case]:
 
 def _normalised(case: Case) -> dict[str, Any]:
     """The request and expectation as authored, with every family expanded. ``repeat``
-    joins only where a case sets it, so a case without it hashes as it did before the field
-    existed."""
+    joins only where a case sets it, so a case without it keeps its hash."""
     normalised = {
         "query": case.query,
         "door": case.door,

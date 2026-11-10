@@ -126,7 +126,6 @@ from search.engine.region.place_roles import (
     names_a_place,
     request_named_groups,
     undirected_place_name,
-    undirected_set,
     whole_total_candidates,
 )
 from search.engine.region.refs import provenance_labels
@@ -149,7 +148,6 @@ from search.engine.region.status_rule import (
     plan_status,
     shares_role_class,
 )
-from search.engine.region.undirected import declaring_dataset
 from search.engine.region.unrealisable import unbind_unrealisable
 from search.engine.retrieval.bound_values import (
     RoleKeys,
@@ -157,6 +155,7 @@ from search.engine.retrieval.bound_values import (
     elected_role_class_shape,
     entity_role_keys,
     narrowed_to,
+    shape_part_datasets,
     shape_population_arcs,
     shape_query,
     sole_shared_value,
@@ -460,15 +459,13 @@ def _state_read_direction(state: ResolveState, bound: PlaceAssignment) -> None:
 
 
 def _listing_source(state: ResolveState, reading: UndirectedReading) -> str | None:
-    """The name of the dataset a declaration reading cites: the elected shape's own where it
-    declares the place (`undirected.declaring_dataset`), else the one the reading settled
-    on (`UndirectedReading.listed_by`), which a declaration reading always carries. `None`
-    for another rule."""
-    if reading.listed_by is None:
+    """The name of the dataset a declaration reading cites, of those declaring every place
+    of the set a provider (`UndirectedReading.listed_by`): the first by dcid the elected
+    shape answers from (`shape_part_datasets`), else the first. `None` for another rule."""
+    if not reading.listed_by:
         return None
-    place_set = undirected_set(state)
-    own = None if place_set is None else declaring_dataset(place_set, [state.shape_draft])
-    dataset = own or reading.listed_by
+    own = set(shape_part_datasets(state.shape_draft, get_index())).intersection(reading.listed_by)
+    dataset = min(own) if own else reading.listed_by[0]
     return provenance_labels([dataset], state.graph, deadline=state.deadline).get(dataset, dataset)
 
 

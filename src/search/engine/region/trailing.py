@@ -10,9 +10,9 @@ years ending there, `[Y - N + 1, Y]` (`extract.TrailingSpan.settled`), over the 
 built (`ReadPlan.windowed`), so the request resolves once. A standard answer that elected one
 member starts after the newest year a member ahead of it in election order holds
 (`Materialised.passed_over_newest_year`), so a resubmit of the range elects the same member,
-and no span starts before the plan's own years; such a span can hold fewer than N years. Its
-request becomes
-that plain range, which the Spec states and a resubmit reads. A Y more than
+and no span starts before the plan's own years; such a span can hold fewer than N years, and
+one the passed-over member shortens departs `year_unavailable` showing the years it holds. Its
+request becomes that plain range, which the Spec states and a resubmit reads. A Y more than
 `trailing_stale_years` before the current year departs `year_unavailable` naming it
 (`stale_departure`). An admitted answer whose newest year lies before the judged years reads the
 judged years, where it holds no point, as an answer to the asked span alone would.
@@ -23,7 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
-from search.engine.departures import stale_trailing_fact
+from search.engine.departures import shortened_trailing_fact, stale_trailing_fact
 from search.engine.extract import DateRequest
 from search.engine.region.codes import DATE_COVERAGE_PARTIAL
 from search.engine.region.facets import FilteredAnswer, plan_answer
@@ -181,6 +181,12 @@ def settle_trailing(
         if floor is not None
     ]
     window = date_request.trailing.settled(newest, floor=max(floors, default=None))
+    assert window.start_year is not None
+    shortened = (
+        passed_over is not None
+        and window.start_year == passed_over + 1
+        and window.start_year > newest - date_request.trailing.years + 1
+    )
     settled = DateRequest(window=window, latest=False)
     mat, answer = _over(mat, filtered, window, date_request=settled, coverage_index=coverage_index)
     return SettledTrailing(
@@ -188,36 +194,46 @@ def settle_trailing(
         filtered=answer,
         date_request=settled,
         asked=asked,
-        departure=stale_departure(date_request, answer.plan, newest=newest),
+        departure=stale_departure(date_request, answer.plan, newest=newest, shortened=shortened),
     )
 
 
 def stale_departure(
-    date_request: DateRequest, plan: ReadPlan | None, *, newest: int
+    date_request: DateRequest, plan: ReadPlan | None, *, newest: int, shortened: bool
 ) -> tuple[Warning, DepartureFact] | None:
     """The `date_coverage_partial` warning and the `year_unavailable` fact it discloses for a
     trailing request answered from data whose newest year lies more than
-    `trailing_stale_years` before the current year: the years the words cover, the years the
-    data holds up to `newest`, and the years shown. None for a newer year."""
+    `trailing_stale_years` before the current year, or whose range a member passed over in
+    election shortened (`shortened`): the years the words cover, the years shown, and for a
+    stale year alone the years the data holds up to `newest`. A shortened range states no
+    data years (`departures.shortened_trailing_fact`), since the years before it can hold
+    data. None for a newer year a full range shows."""
     now = current_year()
-    if now - newest <= scope_window_settings().trailing_stale_years:
+    stale = now - newest > scope_window_settings().trailing_stale_years
+    if not stale and not shortened:
         return None
     asked = date_request.window
     assert asked is not None and asked.start_year is not None and asked.end_year is not None
     served = served_dates(plan).values() if plan is not None else ()
     firsts = [year for first, _last in served if (year := year_of(first)) is not None]
     shown = (min(firsts, default=newest), newest)
-    held = data_years(plan)
-    first = min(held[0], shown[0]) if held is not None else shown[0]
-    fact = stale_trailing_fact(
-        asked=(asked.start_year, asked.end_year), data_years=(first, newest), shown=shown
-    )
+    requested = (asked.start_year, asked.end_year)
+    if shortened:
+        fact = shortened_trailing_fact(asked=requested, shown=shown)
+    else:
+        held = data_years(plan)
+        first = min(held[0], shown[0]) if held is not None else shown[0]
+        fact = stale_trailing_fact(asked=requested, data_years=(first, newest), shown=shown)
+    reasons: list[str] = []
+    if stale:
+        reasons.append(
+            f"the newest year the data holds is {newest}, {now - newest} years before {now}"
+        )
+    if shortened:
+        reasons.append("earlier years would read a different series")
     warning = Warning(
         code=DATE_COVERAGE_PARTIAL,
         severity="warn",
-        message=(
-            f"the newest year the data holds is {newest}, {now - newest} years before "
-            f"{now}, so the answer shows {fact.shown}."
-        ),
+        message=f"{' and '.join(reasons)}, so the answer shows {fact.shown}.",
     )
     return warning, fact

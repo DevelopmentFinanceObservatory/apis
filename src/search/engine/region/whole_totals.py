@@ -16,11 +16,11 @@ a side a text names as a whole population so where it holds (`place_roles.bind_p
 and reads that side as unnamed on a dataset that publishes no total of a population covering
 it (`covers_unpublished`). A Spec carries the reading on `resolved.entity_groups`
 (`EntityGroup.whole_of`), read from its own identity (`whole_reading.whole_groups_over_identity`)
-on the roles the request read whole, and on a resubmit also on the roles it posts no group
-on, so a span counted back from now, whose years settle only once its series are read,
-labels each side over the years it settled on. An answer that lists a side member by member
-where its dataset publishes such a total states the total beside the members in a
-`whole_total_available` warning (`whole_total_warnings`).
+on the roles the request named or was offered a whole population on, and on a resubmit
+also on the roles it posts no group on, so a span counted back from now, whose years settle
+only once its series are read, labels each side over the years it settled on. An answer that
+lists a side member by member where its dataset publishes such a total states the total
+beside the members in a `whole_total_available` warning (`whole_total_warnings`).
 """
 
 from __future__ import annotations

@@ -1020,6 +1020,22 @@ def stale_trailing_fact(
     )
 
 
+def shortened_trailing_fact(*, asked: tuple[int, int], shown: tuple[int, int]) -> DepartureFact:
+    """`year_unavailable` for a span counted back from now whose range starts after the
+    newest year a member ahead of the served one in election order holds
+    (`region.trailing.settle_trailing`), so it shows fewer years than the span counts: the
+    calendar years the words cover and the years the answer shows. It states no data years,
+    since the years before the range can hold data."""
+    return DepartureFact(
+        code="year_unavailable",
+        binding_ref=WHEN_REF,
+        asked=_range_text(*asked),
+        shown=_span_text(shown),
+        requested_years=asked,
+        limited_by="passed_over",
+    )
+
+
 def deflator_omission_fact(
     omitted: Sequence[tuple[str, tuple[int, ...], tuple[int, ...]]], *, unnamed: int = 0
 ) -> DepartureFact:

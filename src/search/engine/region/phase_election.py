@@ -1105,7 +1105,7 @@ async def _repair_bindings(state: ResolveState) -> RegionResult | None:
     # value above the default that neither an admitted qualifier nor a menu choice names
     # gives way to the default where it fires ("total aid" read as official and private
     # flows binds total ODA).
-    bindings, _defaulted_bindings = apply_declared_defaults(
+    bindings, fired_defaults = apply_declared_defaults(
         bindings,
         state.shape_draft,
         index=get_index(),
@@ -1119,10 +1119,12 @@ async def _repair_bindings(state: ResolveState) -> RegionResult | None:
             match.code_dcid for match in (*state.admitted_qualifiers, *state.menu_choices)
         ),
     )
-    if _defaulted_bindings:
+    if fired_defaults:
         state.bindings = with_sampled_claims(bindings, claims)
         state.defaulted_properties = frozenset(
-            b.property_dcid for b in _defaulted_bindings if b.property_dcid is not None
+            fired.entry.property_dcid
+            for fired in fired_defaults
+            if fired.entry.property_dcid is not None
         )
         # A default on a slot the query names by its plain name ("top 5 aid flows") warns,
         # and answers each dropped phrase that asked for no more than that slot. A default
@@ -1140,7 +1142,9 @@ async def _repair_bindings(state: ResolveState) -> RegionResult | None:
             if text is not None
         ]
         defaulted = [
-            (prop, b) for b in _defaulted_bindings if (prop := b.property_dcid) is not None
+            (prop, fired)
+            for fired in fired_defaults
+            if (prop := fired.entry.property_dcid) is not None
         ]
         named = {
             prop: defaulted_slots_named([b], index=get_index(), texts=texts)
