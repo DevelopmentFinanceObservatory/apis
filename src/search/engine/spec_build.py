@@ -16,7 +16,7 @@ from code_index.labels import (
     compose_measure_label,
 )
 from code_index.shared import get_index, get_measure_index
-from code_index.types import PartyRow, label_for_pairs
+from code_index.types import PartyRow
 from description.blocks import ranked_values
 from dfo_platform.roles import role_key_axis
 from materialise.enrichment import party_count
@@ -32,6 +32,7 @@ from search.engine.retrieval.bound_values import (
     apply_slot_summability,
     bound_source,
     identity_dataset,
+    label_for_partition,
     measure_without_price_basis,
     mint_sibling_identity,
     price_basis_sibling,
@@ -899,7 +900,7 @@ def measure_label_for_partition(partition: MeasurePartition | None) -> MeasureLa
     if partition is None:
         return NO_MEASURE_LABEL
     measure_index = get_measure_index()
-    partition_match = label_for_pairs(partition.values, measure_index.partition_labels)
+    partition_match = label_for_partition(partition, measure_index.partition_labels)
     if partition_match is None:
         return NO_MEASURE_LABEL
     return MeasureLabel(

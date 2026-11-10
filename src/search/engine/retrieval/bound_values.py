@@ -45,7 +45,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Literal, NamedTuple, cast
 
 from code_index.composites import table_identity
-from code_index.labels import PRICE_BASIS_AXIS, is_price_basis
+from code_index.labels import PRICE_BASIS_AXIS, is_price_basis, rows_held_codes
 from code_index.members import (
     DatasetFamily,
     DatasetScope,
@@ -282,11 +282,19 @@ class MeasureElection:
 def label_for_partition(
     partition: MeasurePartition, labels: Sequence[MeasurePartitionLabel]
 ) -> PartitionLabelMatch | None:
-    """Match authored labels to `partition.values` by subset containment.
+    """Match authored labels to `partition.values` by subset containment, with the codes its
+    members hold (`code_index.labels.rows_held_codes`) where the index carries every member.
 
     The largest match wins; a tie raises `ValueError`.
     """
-    return label_for_pairs(partition.values, labels)
+    index = get_index()
+    rows = [index.statvar_by_dcid(dcid) for dcid in partition.members]
+    held = (
+        rows_held_codes(index, [row.constraint_properties for row in rows if row is not None])
+        if rows and None not in rows
+        else frozenset()
+    )
+    return label_for_pairs(partition.values, labels, held_codes=held)
 
 
 def _measure_axis_value(row: StatVarRow, axis: MeasureAxis) -> str | None:

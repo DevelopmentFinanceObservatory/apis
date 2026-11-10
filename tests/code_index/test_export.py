@@ -2001,6 +2001,53 @@ def test_a_measure_label_named_value_no_partition_row_carries_aborts_the_export(
         _verify_measure_label_named_values([row], codes, _MEASURE_AXES_FOR_TEST, [wrong])
 
 
+def test_a_row_reading_a_label_that_names_none_of_its_codes_aborts_until_a_code_keyed_label_covers_it():
+    """A row whose partition label names a code it does not hold would read that code in its
+    heading. A label keyed on a code the row holds, at the code or below it, names it."""
+    row = {
+        "dcid": "sv_objective_part",
+        "population_type": "FinancialFlow",
+        "measured_property": "amount",
+        "stat_type": "measuredValue",
+        "measurement_qualifier": "Nominal",
+        "constraint_properties": {
+            "financialFlowType": "Disbursement",
+            "nettingBasis": "Gross",
+            "objective": "ObjectivePart",
+        },
+    }
+    named_row = {
+        **row,
+        "dcid": "sv_flat",
+        "constraint_properties": {**row["constraint_properties"], "sysFlat": "SysFlatA"},
+    }
+    del named_row["constraint_properties"]["objective"]
+    codes = [
+        {"dcid": "SysFlatA", "code_system": "sysFlat", "parent": None},
+        {"dcid": "ObjectiveTotal", "code_system": "objective", "parent": None},
+        {"dcid": "ObjectivePart", "code_system": "objective", "parent": "ObjectiveTotal"},
+    ]
+    (gross,) = [
+        label
+        for label in _MEASURE_PARTITION_LABELS_FOR_TEST
+        if label.label == "gross disbursements"
+    ]
+    naming = dataclasses.replace(gross, named_values=(("sysFlat", "SysFlatA"),))
+    with pytest.raises(ExportRefused, match="sv_objective_part"):
+        _verify_measure_label_named_values(
+            [row, named_row], codes, _MEASURE_AXES_FOR_TEST, [naming]
+        )
+    keyed = dataclasses.replace(
+        gross,
+        label="objective gross disbursements",
+        codes=(("objective", "ObjectiveTotal"),),
+        named_values=(("objective", "ObjectiveTotal"),),
+    )
+    _verify_measure_label_named_values(
+        [row, named_row], codes, _MEASURE_AXES_FOR_TEST, [naming, keyed]
+    )
+
+
 # --- plain_name and enum_dcid flow from the code-system table into the declaration row ---
 
 

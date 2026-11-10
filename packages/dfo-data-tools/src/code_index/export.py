@@ -1865,36 +1865,72 @@ def _verify_measure_label_named_values(
     axes: Sequence[MeasureAxis],
     labels: Sequence[MeasurePartitionLabel],
 ) -> None:
-    """Require each label's `named_values` pair to be an exported code of its property's
-    code system, carried by at least one StatVar row under the label's partition. A pair
-    that fails names nothing and silences nothing in a heading. Empty axes make validation
-    a no-op, as in `_verify_measure_partition_labels`."""
+    """Require the codes each label names or keys on to be exported codes of their
+    property's code system, and the label each StatVar row reads, matched with the codes it
+    holds (`label_for_pairs`), to name something the row holds.
+
+    Each label's `named_values` pair must be held, at the code or below it, by at least one
+    row reading the label, and a row reading a label with `named_values` must hold one of
+    them: a label naming the imputed multilateral ODA aid type does not name a climate row
+    that holds none. A pair that fails names nothing and silences nothing in a heading.
+    Empty axes make validation a no-op, as in `_verify_measure_partition_labels`."""
     if not axes:
         return
     known = {(row["code_system"], row["dcid"]) for row in codes}
-    axes_by_name = {axis.axis: axis for axis in axes}
-    offending: list[tuple[str, tuple[str, str]]] = []
-    for label in labels:
-        rows = [
-            row
-            for row in statvars
-            if all(
-                axis in axes_by_name and _measure_axis_value(row, axes_by_name[axis]) == value
-                for axis, value in label.axis_values
-            )
-        ]
-        offending.extend(
-            (label.label, (prop, code))
-            for prop, code in label.named_values
-            if (prop, code) not in known
-            or not any(row["constraint_properties"].get(prop) == code for row in rows)
+    parent_of = {row["dcid"]: row.get("parent") for row in codes}
+    offending: list[tuple[str, tuple[str, str]]] = [
+        (label.label, pair)
+        for label in labels
+        for pair in (*label.named_values, *label.codes)
+        if pair not in known
+    ]
+    carried: dict[tuple[str, tuple[tuple[str, str], ...]], set[tuple[str, str]]] = {}
+    unnamed: list[tuple[str, str]] = []
+    for row in statvars:
+        held_codes = _held_codes(row["constraint_properties"], parent_of)
+        match = label_for_pairs(
+            [(axis.axis, _measure_axis_value(row, axis)) for axis in axes],
+            labels,
+            held_codes=held_codes,
         )
+        if match is None or not match.named_values:
+            continue
+        held = held_codes.intersection(match.named_values)
+        carried.setdefault((match.label, match.named_values), set()).update(held)
+        if not held:
+            unnamed.append((row["dcid"], match.label))
+    offending.extend(
+        (label.label, pair)
+        for label in labels
+        for pair in label.named_values
+        if pair not in carried.get((label.label, label.named_values), set())
+    )
     if offending:
         raise ExportRefused(
-            f"{len(offending)} measure label named value(s) are no exported code carried by "
-            f"a StatVar row under the label's partition: {offending!r} -- fix the entries' "
-            "named_values in MEASURE_PARTITION_LABELS"
+            f"{len(offending)} measure label named value(s) or code(s) are no exported code "
+            f"carried by a StatVar row reading the label: {offending!r} -- fix the entries' "
+            "named_values or codes in MEASURE_PARTITION_LABELS"
         )
+    if unnamed:
+        raise ExportRefused(
+            f"{len(unnamed)} StatVar row(s) read a measure label naming none of their codes, "
+            f"first {unnamed[:5]!r} -- key a label for them on the codes they hold"
+        )
+
+
+def _held_codes(
+    constraints: Mapping[str, str], parent_of: Mapping[str, str | None]
+) -> frozenset[tuple[str, str]]:
+    """The `(property, code)` pairs a row with `constraints` holds: each value that is an
+    exported code and the codes above it, as `code_index.labels.held_codes` reads them from a
+    loaded index."""
+    held: set[tuple[str, str]] = set()
+    for prop, value in constraints.items():
+        node: str | None = value
+        while node is not None and node in parent_of:
+            held.add((prop, node))
+            node = parent_of[node]
+    return frozenset(held)
 
 
 def _measure_axis_to_dict(axis: MeasureAxis) -> dict:
@@ -1913,6 +1949,11 @@ def _measure_partition_label_to_dict(partition_label: MeasurePartitionLabel) -> 
         "label": partition_label.label,
         "named_values": [list(pair) for pair in partition_label.named_values],
         "definition": partition_label.definition,
+        **(
+            {"codes": [list(pair) for pair in partition_label.codes]}
+            if partition_label.codes
+            else {}
+        ),
     }
 
 

@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 
 from pydantic import ConfigDict, Field
 
-from code_index.labels import compose_measure_label
+from code_index.labels import compose_measure_label, held_codes
 from code_index.query import CodeIndex
 from code_index.types import MeasureIndex, label_for_pairs
 from dc_graph import display_name
@@ -209,7 +209,9 @@ def build_definitions(
     constraints: dict[str, list[tuple[str, str]] | None] = {}
     targets: dict[str, list[str]] = {}
     for dcid, shape in shapes.items():
-        measures[dcid] = _measure(shape, measure_index) if shape.constraints is not None else None
+        measures[dcid] = (
+            _measure(shape, measure_index, code_index) if shape.constraints is not None else None
+        )
         constraints[dcid] = _open_constraints(shape, measures[dcid])
         targets[dcid] = _word_targets(shape, constraints[dcid], labels)
 
@@ -303,8 +305,11 @@ def _shapes(
     return shapes
 
 
-def _measure(shape: _Shape, measure_index: MeasureIndex) -> _MeasureMatch | None:
-    """The partition label over the measure axes, else the measure noun, or `None`."""
+def _measure(
+    shape: _Shape, measure_index: MeasureIndex, code_index: CodeIndex
+) -> _MeasureMatch | None:
+    """The partition label over the measure axes and the codes the variable holds
+    (`code_index.labels.held_codes`), else the measure noun, or `None`."""
     constraints = shape.constraints or {}
     shape_values = {
         "populationType": shape.population_type,
@@ -318,7 +323,11 @@ def _measure(shape: _Shape, measure_index: MeasureIndex) -> _MeasureMatch | None
         )
         for axis in measure_index.axes
     ]
-    match = label_for_pairs(pairs, measure_index.partition_labels)
+    match = label_for_pairs(
+        pairs,
+        measure_index.partition_labels,
+        held_codes=held_codes(code_index, {prop: [value] for prop, value in constraints.items()}),
+    )
     if match is not None:
         # `compose_measure_label` folds every uncovered measure-axis value into the label.
         return _MeasureMatch(
