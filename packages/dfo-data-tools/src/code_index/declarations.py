@@ -1330,6 +1330,20 @@ MEASURE_PARTITION_LABELS: tuple[MeasurePartitionLabel, ...] = (
             "recipients in proportion to where those agencies disbursed their funds that year."
         ),
     ),
+    # Only ONE Data Climate Finance holds this partition: each donor's share of what
+    # development banks and climate funds commit, credited by its core contributions to them.
+    MeasurePartitionLabel(
+        axis_values=(
+            ("financialObligationType", "Commitment"),
+            ("measuredProperty", "attributedAmount"),
+            ("populationType", "FinancialObligation"),
+        ),
+        label="imputed multilateral commitments",
+        definition=(
+            "A provider's share of what multilateral agencies commit to recipients, in "
+            "proportion to its core contributions to those agencies."
+        ),
+    ),
     MeasurePartitionLabel(
         axis_values=(
             ("financialFlowType", "Disbursement"),
