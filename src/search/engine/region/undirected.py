@@ -142,11 +142,11 @@ def declaring_datasets(place_set: PlaceSet, shapes: Sequence[ShapeDraft]) -> tup
 @per_index
 def declared_providers(index: CodeIndex) -> Mapping[str, frozenset[str]]:
     """Each place a dataset declares a provider, by dcid, with the datasets that declare it.
-    A dataset publishing a total that declares providers
+    A dataset publishing on the origin axis a total that declares providers
     (`code_index.declarations.TotalGroup.declares_providers`) declares each member the
     membership policy lists for the group the total holds (`PartyRow.totals`,
     `policy_members`): DAC1, DAC2a and DAC2b publish "DAC countries, total"
-    (`groups/OECD.DAC`). A dataset publishing a private party declares that party
+    (`groups/OECD.DAC`). A dataset publishing a private party on the origin axis declares it
     (`PartyRow.party_class`, the export's `PRIVATE_PROVIDERS`)."""
     declared: dict[str, set[str]] = {}
     for row in index.parties.values():
@@ -161,5 +161,7 @@ def declared_providers(index: CodeIndex) -> Mapping[str, frozenset[str]]:
         else:
             continue
         for member in members:
-            declared.setdefault(member, set()).update(row.datasets)
+            declared.setdefault(member, set()).update(
+                dataset for dataset, axis in row.published if axis == "origin"
+            )
     return {member: frozenset(datasets) for member, datasets in declared.items()}

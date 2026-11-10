@@ -182,7 +182,7 @@ def _reading(
             whole_of=tuple(sorted(covered)),
         )
     return WholeReading(
-        axis=first.axes[0],
+        axis=first.sole_axis(),
         members=(first.dcid,),
         total=first.dcid,
         label=first.label or first.dcid,
