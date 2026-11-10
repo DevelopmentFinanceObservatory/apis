@@ -359,8 +359,10 @@ def answer_headline(
     years, with that year's counts, and under `latest` the newest year a member elected
     (`latest_election`), with the counts of the members serving it. The rows a conversion
     leaves out (`ReadPlan.omitted`) count for nothing. None for a plan that is not
-    role-bearing."""
-    if plan.roles is None:
+    role-bearing, and for a span counted back from now that has not settled its years: its
+    plan reads every span it may settle on (`extract.read_window`), and its answer states
+    the headline of the range it settles on (`region.trailing.settle_trailing`)."""
+    if plan.roles is None or (date_request is not None and date_request.trailing is not None):
         return None
     window = plan.years if isinstance(plan.years, TimeWindow) else None
     elected = latest_election(plan, plan.years)

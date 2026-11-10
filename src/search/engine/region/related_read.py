@@ -150,6 +150,20 @@ def start_elected_related_read(state: ResolveState, mat_result: Materialised) ->
     )
 
 
+def elected_related_read(state: ResolveState, mat_result: Materialised) -> RelatedRead | None:
+    """The pass's read for the elected shape when it reads the answer's years
+    (`state.date_request`), else the read started over them (`start_elected_related_read`),
+    the stale one cancelled. A request narrowed after its read started, by a trailing span's
+    settlement or a conversion's period, reads its related measures over the narrowed years
+    as a resubmit of the answer does."""
+    held = state.related_read
+    if held is None or held.window == requested_window_from_date_request(state.date_request):
+        return held
+    cancel_related_reads((held,))
+    start_elected_related_read(state, mat_result)
+    return state.related_read
+
+
 def start_related_read(
     state: ResolveState,
     *,

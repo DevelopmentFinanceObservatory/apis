@@ -3355,11 +3355,10 @@ def test_each_option_probe_of_a_lone_candidate_binds_its_own_entities(monkeypatc
     )
     grounded = {
         "spec_ppp": SimpleNamespace(
-            candidate=SimpleNamespace(shape=object(), place=place),
+            candidate=SimpleNamespace(shape=object(), place=place, date_request=None),
             probe_inputs=(object(), [], [], [_GHA, _NOR]),
             role_axis_facts=(object(),),
             sv_dcids=[_GNI_PPP],
-            date_request=None,
         )
     }
     state = SimpleNamespace(

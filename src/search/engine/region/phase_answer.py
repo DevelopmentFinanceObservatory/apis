@@ -105,7 +105,11 @@ from search.engine.region.phase_shared import (
     withdraw_typed_unit,
 )
 from search.engine.region.place_roles import request_named_groups
-from search.engine.region.related_read import start_elected_related_read, with_related
+from search.engine.region.related_read import (
+    elected_related_read,
+    start_elected_related_read,
+    with_related,
+)
 from search.engine.region.relaunch import _relaunch_place_options, _relaunch_slot_options
 from search.engine.region.requirements import answer_terms, refusal_terms, settle_answer
 from search.engine.region.result import FacetAxisFilter, RegionResult, answered_roles
@@ -295,7 +299,7 @@ def _over_conversion_period(
         requested = (
             settled.asked
             if settled is not None
-            else state.date_request.asked_window
+            else state.date_request.window
             if state.date_request is not None
             else None
         )
@@ -325,7 +329,7 @@ def _over_trailing_years(
     the years it reads from here on, since the years read before settling are not the
     answer's (`_ground_elected_answer`)."""
     # Read from the request before settling replaces it with a plain range.
-    trailing = state.date_request is not None and state.date_request.trailing_years is not None
+    trailing = state.date_request is not None and state.date_request.trailing is not None
     settled = settle_trailing(
         mat_result,
         filtered,
@@ -465,7 +469,7 @@ async def _ground_elected_answer(state: ResolveState) -> RegionResult | None:
     mat_result = cast(Materialised, state.mat_result)
     # A trailing request reads its related measures once it has settled its years
     # (`_over_trailing_years`).
-    if state.date_request is None or state.date_request.trailing_years is None:
+    if state.date_request is None or state.date_request.trailing is None:
         start_elected_related_read(state, mat_result)
 
     early = await _decide_bound_unit_convertibility(state, mat_result)
@@ -1304,7 +1308,7 @@ async def _finalize_definite_result(
     """Attach eager SSE data and related measures, launch relaunch tasks, and return the
     definite result. The preview follows the scope decided for the finished answer
     (`_finished_scope`)."""
-    spec = await with_related(definite_spec.spec, state.related_read)
+    spec = await with_related(definite_spec.spec, elected_related_read(state, mat_result))
     decision = await _finished_scope(state, spec)
     if not decision.composite and state.include_observations and not state.stream_observations:
         # A bound-unit check fetches observations whether or not a preview is asked for.

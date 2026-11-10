@@ -270,60 +270,88 @@ class Extraction(BaseModel):
 
 
 @dataclass(frozen=True)
+class TrailingSpan:
+    """A span counted back from now ("the last five years"): it asks for the `years` newest
+    years the answer's data holds, whose newest year may lie up to `stale_years` before the
+    calendar years its words cover."""
+
+    years: int
+    stale_years: int
+
+    def settled(self, newest: int, *, floor: int | None = None) -> TimeWindow:
+        """The range the span settles on once its data's newest year is `newest`: the
+        `years` years ending there, starting no earlier than `floor`, so it can hold fewer.
+        Every settlement of a trailing span reads this rule (`region.trailing.settle_trailing`,
+        `retrieval.whole_reading.whole_reading`)."""
+        start = newest - self.years + 1
+        if floor is not None:
+            start = max(start, floor)
+        return TimeWindow(start_year=start, end_year=newest)
+
+
+@dataclass(frozen=True)
 class DateRequest:
     """A date window or a request for the latest year present in facets.
 
-    A span counted back from now ("the last five years") asks for the `trailing_years`
-    newest years the answer's data holds, which only its admitted series settle. The newest
-    year Y may lie up to `trailing_stale_years` before the asked span (`judged_window`), so
-    the answer reads `[Y - N + 1, Y]` for some Y there. Until Y is known, `window` holds
-    every such span: the judged window widened back by `trailing_years - 1` more. The reads
-    that confirm members, decide units and admit facets read `window`, so the span the
-    answer settles on was confirmed in full. Every judgement of whether a series or shape
-    holds data in the years asked reads `judged` instead, so a series that ended before the
-    judged window answers as it would to the asked span. The answer then reads the newest
-    years its series hold and states them as a plain range
+    `window` holds the years the request asks for. A span counted back from now ("the last
+    five years") asks for the newest years the answer's data holds, which only its admitted
+    series settle, so it also carries its `trailing` span and its `window` is the calendar
+    years its words cover. Its newest year may lie up to `TrailingSpan.stale_years` before
+    `window`, so every judgement of whether a series or shape holds data in the years asked
+    reads `judged`, and a series that ended before `window` answers as it would to the asked
+    span. The reads that confirm members, decide units and admit facets read every span the
+    answer can settle on (`read_window`), so the span it settles on was confirmed in full.
+    The answer then reads the newest years its series hold and states them as a plain range
     (`region.trailing.settle_trailing`).
     """
 
     window: TimeWindow | None
     latest: bool
-    trailing_years: int | None = None
+    trailing: TrailingSpan | None = None
 
     def __post_init__(self) -> None:
         # A request carries exactly one of `window` or `latest`.
         if self.window is not None and self.latest:
             raise ValueError("DateRequest: set either window or latest=True, not both")
-        if self.trailing_years is not None and (
-            self.window is None or self.window.end_year is None or self.trailing_years < 1
+        if self.trailing is not None and (
+            self.window is None
+            or self.window.start_year is None
+            or self.window.end_year is None
+            or self.trailing.years < 1
+            or self.window.end_year - self.window.start_year + 1 != self.trailing.years
         ):
-            raise ValueError("DateRequest: a trailing span needs a window that ends")
-
-    @property
-    def asked_window(self) -> TimeWindow | None:
-        """The years the request names: for a trailing span, its count of years ending at
-        `window`'s end, the calendar years the words cover; otherwise `window`."""
-        if self.trailing_years is None or self.window is None or self.window.end_year is None:
-            return self.window
-        end = self.window.end_year
-        return TimeWindow(start_year=end - self.trailing_years + 1, end_year=end)
+            raise ValueError("DateRequest: a trailing span needs a window of its years")
 
     @property
     def judged(self) -> DateRequest:
         """The request whose years a judgement of where data is held reads: for a trailing
-        span, the asked years widened back by `trailing_stale_years`, the years its newest
-        year may lie in (`judged_window`); otherwise the request itself."""
-        if self.trailing_years is None:
+        span, `window` widened back by its `stale_years`, the years its newest year may lie
+        in; otherwise the request itself."""
+        if self.trailing is None:
             return self
-        return DateRequest(window=judged_window(self.asked_window), latest=False)
+        assert self.window is not None and self.window.start_year is not None
+        return DateRequest(
+            window=TimeWindow(
+                start_year=self.window.start_year - self.trailing.stale_years,
+                end_year=self.window.end_year,
+            ),
+            latest=False,
+        )
 
 
-def judged_window(asked: TimeWindow | None) -> TimeWindow:
-    """The years a trailing span's newest year may lie in: the `asked` span widened back by
-    `trailing_stale_years`."""
-    assert asked is not None and asked.start_year is not None
-    reach = scope_window_settings().trailing_stale_years
-    return TimeWindow(start_year=asked.start_year - reach, end_year=asked.end_year)
+def read_window(date_request: DateRequest | None) -> TimeWindow | None:
+    """The years a read confirming an answer's members reads for `date_request`: for a
+    trailing span, every span of its count ending in its judged years (`DateRequest.judged`),
+    the judged years widened back by `TrailingSpan.years - 1`; otherwise its `window`. None
+    for a latest or dateless request."""
+    if date_request is None or date_request.trailing is None:
+        return None if date_request is None else date_request.window
+    judged = date_request.judged.window
+    assert judged is not None and judged.start_year is not None
+    return TimeWindow(
+        start_year=judged.start_year - (date_request.trailing.years - 1),
+        end_year=judged.end_year,
+    )
 
 
 def _parse_year(s: str | None) -> int | None:
@@ -339,7 +367,7 @@ def dates_to_request(dates: list[ExtractedDate]) -> DateRequest | None:
     """Combine extracted dates. Bounds take precedence over `latest`.
 
     A lone span counted back from now (`ExtractedDate.trailing_years`) yields a trailing
-    request, whose window holds every span its answer can settle on (`DateRequest`). Return
+    request over the calendar years its words cover (`DateRequest.trailing`). Return
     `None` when no date bound parses and no `latest` entry exists.
     """
     if not dates:
@@ -384,13 +412,13 @@ def _trailing_request(extracted: ExtractedDate) -> DateRequest | None:
     start, end = _parse_year(extracted.start), _parse_year(extracted.end)
     if extracted.trailing_years is None or start is None or end is None:
         return None
-    years = extracted.trailing_years
-    judged = judged_window(TimeWindow(start_year=start, end_year=end))
-    assert judged.start_year is not None
     return DateRequest(
-        window=TimeWindow(start_year=judged.start_year - (years - 1), end_year=end),
+        window=TimeWindow(start_year=start, end_year=end),
         latest=False,
-        trailing_years=years,
+        trailing=TrailingSpan(
+            years=extracted.trailing_years,
+            stale_years=scope_window_settings().trailing_stale_years,
+        ),
     )
 
 

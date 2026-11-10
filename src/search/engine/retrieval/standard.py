@@ -48,6 +48,7 @@ from search.engine.retrieval.read_plan import (
     PairPlan,
     PlanYears,
     asked_years,
+    confirming_years,
     has_points,
     in_elected_datasets,
     plan_standard,
@@ -889,7 +890,7 @@ def _default_scope_short_circuit(
                 sv_dcids=[representative_sv],
                 has_data=False,
                 coverage=CoverageBare(
-                    has_data=False, window=date_request.asked_window if date_request else None
+                    has_data=False, window=date_request.window if date_request else None
                 ),
                 scope_member_dcids=[],
                 member_facts=member_facts,
@@ -905,7 +906,7 @@ def _default_scope_short_circuit(
                 sv_dcids=[representative_sv],
                 has_data=False,
                 coverage=CoverageBare(
-                    has_data=False, window=date_request.asked_window if date_request else None
+                    has_data=False, window=date_request.window if date_request else None
                 ),
                 available_at_place=False,
                 family_total_absent=family.total_absent(representative_sv, ()),
@@ -943,7 +944,7 @@ def _no_entity_disambiguation(
     from search.engine.retrieval.retrieve import Materialised, MemberPopulation
     from search.models import CoverageBare
 
-    no_entity_window = date_request.asked_window if date_request is not None else None
+    no_entity_window = date_request.window if date_request is not None else None
     if not family.members:
         return Materialised(
             sv_dcids=[representative_sv],
@@ -1307,9 +1308,7 @@ def _no_data_at_place(
     return Materialised(
         sv_dcids=[representative_sv],
         has_data=False,
-        coverage=CoverageBare(
-            has_data=False, window=date_request.asked_window if date_request else None
-        ),
+        coverage=CoverageBare(has_data=False, window=date_request.window if date_request else None),
         available_at_place=False,
         family_total_absent=family_total_absent,
         scope_member_dcids=[] if default_scope_probe else None,
@@ -1389,9 +1388,7 @@ def _no_data_in_years(
     return Materialised(
         sv_dcids=[sv],
         has_data=False,
-        coverage=CoverageBare(
-            has_data=False, window=date_request.asked_window if date_request else None
-        ),
+        coverage=CoverageBare(has_data=False, window=date_request.window if date_request else None),
         facets_by_sv={sv: list(facets)},
         available_at_place=True,
         window_gap=window_gap(dateless_plan, years),
@@ -1462,7 +1459,7 @@ def _materialise_collected(
         places_of=places_of,
         member_facts=member_facts,
         declared=declared,
-        years=plan_years(date_request),
+        years=confirming_years(date_request),
         scope=default_scope_probe and is_plural,
     )
     if serves_nothing(plan):
@@ -1633,7 +1630,7 @@ def standard_resolve(
         presence=default_presence if scope_check.active else None,
     )
 
-    years = plan_years(date_request)
+    years = confirming_years(date_request)
     judged_years = plan_years(date_request.judged if date_request is not None else None)
     if default_presence is not None and scope_check.active:
         read_places = {place for places in places_of.values() for place in places}
@@ -1690,7 +1687,7 @@ def standard_resolve(
             if (
                 collected
                 and date_request is not None
-                and date_request.trailing_years is not None
+                and date_request.trailing is not None
                 and isinstance(judged_years, TimeWindow)
                 and judged_years.start_year is not None
             ):
@@ -1940,7 +1937,7 @@ def standard_option_coverage(
             plan = plan_standard(
                 series,
                 members=svs,
-                years=plan_years(date_request),
+                years=confirming_years(date_request),
                 places=tuple(probe_entities),
                 # The request deadline bound to the context bounds the breadth read.
                 deadline=None,

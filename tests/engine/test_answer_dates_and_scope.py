@@ -858,7 +858,7 @@ def test_each_candidates_slot_options_read_its_own_settled_years(
         for spec in result.specs
     }
     assert {
-        spec_id: (request.window.start_year, request.window.end_year, request.trailing_years)
+        spec_id: (request.window.start_year, request.window.end_year, request.trailing)
         for spec_id, request in probed.items()
         if request is not None and request.window is not None
     } == {spec_id: (*years, None) for spec_id, years in stated.items()}

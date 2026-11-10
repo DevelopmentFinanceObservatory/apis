@@ -573,7 +573,7 @@ async def _assemble_definite(
             measure_partition=_entry.measure_partition,
             places=_survivor.place.roles.roles,
             arcs=_survivor.shape.sv_arc_facts,
-            date_request=_entry.date_request,
+            date_request=_survivor.date_request,
         )
         if state.bound_unit_outcome is not None:
             # State the unit lexicon version. A streamed answer also states its preview's
@@ -602,7 +602,7 @@ async def _assemble_definite(
         state.timing["options"] = now_ms() - _options_t0
         _family = [
             *state.family_total_absent_departures((_survivor_spec,)),
-            *state.stale_trailing_departures((_survivor_spec,)),
+            *grounded.stale_trailing_departures((_survivor_spec,)),
         ]
         # Place-option tasks run only when `materialise_graph` is available.
         _place_options_materialise_graph = state.materialise_graph
@@ -863,7 +863,7 @@ async def _assemble_candidate_set(
     )
     _family = [
         *state.family_total_absent_departures(_candidate_specs),
-        *state.stale_trailing_departures(_candidate_specs),
+        *grounded.stale_trailing_departures(_candidate_specs),
     ]
     return RegionResult(
         variable_text=state.variable,
@@ -913,6 +913,7 @@ async def assemble_candidates(
                 cast(Materialised, state.mat_result),
                 state.place,
                 state.walked,
+                state.date_request,
             )
         )
     # Each candidate beside the elected answer is judged on the members its own read
@@ -924,7 +925,7 @@ async def assemble_candidates(
         dataclasses.replace(cand, uncovered=own)
         for cand, own in zip(admission.admitted, uncovered, strict=True)
     )
-    trailing = state.date_request is not None and state.date_request.trailing_years is not None
+    trailing = state.date_request is not None and state.date_request.trailing is not None
     if state.elected_has_data and not trailing:
         # The elected shape most often survives, so its related measures are read beside
         # the grounding and assembly of every candidate (`related_read_for`). A trailing
@@ -937,7 +938,12 @@ async def assemble_candidates(
         # the matching no-data response.
         candidates.append(
             _Candidate(
-                state.shape_draft, state.bindings, state.mat_result, state.place, state.walked
+                state.shape_draft,
+                state.bindings,
+                state.mat_result,
+                state.place,
+                state.walked,
+                state.date_request,
             )
         )
 

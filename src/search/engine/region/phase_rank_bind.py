@@ -2001,7 +2001,9 @@ def _default_reading(
 
     A price basis is named by a free-axis match, or by a two-reading span ("PPP") whose
     measure reading one of `eligible_shapes` carries alone (`reading_for_shape`).
-    `price_basis_order` ignores values of other axes.
+    `price_basis_order` ignores values of other axes. A trailing span's years are those its
+    newest year may lie in (`extract.DateRequest.judged`), as every judgement of where data is
+    held reads them.
     """
     named = [match.code_dcid for match in free_matches]
     named += [
@@ -2010,7 +2012,7 @@ def _default_reading(
         if any(reading_for_shape(readings, s) is readings.measure for s in eligible_shapes)
     ]
     request = state.date_request
-    window = None if request is None else ("latest" if request.latest else request.window)
+    window = None if request is None else ("latest" if request.latest else request.judged.window)
     return DefaultReading(order=price_basis_order(get_measure_index(), named), window=window)
 
 

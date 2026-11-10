@@ -742,9 +742,7 @@ def _no_point_in_years(
         sv_dcids=[sv],
         facets_by_sv={sv: by_sv[sv]},
         has_data=False,
-        coverage=CoverageBare(
-            has_data=False, window=date_request.asked_window if date_request else None
-        ),
+        coverage=CoverageBare(has_data=False, window=date_request.window if date_request else None),
         available_at_place=True,
         window_gap=window_gap(dateless.plan, years),
         role_declaration_unverified=role_declaration_unverified,

@@ -511,7 +511,7 @@ def _trailing(text: str) -> DateRequest:
     """The request a span counted back from 2026 reads as (`time_bind`, `dates_to_request`)."""
     dates, _warning = parse_time_text(text, current_year=2026)
     request = dates_to_request(dates)
-    assert request is not None and request.trailing_years is not None
+    assert request is not None and request.trailing is not None
     return request
 
 

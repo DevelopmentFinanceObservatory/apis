@@ -17,7 +17,8 @@ import threading
 import time
 from collections.abc import Coroutine, Mapping
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -29,6 +30,7 @@ from search.engine.clients.graph import SubjectsPage
 from search.engine.concurrency import scoped_concurrency
 from search.engine.core import resolve_async
 from search.engine.errors import EngineInputError, GraphInfraError
+from search.engine.extract import DateRequest
 from search.engine.region import RegionResult, related_read, resolve_spec_resubmit
 from search.engine.related import (
     NO_RELATED,
@@ -930,3 +932,47 @@ class _PinnedDate:
         from datetime import date
 
         return date(*args, **kwargs)
+
+
+class _HeldTask:
+    """A related read's task that records whether it was cancelled."""
+
+    def __init__(self) -> None:
+        self.cancelled = False
+
+    def cancel(self) -> None:
+        self.cancelled = True
+
+
+@pytest.mark.parametrize(
+    ("asked", "restarted"),
+    [((2015, 2020), False), ((2018, 2020), True)],
+    ids=["same-years", "narrowed-years"],
+)
+def test_a_definite_answer_joins_its_related_read_only_over_its_own_years(
+    monkeypatch, asked: tuple[int, int], restarted: bool
+):
+    """A definite answer whose request narrowed after its related read started, as a
+    conversion's period narrows it, reads its related measures again over the narrowed
+    years and cancels the read over the old ones; a read over its own years is joined."""
+    held = related_read.RelatedRead(
+        stat_var=_INFLATION,
+        window=TimeWindow(start_year=2015, end_year=2020),
+        task=cast(Any, _HeldTask()),
+    )
+    fresh = related_read.RelatedRead(stat_var=_INFLATION, window=None, task=cast(Any, None))
+    state = SimpleNamespace(
+        related_read=held,
+        date_request=DateRequest(
+            window=TimeWindow(start_year=asked[0], end_year=asked[1]), latest=False
+        ),
+    )
+
+    def _start(state: SimpleNamespace, _mat: object) -> None:
+        state.related_read = fresh
+
+    monkeypatch.setattr(related_read, "start_elected_related_read", _start)
+
+    joined = related_read.elected_related_read(cast(Any, state), cast(Any, None))
+
+    assert (joined is fresh, cast(_HeldTask, held.task).cancelled) == (restarted, restarted)

@@ -77,7 +77,7 @@ def _make_slot_options_task(
                 _candidate_facet_probe(state, grounded, s),
                 bool(s.definition.identity.facets),
                 member_labels((s,)),
-                entry.date_request,
+                entry.candidate.date_request,
             )
         )
     if not probes:
@@ -123,7 +123,7 @@ def _make_slot_options_relaunch(
         default_facet_probe=_candidate_facet_probe(state, grounded, original_spec),
         facets_pinned=bool(original_spec.definition.identity.facets),
         variable_labels=member_labels((original_spec,)),
-        date_request=entry.date_request,
+        date_request=entry.candidate.date_request,
     )
 
 
@@ -230,7 +230,7 @@ async def _attach_candidate_slot_options(
         _raw_options,
         entities=entry.candidate.place.roles.resolved_entities,
         open_axes=entry.candidate.place.roles.open_axes,
-        date_request=entry.date_request,
+        date_request=entry.candidate.date_request,
         graph=state.graph,
         materialise_graph=state.materialise_graph,
         place_dcids=_place_dcids,
@@ -262,7 +262,7 @@ async def _attach_candidate_entity_options(
         entry.candidate.place.roles.resolved_entities,
         state.entity_objects,
         entry.sv_dcids,
-        date_request=entry.date_request,
+        date_request=entry.candidate.date_request,
         graph=state.graph,
         sdmx=state.sdmx,
         include_option_coverage=state.include_option_coverage,

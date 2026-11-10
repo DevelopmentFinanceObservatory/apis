@@ -902,10 +902,6 @@ class ResolveState:
     # By `spec_id`, each grounded Spec whose single StatVar is not its family's total.
     # A terminal raises the warning for the Specs its part holds.
     family_total_absent: dict[str, FamilyTotalAbsent] = field(default_factory=dict)
-    # By `spec_id`, the departure of each grounded candidate Spec whose trailing span reads
-    # a stale newest year (`trailing.stale_departure`). A terminal raises those of the Specs
-    # its part holds (`stale_trailing_departures`).
-    stale_trailing: dict[str, Departed] = field(default_factory=dict)
     # Accumulates LLM token usage for this variable's pipeline calls.
     var_usage: dict | None = None
     # What the mint states of the members the walk settled for the shape in play, `None`
@@ -1668,11 +1664,6 @@ class ResolveState:
         return family_total_absent_departures(
             specs, self.family_total_absent, variable_text=self.variable, label_of=self.label_dcids
         )
-
-    def stale_trailing_departures(self, specs: Iterable[Spec]) -> list[Departed]:
-        """The stale-year departure of each of `specs`, the Specs a part holds, that
-        candidate grounding recorded (`stale_trailing`)."""
-        return [departed for spec in specs if (departed := self.stale_trailing.get(spec.spec_id))]
 
     def settled_dataset(self, candidate: _Candidate | None = None) -> str | None:
         """The dataset the part's run has settled on for `candidate`, else for the elected

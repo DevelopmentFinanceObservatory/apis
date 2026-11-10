@@ -1,15 +1,17 @@
 """Settle a span counted back from now on the newest year an answer's admitted series hold.
 
-A trailing request ("the last five years", `extract.DateRequest.trailing_years`) reads its
-`window` through materialisation and the unit and facet admission. That window holds every
-N-year span ending in the judged years (`DateRequest.judged`), so the members, units and facets
-of whichever span the answer settles on were confirmed in that one read. Once admission has
-fixed what an answer serves, its newest year Y is the newest year any served series holds
-(`read_plan.newest_served_year`), one year per Spec, and the answer reads the N years ending
-there, `[Y - N + 1, Y]`, over the plan it already built (`ReadPlan.windowed`), so the request
-resolves once. A standard answer that elected one member starts after the newest year a member
-ahead of it in election order holds (`Materialised.passed_over_newest_year`), so a resubmit of
-the range elects the same member; such a span can hold fewer than N years. Its request becomes
+A trailing request ("the last five years", `extract.DateRequest.trailing`) reads its
+`extract.read_window` through materialisation and the unit and facet admission. That window
+holds every N-year span ending in the judged years (`DateRequest.judged`), so the members,
+units and facets of whichever span the answer settles on were confirmed in that one read. Once
+admission has fixed what an answer serves, its newest year Y is the newest year any served
+series holds (`read_plan.newest_served_year`), one year per Spec, and the answer reads the N
+years ending there, `[Y - N + 1, Y]` (`extract.TrailingSpan.settled`), over the plan it already
+built (`ReadPlan.windowed`), so the request resolves once. A standard answer that elected one
+member starts after the newest year a member ahead of it in election order holds
+(`Materialised.passed_over_newest_year`), so a resubmit of the range elects the same member,
+and no span starts before the plan's own years; such a span can hold fewer than N years. Its
+request becomes
 that plain range, which the Spec states and a resubmit reads. A Y more than
 `trailing_stale_years` before the current year departs `year_unavailable` naming it
 (`stale_departure`). An admitted answer whose newest year lies before the judged years reads the
@@ -48,8 +50,8 @@ if TYPE_CHECKING:
 class SettledTrailing:
     """An answer read over the newest years of a trailing request: the materialised result
     and filtered answer over them, the plain range request that names them, the calendar
-    years the request's words cover (`DateRequest.asked_window`), which a later departure
-    names as the years asked, and the departure a stale newest year raises."""
+    years the request's words cover (`DateRequest.window`), which a later departure names as
+    the years asked, and the departure a stale newest year raises."""
 
     mat: Materialised
     filtered: FilteredAnswer
@@ -70,14 +72,12 @@ def _assert_inside(plan: ReadPlan, window: TimeWindow) -> None:
     ), (years, window)
 
 
-def _from_plan_start(plan: ReadPlan, start: int, end: int) -> TimeWindow:
-    """`start` to `end`, starting no earlier than `plan`'s years: a role read floors its
-    years where coverage begins (`scope_window.role_read_years`), so no data precedes them,
-    and a resubmit of the range floors there too."""
+def _plan_start(plan: ReadPlan) -> int | None:
+    """The first of `plan`'s years, where a settled range starts at the earliest: a role read
+    floors its years where coverage begins (`scope_window.role_read_years`), so no data
+    precedes them, and a resubmit of the range floors there too."""
     years = plan.years
-    if isinstance(years, TimeWindow) and years.start_year is not None:
-        start = max(start, years.start_year)
-    return TimeWindow(start_year=start, end_year=end)
+    return years.start_year if isinstance(years, TimeWindow) else None
 
 
 def _serving(mat: Materialised, window: TimeWindow, answered: ReadPlan) -> Materialised:
@@ -150,32 +150,37 @@ def settle_trailing(
     coverage_index: CoverageIndex,
 ) -> SettledTrailing | None:
     """`filtered`, the answer after unit and facet admission, read over the newest
-    `trailing_years` years its plan serves, starting after the newest year a member passed
+    `TrailingSpan.years` years its plan serves, starting after the newest year a member passed
     over in election holds (`Materialised.passed_over_newest_year`). An answer whose newest
     year lies before the judged years is read over the judged years and keeps its request.
     None for a request that does not trail, or a plan that serves no dated point, which
     keeps its answer."""
-    if date_request is None or date_request.trailing_years is None or filtered.plan is None:
+    if date_request is None or date_request.trailing is None or filtered.plan is None:
         return None
     newest = newest_served_year(filtered.plan)
     if newest is None:
         return None
     judged = date_request.judged.window
     assert judged is not None and judged.start_year is not None and judged.end_year is not None
-    asked = date_request.asked_window
+    asked = date_request.window
     assert asked is not None
+    plan_start = _plan_start(filtered.plan)
     if newest < judged.start_year:
-        window = _from_plan_start(filtered.plan, judged.start_year, judged.end_year)
+        start = judged.start_year if plan_start is None else max(judged.start_year, plan_start)
+        window = TimeWindow(start_year=start, end_year=judged.end_year)
         mat, answer = _over(
             mat, filtered, window, date_request=date_request, coverage_index=coverage_index
         )
         return SettledTrailing(
             mat=mat, filtered=answer, date_request=date_request, asked=asked, departure=None
         )
-    start = newest - date_request.trailing_years + 1
-    if mat.passed_over_newest_year is not None:
-        start = max(start, mat.passed_over_newest_year + 1)
-    window = _from_plan_start(filtered.plan, start, newest)
+    passed_over = mat.passed_over_newest_year
+    floors = [
+        floor
+        for floor in (plan_start, None if passed_over is None else passed_over + 1)
+        if floor is not None
+    ]
+    window = date_request.trailing.settled(newest, floor=max(floors, default=None))
     settled = DateRequest(window=window, latest=False)
     mat, answer = _over(mat, filtered, window, date_request=settled, coverage_index=coverage_index)
     return SettledTrailing(
@@ -197,7 +202,7 @@ def stale_departure(
     now = current_year()
     if now - newest <= scope_window_settings().trailing_stale_years:
         return None
-    asked = date_request.asked_window
+    asked = date_request.window
     assert asked is not None and asked.start_year is not None and asked.end_year is not None
     served = served_dates(plan).values() if plan is not None else ()
     firsts = [year for first, _last in served if (year := year_of(first)) is not None]

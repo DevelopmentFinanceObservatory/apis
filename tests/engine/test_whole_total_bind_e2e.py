@@ -3497,7 +3497,7 @@ _TRAILING_GRID = [
     for lag in (0, 1)
 ] + [
     # The read's first year (`scope_min_year`) falls after the span would start, so the range
-    # settles from it (`trailing._from_plan_start`), inside the marker's years or before them.
+    # settles from it (`extract.TrailingSpan.settled`), inside the marker's years or before them.
     pytest.param(
         named,
         last,

@@ -156,8 +156,8 @@ def _date_request_to_time_text(date_request: DateRequest | None) -> str | None:
         return None
     if date_request.latest:
         return "latest"
-    if date_request.trailing_years is not None:
-        return f"last {date_request.trailing_years} years"
+    if date_request.trailing is not None:
+        return f"last {date_request.trailing.years} years"
     window = date_request.window
     if window is None or window.start_year is None:
         return None

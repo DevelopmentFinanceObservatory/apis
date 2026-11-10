@@ -82,11 +82,11 @@ def requested_years(date_request: DateRequest | None, *, horizon: YearHorizon) -
     if window is None or window.start_year is None or window.end_year is None:
         return None
     assert date_request is not None
-    trailing = date_request.trailing_years
+    trailing = date_request.trailing
     return YearsAsked(
         first=window.start_year,
         last=window.end_year,
-        trailing_years=trailing,
+        trailing=trailing,
         first_read=None if trailing is None else first_read_year(horizon),
     )
 

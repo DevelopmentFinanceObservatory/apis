@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from code_index.shared import get_index
 from code_index.types import POPULATION_CLASS, PartyClass, PartyRow, WholeMarker, WholeTotalSet
 from dfo_platform.roles import role_key_axis
+from search.engine.extract import TrailingSpan
 from search.engine.named_group import NamedGroup
 from search.engine.retrieval.bound_values import identity_dataset
 from search.models import BaseIdentity, IdentityWindow, RoleAxis
@@ -58,15 +59,15 @@ class WholeReading:
 
 @dataclass(frozen=True, slots=True)
 class YearsAsked:
-    """The years a whole-total marker must hold over, `first` to `last`. `trailing_years`
-    is N for a span counted back from now ("the last N years"), whose years are those its
-    newest year may lie in (`extract.DateRequest.judged`), and None for a plain range.
-    `first_read` is the first year such a span's read lists (`scope_window.first_read_year`),
-    where the range it settles on starts at the latest."""
+    """The years a whole-total marker must hold over, `first` to `last`. `trailing` is the
+    span counted back from now ("the last N years") whose years are those its newest year may
+    lie in (`extract.DateRequest.judged`), and None for a plain range. `first_read` is the
+    first year such a span's read lists (`scope_window.first_read_year`), where the range it
+    settles on starts at the latest."""
 
     first: int
     last: int
-    trailing_years: int | None = None
+    trailing: TrailingSpan | None = None
     first_read: int | None = None
 
 
@@ -88,8 +89,8 @@ def _within(marker: WholeMarker, years: YearsAsked | None) -> bool:
     check is provisional: the marker must hold over the N years ending at the earlier of the
     span's last year and the marker's own, starting no earlier than the first year the read
     lists (`YearsAsked.first_read`), the range the answer settles on when its data reach the
-    dataset's last published year (`trailing._from_plan_start`), and that year must lie in
-    the years the span's newest year may lie in. The Spec the answer builds then reads its
+    dataset's last published year (`extract.TrailingSpan.settled`, the rule the answer
+    settles by), and that year must lie in the years the span's newest year may lie in. The Spec the answer builds then reads its
     whole populations again over the range it settled on (`identity_whole_groups`), as a
     resubmit of it does, so the provisional check decides only whether a side the request
     leaves unnamed offers the total."""
@@ -98,11 +99,12 @@ def _within(marker: WholeMarker, years: YearsAsked | None) -> bool:
     if years is None:
         return False
     first, last = marker.years
-    if years.trailing_years is None:
+    if years.trailing is None:
         return first <= years.first and years.last <= last
-    end = min(years.last, last)
-    start = max(end - years.trailing_years + 1, years.first_read or first)
-    return first <= start and years.first <= end
+    newest = min(years.last, last)
+    settled = years.trailing.settled(newest, floor=years.first_read or first)
+    assert settled.start_year is not None
+    return first <= settled.start_year and years.first <= newest
 
 
 def _markers(party: PartyRow, datasets: Sequence[str]) -> list[WholeMarker] | None:

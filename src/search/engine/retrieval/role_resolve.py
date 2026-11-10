@@ -886,9 +886,7 @@ def _zero_observation_carrier(
         sv_dcids=[representative_sv],
         facets_by_sv={representative_sv: held[representative_sv]} if held else None,
         has_data=False,
-        coverage=CoverageBare(
-            has_data=False, window=date_request.asked_window if date_request else None
-        ),
+        coverage=CoverageBare(has_data=False, window=date_request.window if date_request else None),
         available_at_place=bool(held),
         window_gap=window_gap(dateless_plan, years) if held and years is not None else None,
         open_origin_dcids=open_origin_dcids,
