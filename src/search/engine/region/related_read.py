@@ -48,7 +48,7 @@ from search.engine.degraded_reads import ReadBudget, note_lost_read
 from search.engine.errors import GraphInfraError
 from search.engine.extract import DateRequest
 from search.engine.region.grounding import requested_window_from_date_request
-from search.engine.region.state import ResolveState
+from search.engine.region.state import MeasureFamily, ResolveState
 from search.engine.related import Related, read_related, related_measures
 from search.engine.retrieval.bound_values import (
     MeasurePartition,
@@ -121,12 +121,54 @@ def start_elected_related_read(state: ResolveState, mat_result: Materialised) ->
     """Read the measure family the elected shape's served members exhibit into
     `state.measure_family`, and start their related-measures reads over the request's years
     into `state.related_read` (`start_related_read`), replacing one the pass started before."""
+    _start_elected(state, mat_result, _elected_measure_family(state, mat_result))
+
+
+def start_answer_related_read(state: ResolveState, mat_result: Materialised) -> None:
+    """The elected answer's related-measures read over its final years
+    (`state.date_request`), once a trailing span has settled and a conversion's period has
+    narrowed them, as a resubmit of the answer reads them. A read the pass already started
+    for the answer's one StatVar, outside a measure family, over those years stands
+    (`_ground_elected_answer`, `candidate_collapse`); any other read it holds is cancelled
+    and a read for the answer starts, as `start_elected_related_read` starts one."""
+    held = state.related_read
+    family = _elected_measure_family(state, mat_result)
+    if (
+        held is not None
+        and mat_result.sv_dcids == [held.stat_var]
+        and family[0] is None
+        and held.window == requested_window_from_date_request(state.date_request)
+    ):
+        state.measure_family = family
+        return
+    if held is not None:
+        cancel_related_reads((held,))
+    _start_elected(state, mat_result, family)
+
+
+def _start_elected(state: ResolveState, mat_result: Materialised, family: MeasureFamily) -> None:
+    """Record `family` and start the elected shape's related-measures read over the
+    request's years (`start_related_read`)."""
+    state.measure_family = family
+    state.related_read = start_related_read(
+        state,
+        stat_vars=mat_result.sv_dcids,
+        measure_partition=family[0],
+        places=state.place.roles.roles,
+        arcs=state.shape_draft.sv_arc_facts,
+        date_request=state.date_request,
+    )
+
+
+def _elected_measure_family(state: ResolveState, mat_result: Materialised) -> MeasureFamily:
+    """The measure family the elected shape's served members exhibit
+    (`bound_values.observed_measure_family`)."""
     served_member_facts = mat_result.member_facts or {}
     role_keys = entity_role_keys(
         state.place.roles.resolved_entities,
         open_axes=state.place.roles.open_axes,
     )
-    state.measure_family = observed_measure_family(
+    return observed_measure_family(
         state.shape_draft,
         get_index(),
         get_measure_index().axes,
@@ -140,29 +182,6 @@ def start_elected_related_read(state: ResolveState, mat_result: Materialised) ->
         # violates the contract and raises.
         [served_member_facts[dcid] for dcid in mat_result.sv_dcids],
     )
-    state.related_read = start_related_read(
-        state,
-        stat_vars=mat_result.sv_dcids,
-        measure_partition=state.measure_family[0],
-        places=state.place.roles.roles,
-        arcs=state.shape_draft.sv_arc_facts,
-        date_request=state.date_request,
-    )
-
-
-def start_answer_related_read(state: ResolveState, mat_result: Materialised) -> None:
-    """Start the elected shape's related-measures read over the answer's final years
-    (`state.date_request`, `start_elected_related_read`), once a trailing span has settled
-    and a conversion's period has narrowed them, as a resubmit of the answer reads them. A
-    read the pass already started over those years (`candidate_collapse`) stands; one
-    started over other years is cancelled."""
-    held = state.related_read
-    window = requested_window_from_date_request(state.date_request)
-    if state.measure_family is not None and (held is None or held.window == window):
-        return
-    if held is not None:
-        cancel_related_reads((held,))
-    start_elected_related_read(state, mat_result)
 
 
 def start_related_read(

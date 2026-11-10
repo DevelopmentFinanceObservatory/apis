@@ -175,17 +175,15 @@ def settle_trailing(
             mat=mat, filtered=answer, date_request=date_request, asked=asked, departure=None
         )
     passed_over = mat.passed_over_newest_year
-    floors = [
-        floor
-        for floor in (plan_start, None if passed_over is None else passed_over + 1)
-        if floor is not None
-    ]
+    passed_floor = None if passed_over is None else passed_over + 1
+    floors = [floor for floor in (plan_start, passed_floor) if floor is not None]
     window = date_request.trailing.settled(newest, floor=max(floors, default=None))
-    assert window.start_year is not None
-    shortened = (
-        passed_over is not None
-        and window.start_year == passed_over + 1
-        and window.start_year > newest - date_request.trailing.years + 1
+    # The member passed over shortens the span only where its floor lies above both the
+    # span's own start and the plan's first year, which would shorten it as much without it.
+    shortened = passed_floor is not None and all(
+        passed_floor > other
+        for other in (newest - date_request.trailing.years + 1, plan_start)
+        if other is not None
     )
     settled = DateRequest(window=window, latest=False)
     mat, answer = _over(mat, filtered, window, date_request=settled, coverage_index=coverage_index)
@@ -237,5 +235,23 @@ def stale_departure(
         code=DATE_COVERAGE_PARTIAL,
         severity="warn",
         message=f"{' and '.join(reasons)}, so the answer shows {fact.shown}.",
+    )
+    return warning, fact
+
+
+def passed_over_departure(
+    settled: SettledTrailing, *, shown: str
+) -> tuple[Warning, DepartureFact] | None:
+    """The disclosure that a member passed over in election shortened `settled`, for an
+    answer a conversion's period then narrowed to `shown` (`phase_answer._over_conversion_period`):
+    its `passed_over` fact over the years shown, stating no data years, which the
+    conversion's own fact states. None where no member passed over shortened the span."""
+    if settled.departure is None or settled.departure[1].limited_by != "passed_over":
+        return None
+    fact = replace(settled.departure[1], shown=shown, data_years=None)
+    warning = Warning(
+        code=DATE_COVERAGE_PARTIAL,
+        severity="warn",
+        message=f"earlier years would read a different series, so the answer shows {shown}.",
     )
     return warning, fact

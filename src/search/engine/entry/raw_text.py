@@ -680,11 +680,14 @@ async def _discarded_usage(
     if not task.done():
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+    second: dict | None = None
     if samples is not None:
         await samples.aclose()
+        # Read on every path, so each finished second's result or failure is retrieved.
+        second = samples.usage()
     if task.cancelled() or task.exception() is not None:
         return {UNCOUNTED_CALLS: EXTRACTION_CALLS}
-    return sum_usage(task.result()[1], samples.usage() if samples is not None else None)
+    return sum_usage(task.result()[1], second)
 
 
 async def _read_and_extract(query: str, *, llm: SupportsLLM, deadline: float) -> _DoorRead:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import time
 
 import pytest
@@ -891,12 +892,13 @@ async def _agreeing() -> tuple[str, None]:
 
 
 def test_a_second_sample_that_never_finishes_delays_done_by_the_settle_bound_and_stores_nothing(
-    search_settings,
+    search_settings, caplog
 ):
     """`done` waits `llm_second_sample_settle_s` for a second sample that never answers,
     then cancels and awaits it. The reading is cut: neither agreed nor disagreed, judged by
-    nobody, and layer 1 stores nothing under the query."""
+    nobody, logged, and layer 1 stores nothing under the query."""
     search_settings(llm_second_sample_settle_s=0.05)
+    caplog.set_level(logging.INFO, logger=llm_module.__name__)
     base = _base_response()
 
     async def run() -> tuple[float, bool, list[object], bool | None, bool]:
@@ -925,6 +927,7 @@ def test_a_second_sample_that_never_finishes_delays_done_by_the_settle_bound_and
 
     assert elapsed < 1.0
     assert (cancelled, judged, agreed, layer1) == (True, [], None, False)
+    assert [r.levelname for r in caplog.records if r.name == llm_module.__name__] == ["INFO"]
 
 
 def test_a_request_without_cache_or_extraction_store_settles_nothing_at_done():

@@ -404,7 +404,7 @@ class Agreement:
 async def settle(agreements: Sequence[Agreement], *, wait_s: float) -> bool | None:
     """The joint verdict of `agreements`, waiting at most `wait_s` for the second samples
     still running. One still running past it is cancelled and awaited, and its read is cut:
-    neither judged nor stored. The verdict is False when any judged read disagreed, None when
+    neither judged nor stored, and an info line names the stages cut. The verdict is False when any judged read disagreed, None when
     none did and a read was cut, else True. A read whose settling raises, such as an
     extraction store whose write fails, logs the error and counts as disagreed, so settling
     never fails the request."""
@@ -422,6 +422,13 @@ async def settle(agreements: Sequence[Agreement], *, wait_s: float) -> bool | No
             second.cancel()
         await asyncio.gather(*late, return_exceptions=True)
         cut = {second for second in late if second.cancelled()}
+    if cut:
+        logger.info(
+            "%s: second sample still running after %s s; the read is cut, neither agreed "
+            "nor stored",
+            ", ".join(sorted(a._stage for a in agreements if a._second in cut)),
+            wait_s,
+        )
     verdicts: list[bool] = []
     for agreement in agreements:
         if agreement._second in cut:

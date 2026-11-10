@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -761,18 +762,22 @@ def test_a_trailing_role_answer_keeps_a_member_its_unit_admission_empties():
 
 
 @pytest.mark.parametrize(
-    ("now", "passed_over", "window", "limited_by", "data_years"),
+    ("now", "plan_first", "passed_over", "window", "limited_by", "data_years"),
     [
-        pytest.param(2025, 2018, (2019, 2022), "passed_over", None, id="shortened"),
+        pytest.param(2025, 2000, 2018, (2019, 2022), "passed_over", None, id="shortened"),
         pytest.param(
-            2026, 2018, (2019, 2022), "passed_over", (2000, 2022), id="shortened-and-stale"
+            2026, 2000, 2018, (2019, 2022), "passed_over", (2000, 2022), id="shortened-and-stale"
         ),
-        pytest.param(2026, 2016, (2018, 2022), None, (2000, 2022), id="full-span"),
+        pytest.param(2026, 2000, 2016, (2018, 2022), None, (2000, 2022), id="full-span"),
+        pytest.param(
+            2026, 2019, 2018, (2019, 2022), None, (2000, 2022), id="floored-by-the-plan-too"
+        ),
     ],
 )
 def test_a_trailing_span_a_passed_over_member_shortens_says_so(
     monkeypatch,
     now: int,
+    plan_first: int,
     passed_over: int,
     window: tuple[int, int],
     limited_by: str | None,
@@ -782,9 +787,16 @@ def test_a_trailing_span_a_passed_over_member_shortens_says_so(
     passed over in election that holds 2016 at the latest; in 2026 that newest year is
     stale, and the year fact names the data's years. One that holds 2018 floors the range at
     2019, so it shows four years, and the year fact says an earlier start would read another
-    series. It names no data years, which 2018 holds, unless the newest year is stale."""
+    series. It names no data years, which 2018 holds, unless the newest year is stale. A
+    plan whose years start in 2019 floors the range there with or without the member, so
+    the range is not the member's doing and only the stale fact departs."""
     monkeypatch.setattr(trailing_module, "current_year", lambda: now)
-    mat = dataclasses.replace(_two_flows(range(2000, 2023)), passed_over_newest_year=passed_over)
+    flows = _two_flows(range(2000, 2023))
+    assert flows.read_plan is not None
+    plan = dataclasses.replace(
+        flows.read_plan, years=TimeWindow(start_year=plan_first, end_year=2026)
+    )
+    mat = dataclasses.replace(flows, read_plan=plan, passed_over_newest_year=passed_over)
     assert mat.read_plan is not None
 
     settled = settle_trailing(
@@ -877,24 +889,36 @@ def _two_flows(years: range) -> Materialised:
 
 
 @pytest.mark.parametrize(
-    ("held", "deflators_end", "shown", "limited_by"),
+    ("held", "passed_over", "deflators_end", "facts"),
     [
-        (range(2000, 2025), 2023, "2020 to 2023", "deflators"),
-        (range(2000, 2022), 2020, "2017 to 2020", "deflators"),
-        (range(2000, 2022), None, "2017 to 2021", None),
+        (range(2000, 2025), None, 2023, [("2020 to 2023", "deflators")]),
+        (range(2000, 2022), None, 2020, [("2017 to 2020", "deflators")]),
+        (range(2000, 2022), None, None, [("2017 to 2021", None)]),
+        (
+            range(2000, 2025),
+            2020,
+            2023,
+            [("2021 to 2023", "deflators"), ("2021 to 2023", "passed_over")],
+        ),
     ],
-    ids=["converted", "stale_and_converted", "stale"],
+    ids=["converted", "stale_and_converted", "stale", "shortened_and_converted"],
 )
 def test_a_trailing_answer_states_the_years_its_words_cover_once(
-    monkeypatch, held: range, deflators_end: int | None, shown: str, limited_by: str | None
+    monkeypatch,
+    held: range,
+    passed_over: int | None,
+    deflators_end: int | None,
+    facts: list[tuple[str, str | None]],
 ):
     """ "The last five years" in constant dollars, in 2026, settles on the newest five years
     the flows hold. Deflators ending before them narrow the answer again, and its one year
     fact names 2022 to 2026, the years the words cover, as asked: for flows to 2024 and
     deflators to 2023, and for stale flows to 2021 and deflators to 2020, whose fact the
-    conversion's replaces. Stale flows the deflators cover keep the stale fact alone."""
+    conversion's replaces. Stale flows the deflators cover keep the stale fact alone. A span
+    a member passed over in election shortened to 2021 to 2024 keeps saying so beside the
+    conversion's fact, over the years the narrowed answer shows."""
     monkeypatch.setattr(trailing_module, "current_year", lambda: 2026)
-    mat = _two_flows(held)
+    mat = dataclasses.replace(_two_flows(held), passed_over_newest_year=passed_over)
     assert mat.read_plan is not None
     request = _trailing("the last five years")
     settled = settle_trailing(
@@ -917,22 +941,22 @@ def test_a_trailing_answer_states_the_years_its_words_cover_once(
     monkeypatch.setattr(phase_answer, "survivor_declared_roles", lambda _mat: None)
     monkeypatch.setattr(phase_answer, "unit_request_period", lambda *_a, **_k: period)
     monkeypatch.setattr(phase_answer, "deflator_omission_departure", lambda *_a, **_k: None)
-    facts: list[DepartureFact] = []
+    departed: list[DepartureFact] = []
     state = SimpleNamespace(
         unit_request=object(),
         unit_elected_selections={},
         date_request=settled.date_request,
         mat_result=settled.mat,
         coverage=SimpleNamespace(index=empty_coverage_snapshot().index),
-        depart=lambda _warning, fact: facts.append(fact),
+        depart=lambda _warning, fact: departed.append(fact),
     )
 
     phase_answer._over_conversion_period(
         state, settled.mat, settled.filtered, FacetAdmission(), settled=settled
     )
 
-    assert [(f.code, f.requested_years, f.shown, f.limited_by) for f in facts] == [
-        ("year_unavailable", (2022, 2026), shown, limited_by)
+    assert [(f.code, f.requested_years, f.shown, f.limited_by) for f in departed] == [
+        ("year_unavailable", (2022, 2026), shown, limited_by) for shown, limited_by in facts
     ]
 
 
@@ -950,11 +974,11 @@ def test_a_narrowed_answer_starts_one_related_read_over_its_final_years(monkeypa
     monkeypatch.setattr(phase_answer, "deflator_omission_departure", lambda *_a, **_k: None)
     windows: list[TimeWindow | None] = []
 
-    def start(state: SimpleNamespace, _mat: Materialised) -> None:
-        windows.append(state.date_request.window)
-        state.measure_family = (None, ())
+    def start(_state: SimpleNamespace, *, date_request: DateRequest, **_kwargs: object) -> None:
+        windows.append(date_request.window)
 
-    monkeypatch.setattr(related_read_module, "start_elected_related_read", start)
+    monkeypatch.setattr(related_read_module, "_elected_measure_family", lambda *_a: (None, ()))
+    monkeypatch.setattr(related_read_module, "start_related_read", start)
     state = SimpleNamespace(
         unit_request=object(),
         unit_elected_selections={},
@@ -964,6 +988,8 @@ def test_a_narrowed_answer_starts_one_related_read_over_its_final_years(monkeypa
         depart=lambda _warning, _fact: None,
         related_read=None,
         measure_family=None,
+        place=SimpleNamespace(roles=SimpleNamespace(roles=())),
+        shape_draft=SimpleNamespace(sv_arc_facts=None),
     )
 
     phase_answer._over_answer_years(
@@ -971,3 +997,36 @@ def test_a_narrowed_answer_starts_one_related_read_over_its_final_years(monkeypa
     )
 
     assert windows == [TimeWindow(start_year=2020, end_year=2023)]
+
+
+@pytest.mark.parametrize(
+    ("request_text", "order"),
+    [("2015 to 2020", ["related", "unit"]), ("the last five years", ["unit"])],
+    ids=["fixed-years", "trailing"],
+)
+def test_an_answer_with_fixed_years_starts_its_related_read_before_the_unit_decision(
+    monkeypatch, request_text: str, order: list[str]
+):
+    """An answer whose years no trailing span settles starts its related-measures read
+    before the bound-unit decision reads the graph, so the two run side by side. A trailing
+    answer starts it only once its years have settled (`_over_answer_years`)."""
+    calls: list[str] = []
+    stop = cast(RegionResult, object())
+
+    async def decide(_state: object, _mat: object) -> RegionResult:
+        calls.append("unit")
+        return stop
+
+    monkeypatch.setattr(phase_answer, "_decide_bound_unit_convertibility", decide)
+    monkeypatch.setattr(
+        phase_answer, "start_elected_related_read", lambda *_a: calls.append("related")
+    )
+    request = (
+        _trailing(request_text)
+        if request_text.startswith("the last")
+        else DateRequest(window=TimeWindow(start_year=2015, end_year=2020), latest=False)
+    )
+    state = SimpleNamespace(mat_result=_two_flows(range(2000, 2025)), date_request=request)
+
+    assert asyncio.run(phase_answer._ground_elected_answer(cast(Any, state))) is stop
+    assert calls == order

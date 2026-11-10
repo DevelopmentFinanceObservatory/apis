@@ -105,7 +105,11 @@ from search.engine.region.phase_shared import (
     withdraw_typed_unit,
 )
 from search.engine.region.place_roles import request_named_groups
-from search.engine.region.related_read import start_answer_related_read, with_related
+from search.engine.region.related_read import (
+    start_answer_related_read,
+    start_elected_related_read,
+    with_related,
+)
 from search.engine.region.relaunch import _relaunch_place_options, _relaunch_slot_options
 from search.engine.region.requirements import answer_terms, refusal_terms, settle_answer
 from search.engine.region.result import FacetAxisFilter, RegionResult, answered_roles
@@ -123,7 +127,7 @@ from search.engine.region.scope_decision import (
     guarded_scope_decision,
 )
 from search.engine.region.state import MeasureFamily, ResolveState, raised_facts
-from search.engine.region.trailing import SettledTrailing, settle_trailing
+from search.engine.region.trailing import SettledTrailing, passed_over_departure, settle_trailing
 from search.engine.region.un_system import member_labels
 from search.engine.region.whole_totals import whole_total_warnings
 from search.engine.retrieval.bound_values import (
@@ -275,7 +279,9 @@ def _over_conversion_period(
     answer departs `year_unavailable` naming the table and the years asked, which for a
     trailing request `settled` are the years its words cover. Otherwise both as they are,
     and a stale trailing answer departs as `settled` holds. The conversion's departure
-    replaces the stale one, so the answer states its years once. Either way an answer
+    replaces the stale one, so the answer states its years once; a span a member passed
+    over in election shortened still says so, over the years shown
+    (`trailing.passed_over_departure`). Either way an answer
     whose deflators leave out some entities' rows departs `year_unavailable` naming them
     (`convertibility.deflator_omission_departure`)."""
     stale = settled.departure if settled is not None else None
@@ -299,9 +305,14 @@ def _over_conversion_period(
             if state.date_request is not None
             else None
         )
-        mat_result, filtered = _narrowed_to_period(
+        mat_result, filtered, shown = _narrowed_to_period(
             state, mat_result, admission, period, requested=requested
         )
+        if (
+            settled is not None
+            and (passed := passed_over_departure(settled, shown=shown)) is not None
+        ):
+            state.depart(*passed)
     elif stale is not None:
         state.depart(*stale)
     omission = deflator_omission_departure(
@@ -343,8 +354,9 @@ def _over_answer_years(
 ) -> tuple[Materialised, FilteredAnswer]:
     """The answer over its final years: a trailing span's settled years
     (`_over_trailing_years`), narrowed to a conversion's period (`_over_conversion_period`).
-    Its related-measures read starts once they are final, over them, and runs beside the
-    rest of the answer (`related_read.start_answer_related_read`)."""
+    The related-measures read the answer joins reads those years: one started before them
+    stands where they did not change, else one starts here and runs beside the rest of the
+    answer (`related_read.start_answer_related_read`)."""
     mat_result, filtered, settled = _over_trailing_years(state, mat_result, filtered)
     mat_result, filtered = _over_conversion_period(
         state, mat_result, filtered, admission, settled=settled
@@ -360,10 +372,10 @@ def _narrowed_to_period(
     period: ConversionPeriod,
     *,
     requested: TimeWindow | None,
-) -> tuple[Materialised, FilteredAnswer]:
+) -> tuple[Materialised, FilteredAnswer, str]:
     """The answer read over `period`'s window, departing `year_unavailable` naming the
     table that leaves the other years out and `requested`, the years asked
-    (`_over_conversion_period`)."""
+    (`_over_conversion_period`), with the years it shows."""
     state.date_request = DateRequest(window=period.window, latest=False)
     mat_result = over_conversion_period(mat_result, period)
     state.mat_result = mat_result
@@ -373,8 +385,10 @@ def _narrowed_to_period(
         date_request=state.date_request,
         coverage_index=state.coverage.index,
     )
-    state.depart(*conversion_period_departure(period, requested=requested, plan=filtered.plan))
-    return mat_result, filtered
+    warning, fact = conversion_period_departure(period, requested=requested, plan=filtered.plan)
+    state.depart(warning, fact)
+    assert fact.shown is not None
+    return mat_result, filtered, fact.shown
 
 
 def _answer_unit_filter(
@@ -475,6 +489,11 @@ async def _ground_elected_answer(state: ResolveState) -> RegionResult | None:
     # The phase spine narrows this result to ``Materialised``. The attribute loses that
     # narrowing here.
     mat_result = cast(Materialised, state.mat_result)
+    # A request whose years only a conversion's period can still narrow reads its related
+    # measures beside the unit decision; a trailing request reads them once it has settled
+    # its years (`_over_answer_years`).
+    if state.date_request is None or state.date_request.trailing is None:
+        start_elected_related_read(state, mat_result)
 
     early = await _decide_bound_unit_convertibility(state, mat_result)
     if early is not None:

@@ -7,11 +7,12 @@ Async calls use `asyncio.run` because the suite has no pytest-asyncio plugin.
 from __future__ import annotations
 
 import asyncio
+import gc
 import time
 import unicodedata
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -20,7 +21,7 @@ from entity_resolution import Admission, EntityResolver
 from search.engine.bind import SlotBindingDraft
 from search.engine.bind_repair import apply_named_exclusions
 from search.engine.clients.graph import EngineGraphClient
-from search.engine.clients.llm import LLM, SecondSamples, SupportsLLM
+from search.engine.clients.llm import LLM, UNCOUNTED_CALLS, SecondSamples, SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.entry import raw_text
 from search.engine.errors import LLMInfraError
@@ -646,6 +647,35 @@ def test_a_discarded_speculative_parse_cancels_its_second_sample_and_counts_it_o
     }
     # The second samples of the read and of the blanked parse.
     assert second_usage == {"input_tokens": 10, "output_tokens": 2, "cached_tokens": 0}
+
+
+def test_a_failed_discarded_parse_retrieves_its_finished_second_samples_failure():
+    """A speculative parse the door discards after it failed, whose second sample had
+    already failed, counts its two calls as uncounted and retrieves the second's failure,
+    so asyncio reports no exception left unretrieved."""
+
+    async def failing() -> tuple[None, None]:
+        raise LLMInfraError("503")
+
+    async def run() -> tuple[dict | None, list[dict]]:
+        unretrieved: list[dict] = []
+        asyncio.get_running_loop().set_exception_handler(
+            lambda _loop, context: unretrieved.append(context)
+        )
+        samples = SecondSamples()
+        second = samples.start(failing)
+        samples.count(second)
+        parse = asyncio.create_task(failing())
+        await asyncio.wait([second, parse])
+        usage = await raw_text._discarded_usage(cast(Any, parse), samples)
+        del samples, second, parse
+        gc.collect()
+        return usage, unretrieved
+
+    usage, unretrieved = asyncio.run(run())
+
+    assert usage == {UNCOUNTED_CALLS: EXTRACTION_CALLS}
+    assert unretrieved == []
 
 
 def test_a_failed_extraction_on_a_miss_fails_the_query():
