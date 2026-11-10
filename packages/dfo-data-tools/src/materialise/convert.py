@@ -36,7 +36,7 @@ The output preserves columns and the order of the rows it keeps, changing only `
 and `unit`. Values are
 stored as strings using `repr()`, which round-trips exactly through `observed_values`. Unit
 is a per-row `{currency, prices, base_year, deflation_basis}` struct (`deflation_basis` set at
-constant prices, `recipe_bodies.DEFLATION_BASES`), which allows role-shaped targets.
+constant prices, `ConversionRecipe.deflator_entity_roles`), which allows role-shaped targets.
 `convert_scalar` replays the formula with Python floats in the same order."""
 
 from __future__ import annotations
@@ -52,7 +52,7 @@ from dc_sdmx.results import VALUE_COLUMN
 from materialise.columnar import leading_years, observed_values
 from materialise.errors import MaterialisationUsageError, UpstreamResponseError
 from materialise.rate_tables import RateTable
-from materialise.recipe_bodies import DeflationBasis, basis_of_role
+from materialise.recipe_bodies import DeflationBasis
 from materialise.recipes import (
     _MAX_NAMED_ENTITIES,
     ConversionRecipe,
@@ -65,8 +65,7 @@ from materialise.recipes import (
 _UNIT_COLUMN = "unit"
 
 # Mirrors `dfo_frame_grammar.grammar.UnitRequest`'s field set less `recipe`, which a
-# conversion here does not write, defined here to keep this module independent of
-# `dfo_frame_grammar`.
+# conversion here does not write.
 _UNIT_STRUCT_TYPE = pa.struct(
     [
         ("currency", pa.string()),
@@ -675,7 +674,8 @@ def _gather_rows(
         deflator_table=inputs.deflator_table,
     )
     if r_role is not None:
-        gathered = replace(gathered, deflation_basis=basis_of_role(inputs.recipe, r_role))
+        basis = inputs.recipe.deflator_entity_roles[r_role]
+        gathered = replace(gathered, deflation_basis=basis)
     return gathered, deflator_entities, years
 
 
@@ -805,7 +805,7 @@ def _apply_conversion(
     """Replaces `OBS_VALUE` with the result's `repr()` (`""` for null) and `unit` with a
     per-row `{currency, prices, base_year, deflation_basis}` struct, null when the value is
     null. `basis` is whose prices deflated a constant-price row
-    (`recipe_bodies.DEFLATION_BASES`), `None` at current prices. Other columns and row order
+    (`ConversionRecipe.deflator_entity_roles`), `None` at current prices. Other columns and row order
     stay unchanged."""
     values = result.to_pylist()
     value_strings = pa.array(

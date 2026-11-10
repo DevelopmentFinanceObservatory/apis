@@ -21,9 +21,9 @@ from typing import NamedTuple
 
 import pytest
 
+from code_index.declarations import DAC1
 from code_index.scope_conventions import BASIS_MEASURES
 from code_index.shared import get_index
-from materialise.recipe_bodies import RECIPE_BODIES
 from origin_catalogue import BASE
 from search.engine.bind import SlotBindingDraft
 from search.engine.binders import JevBinder, StatedWordsRequest
@@ -31,6 +31,7 @@ from search.engine.departures import served_datasets
 from search.engine.quantity_read import QuantityOutput
 from search.engine.spec_id import identity_spec_id
 from search.engine.stated_words_read import StatedWordsOutput
+from search.engine.unit.conversion_catalogue import ConversionCatalogue, bound_conversion_catalogue
 from search.models import (
     BaseIdentity,
     ChoiceOrigin,
@@ -60,7 +61,7 @@ from search.scope.basis import (
     window_class,
 )
 from search.scope.edits import apply_binding
-from search.scope.tables import PartFacts, ScopeFacts
+from search.scope.tables import ScopeFacts
 from search.scope.vocabulary import measure_basis_option_id
 from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from tests.engine._binders import FakeAsk, MenuRecordingBinder, elected_reply
@@ -983,7 +984,8 @@ def test_a_basis_label_states_the_prices_and_currency_the_part_is_served_in(
 def test_a_basis_option_names_whose_prices_deflate_the_part(
     recipe_id: str | None, unit_request: dict, expected: str
 ):
-    """The DAC recipe deflates by the donor the family's rows declare, as the conversion does."""
+    """The recipe DAC1 names in the bound catalogue deflates by the donor the family's rows
+    declare, as the conversion does."""
     identity = _DAC1_TOTAL.model_copy(
         update={
             "facets": {
@@ -993,15 +995,16 @@ def test_a_basis_option_names_whose_prices_deflate_the_part(
             }
         }
     )
-    facts = ScopeFacts(
-        index=get_index(),
-        coverage=empty_coverage_snapshot(),
-        part=PartFacts(
-            conversion_recipe=RECIPE_BODIES[recipe_id] if recipe_id is not None else None
-        ),
+    catalogue = ConversionCatalogue(
+        recipes={} if recipe_id is None else {DAC1: recipe_id},
+        tables={},
+        national_currencies={},
+        default_base_year=2024,
     )
+    facts = ScopeFacts(index=get_index(), coverage=empty_coverage_snapshot())
 
-    table = basis_rule(identity, None, facts)
+    with bound_conversion_catalogue(catalogue):
+        table = basis_rule(identity, None, facts)
 
     assert table is not None
     labels = {option.option_id: option.label for option in table.options}

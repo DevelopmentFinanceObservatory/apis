@@ -17,7 +17,6 @@ from code_index.composites import CompositeNotServable, composite_ref
 from code_index.shared import get_index
 from search.engine.degraded_reads import LOST_READ_ERRORS, note_degraded_read
 from search.engine.departures import datasets_served
-from search.engine.unit.conversion_catalogue import served_recipe
 from search.models import (
     BaseIdentity,
     EntityGroup,
@@ -63,18 +62,15 @@ def answer_scope_facts(
 ) -> ScopeFacts:
     """What the axis rules read of the part an answer stating `entity_groups`, `facets`
     and `sources` answers: the bound release's code index, `coverage`, the part's
-    `operations`, the groups its roles stand for, the datasets it is served from
-    (`departures.datasets_served`) and the conversion recipe they name
-    (`conversion_catalogue.served_recipe`)."""
-    datasets = tuple(sorted(datasets_served(facets, sources)))
+    `operations`, the groups its roles stand for and the datasets it is served from
+    (`departures.datasets_served`)."""
     return ScopeFacts(
         index=get_index(),
         coverage=coverage,
         part=PartFacts(
             operations=tuple(operations),
             entity_groups=entity_groups,
-            datasets=datasets,
-            conversion_recipe=served_recipe(datasets),
+            datasets=tuple(sorted(datasets_served(facets, sources))),
         ),
     )
 

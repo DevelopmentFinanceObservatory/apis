@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal, Self
 
+from dfo_frame_grammar import DeflationBasis
 from pydantic import AfterValidator, Field, Strict, StringConstraints, model_validator
 from pydantic.experimental.missing_sentinel import MISSING
 
@@ -102,7 +103,7 @@ class SimpleUnit(Stored):
     at_mint: Literal[True] | MISSING = MISSING
     prices: Literal["current", "constant"] | MISSING = MISSING
     base_year: Annotated[int, Strict(), Field(ge=1900, le=2100)] | MISSING = MISSING
-    deflation_basis: Literal["donor", "recipient", "national"] | MISSING = MISSING
+    deflation_basis: DeflationBasis | MISSING = MISSING
 
     @model_validator(mode="after")
     def _ref_or_currency(self) -> Self:

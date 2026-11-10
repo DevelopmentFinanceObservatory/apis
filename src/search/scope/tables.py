@@ -8,7 +8,6 @@ from dataclasses import dataclass, field
 from typing import cast
 
 from code_index.query import CodeIndex, IndexFamily
-from materialise.recipe_bodies import ConversionRecipe
 from search.models import EntityGroup, Operation, Option, ScopeAxis
 from search.scope.edits import AXIS_BINDING, PUBLISHED_BINDING, ScopeTableError
 from series_coverage.shared import CoverageSnapshot
@@ -100,14 +99,12 @@ class CompileFacts:
 class PartFacts:
     """What the part asks beside its identity, which a rule reads on both doors alike: its
     operations, the groups its roles stand for by role key (`ResolvedSpec.entity_groups`,
-    or those a dataset_resubmit posts), the datasets its identity is served from, empty
-    when unknown, and the conversion recipe those datasets name in the bound conversion
-    catalogue, None when they name none or several or no catalogue is bound."""
+    or those a dataset_resubmit posts), and the datasets its identity is served from, empty
+    when unknown."""
 
     operations: tuple[Operation, ...] = ()
     entity_groups: Mapping[str, EntityGroup] = field(default_factory=dict)
     datasets: tuple[str, ...] = ()
-    conversion_recipe: ConversionRecipe | None = None
 
 
 @dataclass(frozen=True)

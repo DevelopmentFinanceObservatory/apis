@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from typing import Literal, Self
 
+from dfo_frame_grammar import DeflationBasis
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_core import PydanticCustomError
 
@@ -102,7 +103,7 @@ class ConvertedUnitModel(BaseModel):
     base_year: int | None = Field(
         default=None, description="the base year of constant prices, absent for current prices"
     )
-    deflation_basis: Literal["donor", "recipient", "national"] | None = Field(
+    deflation_basis: DeflationBasis | None = Field(
         default=None,
         description=(
             "whose prices deflated constant-price values: the donor's, the recipient's, or "

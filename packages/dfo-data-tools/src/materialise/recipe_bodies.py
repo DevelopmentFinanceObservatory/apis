@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 
 from dfo_frame_grammar import DeflationBasis
@@ -27,8 +27,13 @@ class ConversionRecipe:
     are about countries and aggregates, each series rebased to 100 in one
     base year. Both are read under `table_provenance`.
 
-    `deflator_entity_roles` is the unordered set of graph roles that may
-    supply a row's deflator entity. `flow_population_types` is the set of
+    `deflator_entity_roles` maps each graph role that may supply a row's
+    deflator entity to whose prices that entity's deflator is (`DeflationBasis`,
+    the frame grammar's). A conversion deflates each row by the entity on the one
+    role `resolve_deflator_role` settles, so the basis follows the recipe's table
+    and that role. A converted cell carries it as `deflation_basis`, so it reaches
+    a constant-price frame's content version through the frame's bytes.
+    `flow_population_types` is the set of
     StatVar population types the recipe converts. Any other population type,
     stocks among them, refuses. `fallback_entity` stands in for a deflator
     entity absent from the whole deflator table.
@@ -37,7 +42,8 @@ class ConversionRecipe:
     recipe_id: str
     exchange_rate_variable: str
     deflator_variable: str
-    deflator_entity_roles: frozenset[str]
+    # A mapping cannot be hashed, so the hash leaves it out; equality still compares it.
+    deflator_entity_roles: Mapping[str, DeflationBasis] = field(hash=False)
     flow_population_types: frozenset[str]
     forecast_policy: str
     table_provenance: str
@@ -47,7 +53,8 @@ class ConversionRecipe:
 def recipe_body_digest(recipe: ConversionRecipe) -> str:
     """SHA-256 hex digest of recipe fields in the same canonical JCS form as
     content-version minting. Sets become sorted arrays and `None` becomes
-    JSON null.
+    JSON null. `deflator_entity_roles` contributes its sorted roles only: the basis
+    each role maps to follows from the recipe's table and that role.
     """
     projection: dict[str, object] = {
         "recipe_id": recipe.recipe_id,
@@ -76,7 +83,11 @@ RECIPE_BODIES: dict[str, ConversionRecipe] = {
         recipe_id="ConversionRecipeDAC",
         exchange_rate_variable="ExchangeRate_CurrencyUnit_ConversionRecipeDAC",
         deflator_variable="Deflator_EconomicProduction_ConversionRecipeDAC",
-        deflator_entity_roles=frozenset({"financingProvider", "observationAbout"}),
+        # The DAC table holds donors' deflators and the DAC countries' total, so a
+        # row deflated through it is in donor prices whichever role keys it.
+        deflator_entity_roles=MappingProxyType(
+            {"financingProvider": "donor", "observationAbout": "donor"}
+        ),
         flow_population_types=_FINANCE_FLOW_POPULATION_TYPES,
         forecast_policy="FlagProjected",
         table_provenance=_DAC_TABLES,
@@ -86,7 +97,9 @@ RECIPE_BODIES: dict[str, ConversionRecipe] = {
         recipe_id="ConversionRecipeIMF",
         exchange_rate_variable="ExchangeRate_CurrencyUnit_ConversionRecipeIMF",
         deflator_variable="Deflator_EconomicProduction_ConversionRecipeIMF",
-        deflator_entity_roles=frozenset({"financingProvider", "observationAbout"}),
+        deflator_entity_roles=MappingProxyType(
+            {"financingProvider": "donor", "observationAbout": "national"}
+        ),
         # The population type the WEO import gives its nominal GDP StatVars
         # (`weo_indicator_mapping.csv`).
         flow_population_types=frozenset({"EconomicProduction"}),
@@ -99,7 +112,7 @@ RECIPE_BODIES: dict[str, ConversionRecipe] = {
         deflator_variable="Deflator_EconomicProduction_ConversionRecipeIMF",
         # Debt deflates by the debtor's prices, and every IDS StatVar
         # declares the debtor role.
-        deflator_entity_roles=frozenset({"financingRecipient"}),
+        deflator_entity_roles=MappingProxyType({"financingRecipient": "recipient"}),
         flow_population_types=_FINANCE_FLOW_POPULATION_TYPES,
         forecast_policy="FlagProjected",
         table_provenance=_IMF_TABLES,
@@ -109,47 +122,3 @@ RECIPE_BODIES: dict[str, ConversionRecipe] = {
 RECIPE_CLASSES: tuple[str, ...] = tuple(sorted(RECIPE_BODIES))
 """The recipe members this deployment can apply, published as the
 capabilities field `recipe_classes`."""
-
-DEFLATION_BASES: Mapping[str, Mapping[str, DeflationBasis]] = MappingProxyType(
-    {
-        # The DAC table holds donors' deflators and the DAC countries' total, so a row
-        # deflated through it is in donor prices whichever role keys it.
-        "ConversionRecipeDAC": MappingProxyType(
-            {"financingProvider": "donor", "observationAbout": "donor"}
-        ),
-        "ConversionRecipeIMF": MappingProxyType(
-            {"financingProvider": "donor", "observationAbout": "national"}
-        ),
-        "ConversionRecipeIDS": MappingProxyType({"financingRecipient": "recipient"}),
-    }
-)
-"""Whose prices deflate a row each recipe deflates by the entity on each of its
-`deflator_entity_roles`, by recipe id. A conversion deflates each row by the entity on the
-one role `resolve_deflator_role` settles, so the basis follows the recipe's table and that
-role. It stays outside `recipe_body_digest`, since it is read from the recipe's table and
-role set. A converted cell carries it as `deflation_basis` (`DeflationBasis`, the frame
-grammar's), so it reaches a constant-price frame's content version through the frame's
-bytes."""
-
-
-def basis_of_role(recipe: ConversionRecipe, role: str) -> DeflationBasis:
-    """Whose prices `recipe` deflates a row by when it reads the deflator entity on `role`
-    (`DEFLATION_BASES`)."""
-    return DEFLATION_BASES[recipe.recipe_id][role]
-
-
-def _check_deflation_bases() -> None:
-    unmapped = {
-        (recipe.recipe_id, role)
-        for recipe in RECIPE_BODIES.values()
-        for role in recipe.deflator_entity_roles
-        if role not in DEFLATION_BASES.get(recipe.recipe_id, {})
-    }
-    if unmapped:
-        raise RuntimeError(
-            f"recipe deflator roles {sorted(unmapped)!r} name no deflation basis; add them "
-            "to DEFLATION_BASES"
-        )
-
-
-_check_deflation_bases()

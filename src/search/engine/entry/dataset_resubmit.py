@@ -128,7 +128,6 @@ from search.engine.region.state import EngineOptions
 from search.engine.response_cache_flow import PartMemoScope
 from search.engine.retrieval.bound_values import identity_dataset
 from search.engine.spec_id import identity_spec_id
-from search.engine.unit.conversion_catalogue import served_recipe
 from search.models import (
     BaseIdentity,
     DatasetResubmitInput,
@@ -218,7 +217,6 @@ def _compiled_scope(
                 operations=tuple(entry.operations),
                 entity_groups=groups,
                 datasets=() if dataset is None else (dataset,),
-                conversion_recipe=None if dataset is None else served_recipe((dataset,)),
             ),
         ),
     )

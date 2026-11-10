@@ -46,6 +46,7 @@ from typing import Annotated, Literal, NotRequired, Self, TypedDict
 from dfo_frame_grammar import shift_period
 from dfo_frame_grammar.grammar import (
     TIME_PERIOD_COLUMN,
+    DeflationBasis,
     UnitCell,
     UnitRequest,
     unit_cell_from_json,
@@ -453,7 +454,7 @@ class ConvertedUnit(TypedDict):
     currency: Annotated[str, Field(pattern=r"^[A-Z]{3}$")]
     prices: Literal["current", "constant"]
     base_year: NotRequired[int]
-    deflation_basis: NotRequired[Literal["donor", "recipient", "national"]]
+    deflation_basis: NotRequired[DeflationBasis]
 
 
 # A composed pin as a tool's input schema advertises it. A caller copies one
