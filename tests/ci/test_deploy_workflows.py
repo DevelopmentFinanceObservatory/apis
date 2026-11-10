@@ -191,13 +191,13 @@ def test_every_name_comes_from_the_environment_variables():
             r"gcloud run (?:jobs|services) \w+ (\S+ \S+ \S+)", step.get("run", "")
         )
     ]
-    # Six job updates, eleven job executions, and two service updates.
+    # Six job updates, ten job executions, and two service updates.
     assert Counter(targets) == {
         f'"${{{{ vars.{name} }}}}"': count
         for name, count in {
             "JOB_DATASETS_MIGRATE": 2,
             "JOB_PRESENTATION_MIGRATE": 2,
-            "JOB_DATASETS_MAINTENANCE": 4,
+            "JOB_DATASETS_MAINTENANCE": 3,
             "JOB_ORIGIN_CATALOGUE": 3,
             "JOB_GRAPH_RELEASE": 3,
             "JOB_SEARCH_CATALOGUE": 3,
@@ -229,10 +229,6 @@ def test_every_name_comes_from_the_environment_variables():
         (
             "Point the search catalogue job at the new image",
             "Build the search catalogue on the new image",
-        ),
-        (
-            "Point the datasets maintenance job at the new image",
-            "Count recipes pinning a unit without its deflation basis",
         ),
     ],
 )
@@ -362,14 +358,12 @@ def test_maintenance_job_moves_to_the_new_image_after_both_migrations():
     assert names.index(update) < names.index("Point the datasets worker at the new image")
 
 
-def test_the_maintenance_job_counts_before_and_settles_then_backfills_after_the_services_move():
-    """The pinned-unit count reads the recipes the new unit keys stop replaying before the
-    services move. The previous image writes rows in the old shape, and versions without a description
+def test_the_maintenance_job_settles_then_backfills_once_both_services_run_the_new_image():
+    """The previous image writes rows in the old shape, and versions without a description
     record, until both services move, so the settle and then the description backfill run after
-    the apis service moves. These are the deploy's only maintenance executions. The backfill
+    the apis service moves, and they are the deploy's only maintenance executions. The backfill
     runs after the settle, so its failure never holds the settle back."""
     names = [step.get("name") for step in _steps()]
-    count = "Count recipes pinning a unit without its deflation basis"
     settle = "Settle rows the previous image wrote"
     backfill = "Backfill description records"
     executions = [
@@ -378,13 +372,11 @@ def test_the_maintenance_job_counts_before_and_settles_then_backfills_after_the_
         if 'jobs execute "${{ vars.JOB_DATASETS_MAINTENANCE }}"' in step.get("run", "")
     ]
 
-    assert executions == [count, settle, backfill]
-    assert "--args=count-pinned-units" in _named(count)["run"]
+    assert executions == [settle, backfill]
     assert "--args=settle" in _named(settle)["run"]
     assert "--args=backfill-descriptions" in _named(backfill)["run"]
-    for name in (count, settle, backfill):
+    for name in (settle, backfill):
         assert "--wait" in _named(name)["run"]
-    assert names.index(count) < names.index("Point the datasets worker at the new image")
     assert names.index("Point Cloud Run at the new image") < names.index(settle)
     assert names.index(settle) < names.index(backfill)
 
@@ -410,7 +402,6 @@ def test_the_upfront_check_refuses_a_deploy_without_the_maintenance_job():
     ]
     for name in (
         "Point the datasets maintenance job at the new image",
-        "Count recipes pinning a unit without its deflation basis",
         "Settle rows the previous image wrote",
         "Backfill description records",
     ):
@@ -443,7 +434,7 @@ def test_decide_step_runs_gcloud_describe_and_git_diff_and_gates_every_later_ste
     steps = _steps()
     decide_index = steps.index(decide)
     later = steps[decide_index + 1 :]
-    assert len(later) == 19
+    assert len(later) == 18
     for step in later:
         assert step["if"] == "steps.decide.outputs.deploy == 'true'", step
 

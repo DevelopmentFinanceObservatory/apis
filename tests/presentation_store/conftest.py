@@ -241,42 +241,6 @@ class FakeTransaction:
                     row["frame_rendering"] = new[0]
             return [{"component_id": component_id} for component_id, _row in matched]
 
-        if sql.startswith("WITH heads AS (SELECT DISTINCT ON (component_id) component_id, "):
-            # `presentation_store.store.derived_frame_revisions`.
-            live: dict[tuple[str, int], int] = {}
-            for share_id, share in s.shares.items():
-                revisions = s.share_revisions.get(share_id, [])
-                if share["mode"] != "live" or share["deleted_at"] is not None or not revisions:
-                    continue
-                newest = max(row["revision"] for row in revisions)
-                for slot in s.share_slots.get((share_id, newest), []):
-                    if slot["component_id"] is not None:
-                        key = (slot["component_id"], slot["component_revision"])
-                        live[key] = live.get(key, 0) + 1
-            derived = []
-            for component_id in sorted(s.component_revisions):
-                rows = s.component_revisions[component_id]
-                head = max((row["revision"] for row in rows), default=None)
-                for row in sorted(rows, key=lambda row: row["revision"]):
-                    key = (component_id, row["revision"])
-                    frame_ref = row["stored_intent"].get("frame_ref")
-                    if (
-                        (row["revision"] != head and key not in live)
-                        or not isinstance(frame_ref, dict)
-                        or not str(frame_ref.get("spec_id", "")).startswith("ops_")
-                    ):
-                        continue
-                    derived.append(
-                        {
-                            "component_id": component_id,
-                            "revision": row["revision"],
-                            "head": row["revision"] == head,
-                            "live_slots": live.get(key, 0),
-                            "frame_ref": frame_ref,
-                        }
-                    )
-            return derived
-
         if sql.startswith("SELECT DISTINCT ON (component_id) component_id, revision, "):
             # `presentation_store.store.described_heads`.
             after, limit = params

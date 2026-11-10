@@ -21,9 +21,7 @@ records whether the driver failure meant a dead connection so the presentation p
 `rehash_derived_rendering` moves the revisions drawing one derived frame from its recipe's old
 `normal_form_hash` to a new one, for `datasets-maintenance normalise-recipes`.
 `described_heads` lists the head revisions that carry a description, for
-`datasets-maintenance remint-card-descriptions`. `derived_frame_revisions` lists the revisions
-that are a component's head or that a live share shows and draw a derived frame, for
-`datasets-maintenance count-pinned-units`.
+`datasets-maintenance remint-card-descriptions`.
 """
 
 from __future__ import annotations
@@ -56,14 +54,7 @@ from presentation_store.store_errors import (
     violated_constraint,
 )
 
-__all__ = [
-    "DerivedFrameRevision",
-    "DescribedHead",
-    "LivePresentationStore",
-    "derived_frame_revisions",
-    "described_heads",
-    "rehash_derived_rendering",
-]
+__all__ = ["DescribedHead", "LivePresentationStore", "described_heads", "rehash_derived_rendering"]
 
 _REVISION_COLUMNS = (
     "revision, stored_intent, resolved_payload, catalog_version, schema_version, "
@@ -499,63 +490,6 @@ def described_heads(store: DatasetStore, *, page_size: int = 500) -> Iterator[De
         if len(rows) < page_size:
             return
         after = cast(str, rows[-1]["component_id"])
-
-
-@dataclass(frozen=True)
-class DerivedFrameRevision:
-    """A card revision that is its component's head or that a live share's newest revision
-    shows in `live_slots` slots, with the derived (`ops_`) frame it draws."""
-
-    component_id: str
-    revision: int
-    head: bool
-    live_slots: int
-    spec_id: str
-    content_version: str
-
-
-# The revisions a component's head or a live share's newest revision names, with the number of
-# live slots naming each, that draw a derived frame. A note draws no frame and is left out.
-_DERIVED_FRAME_REVISIONS = (
-    "WITH heads AS (SELECT DISTINCT ON (component_id) component_id, revision "
-    "FROM presentation.component_revision ORDER BY component_id, revision DESC), "
-    "live AS (SELECT sl.component_id, sl.component_revision AS revision, "
-    "count(*) AS live_slots FROM presentation.share sh "
-    "JOIN presentation.share_slot sl ON sl.share_id = sh.id AND sl.revision = "
-    "(SELECT max(revision) FROM presentation.share_revision r WHERE r.share_id = sh.id) "
-    "WHERE sh.mode = 'live' AND sh.deleted_at IS NULL AND sl.component_id IS NOT NULL "
-    "GROUP BY sl.component_id, sl.component_revision) "
-    "SELECT cr.component_id, cr.revision, heads.revision IS NOT NULL AS head, "
-    "COALESCE(live.live_slots, 0) AS live_slots, "
-    "cr.stored_intent -> 'frame_ref' AS frame_ref FROM presentation.component_revision cr "
-    "LEFT JOIN heads ON heads.component_id = cr.component_id AND heads.revision = cr.revision "
-    "LEFT JOIN live ON live.component_id = cr.component_id AND live.revision = cr.revision "
-    "WHERE (heads.revision IS NOT NULL OR live.revision IS NOT NULL) "
-    "AND jsonb_typeof(cr.stored_intent -> 'frame_ref') = 'object' "
-    "AND left(cr.stored_intent -> 'frame_ref' ->> 'spec_id', 4) = 'ops_' "
-    "ORDER BY cr.component_id, cr.revision"
-)
-
-
-def derived_frame_revisions(store: DatasetStore) -> list[DerivedFrameRevision]:
-    """Every revision that is its component's head or that a live share shows, and draws a
-    derived (`ops_`) frame, in component id and revision order, read in one transaction."""
-    with store.transaction() as tx:
-        rows = tx.fetch_all(_DERIVED_FRAME_REVISIONS)
-    revisions = []
-    for row in rows:
-        frame_ref = cast("Mapping[str, str]", row["frame_ref"])
-        revisions.append(
-            DerivedFrameRevision(
-                component_id=cast(str, row["component_id"]),
-                revision=cast(int, row["revision"]),
-                head=cast(bool, row["head"]),
-                live_slots=cast(int, row["live_slots"]),
-                spec_id=frame_ref["spec_id"],
-                content_version=frame_ref["content_version"],
-            )
-        )
-    return revisions
 
 
 def _insert_generated_subject(

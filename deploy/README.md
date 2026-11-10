@@ -80,6 +80,23 @@ Each caller has its own concurrency group (`deploy-dev`, `deploy-production`) wi
 
 Every job moves to the new image before it executes, so a job still on the `gcr.io/cloudrun/hello` placeholder a fresh project starts with never runs as the placeholder. A failed job step stops the run before the service moves to the new image.
 
+### Recipe migration after the services move
+
+`datasets-maintenance normalise-recipes` runs by hand, once per environment, after the first deploy whose image writes a constant-price converted unit with its deflation basis (frame grammar 1.2.0, as `NGN/constant/2024/donor`). A stored recipe that pins such a unit without the basis matches no rebuilt root, so from the service move until the run its derived frame refuses `unit_not_present` on refresh. The task gives each such pin the basis its roots were deflated on and moves the cards drawing the frame to the recipe's new hash. It reads each root's basis from the conversion records the root's version stores per series, the recipe id and the series' declared roles, through `materialise.recipes.deflation_basis`, the rule the conversion applies when it labels a cell, so it reads neither the graph nor the conversion catalogue. A pin takes the basis of the roots feeding its parameter: `left_unit` and `numerator_unit` the roots under `frame_ref`, `right_unit` and `denominator_unit` those under the other side's slot, or under `frame_ref` when that slot is unset, and `unit` every root under the op-spec. It runs by hand because it exits 1 whenever it skips a recipe, and as a deploy step one recipe it can never fix would fail every later deploy.
+
+Run it as an execution of the maintenance job, dry run first, with the environment's values for the three variables:
+
+```sh
+gcloud run jobs execute "$JOB_DATASETS_MAINTENANCE" --region="$REGION" --project="$PROJECT_ID" \
+  --wait --args=normalise-recipes,--dry-run
+gcloud run jobs execute "$JOB_DATASETS_MAINTENANCE" --region="$REGION" --project="$PROJECT_ID" \
+  --wait --args=normalise-recipes
+```
+
+The dry run writes one `datasets_recipes_normalised` line with the recipes it would rewrite, the card revisions it would move and each skip count, and changes nothing. Each skipped recipe gets a `datasets_recipe_normalise_skipped` line naming its `spec_id`, `content_version` and `reason`. A `basis_undetermined` recipe has a pin whose roots give no basis or several, or a root whose stored version cannot tell; it is left as it is, and its frame needs minting again. A second run changes nothing.
+
+Rolling back is safe before the run. After it, a migrated pin carries `deflation_basis`, which an image on a frame grammar older than 1.2.0 refuses as an unknown unit member, so every migrated recipe refuses on replay under that image. Roll back past this change only before running the task.
+
 Manual deployments trigger via `workflow_dispatch` in GitHub Actions and always deploy the
 dispatched commit, whether or not it's already live, since dispatch exists to force a redeploy
 (to re-run the migration jobs, for instance, or to roll back). Roll back by dispatching the older

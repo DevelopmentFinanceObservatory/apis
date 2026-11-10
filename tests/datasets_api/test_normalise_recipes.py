@@ -7,12 +7,14 @@ Presentation store fake."""
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, get_args
 
 import pytest
 
+from datasets_api import maintenance
 from datasets_api.analysis import AnalysisRequest, run_analysis
 from datasets_api.maintenance import main, run_normalise_recipes
+from dfo_analysis_engine.op_spec import OpSpec, PinnedUnit
 from dfo_analysis_engine.recipe import normal_form, normal_form_hash, replay_key, root_identity
 from tests.presentation_store.conftest import FakePresentationStore
 
@@ -116,7 +118,13 @@ def _summary(capsys: pytest.CaptureFixture[str]) -> dict[str, Any]:
     (summary,) = [line for line in lines if line["event"] == "datasets_recipes_normalised"]
     return {
         key: summary[key]
-        for key in ("normalised", "revisions", "replay_key_held", "unreproducible")
+        for key in (
+            "normalised",
+            "revisions",
+            "replay_key_held",
+            "unreproducible",
+            "basis_undetermined",
+        )
     }
 
 
@@ -153,7 +161,13 @@ def test_a_recipe_stored_unsorted_gets_the_analysis_routes_recipe_and_its_cards_
 
     assert (dry, _summary(capsys)) == (
         0,
-        {"normalised": 1, "revisions": 2, "replay_key_held": 0, "unreproducible": 0},
+        {
+            "normalised": 1,
+            "revisions": 2,
+            "replay_key_held": 0,
+            "unreproducible": 0,
+            "basis_undetermined": 0,
+        },
     )
     assert (_stored(stores), json.dumps(revisions(), sort_keys=True)) == before
 
@@ -161,7 +175,13 @@ def test_a_recipe_stored_unsorted_gets_the_analysis_routes_recipe_and_its_cards_
 
     assert (skipped, _summary(capsys)) == (
         0,
-        {"normalised": 1, "revisions": 2, "replay_key_held": 0, "unreproducible": 0},
+        {
+            "normalised": 1,
+            "revisions": 2,
+            "replay_key_held": 0,
+            "unreproducible": 0,
+            "basis_undetermined": 0,
+        },
     )
     (row,) = _stored(stores)
     assert {key: row[key] for key in ("normal_form_hash", "replay_key", "recipe")} == {
@@ -179,7 +199,13 @@ def test_a_recipe_stored_unsorted_gets_the_analysis_routes_recipe_and_its_cards_
 
     assert (again, _summary(capsys)) == (
         0,
-        {"normalised": 0, "revisions": 0, "replay_key_held": 0, "unreproducible": 0},
+        {
+            "normalised": 0,
+            "revisions": 0,
+            "replay_key_held": 0,
+            "unreproducible": 0,
+            "basis_undetermined": 0,
+        },
     )
     assert (_stored(stores), json.dumps(revisions(), sort_keys=True)) == after
 
@@ -216,6 +242,7 @@ def test_a_recipe_it_cannot_normalise_safely_is_reported_and_left_as_it_is(
         "revisions": 0,
         "replay_key_held": int(reason == "replay_key_held"),
         "unreproducible": int(reason == "unreproducible"),
+        "basis_undetermined": 0,
     }
     assert (_stored(stores), json.dumps(presentation.state.component_revisions)) == before
 
@@ -235,3 +262,257 @@ def test_normalise_recipes_exits_non_zero_when_it_skips_a_recipe(monkeypatch):
 
     assert main(["normalise-recipes", "--dry-run"]) == 1
     assert ran == [True]
+
+
+# Pins of a constant-price unit without its deflation basis.
+
+_DAC = "spec_" + "d" * 32
+_IDS = "spec_" + "e" * 32
+_POP = "spec_" + "f" * 32
+_UNRECORDED = "spec_" + "0" * 32
+_CV = "cv_" + "9" * 32
+_CONSTANT = {"currency": "NGN", "prices": "constant", "base_year": 2024}
+# What each root's mint converted: the recipe and the declared roles of each series.
+_ROOT_SERIES: dict[str, tuple[str | None, list[tuple[str, str]]]] = {
+    _DAC: ("ConversionRecipeDAC", [("financingProvider", "country/DEU")]),
+    _IDS: ("ConversionRecipeIDS", [("financingRecipient", "country/NGA")]),
+    _POP: (None, []),
+    _UNRECORDED: ("", []),
+}
+
+
+def _store_root(stores: Stores, spec_id: str) -> None:
+    """Record the version `_CV` of the root `spec_id` as its mint stores it: a constant-price
+    unit request and one conversion record per series (`_ROOT_SERIES`), `_POP` asking no unit
+    and `_UNRECORDED` storing no series record."""
+    recipe_id, roles = _ROOT_SERIES[spec_id]
+    unit = {} if recipe_id is None else {"unit": {"request": _CONSTANT}}
+    series = None
+    if recipe_id:
+        series = [
+            {
+                "stat_var": "dcid:Amount",
+                "roles": [list(pair) for pair in roles],
+                "recipe_id": recipe_id,
+                "table_provenance_id": "dcid:Tables",
+                "exchange_rate_table_version": "rates",
+                "deflator_table_version": "deflators",
+                "fallback_count": 0,
+                "fallback_examples": [],
+                "projected_count": 0,
+                "projected_examples": [],
+            }
+        ]
+    with stores.store.transaction() as tx:
+        tx.execute(
+            "INSERT INTO datasets.version_record (subject_id, subject_kind, content_version, "
+            "schema_version, immutable_body, recorded_at, prepared_at, definition, coverage, "
+            "citation, trace, warnings, series_conversions) "
+            "VALUES (%s, 'spec', %s, 1, '{}', %s, %s, %s, '{}', '{}', '{}', '[]', %s)",
+            (
+                spec_id,
+                _CV,
+                "2026-01-01T00:00:00+00:00",
+                "2026-01-01T00:00:00+00:00",
+                json.dumps({"identity": {"facets": unit}}),
+                None if series is None else json.dumps(series),
+            ),
+        )
+
+
+def _root(index: int) -> dict[str, Any]:
+    return {"frame": {"spec_id": "spec_frame", "content_version": "cv_frame"}, "root": index}
+
+
+def _op(verb: str, inputs: dict[str, Any], **parameters: Any) -> dict[str, Any]:
+    """A derived node of `verb` over `inputs`, its slots also named in its parameters."""
+    slots = {slot: {"spec_id": "ops_in", "content_version": "ocv_in"} for slot in inputs}
+    return {
+        "frame": {"spec_id": "ops_node", "content_version": "ocv_node"},
+        "op_spec": {
+            "identity_version": 1,
+            "verb": verb,
+            "frame_ref": slots.pop("frame_ref"),
+            "parameters": {**slots, **parameters},
+        },
+        "inputs": inputs,
+    }
+
+
+def _pinned(stores: Stores, tree: dict[str, Any], roots: list[str]) -> dict[str, Any]:
+    """Store, under `ops_pinned`, the recipe of `tree` over the `_CV` versions of `roots`,
+    recording each root, and return it."""
+    for spec_id in roots:
+        _store_root(stores, spec_id)
+    recipe = {
+        "tree": tree,
+        "roots": [
+            {"dataset": {"spec_id": spec_id, "content_version": _CV}, "options": {}}
+            for spec_id in roots
+        ],
+        "execution_identity": "engine-1",
+    }
+    normal, key = _hashes(recipe)
+    recipe = {**recipe, "normal_form_hash": normal, "replay_key": key}
+    _store_recipe(stores, "ops_pinned", "ocv_pinned", recipe)
+    return recipe
+
+
+def _with(unit: dict[str, Any], basis: str) -> dict[str, Any]:
+    return {**unit, "deflation_basis": basis}
+
+
+_COMPOSED = {"numerator": _CONSTANT, "denominator": {"stat_var": "dcid:Count_Person"}}
+
+
+@pytest.mark.parametrize(
+    ("tree", "roots", "migrated"),
+    [
+        (
+            _op(
+                "compare",
+                {"frame_ref": _root(0), "right_frame_ref": _root(1)},
+                left_unit=_CONSTANT,
+                right_unit=_CONSTANT,
+            ),
+            [_DAC, _IDS],
+            {"left_unit": _with(_CONSTANT, "donor"), "right_unit": _with(_CONSTANT, "recipient")},
+        ),
+        (
+            _op(
+                "share_of",
+                {"frame_ref": _root(0), "denominator_frame_ref": _root(1)},
+                numerator_unit=_CONSTANT,
+                denominator_unit=_CONSTANT,
+            ),
+            [_IDS, _DAC],
+            {
+                "numerator_unit": _with(_CONSTANT, "recipient"),
+                "denominator_unit": _with(_CONSTANT, "donor"),
+            },
+        ),
+        (
+            # The other side is a second slice of `frame_ref`.
+            _op("compare", {"frame_ref": _root(0)}, right_unit=_CONSTANT),
+            [_IDS],
+            {"right_unit": _with(_CONSTANT, "recipient")},
+        ),
+        (
+            # A composed unit's converted side takes the basis, its StatVar side stays.
+            _op(
+                "aggregate",
+                {
+                    "frame_ref": _op(
+                        "quotient_of", {"frame_ref": _root(0), "denominator_frame_ref": _root(1)}
+                    )
+                },
+                unit=_COMPOSED,
+            ),
+            [_DAC, _POP],
+            {"unit": {**_COMPOSED, "numerator": _with(_CONSTANT, "donor")}},
+        ),
+    ],
+    ids=["compare-sides", "share-of-sides", "second-slice", "composed"],
+)
+def test_a_pin_without_its_basis_gets_the_basis_of_the_roots_feeding_it(
+    capsys: pytest.CaptureFixture[str],
+    tree: dict[str, Any],
+    roots: list[str],
+    migrated: dict[str, Any],
+):
+    stores = Stores()
+    old = _pinned(stores, tree, roots)
+    presentation = FakePresentationStore()
+    presentation.state.component_revisions["cmp_drawn"] = [
+        _revision("ops_pinned", "ocv_pinned", old["normal_form_hash"], 1)
+    ]
+
+    def state() -> tuple[list[dict[str, Any]], str]:
+        # A fake transaction replaces the state's mappings when it commits.
+        return _stored(stores), json.dumps(presentation.state.component_revisions, sort_keys=True)
+
+    before = state()
+
+    dry = run_normalise_recipes(datasets=stores.store, presentation=presentation, dry_run=True)
+
+    assert (dry, _summary(capsys)) == (
+        0,
+        {
+            "normalised": 1,
+            "revisions": 1,
+            "replay_key_held": 0,
+            "unreproducible": 0,
+            "basis_undetermined": 0,
+        },
+    )
+    assert state() == before
+
+    assert run_normalise_recipes(datasets=stores.store, presentation=presentation) == 0
+    (row,) = _stored(stores)
+    parameters = row["recipe"]["tree"]["op_spec"]["parameters"]
+    assert {name: parameters[name] for name in migrated} == migrated
+    expected = {**old, "tree": row["recipe"]["tree"]}
+    del expected["normal_form_hash"], expected["replay_key"]
+    normal, key = _hashes(expected)
+    assert (row["normal_form_hash"], row["replay_key"]) == (normal, key)
+    assert (row["recipe"]["normal_form_hash"], row["recipe"]["replay_key"]) == (normal, key)
+    assert normal != old["normal_form_hash"]
+    assert presentation.state.component_revisions["cmp_drawn"][0]["frame_rendering"] == {
+        "normal_form_hash": normal
+    }
+    capsys.readouterr()
+
+    after = state()
+
+    assert run_normalise_recipes(datasets=stores.store, presentation=presentation) == 0
+    assert _summary(capsys)["normalised"] == 0
+    assert state() == after
+
+
+@pytest.mark.parametrize(
+    ("roots", "inputs"),
+    [
+        ([_DAC, _IDS], {"frame_ref": _root(0), "right_frame_ref": _root(1)}),
+        ([_UNRECORDED], {"frame_ref": _root(0)}),
+        ([_POP], {"frame_ref": _root(0)}),
+    ],
+    ids=["two-bases", "no-series-record", "no-basis"],
+)
+def test_a_pin_whose_roots_give_no_single_basis_is_reported_and_left_as_it_is(
+    capsys: pytest.CaptureFixture[str], roots: list[str], inputs: dict[str, Any]
+):
+    stores = Stores()
+    # `unit` reads every root under its op-spec.
+    old = _pinned(
+        stores, _op("aggregate", {"frame_ref": _op("compare", inputs)}, unit=_CONSTANT), roots
+    )
+    presentation = FakePresentationStore()
+    presentation.state.component_revisions["cmp_drawn"] = [
+        _revision("ops_pinned", "ocv_pinned", old["normal_form_hash"], 1)
+    ]
+    before = (_stored(stores), json.dumps(presentation.state.component_revisions))
+
+    skipped = run_normalise_recipes(datasets=stores.store, presentation=presentation)
+
+    assert (skipped, _summary(capsys)) == (
+        1,
+        {
+            "normalised": 0,
+            "revisions": 0,
+            "replay_key_held": 0,
+            "unreproducible": 0,
+            "basis_undetermined": 1,
+        },
+    )
+    assert (_stored(stores), json.dumps(presentation.state.component_revisions)) == before
+
+
+def test_every_unit_pin_of_an_op_spec_names_the_slot_feeding_it():
+    pins = {
+        name
+        for model in get_args(get_args(OpSpec)[0])
+        for name, field in model.model_fields.items()
+        if field.annotation == PinnedUnit | None
+    }
+
+    assert pins == set(maintenance._PIN_SLOTS)
