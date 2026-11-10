@@ -634,6 +634,26 @@ def test_a_live_slot_logs_the_code_of_the_refusal_that_left_it_stale(
     assert getattr(record, JSON_FIELDS_ATTR) == fields
 
 
+def test_a_slot_whose_stored_intent_no_longer_draws_tells_its_reader_not_to_retry(door: _Door):
+    """The share's reader cannot change the card's stored intent, so a refusal of it states
+    `do_not_retry` where the card's own write would state `correct_and_retry`."""
+    share = door.share(door.card(), latest=False)
+    door.frame_store.refusals[_STORED] = ConstraintViolation(
+        constraint_id="comparable_units_required",
+        pointer="/select",
+        detail="exemplar",
+        fix="exemplar fix",
+    )
+
+    body = door.data(share["id"]).json()
+
+    assert (body["code"], body["retry_mode"], body["retryable"]) == (
+        "constraint_violation",
+        "do_not_retry",
+        False,
+    )
+
+
 @pytest.mark.parametrize(
     ("raised", "wait_s"),
     [

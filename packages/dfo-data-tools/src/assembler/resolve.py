@@ -24,6 +24,7 @@ from assembler.frame_view import dimension_columns, facet_dimension_names, serie
 from assembler.limits import MAX_SELECTORS, MAX_SERIES_PER_COMPONENT, PER_DIMENSION_LISTING_CAP
 from assembler.ports import Continuation, DimensionView, ResolvedFrame, StructuralView
 from assembler.series_id import Coordinates, mint_series_ids
+from dfo_platform.codes import RegisteredLimitName
 from materialise.bundle_columns import MEASUREMENT_METHOD_COLUMN
 
 __all__ = [
@@ -58,7 +59,7 @@ class ResolvedSeries:
 class SeriesLimit(NamedTuple):
     """The most series a component draws, and the `limit_name` a refusal of it names."""
 
-    name: str
+    name: RegisteredLimitName
     cap: int
 
 

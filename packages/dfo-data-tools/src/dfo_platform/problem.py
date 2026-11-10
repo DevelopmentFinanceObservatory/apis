@@ -15,7 +15,12 @@ from typing import TYPE_CHECKING, Annotated, NamedTuple
 from pydantic import BaseModel, BeforeValidator, Field, TypeAdapter
 
 from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
-from dfo_platform.codes import CodeCatalogue, registered_status
+from dfo_platform.codes import (
+    CodeCatalogue,
+    RegisteredLimitName,
+    RetryMode,
+    registered_status,
+)
 from dfo_platform.trace import get_trace_id
 
 if TYPE_CHECKING:
@@ -164,14 +169,14 @@ class ProblemDetails(BaseModel):
             "Under candidate_window it is the candidate window the read was allowed"
         ),
     )
-    limit_name: str | None = Field(
+    limit_name: RegisteredLimitName | None = Field(
         default=None,
         description=(
             "for resource_exhausted: the name of the limit the request crossed, such as "
             "MAX_LINE_CHART_SERIES"
         ),
     )
-    retry_mode: str | None = Field(
+    retry_mode: RetryMode | None = Field(
         default=None,
         description=(
             "what a caller does with this occurrence: correct_and_retry (change the request "
@@ -234,8 +239,8 @@ class ProblemSpec(NamedTuple):
     ceiling_kind: str | None = None
     count: int | None = None
     cap: int | None = None
-    limit_name: str | None = None
-    retry_mode: str | None = None
+    limit_name: RegisteredLimitName | None = None
+    retry_mode: RetryMode | None = None
     headers: Mapping[str, str] | None = None
     # What `log_problem` logs for a refusal a surface's classifier or admission check returns,
     # so both stay pure, with the classified exception's traceback when `log_traceback`, and
@@ -321,7 +326,7 @@ def refused(
     issues: list[ProblemIssue] | None = None,
     cause: Cause | None = None,
     constraint_id: str | None = None,
-    limit_name: str | None = None,
+    limit_name: RegisteredLimitName | None = None,
     headers: Mapping[str, str] | None = None,
     log: str | None = None,
     log_level: int = logging.ERROR,
@@ -469,8 +474,8 @@ class Envelope:
         ceiling_kind: str | None = None,
         count: int | None = None,
         cap: int | None = None,
-        limit_name: str | None = None,
-        retry_mode: str | None = None,
+        limit_name: RegisteredLimitName | None = None,
+        retry_mode: RetryMode | None = None,
         retryable: bool,
     ) -> ProblemDetails:
         """Build one problem body. Raise `UnregisteredCode` for unknown codes.
@@ -515,8 +520,8 @@ class Envelope:
         ceiling_kind: str | None = None,
         count: int | None = None,
         cap: int | None = None,
-        limit_name: str | None = None,
-        retry_mode: str | None = None,
+        limit_name: RegisteredLimitName | None = None,
+        retry_mode: RetryMode | None = None,
         retryable: bool,
         headers: Mapping[str, str] | None = None,
     ) -> JSONResponse:

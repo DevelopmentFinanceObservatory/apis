@@ -1,8 +1,8 @@
 """Checks coverage rows before they become a `CoverageIndex`.
 
 `checked_index` refuses rows whose year-mask popcount disagrees with `n_obs`, rows whose facet
-has no metadata, rows whose entities disagree with their variable's role names, and a table
-`CoverageIndex` refuses. `graph_release.views` builds the release's coverage view through it.
+has no metadata, a facet whose observation period the year mask does not count, rows whose
+entities disagree with their variable's role names, and a table `CoverageIndex` refuses. `graph_release.views` builds the release's coverage view through it.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 
+from graph_release.format import MASK_PERIODS
 from series_coverage._bits import popcount64
 from series_coverage.index import CoverageIndex
 from series_coverage.schema import (
@@ -44,7 +45,8 @@ def checked_index(
     label: str,
 ) -> CoverageIndex:
     """The `CoverageIndex` over `table`, once every row's mask popcount equals its `n_obs`,
-    every facet has metadata and every row's entities match its variable's role names.
+    every facet has metadata, every facet's `observation_period` is one the mask counts
+    (`MASK_PERIODS`, `P1Y`) and every row's entities match its variable's role names.
     `table`'s `donor` and `recipient` columns are dictionary-encoded. `label` names the source
     in errors.
 
@@ -52,6 +54,7 @@ def checked_index(
     """
     _check_popcount_invariant(table, horizon, label=label)
     _check_facet_metadata_completeness(table, facet_metadata, label=label)
+    _check_observation_periods(facet_metadata, label=label)
     _check_role_slots(table, role_names, label=label)
     try:
         return CoverageIndex(
@@ -75,6 +78,21 @@ def _check_facet_metadata_completeness(
     if missing:
         raise CoverageArtifactError(
             f"{label} has {len(missing)} facet_id(s) with no facet metadata, e.g. {missing[:10]!r}"
+        )
+
+
+def _check_observation_periods(facet_metadata: Mapping[str, FacetMetadata], *, label: str) -> None:
+    """Requires every facet's `observation_period` to be one of `MASK_PERIODS`, the periods
+    a year mask counts, a facet stating none included."""
+    unsupported = sorted(
+        facet_id
+        for facet_id, metadata in facet_metadata.items()
+        if metadata.observation_period not in MASK_PERIODS
+    )
+    if unsupported:
+        raise CoverageArtifactError(
+            f"{label} has {len(unsupported)} facet(s) whose observation period the year mask "
+            f"does not count ({list(MASK_PERIODS)}), e.g. {unsupported[:10]!r}"
         )
 
 

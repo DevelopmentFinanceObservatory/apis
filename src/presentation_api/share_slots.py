@@ -78,6 +78,7 @@ from presentation_api.newest_frames import FRESHNESS_WINDOW, NewestPending
 from presentation_api.reply import serialize_read_reply
 from presentation_api.retention import stated_retention
 from presentation_api.routes import SHARES_ENDPOINT
+from presentation_api.stored_intent import replaying_stored_intent
 from presentation_store import (
     Freshness,
     ServedPage,
@@ -213,12 +214,15 @@ def serve_on_slot_frame[T](
     be drawn: it stores a check `stale` on it, due after the failure's wait, so the reads before it serve that frame without drawing
     the failing one. Any other failure stores the slot `stale` on the card's own frame until the
     next check.
-    `card.frame` must be set and `record` must be the card revision.
+    `card.frame` must be set and `record` must be the card revision. `draw` replays the card
+    revision's stored intent, so a refusal of it leaves as `StoredIntentRefused`
+    (`replaying_stored_intent`): the share's reader cannot change the intent.
 
     Raises:
         Any refusal of `draw` on the card's own frame.
     """
     assert card.frame is not None
+    draw = _replaying(draw)
     if share.mode == "snapshot":
         frame, freshness, checked_at = card.frame, "current", None
         drawn = draw(frame)
@@ -487,6 +491,16 @@ def _fetchable(retention: Mapping[str, object] | None, *, now: datetime) -> bool
         return True
     held_until = retention.get("held_until")
     return isinstance(held_until, str) and datetime.fromisoformat(held_until) > now
+
+
+def _replaying[T](draw: Callable[[FrameRef], T]) -> Callable[[FrameRef], T]:
+    """`draw`, run inside `replaying_stored_intent`."""
+
+    def replayed(frame: FrameRef) -> T:
+        with replaying_stored_intent():
+            return draw(frame)
+
+    return replayed
 
 
 def _transient_wait(exc: Exception) -> float | None:

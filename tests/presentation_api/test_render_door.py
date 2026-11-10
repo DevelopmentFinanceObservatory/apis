@@ -854,7 +854,9 @@ def test_a_target_frame_that_does_not_load_refuses_frame_unavailable_at_409(
             id="release-mismatch",
         ),
         pytest.param(
-            ResourceExhausted(pointer="/select", limit_name="MAX_SERIES", detail="too many"),
+            ResourceExhausted(
+                pointer="/select", limit_name="MAX_SERIES_PER_COMPONENT", detail="too many"
+            ),
             409,
             "resource_exhausted",
             False,

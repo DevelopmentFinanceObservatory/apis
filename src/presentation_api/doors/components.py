@@ -115,7 +115,6 @@ from presentation_api.doors.component_data import (
 from presentation_api.doors.render import (
     RENDER_EXCEPTION_EXEMPLARS,
     RENDER_EXCEPTION_TYPES,
-    StoredIntentRefused,
     build_render_router,
     classify_render_exception,
     replayed,
@@ -133,6 +132,7 @@ from presentation_api.refusals import (
     FRAME_UNAVAILABLE_EXEMPLARS,
     binding_invalid_spec,
     frame_unavailable_spec,
+    retry_mode,
 )
 from presentation_api.reply import serialize_create_reply, serialize_write_reply
 from presentation_api.retention import stated_retention
@@ -145,6 +145,7 @@ from presentation_api.routes import (
     WRITE_ENDPOINT,
     door_registry_endpoints,
 )
+from presentation_api.stored_intent import StoredIntentRefused
 from presentation_api.vocabulary import LiveVocabularySource
 from presentation_store import (
     GeneratedIdCollision,
@@ -240,6 +241,12 @@ class CreateComponentBody(ComponentBody):
 
 
 def classify_components_exception(exc: BaseException) -> ProblemSpec | None:
+    if isinstance(exc, StoredIntentRefused):
+        # The caller replays a stored intent it cannot change.
+        spec = classify_components_exception(exc.refusal)
+        if spec is None:
+            return None
+        return spec._replace(retry_mode=retry_mode(spec, stored_intent=True))
     if isinstance(exc, PathParamInvalid):
         return refused(
             "request_invalid",

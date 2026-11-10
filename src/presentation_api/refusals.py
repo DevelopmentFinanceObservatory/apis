@@ -14,9 +14,9 @@ from fastapi.exceptions import RequestValidationError
 from assembler.errors import BindingInvalid, FrameUnavailable
 from assembler.ports import FRAME_UNAVAILABLE_OUTCOME
 from dfo_platform import Alternative, Cause, ProblemIssue, ProblemSpec, refused
-from dfo_platform.codes import registered_status
+from dfo_platform.codes import RetryMode, registered_status
 from dfo_platform.validation import validation_problem
-from presentation_api.codes import _UNCHANGED_RETRY_MODES, CODE_RETRY_MODE, retryable_for
+from presentation_api.codes import CODE_RETRY_MODE, UNCHANGED_RETRY_MODES, retryable_for
 
 __all__ = [
     "EXPIRED_FRAME_FIX",
@@ -32,14 +32,11 @@ __all__ = [
     "with_retry_mode",
 ]
 
-# The modes stated for codes whose occurrences all share one mode other than their headline
-# mode, or which `CODE_RETRY_MODE` does not name: the shares door's codes, the daily allowance,
-# and the platform's own refusals. Every code the surface can answer is named here or there.
-_STATED_MODES: Mapping[str, str] = MappingProxyType(
+# The modes of the codes `CODE_RETRY_MODE` does not name: the shares door's codes, the daily
+# allowance, and the platform's own refusals. Every code the surface can answer is named here
+# or there, and none in both (`tests/presentation_api/test_refusal_registry.py`).
+_STATED_MODES: Mapping[str, RetryMode] = MappingProxyType(
     {
-        # Every limit a drawing crosses grows with the request's own select, window or intent,
-        # the minted envelope's bytes included, so a changed request fits.
-        "resource_exhausted": "correct_and_retry",
         "payload_too_large": "correct_and_retry",
         # A replace or delete sent without its write token succeeds with the header.
         "write_token_required": "correct_and_retry",
@@ -56,14 +53,15 @@ _STATED_MODES: Mapping[str, str] = MappingProxyType(
 )
 
 
-def retry_mode(spec: ProblemSpec, *, stored_intent: bool) -> str:
+def retry_mode(spec: ProblemSpec, *, stored_intent: bool) -> RetryMode:
     """What a caller does with the refusal `spec`, stated on every Presentation problem body as
-    `retry_mode` (`with_retry_mode`). `stored_intent` is true for a refusal a render route
-    raised while replaying a revision's stored intent (`doors.render.StoredIntentRefused`).
+    `retry_mode` (`with_retry_mode`). `stored_intent` is true for a refusal a render route or
+    a share slot's read raised while replaying a revision's stored intent
+    (`presentation_api.stored_intent.StoredIntentRefused`).
 
-    A code `_STATED_MODES` names states that mode, and any other states its headline mode
-    (`CODE_RETRY_MODE`). A headline mode that repeats the request unchanged holds only where
-    the occurrence is `retryable`, since `frame_unavailable` varies by cause. A render caller
+    A code states its headline mode (`CODE_RETRY_MODE`), or the mode `_STATED_MODES` gives a
+    code outside it. A headline mode that repeats the request unchanged holds only where
+    the occurrence is `retryable`, since `frame_unavailable` varies by cause. A replaying caller
     cannot change the stored intent it replays, so a refusal of that intent states
     `do_not_retry` where it would correct. Every refusal of a request itself, a render's body,
     path, `schema_version` and headers included, keeps its mode.
@@ -73,7 +71,7 @@ def retry_mode(spec: ProblemSpec, *, stored_intent: bool) -> str:
             (`tests/presentation_api/test_refusal_registry.py`), and the platform renders a
             refusal whose `finish` raises as it was classified."""
     mode = _STATED_MODES.get(spec.code) or CODE_RETRY_MODE[spec.code]
-    if spec.code not in _STATED_MODES and mode in _UNCHANGED_RETRY_MODES and not spec.retryable:
+    if spec.code not in _STATED_MODES and mode in UNCHANGED_RETRY_MODES and not spec.retryable:
         return "do_not_retry"
     if stored_intent and mode == "correct_and_retry":
         return "do_not_retry"
@@ -85,7 +83,7 @@ def retry_mode_codes() -> frozenset[str]:
     return frozenset(_STATED_MODES) | frozenset(CODE_RETRY_MODE)
 
 
-def retry_mode_table() -> dict[str, str]:
+def retry_mode_table() -> dict[str, RetryMode]:
     """`retry_mode`'s answer for every code it names, retryable or not, on a request and on a
     replayed stored intent, keyed `request|code|retryable` or `stored_intent|code|retryable`,
     the rule's only inputs. The capability version hashes it, so a change to the rule moves
@@ -103,8 +101,8 @@ def retry_mode_table() -> dict[str, str]:
 def with_retry_mode(spec: ProblemSpec) -> ProblemSpec:
     """`spec` stating its `retry_mode`, the Presentation surface's `finish`, so every body it
     answers states the member. A refusal of a replayed stored intent arrives with the member
-    set by the render routes' classifier (`doors.render.replayed`) and keeps it. Any other
-    states the mode of a refusal of the request itself."""
+    set by the components door's classifier (`doors.components.classify_components_exception`)
+    and keeps it. Any other states the mode of a refusal of the request itself."""
     if spec.retry_mode is not None:
         return spec
     return spec._replace(retry_mode=retry_mode(spec, stored_intent=False))

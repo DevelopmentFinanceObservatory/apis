@@ -215,7 +215,7 @@ def test_registered_status_reads_the_bound_endpoint_or_unbound_the_one_status_ov
 
 def _state_endpoint(spec: ProblemSpec) -> ProblemSpec:
     """Writes the endpoint bound while `finish` runs into a member the body carries."""
-    return spec._replace(retry_mode=f"bound:{codes.bound_endpoint()}")
+    return spec._replace(detail=f"bound:{codes.bound_endpoint()}")
 
 
 @pytest.mark.parametrize(
@@ -232,7 +232,7 @@ def test_finish_runs_on_every_refusal_the_surface_answers(path: str, stated: str
     route's registry endpoint bound."""
     response = _client(finish=_state_endpoint).get(path)
 
-    assert response.json()["retry_mode"] == stated
+    assert response.json()["detail"] == stated
 
 
 def test_finish_runs_on_the_platforms_answer_to_an_unregistered_code() -> None:
@@ -245,7 +245,7 @@ def test_finish_runs_on_the_platforms_answer_to_an_unregistered_code() -> None:
     response = _client(classify=classify, finish=_state_endpoint).get("/api/t/a")
 
     body = response.json()
-    assert (body["code"], body["retry_mode"]) == ("internal_error", "bound:t.a")
+    assert (body["code"], body["detail"]) == ("internal_error", "bound:t.a")
 
 
 def _finish_raises(spec: ProblemSpec) -> ProblemSpec:

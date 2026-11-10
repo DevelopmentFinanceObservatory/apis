@@ -52,23 +52,21 @@ For five codes it differs from the status the write routes serve: `binding_inval
 or `refresh_then_retry` code whose occurrence is retryable.
 
 A refusal of the stored intent itself, an `AssemblerRefusal` the replay raises, leaves the route
-as `StoredIntentRefused`, and `replayed` states its `retry_mode` as such a refusal's
-(`presentation_api.refusals.retry_mode`): `do_not_retry` where the write routes would answer
-`correct_and_retry`. A refusal of the render request itself, its body, path, `schema_version`
+as `StoredIntentRefused` (`presentation_api.stored_intent`), which states the `retry_mode` of
+such a refusal (`presentation_api.refusals.retry_mode`): `do_not_retry` where the write routes
+would answer `correct_and_retry`. A refusal of the render request itself, its body, path, `schema_version`
 or headers, states the mode the write routes would.
 """
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING, Literal, cast
 
 from fastapi import APIRouter, Path, Query
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict
 
-from assembler.errors import AssemblerRefusal
 from assembler.pipeline import ComponentHoldsNoFrame, render_component
 from assembler.pipeline.export_component import export_component_data
 from assembler.pipeline.stored_revision import read_stored_revision
@@ -97,10 +95,10 @@ from presentation_api.path_params import (
     require_content_version,
     require_spec_id,
 )
-from presentation_api.refusals import retry_mode
 from presentation_api.reply import serialize_read_reply
 from presentation_api.retention import stated_retention
 from presentation_api.routes import RENDER_DATA_PATH, RENDER_ENDPOINT, RENDER_PATH
+from presentation_api.stored_intent import StoredIntentRefused, replaying_stored_intent
 
 if TYPE_CHECKING:
     from presentation_api.doors.components import ComponentsDeps
@@ -140,40 +138,17 @@ def classify_render_exception(exc: BaseException) -> ProblemSpec | None:
     return classify_live_refresh_exception(exc)
 
 
-class StoredIntentRefused(Exception):
-    """A render route's replay refused the revision's stored intent. `refusal` is what the
-    replay raised (`_replaying_stored_intent`)."""
-
-    def __init__(self, refusal: AssemblerRefusal) -> None:
-        self.refusal = refusal
-        super().__init__(str(refusal))
-
-
-@contextmanager
-def _replaying_stored_intent() -> Iterator[None]:
-    """Re-raises an `AssemblerRefusal` raised inside as `StoredIntentRefused`."""
-    try:
-        yield
-    except AssemblerRefusal as exc:
-        raise StoredIntentRefused(exc) from exc
-
-
 def replayed(
     classify: Callable[[BaseException], ProblemSpec | None],
 ) -> Callable[[BaseException], ProblemSpec | None]:
     """`classify`, with a refusal on a render route restating `retryable` as its caller, who
-    replays a stored intent, reads it (`replay_retryable`). A `StoredIntentRefused` classifies
-    as its `refusal` and states the `retry_mode` of a refusal of the stored intent."""
+    replays a stored intent, reads it (`replay_retryable`)."""
 
     def classify_replayed(exc: BaseException) -> ProblemSpec | None:
-        refusal = exc.refusal if isinstance(exc, StoredIntentRefused) else None
-        spec = classify(exc if refusal is None else refusal)
+        spec = classify(exc)
         if spec is None or bound_endpoint() != RENDER_ENDPOINT:
             return spec
-        spec = spec._replace(retryable=replay_retryable(spec.code, retryable=spec.retryable))
-        if refusal is not None:
-            spec = spec._replace(retry_mode=retry_mode(spec, stored_intent=True))
-        return spec
+        return spec._replace(retryable=replay_retryable(spec.code, retryable=spec.retryable))
 
     return classify_replayed
 
@@ -358,7 +333,7 @@ def build_render_router(
 
         def job() -> JSONResponse:
             record = accepted_revision(component_id=component_id, revision=revision, target=target)
-            with _replaying_stored_intent():
+            with replaying_stored_intent():
                 reply = render_component(
                     component_id=component_id,
                     revision=revision,
@@ -404,7 +379,7 @@ def build_render_router(
 
         def job() -> Response:
             accepted_revision(component_id=component_id, revision=revision, target=target)
-            with _replaying_stored_intent():
+            with replaying_stored_intent():
                 exported = export_component_data(
                     component_id=component_id,
                     revision=revision,

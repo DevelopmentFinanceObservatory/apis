@@ -18,12 +18,13 @@ from dfo_platform import Alternative, ProblemSpec, codes
 from dfo_platform import refusal as platform_refusal
 from dfo_platform.codes import bound_registry_endpoint
 from dfo_platform.doors import DoorContribution, check_endpoint_exemplars, combine_classifiers
+from presentation_api import refusals
 from presentation_api.app import presentation_surface
 from presentation_api.codes import (
-    _UNCHANGED_RETRY_MODES,
     CODE_RETRY_MODE,
     PRESENTATION_SERVED_CODES,
     SHARE_CODE_CATALOGUE,
+    UNCHANGED_RETRY_MODES,
 )
 from presentation_api.doors.components import classify_components_exception
 from presentation_api.refusals import frame_unavailable_spec, retry_mode, retry_mode_codes
@@ -84,7 +85,7 @@ def test_every_presentation_refusal_goes_out_at_its_registered_status(
         if problem_statuses(spec.code, endpoint) != {spec.status}:
             disagreements.add((type(exemplar).__qualname__, endpoint, spec.code, spec.status))
         if endpoint == RENDER_ENDPOINT and spec.retryable:
-            assert CODE_RETRY_MODE[spec.code] in _UNCHANGED_RETRY_MODES, repr(exemplar)
+            assert CODE_RETRY_MODE[spec.code] in UNCHANGED_RETRY_MODES, repr(exemplar)
     assert swept == registered_endpoints("presentation.")
     assert sorted(disagreements) == []
 
@@ -371,3 +372,9 @@ def test_every_code_the_surface_answers_states_a_mode_of_its_own(
     )
 
     assert answered - retry_mode_codes() == set()
+
+
+def test_the_stated_modes_name_only_codes_outside_the_headline_table():
+    """A code `CODE_RETRY_MODE` names states its headline mode, so no occurrence contradicts the
+    release document's `retry_modes`."""
+    assert set(refusals._STATED_MODES) & set(CODE_RETRY_MODE) == set()

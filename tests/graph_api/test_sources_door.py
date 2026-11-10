@@ -1149,9 +1149,9 @@ class TestCurrency:
         ] == ["granularity"]
 
     def test_the_recorded_coverage_slice_serves_crs_in_usd(self):
-        """The session release's coverage view is the committed slice, which holds one CRS
-        facet, in `CurrencyUSD`, so the bound release's coverage and inversion resolve the
-        orphan CRS Provenance to USD.
+        """The session release's coverage view is the committed slice, which holds one annual
+        CRS facet, in `CurrencyUSD`, so the bound release's coverage and inversion resolve the
+        orphan CRS Provenance to USD, by year.
         """
         crs = "provenance/OECDCreditorReportingSystem"
         graph = FakeGraphNodeReader(nodes={crs: {"typeOf": ("Provenance",)}})
@@ -1162,10 +1162,9 @@ class TestCurrency:
         assert resp.status_code == 200, resp.text
         assert resp.json()["scope_and_units"]["currencies"] == ["USD"]
         assert "scope_and_units.currencies" not in resp.json()["gaps"]
-        # The slice's facets carry no `observation_period`, so granularity is
-        # unknown.
-        assert resp.json()["scope_and_units"]["granularity"] is None
-        assert "scope_and_units.granularity" in resp.json()["gaps"]
+        # The slice's facet is annual, as every coverage facet is (`checked_index`).
+        assert resp.json()["scope_and_units"]["granularity"] == "Annual, by provider and recipient"
+        assert "scope_and_units.granularity" not in resp.json()["gaps"]
 
 
 def _documentation_response(coverage: object, headers: dict[str, str] | None = None):

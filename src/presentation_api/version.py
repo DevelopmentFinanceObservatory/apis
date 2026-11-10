@@ -17,13 +17,13 @@ from collections.abc import Mapping
 from assembler.catalogue import CatalogueRelease
 from assembler.ports import FRAME_UNAVAILABLE_OUTCOME, FrameOutcome, FrameUnavailableReason
 from dfo_platform import Alternative, Cause, CodeCatalogue, Envelope, ProblemIssue
-from dfo_platform.codes import endpoint_statuses
+from dfo_platform.codes import RetryMode, endpoint_statuses
 from dfo_platform.doors import RouteKey
 from dfo_platform.trace import set_trace_id
 from presentation_api.codes import (
-    _UNCHANGED_RETRY_MODES,
     CODE_RETRY_MODE,
     PRESENTATION_CODE_CATALOGUE,
+    UNCHANGED_RETRY_MODES,
 )
 from presentation_api.doors.release import release_document
 from presentation_api.refusals import NEWEST_NOT_READY_OUTCOME, retry_mode_table
@@ -40,7 +40,7 @@ _EXEMPLAR_CATALOG_VERSION = "cv_exemplar_placeholder"
 
 
 def _render_refusal_exemplars(
-    code_catalogue: CodeCatalogue, retry_modes: Mapping[str, str]
+    code_catalogue: CodeCatalogue, retry_modes: Mapping[str, RetryMode]
 ) -> dict[str, dict[str, object]]:
     """Render one sorted `ProblemDetails` body per code. The first includes every optional
     field, so removing a field changes the hash. Run in a fresh context with the fixed trace ID
@@ -72,7 +72,7 @@ def _render_refusal_exemplars(
                         detail="exemplar issue detail",
                     )
                 ],
-                limit_name="EXEMPLAR_LIMIT",
+                limit_name="MAX_LINE_CHART_SERIES",
                 retry_mode=retry_modes[code],
                 retryable=retryable,
             )
@@ -86,14 +86,14 @@ def compute_presentation_capability_version(
     *,
     release: CatalogueRelease,
     code_catalogue: CodeCatalogue = PRESENTATION_CODE_CATALOGUE,
-    retry_modes: Mapping[str, str] = CODE_RETRY_MODE,
+    retry_modes: Mapping[str, RetryMode] = CODE_RETRY_MODE,
     frame_unavailable_outcome: Mapping[
         FrameUnavailableReason, FrameOutcome
     ] = FRAME_UNAVAILABLE_OUTCOME,
     registry_statuses: Mapping[str, Mapping[str, tuple[int, ...]]] = PRESENTATION_STATUSES,
     newest_not_ready_outcome: tuple[str, bool] = NEWEST_NOT_READY_OUTCOME,
     route_endpoints: Mapping[RouteKey, str] = ROUTE_ENDPOINTS,
-    replay_modes: frozenset[str] = _UNCHANGED_RETRY_MODES,
+    replay_modes: frozenset[RetryMode] = UNCHANGED_RETRY_MODES,
 ) -> str:
     """Return the capability hash for `release` and the supplied refusal data."""
     refusal_exemplars = contextvars.copy_context().run(
