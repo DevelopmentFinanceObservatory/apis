@@ -31,7 +31,12 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator, Sequence
 
 from code_index.shared import get_index
-from search.engine.measure_verdict import ReadingEvidence, measure_verdicts, reading_evidence
+from search.engine.measure_verdict import (
+    PropertyEvidence,
+    ReadingEvidence,
+    measure_verdicts,
+    reading_evidence,
+)
 from search.engine.qualifier_match import declared_measures_named, holds_words
 from search.heading.departure_fact import DepartureFact
 from search.heading.words import content_words
@@ -112,17 +117,17 @@ def reading_inputs(
     `measure_noun`, from what a Spec states whether assembly built it or a recorded response
     rebuilt it with its sentence facts: its evidence, its bound codes and its series codes.
 
-    Its member names are the served members' labels (`ResolvedSpec.sentence_facts`). Its bound codes
-    are the values bound on its what and how slots, in slot order: every constraint value a member
-    asserts on a bound slot is one of them (`spec_build.build_stat_vars`). Its evidence
-    (`measure_verdict.reading_evidence`, as `admissibility.draft_evidence` builds a shape's) is its
-    shape's five-tuple and the constraint values its served members hold: each bound value under its
-    slot's constraint property, and the one value every served member declares on an axis the query
-    left open (`ResolvedSpec.open_axis_facts`, `varies` false and `undeclared_count` 0). Members
-    split across values, or some declaring none, do not all hold a value, so a value only some
-    members declare never answers the asked measure. Its series codes are the publisher codes that
-    stand for it (`ResolvedStatVars.source_codes`, `exact`). A Spec states no member constraint
-    properties and no denominator pairs, only the denominator's name."""
+    Its member names are the served members' labels (`ResolvedSpec.sentence_facts`). Its bound
+    codes are the values bound on its what and how slots, in slot order: every constraint value
+    a member asserts on a bound slot is one of them (`spec_build.build_stat_vars`). Its evidence
+    (`measure_verdict.reading_evidence`, as `admissibility.draft_evidence` builds a shape's) is
+    its shape's five-tuple and, on each constraint property, the values its served members
+    declare and whether every one declares one (`measure_verdict.PropertyEvidence`): on a
+    bound slot its bound values, which every member declares, and on an axis the query left
+    open the values `ResolvedSpec.open_axis_facts` lists, which every member declares when
+    none is undeclared. Its series codes are the publisher codes that stand for it
+    (`ResolvedStatVars.source_codes`, `exact`). A Spec states no denominator pairs, only the
+    denominator's name."""
     resolved = spec.resolved
     bound = [
         (slot.key.property.ref if slot.key.property is not None else None, value.ref.ref)
@@ -133,18 +138,30 @@ def reading_inputs(
     ]
     shape = resolved.shape
     denominator = shape.measurement_denominator
+    properties: dict[str, PropertyEvidence] = {}
+    declared = [
+        *((prop, frozenset({code}), True) for prop, code in bound if prop is not None),
+        *(
+            (
+                fact.property,
+                frozenset(count.value.ref for count in fact.values),
+                fact.undeclared_count == 0,
+            )
+            for fact in resolved.open_axis_facts or ()
+            if fact.values
+        ),
+    ]
+    for prop, values, every_member in declared:
+        held = properties.get(prop)
+        properties[prop] = PropertyEvidence(
+            values=values | (held.values if held is not None else frozenset()),
+            every_member=every_member or (held is not None and held.every_member),
+        )
     evidence = reading_evidence(
         population_type=_ref(shape.population_type),
         measured_property=_ref(shape.measured_property),
         stat_type=_ref(shape.stat_type),
-        constraint_values=[
-            *((prop, code) for prop, code in bound if prop is not None),
-            *(
-                (fact.property, fact.value.ref)
-                for fact in resolved.open_axis_facts or ()
-                if not fact.varies and fact.undeclared_count == 0 and fact.value is not None
-            ),
-        ],
+        properties=properties,
         noun=measure_noun,
         member_names=[m.label for m in resolved.sentence_facts.members if m.label],
         denominator_name=denominator.label if denominator is not None else None,

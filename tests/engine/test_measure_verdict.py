@@ -10,7 +10,12 @@ from __future__ import annotations
 
 import pytest
 
-from search.engine.measure_verdict import ReadingEvidence, Verdict, measure_verdicts
+from search.engine.measure_verdict import (
+    PropertyEvidence,
+    ReadingEvidence,
+    Verdict,
+    measure_verdicts,
+)
 from search.engine.qualifier_match import declared_measures_named
 
 _ACTIVITY = (
@@ -78,26 +83,59 @@ _NET = _DISBURSEMENTS | {("nettingBasis", "Net")}
 _GDP_NAME = "Gross domestic product (GDP)"
 
 
+_FIVE_TUPLE_KEYS = frozenset({"populationType", "measuredProperty", "statType"})
+
+
+def _reading(
+    *,
+    pairs: frozenset[tuple[str, str]] = frozenset(),
+    members: tuple[frozenset[str], ...] | None = None,
+    noun: str | None = None,
+    member_names: tuple[str, ...] = (),
+    denominator_pairs: frozenset[tuple[str, str]] = frozenset(),
+    denominator_name: str | None = None,
+) -> ReadingEvidence:
+    """The evidence of a reading whose five-tuple and constraint values are `pairs`, its
+    members declaring the constraint properties `members`: by default one member declaring
+    every constraint value, and none known when `members` is empty."""
+    constraints = [(prop, value) for prop, value in pairs if prop not in _FIVE_TUPLE_KEYS]
+    if members is None:
+        members = (frozenset(prop for prop, _value in constraints),)
+    properties = {
+        prop: PropertyEvidence(
+            values=frozenset(value for on, value in constraints if on == prop),
+            every_member=bool(members) and all(prop in member for member in members),
+        )
+        for prop in {prop for prop, _value in constraints}
+    }
+    return ReadingEvidence(
+        five_tuple=pairs - frozenset(constraints),
+        properties=properties,
+        noun=noun,
+        member_names=member_names,
+        denominator_pairs=denominator_pairs,
+        denominator_name=denominator_name,
+    )
+
+
 @pytest.mark.parametrize(
     ("variable_text", "evidence", "verdicts"),
     [
         pytest.param(
             "GDP",
-            ReadingEvidence(
-                pairs=_GDP_GROWTH, noun="GDP growth", member_names=("GDP growth (annual %)",)
-            ),
+            _reading(pairs=_GDP_GROWTH, noun="GDP growth", member_names=("GDP growth (annual %)",)),
             ["unknown"],
             id="gdp-answered-with-gdp-growth-whose-pairs-hold-gdp-growth",
         ),
         pytest.param(
             "GDP",
-            ReadingEvidence(noun="GDP growth", member_names=("GDP growth (annual %)",)),
+            _reading(noun="GDP growth", member_names=("GDP growth (annual %)",)),
             ["unknown"],
             id="gdp-answered-with-gdp-growth-by-name-alone",
         ),
         pytest.param(
             "GDP",
-            ReadingEvidence(
+            _reading(
                 pairs=_GROSS_CAPITAL_FORMATION,
                 noun="gross capital formation",
                 member_names=("Gross capital formation, Percent of GDP",),
@@ -108,15 +146,15 @@ _GDP_NAME = "Gross domestic product (GDP)"
         ),
         pytest.param(
             "GDP",
-            ReadingEvidence(pairs=_HEALTH, denominator_pairs=_WDI_GDP),
+            _reading(pairs=_HEALTH, denominator_pairs=_WDI_GDP),
             ["base"],
             id="gdp-the-reading-divides-by-held-by-its-denominator-pairs",
         ),
         pytest.param(
             "external health expenditure as a share of GDP",
-            ReadingEvidence(
+            _reading(
                 pairs=_EDUCATION,
-                member_properties=(frozenset({"activitySource", "expenditureType"}),),
+                members=(frozenset({"activitySource", "expenditureType"}),),
                 denominator_pairs=_WDI_GDP,
             ),
             ["contradicts", "base"],
@@ -124,18 +162,18 @@ _GDP_NAME = "Gross domestic product (GDP)"
         ),
         pytest.param(
             "external health expenditure as a share of GDP",
-            ReadingEvidence(
+            _reading(
                 pairs=_EDUCATION,
                 noun="government expenditure",
                 member_names=("Government expenditure on education, total (% of GDP)",),
                 denominator_name=_GDP_NAME,
             ),
-            ["unknown", "holds"],
+            ["contradicts", "base"],
             id="issue-47a-education-share-answered-for-a-health-share",
         ),
         pytest.param(
             "health expenditure as a share of GDP",
-            ReadingEvidence(
+            _reading(
                 pairs=_HEALTH,
                 noun="health expenditure",
                 member_names=("Current health expenditure (% of GDP)",),
@@ -146,7 +184,7 @@ _GDP_NAME = "Gross domestic product (GDP)"
         ),
         pytest.param(
             "debt service to GNI",
-            ReadingEvidence(
+            _reading(
                 pairs=_DEBT_SERVICE,
                 noun="external debt service",
                 member_names=("External debt service, percent of GDP",),
@@ -157,7 +195,7 @@ _GDP_NAME = "Gross domestic product (GDP)"
         ),
         pytest.param(
             "GNI per capita",
-            ReadingEvidence(
+            _reading(
                 pairs=_WDI_GDP,
                 noun="GDP",
                 member_names=("Nominal gross domestic product per capita",),
@@ -167,7 +205,7 @@ _GDP_NAME = "Gross domestic product (GDP)"
         ),
         pytest.param(
             "GNI per capita",
-            ReadingEvidence(
+            _reading(
                 pairs=_GNI_AT_PPP,
                 noun="gross national income based on purchasing power parity per capita",
             ),
@@ -176,7 +214,7 @@ _GDP_NAME = "Gross domestic product (GDP)"
         ),
         pytest.param(
             "GNI",
-            ReadingEvidence(
+            _reading(
                 pairs=frozenset(
                     {
                         ("populationType", "EconomicActivity"),
@@ -193,7 +231,7 @@ _GDP_NAME = "Gross domestic product (GDP)"
         ),
         pytest.param(
             "GDP",
-            ReadingEvidence(
+            _reading(
                 pairs=frozenset(
                     {
                         ("populationType", "EconomicProduction"),
@@ -212,7 +250,7 @@ _GDP_NAME = "Gross domestic product (GDP)"
         ),
         pytest.param(
             "GDP",
-            ReadingEvidence(
+            _reading(
                 pairs=frozenset(
                     {
                         *_WEO,
@@ -226,54 +264,54 @@ _GDP_NAME = "Gross domestic product (GDP)"
         ),
         pytest.param(
             "disbursements",
-            ReadingEvidence(pairs=_GROSS),
+            _reading(pairs=_GROSS),
             ["holds"],
             id="disbursements-answered-with-gross-disbursements-a-label-refining-it",
         ),
         pytest.param(
             "national income per person",
-            ReadingEvidence(pairs=_WDI_GDP, noun="GDP"),
+            _reading(pairs=_WDI_GDP, noun="GDP"),
             [],
             id="national-income-per-person-names-no-declared-measure",
         ),
         pytest.param(
             "net disbursements",
-            ReadingEvidence(pairs=_GROSS, noun="gross disbursements"),
-            ["unknown"],
+            _reading(pairs=_GROSS, noun="gross disbursements"),
+            ["contradicts"],
             id="net-disbursements-answered-with-gross",
         ),
         pytest.param(
             "net disbursements",
-            ReadingEvidence(pairs=_NET, noun="ODA net disbursements"),
+            _reading(pairs=_NET, noun="ODA net disbursements"),
             ["holds"],
             id="net-disbursements-held",
         ),
         pytest.param(
             "GNI",
-            ReadingEvidence(noun="gross national income"),
+            _reading(noun="gross national income"),
             ["holds"],
             id="an-acronym-names-the-measure-its-expansion-names",
         ),
         pytest.param(
             "GDP",
-            ReadingEvidence(pairs=_WEO_GDP_PPP),
+            _reading(pairs=_WEO_GDP_PPP),
             ["holds"],
             id="a-name-three-declarations-share-held-by-one",
         ),
         pytest.param(
             "GDP",
-            ReadingEvidence(
+            _reading(
                 pairs=_WEO_GVA,
-                member_properties=(frozenset({"productTaxBasis", "fixedCapitalConsumptionBasis"}),),
+                members=(frozenset({"productTaxBasis", "fixedCapitalConsumptionBasis"}),),
             ),
             ["contradicts"],
             id="a-name-three-declarations-share-contradicted-by-each-of-its-population-type",
         ),
         pytest.param(
             "GDP",
-            ReadingEvidence(
+            _reading(
                 pairs=_WEO_GDP_AT_MARKET_RATES,
-                member_properties=(
+                members=(
                     frozenset(
                         {
                             "productTaxBasis",
@@ -288,7 +326,7 @@ _GDP_NAME = "Gross domestic product (GDP)"
         ),
         pytest.param(
             "health expenditure",
-            ReadingEvidence(
+            _reading(
                 pairs=frozenset(
                     {
                         ("populationType", "WHO_GHED_CHE_pc_US_SHA2011"),
@@ -303,9 +341,7 @@ _GDP_NAME = "Gross domestic product (GDP)"
         ),
         pytest.param(
             "gross disbursements",
-            ReadingEvidence(
-                pairs=_GROSS, noun="ODA", member_names=("Official development assistance",)
-            ),
+            _reading(pairs=_GROSS, noun="ODA", member_names=("Official development assistance",)),
             ["holds"],
             id="a-reading-whose-codes-identify-the-declared-measure",
         ),

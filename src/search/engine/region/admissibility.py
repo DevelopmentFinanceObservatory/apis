@@ -60,6 +60,7 @@ from search.engine.measure_verdict import (
     ReadingEvidence,
     Verdict,
     measure_verdicts,
+    property_evidence,
     reading_evidence,
 )
 from search.engine.qualifier_match import NamedMeasure, QualifierMatch
@@ -180,18 +181,22 @@ def draft_evidence(
     shape: ShapeDraft, arcs: Mapping[str, dict], denominators: Mapping[str, DenominatorRead]
 ) -> ReadingEvidence:
     """What `shape` states of its measure before bind (`measure_verdict.reading_evidence`):
-    its five-tuple, the constraint values its family holds (`shape_constraint_values`), the
-    constraint properties of each member whose arcs `arcs` holds, its label as its noun,
-    and the pairs and name the graph gives the StatVar it divides by, as `denominators`
-    read them."""
+    its five-tuple; on each constraint property the values the members whose arcs `arcs`
+    holds declare and whether every one of them declares one, beside the values its own
+    members and its held family's summary hold (`shape_constraint_values`), which never
+    decide that every member declares one (`measure_verdict.property_evidence`); its label
+    as its noun; and the pairs and name the graph gives the StatVar it divides by, as
+    `denominators` read them."""
     read = denominators.get(shape.meas_denom_dcid) if shape.meas_denom_dcid else None
     return reading_evidence(
         population_type=shape.pop_type_dcid,
         measured_property=shape.meas_prop_dcid,
         stat_type=shape.stat_type_dcid,
-        constraint_values=shape_constraint_values(shape),
+        properties=property_evidence(
+            [read_constraints(member) for member in arcs.values()],
+            summary=shape_constraint_values(shape),
+        ),
         noun=shape.label,
-        member_properties=[frozenset(read_constraints(member)) for member in arcs.values()],
         denominator_pairs=read.pairs if read is not None else (),
         denominator_name=read.name if read is not None else None,
     )

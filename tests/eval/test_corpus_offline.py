@@ -67,10 +67,12 @@ from tests.engine._harness import build_materialise_double, offline_events
 
 _CASES = load_cases()
 
-CLOSEST_MATCH_FIRES: frozenset[str] = frozenset()
-"""The corpus cases whose answer the lexical closest-match rule flags. std-02 ("GDP India")
-stays silent: its offline answer leaves `activitySource` open, so the heading reads the
-shape's name, "nominal gross domestic product", which the GDP noun's `also_called` names."""
+CLOSEST_MATCH_FIRES: frozenset[str] = frozenset({"std-02"})
+"""The corpus cases whose answer the closest-match rule flags. std-02 ("GDP India") leaves
+`activitySource` open, and its served members split on it: one declares
+GrossDomesticProduction and three GrossValueAdded. The series its file writes are two sector
+gross value added series, so the answer shows "GDP" on some members only and closest match
+says so."""
 
 type Pass = tuple[ResolveState, RegionResult]
 

@@ -11,14 +11,19 @@ from __future__ import annotations
 import dataclasses
 import gzip
 import json
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
 
+from code_index.shared import get_index
 from scripts.sentence_golden import golden_parts
+from search.engine import measure_verdict
 from search.engine.closest_match import closest_match_fact, reading_inputs
-from search.engine.measure_verdict import ReadingEvidence, measure_verdicts
+from search.engine.measure_verdict import ReadingEvidence, measure_verdicts, property_evidence
 from search.engine.qualifier_match import declared_measures_named
+from search.engine.region.admissibility import rule_four_verdicts
+from search.engine.shape import ShapeDraft
 from search.heading.departure_fact import DepartureFact
 from search.models import CandidatesPart, DefinitePart, GraphRef, Spec
 from search.models.spec import OpenAxisValueCount, OpenConstraintAxisFact
@@ -377,7 +382,10 @@ def test_closest_match_fact_on_a_ratio(
     fact = closest_match_fact(
         variable_text=variable_text,
         evidence=ReadingEvidence(
-            pairs=frozenset(pairs),
+            five_tuple=frozenset(pair for pair in pairs if pair[0] in _SHAPE_KEYS),
+            properties=property_evidence(
+                [{prop: value for prop, value in pairs if prop not in _SHAPE_KEYS}]
+            ),
             noun=measure_noun,
             member_names=(stat_var_name,),
             denominator_name=denominator,
@@ -423,63 +431,131 @@ _SPLIT_AXIS = OpenConstraintAxisFact(
 )
 
 
-@pytest.mark.parametrize(
-    ("open_axis", "verdicts"),
-    [
-        pytest.param("agreed", ["holds"], id="every-member-holds"),
-        pytest.param("split", ["unknown"], id="members-split"),
-        pytest.param("some-undeclared", ["unknown"], id="some-undeclared"),
-        pytest.param(None, ["unknown"], id="no-open-axis"),
-    ],
+_INCLUDING_IMPORT_DUTIES = GraphRef(
+    ref="IncludingProductTaxesAndImportDuties", label="Including product taxes and import duties"
 )
-def test_a_value_every_member_holds_on_an_open_axis_reaches_the_pairs(
-    open_axis: str | None, verdicts: list[str]
-) -> None:
-    """The weo-020 reading of GDP per capita at purchasing power parity binds its product
-    tax basis on a slot. Left on no slot, the value every served member holds on the open
-    axis (`ResolvedSpec.open_axis_facts`) is in the reading's pairs, so its pairs alone hold
-    "GDP". Members split between including and excluding the taxes hold neither value, and
-    neither do members of which one declares no tax basis."""
+
+
+class _IndexWithChild:
+    """The code index, with `_INCLUDING_IMPORT_DUTIES` a child of `_INCLUDING_TAXES`: the
+    fixture index declares no child under any value a declared measure keys on."""
+
+    def __init__(self, index: object) -> None:
+        self._index = index
+
+    def descendants(self, code: str) -> frozenset[str]:
+        found = frozenset(self._index.descendants(code))
+        if code == _INCLUDING_TAXES.ref:
+            return found | {_INCLUDING_IMPORT_DUTIES.ref}
+        return found
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._index, name)
+
+
+def _open_axis(values: Sequence[GraphRef], *, undeclared: int = 0) -> OpenConstraintAxisFact:
+    """The open product tax basis axis whose served members declare `values`, one member
+    each, and `undeclared` members declare none."""
+    distinct = list({value.ref: value for value in values}.values())
+    return OpenConstraintAxisFact(
+        property=_PRODUCT_TAX,
+        varies=len(distinct) > 1,
+        value=distinct[0] if len(distinct) == 1 else None,
+        distinct_count=len(distinct),
+        undeclared_count=undeclared,
+        values=[OpenAxisValueCount(value=value, count=1) for value in distinct],
+    )
+
+
+def _weo_reading_without_tax_slot(open_axis: OpenConstraintAxisFact | None) -> Spec:
+    """The weo-020 reading of GDP per capita at purchasing power parity, its product tax
+    basis on no slot and its members' tax bases `open_axis`."""
     spec = _panel_reading("weo-020", _GDP_PPP_SHAPE)
     resolved = spec.resolved
     slots = [
         s for s in resolved.slots if s.key.property is None or s.key.property.ref != _PRODUCT_TAX
     ]
-    facts = {
-        "agreed": [
-            OpenConstraintAxisFact(
-                property=_PRODUCT_TAX,
-                varies=False,
-                value=_INCLUDING_TAXES,
-                distinct_count=1,
-                undeclared_count=0,
-                values=[OpenAxisValueCount(value=_INCLUDING_TAXES, count=1)],
-            )
-        ],
-        "split": [_SPLIT_AXIS],
-        "some-undeclared": [
-            OpenConstraintAxisFact(
-                property=_PRODUCT_TAX,
-                varies=False,
-                value=_INCLUDING_TAXES,
-                distinct_count=1,
-                undeclared_count=1,
-                values=[OpenAxisValueCount(value=_INCLUDING_TAXES, count=1)],
-            )
-        ],
-    }
-    reading = spec.model_copy(
+    return spec.model_copy(
         update={
             "resolved": resolved.model_copy(
                 update={
                     "slots": slots,
-                    "open_axis_facts": facts[open_axis] if open_axis else None,
+                    "open_axis_facts": [open_axis] if open_axis is not None else None,
                 }
             )
         }
     )
 
-    evidence, _bound, _series = reading_inputs(reading, measure_noun="")
-    pairs_alone = dataclasses.replace(evidence, noun=None, member_names=())
 
-    assert measure_verdicts(declared_measures_named("GDP"), pairs_alone) == verdicts
+@pytest.mark.parametrize(
+    ("open_axis", "verdicts"),
+    [
+        pytest.param(_open_axis([_INCLUDING_TAXES]), ["holds"], id="every-member-holds"),
+        pytest.param(
+            _open_axis([_INCLUDING_TAXES, _INCLUDING_IMPORT_DUTIES]),
+            ["holds"],
+            id="varied-every-value-related",
+        ),
+        pytest.param(_SPLIT_AXIS, ["some"], id="members-split"),
+        pytest.param(_open_axis([_INCLUDING_TAXES], undeclared=1), ["some"], id="some-undeclared"),
+        pytest.param(None, ["unknown"], id="no-open-axis"),
+    ],
+)
+def test_the_values_members_declare_on_an_open_axis_reach_the_verdict(
+    open_axis: OpenConstraintAxisFact | None, verdicts: list[str], monkeypatch
+) -> None:
+    """The weo-020 reading of GDP per capita at purchasing power parity binds its product
+    tax basis on a slot. Left on no slot, the values its served members declare on the open
+    axis (`ResolvedSpec.open_axis_facts`) are its evidence on the property, so "GDP" holds
+    where every member declares a value related to including the taxes, varied or not, and
+    some members holding it reads `some`, whether the rest exclude the taxes or declare no
+    basis."""
+    monkeypatch.setattr(measure_verdict, "get_index", lambda: _IndexWithChild(get_index()))
+    reading = _weo_reading_without_tax_slot(open_axis)
+
+    evidence, _bound, _series = reading_inputs(reading, measure_noun="")
+    values_alone = dataclasses.replace(evidence, noun=None, member_names=())
+
+    assert measure_verdicts(declared_measures_named("GDP"), values_alone) == verdicts
+
+
+def test_rule_four_and_closest_match_read_a_split_reading_alike() -> None:
+    """A shape whose two members split on the product tax basis, one including the taxes
+    and one excluding them, and the reading those members serve read "GDP" alike: `some`,
+    which rule 4 admits and closest match departs."""
+    reading = _weo_reading_without_tax_slot(_SPLIT_AXIS)
+    evidence, _bound, _series = reading_inputs(reading, measure_noun="")
+    shape = reading.resolved.shape
+    constraints = {prop: next(iter(found.values)) for prop, found in evidence.properties.items()}
+
+    def member(tax_basis: str) -> dict:
+        declared = {**constraints, _PRODUCT_TAX: tax_basis}
+        return {
+            "populationType": {"nodes": [{"dcid": shape.population_type.ref}]},
+            "measuredProperty": {"nodes": [{"dcid": shape.measured_property.ref}]},
+            "statType": {"nodes": [{"dcid": shape.stat_type.ref}]},
+            "constraintProperties": {"nodes": [{"dcid": prop} for prop in declared]},
+            **{prop: {"nodes": [{"dcid": value}]} for prop, value in declared.items()},
+        }
+
+    draft = ShapeDraft(
+        shape_id="weo_gdp_ppp",
+        label=_GDP_PPP_SHAPE,
+        pop_type_dcid=shape.population_type.ref,
+        meas_prop_dcid=shape.measured_property.ref,
+        stat_type_dcid=shape.stat_type.ref,
+        meas_qual_dcid=None,
+        meas_denom_dcid=None,
+        slot_keys=(),
+        sv_arc_facts={
+            "weo/including": member(_INCLUDING_TAXES.ref),
+            "weo/excluding": member("ExcludingProductTaxes"),
+        },
+    )
+    named = declared_measures_named("GDP")
+
+    assert rule_four_verdicts(draft, named, {}) == ["some"]
+    assert measure_verdicts(named, dataclasses.replace(evidence, noun=None, member_names=())) == [
+        "some"
+    ]
+    assert closest_match_fact(variable_text="GDP", evidence=evidence) is not None

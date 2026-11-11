@@ -1639,8 +1639,10 @@ def _measure_named_ranges(
 ) -> list[tuple[int, int]]:
     """The range of each of `spans` inside a name of declared measures the variable holds
     (`named`, `ResolveState.declared_names`, read once per part) that `shape`
-    holds or divides by (`measure_verdict.measure_verdicts` on
+    holds on some member or divides by (`measure_verdict.measure_verdicts` on
     `admissibility.draft_evidence`, the StatVar it divides by as `denominators` read it).
+    The evidence reads no member arcs, so no name reads ``holds`` from values and one some
+    member holds reads ``some``.
     Such a span is the measure the part elected or its base, no code qualifying it: "GNI"
     names `CRSTypeOfFinance1` and `CRSTypeOfFlow40`, which no gross national income row
     holds, and it names the declared measure gross national income, which the "Gross
@@ -1657,7 +1659,7 @@ def _measure_named_ranges(
     held = [
         occurrence
         for name, verdict in zip(named, verdicts, strict=True)
-        if verdict in ("holds", "base")
+        if verdict in ("holds", "some", "base")
         for occurrence in name.occurrences
     ]
     return [
@@ -4074,10 +4076,14 @@ def judge_value_requirements(
     shape: ShapeDraft,
     bindings: Sequence[SlotBindingDraft],
     state: ResolveState | None = None,
+    *,
+    read_words: bool = True,
 ) -> tuple[Requirement, ...]:
     """The requirements of `requirements` judged by the values their words name
     (`ValueRule`, `value_requirements`) that an answer of `shape` read under `bindings`
-    leaves unmet.
+    leaves unmet. With `read_words` false only the value rules judge, and no requirement is
+    met by its words, so a caller can judge before it has read the words: a requirement this
+    leaves met is met with them too.
 
     The answer is the members of `shape` its bindings select (`_selected_members`). It applies a
     value its bindings bind, or one every selected member holds, as every member of a female
@@ -4149,6 +4155,8 @@ def judge_value_requirements(
         ) or any(applies_value(value, member.get(prop)) for member in constraints)
 
     def states(words: frozenset[str]) -> bool:
+        if not read_words:
+            return False
         return all(_holds_word(stated, word) for word in words) or (
             bool(names) and all(words <= name for name in names)
         )

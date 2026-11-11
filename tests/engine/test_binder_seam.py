@@ -40,7 +40,7 @@ from search.engine.interpretation import Interpretation
 from search.engine.qualifier_match import declared_measures_named
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import candidate_collapse, phase_rank_bind
-from search.engine.region.candidate_collapse import _record_unheld_values
+from search.engine.region.candidate_collapse import _record_unheld_values, _unheld_requirement
 from search.engine.region.phase_rank_bind import (
     _logged_verdicts,
     _phase_bind,
@@ -790,3 +790,73 @@ def test_labels_are_read_only_for_a_value_some_answer_leaves_unmet(monkeypatch, 
     asyncio.run(_record_unheld_values(state, [(_AID_MENU[0], drafts), (nominated, [])]))
 
     assert read == ([[_EDUCATION]] if reads else [])
+
+
+def test_a_value_is_judged_by_its_label_and_never_by_the_words_of_its_dcid(monkeypatch):
+    """The series states "person", a word of the dcid `Person`, and not "women", the label
+    the value is read by. The value rules leave the value unmet on the answer without a
+    gender slot, so its label is read, and the label's words leave it unmet as well."""
+    read: list[list[str]] = []
+
+    async def labels(state, values):
+        read.append(list(values))
+        return dict.fromkeys(values, "Women")
+
+    monkeypatch.setattr(candidate_collapse, "draft_value_labels", labels)
+    state = _state(llm=_NoCallLLM())
+    state.variable = state.detect_query = "women population"
+    drafts = [
+        SlotBindingDraft(
+            axis="how",
+            property_dcid="gender",
+            kind="value",
+            value_dcids=["Person"],
+            evidence="mentioned",
+        )
+    ]
+    state.shape_draft, state.bindings = _MENU[1], drafts
+
+    asyncio.run(_record_unheld_values(state, [(_MENU[1], drafts), (_MENU[0], [])]))
+
+    assert read == [["Person"]]
+    assert [requirement.term.text for requirement in state.requirements] == ["Women"]
+
+
+_IDS_GNI = ShapeDraft(
+    shape_id="ids_gni",
+    label="Gross national income (current US$)",
+    pop_type_dcid="EconomicActivity",
+    meas_prop_dcid="amount",
+    stat_type_dcid="measuredValue",
+    meas_qual_dcid="CurrentPricesScenario",
+    meas_denom_dcid=None,
+    slot_keys=(),
+    sv_arc_facts={
+        "Amount_EconomicActivity_GrossNationalIncome_NominalScenario": {
+            "name": {"nodes": [{"value": "Gross national income (current US$)"}]},
+            "constraintProperties": {"nodes": [{"dcid": "economicActivityType"}]},
+            "economicActivityType": {"nodes": [{"dcid": "GrossNationalIncome"}]},
+        }
+    },
+)
+
+
+@pytest.mark.parametrize("read_words", [True, False], ids=["with-words", "values-alone"])
+def test_gross_national_income_on_another_property_is_met_by_its_label(read_words):
+    """The placeless-reelect IDS reading of "gross national income": the bind drafts
+    `activitySource` GrossNationalIncome, which the PPP and Atlas series carry, and the IDS
+    series carries GrossNationalIncome on `economicActivityType` instead. No value rule
+    applies the drafted value across properties; the member's name holds every word of the
+    value's label, so the label meets it."""
+    requirement = _unheld_requirement(
+        "activitySource",
+        "GrossNationalIncome",
+        "Gross national income",
+        frozenset(),
+    )
+
+    unmet = judge_value_requirements(
+        [requirement], _IDS_GNI, [], _state(llm=_NoCallLLM()), read_words=read_words
+    )
+
+    assert unmet == (() if read_words else (requirement,))
