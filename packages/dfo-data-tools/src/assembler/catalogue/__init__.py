@@ -47,13 +47,20 @@ class CatalogueRelease:
     retry_modes: Mapping[str, str]
     line_chart_max_series: int
     """Series a `line_chart` draws, the `maxItems` of its select's one array."""
-    write_schemas: Mapping[str, Mapping[str, object]]
+    referenced_schemas: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
+    write_schemas: Mapping[str, Mapping[str, object]] = field(init=False)
     """`intent_schemas` as a write validates against them: `line_chart`'s without its select
     array's `maxItems` (`without_select_list_cap`), the series cap a write checks only where
-    it applies."""
-    write_schemas_tolerant: Mapping[str, Mapping[str, object]]
+    it applies. Derived from `intent_schemas` on construction, so `dataclasses.replace`
+    derives it again."""
+    write_schemas_tolerant: Mapping[str, Mapping[str, object]] = field(init=False)
     """`intent_schemas_tolerant` as a write validates against them, as `write_schemas`."""
-    referenced_schemas: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "write_schemas", _write_schemas(self.intent_schemas))
+        object.__setattr__(
+            self, "write_schemas_tolerant", _write_schemas(self.intent_schemas_tolerant)
+        )
 
 
 class CatalogueIntegrityError(Exception):
@@ -246,8 +253,6 @@ def load_release(*, catalogue_dir: Path | None = None) -> CatalogueRelease:
         line_chart_max_series=_line_chart_max_series(
             tolerant=intent_schemas_tolerant["line_chart"]
         ),
-        write_schemas=_write_schemas(intent_schemas),
-        write_schemas_tolerant=_write_schemas(intent_schemas_tolerant),
         referenced_schemas={
             schema_id: json.loads(content) for schema_id, content in referenced.items()
         },

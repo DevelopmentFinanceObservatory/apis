@@ -99,7 +99,7 @@ from search.engine.retrieval.read_plan import ReadPlan, plan_coverage, serves_no
 from search.engine.retrieval.retrieve import Materialised, NoDataDraft
 from search.engine.retrieval.standard import Narrow
 from search.engine.unit.bind import with_unit_lexicon_version
-from search.engine.unit.conversion import served_prices, with_unit_conversion
+from search.engine.unit.conversion import served_prices
 from search.engine.unit.conversion_catalogue import current_conversion_catalogue
 from search.models import (
     CandidateBasis,
@@ -543,15 +543,7 @@ async def _assemble_definite(
     # A `has_data` result with no StatVars signals a missing series.
     if not unique_specs[0].resolved.members:
         return state.no_data("no_observations", llm_usage=state.var_usage)
-    # The survivor states the conversions it offers, as a single-table answer does
-    # (`phase_answer._build_definite_spec`).
-    _survivor_spec = with_unit_conversion(
-        unique_specs[0],
-        members=[(_survivor.mat.member_facts or {})[dcid] for dcid in _survivor.mat.sv_dcids],
-        plans=tuple(
-            plan for plan in (grounded.cand_plans.get(unique_specs[0].spec_id),) if plan is not None
-        ),
-    )
+    _survivor_spec = unique_specs[0]
     note_denominator_unverified(state, _survivor.shape, spec_id=_survivor_spec.spec_id)
     if (omitted := grounded.cand_unit_omitted.get(_survivor_spec.spec_id)) is not None:
         state.warnings.append(omitted)
@@ -694,6 +686,14 @@ async def _assemble_definite(
         measure_siblings=grounded.cand_measure_siblings.get(_survivor_spec.spec_id, ()),
         open_axis_facts=grounded.cand_open_axis_facts.get(_survivor_spec.spec_id, ()),
         role_axis_facts=tuple(grounded.cand_role_axis_facts[_survivor_id][1]),
+        # The members and plan its conversion offer reads, which a same-shape merge offers
+        # conversions over (`RegionResult.served_members`).
+        served_members=tuple(
+            (_survivor.mat.member_facts or {})[dcid] for dcid in _survivor.mat.sv_dcids
+        ),
+        served_plans=tuple(
+            plan for plan in (grounded.cand_plans.get(_survivor_id),) if plan is not None
+        ),
     )
 
 

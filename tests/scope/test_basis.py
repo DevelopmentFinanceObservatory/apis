@@ -58,6 +58,7 @@ from search.models import (
     ParsedEntity,
     ParsedInput,
     ParsedPart,
+    PartScope,
     ProvenanceRef,
     Resolution,
     ResolvedFacet,
@@ -75,6 +76,7 @@ from search.scope.basis import (
     window_class,
 )
 from search.scope.edits import apply_binding
+from search.scope.vocabulary import measure_basis_option_id
 from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from tests.engine._binders import FakeAsk, FixedBinder, MenuRecordingBinder, elected_reply
 from tests.engine._fake_coverage import patch_coverage
@@ -1082,13 +1084,37 @@ def test_the_basis_labels_name_the_basis_the_answers_conversion_states(
         spec = _ngn_answer(datasets, prices)
     scope = spec.resolved.scope_choices
     assert scope is not None
-    base = scope.base.model_copy(update={"identity": spec.definition.identity})
 
-    stated = with_scope_choices(spec, scope.model_copy(update={"base": base}))
+    stated = with_scope_choices(spec, _decided_over(scope, spec.definition.identity))
 
     assert _net_label(stated) == expected
     (unit,) = [token.text for token in render_sentence_plan(stated) if token.axis == "unit"]
     assert unit.endswith(", donor prices") == expected.endswith(", donor prices")
+
+
+def _decided_over(scope: PartScope, identity: BaseIdentity) -> PartScope:
+    """`scope` as a decision over `identity` states it: that base, and each measure-basis
+    option labelled on it with no deflation basis (`basis.basis_rule`)."""
+    rows = {measure_basis_option_id(row.basis): row for row in BASIS_MEASURES}
+    choices = [
+        choice
+        if choice.axis != "measure_basis"
+        else choice.model_copy(
+            update={
+                "options": [
+                    option.model_copy(
+                        update={"label": basis_label(rows[option.option_id], identity)}
+                    )
+                    if option.option_id in rows
+                    else option
+                    for option in choice.options
+                ]
+            }
+        )
+        for choice in scope.choices
+    ]
+    base = scope.base.model_copy(update={"identity": identity})
+    return scope.model_copy(update={"base": base, "choices": choices})
 
 
 def _net_label(spec: Spec) -> str:
@@ -1171,8 +1197,8 @@ def _materialise(years: range) -> tuple[FakeGraphReader, MaterialiseSdmxClient]:
 def _converted(
     request: ResolveRequest, years: range, *, binder: Binder | None = None
 ) -> tuple[DefinitePart, str]:
-    """`request` answered in constant 2024 US dollars under the DAC recipe, and its byline's
-    unit words. `binder` replaces the configured binder."""
+    """`request` answered in constant 2024 US dollars under the DAC recipe: its first part,
+    and its byline's unit words. `binder` replaces the configured binder."""
     catalogue = ConversionCatalogue(
         recipes={_DAC1: "ConversionRecipeDAC"},
         tables={"ConversionRecipeDAC": _tables()},
@@ -1185,7 +1211,10 @@ def _converted(
             **{dcid: _member_node(dcid) for dcid in _DAC1_MEMBERS},
             _RIVAL: _rival_node(),
         },
-        detect={"aid": {"svs": [*_DAC1_MEMBERS, _RIVAL], "cosine_scores": [0.9] * 4}},
+        detect={
+            words: {"svs": [*_DAC1_MEMBERS, _RIVAL], "cosine_scores": [0.9] * 4}
+            for words in ("aid", "net aid", "gross aid")
+        },
         resolve={"United States": _USA},
     )
     materialise_graph, materialise_sdmx = _materialise(years)
@@ -1201,22 +1230,31 @@ def _converted(
             binder=binder,
         )
     assert isinstance(response, Resolution), response
-    (part,) = response.parts
+    part = response.parts[0]
     assert isinstance(part, DefinitePart), part
-    (unit,) = [token.text for token in response.sentence_plan if token.axis == "unit"]
+    # Parts folded into one answer share its Spec, whose byline the unit words are.
+    assert {p.spec.spec_id for p in response.parts if isinstance(p, DefinitePart)} == {
+        part.spec.spec_id
+    }
+    (unit,) = {
+        token.text for token in part.spec.resolved.sentence_plan or () if token.axis == "unit"
+    }
     return part, unit
 
 
-def _asked(time: str) -> ResolveRequest:
+def _asked(time: str, *, words: tuple[str, ...] = ("aid",)) -> ResolveRequest:
+    """The United States' aid in `time` in constant 2024 US dollars, one part for each of
+    `words`."""
     return ResolveRequest(
         input=ParsedInput(
             parts=[
                 ParsedPart(
-                    variable_text="aid",
+                    variable_text=variable,
                     entities=[ParsedEntity(text="United States", role_text="from")],
                     time_text=time,
                     unit_text="constant 2024 US dollars",
                 )
+                for variable in words
             ]
         )
     )
@@ -1245,13 +1283,15 @@ def _resubmitted(fresh: Spec) -> ResolveRequest:
     )
 
 
-@pytest.mark.parametrize("door", ["fresh", "resubmit", "candidates", "composite"])
+@pytest.mark.parametrize(
+    "door", ["fresh", "resubmit", "candidates", "candidates-merged", "composite"]
+)
 def test_one_answer_states_one_deflation_basis(monkeypatch: pytest.MonkeyPatch, door: str):
     """Every door's answer in constant prices names whose prices deflate it once, in its
     `UnitConversion.deflation_basis`, and its measure-basis labels and byline both read it:
     a fresh search, a resubmit switching an option, a candidates answer whose rival reads no
-    data in the asked unit (`candidate_collapse`), and the OECD headline composite over 2015
-    to 2020."""
+    data in the asked unit (`candidate_collapse`), two such answers a same-shape merge folds
+    into one, and the OECD headline composite over 2015 to 2020."""
     # The bound-unit decision reads the coverage's facets in the graph's unit dcids.
     _cover(monkeypatch, _DAC1_MEMBERS, unit="CurrencyUSD")
     fresh, fresh_unit = _converted(_asked("2016"), range(2016, 2017))
@@ -1263,6 +1303,23 @@ def test_one_answer_states_one_deflation_basis(monkeypatch: pytest.MonkeyPatch, 
         case "candidates":
             nominated = FixedBinder(elected_reply(0, also_plausible=[1]))
             part, unit = _converted(_asked("2016"), range(2016, 2017), binder=nominated)
+        case "candidates-merged":
+            # Net and gross aid, each a candidates answer, merge into one answer over both
+            # bases (`same_shape`), which offers conversions over both legs' members and
+            # states no measure-basis choice.
+            nominated = FixedBinder(elected_reply(0, also_plausible=[1]))
+            part, unit = _converted(
+                _asked("2016", words=("net aid", "gross aid")),
+                range(2016, 2017),
+                binder=nominated,
+            )
+            assert [w.code for w in part.warnings] == ["slot_defaulted"]
+            netting = next(
+                slot
+                for slot in part.spec.definition.identity.slots
+                if slot.property == "nettingBasis"
+            )
+            assert isinstance(netting.binding, IdentityBindingSet), netting
         case _:
             part, unit = _converted(_asked("2015-2020"), range(2015, 2021))
             assert _basis_choice(part.spec)[0] == "measure_basis:oecd_headline"
@@ -1271,8 +1328,13 @@ def test_one_answer_states_one_deflation_basis(monkeypatch: pytest.MonkeyPatch, 
     conversion = part.spec.resolved.unit_conversion
     assert conversion is not None
     assert conversion.deflation_basis == "donor"
-    assert _net_label(part.spec).endswith(", donor prices")
     assert unit == "Constant 2024 US dollars, donor prices"
+    if door == "candidates-merged":
+        # The merged identity holds both bases, so its scope offers no basis to switch to.
+        scope = part.spec.resolved.scope_choices
+        assert scope is None or all(c.axis != "measure_basis" for c in scope.choices)
+        return
+    assert _net_label(part.spec).endswith(", donor prices")
     if door == "resubmit":
         assert _net_label(part.spec) == _net_label(fresh.spec)
 

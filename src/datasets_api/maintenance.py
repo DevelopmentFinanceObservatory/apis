@@ -1969,10 +1969,10 @@ def run_normalise_recipes(
     Return how many recipes it skipped (`RecipeSkip`).
 
     Each recipe takes one outcome, so the summary's `normalised`, `unchanged` and skip counts
-    add up to its `recipes`. A recipe whose sort is unreproducible or whose new replay key is
-    held is left whole under that reason, its line naming any undetermined pin too. One whose
-    pin alone is undetermined is `basis_undetermined`, and its sort is still written under the
-    replay key its line names.
+    add up to its `recipes`. A recipe whose sort is unreproducible or whose new replay key
+    another recipe row holds is left whole under that reason, its line naming any undetermined
+    pin too. One whose pin alone is undetermined is `basis_undetermined`, and its sort is still
+    written under the replay key its line names.
 
     The revisions move first, in the Presentation database, then the recipe row, in the
     Datasets one, so a run stopped between the two leaves the recipe to the next run. With
@@ -2004,8 +2004,9 @@ def run_normalise_recipes(
                 with datasets.transaction() as tx:
                     holder = tx.fetch_one(
                         "SELECT subject_id, content_version FROM datasets.frame_recipe "
-                        "WHERE replay_key = %s AND superseded_at IS NULL",
-                        (new_key,),
+                        "WHERE replay_key = %s AND superseded_at IS NULL "
+                        "AND NOT (subject_id = %s AND content_version = %s)",
+                        (new_key, spec_id, content_version),
                     )
                 if holder is not None:
                     skip = RecipeSkip.REPLAY_KEY_HELD

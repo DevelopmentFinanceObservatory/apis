@@ -226,6 +226,35 @@ def test_the_preview_follows_the_scope_decided_for_the_finished_answer(
         assert len(reads) == table_reads
 
 
+@pytest.mark.parametrize("stream", [False, True], ids=["buffered", "streamed"])
+def test_a_raising_decision_for_the_finished_answer_keeps_it_as_a_single_table(
+    monkeypatch, caplog, stream
+):
+    """An early decision made for another `spec_id` is decided again from the finished
+    answer, guarded as the early one is: a decision that raises there leaves the answer as
+    one table that states no scope, and the error is logged."""
+    _components(monkeypatch)
+    real = phase_answer._decide_answer_scope
+
+    def mismatched(*args: Any) -> phase_answer._AnswerScope:
+        scope = real(*args)
+        return dataclasses.replace(
+            scope, decision=dataclasses.replace(scope.decision, spec_id="other")
+        )
+
+    def raises(spec: Spec, **kwargs: Any) -> ScopeDecision:
+        raise _not_servable()
+
+    monkeypatch.setattr(phase_answer, "_decide_answer_scope", mismatched)
+    monkeypatch.setattr(phase_answer, "decide_spec_scope", raises)
+
+    with caplog.at_level(logging.WARNING, logger=scope_decision.logger.name):
+        spec = _answered(_stream(_fresh(_BILATERAL))) if stream else _buffered(_BILATERAL)
+
+    assert spec.resolved.scope_choices is None
+    _assert_decision_error_logged(caplog)
+
+
 def _not_servable() -> Exception:
     return CompositeNotServable("no component", ref="dfo-composite", pointer="/facets")
 

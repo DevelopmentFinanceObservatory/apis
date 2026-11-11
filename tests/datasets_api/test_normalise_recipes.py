@@ -244,6 +244,36 @@ def test_a_recipe_it_cannot_normalise_safely_is_reported_and_left_as_it_is(
     assert (_stored(stores), json.dumps(presentation.state.component_revisions)) == before
 
 
+def test_a_rewrite_that_keeps_its_own_replay_key_is_normalised(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+):
+    stores = Stores()
+    analysed = _analysed(stores)
+    old = _unsorted(analysed["recipe"])
+    _store_recipe(stores, "ops_earlier", "ocv_earlier", old)
+    with stores.store.transaction() as tx:
+        tx.execute(
+            "DELETE FROM datasets.frame_recipe WHERE subject_id = %s", (analysed["subject_id"],)
+        )
+    # A rewrite the normal form ignores: the recipe's own row holds the key it computes.
+    monkeypatch.setattr(
+        maintenance, "_recipe_hashes", lambda _: (old["normal_form_hash"], old["replay_key"])
+    )
+
+    skipped = run_normalise_recipes(datasets=stores.store, presentation=FakePresentationStore())
+
+    assert skipped == 0
+    assert _summary(capsys) == {
+        "normalised": 1,
+        "revisions": 0,
+        "replay_key_held": 0,
+        "unreproducible": 0,
+        "basis_undetermined": 0,
+    }
+    (row,) = _stored(stores)
+    assert row["recipe"]["roots"][0]["options"]["columns"] == sorted(_COLUMNS)
+
+
 def test_normalise_recipes_exits_non_zero_when_it_skips_a_recipe(monkeypatch):
     ran: list[bool] = []
 
