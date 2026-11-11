@@ -54,8 +54,6 @@
   query: climate finance commitments from Germany in 2022
   why: '"Commitments" picks ONE Data''s commitment series; a question naming only a provider reads the total over all recipients.'
   tags: {theme: climate, entity: country, direction: origin_only, unit: default, time: year, operation: none, breakdown: none, door: raw_text, phrasing: technical}
-  # The deployed dev release lacks the "climate finance" synonym, so the total is not read until the release rebuilds.
-  known_failure: {issue: 278, checks: [disposition]}
   expect:
     definite:
       measure:
@@ -69,8 +67,6 @@
   query: Germany climate finance commitments 2022
   why: 'The terse word order reads the same as the full sentence: commitments, total objective, Germany as provider.'
   tags: {theme: climate, entity: country, direction: origin_only, unit: default, time: year, operation: none, breakdown: none, door: raw_text, phrasing: terse}
-  # The deployed dev release lacks the "climate finance" synonym, so the total is not read until the release rebuilds.
-  known_failure: {issue: 278, checks: [measure]}
   expect:
     definite:
       measure:
@@ -84,8 +80,6 @@
   query: climate finance gross disbursements from Germany in 2022
   why: '"Gross disbursements" picks ONE Data''s gross disbursement series; a provider-only question reads the total over all recipients.'
   tags: {theme: climate, entity: country, direction: origin_only, unit: default, time: year, operation: none, breakdown: none, door: raw_text, phrasing: technical}
-  # The deployed dev release lacks the "climate finance" synonym, so the total is not read until the release rebuilds.
-  known_failure: {issue: 278, checks: [measure]}
   expect:
     definite:
       measure:
@@ -112,8 +106,6 @@
   query: climate finance from Germany in 2022
   why: 'No measure word, so the declared preference for gross disbursements applies; the commitment family is accepted as the other ONE Data reading.'
   tags: {theme: climate, entity: country, direction: origin_only, unit: default, time: year, operation: none, breakdown: none, door: raw_text, phrasing: casual}
-  # The deployed dev release lacks the "climate finance" synonym, so the total is not read until the release rebuilds.
-  known_failure: {issue: 278, checks: [disposition]}
   expect:
     definite:
       measure:
