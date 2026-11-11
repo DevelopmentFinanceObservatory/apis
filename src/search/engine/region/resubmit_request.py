@@ -475,7 +475,8 @@ def resubmit_named_groups(
     its members, and is kept only when it posts a dcid and that dcid's members are the
     identity's entities on the role: the membership policy's members for a group or region it
     holds (`_policy_members`), the graph's members of the node otherwise (`_graph_members`). A
-    group posted under a retired group id refuses (`_refuse_retired_group_id`). A kept group with a dcid
+    group posted under a retired group id refuses (`_refuse_retired_group_id`), on any role
+    and in any years, before any other check. A kept group with a dcid
     takes the graph's type and label for the node, as a first answer does
     (`place_roles.request_named_groups`). The posted type is ignored, and the posted label
     stands only where the graph gives none, or for a group that posts no dcid, as a resolver
@@ -511,10 +512,12 @@ def resubmit_named_groups(
     named: list[NamedGroup] = list(whole.values())
     entities = inp.identity.entities
     for role, group in (inp.entity_groups or {}).items():
-        if role in whole:
-            continue
+        # Every posted id is checked before any group drops or a whole reading replaces it,
+        # so a request refuses alike whatever its years.
         _refuse_retired_group_id(group, role)
         registry_group = _registry_group(group, role)
+        if role in whole:
+            continue
         if group.whole_of and group.total is not None:
             logger.info(
                 "resubmit dropped group %r on role %s: the identity does not read it whole",

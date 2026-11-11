@@ -3655,35 +3655,38 @@ def test_a_whole_total_set_and_the_resubmit_of_its_spec_state_the_donor_group_al
     assert _group(resubmit.spec, "origin") == _DONOR_SET_GROUP[resubmitted or asked]
 
 
+_RETIRED_DONOR_GROUP = EntityGroup(
+    label="all donors including private", group_id="groups/G7", whole_of=["official"]
+)
+
+
 @pytest.mark.parametrize(
-    ("posted", "refused"),
+    ("posted", "year", "refused"),
     [
         pytest.param(
             EntityGroup(
                 label="all donors including private", ref="dc/g/Africa", whole_of=["official"]
             ),
+            1995,
             False,
             id="ref-whose-members-differ",
         ),
-        pytest.param(
-            EntityGroup(
-                label="all donors including private", group_id="groups/G7", whole_of=["official"]
-            ),
-            True,
-            id="retired-group-id",
-        ),
+        pytest.param(_RETIRED_DONOR_GROUP, 1995, True, id="retired-group-id"),
+        pytest.param(_RETIRED_DONOR_GROUP, 2021, True, id="retired-group-id-read-whole"),
     ],
 )
 def test_a_whole_group_posted_on_a_role_not_read_whole_is_checked_as_any_group(
-    monkeypatch: pytest.MonkeyPatch, posted: EntityGroup, refused: bool
+    monkeypatch: pytest.MonkeyPatch, posted: EntityGroup, year: int, refused: bool
 ):
     """A whole group posted on a donor role the identity does not read whole (1995) is
     checked as any posted group is: a dcid whose members are not the role's parties drops
-    the group, and a retired group id refuses at its pointer. Neither is carried as posted."""
+    the group, and a retired group id refuses at its pointer. Neither is carried as posted.
+    A retired group id refuses on a role read whole (2021) too, whose reading would replace
+    the posted group, so a request refuses alike whatever its years."""
     _with_private_donors_marker(monkeypatch, (2009, 2024))
     _coverage(monkeypatch, years=tuple(range(1990, 2024)))
     entities = [_TO_ETHIOPIA, {"role": "from", "text": "all donors including private"}]
-    ask = _part(_resolve({"entities": entities, "time": "1995", "variable": _VARIABLE}))
+    ask = _part(_resolve({"entities": entities, "time": str(year), "variable": _VARIABLE}))
     payload = ResubmitIdentityPayload(
         identity=ask.spec.definition.identity, entity_groups={"origin": posted}
     )

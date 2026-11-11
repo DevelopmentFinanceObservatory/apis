@@ -246,8 +246,9 @@ def passed_over_departure(
     answer a conversion's period then narrowed to `shown`, starting in `first_year`
     (`phase_answer._over_conversion_period`): its `passed_over` fact over the years shown,
     stating no data years, which the conversion's own fact states. None where no member
-    passed over shortened the span, or where the period starts after the year the passed
-    over member's data ends, since the conversion's tables then set the first year shown."""
+    passed over shortened the span, or where `first_year` is not the settled span's first
+    year, the year after the passed-over member's newest, since the conversion's tables
+    then set the first year shown."""
     if settled.departure is None or settled.departure[1].limited_by != "passed_over":
         return None
     window = settled.date_request.window

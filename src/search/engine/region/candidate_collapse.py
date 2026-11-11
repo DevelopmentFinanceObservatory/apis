@@ -81,7 +81,7 @@ from search.engine.region.place_context import (
 )
 from search.engine.region.related_read import (
     related_read_for,
-    start_elected_related_read,
+    start_answer_related_read,
     with_related,
 )
 from search.engine.region.relaunch import _relaunch_place_options
@@ -930,7 +930,7 @@ async def assemble_candidates(
         # The elected shape most often survives, so its related measures are read beside
         # the grounding and assembly of every candidate (`related_read_for`). A trailing
         # request reads them once the survivor has settled its years.
-        start_elected_related_read(state, cast(Materialised, state.mat_result))
+        start_answer_related_read(state, cast(Materialised, state.mat_result))
     if not candidates and (
         isinstance(state.mat_result, Materialised) and state.mat_result.available_at_place is False
     ):

@@ -117,13 +117,6 @@ class PendingRelated:
     budget: ReadBudget
 
 
-def start_elected_related_read(state: ResolveState, mat_result: Materialised) -> None:
-    """Read the measure family the elected shape's served members exhibit into
-    `state.measure_family`, and start their related-measures reads over the request's years
-    into `state.related_read` (`start_related_read`), replacing one the pass started before."""
-    _start_elected(state, mat_result, _elected_measure_family(state, mat_result))
-
-
 def start_answer_related_read(state: ResolveState, mat_result: Materialised) -> None:
     """The elected answer's related-measures read over the request's years
     (`state.date_request`) into `state.related_read`, with the measure family its served
@@ -134,20 +127,6 @@ def start_answer_related_read(state: ResolveState, mat_result: Materialised) -> 
     family = _elected_measure_family(state, mat_result)
     state.measure_family = family
     related_read_for(
-        state,
-        stat_vars=mat_result.sv_dcids,
-        measure_partition=family[0],
-        places=state.place.roles.roles,
-        arcs=state.shape_draft.sv_arc_facts,
-        date_request=state.date_request,
-    )
-
-
-def _start_elected(state: ResolveState, mat_result: Materialised, family: MeasureFamily) -> None:
-    """Record `family` and start the elected shape's related-measures read over the
-    request's years (`start_related_read`)."""
-    state.measure_family = family
-    state.related_read = start_related_read(
         state,
         stat_vars=mat_result.sv_dcids,
         measure_partition=family[0],

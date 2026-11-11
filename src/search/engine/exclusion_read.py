@@ -32,7 +32,7 @@ from search.engine.clients.llm import (
     Agreement,
     SupportsLLM,
     for_stage,
-    generate_structured_async,
+    sample_structured,
     two_samples,
 )
 from search.engine.extract import _extract_version
@@ -155,7 +155,7 @@ async def read_exclusions(
         return True
 
     return await two_samples(
-        lambda sampler: generate_structured_async(
+        lambda sampler: sample_structured(
             sampler, prompt=query, system=EXCLUSION_READ_SYSTEM_PROMPT, schema=ExclusionRead
         ),
         staged,

@@ -120,7 +120,7 @@ from search.engine.region.place_roles import (
     bound_after_election,
     lacks_query_axis,
 )
-from search.engine.region.related_read import start_elected_related_read
+from search.engine.region.related_read import start_answer_related_read
 from search.engine.region.requirements import judge
 from search.engine.region.result import RegionResult
 from search.engine.region.sentence_events import _build_shape_event
@@ -1878,7 +1878,7 @@ def test_the_answer_reads_the_measure_partition_of_the_dataset_the_role_keys_ele
     index, monkeypatch
 ):
     """The answer's measure partition, which the Spec and the related-measures read take
-    (`start_elected_related_read`), is read under the role keys the identity binds its
+    (`start_answer_related_read`), is read under the role keys the identity binds its
     places under. A donor-only question serves `_DONORS`' net row. Read by rank alone, the
     family would be `_BROAD`'s, whose gross partitions hold no served member's values, and
     the answer would have no partition."""
@@ -1900,7 +1900,7 @@ def test_the_answer_reads_the_measure_partition_of_the_dataset_the_role_keys_ele
         lambda: MeasureIndex(axes=(_NETTING,), values=(), partition_labels=()),
     )
 
-    start_elected_related_read(
+    start_answer_related_read(
         state, cast(Materialised, SimpleNamespace(member_facts=served, sv_dcids=list(served)))
     )
 

@@ -24,7 +24,13 @@ from pydantic import BaseModel
 import search.engine.clients.llm as llm_module
 import search.engine.config as config
 from search.engine.bind import _UniversalBindOutput
-from search.engine.clients.llm import LLM, LLMMemo, detached, generate_structured_async
+from search.engine.clients.llm import (
+    LLM,
+    LLMMemo,
+    detached,
+    generate_structured_async,
+    sample_structured,
+)
 from search.engine.errors import LLMInfraError, LLMOutputRefused
 
 # Captured at import, before the autouse `_guard_outbound_http` fixture swaps
@@ -443,6 +449,36 @@ def test_concurrent_gemini_requests_stay_within_the_cap(
 
     assert [parsed for parsed, _usage in results] == [_Value(value=1)] * 3
     assert holding_listener.max_open == 2
+
+
+@pytest.mark.usefixtures("live_client_env", "loopback_transport")
+def test_the_memo_keeps_a_calls_model_time_without_its_wait_for_a_connection(
+    search_settings, holding_listener: _HoldingListener
+):
+    """With a pool cap of 1, a memoised call waits about 0.4 s for the first call's
+    connection, then the model answers it about 0.1 s after it is sent. The memo keeps the
+    0.1 s, the model's time, which a repeat served from the memo reports
+    (`Sampled.memo_live_s`), and leaves out the wait for the connection."""
+    search_settings(llm_max_concurrency=1)
+    llm = _memo_llm()
+
+    async def scenario() -> float | None:
+        first = asyncio.create_task(sample_structured(llm, prompt="a", system="s", schema=_Value))
+        await _until(lambda: len(holding_listener.arrivals) == 1)
+        waiting = asyncio.create_task(sample_structured(llm, prompt="b", system="s", schema=_Value))
+        await asyncio.sleep(0.4)
+        holding_listener.release()
+        await _until(lambda: len(holding_listener.arrivals) == 2)
+        await asyncio.sleep(0.1)
+        holding_listener.release()
+        await asyncio.gather(first, waiting)
+        repeat = await sample_structured(llm, prompt="b", system="s", schema=_Value)
+        return repeat.memo_live_s
+
+    live_s = asyncio.run(scenario())
+
+    assert live_s is not None
+    assert 0.1 <= live_s < 0.35
 
 
 @pytest.mark.usefixtures("live_client_env", "loopback_transport")

@@ -340,8 +340,10 @@ class CacheScope:
         self._replay: StoredBundle | None = None
         # The response a request without trailing events publishes.
         self._response: ResolveResponse | None = None
-        # The entry both layers publish, encoded once (`_entry`).
+        # The entry both layers publish, encoded once (`_entry`), and whether it may be
+        # stored, decided once (`_verdict`).
         self._encoded: tuple[bytes, int] | None = None
+        self._storable_verdict: bool | None = None
         self._outcome: str = "inactive" if not self.active else "miss"
 
     @property
@@ -564,13 +566,18 @@ class CacheScope:
         read to the extraction store; a second sample still running ends by its own
         deadline, `llm_second_sample_settle_s` after its first was read. A request with
         neither the response cache nor an extraction store has nothing to write and settles
-        nothing."""
+        nothing. A defect raised while settling (`Agreement.outcome`) is logged at error
+        with its traceback and leaves the reading unjudged: the answer is already computed,
+        and only its storage depends on the verdict."""
         if self._settled or not self._agreements:
             return
         self._settled = True
         if not self.active and not self._stores_readings:
             return
-        self._extraction_agreed = await settle(self._agreements)
+        try:
+            self._extraction_agreed = await settle(self._agreements)
+        except Exception:
+            logger.exception("settling the second samples failed; the reading is unjudged")
 
     @property
     def extraction_agreed(self) -> bool | None:
@@ -644,6 +651,19 @@ class CacheScope:
                 self._encoded = to_entry(self._response)
         return self._encoded
 
+    def _verdict(self) -> bool:
+        """Whether this request's entry may be stored, decided once for both layers: no
+        fallback, no read cut, a stored verdict that allows it where it served a hit, and the
+        entry's own checks (`_storable`)."""
+        if self._storable_verdict is None:
+            self._storable_verdict = (
+                not self._fallbacks.reasons
+                and not self._request_reads.cut
+                and self._served_storable
+                and self._storable()
+            )
+        return self._storable_verdict
+
     def _storable(self) -> bool:
         """Whether this request's entry may be stored (`is_bundle_storable`, `is_storable`)."""
         if self._bundle:
@@ -666,7 +686,7 @@ class CacheScope:
         """Publish this request's entry to its lease on `layer`, if it holds one.
 
         Cache errors are logged and never reach the pipeline. Both layers share one
-        encoding and verdict, and layer 1 also needs an agreed reading
+        encoding and verdict (`_entry`, `_verdict`), and layer 1 also needs an agreed reading
         (`note_extraction`). Entry lifetime comes from the generation stamp captured
         before lookup.
         """
@@ -678,12 +698,7 @@ class CacheScope:
             # No lease means this request cannot publish a cache entry on this layer.
             return
         try:
-            verdict = (
-                not self._fallbacks.reasons
-                and not self._request_reads.cut
-                and self._served_storable
-                and self._storable()
-            )
+            verdict = self._verdict()
             entry, size = self._entry()
             await self._cache.publish(
                 lease,

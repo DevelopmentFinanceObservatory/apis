@@ -22,6 +22,7 @@ from search.engine.clients.llm import (
     LLM,
     UNCOUNTED_CALLS,
     Agreement,
+    Sampled,
     SecondSample,
     SecondSamples,
     SupportsLLM,
@@ -492,9 +493,9 @@ async def _test_store_publishes_both_leases_when_this_request_holds_both(
     assert scope._layer2_lease is not None
     if pending:
 
-        async def second() -> tuple[None, None]:
+        async def second() -> Sampled[None]:
             await asyncio.sleep(0.01)
-            return None, None
+            return Sampled(None, None, None)
 
         scope.note_extraction(Agreement(_held(second), lambda _second: agreed))
     else:
@@ -845,9 +846,9 @@ def test_an_unstreamed_response_passes_before_its_second_sample_and_publishes_at
         assert await scope.lookup_raw(query) is None
         gate = asyncio.Event()
 
-        async def second() -> tuple[None, None]:
+        async def second() -> Sampled[None]:
             await gate.wait()
-            return None, None
+            return Sampled(None, None, None)
 
         scope.note_extraction(Agreement(_held(second), lambda _second: True))
         response, done = _terminal_events(base, start_ms=now_ms(), degraded_leg=False)
@@ -868,11 +869,11 @@ def test_release_cancels_and_awaits_a_second_sample_still_running():
     """A request cancelled after its read served the first sample releases its scope in
     `finally`, which cancels the second sample its holder owns and awaits it."""
 
-    async def sample(sampler: SupportsLLM) -> tuple[str, None]:
+    async def sample(sampler: SupportsLLM) -> Sampled[str]:
         assert isinstance(sampler, LLM)
         if sampler._seed == 2:
             await asyncio.Event().wait()
-        return "first", None
+        return Sampled("first", None, None)
 
     async def run() -> list[bool]:
         scope = _make_scope(_new_cache())
@@ -901,31 +902,31 @@ def test_release_cancels_and_awaits_a_second_sample_still_running():
     assert asyncio.run(run()) == [True]
 
 
-def _held(call: Callable[[], Coroutine[Any, Any, tuple[Any, None]]]) -> SecondSample:
+def _held(call: Callable[[], Coroutine[Any, Any, Sampled[Any]]]) -> SecondSample:
     """`call()` run as an extraction's second sample, held apart from any request."""
     return SecondSamples().start(call, stage="extraction")
 
 
-async def _never() -> tuple[None, None]:
+async def _never() -> Sampled[None]:
     await asyncio.Event().wait()
     raise AssertionError("unreachable")
 
 
-async def _agreeing() -> tuple[str, None]:
-    return "second", None
+async def _agreeing() -> Sampled[str]:
+    return Sampled("second", None, None)
 
 
 def _stalling_second(fail: bool = False):
     """A sample whose seed-2 call never answers, or fails with `fail`, and whose seed-1 call
     answers at once."""
 
-    async def sample(sampler: SupportsLLM) -> tuple[str, None]:
+    async def sample(sampler: SupportsLLM) -> Sampled[str]:
         assert isinstance(sampler, LLM)
         if sampler._seed == 2:
             if fail:
                 raise LLMInfraError("503")
             await asyncio.Event().wait()
-        return "first", None
+        return Sampled("first", None, None)
 
     return sample
 
@@ -1057,8 +1058,8 @@ def test_an_unheld_callers_cut_logs_its_stage(search_settings, caplog):
 
 def test_a_cut_set_while_the_model_deadline_expires_does_not_raise(search_settings):
     """A first sample read just as its second's own `llm_timeout_s` deadline fires sets the
-    cut on a timeout already expiring. The cut is ignored, and the second ends as the model
-    deadline ended it: failed."""
+    cut on a timeout already expiring. The deadline is not moved, and since the first was
+    read the second's end reads as cut."""
     search_settings(llm_timeout_s=0.01, llm_second_sample_settle_s=1.0)
 
     async def run() -> tuple[bool, str]:
@@ -1073,21 +1074,109 @@ def test_a_cut_set_while_the_model_deadline_expires_does_not_raise(search_settin
         second.cut_after(1.0)
         return expiring, await Agreement(second, lambda _answer: True).outcome()
 
-    assert asyncio.run(run()) == (True, "failed")
+    assert asyncio.run(run()) == (True, "cut")
 
 
-def test_a_second_sample_raising_a_defect_raises_from_its_outcome():
-    """Only a model failure, a refusal, a cut or a cancellation leaves a read unjudged. Any
-    other exception from the second sample is a defect, and `outcome()` raises it."""
-
-    async def broken() -> tuple[None, None]:
-        raise KeyError("missing")
+def test_a_second_sample_reaching_its_model_deadline_after_its_first_is_cut(search_settings):
+    """A second whose cut would fall after its own `llm_timeout_s` deadline, as when the
+    memo's live call took longer than the time left, ends at that deadline, and since its
+    first was read its end reads as cut, logged as one."""
+    search_settings(llm_timeout_s=0.05)
 
     async def run() -> str:
-        return await Agreement(_held(broken), lambda _answer: True).outcome()
+        second = _held(_never)
+        second.cut_after(10.0)
+        return await asyncio.wait_for(Agreement(second, lambda _answer: True).outcome(), 2)
+
+    assert asyncio.run(run()) == "cut"
+
+
+async def _broken() -> Sampled[None]:
+    raise KeyError("missing")
+
+
+def _broken_judge(_answer: object) -> bool:
+    raise KeyError("missing")
+
+
+@pytest.mark.parametrize(
+    ("second", "judge"),
+    [(_broken, lambda _answer: True), (_agreeing, _broken_judge)],
+    ids=["second-sample", "judge"],
+)
+def test_a_defect_raises_from_its_outcome(second, judge):
+    """Only a model failure, a refusal, a cut, a cancellation or a failed extraction-store
+    write leaves a read unjudged. Any other exception, from the second sample or from the
+    judge reading it, is a defect, and `outcome()` raises it."""
+
+    async def run() -> str:
+        return await Agreement(_held(second), judge).outcome()
 
     with pytest.raises(KeyError):
         asyncio.run(run())
+
+
+def test_an_unheld_callers_defective_second_sample_raises(search_settings):
+    """A caller outside a request settles its read before `two_samples` returns, so a defect
+    in the second sample reaches it."""
+
+    async def sample(sampler: SupportsLLM) -> Sampled[str]:
+        assert isinstance(sampler, LLM)
+        if sampler._seed == 2:
+            raise KeyError("missing")
+        return Sampled("first", None, None)
+
+    with pytest.raises(KeyError):
+        asyncio.run(
+            two_samples(
+                sample,
+                LLM(seed=1),
+                stage="extraction",
+                read=lambda answer: answer,
+                judge=lambda *_answers: True,
+            )
+        )
+
+
+def test_a_defective_second_sample_leaves_a_requests_answer_intact(caplog):
+    """A request whose second sample raises a defect settles at `done` without failing: the
+    defect is logged at error with its traceback, the reading is unjudged, layer 2 keeps
+    the answer and layer 1 stores nothing under the query."""
+    caplog.set_level(logging.INFO)
+    base = _base_response()
+
+    async def run() -> tuple[bool | None, bool, bool]:
+        cache = _new_cache()
+        extraction = _population_india_extraction()
+        query = "total population india"
+        scope = _make_scope(cache)
+        assert await scope.lookup_raw(query) is None
+        assert await scope.lookup_parsed(query=query, **extraction) is None
+        scope.note_extraction(Agreement(_held(_broken), lambda _answer: True))
+        await observe_answer(scope, base)
+        other = _make_scope(cache)
+        layer2 = await other.lookup_parsed(query="another wording", **extraction) is not None
+        await other.release()
+        await scope.release()
+        return scope.extraction_agreed, layer2, await _new_scope_hits_layer1(cache, query)
+
+    assert asyncio.run(run()) == (None, True, False)
+    errors = [record for record in caplog.records if record.levelname == "ERROR"]
+    assert [
+        (record.name, record.exc_info is not None and record.exc_info[0]) for record in errors
+    ] == [(response_cache_flow.__name__, KeyError)]
+
+
+def test_an_agreement_holds_a_second_sample_or_a_fixed_verdict():
+    """An `Agreement` is built around a second sample, or with a known verdict through
+    `Agreement.fixed`, which holds no second; no constructor takes both or neither."""
+
+    async def run() -> list[str]:
+        return [await Agreement.fixed(True).outcome(), await Agreement.fixed(False).outcome()]
+
+    assert asyncio.run(run()) == ["agreed", "disagreed"]
+    with pytest.raises(TypeError):
+        Agreement(None, lambda _answer: True, verdict=True)
 
 
 def test_an_unstreamed_response_is_encoded_once_for_both_layers(monkeypatch):
@@ -1132,9 +1221,9 @@ def test_a_bundle_publishes_layer2_at_done_before_its_second_sample_settles():
         assert await scope.lookup_parsed(query=query, **extraction) is None
         gate = asyncio.Event()
 
-        async def second() -> tuple[None, None]:
+        async def second() -> Sampled[None]:
             await gate.wait()
-            return None, None
+            return Sampled(None, None, None)
 
         scope.note_extraction(Agreement(_held(second), lambda _answer: True))
         response, done = _terminal_events(base, start_ms=now_ms(), degraded_leg=False)
@@ -1171,8 +1260,8 @@ class _Value(BaseModel):
     value: int = 0
 
 
-def _timed_sample(sampler: SupportsLLM) -> Coroutine[Any, Any, tuple[_Value, dict | None]]:
-    return llm_module.generate_structured_async(sampler, prompt="q", system="s", schema=_Value)
+def _timed_sample(sampler: SupportsLLM) -> Coroutine[Any, Any, Sampled[_Value]]:
+    return llm_module.sample_structured(sampler, prompt="q", system="s", schema=_Value)
 
 
 def test_a_repeat_whose_first_the_memo_serves_gives_its_second_the_live_calls_time(
@@ -1227,6 +1316,47 @@ def test_a_repeat_whose_first_the_memo_serves_gives_its_second_the_live_calls_ti
     assert waited >= 0.2 + 0.05
 
 
+def test_only_the_first_samples_own_answer_widens_its_seconds_cut(search_settings):
+    """A first sample whose own answer is live gives its second the settle bound alone,
+    even when another call it makes is served from the memo with a 5 s live time: the
+    allowance travels with the answer the memo served (`Sampled.memo_live_s`)."""
+    search_settings(llm_second_sample_settle_s=0.05)
+    memo = llm_module.build_memo()
+    assert memo is not None
+    llm = LLM(seed=1, memo=memo)
+
+    async def sample(sampler: SupportsLLM) -> Sampled[str]:
+        assert isinstance(sampler, LLM)
+        if sampler._seed == 2:
+            await asyncio.Event().wait()
+        await llm_module.sample_structured(sampler, prompt="other", system="s", schema=_Value)
+        return Sampled("first", None, None)
+
+    async def run() -> str:
+        config_obj = llm._resolve_config(system="s", schema=_Value)
+        key = llm_module._memo_key(
+            model=llm._model, prompt="other", schema=_Value, config=config_obj
+        )
+        _stored, lease = await memo.acquire(key)
+        assert lease is not None
+        payload = llm_module._memo_value('{"value": 1}', live_s=5.0)
+        await memo.publish(lease, payload, size=len(payload))
+        memo.leave(lease)
+        _served, _usage, agreement = await asyncio.wait_for(
+            two_samples(
+                sample,
+                llm,
+                stage="extraction",
+                read=lambda answer: answer,
+                judge=lambda *_answers: True,
+            ),
+            2,
+        )
+        return await agreement.outcome()
+
+    assert asyncio.run(run()) == "cut"
+
+
 def test_a_failed_second_sample_leaves_the_reading_unjudged():
     """A second sample that fails is unjudged, not a disagreement: the request's reading is
     neither agreed nor disagreed, and layer 1 stores nothing under the query."""
@@ -1271,9 +1401,9 @@ def test_an_unstreamed_response_publishes_layer2_at_response_and_layer1_at_done(
         assert await scope.lookup_parsed(query=query, **extraction) is None
         gate = asyncio.Event()
 
-        async def second() -> tuple[None, None]:
+        async def second() -> Sampled[None]:
             await gate.wait()
-            return None, None
+            return Sampled(None, None, None)
 
         scope.note_extraction(Agreement(_held(second), lambda _answer: True))
         response, done = _terminal_events(base, start_ms=now_ms(), degraded_leg=False)

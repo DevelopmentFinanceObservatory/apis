@@ -30,7 +30,7 @@ from search.engine.clients.llm import (
     Agreement,
     SupportsLLM,
     for_stage,
-    generate_structured_async,
+    sample_structured,
     schema_digest,
     two_samples,
 )
@@ -2010,9 +2010,7 @@ async def _model_extraction(
         return True
 
     reading, usage, agreed = await two_samples(
-        lambda sampler: generate_structured_async(
-            sampler, prompt=query, system=system, schema=Extraction
-        ),
+        lambda sampler: sample_structured(sampler, prompt=query, system=system, schema=Extraction),
         llm,
         stage="extraction",
         read=lambda first: _read_extraction(query, first, year=year),

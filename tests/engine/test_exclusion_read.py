@@ -21,7 +21,7 @@ from entity_resolution import Admission, EntityResolver
 from search.engine.bind import SlotBindingDraft
 from search.engine.bind_repair import apply_named_exclusions
 from search.engine.clients.graph import EngineGraphClient
-from search.engine.clients.llm import LLM, UNCOUNTED_CALLS, SecondSamples, SupportsLLM
+from search.engine.clients.llm import LLM, UNCOUNTED_CALLS, Sampled, SecondSamples, SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.entry import raw_text
 from search.engine.errors import LLMInfraError
@@ -654,7 +654,7 @@ def test_a_failed_discarded_parse_retrieves_its_finished_second_samples_failure(
     already failed, counts its two calls as uncounted and retrieves the second's failure,
     so asyncio reports no exception left unretrieved."""
 
-    async def failing() -> tuple[None, None]:
+    async def failing() -> Sampled[None]:
         raise LLMInfraError("503")
 
     async def run() -> tuple[dict | None, list[dict]]:
