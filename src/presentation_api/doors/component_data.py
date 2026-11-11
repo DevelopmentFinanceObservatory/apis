@@ -103,9 +103,10 @@ def add_component_data_route(
                 "`SOURCES.md`. When the revision's `select` lists the members of one "
                 "dimension and the frame holds one the card leaves out, the zip also holds "
                 "`data/{slug}-all-members.{format}`: the frame's rows at the periods the card "
-                "shows for every member with a value there, totals included. On a party role, "
-                "the frame's kind column marks which rows are totals. The frame bounds that "
-                "file, at most 250,000 rows.",
+                "shows for every member with a value there, totals included. Its description "
+                "names a party role's kind column where a row is a total, and the place "
+                "role's type column where the rows hold more than one place type. The frame "
+                "bounds that file, at most 250,000 rows.",
                 "content": {media_type: {} for media_type in COMPONENT_DATA_MEDIA_TYPES},
             }
         },

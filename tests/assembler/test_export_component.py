@@ -574,8 +574,12 @@ def test_a_cut_bar_chart_bundles_every_member_of_its_frame_beside_the_shown_rows
     }
 
 
+_TOTALS = "marks which rows are totals."
+_PLACE_TYPE = "gives each row's place type."
+
+
 @pytest.mark.parametrize(
-    ("role", "cell_column", "member_cell", "aggregate", "aggregate_cell", "counted", "marked"),
+    ("role", "cell_column", "member_cell", "aggregate", "aggregate_cell", "counted", "note"),
     [
         pytest.param(
             "financingRecipient",
@@ -584,10 +588,11 @@ def test_a_cut_bar_chart_bundles_every_member_of_its_frame_beside_the_shown_rows
             "dac/AfricaTotal",
             "total",
             13,
-            True,
+            _TOTALS,
             id="party-total",
         ),
-        # An aggregate with no row at the shown period holds no row of either file.
+        # An aggregate with no row at the shown period holds no row of either file, so no
+        # kept row is a total.
         pytest.param(
             "financingRecipient",
             "financingRecipient_party_kind",
@@ -595,7 +600,7 @@ def test_a_cut_bar_chart_bundles_every_member_of_its_frame_beside_the_shown_rows
             "dac/AfricaTotal@2023",
             "total",
             12,
-            True,
+            None,
             id="party-total-at-another-period",
         ),
         # A kind column whose cells name no kind marks no total.
@@ -606,7 +611,7 @@ def test_a_cut_bar_chart_bundles_every_member_of_its_frame_beside_the_shown_rows
             "dac/Unkinded",
             UNTYPED,
             13,
-            False,
+            None,
             id="no-member-with-a-kind",
         ),
         pytest.param(
@@ -616,8 +621,19 @@ def test_a_cut_bar_chart_bundles_every_member_of_its_frame_beside_the_shown_rows
             "wb/LowIncome",
             "ProvisionalNode",
             13,
-            False,
+            _PLACE_TYPE,
             id="place-aggregate",
+        ),
+        # Places sharing one type need no column to tell them apart.
+        pytest.param(
+            "observationAbout",
+            "observationAbout_type",
+            "Country",
+            "country/D00",
+            "Country",
+            13,
+            None,
+            id="place-countries",
         ),
         pytest.param(
             "financingRecipient",
@@ -626,7 +642,7 @@ def test_a_cut_bar_chart_bundles_every_member_of_its_frame_beside_the_shown_rows
             "dac/AfricaTotal",
             "Place",
             13,
-            False,
+            None,
             id="party-type-column-alone",
         ),
     ],
@@ -638,7 +654,7 @@ def test_a_cut_card_counts_every_member_with_a_value_at_its_periods(
     aggregate,
     aggregate_cell,
     counted,
-    marked,
+    note,
     tmp_path,
     frame_store,
     revision_store,
@@ -646,9 +662,10 @@ def test_a_cut_card_counts_every_member_with_a_value_at_its_periods(
 ):
     """A card showing 8 of a frame's 12 members beside an aggregate larger than any of them
     counts every member with a value at the shown period, the aggregate included, and the
-    all-members file's description names the party kind column as marking the totals only
-    where its cells name a kind. An aggregate `@`-suffixed with a period holds its one row
-    there, outside the card's window."""
+    all-members file's description names a party kind column where a kept row holds
+    `total`, and a place type column where the kept rows hold more than one type. An
+    aggregate `@`-suffixed with a period holds its one row there, outside the card's
+    window."""
     members = tuple(f"country/C{number:02d}" for number in range(12))
     aggregate, _, aggregate_period = aggregate.partition("@")
     rows = [
@@ -701,7 +718,10 @@ def test_a_cut_card_counts_every_member_with_a_value_at_its_periods(
     assert len({row[role] for row in every}) == counted
     assert set(members) <= {row[role] for row in every}
     assert f"The card shows 8 of {counted}" in files["README.md"].decode("utf-8")
-    assert (f"`{cell_column}`" in description) is marked
+    if note is None:
+        assert f"`{cell_column}`" not in description
+    else:
+        assert f"The `{cell_column}` column {note}" in description
     assert f"all {counted} {role} values with a value at those periods" in description
 
 

@@ -34,19 +34,20 @@ holds a member of it the card leaves out, as for a chart cut to its largest memb
 also holds `data/<card-slug>-all-members.<format>`. It holds the valued frame rows at the periods
 the card shows whose other `select`-bound dimensions match the card, so every member with a value
 at those periods, group totals, aggregates and `untyped` members included, in frame order, its
-`series` cell empty on rows the card does not show. On a party role whose kind column
-(`dfo_analysis_engine.place_type.kind_column`) holds a kind among those rows, its description names
-that column as marking the totals. Dimensions `select` leaves unbound, `unit`, `measurementMethod`
-and `provenance` among them when unbound, are free, so a member served under another method or
-source is kept. The revision does not record whether the listed members were cut for display or
-chosen, so both get the same file. Each file's resource `description` and README row say which file
-is which, with "The card shows N of M; <file> holds all M." on the shown file.
-`ComponentExportMismatch` guards the shown file alone, and a bare file holds the shown rows. Each
-provenance ref the kept rows carry is cited from the frame manifest's citation, its licence and
-documentation included, through `materialise.bundle_sources`. Columns are documented by
-`materialise.bundle_columns`, and the codes table is labelled from `ResolvedFrame.labels` and the
-cited source names with no graph read, so a role's codes keep the kind `entity`. Links and the
-reproducing call sit under the public site origin the caller passes.
+`series` cell empty on rows the card does not show. On a party role whose kind column holds `total`
+in one of those rows, its description names that column as marking the totals. On the place role,
+where those rows hold more than one type cell, it names the type column as giving each row's place
+type (`_column_note`). Dimensions `select` leaves unbound, `unit`, `measurementMethod` and
+`provenance` among them when unbound, are free, so a member served under another method or source
+is kept. The revision does not record whether the listed members were cut for display or chosen, so
+both get the same file. Each file's resource `description` and README row say which file is which,
+with "The card shows N of M; <file> holds all M." on the shown file. `ComponentExportMismatch`
+guards the shown file alone, and a bare file holds the shown rows. Each provenance ref the kept
+rows carry is cited from the frame manifest's citation, its licence and documentation included,
+through `materialise.bundle_sources`. Columns are documented by `materialise.bundle_columns`, and
+the codes table is labelled from `ResolvedFrame.labels` and the cited source names with no graph
+read, so a role's codes keep the kind `entity`. Links and the reproducing call sit under the public
+site origin the caller passes.
 
 The revision's stored `created_at` is the bundle's prepared date and dates the file name, so one
 revision always serves one name. An export on a target frame takes both from that frame's
@@ -80,9 +81,11 @@ from assembler.pipeline.render import render_on_frame
 from assembler.pipeline.stored_revision import read_stored_revision
 from assembler.ports import FrameRef, FrameStore, ReleaseRegistry, ResolvedFrame, RevisionStore
 from dfo_analysis_engine.place_type import (
-    PARTY_KINDS,
     PARTY_ROLES,
+    PLACE_ROLE,
+    TOTAL_KIND,
     kind_column,
+    type_column,
 )
 from materialise.bundle import (
     ArtifactEntry,
@@ -371,11 +374,7 @@ def export_component_data(
                         "Every frame row for the card's measure at the periods it shows, "
                         f"across all {all_members.members} {all_members.dimension} values "
                         "with a value at those periods."
-                        + (
-                            f" The `{all_members.total_column}` column marks which rows are totals."
-                            if all_members.total_column is not None
-                            else ""
-                        )
+                        + all_members.column_note
                         + f" The {series_column} column holds the card's label on the rows "
                         "the card shows. A download without the bundle holds only the shown "
                         "rows."
@@ -524,14 +523,14 @@ type _ExportRow = tuple[str | None, Sequence[object]]
 class _AllMembers:
     """The frame rows of every member of the one dimension a card's `select` lists, at the
     periods the card shows. `shown` and `members` count the dimension's distinct values on
-    the card and in `rows`. `total_column` is the dimension's kind column where one of
-    `rows` holds a party kind (`PARTY_KINDS`) in it, which marks the totals, else None."""
+    the card and in `rows`. `column_note` is the description's sentence naming the column
+    that tells the rows apart (`_column_note`), or empty."""
 
     dimension: str
     rows: tuple[_ExportRow, ...]
     shown: int
     members: int
-    total_column: str | None
+    column_note: str
 
 
 @dataclass(frozen=True)
@@ -633,19 +632,32 @@ def _all_members(
         members.add(member)
     if len(members) <= len(shown_members):
         return None
-    column = kind_column(dimension)
-    marks_totals = (
-        dimension in PARTY_ROLES
-        and column in index
-        and any(row[index[column]] in PARTY_KINDS for _, row in kept)
-    )
     return _AllMembers(
         dimension=dimension,
         rows=tuple(kept),
         shown=len(shown_members),
         members=len(members),
-        total_column=column if marks_totals else None,
+        column_note=_column_note(dimension, index=index, rows=[row for _, row in kept]),
     )
+
+
+def _column_note(
+    dimension: str, *, index: Mapping[str, int], rows: Sequence[Sequence[object]]
+) -> str:
+    """The sentence naming the frame column that tells `rows` apart, with a leading space,
+    or empty. On a party role, its kind column (`kind_column`) where a row holds
+    `TOTAL_KIND`, as marking the totals. On the place role, its type column (`type_column`)
+    where the rows hold more than one type cell, as giving each row's place type, which
+    tells a region from a country."""
+    if dimension in PARTY_ROLES:
+        column = kind_column(dimension)
+        if column in index and any(row[index[column]] == TOTAL_KIND for row in rows):
+            return f" The `{column}` column marks which rows are totals."
+    elif dimension == PLACE_ROLE:
+        column = type_column(dimension)
+        if column in index and len({row[index[column]] for row in rows}) > 1:
+            return f" The `{column}` column gives each row's place type."
+    return ""
 
 
 def _export_table(
