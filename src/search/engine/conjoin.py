@@ -93,6 +93,10 @@ NESTED_SHAPE_STEPS = frozenset(
         "shape_labels",
         "shape_groups",
         "shape_admission",
+        "shape_denominators",
+        "shape_quantity",
+        "shape_rank",
+        "shape_availability",
     }
 )
 

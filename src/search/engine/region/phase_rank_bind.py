@@ -131,6 +131,7 @@ from search.engine.region.availability import (
 from search.engine.region.codes import AVAILABILITY_PROBE_FAILED, DEGENERATE_BINDING_DETECTED
 from search.engine.region.decisions import PartyReadingWithdrawn
 from search.engine.region.grounding import _shape_with_taxonomy
+from search.engine.region.phase_timing import timed_step
 from search.engine.region.place_roles import (
     bind_place_roles,
     held_party_words,
@@ -800,6 +801,7 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
     """
     state.scope = with_idle_exclusions(state.scope, state.shapes_found)
     state.warnings.extend(idle_exclusion_warnings(state.scope))
+    _log_pool_origins(state.shapes_found)
     only_excludes = state.scope is not None and not state.scope.named
     candidates = _dataset_candidates(state.shapes_found, None if only_excludes else state.scope)
     state.scope_removed_readings = len(candidates) < len(state.shapes_found)
@@ -856,8 +858,11 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
     admissible = [i.shape for i in judged if i.admissible]
     # The kinds of the denominators the shapes divide by class each one's form, and the
     # quantity read lists them by name to read the form and base the phrase states.
-    await _read_denominators(state, admissible)
-    if admissible and (malformed := await _read_stated_quantity(state, admissible)) is not None:
+    with timed_step(state, "shape_denominators"):
+        await _read_denominators(state, admissible)
+    with timed_step(state, "shape_quantity"):
+        malformed = await _read_stated_quantity(state, admissible) if admissible else None
+    if malformed is not None:
         return malformed
     # The question's codes read in each vocabulary the pinned parts are judged in. A reading
     # refused on a pinned part keeps its vocabulary's matches, which settle it when it
@@ -901,7 +906,8 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
     # From here to the seated menu the phase reads the readings it may offer apart from
     # the part (`_read_offer`), and writes them to it only once the menu seats one, so a
     # part that offers none holds nothing they read.
-    offer, ranked_shapes = _read_offer(state, eligible_shapes, sources, reading_owned_phrases)
+    with timed_step(state, "shape_rank"):
+        offer, ranked_shapes = _read_offer(state, eligible_shapes, sources, reading_owned_phrases)
     refused_on_pinned = _refused_on_pinned(judged, excluding)
     top_k = settings().bind_top_k
     # The menu seats the hits in rank order under ``bind_top_k``, a topic root with every
@@ -964,7 +970,8 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
     # elected shape's own read settles its data.
     places = menu_read_places(state.place_sets, state.recall_only_place_dcids)
     if places and len(capped_shapes) > 1:
-        capped_shapes = await _read_availability(state, capped_shapes, places)
+        with timed_step(state, "shape_availability"):
+            capped_shapes = await _read_availability(state, capped_shapes, places)
     state.capped_shapes = capped_shapes
     state.basis_siblings = [_shape_with_taxonomy(s) for s in siblings]
     state.interpretations = replace(
@@ -974,6 +981,24 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
     )
     await _record_shape_step(state)
     return None
+
+
+def _log_pool_origins(shapes: Sequence[ShapeDraft]) -> None:
+    """Log where each shape of the pool came from: `recalled` when a confirmed member is a
+    direct recall, `injected` when every member is a row recall added for its five-tuple
+    (`clients.graph.with_rival_families`), and `derived` otherwise."""
+    origins: dict[str, list[str]] = {"recalled": [], "injected": [], "derived": []}
+    for shape in shapes:
+        origin = "injected" if shape.rival else "recalled" if shape.recalled else "derived"
+        origins[origin].append(shape.shape_id)
+    logger.info(
+        "shape pool: %d recalled, %d injected, %d derived; injected %s",
+        len(origins["recalled"]),
+        len(origins["injected"]),
+        len(origins["derived"]),
+        origins["injected"],
+        extra={"pool_origins": origins},
+    )
 
 
 def _seat_menu_and_siblings(

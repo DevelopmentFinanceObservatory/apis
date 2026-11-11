@@ -50,6 +50,10 @@ def test_booked_steps_sum_to_the_wall_time_of_the_resolve(monkeypatch):
     booked = sum(ms for step, ms in by_step.items() if step not in NESTED_SHAPE_STEPS)
     assert abs(booked - clock[0]) <= 0.05 * clock[0], (booked, clock[0], by_step)
     assert by_step["phase_place_bindings"] > 0, "a phase that books nothing carries its time"
+    assert {"shape_quantity", "shape_denominators", "shape_rank"} <= set(by_step)
+    assert {"shape_quantity", "shape_denominators", "shape_rank", "shape_availability"} <= (
+        NESTED_SHAPE_STEPS
+    )
     assert {f"phase_{phase.__name__.removeprefix('_phase_')}" for phase in pipeline._PHASES} <= set(
         by_step
     )
@@ -75,3 +79,13 @@ def test_the_stages_inside_shape_book_no_phase_time():
     state = SimpleNamespace(timing={"phase_recall": 5, "shape": 30, "shape_arcs": 12})
 
     assert phase_timing.booked_ms(state) == 35
+
+
+def test_the_pool_log_names_each_shape_s_origin(caplog):
+    with caplog.at_level("INFO", logger="search.engine.region.phase_rank_bind"):
+        _run()
+
+    (record,) = [r for r in caplog.records if r.getMessage().startswith("shape pool:")]
+    origins = record.pool_origins
+    assert set(origins) == {"recalled", "injected", "derived"}
+    assert sum(map(len, origins.values())) > 0
