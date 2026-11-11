@@ -305,7 +305,8 @@ def no_data_phrase(
     used by itself, and neither returns the term-free phrase.
 
     For qualifier_not_bound, any ``unbound`` terms take precedence and
-    identify categories the search could not apply. Otherwise, ``no_vocabulary``
+    identify categories the search could not apply, each dataset that records one of them
+    (`ResolvedQualifier.held_by`) named after (`_held_by_sentences`). Otherwise, ``no_vocabulary``
     terms name distinctions the data does not record and advise omitting them.
     With neither, a part read under a source ``scope`` says no series comes from the
     sources it names, or from any source but those it leaves out (`_scope_verdict`).
@@ -329,12 +330,13 @@ def no_data_phrase(
             return f"No data for {concept}."
         return _NO_DATA_PHRASES["no_observations"]
     if reason == "qualifier_not_bound" and qualifier_terms:
-        unbound = [q.text for q in qualifier_terms if q.disposition == "unbound"]
+        unbound = [q for q in qualifier_terms if q.disposition == "unbound"]
         if unbound:
-            joined = join_labels([f'"{t}"' for t in unbound])
+            joined = join_labels([f'"{q.text}"' for q in unbound])
             verb = "name" if len(unbound) != 1 else "names"
             noun = "categories" if len(unbound) != 1 else "a category"
-            return f"{joined} {verb} {noun} the search could not apply to this query."
+            verdict = f"{joined} {verb} {noun} the search could not apply to this query."
+            return " ".join([verdict, *_held_by_sentences(unbound)])
         no_vocabulary = [q.text for q in qualifier_terms if q.disposition == "no_vocabulary"]
         if no_vocabulary:
             joined = join_labels([f'"{t}"' for t in no_vocabulary])
@@ -386,6 +388,24 @@ def no_data_phrase(
                 verb = "are" if plural else "is"
                 return f"{joined} {verb} not the kind of entity this query's data is reported for."
     return _NO_DATA_PHRASES.get(reason, _GENERIC_NO_DATA)
+
+
+def _held_by_sentences(unbound: Sequence[ResolvedQualifier]) -> list[str]:
+    """One sentence per dataset that records an `unbound` term (`ResolvedQualifier.held_by`),
+    in the order the terms name them: "ONE Data Climate Finance records it." A dataset
+    recording only some of the terms names those it records."""
+    held: dict[str, list[str]] = {}
+    for term in unbound:
+        for dataset in term.held_by:
+            held.setdefault(dataset.label or dataset.ref, []).append(term.text)
+    sentences = []
+    for label, texts in held.items():
+        if len(texts) == len(unbound):
+            what = "it" if len(texts) == 1 else "them"
+        else:
+            what = join_labels([f'"{text}"' for text in texts])
+        sentences.append(f"{label} records {what}.")
+    return sentences
 
 
 def _untold_places(groups: Sequence[Sequence[str]]) -> list[str]:

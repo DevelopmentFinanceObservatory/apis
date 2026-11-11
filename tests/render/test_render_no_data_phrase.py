@@ -622,6 +622,41 @@ def test_no_data_phrase_qualifier_not_bound_multiple_terms(texts, disposition, e
     assert no_data_phrase("qualifier_not_bound", qualifier_terms=qualifiers) == expected
 
 
+_CLIMATE_FINANCE = GraphRef(ref="provenance/ONEClimateFinance", label="ONE Data Climate Finance")
+
+
+@pytest.mark.parametrize(
+    ("held_by", "expected"),
+    [
+        pytest.param(
+            {"adaptation": [_CLIMATE_FINANCE]},
+            '"adaptation" names a category the search could not apply to this query. '
+            "ONE Data Climate Finance records it.",
+            id="one-term-held",
+        ),
+        pytest.param(
+            {"adaptation": [_CLIMATE_FINANCE], "mitigation": [_CLIMATE_FINANCE]},
+            '"adaptation" and "mitigation" name categories the search could not apply to '
+            "this query. ONE Data Climate Finance records them.",
+            id="every-term-held",
+        ),
+        pytest.param(
+            {"adaptation": [_CLIMATE_FINANCE], "mitigation": []},
+            '"adaptation" and "mitigation" name categories the search could not apply to '
+            'this query. ONE Data Climate Finance records "adaptation".',
+            id="some-terms-held",
+        ),
+    ],
+)
+def test_no_data_phrase_qualifier_not_bound_names_the_datasets_holding_a_term(held_by, expected):
+    """An unbound term another dataset records (`ResolvedQualifier.held_by`) names it."""
+    qualifiers = [
+        ResolvedQualifier(text=text, named=[], disposition="unbound", held_by=datasets)
+        for text, datasets in held_by.items()
+    ]
+    assert no_data_phrase("qualifier_not_bound", qualifier_terms=qualifiers) == expected
+
+
 def test_no_data_phrase_qualifier_not_bound_unbound_wins_over_mixed_dispositions():
     """An unbound term selects the unbound wording for a mixed set."""
     qualifiers = [

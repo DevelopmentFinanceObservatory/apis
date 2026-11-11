@@ -321,7 +321,7 @@ def with_reading_families(
     A row added here is the family's broadest admitted row (`_broadest_admitted_row`),
     takes the best score of the five-tuple's hits, and is marked `DetectedSV.rival` as a
     row of `with_rival_families` is, so it displaces only shapes of its own five-tuple."""
-    readers = [_code_values(codes, index) for codes in phrases]
+    readers = [code_values(codes, index) for codes in phrases]
     if not readers:
         return tuple(hits)
     best: dict[FiveTuple, float] = {}
@@ -341,13 +341,13 @@ def with_reading_families(
         unread = [
             values
             for values in readers
-            if not any(_reads(family, values, index=index) for family in pooled[five_tuple])
+            if not any(family_reads(family, values, index=index) for family in pooled[five_tuple])
         ]
         if not unread:
             continue
         for family in index.families_by_five_tuple[five_tuple]:
             if id(family) in held or not any(
-                _reads(family, values, index=index) for values in unread
+                family_reads(family, values, index=index) for values in unread
             ):
                 continue
             row = _broadest_admitted_row(family, catalogue=catalogue, index=index)
@@ -367,7 +367,7 @@ def with_reading_families(
     return tuple(sorted((*hits, *rows), key=lambda c: c.score, reverse=True))
 
 
-def _code_values(codes: Iterable[CodeRow], index: CodeIndex) -> dict[str, frozenset[str]]:
+def code_values(codes: Iterable[CodeRow], index: CodeIndex) -> dict[str, frozenset[str]]:
     """Each code system of `codes`, mapped to its codes among them and their descendants
     (`CodeIndex.descendants`)."""
     values: dict[str, set[str]] = {}
@@ -395,7 +395,7 @@ def _family_values(
     return found
 
 
-def _reads(
+def family_reads(
     family: IndexFamily, values: Mapping[str, AbstractSet[str]], *, index: CodeIndex
 ) -> bool:
     """Whether a row of `family` carries one of `values` on its code system."""

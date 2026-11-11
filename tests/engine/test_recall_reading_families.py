@@ -179,10 +179,17 @@ _SYSTEMS = {
 }
 
 
+_LABELS = {
+    _CRS: "OECD Creditor Reporting System",
+    _DAC1: "OECD DAC1",
+    _CLIMATE: "ONE Data Climate Finance",
+}
+
+
 def _dataset(provenance: str, rank: int) -> DatasetDeclaration:
     return DatasetDeclaration(
         provenance=provenance,
-        label=provenance.removeprefix("provenance/"),
+        label=_LABELS[provenance],
         description="A test table.",
         opt_in=False,
         absent_observation="unknown",
@@ -192,13 +199,14 @@ def _dataset(provenance: str, rank: int) -> DatasetDeclaration:
     )
 
 
-def _index() -> CodeIndex:
+def _index(codes: tuple[CodeRow, ...] = _CODES) -> CodeIndex:
+    """The test index, holding `codes`."""
     return CodeIndex(
         stamp=IndexStamp(
             graph_endpoint="test",
             exported_at="2026-01-01T00:00:00Z",
             code_counts={
-                system: sum(code.code_system == system for code in _CODES) for system in _SYSTEMS
+                system: sum(code.code_system == system for code in codes) for system in _SYSTEMS
             },
             statvar_shape_counts={},
             content_hash="recall-reading-families",
@@ -214,18 +222,23 @@ def _index() -> CodeIndex:
             )
             for system, (hierarchical, plain_name) in _SYSTEMS.items()
         ),
-        codes=_CODES,
+        codes=codes,
         statvars=_ROWS,
         datasets=(_dataset(_CRS, 0), _dataset(_DAC1, 1), _dataset(_CLIMATE, 2)),
     )
 
 
-def _graph(query: str, recalled: tuple[tuple[str, float], ...]) -> FakeGraph:
+def _graph(
+    query: str, recalled: tuple[tuple[str, float], ...], series: dict[str, str] | None = None
+) -> FakeGraph:
+    """The test graph, recalling `recalled` for `query`, with `series` (dcid to label) as
+    further series outside the index."""
     return FakeGraph(
         nodes={
             **{row.dcid: _row_node(row) for row in _ROWS},
             _SDG_CLIMATE: _series_node("Climate-specific financial support provided"),
             _WB_AGRICULTURE: _series_node("Agriculture, value added (% of GDP)"),
+            **{dcid: _series_node(label) for dcid, label in (series or {}).items()},
             _DEU: {"label": "Germany", "type": "Country"},
             _KEN: {"label": "Kenya", "type": "Country"},
         },

@@ -14,8 +14,8 @@ from datetime import date
 from typing import Literal, NamedTuple
 
 from code_index.labels import without_property_suffix
-from code_index.members import ProvenanceScope, is_opt_in
-from code_index.query import CodeIndex, fold_word
+from code_index.members import ProvenanceScope, eligible_among, is_opt_in
+from code_index.query import CodeIndex, IndexFamily, fold_word
 from code_index.shared import get_index, get_measure_index
 from code_index.tokens import Token, text_matches, tokenize, word_tokens
 from code_index.types import (
@@ -58,7 +58,7 @@ from search.engine.binders.house_policy import (
     differ_on_basis,
     shape_facts,
 )
-from search.engine.clients.graph import family_ref
+from search.engine.clients.graph import code_values, family_reads, family_ref
 from search.engine.config import settings
 from search.engine.degraded_reads import fail_open_reads
 from search.engine.departures import qualifier_property
@@ -179,6 +179,7 @@ from search.engine.retrieval.bound_values import (
     collapse_measure_families,
     declared_datasets,
     elect_five_tuple_family,
+    five_tuple_families,
     five_tuple_member_facts,
     held_family_exact,
     index_carries_shape,
@@ -1574,29 +1575,134 @@ def _unbindable_qualifiers(
     return tuple(unbindable)
 
 
+def _rival_held_qualifiers(state: ResolveState) -> tuple[ResolvedQualifier, ...]:
+    """The variable's code terms, read in every code system, that the elected shape leaves
+    partly unread and that another index family of its five-tuple and role class records
+    while its own family records none of their codes, each as an unbound record with
+    evidence ``"unavailable"`` naming the datasets that serve those families
+    (`ResolvedQualifier.held_by`).
+
+    The climate finance tables share the CRS's five-tuples, so "adaptation" on a CRS
+    disbursements answer names a policy objective ONE Data Climate Finance records and the
+    CRS does not. Election keeps the family reading more of the query
+    (`elect_five_tuple_family`), but a named source, a tie on the phrases read or a rival
+    recall left out can still elect the family that drops the word, and the answer would
+    report the CRS total. A family records a code as recall's closure reads it
+    (`clients.graph.family_reads`), on the index alone, so the check holds whatever recall
+    pooled. Families of one five-tuple are rivals when both bear roles or neither does, as
+    election pairs them.
+
+    A word counts as read where a span of the shape's own reading covers it, a menu choice
+    reads it (`_chosen_ranges`), or the series or its datasets state it, as
+    `_unread_qualifier_runs` reads them: "bilateral" in "bilateral ODA", DAC1 aid type
+    1015, is read on a CRS shape. A shape the index does not carry has no family to compare,
+    and a term no rival records keeps the handling of the checks beside this one.
+    """
+    index = get_index()
+    shape = state.shape_draft
+    own = shape_family(shape, index)
+    if own is None:
+        return ()
+    role_bearing = is_role_bearing(shape)
+    rivals = [
+        family
+        for family in five_tuple_families(shape_five_tuple(shape), index)
+        if family is not own and _bears_roles(family) == role_bearing
+    ]
+    if not rivals:
+        return ()
+    variable = state.variable
+    stated = _series_words(shape) | _dataset_stated_words(shape, index, state)
+    if _ratio_words(shape):
+        stated |= FUNCTION_WORDS
+    read = [
+        *(
+            (own_span.start, own_span.end)
+            for own_span in for_shape(state.variable_spans_by_vocabulary, shape)
+        ),
+        *_chosen_ranges(state),
+        *_word_ranges(variable, stated),
+    ]
+    records: list[ResolvedQualifier] = []
+    for span in state.variable_spans_in_every_system:
+        code_rows = [row for row in span.rows if isinstance(row, CodeRow)]
+        if not code_rows or len(code_rows) < len(span.rows):
+            continue
+        if not _unread_words(variable, span, read):
+            continue
+        values = code_values(code_rows, index)
+        if family_reads(own, values, index=index):
+            continue
+        holders = [family for family in rivals if family_reads(family, values, index=index)]
+        if holders:
+            records.append(
+                _unavailable_record(span, code_rows, held_by=_serving_datasets(holders, index))
+            )
+    return tuple(records)
+
+
+def _bears_roles(family: IndexFamily) -> bool:
+    """Whether a row of `family` declares a role other than the subject, as
+    `shape.is_role_bearing` reads a shape."""
+    return any(
+        role != "observationAbout" for row in family.rows for role in row.observation_properties
+    )
+
+
+def _serving_datasets(families: Sequence[IndexFamily], index: CodeIndex) -> list[GraphRef]:
+    """The declared datasets an unscoped question answers `families` from
+    (`code_index.members.eligible_among`), lowest rank first within each family, each once,
+    by provenance and label: ONE Data Climate Finance for the climate finance family, whose
+    other publishers are opt-in."""
+    served: dict[str, GraphRef] = {}
+    for family in families:
+        declared = sorted(
+            (index.datasets[dataset] for dataset in family.datasets if dataset in index.datasets),
+            key=lambda dataset: dataset.rank,
+        )
+        for provenance in eligible_among(
+            index, [dataset.provenance for dataset in declared], scope=None
+        ):
+            served.setdefault(
+                provenance, GraphRef(ref=provenance, label=index.datasets[provenance].label)
+            )
+    return list(served.values())
+
+
 def _unavailable_qualifiers(state: ResolveState) -> list[ResolvedQualifier]:
     """The variable's code terms the elected shape cannot apply that the part refuses on,
     each as an unbound record with evidence ``"unavailable"``, in query order, with the
     elected shape as its near match.
 
-    On a part naming a source (`_names_source`) they are the terms none of its tables'
-    rows holds (`_undeclared_qualifiers`) and the terms naming
+    On every part they are the terms another family of the shape's five-tuple records and
+    the shape leaves unread (`_rival_held_qualifiers`), in every coverage mode: "adaptation"
+    on a CRS answer, which ONE Data Climate Finance records. On a part naming a source
+    (`_names_source`) they are also the terms none of its tables' rows holds
+    (`_undeclared_qualifiers`) and the terms naming
     only codes no shape can bind (`_unbindable_qualifiers`), in every coverage mode:
     "multilateral ODA" names DAC1 aid type 2000, which a CRS part cannot apply, so the CRS
-    ODA answer is the near match. On a part naming no source they are the unbindable
-    terms under ``SearchSettings.qualifier_coverage="refuse"`` only. In log mode
-    `_withheld_qualifiers` holds them.
+    ODA answer is the near match. On a part naming no source the unbindable terms join
+    under ``SearchSettings.qualifier_coverage="refuse"`` only. In log mode
+    `_withheld_qualifiers` holds them. A term two checks record keeps the first record,
+    in that order, so a rival-held term names the datasets that record it.
     """
     variable = state.variable
     spans = state.variable_spans_in_every_system
     chosen = _chosen_ranges(state)
-    records = list(
-        _unbindable_qualifiers(
+    records = list(_rival_held_qualifiers(state))
+    recorded = {(record.start, record.end) for record in records}
+    unbindable = [
+        record
+        for record in _unbindable_qualifiers(
             variable, spans, state.shape_draft, state.variable_spans_by_vocabulary, chosen
         )
-    )
+        if (record.start, record.end) not in recorded
+    ]
     if not _names_source(state):
-        return records if settings().qualifier_coverage == "refuse" else []
+        if settings().qualifier_coverage == "refuse":
+            records += unbindable
+        return sorted(records, key=lambda record: record.start or 0)
+    records += unbindable
     recorded = {(record.start, record.end) for record in records}
     records += [
         record
@@ -1656,9 +1762,11 @@ def _withheld_qualifiers(state: ResolveState) -> tuple[ResolvedQualifier, ...]:
     )
 
 
-def _unavailable_record(span: QualifierSpan, code_rows: Sequence[CodeRow]) -> ResolvedQualifier:
+def _unavailable_record(
+    span: QualifierSpan, code_rows: Sequence[CodeRow], *, held_by: Sequence[GraphRef] = ()
+) -> ResolvedQualifier:
     """The unbound record of the term `span`, naming `code_rows`, that the part cannot
-    apply."""
+    apply, with the datasets `held_by` that record it (`_rival_held_qualifiers`)."""
     return ResolvedQualifier(
         text=span.matched_text,
         named=[GraphRef(ref=row.dcid, label=row.label) for row in code_rows],
@@ -1667,6 +1775,7 @@ def _unavailable_record(span: QualifierSpan, code_rows: Sequence[CodeRow]) -> Re
         start=span.start,
         end=span.end,
         evidence="unavailable",
+        held_by=list(held_by),
     )
 
 

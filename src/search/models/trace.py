@@ -78,6 +78,11 @@ class ResolvedQualifier(StrictModel):
     `operation` and `selected` describe how the term's codes combine with
     another term's on one code system, and the codes it asked for before that
     combination simplified.
+
+    `held_by` names, on an `"unavailable"` term the elected shape leaves unread, the
+    datasets serving another table family of the answer's five-tuple and role class that
+    records one of its codes (`phase_rank_bind._rival_held_qualifiers`): "adaptation" on
+    a CRS answer names ONE Data Climate Finance. The refusal names them.
     """
 
     text: str = Field(
@@ -140,6 +145,13 @@ class ResolvedQualifier(StrictModel):
     selected: list[GraphRef] = Field(
         default_factory=list,
         description="the codes the term asked for before the combination simplified them",
+    )
+    held_by: list[GraphRef] = Field(
+        default_factory=list,
+        description=(
+            "on an unavailable term, the datasets whose table of the answer's measure "
+            "records the term's codes, each by its provenance and label; empty otherwise"
+        ),
     )
 
 
