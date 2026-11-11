@@ -24,8 +24,9 @@ from dataclasses import dataclass, replace
 from pydantic import BaseModel, ConfigDict, Field
 
 from code_index.query import CodeIndex
-from code_index.shared import get_index
+from code_index.shared import get_index, get_measure_index
 from code_index.tokens import word_tokens
+from code_index.types import CodeRow
 from entity_resolution import EntityResolver, Resolution, Resolved
 from origin_catalogue import current_catalogue
 from search.engine.clients.graph import (
@@ -36,8 +37,10 @@ from search.engine.clients.graph import (
     settled_un,
     stand_candidates,
     stand_in,
+    with_reading_families,
 )
 from search.engine.config import settings
+from search.engine.qualifier_match import read_by_vocabulary
 from search.engine.retrieval.topics import is_topic_candidate
 from search.engine.surface_resolution import resolve_names
 
@@ -246,23 +249,59 @@ def _pooled(first: Detection, second: Detection, joins: Callable[[str], bool]) -
 
 
 async def _detect(
-    graph: EngineGraphClient, text: str, party_words: AbstractSet[str] = frozenset()
+    graph: EngineGraphClient,
+    text: str,
+    party_words: AbstractSet[str] = frozenset(),
+    *,
+    variable: str,
 ) -> Detection:
-    """The graph's detection of `text` (`EngineGraphClient.detect_svs`). When `text` holds a
-    word some declared dataset states, or one of `party_words` (`_without_stated_words`),
-    the graph is searched concurrently on the text without it, and the series of the
-    datasets that state or name a party for a removed word join the pool (`_states_a_word`,
-    `_pooled`). A failure of either search raises."""
+    """The graph's detection of `text` (`EngineGraphClient.detect_svs`), with a row of each
+    family that reads a code `variable` names where no recalled family of its five-tuple
+    reads it (`_with_reading_families`). When `text` holds a word some declared dataset
+    states, or one of `party_words` (`_without_stated_words`), the graph is searched
+    concurrently on the text without it, and the series of the datasets that state or name
+    a party for a removed word join the pool (`_states_a_word`, `_pooled`). A failure of
+    either search raises."""
     index = get_index()
     unstated = _without_stated_words(text, index, party_words)
     if unstated is None:
-        return await asyncio.to_thread(graph.detect_svs, text)
-    rest, removed = unstated
-    first, second = await asyncio.gather(
-        asyncio.to_thread(graph.detect_svs, text),
-        asyncio.to_thread(graph.detect_svs, rest),
+        detection = await asyncio.to_thread(graph.detect_svs, text)
+    else:
+        rest, removed = unstated
+        first, second = await asyncio.gather(
+            asyncio.to_thread(graph.detect_svs, text),
+            asyncio.to_thread(graph.detect_svs, rest),
+        )
+        detection = _pooled(
+            first, second, lambda dcid: _states_a_word(dcid, removed, index, party_words)
+        )
+    return _with_reading_families(detection, variable, index)
+
+
+def _with_reading_families(detection: Detection, variable: str, index: CodeIndex) -> Detection:
+    """`detection` with a row of each family of a five-tuple among its hits that reads a
+    phrase of `variable` no recalled family there reads (`with_reading_families`), in its
+    hits and in its candidates as they stand (`stand_candidates`).
+
+    `variable` is read in every code system with the reader the bind phase reads it with
+    (`read_by_vocabulary`, as `phase_rank_bind._read_sources` calls it), so recall adds a
+    family for exactly the phrases the later checks find in the variable."""
+    (reading,) = read_by_vocabulary((variable,), index, get_measure_index(), vocabularies=())
+    phrases = [
+        codes
+        for span in reading.everywhere.spans
+        if (codes := [row for row in span.rows if isinstance(row, CodeRow)])
+    ]
+    if not phrases:
+        return detection
+    catalogue = current_catalogue()
+    hits = detection.candidates if detection.hits is None else detection.hits
+    widened = with_reading_families(hits, phrases=phrases, catalogue=catalogue, index=index)
+    if len(widened) == len(hits):
+        return detection
+    return replace(
+        detection, candidates=stand_candidates(widened, catalogue=catalogue), hits=widened
     )
-    return _pooled(first, second, lambda dcid: _states_a_word(dcid, removed, index, party_words))
 
 
 def _member_detection(members: Sequence[str]) -> Detection:
@@ -308,6 +347,8 @@ async def recall(
     the series of the tables that state the word (`_detect`), and so is one holding a word
     of `party_words`, the words that name a party on an axis the request leaves unnamed
     (`region.place_roles.stated_party_words`), for the series of the tables that declare it.
+    A family of a recalled five-tuple that reads a code of `variable` no recalled family
+    there reads joins the pool (`_with_reading_families`).
 
     `members` are the StatVars a part's series code names (`search.engine.source_code`).
     They are the candidates, each at score 1.0 and admitted by the request's catalogue as a
@@ -324,7 +365,12 @@ async def recall(
         miss_resolutions = await resolve_names(misses, resolver=resolver, surfaces=surfaces)
     else:
         detection, miss_resolutions = await asyncio.gather(
-            _detect(graph, _canonicalize_acronyms(detect_query), party_words),
+            _detect(
+                graph,
+                _canonicalize_acronyms(detect_query),
+                party_words,
+                variable=variable,
+            ),
             resolve_names(misses, resolver=resolver, surfaces=surfaces),
         )
     candidates = _above_recall_floor(detection.candidates)

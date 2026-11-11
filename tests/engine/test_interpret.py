@@ -652,4 +652,4 @@ class TestStatedWordSearch:
         graph = _FailingGraph(fails_on)
 
         with pytest.raises(GraphInfraError):
-            run(_detect(graph, "bilateral ODA to Kenya"))
+            run(_detect(graph, "bilateral ODA to Kenya", variable="bilateral ODA to Kenya"))

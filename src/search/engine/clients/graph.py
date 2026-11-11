@@ -23,7 +23,7 @@ import pydantic
 from code_index.query import CodeIndex, IndexFamily
 from code_index.scope_conventions import BasisMeasure
 from code_index.shared import get_index, per_index
-from code_index.types import StatVarRow
+from code_index.types import CodeRow, StatVarRow
 from dc_graph import ArcTarget, Facet, FacetDefaultPolicy
 from origin_catalogue import Catalogue
 from origin_catalogue.origins import UN_ID_PREFIX
@@ -290,6 +290,117 @@ def _broadest_admitted_row(
     constraint properties, None when it admits none."""
     rows = _rows_broadest_first(index)[family.five_tuple, family.properties]
     return next((r for r in rows if catalogue.admit_candidate(r.dcid) is not None), None)
+
+
+def with_reading_families(
+    hits: Sequence[DetectedSV],
+    *,
+    phrases: Iterable[Sequence[CodeRow]],
+    catalogue: Catalogue,
+    index: CodeIndex,
+) -> tuple[DetectedSV, ...]:
+    """`hits` and, for each five-tuple an index row among them belongs to, one row of each
+    family of that five-tuple that reads a query phrase no family among the hits there
+    reads, in descending score.
+
+    `phrases` holds the code rows each phrase of the query names, read in every code system
+    (`qualifier_match.read_by_vocabulary`). A family reads a phrase when one of its rows
+    carries one of the phrase's codes, or a descendant of one, on the code's property, as
+    `bound_values.query_phrases_read` counts a shape's phrases. The resolve ranks
+    sentences, and a sentence states no code: for "adaptation disbursements" it returns the
+    CRS's disbursements, which hold no climate objective, and not the climate finance
+    disbursements that share the CRS's five-tuple and hold the adaptation objective. Within
+    a five-tuple the family reading more of the query's phrases is elected
+    (`bound_values.elect_five_tuple_family`), so a family the resolve left out must join the
+    pool to be compared.
+
+    The closure stays within the five-tuples among the hits, so a phrase brings in no
+    family of a five-tuple the resolve did not return, and a phrase some family among the
+    hits reads brings in none: "health aid" with CRS rows recalled gains nothing.
+
+    A row added here is the family's broadest admitted row (`_broadest_admitted_row`),
+    takes the best score of the five-tuple's hits, and is marked `DetectedSV.rival` as a
+    row of `with_rival_families` is, so it displaces only shapes of its own five-tuple."""
+    readers = [_code_values(codes, index) for codes in phrases]
+    if not readers:
+        return tuple(hits)
+    best: dict[FiveTuple, float] = {}
+    pooled: dict[FiveTuple, list[IndexFamily]] = {}
+    held: set[int] = set()
+    for hit in hits:
+        family = index.family_by_dcid.get(hit.dcid)
+        if family is None:
+            continue
+        if id(family) not in held:
+            pooled.setdefault(family.five_tuple, []).append(family)
+            held.add(id(family))
+        best[family.five_tuple] = max(best.get(family.five_tuple, hit.score), hit.score)
+
+    rows: list[DetectedSV] = []
+    for five_tuple, score in best.items():
+        unread = [
+            values
+            for values in readers
+            if not any(_reads(family, values, index=index) for family in pooled[five_tuple])
+        ]
+        if not unread:
+            continue
+        for family in index.families_by_five_tuple[five_tuple]:
+            if id(family) in held or not any(
+                _reads(family, values, index=index) for values in unread
+            ):
+                continue
+            row = _broadest_admitted_row(family, catalogue=catalogue, index=index)
+            if row is not None:
+                held.add(id(family))
+                rows.append(
+                    DetectedSV(
+                        dcid=row.dcid,
+                        score=score,
+                        type_of="StatisticalVariable",
+                        sentence=None,
+                        rival=True,
+                    )
+                )
+    if not rows:
+        return tuple(hits)
+    return tuple(sorted((*hits, *rows), key=lambda c: c.score, reverse=True))
+
+
+def _code_values(codes: Iterable[CodeRow], index: CodeIndex) -> dict[str, frozenset[str]]:
+    """Each code system of `codes`, mapped to its codes among them and their descendants
+    (`CodeIndex.descendants`)."""
+    values: dict[str, set[str]] = {}
+    for code in codes:
+        values.setdefault(code.code_system, set()).update(index.descendants(code.dcid))
+    return {system: frozenset(held) for system, held in values.items()}
+
+
+@per_index
+def _family_values(
+    index: CodeIndex,
+) -> dict[tuple[FiveTuple, frozenset[str]], dict[str, frozenset[str]]]:
+    """Each index family's constraint values by property, keyed by five-tuple and family
+    properties."""
+    found: dict[tuple[FiveTuple, frozenset[str]], dict[str, frozenset[str]]] = {}
+    for families in index.families_by_five_tuple.values():
+        for family in families:
+            values: dict[str, set[str]] = {}
+            for row in family.rows:
+                for prop, value in row.constraint_properties.items():
+                    values.setdefault(prop, set()).add(value)
+            found[family.five_tuple, family.properties] = {
+                prop: frozenset(held) for prop, held in values.items()
+            }
+    return found
+
+
+def _reads(
+    family: IndexFamily, values: Mapping[str, AbstractSet[str]], *, index: CodeIndex
+) -> bool:
+    """Whether a row of `family` carries one of `values` on its code system."""
+    carried = _family_values(index)[family.five_tuple, family.properties]
+    return any(not held.isdisjoint(carried.get(system, ())) for system, held in values.items())
 
 
 def family_ref(family: IndexFamily) -> str:
