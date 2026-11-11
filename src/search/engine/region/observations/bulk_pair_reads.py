@@ -1,13 +1,13 @@
-"""One SDMX read for a role-bearing per-series preview's many reads.
+"""SDMX reads for a role-bearing per-series preview's many reads, batched into exact requests.
 
 A per-series preview runs one `materialise_preview` per member and bound role tuple
 (`fetch._Dispatch`), and each streams its rows from SDMX in a request of its own. Above
 `obs_preview_concurrency` reads those requests run in more than one wave of the preview's
 pool. `BulkPairSdmx` stands in for the materialise SDMX client those reads share: the first
-read of a time period fetches, in one `stream_data_batches` call, the rows of every planned
-read of that period, and each read is then served the rows its own request selects from them.
-Materialise runs as before on each read, so election, collapse, conversion and the preview's
-assembly see the rows a request of their own would have returned.
+read of a request fetches, in one `stream_data_batches` call, the rows of every planned read
+the request covers, and each read is then served the rows its own request selects from them.
+Materialise runs on each read over those rows, so election, collapse, conversion and the
+preview's assembly see the rows a request of the read's own would have returned.
 
 A read's rows are the bulk rows whose variable is the read's, whose dcid on each role the read
 filters is one it names, and whose facet id is one it dispatches. SDMX filters variables,
@@ -17,11 +17,17 @@ that match its filters. Reads are grouped by the roles their variables declare a
 they filter, so one bulk request never mixes variables whose responses would name different
 role columns.
 
+A bulk request names the union of its reads' dcids on each role, so it asks for exactly the
+reads' series only when its reads differ on one role at most. A time period's reads of a
+group are therefore split into requests whose reads share every role's dcids but one, and
+share the dcids of that one role per variable: the role that gives the fewest requests. The
+request is split further by the client when it exceeds the URL budget.
+
 Every case the selection cannot reproduce goes to the wrapped client, request by request: a
 request no planned read matches, a bulk read that fails, crosses its row or byte cap or the
 deadline, a response whose role columns differ from the group's declared roles, and a response
-holding a row with no facet id. A bulk read that cannot serve therefore costs each read its own
-request, with the failures and partial delivery of today's per-series path.
+holding a row with no facet id. A bulk read that cannot serve costs each read of its request
+one request of its own, with the failures and partial delivery of a per-series read.
 """
 
 from __future__ import annotations
@@ -31,7 +37,7 @@ import threading
 import time
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 import pyarrow as pa
@@ -88,6 +94,17 @@ class PlannedRead:
         return self.elected_year is not None and period == (str(self.elected_year),)
 
 
+@dataclass
+class _Request:
+    """One bulk request: the `reads` it serves and, once read, its rows (None when the bulk
+    read cannot serve them). `lock` makes the first read to need it the only one to fetch."""
+
+    reads: tuple[PlannedRead, ...]
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    done: bool = False
+    rows: _BulkRows | None = None
+
+
 @dataclass(frozen=True)
 class _BulkRows:
     """A bulk response: its role columns and every row."""
@@ -115,6 +132,36 @@ def _bound_key(entities: Mapping[str, EntityFilter]) -> _Bound | None:
     return tuple(bound)
 
 
+def _plan_requests(reads: Sequence[PlannedRead]) -> dict[tuple[str, _Bound], _Request]:
+    """`reads`, which share a group, split into requests whose product of filters is the set of
+    series their reads need: the reads of a request share every role's dcids but those of one
+    role `varying`, and share the union of that role's dcids per variable. The role chosen is
+    the one giving the fewest requests, the first of the group's filtered roles on a tie."""
+    roles = [role for role, _dcids in reads[0].bound]
+    best: dict[tuple[object, ...], list[PlannedRead]] | None = None
+    for varying in roles or [None]:
+        fixed = {
+            r: tuple((role, dcids) for role, dcids in r.bound if role != varying) for r in reads
+        }
+        union: dict[tuple[object, str], set[str]] = {}
+        for r in reads:
+            dcids = dict(r.bound).get(varying, ())
+            union.setdefault((fixed[r], r.variable), set()).update(dcids)
+        split: dict[tuple[object, ...], list[PlannedRead]] = {}
+        for r in reads:
+            key = (fixed[r], frozenset(union[(fixed[r], r.variable)]))
+            split.setdefault(key, []).append(r)
+        if best is None or len(split) < len(best):
+            best = split
+    assert best is not None
+    return {
+        (r.variable, r.bound): request
+        for members in best.values()
+        for request in [_Request(tuple(members))]
+        for r in members
+    }
+
+
 class BulkPairSdmx:
     """The materialise SDMX client for one preview's `reads`, serving each read's
     `stream_data_batches` from one bulk request per group and time period (module
@@ -126,7 +173,7 @@ class BulkPairSdmx:
         self._inner = inner
         self._deadline = deadline
         self._reads = {(read.variable, read.bound): read for read in reads}
-        self._bulk: dict[tuple[_Group, _Period], _BulkRows | None] = {}
+        self._requests: dict[tuple[_Group, _Period], dict[tuple[str, _Bound], _Request]] = {}
         self._lock = threading.Lock()
 
     def __getattr__(self, name: str) -> object:
@@ -191,20 +238,25 @@ class BulkPairSdmx:
         yield rows.roles, iter(selected.to_batches())
 
     def _bulk_rows(self, read: PlannedRead, period: _Period) -> _BulkRows | None:
-        """The bulk rows of `read`'s group at `period`, read once for every planned read of
-        the group that requests it, or None when the bulk read cannot serve them."""
+        """The bulk rows of the request that serves `read` at `period`, read once for every
+        planned read of the request, or None when the bulk read cannot serve them. Only the
+        workers needing the same request wait on its read."""
         key = (read.group, period)
         with self._lock:
-            if key not in self._bulk:
-                self._bulk[key] = self._read_bulk(
+            if key not in self._requests:
+                self._requests[key] = _plan_requests(
                     [
                         r
                         for r in self._reads.values()
                         if r.group == read.group and r.requests(period)
-                    ],
-                    period,
+                    ]
                 )
-            return self._bulk[key]
+            request = self._requests[key][(read.variable, read.bound)]
+        with request.lock:
+            if not request.done:
+                request.rows = self._read_bulk(request.reads, period)
+                request.done = True
+            return request.rows
 
     def _read_bulk(self, reads: Sequence[PlannedRead], period: _Period) -> _BulkRows | None:
         variables = list(dict.fromkeys(r.variable for r in reads))

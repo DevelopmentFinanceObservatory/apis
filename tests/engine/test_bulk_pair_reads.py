@@ -10,9 +10,11 @@ each role and the facets as a product, and `LATEST` keeps each series' newest ro
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import pyarrow as pa
@@ -350,7 +352,9 @@ def test_the_bulk_read_serves_the_preview_the_per_series_reads_serve(
         assert per_series_warn is not None and per_series_warn.code == OBSERVATIONS_PROBE_FAILED
     else:
         periods = {params.get("c[TIME_PERIOD]") for params in per_series_requests}
-        assert len(bulk_requests) == len(periods)
+        # Members whose reads name the same debtors share a request: `two_debtors` has
+        # members reading both debtors and members reading the first alone.
+        assert len(bulk_requests) == len(periods) * (2 if name == "two_debtors" else 1)
         assert all(len(params["c[variableMeasured]"].split(",")) > 1 for params in bulk_requests)
 
 
@@ -407,3 +411,101 @@ def test_each_read_gets_the_rows_its_own_request_returns(period, quirk) -> None:
         del mixer.data_requests[before:]
 
     assert len(mixer.data_requests) == (1 if quirk is None else 1 + len(reads))
+
+
+class _RecordingSdmx:
+    """An inner client that answers every request with no rows, records the entity filters
+    it was asked for, and holds a request naming `hold_donor` until `release` is set."""
+
+    def __init__(self, *, hold_donor: str | None = None) -> None:
+        self.requests: list[Mapping[str, Sequence[str]]] = []
+        self.hold_donor = hold_donor
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    @contextmanager
+    def stream_data_batches(self, *, entities, **_kwargs):
+        self.requests.append(dict(entities))
+        if self.hold_donor in entities.get("creditor", ()):
+            self.entered.set()
+            self.release.wait(10)
+        yield _ROLES, iter(())
+
+
+def _pair_read(donor: str, recipient: str) -> PlannedRead:
+    return PlannedRead(
+        variable="TESTFIXTURE/BulkPair/V00",
+        bound=(("creditor", (donor,)), ("debtor", (recipient,))),
+        facet_ids=frozenset({"f-default"}),
+        declared_roles=frozenset(_ROLES),
+        latest=False,
+    )
+
+
+def _pair_rows(bulk: BulkPairSdmx, read: PlannedRead) -> None:
+    with bulk.stream_data_batches(
+        variables=[read.variable],
+        entities={role: list(dcids) for role, dcids in read.bound},
+        facet_ids=["f-default"],
+    ) as (_roles, batches):
+        list(batches)
+
+
+@pytest.mark.parametrize(
+    ("reads", "request_count"),
+    [
+        pytest.param(
+            [_pair_read(f"country/D{i}", f"country/R{i}") for i in range(30)], 30, id="diagonal"
+        ),
+        pytest.param(
+            [_pair_read(f"country/D{i}", f"country/R{j}") for i in range(30) for j in range(30)],
+            30,
+            id="full_grid",
+        ),
+        pytest.param(
+            [_pair_read(f"country/D{i}", "country/R0") for i in range(30)], 1, id="one_recipient"
+        ),
+    ],
+)
+def test_a_bulk_request_asks_for_the_series_the_reads_need_and_no_more(
+    reads: list[PlannedRead], request_count: int
+) -> None:
+    """The mixer filters roles as a product, so each bulk request's donors times its
+    recipients are the pairs of its reads: 30 reads on a diagonal ask for 30 series, and
+    900 reads on a full grid ask for 900."""
+    inner = _RecordingSdmx()
+    bulk = BulkPairSdmx(cast(SdmxClient, inner), reads, deadline=None)
+
+    for read in reads:
+        _pair_rows(bulk, read)
+
+    asked = [
+        (donor, recipient)
+        for request in inner.requests
+        for donor in request["creditor"]
+        for recipient in request["debtor"]
+    ]
+    needed = {(dict(r.bound)["creditor"][0], dict(r.bound)["debtor"][0]) for r in reads}
+    assert len(inner.requests) == request_count
+    assert len(asked) == len(needed)
+    assert set(asked) == needed
+
+
+def test_a_slow_bulk_read_does_not_block_a_read_of_another_request() -> None:
+    """A worker waiting for its request's rows holds nothing a worker of another request
+    needs."""
+    slow, other = _pair_read("country/D0", "country/R0"), _pair_read("country/D1", "country/R1")
+    inner = _RecordingSdmx(hold_donor="country/D0")
+    bulk = BulkPairSdmx(cast(SdmxClient, inner), [slow, other], deadline=None)
+    held = threading.Thread(target=_pair_rows, args=(bulk, slow))
+    free = threading.Thread(target=_pair_rows, args=(bulk, other))
+    held.start()
+    try:
+        assert inner.entered.wait(10)
+        free.start()
+        free.join(5)
+        assert not free.is_alive()
+    finally:
+        inner.release.set()
+        held.join(10)
+        free.join(10)
