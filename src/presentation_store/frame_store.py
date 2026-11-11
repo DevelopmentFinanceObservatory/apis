@@ -250,6 +250,7 @@ from description.steps_text import bound_entities, composed_names, step_output_n
 from description.vocabulary import SourceDocumentFacts, Vocabulary, build_vocabulary
 from description.world_bank import WORLD_BANK_NAMESPACE
 from dfo_platform.caller import Caller
+from dfo_platform.columns import PROVENANCE_COLUMN
 from dfo_platform.executor import submit_with_context
 from dfo_platform.timings import phase
 from graph_generation import GenerationStamp
@@ -360,7 +361,6 @@ _FAMILY_REF_PREFIX = "spec_"
 # refs. Unit dcid refs are labelled under their own cap. Converted units need no label. A
 # composed unit is labelled side by side, a string side as a unit ref and a StatVar side as a
 # stat_var ref.
-_PROVENANCE_COLUMN = "provenance"
 
 # A published derived frame's spec id. Its version stores no citation.
 _DERIVED_SPEC_PREFIX = "ops_"
@@ -593,9 +593,9 @@ def _provenance_cells(
     *, columns: Sequence[str], rows: Sequence[Sequence[object]]
 ) -> frozenset[str]:
     """The provenance dcids the `provenance` column of `rows` holds."""
-    if _PROVENANCE_COLUMN not in columns:
+    if PROVENANCE_COLUMN not in columns:
         return frozenset()
-    index = columns.index(_PROVENANCE_COLUMN)
+    index = columns.index(PROVENANCE_COLUMN)
     return frozenset(cast(str, row[index]) for row in rows if row[index] is not None)
 
 
@@ -617,7 +617,7 @@ def _capped_refs(
     ref_columns = tuple(
         column
         for column in dimension_columns(columns=columns)
-        if column not in facets or column == _PROVENANCE_COLUMN
+        if column not in facets or column == PROVENANCE_COLUMN
     )
 
     unit_parts: tuple[object, ...] = ()
@@ -1735,8 +1735,8 @@ class LiveFrameStore:
         """
         columns = tuple(cast("Sequence[str]", doc["columns"]))
         refs: list[str] = []
-        if _PROVENANCE_COLUMN in columns:
-            index = columns.index(_PROVENANCE_COLUMN)
+        if PROVENANCE_COLUMN in columns:
+            index = columns.index(PROVENANCE_COLUMN)
             rows = cast("Sequence[Sequence[object]]", doc["rows"])
             refs = list(dict.fromkeys(cast(str, row[index]) for row in rows if row[index]))
         live: dict[str, SourceCitation] = {}

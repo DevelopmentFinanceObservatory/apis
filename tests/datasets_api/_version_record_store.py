@@ -191,6 +191,8 @@ def _role_columns(output_profile: str | None) -> str | None:
 _JSONB_REPLACE = re.compile(r"jsonb_set\((\w+), '\{(\w+)\}', %s::jsonb, false\)")
 """A `jsonb_set` that sets one existing top-level key and adds none (`create_missing` false),
 SQLite's `json_replace`."""
+_JSONB_EQUALS = re.compile(r"(\w+) = %s::jsonb")
+"""A JSONB column compared with a parameter in a `WHERE` clause."""
 
 
 def _to_sqlite(sql: str) -> str:
@@ -198,6 +200,9 @@ def _to_sqlite(sql: str) -> str:
     # SQLite runs one writer at a time, so a row lock has nothing to add.
     sql = sql.removesuffix(" FOR UPDATE")
     sql = _JSONB_REPLACE.sub(r"json_replace(\1, '$.\2', json(%s))", sql)
+    # A JSONB comparison compares values; `json` minifies both texts alike.
+    head, where, condition = sql.partition(" WHERE ")
+    sql = head + where + _JSONB_EQUALS.sub(r"json(\1) = json(%s)", condition)
     sql = sql.replace("%s::jsonb", "%s")
     return _to_sqlite_paramstyle(sql)
 

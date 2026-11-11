@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import random
+from dataclasses import replace
 
 import httpx
 import pytest
@@ -763,7 +764,8 @@ def test_a_recount_that_changes_nothing_keeps_every_entry_where_it_stands(
 ):
     """A mint orders a profile's entries by its declared roles, here the reverse of the
     frame's columns. Recounting `party_kind` over the same frame and party rows returns the
-    profile unchanged, entry order included, with or without a `provenance` column."""
+    profile unchanged, entry order included, with or without a `provenance` column, and
+    writes entries a profile lacked in that order."""
     party = PartyRow(
         dcid="org/X",
         kind="party",
@@ -797,4 +799,18 @@ def test_a_recount_that_changes_nothing_keeps_every_entry_where_it_stands(
         "financingProvider",
     ]
 
-    assert with_party_kind_coverage(profile, lambda: iter((table,)), parties=parties) == profile
+    without_kinds = replace(
+        profile,
+        enrichments=tuple(entry for entry in profile.enrichments if entry.field != "party_kind"),
+    )
+
+    for stored in (profile, without_kinds):
+        assert (
+            with_party_kind_coverage(
+                stored,
+                lambda: iter((table,)),
+                parties=parties,
+                declared_roles=("financingRecipient", "financingProvider"),
+            )
+            == profile
+        )

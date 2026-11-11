@@ -5,7 +5,8 @@ counted under the earlier rule, which read each party for no dataset."""
 from __future__ import annotations
 
 import json
-from contextlib import nullcontext
+from collections.abc import Callable, Mapping
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -84,12 +85,19 @@ def _counted_under_the_earlier_rule(version_store, manifest: dict[str, Any]) -> 
 
 
 def _backfilled(
-    rig: _PartyRig, index: CodeIndex, *, dry_run: bool, capsys, artifact_store=None, failed=0
+    rig: _PartyRig,
+    index: CodeIndex,
+    *,
+    dry_run: bool,
+    capsys,
+    artifact_store=None,
+    store=None,
+    failed=0,
 ) -> dict[str, Any]:
     capsys.readouterr()
     assert (
         run_backfill_party_kind_coverage(
-            store=rig.version_store,
+            store=store or rig.version_store,
             artifact_store=artifact_store or rig.artifact_store,
             parties=index.parties,
             dry_run=dry_run,
@@ -166,27 +174,43 @@ def _set_body_key(tx, manifest: dict[str, Any], key: str, value: object) -> None
     )
 
 
-def test_a_body_write_another_writer_lands_after_the_backfill_reads_the_row_is_kept(
-    monkeypatch, capsys
-):
-    """The backfill sets the body's `output_profile` alone, so a change another writer makes
-    to the body between the backfill's read of the row and its write stays."""
-    version = _minted_then_counted_under_the_earlier_rule()
-    stored_profile = maintenance._stored_profile
-    reads: list[None] = []
+class _LandingBeforeTheUpdate:
+    """`store`, where `land` runs in the backfill's write transaction just before its update,
+    as a writer that takes no lock can commit between the backfill's read and its write."""
 
-    def read_then_another_writer_lands(tx, subject_id, content_version):
-        profile = stored_profile(tx, subject_id, content_version)
-        reads.append(None)
-        if len(reads) == 2:
-            _set_body_key(tx, version.manifest, "other_writer", "kept")
-        return profile
+    def __init__(self, store, land: Callable[[Any], None]) -> None:
+        self._store = store
+        self._land = land
 
-    monkeypatch.setattr(maintenance, "_stored_profile", read_then_another_writer_lands)
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._store, name)
 
-    run = _backfilled(version.rig, version.index, dry_run=False, capsys=capsys)
+    @contextmanager
+    def transaction(self):
+        with self._store.transaction() as tx:
+            yield _LandingTransaction(tx, self._land)
 
-    assert run["refreshed"] == 1
+
+class _LandingTransaction:
+    def __init__(self, tx, land: Callable[[Any], None]) -> None:
+        self._tx = tx
+        self._land = land
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._tx, name)
+
+    def fetch_one(self, sql: str, params=()):
+        if sql.startswith("UPDATE datasets.version_record SET output_profile"):
+            self._land(self._tx)
+        return self._tx.fetch_one(sql, params)
+
+    def execute(self, sql: str, params=()) -> None:
+        if sql.startswith("UPDATE datasets.version_record SET output_profile"):
+            self._land(self._tx)
+        self._tx.execute(sql, params)
+
+
+def _row(version: _Minted) -> Mapping[str, Any]:
     with version.rig.version_store.transaction() as tx:
         row = tx.fetch_one(
             "SELECT output_profile, immutable_body FROM datasets.version_record "
@@ -194,9 +218,46 @@ def test_a_body_write_another_writer_lands_after_the_backfill_reads_the_row_is_k
             (version.manifest["content_version"],),
         )
     assert row is not None
+    return row
+
+
+def test_a_body_write_another_writer_lands_before_the_backfill_s_update_is_kept(capsys):
+    """The backfill sets the body's `output_profile` alone, so a change another writer makes
+    to the body between the backfill's read of the row and its write stays."""
+    version = _minted_then_counted_under_the_earlier_rule()
+    store = _LandingBeforeTheUpdate(
+        version.rig.version_store,
+        lambda tx: _set_body_key(tx, version.manifest, "other_writer", "kept"),
+    )
+
+    run = _backfilled(version.rig, version.index, dry_run=False, capsys=capsys, store=store)
+
+    assert run["refreshed"] == 1
+    row = _row(version)
     assert row["output_profile"] == version.minted
     assert row["immutable_body"]["output_profile"] == version.minted
     assert row["immutable_body"]["other_writer"] == "kept"
+
+
+def test_a_profile_a_writer_taking_no_lock_writes_before_the_backfill_s_update_is_kept(capsys):
+    """A writer that takes no lock can write the profile after the backfill last read it and
+    before its update. The update writes only over the profile it counted from, so the other
+    writer's profile stays and the row counts `changed_under_run`."""
+    version = _minted_then_counted_under_the_earlier_rule()
+    changed = {**version.earlier, "rows": version.earlier["rows"] + 1}
+
+    def write_profile(tx) -> None:
+        tx.execute(
+            "UPDATE datasets.version_record SET output_profile = %s WHERE content_version = %s",
+            (json.dumps(changed), version.manifest["content_version"]),
+        )
+
+    store = _LandingBeforeTheUpdate(version.rig.version_store, write_profile)
+
+    run = _backfilled(version.rig, version.index, dry_run=False, capsys=capsys, store=store)
+
+    assert (run["refreshed"], run["changed_under_run"]) == (0, 1)
+    assert _row(version)["output_profile"] == changed
 
 
 def test_a_profile_changed_after_it_was_counted_is_left_to_the_writer_that_changed_it(

@@ -70,8 +70,9 @@ class EnrichmentCoverage:
     """Coverage of one `(column, field)` enrichment pair over the frame's
     distinct refs in `column`. `entities` is the distinct ref count.
     `covered` is how many of those refs have `field`: for `party_kind`, a kind
-    from the code index on the column's axis in every row's own dataset, as a
-    long download fills it; the graph lookup for every other field.
+    from the code index on the column's axis wherever every layout fills it, a
+    long download in each row's own dataset and a pivot over the datasets the
+    frame serves the ref from; the graph lookup for every other field.
     `missing` lists the refs without `field`, each paired with its label
     from the same lookup call, empty when the graph carries no label for
     that ref either. It is capped at `_MAX_NAMED_MISSING_REFS`, with
@@ -217,11 +218,13 @@ class OutputProfileFold:
     (`add`), so a caller already passing over the chunks folds the profile in that pass.
     `finish` runs the second pass, when one is needed, over `frame_chunks`, which yields the
     chunks `add` was given in the same order. `party_kind_coverage` counts the `party_kind`
-    coverage alone, which reads no graph."""
+    coverage alone, which reads no graph; a fold made by `of_party_kinds` keeps only what it
+    reads, the role columns' refs and their datasets, and has no `finish`."""
 
     def __init__(self, *, role_columns: Sequence[str], parties: Mapping[str, PartyRow]) -> None:
         self._role_columns = tuple(role_columns)
         self._parties = parties
+        self._pivots = True
         # A party's kind depends on the dataset only where its row names dataset kinds.
         self._kinds_vary = any(party.dataset_kinds for party in parties.values())
         self._columns: tuple[str, ...] | None = None
@@ -242,7 +245,10 @@ class OutputProfileFold:
         self._classification = classify_columns(columns)
         self._role_column_set = frozenset(role_columns)
         self._distinct_columns = tuple(
-            name for name in columns if name not in (_VALUE_COLUMN, _STATUS_COLUMN)
+            name
+            for name in columns
+            if name not in (_VALUE_COLUMN, _STATUS_COLUMN)
+            and (self._pivots or name in self._role_column_set or name == PROVENANCE_COLUMN)
         )
         self._books: dict[str, dict[object, int]] = {name: {} for name in self._distinct_columns}
         # Coded tables name columns by position, so aggregate outputs cannot clash.
@@ -260,7 +266,8 @@ class OutputProfileFold:
         self._candidate_sources = tuple(
             name
             for name in columns
-            if _column_kind(
+            if self._pivots
+            and _column_kind(
                 name, role_columns=self._role_column_set, classification=self._classification
             )
             in ("grain", "role")
@@ -310,8 +317,14 @@ class OutputProfileFold:
         self, frame_chunks: Callable[[], Iterator[TableLike]], *, enrichment: EnrichmentLookup
     ) -> OutputProfile:
         """The profile of the chunks `add` was given, its role columns' graph fields read
-        through `enrichment`. Raises `MaterialisationUsageError` when it was given none."""
-        self._check_started()
+        through `enrichment`. Raises `MaterialisationUsageError` when it was given none or the
+        fold counts party kinds alone (`of_party_kinds`)."""
+        if not self._pivots:
+            raise MaterialisationUsageError(
+                "OutputProfileFold.finish() needs a fold made for a whole profile, not by "
+                "of_party_kinds()"
+            )
+        self._check_started("OutputProfileFold.finish()")
         assert self._columns is not None
         columns = self._columns
         role_columns = self._role_columns
@@ -422,7 +435,7 @@ class OutputProfileFold:
         `finish` counts it, `None` for a column whose parties take no kind. A missing ref is
         named by its label in `labels`, else by none. Raises `MaterialisationUsageError` when
         `add` was given no chunk."""
-        self._check_started()
+        self._check_started("OutputProfileFold.party_kind_coverage()")
         resolved = {ref: {"label": label} for ref, label in labels.items()}
         return {
             role_column: next(
@@ -431,11 +444,20 @@ class OutputProfileFold:
             for role_column in self._role_columns
         }
 
-    def _check_started(self) -> None:
+    @classmethod
+    def of_party_kinds(
+        cls, *, role_columns: Sequence[str], parties: Mapping[str, PartyRow]
+    ) -> OutputProfileFold:
+        """A fold that counts `party_kind_coverage` alone, keeping each role column's refs
+        and the datasets serving them and none of the pivot facts `finish` reads."""
+        fold = cls(role_columns=role_columns, parties=parties)
+        fold._pivots = False
+        return fold
+
+    def _check_started(self, caller: str) -> None:
         if self._columns is None:
             raise MaterialisationUsageError(
-                "compute_output_profile_from_chunks() requires frame_chunks() to yield at "
-                "least one chunk"
+                f"{caller} requires the fold to have been given at least one chunk"
             )
 
     def _coverage(
@@ -739,16 +761,25 @@ def with_party_kind_coverage(
     frame_chunks: Callable[[], Iterator[TableLike]],
     *,
     parties: Mapping[str, PartyRow],
+    declared_roles: Sequence[str],
 ) -> OutputProfile:
     """`profile`, the profile of the frame `frame_chunks` yields, with each role column's
     `party_kind` coverage counted again from `parties` by the mint's own fold
-    (`OutputProfileFold.party_kind_coverage`), every other entry kept. A role column is one
-    whose `ColumnProfile.kind` is `role`. A recounted entry takes the place of the one it
-    replaces; a new one follows its column's graph fields, where a mint writes it, and a column
-    whose parties take no kind has none. A missing ref is named by the label another of the
-    profile's entries names it by, else by none: the graph is not read."""
-    role_columns = [column.name for column in profile.columns if column.kind == "role"]
-    fold = OutputProfileFold(role_columns=role_columns, parties=parties)
+    (`OutputProfileFold.of_party_kinds`), every other entry kept. A role column is one whose
+    `ColumnProfile.kind` is `role`, and `declared_roles` are the roles the mint declared, in
+    its order, which a mint writes the entries in. A recounted entry takes the place of the
+    one it replaces; a new one follows its column's graph fields, where a mint writes it, and a
+    column whose parties take no kind has none. A missing ref is named by the label another of
+    the profile's entries names it by, else by none: the graph is not read. Raises
+    `MaterialisationUsageError` for a role column `declared_roles` does not name."""
+    profiled = {column.name for column in profile.columns if column.kind == "role"}
+    if undeclared := sorted(profiled.difference(declared_roles)):
+        raise MaterialisationUsageError(
+            f"with_party_kind_coverage() needs every role column among declared_roles; "
+            f"{undeclared!r} are not"
+        )
+    role_columns = [role for role in declared_roles if role in profiled]
+    fold = OutputProfileFold.of_party_kinds(role_columns=role_columns, parties=parties)
     for chunk in frame_chunks():
         fold.add(chunk)
     labels = {ref: label for entry in profile.enrichments for ref, label in entry.missing if label}

@@ -654,9 +654,10 @@ def test_rule_four_and_closest_match_read_a_denominator_known_by_name_alike(
 ) -> None:
     """A shape whose denominator the graph gives no pairs, and a Spec of the same members,
     which states its denominator by name alone, hold the same evidence and read "GDP" alike.
-    Empty pairs are no pairs known, however the evidence holds them."""
+    Empty pairs are no pairs known, and evidence built with them holds none."""
     named = declared_measures_named("GDP")
     denominators = {"Amount_Gdp_Unread": DenominatorRead(kind="other", name=_GDP_NAMED, pairs=())}
 
+    assert spec_evidence.denominator_pairs is None
     assert rule_four_verdicts(_HEALTH_SHARE, named, denominators) == ["base"]
     assert measure_verdicts(named, spec_evidence) == ["base"]

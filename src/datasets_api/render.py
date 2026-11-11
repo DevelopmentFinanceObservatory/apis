@@ -2327,7 +2327,13 @@ def _stream_bare_pivot(
     # Non-string entity cells count as lookup misses for every field. Count them once per entity
     # column, separate from the ref counts.
     enrichment_non_string_counts: dict[str, int] = dict.fromkeys(enrichment_entity_columns, 0)
-    # The datasets each party is served from, which its one pivot cell reads its kind over.
+    # The datasets each party is served from, which its one pivot cell reads its kind over,
+    # gathered only for the columns a party field is asked of.
+    party_columns = frozenset(
+        entity_column
+        for entity_column, field in (parsed.enrichments if parsed is not None else ())
+        if field in PARTY_FIELDS
+    )
     party_datasets: dict[tuple[str, str], set[str]] = {}
 
     def _decoded_selected_chunks() -> Iterator[Table]:
@@ -2356,11 +2362,12 @@ def _stream_bare_pivot(
             for entity_column in enrichment_entity_columns:
                 entity_pos = decoded.columns.index(entity_column)
                 counts = enrichment_ref_counts[entity_column]
+                gathered = provenance_pos if entity_column in party_columns else None
                 for row in decoded.rows:
                     ref = row[entity_pos]
                     if isinstance(ref, str):
                         counts[ref] = counts.get(ref, 0) + 1
-                        provenance = None if provenance_pos is None else row[provenance_pos]
+                        provenance = None if gathered is None else row[gathered]
                         if isinstance(provenance, str):
                             party_datasets.setdefault((entity_column, ref), set()).add(provenance)
                     else:

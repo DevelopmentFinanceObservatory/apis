@@ -103,8 +103,8 @@ class ReadingEvidence:
     declare on each constraint property (`PropertyEvidence`); `noun` its measure noun and
     `member_names` its members' names; `denominator_pairs` the five-tuple pairs and
     constraint values the graph gives the StatVar it divides by, `None` where none are known
-    (a Spec states none, and a graph read can give none), and `denominator_name` that
-    StatVar's name."""
+    (a Spec states none, and a graph read can give none; empty pairs are stored as `None`),
+    and `denominator_name` that StatVar's name."""
 
     five_tuple: Pairs = frozenset()
     properties: Mapping[str, PropertyEvidence] = field(default_factory=dict)
@@ -112,6 +112,10 @@ class ReadingEvidence:
     member_names: tuple[str, ...] = ()
     denominator_pairs: Pairs | None = None
     denominator_name: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.denominator_pairs is not None and not self.denominator_pairs:
+            object.__setattr__(self, "denominator_pairs", None)
 
 
 def reading_evidence(
@@ -127,15 +131,13 @@ def reading_evidence(
 ) -> ReadingEvidence:
     """The evidence of a reading of the five-tuple `population_type`, `measured_property`
     and `stat_type` whose members declare `properties`. The one builder both judges read,
-    so rule 4 and closest match judge the same evidence alike. No `denominator_pairs` and
-    an empty one are one state, no pairs known."""
-    pairs = frozenset(denominator_pairs or ())
+    so rule 4 and closest match judge the same evidence alike."""
     return ReadingEvidence(
         five_tuple=frozenset(shape_pairs(population_type, measured_property, stat_type)),
         properties=dict(properties),
         noun=noun,
         member_names=tuple(member_names),
-        denominator_pairs=pairs or None,
+        denominator_pairs=None if denominator_pairs is None else frozenset(denominator_pairs),
         denominator_name=denominator_name,
     )
 
@@ -212,7 +214,7 @@ def measure_verdicts(names: Sequence[NamedMeasure], evidence: ReadingEvidence) -
             name.alternatives,
             shown,
             based,
-            pairs_known=bool(evidence.denominator_pairs),
+            pairs_known=evidence.denominator_pairs is not None,
         )
         for verdict, name in zip(verdicts, names, strict=True)
     ]

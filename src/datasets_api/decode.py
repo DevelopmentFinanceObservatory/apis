@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from code_index.query import CodeIndex
+from dfo_platform.columns import PROVENANCE_COLUMN
 from materialise.reshape import DecodePlan, TableLike
 
 _STAT_VAR_COLUMN = "stat_var"
@@ -17,7 +18,6 @@ _STAT_VAR_COLUMN = "stat_var"
 off the frame's `stat_var` column, never a role column (a code system's
 value is a StatVar-level fact, not a role-level one)."""
 
-_PROVENANCE_COLUMN = "provenance"
 
 _STAT_VAR_REF_PREFIX = "dcid:"
 """Mirrors `materialise.frame_build._STAT_VAR_REF_PREFIX`: every frame's own
@@ -98,9 +98,9 @@ def build_decode_plan(
 def _component_marker_axes(table: TableLike, *, index: CodeIndex) -> frozenset[str]:
     """The code systems the components of each composite `table`'s rows carry as their
     provenance bind (`build_decode_plan`)."""
-    if _PROVENANCE_COLUMN not in table.columns:
+    if PROVENANCE_COLUMN not in table.columns:
         return frozenset()
-    position = table.columns.index(_PROVENANCE_COLUMN)
+    position = table.columns.index(PROVENANCE_COLUMN)
     provenances = {cell for row in table.rows if isinstance(cell := row[position], str)}
     return frozenset(
         code_system

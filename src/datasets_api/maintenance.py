@@ -142,14 +142,14 @@ version's stored frame from any tier holding its bytes and counts each role colu
 `party_kind` coverage again with the mint's fold under the served graph release's code index
 (`profile.with_party_kind_coverage`). A row whose count differs gets the new count in its
 `output_profile` column and in the `output_profile` of its `immutable_body`, written under the
-version's link lock (`version_store.lock_version_links`) while the row still holds the profile
-it was counted from; the body's other keys and every other entry keep their place and value. A
-missing ref is named by a label the profile already holds, since the task reads no graph. A row
-whose frame no tier holds stays as it is. A second run changes nothing. It writes one
-`datasets_party_kind_backfill_failed` `ERROR` line per version that fails and one
-`datasets_party_kind_backfilled` line counting each `PartyKindOutcome`, the failures and
-whether it was a dry run, exits 1 when any version failed, and reads the settings `sweep`
-reads. `--dry-run` reads and counts but writes nothing.
+version's link lock (`version_store.lock_version_links`) and only over the profile it was
+counted from; the body's other keys and every other entry keep their place and value, and a new
+entry takes its place by the roles the mint declared. A missing ref is named by a label the
+profile already holds, since the task reads no graph. A row whose frame no tier holds stays as
+it is. A second run changes nothing. It writes one `datasets_party_kind_backfill_failed`
+`ERROR` line per version that fails and one `datasets_party_kind_backfilled` line counting each
+`PartyKindOutcome`, the failures and whether it was a dry run, exits 1 when any version failed,
+and reads the settings `sweep` reads. `--dry-run` reads and counts but writes nothing.
 
 `backfill-within-sets [--apply]` runs by hand once per environment, after a deploy of this
 image has run `backfill-descriptions`. A record written before records held
@@ -1834,17 +1834,24 @@ def _versions_with_profile(store: DatasetStore, *, after: tuple[str, str]) -> li
 
 def _stored_profile(
     tx: Transaction, subject_id: str, content_version: str
-) -> dict[str, object] | None:
-    """The `output_profile` column of one version row, `None` for a row no longer recorded
-    or holding no profile."""
+) -> tuple[dict[str, object], tuple[str, ...]] | None:
+    """The `output_profile` column of one version row and the roles its mint declared, in
+    order, as its `coverage` lists them before `years` (`columnar.coverage`). `None` for a
+    row no longer recorded or holding no profile."""
     row = tx.fetch_one(
-        "SELECT output_profile FROM datasets.version_record "
+        "SELECT output_profile, coverage FROM datasets.version_record "
         "WHERE subject_id = %s AND content_version = %s",
         (subject_id, content_version),
     )
     if row is None or row["output_profile"] is None:
         return None
-    return cast("dict[str, object]", row["output_profile"])
+    coverage = cast("Mapping[str, Any]", row["coverage"] or {})
+    declared = tuple(
+        str(dimension["label"])
+        for dimension in coverage.get("dimensions", ())
+        if dimension["label"] != "years"
+    )
+    return cast("dict[str, object]", row["output_profile"]), declared
 
 
 def _backfill_party_kind_of(
@@ -1860,21 +1867,27 @@ def _backfill_party_kind_of(
     """Count one version's `party_kind` coverage again from its stored frame
     (`profile.with_party_kind_coverage`) and, unless `dry_run`, write it to the row's
     `output_profile` column and to the `output_profile` of its `immutable_body` while the row
-    still holds the profile it was counted from. The write takes the version's link lock
-    (`version_store.lock_version_links`), as the coverage fill does, and sets the body's
-    `output_profile` key alone, so it keeps every other writer's change to the body. `None`
-    for a row no longer recorded."""
+    still holds the profile it was counted from: the update compares the stored profile with
+    it, so a profile any writer changed meanwhile stays. The write takes the version's link
+    lock (`version_store.lock_version_links`), as the coverage fill does, and sets the body's
+    `output_profile` key alone, so it keeps every other writer's change to the body. A new
+    entry takes its place by the roles the mint declared. `None` for a row no longer
+    recorded."""
     with store.transaction() as tx:
-        profile_json = _stored_profile(tx, subject_id, content_version)
-    if profile_json is None:
+        stored = _stored_profile(tx, subject_id, content_version)
+    if stored is None:
         return None
+    profile_json, declared = stored
     frame = _stored_frame(
         artifact_store, reader.read_artifact_locations(subject_id, content_version)
     )
     if frame is None:
         return PartyKindOutcome.FRAME_GONE
     refreshed = with_party_kind_coverage(
-        OutputProfile.from_json(profile_json), lambda: iter((frame,)), parties=parties
+        OutputProfile.from_json(profile_json),
+        lambda: iter((frame,)),
+        parties=parties,
+        declared_roles=declared,
     ).to_json()
     if OutputProfile.from_json(refreshed) == OutputProfile.from_json(profile_json):
         return PartyKindOutcome.UNCHANGED
@@ -1882,15 +1895,20 @@ def _backfill_party_kind_of(
         return PartyKindOutcome.REFRESHED
     with store.transaction() as tx:
         lock_version_links(tx, subject_id=subject_id, content_version=content_version)
-        if _stored_profile(tx, subject_id, content_version) != profile_json:
-            return PartyKindOutcome.CHANGED_UNDER_RUN
-        tx.execute(
+        written = tx.fetch_one(
             "UPDATE datasets.version_record SET output_profile = %s::jsonb, "
             "immutable_body = jsonb_set(immutable_body, '{output_profile}', %s::jsonb, false) "
-            "WHERE subject_id = %s AND content_version = %s",
-            (json.dumps(refreshed), json.dumps(refreshed), subject_id, content_version),
+            "WHERE subject_id = %s AND content_version = %s AND output_profile = %s::jsonb "
+            "RETURNING subject_id",
+            (
+                json.dumps(refreshed),
+                json.dumps(refreshed),
+                subject_id,
+                content_version,
+                json.dumps(profile_json),
+            ),
         )
-    return PartyKindOutcome.REFRESHED
+    return PartyKindOutcome.REFRESHED if written is not None else PartyKindOutcome.CHANGED_UNDER_RUN
 
 
 def run_backfill_party_kind_coverage(
