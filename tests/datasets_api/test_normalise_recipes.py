@@ -113,12 +113,15 @@ def _revision(spec_id: str, content_version: str, normal_hash: str, revision: in
     }
 
 
+_OUTCOMES = ("normalised", "unchanged", "replay_key_held", "unreproducible", "basis_undetermined")
 _COUNTS = ("normalised", "revisions", "replay_key_held", "unreproducible", "basis_undetermined")
 
 
 def _summary(capsys: pytest.CaptureFixture[str]) -> dict[str, Any]:
+    """The summary's counts, once its outcome counts are checked to add up to its recipes."""
     lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     (summary,) = [line for line in lines if line["event"] == "datasets_recipes_normalised"]
+    assert sum(summary[key] for key in _OUTCOMES) == summary["recipes"], summary
     return {key: summary[key] for key in _COUNTS}
 
 
@@ -341,10 +344,16 @@ def _op(verb: str, inputs: dict[str, Any], **parameters: Any) -> dict[str, Any]:
 
 
 def _pinned(
-    stores: Stores, tree: dict[str, Any], roots: list[str], options: dict[str, Any] | None = None
+    stores: Stores,
+    tree: dict[str, Any],
+    roots: list[str],
+    options: dict[str, Any] | None = None,
+    *,
+    replay_key: str | None = None,
 ) -> dict[str, Any]:
     """Store, under `ops_pinned`, the recipe of `tree` over the `_CV` versions of `roots`,
-    each root with `options`, recording each root, and return it."""
+    each root with `options`, recording each root, and return it. `replay_key` replaces the
+    key its hashes give."""
     for spec_id in roots:
         if spec_id != _UNHELD:
             _store_root(stores, spec_id)
@@ -357,7 +366,7 @@ def _pinned(
         "execution_identity": "engine-1",
     }
     normal, key = _hashes(recipe)
-    recipe = {**recipe, "normal_form_hash": normal, "replay_key": key}
+    recipe = {**recipe, "normal_form_hash": normal, "replay_key": replay_key or key}
     _store_recipe(stores, "ops_pinned", "ocv_pinned", recipe)
     return recipe
 
@@ -550,60 +559,92 @@ def test_a_pin_whose_roots_give_no_single_basis_is_reported_and_left_as_it_is(
     assert (_stored(stores), json.dumps(presentation.state.component_revisions)) == before
 
 
-def test_a_recipe_whose_pin_basis_is_undetermined_still_takes_its_sort(
-    capsys: pytest.CaptureFixture[str],
+@pytest.mark.parametrize("sort", ["written", "unreproducible"])
+def test_a_recipe_whose_pin_basis_is_undetermined_takes_one_outcome(
+    capsys: pytest.CaptureFixture[str], sort: str
 ):
-    """The sort of a root's options and the pin's basis are separate rewrites, so a recipe
-    with unsorted columns and a pin its roots give two bases is sorted, and only its pin is
-    left as it is and counted."""
+    """The sort of a root's options and the pin's basis are separate rewrites, and a recipe
+    takes one outcome. With unsorted columns and a pin its roots give two bases, it is sorted
+    and counted `basis_undetermined` under the replay key the run writes. A sort it cannot
+    take leaves it whole and counted under that reason alone, its line naming the pin."""
     stores = Stores()
     tree = _op(
         "aggregate",
         {"frame_ref": _op("compare", {"frame_ref": _root(0), "right_frame_ref": _root(1)})},
         unit=_CONSTANT,
     )
-    old = _pinned(stores, tree, [_DAC, _IDS], options={"columns": _COLUMNS})
+    # A key computed over identities the stored recipe does not name.
+    stored_key = "rpk_" + "0" * 32 if sort == "unreproducible" else None
+    old = _pinned(stores, tree, [_DAC, _IDS], options={"columns": _COLUMNS}, replay_key=stored_key)
     presentation = FakePresentationStore()
     presentation.state.component_revisions["cmp_drawn"] = [
         _revision("ops_pinned", "ocv_pinned", old["normal_form_hash"], 1)
     ]
+    before = _stored(stores)
 
     skipped = run_normalise_recipes(datasets=stores.store, presentation=presentation)
 
-    assert (skipped, _summary(capsys)) == (
-        1,
-        {
-            "normalised": 1,
-            "revisions": 1,
-            "replay_key_held": 0,
-            "unreproducible": 0,
-            "basis_undetermined": 1,
-        },
-    )
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    (summary,) = [line for line in lines if line["event"] == "datasets_recipes_normalised"]
+    (skip,) = [line for line in lines if line["event"] == "datasets_recipe_normalise_skipped"]
+    assert sum(summary[key] for key in _OUTCOMES) == summary["recipes"] == 1
+    assert skipped == 1
+    assert {key: summary[key] for key in _COUNTS} == {
+        "normalised": 0,
+        "revisions": int(sort == "written"),
+        "replay_key_held": 0,
+        "unreproducible": int(sort == "unreproducible"),
+        "basis_undetermined": int(sort == "written"),
+    }
+    sorted_roots = [{**root, "options": {"columns": sorted(_COLUMNS)}} for root in old["roots"]]
+    _normal, key = _hashes({**old, "roots": sorted_roots})
+    assert {k: skip[k] for k in ("reason", "replay_key", "parameter", "cause")} == {
+        "reason": "basis_undetermined" if sort == "written" else "unreproducible",
+        "replay_key": key,
+        "parameter": "unit",
+        "cause": "several_bases",
+    }
+    if sort == "unreproducible":
+        assert _stored(stores) == before
+        return
     (row,) = _stored(stores)
     assert [root["options"] for root in row["recipe"]["roots"]] == [
         {"columns": sorted(_COLUMNS)}
     ] * 2
     assert row["recipe"]["tree"] == tree
-    normal, key = _hashes({**old, "roots": row["recipe"]["roots"]})
-    assert (row["normal_form_hash"], row["replay_key"]) == (normal, key)
+    assert row["replay_key"] == key
     assert presentation.state.component_revisions["cmp_drawn"][0]["frame_rendering"] == {
-        "normal_form_hash": normal
+        "normal_form_hash": row["normal_form_hash"]
     }
+
+
+# The `PinnedUnit` fields each op-spec model declares.
+_PINS = {
+    "AggregateOpSpec": ("unit",),
+    "CompareOpSpec": ("left_unit", "right_unit"),
+    "GrowthOpSpec": ("unit",),
+    "RankOpSpec": ("unit",),
+    "ShareOfOpSpec": ("numerator_unit", "denominator_unit"),
+    "JoinOpSpec": ("left_unit", "right_unit"),
+    "SumOfOpSpec": ("left_unit", "right_unit"),
+    "QuotientOfOpSpec": ("numerator_unit", "denominator_unit"),
+}
 
 
 def test_every_unit_pin_of_an_op_spec_names_the_slot_feeding_it():
-    """The migration rewrites the pins the op-spec models declare, and each names a frame slot
-    the models that declare it hold, so a new `PinnedUnit` field fails here until it has one."""
-    pins = {
-        (model, name)
-        for model in get_args(get_args(OpSpec)[0])
-        for name, field in model.model_fields.items()
-        if field.annotation == PinnedUnit | None
+    """The migration rewrites the pins `_PINS` lists, and each names a frame slot the models
+    that declare it hold, so a new `PinnedUnit` field fails here until it has one."""
+    models = {model.__name__: model for model in get_args(get_args(OpSpec)[0])}
+    declared = {
+        name: tuple(
+            n for n, field in model.model_fields.items() if field.annotation == PinnedUnit | None
+        )
+        for name, model in models.items()
     }
 
-    assert {name for _, name in pins} == maintenance._PINNED_PARAMETERS
-    assert set(maintenance._PIN_SLOTS) == maintenance._PINNED_PARAMETERS
-    for model, name in pins:
-        slot = maintenance._PIN_SLOTS[name]
-        assert slot is None or slot in model.model_fields, (model.__name__, name, slot)
+    assert {name: pins for name, pins in declared.items() if pins} == _PINS
+    assert set(maintenance._PIN_SLOTS) == {pin for pins in _PINS.values() for pin in pins}
+    for name, pins in _PINS.items():
+        for pin in pins:
+            slot = maintenance._PIN_SLOTS[pin]
+            assert slot is None or slot in models[name].model_fields, (name, pin, slot)

@@ -303,7 +303,7 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 from functools import cache, partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TextIO, cast, get_args
+from typing import TYPE_CHECKING, Any, TextIO, cast
 
 import pg8000.exceptions
 import pyarrow as pa
@@ -415,7 +415,6 @@ from datasets_api.warning_backfill import (
 )
 from dc_sdmx import SdmxClient
 from description.facts import SCHEMA_VERSION, DescriptionRecord, VariableFacts
-from dfo_analysis_engine.op_spec import OpSpec, PinnedUnit
 from dfo_analysis_engine.recipe import (
     normal_form,
     normal_form_hash,
@@ -1969,6 +1968,12 @@ def run_normalise_recipes(
     `normal_form_hash`.
     Return how many recipes it skipped (`RecipeSkip`).
 
+    Each recipe takes one outcome, so the summary's `normalised`, `unchanged` and skip counts
+    add up to its `recipes`. A recipe whose sort is unreproducible or whose new replay key is
+    held is left whole under that reason, its line naming any undetermined pin too. One whose
+    pin alone is undetermined is `basis_undetermined`, and its sort is still written under the
+    replay key its line names.
+
     The revisions move first, in the Presentation database, then the recipe row, in the
     Datasets one, so a run stopped between the two leaves the recipe to the next run. With
     `dry_run` it counts and changes nothing."""
@@ -1982,7 +1987,7 @@ def run_normalise_recipes(
         )
     snapshots = LiveSnapshotReader(store=datasets)
     root_bases = cache(partial(_root_bases, snapshots))
-    normalised = revisions = 0
+    normalised = unchanged = revisions = 0
     skipped: dict[RecipeSkip, int] = dict.fromkeys(RecipeSkip, 0)
     for row in rows:
         spec_id, content_version = str(row["subject_id"]), str(row["content_version"])
@@ -1991,20 +1996,6 @@ def run_normalise_recipes(
         new_key: str | None = None
         skip: RecipeSkip | None = None
         rewritten, undetermined = _normalised_recipe(stored, root_bases=root_bases)
-        if undetermined is not None:
-            # The pins stay as they are; the recipe still takes the sort it needs.
-            skipped[RecipeSkip.BASIS_UNDETERMINED] += 1
-            emit(
-                "datasets_recipe_normalise_skipped",
-                severity="WARNING",
-                spec_id=spec_id,
-                content_version=content_version,
-                reason=RecipeSkip.BASIS_UNDETERMINED.value,
-                replay_key=None,
-                parameter=undetermined.parameter,
-                roots=[f"{root}@{version}" for root, version in undetermined.roots],
-                cause=undetermined.cause.value,
-            )
         if rewritten is not None:
             new_hash, new_key = _recipe_hashes(rewritten)
             if _recipe_hashes(stored) != (old_hash, old_key):
@@ -2018,6 +2009,10 @@ def run_normalise_recipes(
                     )
                 if holder is not None:
                     skip = RecipeSkip.REPLAY_KEY_HELD
+        # A recipe takes one outcome. A sort it cannot take leaves it whole; otherwise an
+        # undetermined pin is its outcome, and the run still writes its sort.
+        if skip is None and undetermined is not None:
+            skip = RecipeSkip.BASIS_UNDETERMINED
         if skip is not None:
             skipped[skip] += 1
             emit(
@@ -2027,11 +2022,24 @@ def run_normalise_recipes(
                 content_version=content_version,
                 reason=skip.value,
                 replay_key=new_key,
+                **(
+                    {}
+                    if undetermined is None
+                    else {
+                        "parameter": undetermined.parameter,
+                        "roots": [f"{root}@{version}" for root, version in undetermined.roots],
+                        "cause": undetermined.cause.value,
+                    }
+                ),
             )
-            continue
+            if skip is not RecipeSkip.BASIS_UNDETERMINED:
+                continue
         if rewritten is None:
+            if skip is None:
+                unchanged += 1
             continue
-        normalised += 1
+        if skip is None:
+            normalised += 1
         revisions += rehash_derived_rendering(
             presentation,
             spec_id=spec_id,
@@ -2060,7 +2068,9 @@ def run_normalise_recipes(
         "datasets_recipes_normalised",
         severity="WARNING" if any(skipped.values()) else "INFO",
         dry_run=dry_run,
+        recipes=len(rows),
         normalised=normalised,
+        unchanged=unchanged,
         revisions=revisions,
         **{reason.value: count for reason, count in skipped.items()},
     )
@@ -2122,18 +2132,9 @@ def _normalised_recipe(
     return {**rewritten, "tree": tree}, None
 
 
-_PINNED_PARAMETERS = frozenset(
-    name
-    for model in get_args(get_args(OpSpec)[0])
-    for name, field in model.model_fields.items()
-    if field.annotation == PinnedUnit | None
-)
-"""Each op-spec parameter that pins a unit (`dfo_analysis_engine.op_spec.PinnedUnit`), read
-from the op-spec models."""
-
-# The frame slot whose roots feed each pinned parameter (`_PINNED_PARAMETERS`), `None` for
-# every slot. A slot left unset falls back to `frame_ref`, which is then a second slice of the
-# same frame.
+# The frame slot whose roots feed each op-spec parameter that pins a unit
+# (`dfo_analysis_engine.op_spec.PinnedUnit`), `None` for every slot. A slot left unset falls
+# back to `frame_ref`, which is then a second slice of the same frame.
 _PIN_SLOTS: Mapping[str, str | None] = {
     "unit": None,
     "left_unit": "frame_ref",
@@ -2160,7 +2161,7 @@ def _basis_pinned(
     }
     parameters = node["op_spec"]["parameters"]
     pinned: dict[str, object] = {}
-    for name in _PINNED_PARAMETERS & parameters.keys():
+    for name in _PIN_SLOTS.keys() & parameters.keys():
         pin = unit_cell_from_json(parameters[name])
         if pin is None or not _constant_without_basis(pin):
             continue
