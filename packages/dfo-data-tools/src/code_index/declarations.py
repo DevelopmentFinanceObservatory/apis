@@ -1270,9 +1270,9 @@ _MOBILISED = (
     "guarantees, syndicated loans and direct investment, mobilise for a project"
 )
 _CLIMATE = (("climatePolicyObjective", CLIMATE_FINANCE),)
-_CLIMATE_SHARE = (
-    "counted at the share of each project that serves climate change adaptation or mitigation"
-)
+# The climate labels match every climate table, so their definitions leave out how much of a
+# project each one counts; the dataset descriptions state it.
+_CLIMATE_TARGET = "for activities that target climate change adaptation or mitigation"
 _ATTRIBUTED_CLIMATE = (
     "A provider's share of the climate finance that development banks and climate funds {verb}, "
     "in proportion to its core contributions to them"
@@ -1290,7 +1290,7 @@ MEASURE_PARTITION_LABELS: tuple[MeasurePartitionLabel, ...] = (
         codes=_CLIMATE,
         label="climate finance commitments",
         named_values=_CLIMATE,
-        definition=f"Firm written obligations to give resources to a recipient, {_CLIMATE_SHARE}.",
+        definition=f"Firm written obligations to give resources to a recipient {_CLIMATE_TARGET}.",
     ),
     MeasurePartitionLabel(
         axis_values=(
@@ -1303,8 +1303,8 @@ MEASURE_PARTITION_LABELS: tuple[MeasurePartitionLabel, ...] = (
         label="climate finance gross disbursements",
         named_values=_CLIMATE,
         definition=(
-            "The amount released to recipients in a period, before any repayments are "
-            f"subtracted, {_CLIMATE_SHARE}."
+            f"The amount released to recipients in a period {_CLIMATE_TARGET}, before any "
+            "repayments are subtracted."
         ),
     ),
     MeasurePartitionLabel(
