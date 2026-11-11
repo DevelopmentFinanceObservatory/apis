@@ -199,8 +199,10 @@ def _dataset(provenance: str, rank: int) -> DatasetDeclaration:
     )
 
 
-def _index(codes: tuple[CodeRow, ...] = _CODES) -> CodeIndex:
-    """The test index, holding `codes`."""
+def _index(
+    codes: tuple[CodeRow, ...] = _CODES, datasets: tuple[DatasetDeclaration, ...] | None = None
+) -> CodeIndex:
+    """The test index, holding `codes`, and `datasets` in place of the three test tables."""
     return CodeIndex(
         stamp=IndexStamp(
             graph_endpoint="test",
@@ -224,7 +226,7 @@ def _index(codes: tuple[CodeRow, ...] = _CODES) -> CodeIndex:
         ),
         codes=codes,
         statvars=_ROWS,
-        datasets=(_dataset(_CRS, 0), _dataset(_DAC1, 1), _dataset(_CLIMATE, 2)),
+        datasets=datasets or (_dataset(_CRS, 0), _dataset(_DAC1, 1), _dataset(_CLIMATE, 2)),
     )
 
 

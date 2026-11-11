@@ -65,6 +65,7 @@ from code_index.types import (
     MeasureAxis,
     MeasureClassDeclaration,
     MeasurePartitionLabel,
+    NotedWord,
     PartlyStatedValue,
     PartyClass,
     PartyKind,
@@ -2009,6 +2010,10 @@ def _party_word_to_dict(named: PartyWord) -> dict:
     }
 
 
+def _noted_word_to_dict(noted: NotedWord) -> dict:
+    return {"word": noted.word, "note": noted.note}
+
+
 def _dataset_to_dict(dataset: DatasetDeclaration) -> dict:
     return {
         "provenance": dataset.provenance,
@@ -2027,6 +2032,11 @@ def _dataset_to_dict(dataset: DatasetDeclaration) -> dict:
         **(
             {"party_words": [_party_word_to_dict(w) for w in dataset.party_words]}
             if dataset.party_words
+            else {}
+        ),
+        **(
+            {"noted_words": [_noted_word_to_dict(w) for w in dataset.noted_words]}
+            if dataset.noted_words
             else {}
         ),
         **(

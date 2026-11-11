@@ -86,6 +86,9 @@ ROLE_SCOPE_DEFAULTED = "role_scope_defaulted"
 # A declared default fixed a slot the query names by its plain name ("top 5 aid
 # flows"), so the answer covers one value where the reader may expect them all.
 # Raised by the election of a first answer; a resubmit posts the default and raises none.
+# It also states a default's declared note, a broad reading's note (`BroadReading.note`) and
+# the note of a word the answering dataset notes (`DatasetDeclaration.noted_words`: "aid" on
+# the climate finance tables).
 SLOT_DEFAULTED = "slot_defaulted"
 # A slot default the code index declares for the elected shape's population type was not
 # applied, because no member reading the default value has data at the queried places while

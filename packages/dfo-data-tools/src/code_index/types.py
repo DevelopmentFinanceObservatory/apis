@@ -319,6 +319,20 @@ class StatedWord:
 
 
 @dataclass(frozen=True, slots=True)
+class NotedWord:
+    """One word a question uses for a table's rows that their figures do not mean exactly
+    (`DatasetDeclaration.noted_words`).
+
+    `word` is one lowercase word and `note` the sentence an answer from the table states
+    when the question holds the word. "Aid" on ONE Data Climate Finance reads the table's
+    climate finance, which counts other official flows as well as ODA, and the note says so.
+    """
+
+    word: str
+    note: str
+
+
+@dataclass(frozen=True, slots=True)
 class PartyWord:
     """One word that names a party of a table's rows (`DatasetDeclaration.party_words`).
 
@@ -393,6 +407,12 @@ class DatasetDeclaration:
     search reads it there without a code. A word belongs here only when the table's
     import guarantees it of every such row.
 
+    `noted_words` lists the words a question uses for the table's rows that their figures
+    do not mean exactly (`NotedWord`): "aid" on the climate finance tables, whose figures
+    count other official flows as well as ODA. A part answering from the table reads the
+    word and states the note. Recall and the family election read no noted word, so the
+    word draws no question to the table, and "aid to Kenya" keeps its DAC and CRS answers.
+
     `party_words` lists the words that name a party of the table's rows (`PartyWord`).
     "Multilateral" names DAC2a's and DAC2b's provider `DACMultilaterals`, the DAC's
     published total of the multilateral organisations, on `amount` rows to a country. Such
@@ -420,6 +440,7 @@ class DatasetDeclaration:
     invariants: Mapping[str, str] = field(default_factory=dict)
     stated_words: tuple[StatedWord, ...] = ()
     party_words: tuple[PartyWord, ...] = ()
+    noted_words: tuple[NotedWord, ...] = ()
     house_default_for: tuple[HouseDefaultCase, ...] = ()
     ratio_base_axis: RoleAxis | None = None
 

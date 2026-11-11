@@ -24,6 +24,7 @@ from code_index.types import (
     MeasureAxis,
     MeasureIndex,
     MeasureValueRow,
+    NotedWord,
     StatedWord,
 )
 from origin_catalogue import current_catalogue
@@ -2397,7 +2398,8 @@ def _names_carried_per_head_rate(
 
 def _names_answering_dataset(phrase: str, state: ResolveState, index: CodeIndex) -> bool:
     """Whether every word of `phrase` occurs in the declared label of the dataset the part
-    answers from, or in the words that dataset states (`_dataset_stated_words`): the settled
+    answers from, or in the words that dataset states or notes (`_dataset_stated_words`,
+    `dataset_noted_words`): the settled
     dataset (`ResolveState.settled_dataset`), else each dataset the elected shape answers
     from (`ShapeDraft.datasets`), since election may serve any of them.
 
@@ -2410,7 +2412,8 @@ def _names_answering_dataset(phrase: str, state: ResolveState, index: CodeIndex)
     label_words = _answering_dataset_label_words(state, index)
     if not words or label_words is None:
         return False
-    return words <= label_words | _dataset_stated_words(state.shape_draft, index, state)
+    noted = {noted.word for noted in dataset_noted_words(state.shape_draft, index, state)}
+    return words <= label_words | _dataset_stated_words(state.shape_draft, index, state) | noted
 
 
 def _casefolded_words(text: str) -> frozenset[str]:
@@ -2490,6 +2493,32 @@ def _dataset_stated_words(
     ]
     stated = frozenset.intersection(*declared) if declared else frozenset()
     return stated | {named.word for named in held_party_words(state, shape)}
+
+
+def dataset_noted_words(
+    shape: ShapeDraft, index: CodeIndex, state: ResolveState
+) -> tuple[NotedWord, ...]:
+    """The noted words of the part that every dataset `shape` answers from declares
+    (`DatasetDeclaration.noted_words`, `bound_values.declared_datasets`), each dataset's
+    declaration in turn. The part states a word as it states a dataset's stated word
+    (`place_roles.part_states`): "aid" in "adaptation aid from Germany" on ONE Data Climate
+    Finance.
+
+    The coverage rule reads each such word (`_conversational_words`) and the answer states
+    each one's note (`phase_election._repair_bindings`). Recall and the family election
+    read none, so "aid to Kenya" draws no climate finance table into its pool."""
+    datasets = declared_datasets(shape, index)
+    if not datasets:
+        return ()
+    common = frozenset.intersection(
+        *(frozenset(noted.word for noted in dataset.noted_words) for dataset in datasets)
+    )
+    return tuple(
+        noted
+        for dataset in datasets
+        for noted in dataset.noted_words
+        if noted.word in common and part_states(state, noted.word)
+    )
 
 
 def with_party_reading(
@@ -2625,8 +2654,9 @@ def _conversational_words(
     (`_series_words`: "financial", "flow", "amount", and on a shape with a denominator a
     ratio word or a word of the denominator's noun), a word every label of the datasets
     the part answers from holds, a word those datasets state of the rows the part reads
-    (`_dataset_stated_words`: "bilateral" on the CRS, and on DAC2a to a country), the
-    declared plain name of a slot the shape declares,
+    (`_dataset_stated_words`: "bilateral" on the CRS, and on DAC2a to a country), a word
+    they note (`dataset_noted_words`: "aid" on ONE Data Climate Finance), the declared
+    plain name of a slot the shape declares,
     singular or plural, a word that slot's declared default reads
     (`DeclaredDefault.when_named`: "aid" reads ODA on the CRS flow type), or a year. A
     hyphenated word is read when each of its parts is (`_holds_word`), so
@@ -2640,6 +2670,7 @@ def _conversational_words(
     known = set(FUNCTION_WORDS | AMOUNT_WORDS | DATA_WORDS | FLOW_VERBS | _series_words(shape))
     known |= _answering_dataset_label_words(state, index, shape) or frozenset()
     known |= _dataset_stated_words(shape, index, state)
+    known |= {noted.word for noted in dataset_noted_words(shape, index, state)}
     declarations = [
         index.declarations[prop] for prop in shape_vocabulary(shape) if prop in index.declarations
     ]

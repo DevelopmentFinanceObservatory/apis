@@ -24,6 +24,7 @@ from code_index.types import (
     MeasureAxis,
     MeasureClassDeclaration,
     MeasurePartitionLabel,
+    NotedWord,
     PartlyStatedValue,
     PartyClass,
     PartyKind,
@@ -299,7 +300,12 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
 # and their ranks order them against each other alone. ONE Data Climate Finance answers a
 # climate question that names no table. The OECD's CRDF figures are a second facet of ONE
 # Data's commitment series, and the UNFCCC reports give each party's own totals by its own
-# method, so each answers only a question that names it.
+# method, so each answers only a question that names it. ONE Data Climate Finance and the CRDF
+# count every official provider's climate finance, other official flows as well as ODA, so
+# "aid" names their rows loosely: a part answering from either reads the word and says the
+# figure is wider than aid alone (`DatasetDeclaration.noted_words`). A UNFCCC report totals
+# what its party counts by its own method, which can reach past official finance, so no one
+# note holds and "aid" stays unread there.
 _MULTILATERAL_PROVIDER = PartyWord(
     word="multilateral",
     measured_property="amount",
@@ -402,6 +408,15 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
         absent_observation="unknown",
         account="provider",
         rank=50,
+        noted_words=(
+            NotedWord(
+                word="aid",
+                note=(
+                    "ONE Data Climate Finance counts all official climate finance, other"
+                    " official flows as well as ODA, so the figure is wider than aid alone."
+                ),
+            ),
+        ),
     ),
     DatasetDeclaration(
         provenance=_OECD_CRDF,
@@ -414,6 +429,16 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
         absent_observation="unknown",
         account="provider",
         rank=60,
+        noted_words=(
+            NotedWord(
+                word="aid",
+                note=(
+                    "The OECD's climate-related development finance counts all official"
+                    " climate finance, other official flows as well as ODA, so the figure is"
+                    " wider than aid alone."
+                ),
+            ),
+        ),
     ),
     DatasetDeclaration(
         provenance=_UNFCCC_BTR,
