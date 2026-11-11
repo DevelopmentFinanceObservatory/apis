@@ -23,6 +23,7 @@ from scripts.stage_origin_catalogue_fixture import stage_fixture
 from search.engine import config
 from search.engine.binders import GeminiBinder
 from search.engine.clients.graph import DetectedSV, Detection, settled_un
+from search.engine.clients.llm import FixedAgreement
 from search.engine.concurrency import scoped_concurrency
 from search.engine.conjoin import combine_regions
 from search.engine.entry import raw_text
@@ -644,6 +645,12 @@ class _KeyingScope:
         await scope.release()
         return None
 
+    def hold_samples(self, llm):
+        return llm
+
+    def note_extraction(self, *agreed) -> None:
+        pass
+
     def note_health(self, *, timed_out: bool, degraded_leg: bool) -> None:
         pass
 
@@ -663,7 +670,7 @@ def _layer2_key(query: str, extraction: Extraction, catalogue: CatalogueSnapshot
         yield None
 
     async def _read_exclusions(query, *, llm):
-        return ExclusionRead(exclusions=[]), None
+        return ExclusionRead(exclusions=[]), None, FixedAgreement(True)
 
     async def _run() -> None:
         graph = FakeGraph()
