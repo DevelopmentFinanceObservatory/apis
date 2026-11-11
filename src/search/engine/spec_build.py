@@ -1261,7 +1261,7 @@ def _restate_whole_groups(
     roles = {
         role: group
         for role, dcids in dcids_by_role.items()
-        if (group := _role_group(wholes, dcids)) is not None
+        if (group := _role_group(wholes, role, dcids)) is not None
     }
     read = whole_groups_over_identity(identity, roles)
     unread = (
