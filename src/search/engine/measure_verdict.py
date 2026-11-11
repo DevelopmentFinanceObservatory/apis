@@ -21,13 +21,12 @@ in the code index. The verdicts, in this order:
 3. ``base``: the StatVar the reading divides by holds one;
 4. ``contradicts``: some alternative shares the reading's population type, and for every
    such alternative some constraint property it keys on has every member declaring a value
-   and no value the members or their summary hold related to its own. An alternative of another population type
-   says nothing of the reading, so "GDP", which names WEO's GDP (`EconomicProduction`) and
-   WDI's (`EconomicActivity`), contradicts a WDI series of gross national income. Where
-   the reading does not state its denominator's pairs, as a Spec does not, a name whose
-   alternative the denominator's name names (step 6) is ``base`` instead, so a share of
-   GDP whose numerator contradicts "GDP" divides by it; a shape draft states them, and
-   step 3 has already read them;
+   and no value the members or their summary hold related to its own. An alternative of
+   another population type says nothing of the reading, so "GDP", which names WEO's GDP
+   (`EconomicProduction`) and WDI's (`EconomicActivity`), contradicts a WDI series of gross
+   national income. Where none of the denominator's pairs are known, as on a Spec or where
+   the graph gives none, a name whose alternative the denominator's name names (step 6) is
+   ``base`` instead, so a share of GDP whose numerator contradicts "GDP" divides by it;
 5. ``holds`` from names: the reading relates to no declared measure at all, and its measure
    noun, or every one of its member names, names an alternative (`declared_measures_named`
    again, so "GDP growth (annual %)" names "GDP growth" and not "GDP");
@@ -103,8 +102,8 @@ class ReadingEvidence:
     `five_tuple` are its five-tuple pairs (`shape_pairs`); `properties` what its members
     declare on each constraint property (`PropertyEvidence`); `noun` its measure noun and
     `member_names` its members' names; `denominator_pairs` the five-tuple pairs and
-    constraint values the graph gives the StatVar it divides by, empty where it gives none
-    and `None` where the reading does not state them (a Spec), and `denominator_name` that
+    constraint values the graph gives the StatVar it divides by, `None` where none are known
+    (a Spec states none, and a graph read can give none), and `denominator_name` that
     StatVar's name."""
 
     five_tuple: Pairs = frozenset()
@@ -241,14 +240,14 @@ def _by_names(
     *,
     pairs_known: bool,
 ) -> Verdict:
-    """The verdict `verdict` from the evidence with the names read. A ``contradicts`` is
-    ``base`` where the denominator's name names an alternative (`based`) and the reading
-    does not state its pairs (`pairs_known` false, as on a Spec), so a share of GDP whose
-    numerator contradicts "GDP" divides by it. A shape draft states the pairs the graph
-    gives, which decided ``base`` before the contradiction where they hold the measure, so
-    rule 4 refuses the contradiction as it did before. An ``unknown`` is ``holds`` where the
-    reading's names name an alternative (`shown`), ``base`` where the denominator's name
-    does, and ``unknown`` otherwise."""
+    """The verdict `verdict` from the evidence with the names read. A ``contradicts`` is ``base``
+    where the denominator's name names an alternative (`based`) and none of its pairs are
+    known (`pairs_known` false), so a share of GDP whose numerator contradicts "GDP" divides
+    by it. Known pairs decided ``base`` before the contradiction where they hold the
+    measure, so the contradiction stands on them. A Spec and a shape whose denominator the
+    graph gives no pairs hold the same evidence, and both judges read it alike. An
+    ``unknown`` is ``holds`` where the reading's names name an alternative (`shown`),
+    ``base`` where the denominator's name does, and ``unknown`` otherwise."""
     if verdict == "contradicts":
         return "base" if not pairs_known and based.intersection(alternatives) else verdict
     if verdict != "unknown":

@@ -186,7 +186,8 @@ def draft_evidence(
     members and its held family's summary hold (`shape_constraint_values`) as summary values,
     which can reach ``some`` and never decide ``holds`` (`measure_verdict.property_evidence`);
     its label as its noun; and the pairs and name the graph gives the StatVar it divides by,
-    as `denominators` read them."""
+    as `denominators` read them, its pairs `None` where the graph gives none, the evidence
+    a Spec holds of its denominator (`closest_match.reading_inputs`)."""
     read = denominators.get(shape.meas_denom_dcid) if shape.meas_denom_dcid else None
     return reading_evidence(
         population_type=shape.pop_type_dcid,
@@ -197,7 +198,7 @@ def draft_evidence(
             summary=shape_constraint_values(shape),
         ),
         noun=shape.label,
-        denominator_pairs=read.pairs if read is not None else (),
+        denominator_pairs=read.pairs if read is not None and read.pairs else None,
         denominator_name=read.name if read is not None else None,
     )
 

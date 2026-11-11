@@ -412,7 +412,7 @@ def _role_members(spec: Spec, role: str) -> list[str]:
     return [
         entity.ref
         for entity in spec.resolved.entities
-        if entity.role == role and not is_residual(entity.ref, index)
+        if entity.role == role and not is_residual(entity.ref, index, axis=role_key_axis(role))
     ]
 
 
@@ -424,7 +424,7 @@ def _residuals_bound(spec: Spec, role: str) -> tuple[str, ...]:
     return tuple(
         index.parties[entity.ref].label or entity.ref
         for entity in spec.resolved.entities
-        if entity.role == role and is_residual(entity.ref, index)
+        if entity.role == role and is_residual(entity.ref, index, axis=role_key_axis(role))
     )
 
 
@@ -654,7 +654,9 @@ def unavailable_entity_facts(
     for entity in spec.resolved.entities:
         # A residual bucket a summed region binds beside its members is no member, so it
         # neither counts toward the group's size nor departs as a member without values.
-        if entity.role in groups and is_residual(entity.ref, index):
+        if entity.role in groups and is_residual(
+            entity.ref, index, axis=role_key_axis(entity.role)
+        ):
             continue
         size_by_role[entity.role] = size_by_role.get(entity.role, 0) + 1
         if (entity.role, entity.ref) in unserved:

@@ -93,10 +93,11 @@ def catalogue_counts(
     """Counts over `catalogue`'s admitted provenances and base variable
     table and every row of `coverage`. `datasets` holds the provenances of
     the declared datasets (`CodeIndex.datasets`). Their coverage rows are
-    the aid rows. The aid counts leave out a party that totals other parties on
-    a role's axis in every dataset that publishes it there (`parties`,
-    `PartyRow.kind_over` of `total` on `COVERAGE_ROLE_AXES`), so the IMF trust
-    funds, a total as a donor in some datasets, count only where they are not."""
+    the aid rows. The aid counts leave out each aid row's party that totals
+    other parties on its role's axis in the row's dataset (`parties`,
+    `PartyRow.kind_over` of `total` on `COVERAGE_ROLE_AXES` for the facet's
+    provenance), so the IMF trust funds, a total as a donor in some datasets,
+    count as a donor in the others."""
     provenances = catalogue.provenance_rows()
     source_of = {row.id: row.source.ref for row in provenances}
     base = _base_by_country(catalogue, source_of)
@@ -106,14 +107,7 @@ def catalogue_counts(
         base=base,
         source_of=source_of,
         datasets=datasets,
-        totals={
-            role: frozenset(
-                dcid
-                for dcid, party in parties.items()
-                if party.kind_over(COVERAGE_ROLE_AXES[role]) == "total"
-            )
-            for role in _ROLES
-        },
+        parties=parties,
     )
     countries = sorted(set(base.variables) | set(held.variables))
     no_sources: frozenset[str] = frozenset()
@@ -156,7 +150,7 @@ def _coverage_by_country(
     base: _BaseByCountry,
     source_of: Mapping[str, str],
     datasets: Collection[str],
-    totals: Mapping[Role, frozenset[str]],
+    parties: Mapping[str, PartyRow],
 ) -> _CoverageByCountry:
     """Every country's coverage summary from six grouped passes over the
     index: each role by facet and by variable, the variables, and the donor
@@ -190,27 +184,35 @@ def _coverage_by_country(
             if facet in aid_facets:
                 spans[place].append((first, last))
 
+    def counted(dcid: str, role: Role, provenance: str | None) -> bool:
+        # A one-role variable's rows hold `ABSENT_ENTITY` on the role it lacks.
+        if dcid == ABSENT_ENTITY:
+            return False
+        party = parties.get(dcid)
+        datasets = () if provenance is None else (provenance,)
+        return party is None or party.kind_over(COVERAGE_ROLE_AXES[role], datasets) != "total"
+
     by_pair_facet = coverage.grouped(by=(*_ROLES, "facet_id"))
-    pairs = {
-        (donor, recipient)
-        for donor, recipient, facet in zip(
-            _strings(by_pair_facet["donor"]),
-            _strings(by_pair_facet["recipient"]),
-            _strings(by_pair_facet[FACET_COLUMN]),
-            strict=True,
-        )
-        if facet in aid_facets
-    }
-    # A one-role variable's rows hold `ABSENT_ENTITY` on the role it lacks.
-    uncounted_donors = totals["donor"] | {ABSENT_ENTITY}
-    uncounted_recipients = totals["recipient"] | {ABSENT_ENTITY}
-    donors = {donor for donor, _ in pairs} - uncounted_donors
-    recipients = {recipient for _, recipient in pairs} - uncounted_recipients
-    flows = [
-        (donor, recipient)
-        for donor, recipient in pairs
-        if donor not in uncounted_donors and recipient not in uncounted_recipients
-    ]
+    donors: set[str] = set()
+    recipients: set[str] = set()
+    flows: set[tuple[str, str]] = set()
+    for donor, recipient, facet in zip(
+        _strings(by_pair_facet["donor"]),
+        _strings(by_pair_facet["recipient"]),
+        _strings(by_pair_facet[FACET_COLUMN]),
+        strict=True,
+    ):
+        if facet not in aid_facets:
+            continue
+        provenance = provenance_of[facet]
+        donor_counted = counted(donor, "donor", provenance)
+        recipient_counted = counted(recipient, "recipient", provenance)
+        if donor_counted:
+            donors.add(donor)
+        if recipient_counted:
+            recipients.add(recipient)
+        if donor_counted and recipient_counted:
+            flows.add((donor, recipient))
 
     variables, overlap = _variables_by_country(coverage, catalogue=catalogue, base=base)
     return _CoverageByCountry(

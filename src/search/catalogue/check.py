@@ -34,12 +34,11 @@ from search.models import (
     ResolveResponse,
     SpecObservations,
 )
-from series_coverage.coverage_types import Role
+from series_coverage.coverage_types import COVERAGE_ROLE_AXES, Role
 
 ROLE_KEYS: Final[Mapping[Role | None, EntityRoleKey]] = {
     None: "observationAbout",
-    "donor": "origin",
-    "recipient": "destination",
+    **COVERAGE_ROLE_AXES,
 }
 """The entity role an example's place fills on the wire, by its coverage
 role. An example with no role names the place its data is about."""

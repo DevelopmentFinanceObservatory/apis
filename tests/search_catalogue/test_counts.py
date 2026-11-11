@@ -276,3 +276,43 @@ def test_a_party_that_totals_others_on_one_axis_counts_on_the_other(tmp_path):
     )
     assert counted.places["country/FRA"].aid.recipients == 1
     assert counted.places["country/KEN"].aid.donors == 0
+
+
+def test_the_trust_funds_count_as_a_donor_only_in_the_rows_where_they_total_no_one(tmp_path):
+    """The IMF trust funds total other donors in one aid table and give aid of their own in
+    another. A row of the first counts them nowhere; a row of the second counts them as a
+    donor, and its recipient as a recipient of theirs."""
+    own_flows = "provenance/OwnFlowsTable"
+    own_facet = "facet-own"
+    table, horizon = coverage_table(
+        [
+            (V1, FACET_ACTUALS, "IMFTrustFunds", "country/KEN", [2018]),
+            (V1, own_facet, "IMFTrustFunds", "country/GHA", [2019]),
+        ]
+    )
+    coverage = CoverageIndex(
+        table,
+        {V1: RoleNames(donor="financingProvider", recipient="financingRecipient")},
+        {
+            FACET_ACTUALS: FacetMetadata(provenance_id=AID_TABLE),
+            own_facet: FacetMetadata(provenance_id=own_flows),
+        },
+        horizon=horizon,
+    )
+    trust_funds = PartyRow(
+        dcid="IMFTrustFunds",
+        kind="party",
+        published=((AID_TABLE, "origin"), (own_flows, "origin")),
+        dataset_kinds=((AID_TABLE, "total"),),
+    )
+
+    counted = catalogue_counts(
+        catalogue=origin_snapshot(tmp_path),
+        coverage=coverage,
+        datasets={AID_TABLE, own_flows},
+        parties={"IMFTrustFunds": trust_funds},
+    )
+
+    assert counted.counts.aid.donors == 1
+    assert counted.places["country/GHA"].aid.donors == 1
+    assert counted.places["country/KEN"].aid.donors == 0

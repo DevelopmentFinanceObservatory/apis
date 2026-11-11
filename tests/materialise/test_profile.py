@@ -22,7 +22,13 @@ from materialise import (
 from materialise.facets import FacetBinding
 from materialise.graph import Facet
 from materialise.profile import ColumnProfile, OutputProfile, compute_output_profile
-from materialise.reshape import PivotAnalysis, Table, analyse_pivot, classify_columns
+from materialise.reshape import (
+    PivotAnalysis,
+    Table,
+    analyse_pivot,
+    classify_columns,
+    enrich_columns,
+)
 from materialise.window import RequestedWindow
 from series_coverage.index import CoverageIndex
 from series_coverage.schema import FacetMetadata, RoleNames
@@ -667,3 +673,37 @@ def test_a_party_kind_is_covered_on_each_role_column_by_that_column_s_axis():
         if coverage.field == "party_kind"
     }
     assert covered == {("financingProvider", 1, 1), ("financingRecipient", 1, 1)}
+
+
+def test_a_party_whose_kind_differs_by_dataset_is_covered_as_the_long_download_fills_it():
+    """A total in D1 and a party in D2, both on the provider side, takes a kind in every row
+    of a long download, each row reading its own dataset, so the profile covers it. Read for
+    no dataset, as a pivot reads it, it takes none."""
+    party = PartyRow(
+        dcid="org/X",
+        kind="party",
+        published=((_D1, "origin"), (_D2, "origin")),
+        dataset_kinds=((_D1, "total"),),
+    )
+    parties = {"org/X": party}
+    columns = ("stat_var", "financingProvider", "time_period", "provenance", "value")
+    table = Table(
+        columns=columns,
+        rows=((_STAT_VAR, "org/X", "2015", _D1, 1.0), (_STAT_VAR, "org/X", "2015", _D2, 2.0)),
+    )
+
+    profile = compute_output_profile(
+        table,
+        role_columns=("financingProvider",),
+        enrichment=EnrichmentLookup(FakeGraphReader(), parties=lambda: parties),
+    )
+    filled, _warnings = enrich_columns(
+        table, requests=(("financingProvider", "party_kind"),), lookup={}, parties=parties
+    )
+
+    assert [
+        (coverage.covered, coverage.entities)
+        for coverage in profile.enrichments
+        if coverage.field == "party_kind"
+    ] == [(1, 1)]
+    assert [row[-1] for row in filled.rows] == ["total", "party"]

@@ -14,12 +14,12 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from dfo_frame_grammar import Frame
 
 from code_index.types import PartyRow
-from dfo_platform.roles import role_key_axis
+from materialise.bundle_columns import PROVENANCE_COLUMN
 from materialise.enrichment import (
     ENRICHMENT_FIELDS,
     PARTY_KIND_FIELD,
     EnrichmentLookup,
-    party_cell,
+    row_party_cell,
 )
 from materialise.errors import MaterialisationUsageError
 from materialise.profile import (
@@ -121,12 +121,20 @@ def reference_output_profile_from_chunks(
     }
     dup_found: dict[tuple[str, str], bool] = dict.fromkeys(pair_names, False)
 
+    datasets_by_column: dict[str, dict[object, set[object]]] = {
+        role_column: {} for role_column in role_columns
+    }
     total_rows = 0
     for chunk in _chain_first(first_chunk, chunks):
         for row in _iter_rows(chunk):
             total_rows += 1
             for name in distinct_columns:
                 distinct_by_column[name].add(row[positions[name]])
+            if PROVENANCE_COLUMN in positions:
+                for role_column in role_columns:
+                    datasets_by_column[role_column].setdefault(
+                        row[positions[role_column]], set()
+                    ).add(row[positions[PROVENANCE_COLUMN]])
             for pair, seen in fd_seen.items():
                 if pair in fd_violated:
                     continue
@@ -224,7 +232,11 @@ def reference_output_profile_from_chunks(
         coverage
         for role_column in role_columns
         for coverage in _enrichment_coverage_for_column(
-            role_column, distinct_by_column[role_column], resolved, parties=enrichment.parties
+            role_column,
+            distinct_by_column[role_column],
+            resolved,
+            parties=enrichment.parties,
+            datasets=datasets_by_column[role_column] if PROVENANCE_COLUMN in positions else None,
         )
     )
 
@@ -359,24 +371,31 @@ def _enrichment_coverage_for_column(
     resolved: Mapping[str, Mapping[str, str]],
     *,
     parties: Mapping[str, PartyRow],
+    datasets: Mapping[object, set[object]] | None,
 ) -> tuple[EnrichmentCoverage, ...]:
     # Role columns contain string dcids. `resolved` is the shared lookup
     # across all role columns; `party_kind` comes from `parties` on the
-    # column's axis.
+    # column's axis for each row's provenance, as a long download fills it.
     refs = sorted({ref for ref in refs_seen if isinstance(ref, str)})
     if not refs:
         return ()
-    axis = role_key_axis(role_column)
     fields: dict[str, Mapping[str, str]] = {}
     for ref in refs:
         fields[ref] = resolved.get(ref, {})
-        kind = (
-            party_cell(PARTY_KIND_FIELD, ref, axis=axis, parties=parties)
-            if axis is not None
-            else None
-        )
-        if kind is not None:
-            fields[ref] = {**fields[ref], PARTY_KIND_FIELD: kind}
+        provenances = datasets.get(ref, {None}) if datasets is not None else {None}
+        kinds = [
+            row_party_cell(
+                PARTY_KIND_FIELD,
+                ref,
+                role=role_column,
+                parties=parties,
+                period=None,
+                provenance=provenance,
+            )
+            for provenance in provenances
+        ]
+        if all(kind is not None for kind in kinds):
+            fields[ref] = {**fields[ref], PARTY_KIND_FIELD: "covered"}
 
     coverage: list[EnrichmentCoverage] = []
     for field_name in ENRICHMENT_FIELDS:

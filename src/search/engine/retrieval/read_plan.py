@@ -1616,12 +1616,11 @@ def unserved_entities(plan: ReadPlan | None) -> frozenset[RoleEntity]:
             return frozenset()
         role_names = plan.roles.role_names if plan.roles is not None else {}
         key_by_role_name = {
-            name: COVERAGE_ROLE_AXES.get(coverage_role, coverage_role)
-            for coverage_role, name in role_names.items()
+            name: COVERAGE_ROLE_AXES[coverage_role] for coverage_role, name in role_names.items()
         }
         asked = {("observationAbout", dcid) for dcid in plan.places}
         asked.update(
-            (COVERAGE_ROLE_AXES.get(coverage_role, coverage_role), dcid)
+            (COVERAGE_ROLE_AXES[coverage_role], dcid)
             for coverage_role, dcids in bound.items()
             for dcid in dcids
         )
@@ -1643,7 +1642,7 @@ def unserved_entities(plan: ReadPlan | None) -> frozenset[RoleEntity]:
                 for _sv, c, (first, last) in plan.member_pairs()
             )
         )
-        key = COVERAGE_ROLE_AXES.get(coverage_role, coverage_role)
+        key = COVERAGE_ROLE_AXES[coverage_role]
         unserved.update((key, dcid) for dcid in asked_dcids - served_dcids)
     return frozenset(unserved)
 

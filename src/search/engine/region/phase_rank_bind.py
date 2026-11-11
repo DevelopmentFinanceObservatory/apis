@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import re
@@ -4119,16 +4120,6 @@ def judge_value_requirements(
     }
     selected = _selected_members(shape, bindings)
     constraints = [read_constraints(arcs) for arcs in selected.values()]
-    names = (
-        [_casefolded_words(read_name(arcs, dcid) or "") for dcid, arcs in selected.items()]
-        if read_words
-        else []
-    )
-    stated = (
-        _series_words(shape) | _dataset_stated_words(shape, get_index(), state)
-        if read_words
-        else frozenset()
-    )
     read_broadly = {
         (reading.property_dcid, reading.value_dcid)
         for disclosure in (state.slot_defaults.values() if state is not None else ())
@@ -4162,9 +4153,18 @@ def judge_value_requirements(
             bound_prop == prop and applies_value(value, held) for bound_prop, held in bound
         ) or any(applies_value(value, member.get(prop)) for member in constraints)
 
+    @functools.cache
+    def stated_words() -> tuple[frozenset[str], list[frozenset[str]]]:
+        # The words the series and its datasets state, and each selected member's name.
+        return (
+            _series_words(shape) | _dataset_stated_words(shape, get_index(), state),
+            [_casefolded_words(read_name(arcs, dcid) or "") for dcid, arcs in selected.items()],
+        )
+
     def states(words: frozenset[str]) -> bool:
         if not read_words:
             return False
+        stated, names = stated_words()
         return all(_holds_word(stated, word) for word in words) or (
             bool(names) and all(words <= name for name in names)
         )

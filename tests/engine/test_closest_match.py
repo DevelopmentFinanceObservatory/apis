@@ -562,44 +562,70 @@ def test_rule_four_and_closest_match_read_a_split_reading_alike() -> None:
     assert closest_match_fact(variable_text="GDP", evidence=evidence) is not None
 
 
+_HEALTH_SHARE_MEMBER = {
+    "populationType": {"nodes": [{"dcid": "EconomicActivity"}]},
+    "measuredProperty": {"nodes": [{"dcid": "amount"}]},
+    "statType": {"nodes": [{"dcid": "measuredValue"}]},
+    "constraintProperties": {"nodes": [{"dcid": "activitySource"}, {"dcid": "expenditureType"}]},
+    "activitySource": {"nodes": [{"dcid": "ExpenditureActivity"}]},
+    "expenditureType": {"nodes": [{"dcid": "HealthcareExpenditure"}]},
+}
+_HEALTH_SHARE = ShapeDraft(
+    shape_id="health_share",
+    label="health expenditure",
+    pop_type_dcid="EconomicActivity",
+    meas_prop_dcid="amount",
+    stat_type_dcid="measuredValue",
+    meas_qual_dcid=None,
+    meas_denom_dcid="Amount_Gdp_Unread",
+    slot_keys=(),
+    sv_arc_facts={"health_share_member": _HEALTH_SHARE_MEMBER},
+)
+_GDP_NAMED = "Gross domestic product (GDP)"
+
+
 @pytest.mark.parametrize(
     ("denominator_pairs", "verdicts"),
     [
         pytest.param((("populationType", "Person"),), ["contradicts"], id="pairs-read"),
-        pytest.param((), ["contradicts"], id="graph-gives-no-pairs"),
+        pytest.param((), ["base"], id="graph-gives-no-pairs"),
     ],
 )
-def test_rule_four_refuses_a_contradiction_whatever_its_denominator_is_named(
+def test_rule_four_reads_a_denominator_s_name_only_where_none_of_its_pairs_are_known(
     denominator_pairs: tuple[tuple[str, str], ...], verdicts: list[str]
 ) -> None:
     """A health expenditure series divided by a StatVar named "Gross domestic product (GDP)"
-    whose pairs hold no declared measure contradicts "GDP" before bind, as it did before the
-    name could rescue a Spec: rule 4 reads the pairs the graph gives, never the name alone."""
-    member = {
-        "populationType": {"nodes": [{"dcid": "EconomicActivity"}]},
-        "measuredProperty": {"nodes": [{"dcid": "amount"}]},
-        "statType": {"nodes": [{"dcid": "measuredValue"}]},
-        "constraintProperties": {
-            "nodes": [{"dcid": "activitySource"}, {"dcid": "expenditureType"}]
-        },
-        "activitySource": {"nodes": [{"dcid": "ExpenditureActivity"}]},
-        "expenditureType": {"nodes": [{"dcid": "HealthcareExpenditure"}]},
-    }
-    draft = ShapeDraft(
-        shape_id="health_share",
-        label="health expenditure",
-        pop_type_dcid="EconomicActivity",
-        meas_prop_dcid="amount",
-        stat_type_dcid="measuredValue",
-        meas_qual_dcid=None,
-        meas_denom_dcid="Amount_Gdp_Unread",
-        slot_keys=(),
-        sv_arc_facts={"health_share_member": member},
-    )
+    contradicts "GDP" before bind where the graph gives the StatVar pairs that hold no
+    declared measure. Where it gives none, the name is all that is known of the denominator,
+    and the series divides by GDP."""
     denominators = {
-        "Amount_Gdp_Unread": DenominatorRead(
-            kind="other", name="Gross domestic product (GDP)", pairs=denominator_pairs
-        )
+        "Amount_Gdp_Unread": DenominatorRead(kind="other", name=_GDP_NAMED, pairs=denominator_pairs)
     }
 
-    assert rule_four_verdicts(draft, declared_measures_named("GDP"), denominators) == verdicts
+    assert (
+        rule_four_verdicts(_HEALTH_SHARE, declared_measures_named("GDP"), denominators) == verdicts
+    )
+
+
+def test_rule_four_and_closest_match_read_a_denominator_known_by_name_alike() -> None:
+    """A shape whose denominator the graph gives no pairs, and a Spec of the same members,
+    which states its denominator by name alone, hold the same evidence and read "GDP" alike."""
+    named = declared_measures_named("GDP")
+    denominators = {"Amount_Gdp_Unread": DenominatorRead(kind="other", name=_GDP_NAMED, pairs=())}
+    spec_evidence = ReadingEvidence(
+        five_tuple=frozenset(
+            {
+                ("populationType", "EconomicActivity"),
+                ("measuredProperty", "amount"),
+                ("statType", "measuredValue"),
+            }
+        ),
+        properties=property_evidence(
+            [{"activitySource": "ExpenditureActivity", "expenditureType": "HealthcareExpenditure"}]
+        ),
+        denominator_name=_GDP_NAMED,
+    )
+
+    assert rule_four_verdicts(_HEALTH_SHARE, named, denominators) == measure_verdicts(
+        named, spec_evidence
+    )

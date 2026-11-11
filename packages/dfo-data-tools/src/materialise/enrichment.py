@@ -30,10 +30,10 @@ ENRICHMENT_PROPERTIES: Mapping[str, str] = {
 one batched `node_arcs_many` read, so asking for `type` beside `label` costs no extra read."""
 
 PARTY_KIND_FIELD = "party_kind"
-"""The field a lookup derives with no graph read: the party's kind (`party`, `total` or
-`residual`) the code index declares (`party_kind_of`) for the row's dataset. Where the row names
-no dataset and the party's kind differs between datasets the kind is unavailable, as for a party
-the index does not list."""
+"""The party's kind (`party`, `total` or `residual`) the code index declares on the axis of the
+column that holds it, for the row's dataset (`party_cell`), read with no graph read. Where the row
+names no dataset and the party's kind differs between the datasets that publish it on that axis
+the kind is unavailable, as for a party the index does not list."""
 
 PARTY_CLASS_FIELD = "party_class"
 """The party's class (`official`, `private` or `residual`, `PartyRow.class_of`) in the row's
@@ -50,7 +50,8 @@ PARTY_FIELDS: tuple[str, ...] = (PARTY_KIND_FIELD, PARTY_CLASS_FIELD, PARTY_WHOL
 qualifies a party role only, and a frame carries one only when a token asks for it."""
 
 ENRICHMENT_FIELDS: tuple[str, ...] = (*ENRICHMENT_PROPERTIES, PARTY_KIND_FIELD)
-"""Every field a lookup can return."""
+"""Every field an output profile counts coverage of: the graph fields `EnrichmentLookup.lookup`
+returns, and `party_kind`, which the code index fills per column (`party_cell`)."""
 
 _NAME_PROPERTY = "name"
 _TYPE_PROPERTY = "typeOf"
@@ -68,15 +69,14 @@ its group retry."""
 
 
 class EnrichmentLookup:
-    """Resolves refs to available `iso3`, `iso2`, `label`, `type` and `party_kind` fields. The
-    graph fields are cached per ref in an LRU capped at `_CACHE_CEILING`, and lookups promote
-    refs to most-recently used. An entry also keys on the bound release (`served_origin_key`),
-    which answers a DFO variable's `name` and `typeOf`.
+    """Resolves refs to their available graph fields: `iso3`, `iso2`, `label` and `type`. The
+    fields are cached per ref in an LRU capped at `_CACHE_CEILING`, and lookups promote refs to
+    most-recently used. An entry also keys on the bound release (`served_origin_key`), which
+    answers a DFO variable's `name` and `typeOf`.
 
-    `parties` returns the code index's party rows (`CodeIndex.parties`), which give a ref its
-    `party_kind` (`party_kind_of`). A ref they do not list has no kind, whatever its graph
-    types. It is read on every lookup and the kind is computed from it each time, since the
-    index can change between requests.
+    `parties` returns the code index's party rows (`CodeIndex.parties`) for the readers that
+    fill party cells per column (`party_cell`, `row_party_cell`); the lookup reads none of
+    them. It is called on each read, since the index can change between requests.
 
     The lock guards cache access only. Graph calls run unlocked, so concurrent misses may
     duplicate requests. Results use each call's own hits and fetches, even if another call

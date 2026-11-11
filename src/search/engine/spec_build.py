@@ -416,7 +416,7 @@ def role_entity_groups(
     groups = tuple(groups)
     result: dict[str, EntityGroup] = {}
     for role, dcids in _dcids_by_role(entities).items():
-        group = _role_group(groups, dcids)
+        group = _role_group(groups, role, dcids)
         if group is not None:
             total = group.total if {group.total} == dcids else None
             result[role] = EntityGroup(
@@ -496,7 +496,7 @@ def role_group_totals(
     groups = tuple(groups)
     result: list[tuple[str, str]] = []
     for role, dcids in _dcids_by_role(entities).items():
-        group = _role_group(groups, dcids)
+        group = _role_group(groups, role, dcids)
         if group is not None and group.total is not None and {group.total} != dcids:
             result.append((role, group.total))
     return tuple(result)
@@ -509,12 +509,13 @@ def _dcids_by_role(entities: Iterable[Entity]) -> dict[str, set[str]]:
     return dcids_by_role
 
 
-def _role_group(groups: Sequence[NamedGroup], dcids: set[str]) -> NamedGroup | None:
+def _role_group(groups: Sequence[NamedGroup], role: str, dcids: set[str]) -> NamedGroup | None:
     """The group whose members or total a role's dcids equal, the members with or without
-    the residual buckets a summed region binds beside them (`scope.region.is_residual`).
+    the residual buckets a summed group binds beside them on `role`'s axis
+    (`scope.region.is_residual`).
     Of groups with the same members, one with a node wins over one without, then the first
     by dcid, then label."""
-    members = set(without_residuals(dcids, get_index())) or dcids
+    members = set(without_residuals(dcids, get_index(), axis=role_key_axis(role))) or dcids
     matches = [g for g in groups if g.member_dcids in (dcids, members) or {g.total} == dcids]
     if not matches:
         return None

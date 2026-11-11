@@ -21,12 +21,11 @@ import pyarrow.compute as pc
 from dfo_frame_grammar import Frame
 
 from code_index.types import PartyRow
-from dfo_platform.roles import role_key_axis
 from materialise.enrichment import (
     ENRICHMENT_FIELDS,
     PARTY_KIND_FIELD,
     EnrichmentLookup,
-    party_cell,
+    row_party_cell,
 )
 from materialise.errors import MaterialisationUsageError
 from materialise.reshape import (
@@ -38,6 +37,7 @@ from materialise.reshape import (
 )
 
 _SCHEMA_VERSION = 1
+_PROVENANCE_COLUMN = "provenance"  # frame-grammar's FACET_IDENTITY_COLUMNS names this axis
 
 _VALUE_COLUMN = "value"
 _STATUS_COLUMN = "status"
@@ -68,8 +68,9 @@ class ColumnProfile:
 class EnrichmentCoverage:
     """Coverage of one `(column, field)` enrichment pair over the frame's
     distinct refs in `column`. `entities` is the distinct ref count.
-    `covered` is how many of those refs have `field`: the code index on the
-    column's axis for `party_kind`, the graph lookup for every other field.
+    `covered` is how many of those refs have `field`: for `party_kind`, a kind
+    from the code index on the column's axis in every row's own dataset, as a
+    long download fills it; the graph lookup for every other field.
     `missing` lists the refs without `field`, each paired with its label
     from the same lookup call, empty when the graph carries no label for
     that ref either. It is capped at `_MAX_NAMED_MISSING_REFS`, with
@@ -234,6 +235,13 @@ class OutputProfileFold:
         self._books: dict[str, dict[object, int]] = {name: {} for name in self._distinct_columns}
         # Coded tables name columns by position, so aggregate outputs cannot clash.
         self._alias = {name: f"c{i}" for i, name in enumerate(self._distinct_columns)}
+        # The distinct (ref, provenance) codes of each role column, which `party_kind`
+        # coverage reads as a long download fills each row for its own dataset.
+        self._role_datasets: dict[str, set[tuple[int, int]]] | None = (
+            {name: set() for name in role_columns}
+            if _PROVENANCE_COLUMN in self._distinct_columns
+            else None
+        )
 
         # Candidate sources come from column kinds before distinct counts are known;
         # pivot output uses candidates with multiple distinct values.
@@ -269,6 +277,18 @@ class OutputProfileFold:
             chunk, names=self._distinct_columns, books=self._books, alias=self._alias
         )
         self._total_rows += coded.num_rows
+        if self._role_datasets is not None:
+            provenance = self._alias[_PROVENANCE_COLUMN]
+            for name, pairs in self._role_datasets.items():
+                grouped = coded.group_by([self._alias[name], provenance]).aggregate([])
+                # Codes are never null: every cell, a null one included, has a code.
+                pairs.update(
+                    zip(
+                        cast("list[int]", grouped.column(self._alias[name]).to_pylist()),
+                        cast("list[int]", grouped.column(provenance).to_pylist()),
+                        strict=True,
+                    )
+                )
         for tracker in self._dependency_trackers.values():
             tracker.add(coded)
         for repeats in self._repeat_trackers.values():
@@ -375,7 +395,11 @@ class OutputProfileFold:
             coverage
             for role_column in role_columns
             for coverage in _enrichment_coverage_for_column(
-                role_column, books[role_column], resolved, parties=enrichment.parties
+                role_column,
+                books[role_column],
+                resolved,
+                parties=enrichment.parties,
+                datasets=self._datasets_of(role_column),
             )
         )
 
@@ -386,6 +410,18 @@ class OutputProfileFold:
             pivots=pivots,
             enrichments=enrichments,
         )
+
+    def _datasets_of(self, role_column: str) -> Mapping[object, frozenset[object]] | None:
+        """The `provenance` cells each ref of `role_column` shares a row with, `None` for a
+        frame without a `provenance` column."""
+        if self._role_datasets is None:
+            return None
+        refs = {code: ref for ref, code in self._books[role_column].items()}
+        provenances = {code: cell for cell, code in self._books[_PROVENANCE_COLUMN].items()}
+        datasets: dict[object, set[object]] = {}
+        for ref_code, provenance_code in self._role_datasets[role_column]:
+            datasets.setdefault(refs[ref_code], set()).add(provenances[provenance_code])
+        return {ref: frozenset(cells) for ref, cells in datasets.items()}
 
 
 def _column_kind(
@@ -662,22 +698,41 @@ def _enrichment_coverage_for_column(
     resolved: Mapping[str, Mapping[str, str]],
     *,
     parties: Mapping[str, PartyRow],
+    datasets: Mapping[object, Collection[object]] | None,
 ) -> tuple[EnrichmentCoverage, ...]:
     """The coverage of each enrichment field on `role_column`, whose cells hold `refs_seen`:
     a graph field from `resolved`, the lookup shared across role columns, and `party_kind`
-    from `parties` on the column's own axis (`party_cell` with `role_key_axis`), as the
-    download fills that column's cells for no dataset or year."""
+    from `parties` on the column's own axis. A ref has `party_kind` where every row holding
+    it takes a kind for its own dataset (`row_party_cell`), its `datasets` the `provenance`
+    cells it shares a row with (`None` for a frame without that column, read for no
+    dataset), as a long download fills each row. A pivoted download reads each party for no
+    dataset (`reshape.EnrichmentPlan`), so it leaves empty the cells of a party whose kind
+    differs between the datasets that publish it on the column's axis, which this coverage
+    counts as covered."""
     refs = sorted({ref for ref in refs_seen if isinstance(ref, str)})
     if not refs:
         return ()
-    axis = role_key_axis(role_column)
-    fields: dict[str, Mapping[str, str]] = {
-        ref: {**resolved.get(ref, {}), PARTY_KIND_FIELD: kind}
-        if axis is not None
-        and (kind := party_cell(PARTY_KIND_FIELD, ref, axis=axis, parties=parties)) is not None
-        else resolved.get(ref, {})
+    with_kind = {
+        ref
         for ref in refs
+        if all(
+            row_party_cell(
+                PARTY_KIND_FIELD,
+                ref,
+                role=role_column,
+                parties=parties,
+                period=None,
+                provenance=provenance,
+            )
+            is not None
+            for provenance in (datasets.get(ref, (None,)) if datasets is not None else (None,))
+        )
     }
+
+    def has(ref: str, field_name: str) -> bool:
+        if field_name == PARTY_KIND_FIELD:
+            return ref in with_kind
+        return field_name in resolved.get(ref, {})
 
     coverage: list[EnrichmentCoverage] = []
     for field_name in ENRICHMENT_FIELDS:
@@ -685,13 +740,14 @@ def _enrichment_coverage_for_column(
             role_column, field_name
         ):
             continue
-        covered_refs = [ref for ref in refs if field_name in fields[ref]]
+        covered_refs = [ref for ref in refs if has(ref, field_name)]
         if not covered_refs:
             continue
-        missing_refs = [ref for ref in refs if field_name not in fields[ref]]
+        missing_refs = [ref for ref in refs if not has(ref, field_name)]
         truncated = len(missing_refs) > _MAX_NAMED_MISSING_REFS
         missing = tuple(
-            (ref, fields[ref].get("label", "")) for ref in missing_refs[:_MAX_NAMED_MISSING_REFS]
+            (ref, resolved.get(ref, {}).get("label", ""))
+            for ref in missing_refs[:_MAX_NAMED_MISSING_REFS]
         )
         coverage.append(
             EnrichmentCoverage(

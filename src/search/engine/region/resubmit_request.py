@@ -515,7 +515,10 @@ def resubmit_named_groups(
         role_entities = frozenset(entities[role])
         # A summed region binds its residual buckets beside its members; the group stands
         # for the members (`scope.region.is_residual`).
-        role_members = frozenset(without_residuals(role_entities, get_index())) or role_entities
+        role_members = (
+            frozenset(without_residuals(role_entities, get_index(), axis=role_key_axis(role)))
+            or role_entities
+        )
         total = _bound_total(group, role, role_entities)
         if group.total is not None and total is None:
             logger.info(
