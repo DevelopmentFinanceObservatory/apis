@@ -19,6 +19,7 @@ import hashlib
 import json
 import logging
 import re
+import struct
 from collections.abc import Callable, Coroutine, Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -358,10 +359,11 @@ class SecondSamples:
     longer, and its read is not judged. An SSE answer never waits for a second sample.
     `done`, and so the buffered JSON response, waits at most that bound after the
     extraction's first sample, for the request settles every agreement at `done` before
-    layer 1 stores the answer. A wording whose second was cut is cut again while the LLM
-    memo holds its first sample and not its second: the first then returns at once, and
-    the second rarely beats the bound. Layer 2 still serves its reading, each cut is logged
-    where it fires, and it ends when `llm_memo_ttl_s` expires."""
+    layer 1 stores the answer. A first sample the LLM memo serves returns at once, so its
+    second also gets the time the memo's live call took (`two_samples`): a buffered repeat
+    of a wording whose second was cut waits about one model call once, its second then
+    reaches the memo, and later repeats hit layer 1. A second that takes longer than that
+    and the bound is cut on every repeat, which is what the bound is for."""
 
     def __init__(self) -> None:
         self._running: set[SecondSample] = set()
@@ -509,8 +511,10 @@ async def two_samples[T, R](
     first as `read` makes it, its usage, and the `Agreement` that judges the second against
     it (`judge(first, read(first), second)`). A first sample that fails, or that `read`
     refuses, raises and cancels the second. Once the first is read, the second runs at most
-    `llm_second_sample_settle_s` more (`SecondSample.cut_after`), and at most
-    `llm_timeout_s` from its start.
+    `llm_second_sample_settle_s` more, and at most `llm_timeout_s` from its start
+    (`SecondSample.cut_after`). A first served from the memo took no model call, so the
+    second also gets what the call the memo kept took live beyond the first's wait
+    (`_served`): a fresh call of the same wording needs about that long.
 
     An `llm` bound to a request's `SecondSamples` returns once the first is read, with the
     first's usage: the second runs on under that holder, which counts its cost and closes
@@ -522,6 +526,9 @@ async def two_samples[T, R](
     samples = held if held is not None else SecondSamples()
     try:
         second = samples.start(lambda: sample(reseeded(llm)), stage=stage)
+        latency = _FirstSampleLatency()
+        token = _FIRST_SAMPLE.set(latency)
+        started = asyncio.get_running_loop().time()
         try:
             first, first_usage = await sample(llm)
             served = read(first)
@@ -529,7 +536,12 @@ async def two_samples[T, R](
             second.task.cancel()
             await asyncio.gather(second.task, return_exceptions=True)
             raise
-        second.cut_after(config.settings().llm_second_sample_settle_s)
+        finally:
+            _FIRST_SAMPLE.reset(token)
+        waited_s = asyncio.get_running_loop().time() - started
+        second.cut_after(
+            max(0.0, latency.live_s - waited_s) + config.settings().llm_second_sample_settle_s
+        )
         samples.count(second)
         agreement = Agreement(second, lambda answer: judge(first, served, answer))
         if held is not None:
@@ -739,16 +751,47 @@ async def _generate_structured[SchemaT: BaseModel](
         # Re-acquiring the key here would re-issue the Gemini call that is
         # failing, once per parked request.
         raise LLMInfraError(f"Gemini API error: {_LLM_MEMO_LEADER_FAILED_DETAIL}")
-    value = published.value
     # Followers report zero usage. The leader's live call reports its token cost.
     logger.info("LLM memo hit: schema=%s", schema.__name__)
-    return _served(value, schema, model=llm._model), dict(MEMO_HIT_USAGE)
+    return _served(published.value, schema, model=llm._model), dict(MEMO_HIT_USAGE)
 
 
-def _served[SchemaT: BaseModel](text: bytes, schema: type[SchemaT], *, model: str) -> SchemaT:
-    """Parse the model's text the memo holds, for a caller that made no call. A refusal
-    reaches that caller as `LLMOutputRefused` with zero usage."""
-    return _parse(text, schema, model=model, usage=dict(MEMO_HIT_USAGE))
+# A memo value: the live call's latency in seconds, a little-endian double, then the model's
+# text (`_memo_value`).
+_LIVE_S = struct.Struct("<d")
+
+
+def _memo_value(text: str, *, live_s: float) -> bytes:
+    """The memo's value for a live call that answered `text` after `live_s` seconds."""
+    return _LIVE_S.pack(live_s) + text.encode()
+
+
+def _served[SchemaT: BaseModel](value: bytes, schema: type[SchemaT], *, model: str) -> SchemaT:
+    """Parse the model's text a memo value holds (`_memo_value`), for a caller that made no
+    call, and note the live call's latency for the read that waits on it (`_note_live_s`).
+    A refusal reaches that caller as `LLMOutputRefused` with zero usage."""
+    (live_s,) = _LIVE_S.unpack_from(value)
+    _note_live_s(live_s)
+    return _parse(value[_LIVE_S.size :], schema, model=model, usage=dict(MEMO_HIT_USAGE))
+
+
+class _FirstSampleLatency:
+    """The longest live latency among the calls a first sample was served from the memo
+    (`two_samples`): how long the call it reused took when it ran."""
+
+    def __init__(self) -> None:
+        self.live_s = 0.0
+
+
+_FIRST_SAMPLE: ContextVar[_FirstSampleLatency | None] = ContextVar(
+    "llm_first_sample_latency", default=None
+)
+
+
+def _note_live_s(live_s: float) -> None:
+    record = _FIRST_SAMPLE.get()
+    if record is not None:
+        record.live_s = max(record.live_s, live_s)
 
 
 # The loop keeps weak task refs. This set retains leaders serving followers after cancellation.
@@ -770,10 +813,10 @@ async def _lead[SchemaT: BaseModel](
     followers. The orphan callback cancels it when the last holder leaves.
     """
 
-    async def publish(text: str) -> None:
+    async def publish(text: str, live_s: float) -> None:
         # Preserve the caller's outcome if memo publication fails.
         try:
-            payload = text.encode()
+            payload = _memo_value(text, live_s=live_s)
             await memo.publish(lease, payload, size=len(payload))
         except BaseException:
             logger.exception(
@@ -783,21 +826,23 @@ async def _lead[SchemaT: BaseModel](
             await memo.abandon(lease)
 
     async def lead_and_settle():
+        started = asyncio.get_running_loop().time()
         try:
             text, usage = await llm._fetch_text(prompt=prompt, config=config)
         except BaseException:
             await memo.abandon(lease)
             raise
+        live_s = asyncio.get_running_loop().time() - started
         try:
             parsed = _parse(text, schema, model=llm._model, usage=usage)
         except LLMOutputRefused:
             # A refusal is the model's answer, so the memo stores it like any other.
-            await publish(text)
+            await publish(text, live_s)
             raise
         except BaseException:
             await memo.abandon(lease)
             raise
-        await publish(text)
+        await publish(text, live_s)
         return parsed, usage
 
     task = asyncio.create_task(lead_and_settle())
@@ -865,7 +910,8 @@ async def warm() -> None:
         logger.info("Gemini key check passed (model=%s)", model)
 
 
-# LLMMemo stores the model's text as bytes by `_memo_key`. ResponseCache supplies the
+# LLMMemo stores the model's text with its live latency (`_memo_value`) by `_memo_key`.
+# ResponseCache supplies the
 # byte limits, TTL, and single-flight behavior.
 LLMMemo = ResponseCache
 

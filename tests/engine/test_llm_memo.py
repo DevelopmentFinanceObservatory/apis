@@ -32,9 +32,10 @@ from search.engine.extract import Extraction
 from tests.fixtures import FakeLLM
 from tests.fixtures.keys import fixture_key
 
-# How many bytes one `_DummySchema(value=1)` answer serialises to, so the
-# byte-budget tests below can state an exact ceiling.
-_ANSWER_BYTES = len('{"value":1}')
+# How many bytes the memo holds for one `_DummySchema(value=1)` answer, its text and the
+# live latency beside it (`_memo_value`), so the byte-budget tests below can state an exact
+# ceiling.
+_ANSWER_BYTES = len(llm_module._memo_value('{"value":1}', live_s=0.0))
 
 
 class _DummySchema(BaseModel):
@@ -465,7 +466,9 @@ def test_entries_over_the_byte_budget_evict_least_recently_used(monkeypatch):
 
     # The budget in bytes, not the answer count: the memo's own store is what
     # this test sizes, so a rule that counted entries would fail here.
-    assert len(_DummySchema(value=1).model_dump_json().encode()) == _ANSWER_BYTES
+    assert len(llm_module._memo_value(_DummySchema(value=1).model_dump_json(), live_s=0.0)) == (
+        _ANSWER_BYTES
+    )
 
     llm, client = _llm(monkeypatch, _response(), memo=memo)
 

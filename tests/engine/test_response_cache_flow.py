@@ -7,9 +7,11 @@ import contextlib
 import logging
 import time
 from collections.abc import Callable, Coroutine
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from pydantic import BaseModel
 
 import search.engine.clients.llm as llm_module
 from graph_generation import UNKNOWN_GENERATION, FakeGeneration, GenerationProvider
@@ -1148,6 +1150,81 @@ def test_a_bundle_publishes_layer2_at_done_before_its_second_sample_settles():
         return layer2, layer1_held, scope._layer1_lease is None
 
     assert asyncio.run(run()) == (True, True, True)
+
+
+class _TimedModels:
+    """A Gemini double answering `{"value": 1}` after the next delay listed for the
+    request's seed, or never for `None`."""
+
+    def __init__(self, delays: dict[int, list[float | None]]) -> None:
+        self.delays = delays
+
+    async def generate_content(self, *, model: str, contents: object, config: Any) -> object:
+        delay = self.delays[config.seed].pop(0)
+        if delay is None:
+            await asyncio.Event().wait()
+        await asyncio.sleep(delay)
+        return SimpleNamespace(text='{"value": 1}', model_version=model, usage_metadata=None)
+
+
+class _Value(BaseModel):
+    value: int = 0
+
+
+def _timed_sample(sampler: SupportsLLM) -> Coroutine[Any, Any, tuple[_Value, dict | None]]:
+    return llm_module.generate_structured_async(sampler, prompt="q", system="s", schema=_Value)
+
+
+def test_a_repeat_whose_first_the_memo_serves_gives_its_second_the_live_calls_time(
+    monkeypatch, search_settings
+):
+    """A request whose first sample took 0.2 s live and whose second sample was cut leaves
+    only the first in the LLM memo. Its repeat is served that first at once, and its second
+    runs no less than the 0.2 s the memo's call took plus the settle bound: a second needing
+    0.15 s answers, the samples agree, and layer 1 stores the answer, so the next repeat is a
+    layer-1 hit. A second that never answers is cut no earlier than that."""
+    search_settings(llm_second_sample_settle_s=0.05)
+    models = _TimedModels({1: [0.2, 0.2], 2: [0.4, 0.15, None, None]})
+    monkeypatch.setattr(
+        llm_module, "_get_client", lambda: SimpleNamespace(aio=SimpleNamespace(models=models))
+    )
+    base = _base_response()
+    query = "total population india"
+
+    async def ask(cache: ResponseCache, memo: llm_module.LLMMemo) -> tuple[str, float]:
+        scope = _make_scope(cache)
+        assert await scope.lookup_raw(query) is None
+        started = time.monotonic()
+        _served, _usage, agreement = await two_samples(
+            _timed_sample,
+            scope.hold_samples(LLM(seed=1, memo=memo)),
+            stage="extraction",
+            read=lambda answer: answer,
+            judge=lambda *_answers: True,
+        )
+        scope.note_extraction(agreement)
+        await observe_answer(scope, base)
+        outcome = await agreement.outcome()
+        elapsed = time.monotonic() - started
+        await scope.release()
+        return outcome, elapsed
+
+    async def run() -> tuple[str, str, bool, str, float]:
+        cache, memo = _new_cache(), llm_module.build_memo()
+        assert memo is not None
+        cut, _ = await ask(cache, memo)
+        agreed, _ = await ask(cache, memo)
+        repeat_hits = await _new_scope_hits_layer1(cache, query)
+        cache, memo = _new_cache(), llm_module.build_memo()
+        assert memo is not None
+        await ask(cache, memo)
+        stalled, waited = await ask(cache, memo)
+        return cut, agreed, repeat_hits, stalled, waited
+
+    cut, agreed, repeat_hits, stalled, waited = asyncio.run(run())
+
+    assert (cut, agreed, repeat_hits, stalled) == ("cut", "agreed", True, "cut")
+    assert waited >= 0.2 + 0.05
 
 
 def test_a_failed_second_sample_leaves_the_reading_unjudged():

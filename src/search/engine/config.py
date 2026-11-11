@@ -271,9 +271,11 @@ class SearchSettings(BaseSettings):
     llm_timeout_s: float = 30
 
     # Seconds the second of two samples (`clients.llm.two_samples`) may run after its first
-    # is read. Past it the second is cut (`clients.llm.SecondSample.cut_after`): its read is
-    # not judged and nothing is stored. An SSE answer never waits for it; `done`, and so the
-    # buffered JSON response, waits at most this bound after the extraction's first sample.
+    # is read, added to what the live call took when the LLM memo served the first. Past it
+    # the second is cut (`clients.llm.SecondSample.cut_after`): its read is not judged and
+    # nothing is stored. An SSE answer never waits for it; `done`, and so the buffered JSON
+    # response, waits at most this bound after the extraction's first sample, or about one
+    # model call more once for a repeat of a wording whose second was cut.
     # Both samples go out at the same moment. Over 120 such pairs of extraction and
     # exclusion-read calls against gemini-3.5-flash-lite, the second answered at most 0.66 s
     # after the first, 0.36 s at the 95th percentile, so 1 s waits out a healthy second.
