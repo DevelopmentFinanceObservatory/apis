@@ -1982,8 +1982,9 @@ async def _model_extraction(
     and the first is served. Two equal raw `Extraction`s agree with no second post-processing,
     since `_read_extraction` reads only the query, the year, settings and the bound release;
     otherwise the second is post-processed too, and the two agree when their
-    `ExtractionResult`s are equal, every field included. The second is judged as it
-    answers, and an agreed reading is stored then; a disagreeing pair stores nothing. A
+    `ExtractionResult`s are equal, every field included. The second is judged once it
+    answers and its first is read, and an agreed reading is stored then; a disagreeing
+    pair stores nothing. A
     refused or failed first sample raises and stores nothing; a second sample that is
     refused or fails, or whose reading post-processing refuses (`_second_reading`), leaves
     the first not agreed. An `LLM` bound to a request's `SecondSamples` serves the first
