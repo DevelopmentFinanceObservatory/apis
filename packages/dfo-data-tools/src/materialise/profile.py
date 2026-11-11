@@ -13,7 +13,7 @@ grouping runs over those codes. State follows distinct values and pivot keys.
 from __future__ import annotations
 
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Literal, cast
 
 import pyarrow as pa
@@ -690,6 +690,66 @@ def _pivot_feasibility(
         cells=cells,
         varying=varying,
     )
+
+
+def with_party_kind_coverage(
+    profile: OutputProfile,
+    frame_chunks: Callable[[], Iterator[Frame]],
+    *,
+    parties: Mapping[str, PartyRow],
+) -> OutputProfile:
+    """`profile`, the profile of the frame `frame_chunks` yields, with each role column's
+    `party_kind` coverage counted again from `parties` as `compute_output_profile_from_chunks`
+    counts it (`_enrichment_coverage_for_column`), every other entry kept. A role column is
+    one whose `ColumnProfile.kind` is `role`. Each entry keeps its place, after its column's
+    graph fields, and a column whose parties take no kind has none. A missing ref is named by
+    the label another of the profile's entries names it by, else by none: the graph is not
+    read."""
+    role_columns = tuple(column.name for column in profile.columns if column.kind == "role")
+    labels = {ref: label for entry in profile.enrichments for ref, label in entry.missing if label}
+    refs: dict[str, set[object]] = {name: set() for name in role_columns}
+    datasets: dict[str, dict[object, set[object]]] = {name: {} for name in role_columns}
+    with_provenance = True
+    for chunk in frame_chunks():
+        table = chunk.table
+        with_provenance = with_provenance and _PROVENANCE_COLUMN in table.column_names
+        for name in role_columns:
+            refs[name].update(table.column(name).to_pylist())
+            if _PROVENANCE_COLUMN in table.column_names:
+                pairs = table.select([name, _PROVENANCE_COLUMN]).group_by(
+                    [name, _PROVENANCE_COLUMN]
+                )
+                grouped = pairs.aggregate([])
+                for ref, provenance in zip(
+                    grouped.column(name).to_pylist(),
+                    grouped.column(_PROVENANCE_COLUMN).to_pylist(),
+                    strict=True,
+                ):
+                    datasets[name].setdefault(ref, set()).add(provenance)
+    kinds = {
+        name: [
+            entry
+            for entry in _enrichment_coverage_for_column(
+                name,
+                refs[name],
+                {ref: {"label": label} for ref, label in labels.items()},
+                parties=parties,
+                datasets=datasets[name] if with_provenance else None,
+            )
+            if entry.field == PARTY_KIND_FIELD
+        ]
+        for name in role_columns
+    }
+    enrichments: list[EnrichmentCoverage] = []
+    for name in role_columns:
+        enrichments.extend(
+            entry
+            for entry in profile.enrichments
+            if entry.column == name and entry.field != PARTY_KIND_FIELD
+        )
+        enrichments.extend(kinds[name])
+    enrichments.extend(entry for entry in profile.enrichments if entry.column not in role_columns)
+    return replace(profile, enrichments=tuple(enrichments))
 
 
 def _enrichment_coverage_for_column(

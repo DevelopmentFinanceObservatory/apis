@@ -133,6 +133,23 @@ line per version that fails and one `datasets_frame_summed_backfilled` line coun
 `sweep` reads. No deploy runs it, since a row that stays NULL would be read and cut again on
 every deploy.
 
+`backfill-party-kind-coverage [--dry-run]` runs by hand once per environment after the services
+move to an image whose output profile counts `party_kind` coverage per row
+(`materialise.profile`), with `--dry-run` first. A profile minted before counted a party read for
+no dataset and on any axis, so the options document can call a party column's kind `partial`
+where a long download fills every cell. For each version row holding an output profile it reads
+the version's stored frame from any tier holding its bytes and counts each role column's
+`party_kind` coverage again under the served graph release's code index, each row read for its
+own dataset on the column's axis (`profile.with_party_kind_coverage`). A row whose count
+differs gets the new count in its `output_profile` column and in the `output_profile` of its
+`immutable_body`, written while the row still holds the profile it was counted from; every other
+entry keeps its place and value. A missing ref is named by a label the profile already holds,
+since the task reads no graph. A row whose frame no tier holds stays as it is. A second run
+changes nothing. It writes one `datasets_party_kind_backfill_failed` `ERROR` line per version
+that fails and one `datasets_party_kind_backfilled` line counting each `PartyKindOutcome`, the
+failures and whether it was a dry run, exits 1 when any version failed, and reads the settings
+`sweep` reads. `--dry-run` reads and counts but writes nothing.
+
 `backfill-within-sets [--apply]` runs by hand once per environment, after a deploy of this
 image has run `backfill-descriptions`. A record written before records held
 `DimensionFacts.within_set` holds a dimension its definition narrows to a set as if it were
@@ -333,6 +350,7 @@ from artifact_store import (
 )
 from code_index.query import CodeIndex
 from code_index.shared import get_index
+from code_index.types import PartyRow
 from dataset_store import DatasetStore, Transaction
 from dataset_store.connection import default_is_broken
 from dataset_store.errors import PoolTimeoutError
@@ -432,6 +450,7 @@ from materialise.formats import (
     Frame,
     frame_entity_columns,
 )
+from materialise.profile import OutputProfile, with_party_kind_coverage
 from materialise.recipe_bodies import RECIPE_BODIES
 from materialise.recipes import deflation_basis
 from materialise.reshape import RollupNotSummableError
@@ -1775,6 +1794,171 @@ def _backfill_frame_summed() -> int:
         )
 
 
+class PartyKindOutcome(StrEnum):
+    """What `run_backfill_party_kind_coverage` found for one version row holding an output
+    profile."""
+
+    REFRESHED = "refreshed"
+    """The profile's `party_kind` coverage differed from the per-row count and was rewritten,
+    or would be on a dry run."""
+    UNCHANGED = "unchanged"
+    """The profile already holds the per-row count."""
+    FRAME_GONE = "frame_gone"
+    """No tier holds the bytes of the version's stored frame, so the row is left alone."""
+    CHANGED_UNDER_RUN = "changed_under_run"
+    """The row's profile changed between the read and the write, so the row is left alone."""
+
+
+PARTY_KIND_PAGE = 100
+"""Version rows `run_backfill_party_kind_coverage` reads per query."""
+
+
+def _versions_with_profile(store: DatasetStore, *, after: tuple[str, str]) -> list[tuple[str, str]]:
+    """`(subject_id, content_version)` of up to `PARTY_KIND_PAGE` version rows holding an
+    output profile, past `after` in key order."""
+    with store.transaction() as tx:
+        rows = tx.fetch_all(
+            "SELECT subject_id, content_version FROM datasets.version_record "
+            "WHERE output_profile IS NOT NULL "
+            "AND (subject_id, content_version) > (%s, %s) "
+            "ORDER BY subject_id, content_version LIMIT %s",
+            (*after, PARTY_KIND_PAGE),
+        )
+    return [(str(row["subject_id"]), str(row["content_version"])) for row in rows]
+
+
+def _stored_profile(
+    tx: Transaction, subject_id: str, content_version: str, *, lock: bool
+) -> tuple[dict[str, object], dict[str, object]] | None:
+    """The `output_profile` column and `immutable_body` of one version row, `None` for a row
+    no longer recorded or holding no profile. `lock` holds the row until the transaction
+    ends."""
+    row = tx.fetch_one(
+        "SELECT output_profile, immutable_body FROM datasets.version_record "
+        "WHERE subject_id = %s AND content_version = %s" + (" FOR UPDATE" if lock else ""),
+        (subject_id, content_version),
+    )
+    if row is None or row["output_profile"] is None:
+        return None
+    return (
+        cast("dict[str, object]", row["output_profile"]),
+        cast("dict[str, object]", row["immutable_body"]),
+    )
+
+
+def _backfill_party_kind_of(
+    subject_id: str,
+    content_version: str,
+    *,
+    store: DatasetStore,
+    reader: LiveSnapshotReader,
+    artifact_store: ArtifactStore,
+    parties: Mapping[str, PartyRow],
+    dry_run: bool,
+) -> PartyKindOutcome | None:
+    """Count one version's `party_kind` coverage again from its stored frame
+    (`profile.with_party_kind_coverage`) and, unless `dry_run`, write it to the row's
+    `output_profile` column and to the `output_profile` of its `immutable_body` while the row
+    still holds the profile it was counted from. `None` for a row no longer recorded."""
+    with store.transaction() as tx:
+        stored = _stored_profile(tx, subject_id, content_version, lock=False)
+    if stored is None:
+        return None
+    profile_json, _body = stored
+    frame = _stored_frame(
+        artifact_store, reader.read_artifact_locations(subject_id, content_version)
+    )
+    if frame is None:
+        return PartyKindOutcome.FRAME_GONE
+    refreshed = with_party_kind_coverage(
+        OutputProfile.from_json(profile_json), lambda: iter((frame,)), parties=parties
+    ).to_json()
+    if OutputProfile.from_json(refreshed) == OutputProfile.from_json(profile_json):
+        return PartyKindOutcome.UNCHANGED
+    if dry_run:
+        return PartyKindOutcome.REFRESHED
+    with store.transaction() as tx:
+        current = _stored_profile(tx, subject_id, content_version, lock=True)
+        if current is None or current[0] != profile_json:
+            return PartyKindOutcome.CHANGED_UNDER_RUN
+        body = dict(current[1])
+        if "output_profile" in body:
+            body["output_profile"] = refreshed
+        tx.execute(
+            "UPDATE datasets.version_record SET output_profile = %s, immutable_body = %s "
+            "WHERE subject_id = %s AND content_version = %s",
+            (json.dumps(refreshed), json.dumps(body), subject_id, content_version),
+        )
+    return PartyKindOutcome.REFRESHED
+
+
+def run_backfill_party_kind_coverage(
+    *,
+    store: DatasetStore,
+    artifact_store: ArtifactStore,
+    parties: Mapping[str, PartyRow],
+    dry_run: bool,
+) -> int:
+    """Count the `party_kind` coverage of every version row's output profile again with the
+    rule a mint counts it by, each row of a party column read for its own dataset
+    (`profile.with_party_kind_coverage`), rewrite the rows that differ unless `dry_run`, emit
+    the count of each `PartyKindOutcome`, and return the number of versions that failed.
+
+    Rows are read `PARTY_KIND_PAGE` at a time in key order. A row already holding the count is
+    left alone, so a second run changes nothing. A version that fails is logged with its
+    traceback and left as it is."""
+    reader = LiveSnapshotReader(store=store)
+    counts = dict.fromkeys(PartyKindOutcome, 0)
+    failed = 0
+    after = ("", "")
+    while True:
+        page = _versions_with_profile(store, after=after)
+        for subject_id, content_version in page:
+            try:
+                outcome = _backfill_party_kind_of(
+                    subject_id,
+                    content_version,
+                    store=store,
+                    reader=reader,
+                    artifact_store=artifact_store,
+                    parties=parties,
+                    dry_run=dry_run,
+                )
+            except Exception as exc:
+                # A version that fails is skipped and the run carries on with the others.
+                failed += 1
+                emit(
+                    "datasets_party_kind_backfill_failed",
+                    severity="ERROR",
+                    subject_id=subject_id,
+                    content_version=content_version,
+                    error=f"{type(exc).__name__}: {exc}",
+                    traceback=traceback.format_exc(),
+                )
+                continue
+            if outcome is not None:
+                counts[outcome] += 1
+        if len(page) < PARTY_KIND_PAGE:
+            break
+        after = page[-1]
+    emit(
+        "datasets_party_kind_backfilled",
+        **{outcome.value: count for outcome, count in counts.items()},
+        failed=failed,
+        dry_run=dry_run,
+    )
+    return failed
+
+
+def _backfill_party_kind_coverage(dry_run: bool) -> int:
+    # The run reads one code index, the served graph release's.
+    with bound_served_release(get_release_service()):
+        return _run_over_artifacts(
+            "backfill-party-kind-coverage",
+            partial(run_backfill_party_kind_coverage, parties=get_index().parties, dry_run=dry_run),
+        )
+
+
 def stored_recipe_pairs(store: DatasetStore) -> list[tuple[str, str]]:
     """`(spec_id, content_version)` of every frame holding a recipe, oldest recipe first."""
     with store.transaction() as tx:
@@ -2356,6 +2540,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         "backfill-frame-summed",
         help="record whether each derived version recorded without it stores its collapse",
     ).set_defaults(run=_backfill_frame_summed)
+    party_kind = tasks.add_parser(
+        "backfill-party-kind-coverage",
+        help="count each output profile's party_kind coverage again for each row's dataset",
+    )
+    party_kind.add_argument("--dry-run", action="store_true")
+    party_kind.set_defaults(run=_backfill_party_kind_coverage)
     diff = tasks.add_parser(
         "diff-recipes",
         help="compute every stored recipe again on its own roots and compare its output",

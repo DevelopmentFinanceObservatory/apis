@@ -97,6 +97,21 @@ The dry run writes one `datasets_recipes_normalised` line and changes nothing. T
 
 Rolling back is safe before the run. After it, a migrated pin carries `deflation_basis`, which an image on a frame grammar older than 1.2.0 refuses as an unknown unit member, so every migrated recipe refuses on replay under that image. Once the task has run, roll back only to an image whose frame grammar is 1.2.0 or later.
 
+### Party-kind coverage after the services move
+
+`datasets-maintenance backfill-party-kind-coverage` runs by hand, once per environment, after the first deploy whose image counts an output profile's `party_kind` coverage for each row's own dataset on the role column's axis. A profile minted before counted a party for no dataset and on any axis, so the options document can call a party column's kind `partial` and name a party as missing where a long download fills every cell, as for a party that is a total in one dataset and a party in another. The task reads each version's stored frame, counts its `party_kind` coverage again under the served graph release's code index, and rewrites the profile in the version row's `output_profile` column and in its stored body where the count differs. It reads no graph, so a party it names as missing carries the label the profile already holds for it, or none.
+
+Run it as an execution of the maintenance job, dry run first, with the environment's values for the three variables:
+
+```sh
+gcloud run jobs execute "$JOB_DATASETS_MAINTENANCE" --region="$REGION" --project="$PROJECT_ID" \
+  --wait --args=backfill-party-kind-coverage,--dry-run
+gcloud run jobs execute "$JOB_DATASETS_MAINTENANCE" --region="$REGION" --project="$PROJECT_ID" \
+  --wait --args=backfill-party-kind-coverage
+```
+
+Each run writes one `datasets_party_kind_backfilled` line counting the versions `refreshed` (on a dry run, those it would rewrite), `unchanged`, `frame_gone` (no tier holds the frame, so the row is left as it is) and `changed_under_run` (the profile changed while it counted), with `failed` and `dry_run`. Each version that fails gets one `datasets_party_kind_backfill_failed` line with its `subject_id`, `content_version` and traceback, and the run exits 1. A second run changes nothing. Rolling back after the run is safe: an older image reads the rewritten profile as it reads any other.
+
 Manual deployments trigger via `workflow_dispatch` in GitHub Actions and always deploy the
 dispatched commit, whether or not it's already live, since dispatch exists to force a redeploy
 (to re-run the migration jobs, for instance, or to roll back). Roll back by dispatching the older
