@@ -10,7 +10,7 @@ import pytest
 from dfo_frame_grammar import Frame
 
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
-from code_index.types import PartyRow, StatVarRow
+from code_index.types import PartyRow, RoleAxis, StatVarRow
 from datasets_api import render
 from datasets_api.mint_models import GroupbyOptions, MintOptions
 from datasets_api.render import (
@@ -87,12 +87,15 @@ _INDEX = CodeIndex(
         _statvar("SV_B", purpose=_PURPOSE_EDUCATION.dcid),
     ),
 )
+_BOTH_SIDES: tuple[tuple[str, RoleAxis], ...] = (("p1", "origin"), ("p1", "destination"))
+"""A publication on both flow axes, so a fixture party reads its kind on either."""
+
 _PARTIES = {
     party.dcid: party
     for party in (
-        PartyRow(dcid=_KENYA, kind="party"),
-        PartyRow(dcid=_GHANA, kind="party"),
-        PartyRow(dcid=_DEVELOPING, kind="total"),
+        PartyRow(dcid=_KENYA, kind="party", published=_BOTH_SIDES),
+        PartyRow(dcid=_GHANA, kind="party", published=_BOTH_SIDES),
+        PartyRow(dcid=_DEVELOPING, kind="total", published=_BOTH_SIDES),
     )
 }
 _RESOLVED = ("dcid:SV_A", "dcid:SV_B")

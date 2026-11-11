@@ -49,6 +49,7 @@ from search.engine.source_scope import (
     SourceCollection,
     SourceRefusal,
     SourceScope,
+    normalise_source_text,
     source_label,
 )
 from search.heading.departure_fact import DirectionWord, PartyReason
@@ -756,19 +757,24 @@ def read_as_party(
 
 def _reads_as_party(region: RegionResult, contested: ContestedOrganisation) -> bool:
     """Whether `region` binds one of `contested`'s dcids or refuses on its entity
-    (`ContestedOrganisation.entity`)."""
+    (`ContestedOrganisation.entity`), the two names compared under `normalise_source_text`,
+    the key the entity is found by, so casing, punctuation or a leading "the" does not part
+    them."""
     bound = any(
         dcid in contested.parties
         for spec in region.specs
         for dcids in spec.definition.identity.entities.values()
         for dcid in dcids
     )
-    refused_on = (
-        *(entity.text for entity in region.ambiguous_entities),
-        *region.unresolved_entity_names,
-        *(entity.text for entity in region.role_not_admitted_entities),
-    )
-    return bound or contested.entity in refused_on
+    refused_on = {
+        normalise_source_text(name)
+        for name in (
+            *(entity.text for entity in region.ambiguous_entities),
+            *region.unresolved_entity_names,
+            *(entity.text for entity in region.role_not_admitted_entities),
+        )
+    }
+    return bound or normalise_source_text(contested.entity) in refused_on
 
 
 def _join_words(words: Sequence[str]) -> str:

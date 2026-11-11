@@ -7,7 +7,7 @@ from collections.abc import Mapping
 import pytest
 from dfo_frame_grammar.grammar import ComposedUnit, StatVarPart, UnitRequest
 
-from code_index.types import PartyClass, PartyKind, PartyRow, WholeMarker
+from code_index.types import PartyClass, PartyKind, PartyRow, RoleAxis, WholeMarker
 from materialise.errors import MaterialisationUsageError
 from materialise.projection import (
     NativeCurrency,
@@ -57,9 +57,13 @@ _CLASS_OF_KIND: Mapping[PartyKind, PartyClass | None] = {
 }
 
 
+_BOTH_SIDES: tuple[tuple[str, RoleAxis], ...] = (("p1", "origin"), ("p1", "destination"))
+"""A publication on both flow axes, so a fixture party reads its kind on either."""
+
+
 def _parties(kinds: Mapping[str, PartyKind]) -> dict[str, PartyRow]:
     return {
-        ref: PartyRow(dcid=ref, kind=kind, party_class=_CLASS_OF_KIND[kind])
+        ref: PartyRow(dcid=ref, kind=kind, party_class=_CLASS_OF_KIND[kind], published=_BOTH_SIDES)
         for ref, kind in kinds.items()
     }
 
@@ -589,10 +593,14 @@ def test_a_row_without_a_readable_dataset_or_year_reads_total(columns, rows):
 _CRS = "provenance/OECDCreditorReportingSystem"
 
 _SIDE_PARTIES = {
-    "country/FRA": PartyRow(dcid="country/FRA", kind="party", party_class="official"),
-    "GatesFoundation": PartyRow(dcid="GatesFoundation", kind="party", party_class="private"),
+    "country/FRA": PartyRow(
+        dcid="country/FRA", kind="party", party_class="official", published=_BOTH_SIDES
+    ),
+    "GatesFoundation": PartyRow(
+        dcid="GatesFoundation", kind="party", party_class="private", published=_BOTH_SIDES
+    ),
     "DACAfricaUnallocated": PartyRow(
-        dcid="DACAfricaUnallocated", kind="residual", party_class="residual"
+        dcid="DACAfricaUnallocated", kind="residual", party_class="residual", published=_BOTH_SIDES
     ),
     **_WHOLE_PARTIES,
 }

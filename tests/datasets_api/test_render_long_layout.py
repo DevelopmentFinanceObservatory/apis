@@ -123,12 +123,22 @@ _ARCS = {
     "WDI_GDP": {"name": ("GDP",)},
 }
 _GRAPH = FakeMintGraphReader(arcs=_ARCS)
+_BOTH_SIDES: tuple[tuple[str, RoleAxis], ...] = (("p1", "origin"), ("p1", "destination"))
+"""A publication on both flow axes, so a fixture party reads its kind on either."""
+
 _PARTIES = {
-    "country/USA": PartyRow(dcid="country/USA", kind="party", party_class="official"),
-    "country/KEN": PartyRow(dcid="country/KEN", kind="party", party_class="official"),
+    "country/USA": PartyRow(
+        dcid="country/USA", kind="party", party_class="official", published=_BOTH_SIDES
+    ),
+    "country/KEN": PartyRow(
+        dcid="country/KEN", kind="party", party_class="official", published=_BOTH_SIDES
+    ),
     "DACAfrica": PartyRow(dcid="DACAfrica", kind="total", published=(("p1", "destination"),)),
     "DACAfricaUnallocated": PartyRow(
-        dcid="DACAfricaUnallocated", kind="residual", party_class="residual"
+        dcid="DACAfricaUnallocated",
+        kind="residual",
+        party_class="residual",
+        published=_BOTH_SIDES,
     ),
     "DACDevelopingCountries": PartyRow(
         dcid="DACDevelopingCountries", kind="total", published=(("p1", "destination"),)
@@ -1288,7 +1298,9 @@ _DAC_PARTIES = {
             WholeMarker(dataset=_DAC2B, covers=("official",)),
         ),
     ),
-    "GatesFoundation": PartyRow(dcid="GatesFoundation", kind="party", party_class="private"),
+    "GatesFoundation": PartyRow(
+        dcid="GatesFoundation", kind="party", party_class="private", published=_BOTH_SIDES
+    ),
 }
 
 

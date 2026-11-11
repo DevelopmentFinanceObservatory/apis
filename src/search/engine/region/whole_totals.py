@@ -192,7 +192,7 @@ def whole_reading(
 def containing_reading(dcid: str, *, datasets: Sequence[str]) -> WholeReading | None:
     """The side `dcid` holds when every one of `datasets` serves it as the containing total of
     one flow axis (`code_index.declarations.CONTAINING_TOTALS`) and the code index publishes
-    it on that axis in one of them (`PartyRow.publishes`), or `None`. The reading names
+    it on that axis in each of them (`PartyRow.publishes`), or `None`. The reading names
     the registry group the total holds (`PartyRow.totals`) where the membership policy lists
     that group, and covers no class."""
     row = get_index().parties.get(dcid)
@@ -206,8 +206,10 @@ def containing_reading(dcid: str, *, datasets: Sequence[str]) -> WholeReading | 
     if len(axes) != 1:
         return None
     (axis,) = axes
-    if not row.publishes(axis, datasets) or any(
-        (held := CONTAINING_TOTALS.get((dataset, axis))) is None or held.total != dcid
+    if any(
+        (held := CONTAINING_TOTALS.get((dataset, axis))) is None
+        or held.total != dcid
+        or not row.publishes(axis, (dataset,))
         for dataset in datasets
     ):
         return None

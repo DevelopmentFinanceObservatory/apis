@@ -12,6 +12,7 @@ from typing import cast
 
 import pytest
 
+from code_index.types import BroadReading
 from entity_resolution import Admission, EntityResolver
 from search.engine.bind import (
     ShapeRating,
@@ -35,20 +36,29 @@ from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.interpret import Recall
+from search.engine.interpretation import Interpretation
 from search.engine.qualifier_match import declared_measures_named
 from search.engine.quantity_read import QuantityOutput
-from search.engine.region import candidate_collapse
+from search.engine.region import candidate_collapse, phase_rank_bind
 from search.engine.region.candidate_collapse import _record_unheld_values
 from search.engine.region.phase_rank_bind import (
     _logged_verdicts,
     _phase_bind,
     _read_stated_quantity,
+    _stand_in_declined,
+    judge_value_requirements,
 )
 from search.engine.region.requirements import settle_answer, settle_candidate_set
-from search.engine.region.state import ResolveState
+from search.engine.region.state import (
+    Requirement,
+    ResolveState,
+    SlotDefaultDisclosure,
+    ValueRule,
+)
 from search.engine.retrieval.retrieve import NoDataDraft
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.engine.source_code import SeriesCodeMembers
+from search.models import GraphRef, ResolvedQualifier
 from tests.engine._assemble_fixtures import _make_spec
 from tests.engine._binders import FakeAsk, FixedBinder, elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
@@ -680,13 +690,103 @@ def test_a_lone_twin_is_judged_on_the_typed_values_as_any_reading_is(
     assert [fact.asked for _warning, fact in state.judgement.departures()] == departed
 
 
-def test_the_bind_line_logs_a_verdict_for_a_menu_shape_rule_four_did_not_judge():
+def test_a_stand_in_s_verdict_is_stored_when_it_joins_the_menu(monkeypatch):
     """A stand-in for a declined election joins the menu after rule 4 judged the admissible
-    shapes, so the `bind_decision` line judges it there. A shape rule 4 judged logs the
-    verdicts it stored."""
+    shapes, so rule 4 judges it as it joins and the `bind_decision` line logs the stored
+    verdicts of every shape without judging one."""
     state = _state(llm=_NoCallLLM())
     state.variable = "GDP"
     state.named_measures = tuple(declared_measures_named("GDP"))
-    state.measure_verdicts = {"population": ["base"]}
+    state.measure_verdicts = {"population": ["base"], "population_by_sex": ["holds"]}
+    state.bind_result = elected_reply(0, bindings=[], also_plausible=[])
+    stand_in = _shape("population_stand_in")
 
-    assert _logged_verdicts(state) == [{"GDP": "base"}, {"GDP": "unknown"}]
+    _stand_in_declined(state, Interpretation(shape=stand_in, reason="variable_not_resolved"))
+
+    def judged(*_args: object) -> list[str]:
+        raise AssertionError("the line judged rule 4")
+
+    monkeypatch.setattr(phase_rank_bind, "rule_four_verdicts", judged)
+    assert _logged_verdicts(state) == [{"GDP": "base"}, {"GDP": "holds"}, {"GDP": "unknown"}]
+
+
+@pytest.mark.parametrize("fired", [True, False], ids=["broad-reading", "no-reading"])
+def test_a_value_drafted_in_a_set_is_applied_by_the_broad_reading_that_fired(fired):
+    """ "girls and men" drafts Girls in a set. The part's broad reading of Girls as Female
+    fired, and the answer binds Female, so Girls is applied as the reading says; with no
+    reading the answer leaves it unmet."""
+    state = _state(llm=_NoCallLLM())
+    if fired:
+        state.slot_defaults = {
+            "gender": SlotDefaultDisclosure(
+                reading=BroadReading(
+                    property_dcid="gender",
+                    value_dcid="Girls",
+                    reads_as="Female",
+                    unless_bound="age",
+                    held_with="Adult",
+                    note="girls read as female",
+                )
+            )
+        }
+    requirement = Requirement(
+        term=ResolvedQualifier(
+            text="girls", named=[GraphRef(ref="Girls", label="Girls")], disposition="unbound"
+        ),
+        origin="value",
+        rule=ValueRule(
+            values=frozenset({("gender", "Girls")}),
+            drafted_set=frozenset({("gender", "Girls"), ("gender", "Male")}),
+        ),
+    )
+    bindings = [
+        SlotBindingDraft(axis="how", property_dcid="gender", kind="value", value_dcids=["Female"])
+    ]
+
+    unmet = judge_value_requirements([requirement], _MENU[1], bindings, state)
+
+    assert unmet == (() if fired else (requirement,))
+
+
+@pytest.mark.parametrize(
+    ("members", "reads"),
+    [
+        pytest.param({_HEALTH, _EDUCATION}, False, id="every-answer-holds-both"),
+        pytest.param({_HEALTH}, True, id="one-answer-holds-health-alone"),
+    ],
+)
+def test_labels_are_read_only_for_a_value_some_answer_leaves_unmet(monkeypatch, members, reads):
+    """An answer whose members carry each drafted sector applies both by value, so recording
+    the unheld values reads no label. One holding health alone leaves education unmet, and
+    only education's label is read."""
+    read: list[list[str]] = []
+
+    async def labels(state, values):
+        read.append(list(values))
+        return {value: value for value in values}
+
+    monkeypatch.setattr(candidate_collapse, "draft_value_labels", labels)
+    state = _state(llm=_NoCallLLM())
+    drafts = [
+        SlotBindingDraft(
+            axis="how",
+            property_dcid="crsPurpose",
+            kind="set",
+            value_dcids=[_EDUCATION, _HEALTH],
+            evidence="mentioned",
+        )
+    ]
+    state.variable = state.detect_query = "aid to health and education"
+    state.shape_draft, state.bindings = _AID_MENU[0], drafts
+    nominated = dataclasses.replace(
+        _AID_MENU[1],
+        sv_arc_facts={
+            key: value
+            for member in members
+            for key, value in _member(f"sv_{member}", "crsPurpose", member).items()
+        },
+    )
+
+    asyncio.run(_record_unheld_values(state, [(_AID_MENU[0], drafts), (nominated, [])]))
+
+    assert read == ([[_EDUCATION]] if reads else [])

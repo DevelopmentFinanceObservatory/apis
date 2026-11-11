@@ -21,6 +21,7 @@ from materialise.enrichment import (
     EnrichmentLookup,
     is_whole_total,
     party_cell,
+    party_count,
     period_year,
     read_party_kinds,
     row_party_cell,
@@ -93,8 +94,15 @@ def test_a_partys_kind_comes_from_its_index_row_whatever_its_graph_types():
     lookup = EnrichmentLookup(
         graph,
         parties=lambda: {
-            "WorldBankGroup": PartyRow(dcid="WorldBankGroup", kind="total"),
-            "Bare": PartyRow(dcid="Bare", kind="residual", party_class="residual"),
+            "WorldBankGroup": PartyRow(
+                dcid="WorldBankGroup", kind="total", published=((_DAC2A, "origin"),)
+            ),
+            "Bare": PartyRow(
+                dcid="Bare",
+                kind="residual",
+                party_class="residual",
+                published=((_DAC2A, "origin"),),
+            ),
         },
     )
 
@@ -116,7 +124,11 @@ def test_a_partys_kind_survives_a_graph_that_returns_no_node_for_it():
     graph = FakeGraphReader(arcs={})
     lookup = EnrichmentLookup(
         graph,
-        parties=lambda: {"WorldBankGroup": PartyRow(dcid="WorldBankGroup", kind="total")},
+        parties=lambda: {
+            "WorldBankGroup": PartyRow(
+                dcid="WorldBankGroup", kind="total", published=((_DAC2A, "origin"),)
+            )
+        },
     )
 
     first = lookup.lookup(["WorldBankGroup", "country/NOWHERE"])
@@ -134,13 +146,24 @@ _DAC2B = "provenance/OECDDAC2B"
 _ETHIOPIA_2021_PARTIES = {
     row.dcid: row
     for row in (
-        PartyRow(dcid="country/FRA", kind="party", party_class="official"),
-        PartyRow(dcid="GatesFoundation", kind="party", party_class="private"),
-        PartyRow(dcid="DACCountriesTotal", kind="total"),
+        PartyRow(
+            dcid="country/FRA",
+            kind="party",
+            party_class="official",
+            published=((_DAC2A, "origin"),),
+        ),
+        PartyRow(
+            dcid="GatesFoundation",
+            kind="party",
+            party_class="private",
+            published=((_DAC2A, "origin"),),
+        ),
+        PartyRow(dcid="DACCountriesTotal", kind="total", published=((_DAC2A, "origin"),)),
         PartyRow(
             dcid="DACOfficialDonors",
             kind="total",
             party_class="official",
+            published=((_DAC2A, "origin"), (_DAC2B, "origin")),
             whole=(
                 WholeMarker(dataset=_DAC2A, covers=("official",)),
                 WholeMarker(dataset=_DAC2B, covers=("official",)),
@@ -150,9 +173,15 @@ _ETHIOPIA_2021_PARTIES = {
             dcid="DACPrivateDonors",
             kind="total",
             party_class="private",
+            published=((_DAC2A, "origin"),),
             whole=(WholeMarker(dataset=_DAC2A, covers=("private",)),),
         ),
-        PartyRow(dcid="DACAfricaUnallocated", kind="residual", party_class="residual"),
+        PartyRow(
+            dcid="DACAfricaUnallocated",
+            kind="residual",
+            party_class="residual",
+            published=((_DAC2A, "origin"),),
+        ),
     )
 }
 """The origin refs of DAC2A Ethiopia 2021 as the code index rows give them."""
@@ -161,7 +190,14 @@ _ETHIOPIA_2021_PARTIES = {
 def test_a_dac2a_ethiopia_2021_row_reads_each_partys_kind_class_and_whole_cells():
     cells = {
         ref: tuple(
-            party_cell(field, ref, parties=_ETHIOPIA_2021_PARTIES, year=2021, provenance=_DAC2A)
+            party_cell(
+                field,
+                ref,
+                axis="origin",
+                parties=_ETHIOPIA_2021_PARTIES,
+                year=2021,
+                provenance=_DAC2A,
+            )
             for field in PARTY_FIELDS
         )
         for ref in (*_ETHIOPIA_2021_PARTIES, "country/NOWHERE")
@@ -182,7 +218,12 @@ def test_a_dac2a_ethiopia_2021_row_reads_each_partys_kind_class_and_whole_cells(
 def test_official_donors_are_whole_in_both_dac_datasets_and_private_donors_in_one():
     def whole(ref: str, provenance: str) -> object:
         return party_cell(
-            "party_whole", ref, parties=_ETHIOPIA_2021_PARTIES, year=2021, provenance=provenance
+            "party_whole",
+            ref,
+            axis="origin",
+            parties=_ETHIOPIA_2021_PARTIES,
+            year=2021,
+            provenance=provenance,
         )
 
     assert [whole("DACOfficialDonors", dataset) for dataset in (_DAC2A, _DAC2B)] == [
@@ -195,9 +236,10 @@ def test_official_donors_are_whole_in_both_dac_datasets_and_private_donors_in_on
     ]
 
 
-def test_the_render_leaves_a_whole_cell_empty_where_it_knows_no_dataset_or_year():
-    """`fields_of` carries no row, so `party_whole` is empty for a party with whole markers and
-    `false` for every other party; every other cell reads as the row would."""
+def test_a_pivot_leaves_a_whole_cell_empty_where_it_knows_no_dataset_or_year():
+    """A pivot reads a party's cells for no row, so `party_whole` is empty for a party with
+    whole markers and `false` for every other party; every other cell reads as the row would.
+    The render's graph reads carry no party cell, since those depend on the column's axis."""
     reads = _RenderReads(
         enrichment=EnrichmentLookup(
             FakeGraphReader(arcs={}), parties=lambda: _ETHIOPIA_2021_PARTIES
@@ -205,9 +247,28 @@ def test_the_render_leaves_a_whole_cell_empty_where_it_knows_no_dataset_or_year(
         known={},
         deadline=None,
     )
+    refs = [*_ETHIOPIA_2021_PARTIES, "country/NOWHERE"]
 
-    cells = reads.fields_of([*_ETHIOPIA_2021_PARTIES, "country/NOWHERE"], fields=PARTY_FIELDS)
+    cells = {
+        ref: {
+            field: cell
+            for field in PARTY_FIELDS
+            if (
+                cell := row_party_cell(
+                    field,
+                    ref,
+                    role="origin",
+                    parties=_ETHIOPIA_2021_PARTIES,
+                    period=None,
+                    provenance=None,
+                )
+            )
+            is not None
+        }
+        for ref in refs
+    }
 
+    assert reads.fields_of(refs, fields=PARTY_FIELDS) == {ref: {} for ref in refs}
     assert cells == {
         "country/FRA": {"party_kind": "party", "party_class": "official", "party_whole": "false"},
         "GatesFoundation": {
@@ -233,21 +294,20 @@ def test_the_render_leaves_a_whole_cell_empty_where_it_knows_no_dataset_or_year(
         },
         "country/NOWHERE": {},
     }
-    assert reads.fields_of(["GatesFoundation"], fields={"party_class"}) == {
-        "GatesFoundation": {"party_class": "private"}
-    }
 
 
 _WINDOWED = PartyRow(
     dcid="W",
     kind="total",
     party_class="official",
+    published=((_DAC2A, "origin"),),
     whole=(WholeMarker(dataset=_DAC2A, covers=("official",), years=(2010, 2023)),),
 )
 _UNWINDOWED = PartyRow(
     dcid="W",
     kind="total",
     party_class="official",
+    published=((_DAC2A, "origin"),),
     whole=(WholeMarker(dataset=_DAC2A, covers=("official",)),),
 )
 
@@ -285,41 +345,45 @@ def test_a_total_is_whole_only_in_the_dataset_and_years_of_its_marker(
     decides it; a party with no marker is `false` in every dataset and year."""
     assert is_whole_total(row, year=year, provenance=provenance) is expected
     assert (
-        party_cell("party_whole", "W", parties={"W": row}, year=year, provenance=provenance) == cell
+        party_cell(
+            "party_whole", "W", axis="origin", parties={"W": row}, year=year, provenance=provenance
+        )
+        == cell
     )
 
 
-def test_the_lookup_reads_only_the_kind_and_its_cells_no_whole_total():
+def test_the_lookup_reads_only_the_kind_and_no_whole_total():
     lookup = EnrichmentLookup(FakeGraphReader(arcs={}), parties=lambda: {"W": _WINDOWED})
 
-    assert lookup.party_cells("W") == {
-        "party_kind": "total",
-        "party_class": "official",
-        "party_whole": "",
-    }
-    assert lookup.party_cells("X") == {}
     assert lookup.lookup(["W"]) == {"W": {"party_kind": "total"}}
 
 
 def test_a_party_cell_refuses_a_field_that_is_not_a_party_field():
     with pytest.raises(ValueError, match="iso3"):
-        party_cell("iso3", "W", parties={"W": _WINDOWED})
+        party_cell("iso3", "W", axis="origin", parties={"W": _WINDOWED})
 
 
 def test_a_partys_kind_follows_the_party_rows_each_lookup_reads():
     """The rows can change between lookups, as a graph release swap replaces the code index. A
     cached ref takes the kind the current rows give, with no second graph read."""
     graph = FakeGraphReader(arcs={"WorldBankGroup": {"typeOf": ("Organization",)}})
-    rows = {"WorldBankGroup": PartyRow(dcid="WorldBankGroup", kind="total")}
+    rows = {
+        "WorldBankGroup": PartyRow(
+            dcid="WorldBankGroup", kind="total", published=((_DAC2A, "origin"),)
+        )
+    }
     lookup = EnrichmentLookup(graph, parties=lambda: rows)
 
     before = lookup.lookup(["WorldBankGroup"])
-    rows = {"WorldBankGroup": PartyRow(dcid="WorldBankGroup", kind="party")}
+    rows = {
+        "WorldBankGroup": PartyRow(
+            dcid="WorldBankGroup", kind="party", published=((_DAC2A, "origin"),)
+        )
+    }
     after = lookup.lookup(["WorldBankGroup"])
 
     assert before["WorldBankGroup"]["party_kind"] == "total"
     assert after["WorldBankGroup"] == {"type": "Organization", "party_kind": "party"}
-    assert lookup.party_cells("WorldBankGroup")["party_kind"] == "party"
     assert graph.calls["node_arcs_many"] == 1
 
 
@@ -335,9 +399,15 @@ def test_party_kinds_read_the_index_alone_for_flow_parties():
             ("observationAbout", "country/USA"),
         ],
         parties={
-            "WorldBankGroup": PartyRow(dcid="WorldBankGroup", kind="total"),
-            "country/USA": PartyRow(dcid="country/USA", kind="party"),
-            "DACAfrica": PartyRow(dcid="DACAfrica", kind="total"),
+            "WorldBankGroup": PartyRow(
+                dcid="WorldBankGroup", kind="total", published=((_DAC2A, "origin"),)
+            ),
+            "country/USA": PartyRow(
+                dcid="country/USA", kind="party", published=((_DAC2A, "origin"),)
+            ),
+            "DACAfrica": PartyRow(
+                dcid="DACAfrica", kind="total", published=((_DAC2A, "destination"),)
+            ),
         },
         datasets=(),
     )
@@ -377,7 +447,14 @@ def test_a_party_takes_its_dataset_kind_there_and_its_own_kind_in_every_other_da
 
     def cells(provenance: str | None) -> tuple[str | None, ...]:
         return tuple(
-            party_cell(field, _TRUST_FUNDS.dcid, parties=parties, year=2020, provenance=provenance)
+            party_cell(
+                field,
+                _TRUST_FUNDS.dcid,
+                axis="origin",
+                parties=parties,
+                year=2020,
+                provenance=provenance,
+            )
             for field in PARTY_FIELDS
         )
 
@@ -393,7 +470,29 @@ def test_a_party_takes_its_dataset_kind_there_and_its_own_kind_in_every_other_da
     ] == [{entity: "total"}, {entity: "party"}, {}, {}]
     lookup = EnrichmentLookup(FakeGraphReader(arcs={}), parties=lambda: parties)
     assert lookup.lookup([_TRUST_FUNDS.dcid]) == {_TRUST_FUNDS.dcid: {}}
-    assert lookup.party_cells(_TRUST_FUNDS.dcid) == {"party_whole": "false"}
+
+
+def test_a_party_s_kind_and_count_read_the_role_s_axis():
+    """A party that is a total where DAC2B publishes it as a recipient and a party where DAC2A
+    publishes it as a donor is a party among the donors and a total among the recipients, so
+    the default download keeps it as a donor and leaves it out as a recipient."""
+    mixed = PartyRow(
+        dcid="MixedParty",
+        kind="party",
+        party_class="official",
+        published=((_DAC2A, "origin"), (_DAC2B, "destination")),
+        dataset_kinds=((_DAC2B, "total"),),
+    )
+    parties = {**_ETHIOPIA_2021_PARTIES, mixed.dcid: mixed}
+    members = [mixed.dcid, "country/FRA"]
+
+    assert read_party_kinds(
+        [("origin", mixed.dcid), ("destination", mixed.dcid)], parties=parties, datasets=()
+    ) == {("origin", mixed.dcid): "party", ("destination", mixed.dcid): "total"}
+    assert [
+        party_count(members, axis=axis, parties=parties, datasets=())
+        for axis in ("origin", "destination")
+    ] == [2, 1]
 
 
 def test_ref_with_only_a_label_omits_the_missing_fields():
@@ -665,12 +764,20 @@ def test_a_rows_cells_give_its_party_whole_cell(ref, period, provenance, expecte
             dcid="W",
             kind="total",
             party_class="official",
+            published=((_DAC2A, "origin"),),
             whole=(WholeMarker(dataset=_DAC2A, covers=("official",), years=(2020, 2021)),),
         )
     }
 
     assert (
-        row_party_cell("party_whole", ref, parties=parties, period=period, provenance=provenance)
+        row_party_cell(
+            "party_whole",
+            ref,
+            role="origin",
+            parties=parties,
+            period=period,
+            provenance=provenance,
+        )
         == expected
     )
 

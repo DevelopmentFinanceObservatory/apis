@@ -2516,3 +2516,19 @@ def test_a_stretch_departs_only_on_the_part_it_qualifies(catalogue: CatalogueSna
         for part in response.parts
     ] == [[], ["excluding humanitarian aid"]]
     assert [w.code for w in response.diagnostics.warnings] == ["query_qualifier_dropped"]
+
+
+@pytest.mark.parametrize("refused_as", ["World Bank", "the World Bank", "world bank"])
+def test_a_refusal_on_the_organisation_s_words_says_it_was_read_as_a_party(refused_as):
+    """The refusal names the organisation as its entity key spells it, which can differ in
+    case or a leading "the" from the words the contest read; the part still says it read
+    the organisation as a party."""
+    reading = OrganisationReading(role="party", source_possible=False, reason="direction")
+    refused = dataclasses.replace(
+        _refusal("debt service", "entity_role_not_admitted"),
+        unresolved_entity_names=(refused_as,),
+    )
+
+    disclosed = read_as_party(refused, _WORLD_BANK, reading)
+
+    assert [warning.code for warning in disclosed.warnings] == [ORGANISATION_READ_AS_PARTY]

@@ -654,14 +654,14 @@ class PartyRow:
     marker reads the party as an ordinary `total`. The kind stays `total`, so a reader of
     `kind == "total"` stays correct.
 
-    `kind` is the party's kind in every dataset `dataset_kinds` does not name, and
-    `dataset_kinds` the `(dataset, kind)` pairs, sorted by dataset, where it takes another
-    kind. IMF Concessional Trust Funds (`IMFConcessionalTrustFunds`) is a `party` in the CRS,
-    which publishes it and never the IMF, and a `total` in DAC2A, which publishes it beside
-    the IMF it equals. A reader serving one dataset reads `kind_in`, and one serving several or
-    none reads `kinds_over` or `kind_over` on the axis of the role it serves, so a kind a
-    dataset gives the party on one axis never reaches a role on the other. `party_class` is the class of `kind`; where the
-    party takes another kind it takes that kind's class (`class_of`).
+    `kind` is the party's kind in every dataset `dataset_kinds` does not name, and `dataset_kinds`
+    the `(dataset, kind)` pairs, sorted by dataset, where it takes another kind. IMF Concessional
+    Trust Funds (`IMFConcessionalTrustFunds`) is a `party` in the CRS, which publishes it and never
+    the IMF, and a `total` in DAC2A, which publishes it beside the IMF it equals. A reader serving
+    one dataset reads `kind_in`, and one serving several or none reads `kinds_over` or `kind_over`
+    on the axis of the role it serves, so a kind a dataset gives the party on one axis never reaches
+    a role on the other. `party_class` is the class of `kind`; where the party takes another kind it
+    takes that kind's class (`class_of`).
     """
 
     dcid: str
@@ -707,16 +707,16 @@ class PartyRow:
     ) -> frozenset[PartyKind]:
         """The kinds the party takes in those of `datasets` that publish it on `axis` (on
         either axis for `ANY_AXIS`), or in every dataset that publishes it there when none of
-        `datasets` does, as for an empty `datasets`. A party with `dataset_kinds` that no
-        dataset publishes on `axis` takes no kind there. A row without `dataset_kinds` takes
-        `kind` alone."""
-        if not self.dataset_kinds:
-            return frozenset((self.kind,))
+        `datasets` does, as for an empty `datasets`. A party no dataset publishes on `axis`
+        takes no kind there. A row without `dataset_kinds` takes `kind` alone wherever it is
+        published."""
         publishing = {
             dataset
             for dataset, published_axis in self.published
             if axis is ANY_AXIS or published_axis == axis
         }
+        if not self.dataset_kinds:
+            return frozenset((self.kind,)) if publishing else frozenset()
         named = (publishing & set(datasets)) or publishing
         return frozenset(self.kind_in(dataset) for dataset in named)
 

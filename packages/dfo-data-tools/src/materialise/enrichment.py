@@ -1,9 +1,10 @@
 """Batched graph lookups for materialisation's country-code, label and place-type enrichment
 fields, the party fields the code index gives, and `read_party_kinds`, Search's reader of a
-party's kind. Every reader takes the kind from the code index alone (`party_kind_of`), for the
-datasets it serves, since a party can take a different kind in each (`PartyRow.dataset_kinds`).
-A frame row's party cells (`party_cell`) are its party's kind and class in that row's dataset,
-and whether it is a whole total for that row's dataset and year (`is_whole_total`)."""
+party's kind. Every reader takes the kind from the code index alone (`party_kind_of`), on the
+axis of the role it reads and for the datasets it serves, since a party can take a different
+kind in each (`PartyRow.dataset_kinds`). A frame row's party cells (`party_cell`) are its
+party's kind and class on its column's axis in that row's dataset, and whether it is a whole
+total for that row's dataset and year (`is_whole_total`)."""
 
 from __future__ import annotations
 
@@ -13,9 +14,9 @@ import threading
 from collections import OrderedDict
 from collections.abc import Callable, Collection, Iterable, Mapping
 
-from code_index.types import ANY_AXIS, PartyKind, PartyRow
+from code_index.types import ANY_AXIS, AnyAxis, PartyKind, PartyRow
 from dc_graph import label_or_self_name
-from dfo_platform.roles import role_key_axis
+from dfo_platform.roles import RoleAxis, role_key_axis
 from graph_release.context import served_origin_key
 from materialise.graph import GraphReader
 
@@ -125,15 +126,6 @@ class EnrichmentLookup:
             hits.update(resolved)
         return {ref: _with_party_kind(ref, hits[ref], parties=parties) for ref in requested}
 
-    def party_cells(self, ref: str) -> dict[str, str]:
-        """The party cells `parties` gives `ref` for no dataset and year (`party_cell` of each
-        of `PARTY_FIELDS`), read with no graph call, so they hold when a `lookup` fails. Empty
-        for a ref the rows do not list. With no dataset, `party_whole` is empty for a party that
-        carries whole markers (`whole_cell`), and `party_kind` and `party_class` are absent for
-        a party whose kind differs between datasets."""
-        cells = {field: party_cell(field, ref, parties=self._parties()) for field in PARTY_FIELDS}
-        return {field: cell for field, cell in cells.items() if cell is not None}
-
     def _hits_and_missing(
         self, requested: list[str]
     ) -> tuple[dict[str, Mapping[str, str]], list[str]]:
@@ -164,7 +156,7 @@ def _with_party_kind(
 ) -> Mapping[str, str]:
     """`fields` with `party_kind` set to the ref's cell for no dataset (`party_cell`), unchanged
     for a ref that has none there. A copy, so the cached fields never carry a kind."""
-    if (kind := party_cell(PARTY_KIND_FIELD, ref, parties=parties)) is None:
+    if (kind := party_cell(PARTY_KIND_FIELD, ref, axis=ANY_AXIS, parties=parties)) is None:
         return fields
     return {**fields, PARTY_KIND_FIELD: kind}
 
@@ -189,30 +181,44 @@ def _node_fields(dcid: str, node: Mapping[str, tuple[str, ...]]) -> dict[str, st
 
 
 def party_kind_of(
-    ref: str, *, parties: Mapping[str, PartyRow], datasets: Collection[str]
+    ref: str,
+    *,
+    axis: RoleAxis | AnyAxis,
+    parties: Mapping[str, PartyRow],
+    datasets: Collection[str],
 ) -> PartyKind | None:
-    """The kind the code index's `parties` row declares for the party `ref` in `datasets`, the
+    """The kind the code index's `parties` row declares for the party `ref` on `axis`, the
+    axis of the role the reader reads (`ANY_AXIS` for a reader of no role), in `datasets`, the
     provenances the reader serves (`PartyRow.kind_over`), which holds whatever the graph says
     (a group of organisations is typed `Organization` and declared `total`). Empty `datasets`
-    reads every dataset that publishes the party. `None` for a ref the rows do not list, and
-    for a party that takes different kinds in those datasets.
+    reads every dataset that publishes the party on `axis`. `None` for a ref the rows do not
+    list, for a party no dataset publishes on `axis`, and for a party that takes different
+    kinds in those datasets.
 
     Search, the options document and every download read this one source, since the index
     lists every party a declared dataset publishes. A coverage build carrying a party the index
     was not exported for leaves that party with no kind. That is index drift, which the
     code-index drift gate reports and a re-export of the index repairs."""
     party = parties.get(ref)
-    return None if party is None else party.kind_over(ANY_AXIS, datasets)
+    return None if party is None else party.kind_over(axis, datasets)
 
 
 def party_count(
-    dcids: Collection[str], *, parties: Mapping[str, PartyRow], datasets: Collection[str]
+    dcids: Collection[str],
+    *,
+    axis: RoleAxis | AnyAxis,
+    parties: Mapping[str, PartyRow],
+    datasets: Collection[str],
 ) -> int:
-    """How many of `dcids` the default download keeps as parties: those the code index's
-    `parties` declares no `total` in `datasets` (`party_kind_of`),
-    the test the Datasets cut of party totals applies (`datasets_api.party_totals`). When
-    every member is a total the cut keeps them all, and so does the count."""
-    kept = sum(party_kind_of(dcid, parties=parties, datasets=datasets) != "total" for dcid in dcids)
+    """How many of `dcids`, members of a role on `axis`, the default download keeps as
+    parties: those the code index's `parties` declares no `total` on `axis` in `datasets`
+    (`party_kind_of`), the test the Datasets cut of party totals applies
+    (`datasets_api.party_totals`). When every member is a total the cut keeps them all, and so
+    does the count."""
+    kept = sum(
+        party_kind_of(dcid, axis=axis, parties=parties, datasets=datasets) != "total"
+        for dcid in dcids
+    )
     return kept or len(dcids)
 
 
@@ -246,21 +252,23 @@ def party_cell(
     field: str,
     ref: str,
     *,
+    axis: RoleAxis | AnyAxis,
     parties: Mapping[str, PartyRow],
     year: int | None = None,
     provenance: str | None = None,
 ) -> str | None:
     """The `<role>_<field>` cell of the party `ref`, for `field` one of `PARTY_FIELDS`, on a
-    row of `provenance` in `year`: its kind there (`party_kind_of`), its class there
-    (`PartyRow.class_of`, empty when it has none), or whether it is a whole total there
-    (`whole_cell`). With no `provenance` the kind and class are those of every dataset. `None`
-    for a ref the rows do not list, and for the kind and class of a party that takes no one kind
-    for the row (`PartyRow.kind_over`), so a reader counts the cell unavailable."""
+    row of `provenance` in `year`, for a role on `axis` (`ANY_AXIS` for a reader of no role):
+    its kind there (`party_kind_of`), its class there (`PartyRow.class_of`, empty when it has
+    none), or whether it is a whole total there (`whole_cell`). With no `provenance` the kind
+    and class are those of every dataset that publishes it on `axis`. `None` for a ref the rows
+    do not list, and for the kind and class of a party that takes no one kind for the row
+    (`PartyRow.kind_over`), so a reader counts the cell unavailable."""
     party = parties.get(ref)
     if party is None:
         return None
     if field in (PARTY_KIND_FIELD, PARTY_CLASS_FIELD):
-        kind = party.kind_over(ANY_AXIS, () if provenance is None else (provenance,))
+        kind = party.kind_over(axis, () if provenance is None else (provenance,))
         if kind is None:
             return None
         if field == PARTY_KIND_FIELD:
@@ -272,17 +280,25 @@ def party_cell(
 
 
 def row_party_cell(
-    field: str, ref: object, *, parties: Mapping[str, PartyRow], period: object, provenance: object
+    field: str,
+    ref: object,
+    *,
+    role: str,
+    parties: Mapping[str, PartyRow],
+    period: object,
+    provenance: object,
 ) -> str | None:
-    """The `<role>_<field>` cell of a frame row whose party cell is `ref`, `time_period` cell
+    """The `<role>_<field>` cell of a frame row whose `role` cell is `ref`, `time_period` cell
     `period` and `provenance` cell `provenance` (`None` for a table without that column): the
-    `party_cell` for the year of `period` (`period_year`) and that dataset. `None` for a `ref`
-    that is not text. A `provenance` that is not text reads as no dataset."""
-    if not isinstance(ref, str):
+    `party_cell` on the role's axis (`role_key_axis`) for the year of `period` (`period_year`)
+    and that dataset. `None` for a `ref` that is not text and for a role on no flow axis. A
+    `provenance` that is not text reads as no dataset."""
+    if not isinstance(ref, str) or (axis := role_key_axis(role)) is None:
         return None
     return party_cell(
         field,
         ref,
+        axis=axis,
         parties=parties,
         year=period_year(period),
         provenance=provenance if isinstance(provenance, str) else None,
@@ -335,14 +351,14 @@ def read_party_kinds(
     datasets: Collection[str],
 ) -> dict[tuple[str, str], PartyKind]:
     """The kind of each `(role, ref)` entity whose role is a party role (`is_party_role`) in
-    `datasets`, the provenances the reader serves, keyed by the pair: `party_kind_of` over the
-    code index's `parties` rows. An entity the rows do not list, one that takes different kinds
-    in `datasets`, or one in a subject role, is absent."""
+    `datasets`, the provenances the reader serves, keyed by the pair: `party_kind_of` on the
+    role's axis over the code index's `parties` rows. An entity the rows do not list, one that
+    takes no one kind on that axis in `datasets`, or one in a subject role, is absent."""
     kinds: dict[tuple[str, str], PartyKind] = {}
     for role, ref in dict.fromkeys(entities):
-        if not is_party_role(role):
+        if (axis := role_key_axis(role)) is None:
             continue
-        kind = party_kind_of(ref, parties=parties, datasets=datasets)
+        kind = party_kind_of(ref, axis=axis, parties=parties, datasets=datasets)
         if kind is not None:
             kinds[role, ref] = kind
     return kinds

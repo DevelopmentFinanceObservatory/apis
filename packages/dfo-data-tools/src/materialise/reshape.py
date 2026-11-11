@@ -1174,20 +1174,21 @@ def _fill_lookup_columns(
     requests: Sequence[tuple[str, str]],
     lookup: Mapping[str, Mapping[str, str]],
     parties: Mapping[str, PartyRow] | None = None,
+    per_row: bool = True,
 ) -> tuple[Table, tuple[MaterialisationWarning, ...]]:
     """Append one `{entity_column}_{field}` column per request, in request
     order. Missing refs or fields become empty cells; each affected request
     gets an `enrichment_unavailable` warning with its empty-cell count.
     Callers validate entity columns, field names, and duplicate requests.
 
-    With `parties` (the code index's rows), a party field's cell (`PARTY_FIELDS`) is
-    `party_cell` of the row's party for the row's `provenance` and the year of its
-    `time_period`, so `party_whole` reads `true` only in the dataset and years a whole total's
-    marker holds (`PartyRow.whole`). Where a table has no `provenance` or `time_period` column,
-    or a row no readable value in one, the `party_whole` cell of a party with whole markers is
-    empty (`materialise.enrichment.whole_cell`). Without
-    `parties` the cell comes from `lookup` like every field. Only a cell `lookup_cell` reads as
-    absent counts as missing.
+    With `parties` (the code index's rows), a party field's cell (`PARTY_FIELDS`) is `party_cell` of
+    the row's party on its entity column's axis (`row_party_cell`) for the row's `provenance` and
+    the year of its `time_period`, so `party_whole` reads `true` only in the dataset and years a
+    whole total's marker holds (`PartyRow.whole`). With `per_row` false the cell is read for no
+    dataset and year, as a pivot reads it. Where a table has no `provenance` or `time_period`
+    column, or a row no readable value in one, the `party_whole` cell of a party with whole markers
+    is empty (`materialise.enrichment.whole_cell`). Without `parties` the cell comes from `lookup`
+    like every field. Only a cell `lookup_cell` reads as absent counts as missing.
     """
     entity_positions = {
         entity_column: table.columns.index(entity_column) for entity_column, _field in requests
@@ -1209,9 +1210,12 @@ def _fill_lookup_columns(
                 value = row_party_cell(
                     field_name,
                     ref,
+                    role=entity_column,
                     parties=parties,
-                    period=None if period_at is None else row[period_at],
-                    provenance=None if provenance_at is None else row[provenance_at],
+                    period=None if period_at is None or not per_row else row[period_at],
+                    provenance=(
+                        None if provenance_at is None or not per_row else row[provenance_at]
+                    ),
                 )
             else:
                 value = lookup_cell(lookup, ref, field_name)
@@ -1285,11 +1289,13 @@ def enrich_columns(
     requests: Sequence[tuple[str, str]],
     lookup: Mapping[str, Mapping[str, str]],
     parties: Mapping[str, PartyRow] | None = None,
+    per_row: bool = True,
 ) -> tuple[Table, tuple[MaterialisationWarning, ...]]:
     """Append `{entity_column}_{field}` columns in request order.
     Fields must be supported, entity columns must exist, and requests must
     be unique. Invalid input raises `MaterialisationUsageError` before rows
-    are processed. `parties` gives party fields' cells their year-aware reading
+    are processed. `parties` gives party fields' cells their reading on each
+    column's axis, for each row's dataset and year unless `per_row` is false
     (`_fill_lookup_columns`).
     """
     unsupported = sorted(
@@ -1307,7 +1313,9 @@ def enrich_columns(
     _refuse_unknown_entity_columns(table, requests=requests, caller_name="enrich_columns")
     _refuse_duplicate_requests(requests, caller_name="enrich_columns", field_noun="field")
 
-    return _fill_lookup_columns(table, requests=requests, lookup=lookup, parties=parties)
+    return _fill_lookup_columns(
+        table, requests=requests, lookup=lookup, parties=parties, per_row=per_row
+    )
 
 
 def decode_columns(
@@ -1971,13 +1979,16 @@ class EnrichmentPlan:
     """One `enrich_columns` invocation's parameters. `requests` is a tuple
     of `(entity_column, field)` pairs, in the order `enrich_columns` should
     append their output columns. `parties` is the code index's rows, which give
-    each row's party cells (`PARTY_FIELDS`) for the dataset and year of the row;
-    `None` reads the cells from `lookup`, as for every other field.
+    each row's party cells (`PARTY_FIELDS`) on its entity column's axis, for the
+    dataset and year of the row, or for no dataset and year when `per_row` is
+    false, as a pivot's index groups rows; `None` reads the cells from `lookup`,
+    as for every other field.
     """
 
     requests: tuple[tuple[str, str], ...]
     lookup: Mapping[str, Mapping[str, str]]
     parties: Mapping[str, PartyRow] | None = None
+    per_row: bool = True
 
 
 @dataclass(frozen=True)
@@ -2135,6 +2146,7 @@ def apply_reshapes(
             requests=plan.enrichment.requests,
             lookup=plan.enrichment.lookup,
             parties=plan.enrichment.parties,
+            per_row=plan.enrichment.per_row,
         )
         warnings.extend(enrichment_warnings)
 

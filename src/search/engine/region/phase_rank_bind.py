@@ -76,7 +76,7 @@ from search.engine.function_words import (
     RATIO_WORDS,
 )
 from search.engine.interpretation import Interpretation, InterpretationSet
-from search.engine.measure_verdict import Verdict, measure_verdicts
+from search.engine.measure_verdict import measure_verdicts
 from search.engine.qualifier_match import (
     BREAKDOWN_FILLER_NOUNS,
     CONNECTIVES,
@@ -4079,30 +4079,28 @@ def judge_value_requirements(
     (`ValueRule`, `value_requirements`) that an answer of `shape` read under `bindings`
     leaves unmet.
 
-    The answer is the members of `shape` its bindings select (`_selected_members`). It
-    applies a value its bindings bind, or one every selected member holds, as every member
-    of a female population shape holds gender Female, where a code's descendant applies it
-    as a binding of the code reads (`applies_value`). The values the bind drafted on a
-    property the elected reading lacks (origin ``stray``) are a set, applied by membership
-    as a set bound on a slot reads: a binding holds one of them, or every selected member
-    does (`applies_one_of`). One value of such a set (origin ``set_value``) is applied when
-    a binding or some selected member holds it, and so is a value drafted in a set on a
-    slot the elected reading holds (`ValueRule.drafted_set`) where the answer applies that
-    set by membership: members carrying health alone apply health of "health and
-    education" and not education. These are judged by values alone: a word of a member's
-    name states none of them. Any other requirement is also met by a run every word
-    of which its series states (`_series_words`), as a Student population states "student", or each
-    selected member's name holds, as "Infant Mortality Rate", the name of
-    `Count_Death_0Years_AsFractionOf_Count_BirthEvent_LiveBirth`, holds "infant" though
-    the member binds age 0 and not the age group Infant. A run overlapping a code term of
-    a system `shape` holds (`shape_vocabulary`) is its code readers'. Any other run is
-    unmet: "female" when the answering literacy rate has no gender slot. A word the
-    answer's datasets state of the rows the part reads (`_dataset_stated_words`) is stated
-    too: "bilateral", the creditor type of a debt series on the menu, is met by a CRS
-    answer. A broad reading that fired on the part (`SlotDefaultDisclosure.reading`) applies
-    its narrow value wherever the bindings hold its broader one: "publicly guaranteed" is
-    applied by public and publicly guaranteed debt, which the part's note says it read. A
-    resubmit gives no `state` and reads none.
+    The answer is the members of `shape` its bindings select (`_selected_members`). It applies a
+    value its bindings bind, or one every selected member holds, as every member of a female
+    population shape holds gender Female, where a code's descendant applies it as a binding of the
+    code reads (`applies_value`). The values the bind drafted on a property the elected reading
+    lacks (origin ``stray``) are a set, applied by membership as a set bound on a slot reads: a
+    binding holds one of them, or every selected member does (`applies_one_of`). One value of such a
+    set (origin ``set_value``) is applied when a binding or some selected member holds it, and so is
+    a value drafted in a set on a slot the elected reading holds (`ValueRule.drafted_set`) where the
+    answer applies that set by membership, or where a broad reading applies it as below: members
+    carrying health alone apply health of "health and education" and not education. These are judged
+    by values alone: a word of a member's name states none of them. Any other requirement is also
+    met by a run every word of which its series states (`_series_words`), as a Student population
+    states "student", or each selected member's name holds, as "Infant Mortality Rate", the name of
+    `Count_Death_0Years_AsFractionOf_Count_BirthEvent_LiveBirth`, holds "infant" though the member
+    binds age 0 and not the age group Infant. A run overlapping a code term of a system `shape`
+    holds (`shape_vocabulary`) is its code readers'. Any other run is unmet: "female" when the
+    answering literacy rate has no gender slot. A word the answer's datasets state of the rows the
+    part reads (`_dataset_stated_words`) is stated too: "bilateral", the creditor type of a debt
+    series on the menu, is met by a CRS answer. A broad reading that fired on the part
+    (`SlotDefaultDisclosure.reading`) applies its narrow value wherever the bindings hold its
+    broader one: "publicly guaranteed" is applied by public and publicly guaranteed debt, which the
+    part's note says it read. A resubmit gives no `state` and reads none.
     """
     if not requirements:
         return ()
@@ -4162,9 +4160,13 @@ def judge_value_requirements(
             return any(held_by_some(prop, value) for prop, value in rule.values)
         if rule.drafted_set:
             return (
-                applied_as_a_set(rule.drafted_set)
-                and any(held_by_some(prop, value) for prop, value in rule.values)
-            ) or states(_casefolded_words(requirement.term.text))
+                any(value in read_broadly for value in rule.values)
+                or (
+                    applied_as_a_set(rule.drafted_set)
+                    and any(held_by_some(prop, value) for prop, value in rule.values)
+                )
+                or states(_casefolded_words(requirement.term.text))
+            )
         return any(applied(prop, value) for prop, value in rule.values) or states(
             _casefolded_words(requirement.term.text)
         )
@@ -5062,25 +5064,19 @@ def _log_bind_decision(state: ResolveState, decision: BindResult | None) -> None
 
 def _logged_verdicts(state: ResolveState) -> list[dict[str, str]]:
     """For each menu shape, in menu order, the verdict rule 4 read on each of the part's
-    `ResolveState.named_measures`, keyed by the words of its first occurrence: the verdicts
-    rule 4 stored (`ResolveState.measure_verdicts`), or for a menu shape it did not judge,
-    such as a stand-in for a declined election, its verdicts judged here
-    (`admissibility.rule_four_verdicts`)."""
+    `ResolveState.named_measures`, keyed by the words of its first occurrence, as rule 4
+    stored them (`ResolveState.measure_verdicts`): for each admissible shape when the phase
+    judged them, and for a stand-in for a declined election when `_stand_in_declined` added
+    it. The line judges nothing; a shape with no stored verdicts logs none."""
     spans = state.named_measures
     words = [state.variable[slice(*span.occurrences[0])] for span in spans]
     return [
-        dict(zip(words, _shape_verdicts(state, shape), strict=True))
+        dict(zip(words, verdicts, strict=True))
+        if (verdicts := state.measure_verdicts.get(shape.shape_id)) is not None
+        else {}
         for shape in state.capped_shapes
         if spans
     ]
-
-
-def _shape_verdicts(state: ResolveState, shape: ShapeDraft) -> list[Verdict]:
-    """Rule 4's verdicts on `shape`: those it stored, else judged now."""
-    stored = state.measure_verdicts.get(shape.shape_id)
-    if stored is not None:
-        return stored
-    return rule_four_verdicts(shape, state.named_measures, state.denominator_reads)
 
 
 async def _phase_bind(state: ResolveState) -> RegionResult | None:
@@ -5473,8 +5469,14 @@ def _stand_in_declined(state: ResolveState, declined: Interpretation) -> None:
     whose name the variable phrase states (`_with_named_values`), the codes the question
     names in its vocabulary join the part's matches (`ResolveState.pinned_part_matches`),
     which vetting forces where it can bind them, and repair applies the declared defaults
-    and the values its family shares."""
+    and the values its family shares. Rule 4's verdicts on it are stored beside the menu's
+    (`ResolveState.measure_verdicts`) when the phase did not judge it, so the `bind_decision`
+    line logs them."""
     state.declined = declined
+    if declined.shape.shape_id not in state.measure_verdicts:
+        state.measure_verdicts[declined.shape.shape_id] = rule_four_verdicts(
+            declined.shape, state.named_measures, state.denominator_reads
+        )
     vocabulary = shape_vocabulary(declined.shape)
     if vocabulary not in state.query_qualifier_matches:
         state.query_qualifier_matches = {

@@ -690,8 +690,9 @@ async def _record_unheld_values(
     origin ``unheld``) by the rule that settles it on each answer
     (`phase_rank_bind.judge_value_requirements`), a value drafted in a set judged with
     that set (`ValueRule.drafted_set`), and named by the value's label
-    (`value_labels.draft_value_labels`). An answer binding the value on its property meets
-    it, so a set whose every answer binds each drafted value reads no labels. A value no
+    (`value_labels.draft_value_labels`). Labels are read only for the values the rule leaves
+    unmet on some answer judged by values alone, so a set whose every answer binds or holds
+    each drafted value reads no labels. A value no
     recorded term supports is the bind model's reading of the measure the phrase names,
     not a value the user typed (`value_labels.model_only_values`), as LiveBirth is of
     "birth rate", and records nothing. The requirement refuses nothing, so the set offers
@@ -715,6 +716,18 @@ async def _record_unheld_values(
         for _shape, bindings in answers
     ]
     pending = [pair for pair in drafted if not all(pair in held for held in bound)]
+    # Judged first by values alone, each named by its dcid, so labels are read only for the
+    # values some answer leaves unmet.
+    by_value = [
+        _unheld_requirement(prop, value, value, drafted_sets[prop, value])
+        for prop, value in pending
+    ]
+    unmet_by_value = _unmet_on_some(by_value, answers, state)
+    pending = [
+        pair
+        for pair, requirement in zip(pending, by_value, strict=True)
+        if requirement in unmet_by_value
+    ]
     if not pending:
         return
     labels = await draft_value_labels(state, [value for _prop, value in pending])
@@ -727,14 +740,24 @@ async def _record_unheld_values(
             for value in values
             if value not in model
         ]
+    unmet = _unmet_on_some(requirements, answers, state)
+    for requirement in requirements:
+        if requirement in unmet:
+            state.requirements = with_requirement(state.requirements, requirement)
+
+
+def _unmet_on_some(
+    requirements: Sequence[Requirement],
+    answers: Sequence[tuple[ShapeDraft, Sequence[SlotBindingDraft]]],
+    state: ResolveState,
+) -> list[Requirement]:
+    """The `requirements` one of `answers` leaves unmet (`judge_value_requirements`)."""
     unmet = {
         id(requirement)
         for shape, bindings in answers
         for requirement in judge_value_requirements(requirements, shape, bindings, state)
     }
-    for requirement in requirements:
-        if id(requirement) in unmet:
-            state.requirements = with_requirement(state.requirements, requirement)
+    return [requirement for requirement in requirements if id(requirement) in unmet]
 
 
 def _unheld_requirement(

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from code_index.types import PartyRow
+from code_index.types import PartyRow, RoleAxis
 from series_coverage.index import CoverageIndex
 from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from series_coverage.summary import FacetSummary, PartyCounts
@@ -91,14 +91,22 @@ def test_party_counts_split_the_union_of_facets_by_code_index_kind() -> None:
         ]
     )
     index = CoverageIndex(table, {"V-a": _FLOW_ROLES}, horizon=horizon)
+    donor: tuple[tuple[str, RoleAxis], ...] = (("p", "origin"),)
+    recipient: tuple[tuple[str, RoleAxis], ...] = (("p", "destination"),)
     parties = {
-        FRA: PartyRow(dcid=FRA, kind="party", party_class="official"),
-        DEU: PartyRow(dcid=DEU, kind="party", party_class="official"),
-        gates: PartyRow(dcid=gates, kind="party", party_class="private"),
-        KEN: PartyRow(dcid=KEN, kind="party", party_class="official"),
-        private_total: PartyRow(dcid=private_total, kind="total", party_class="private"),
-        africa_total: PartyRow(dcid=africa_total, kind="total", totals="africa"),
-        africa_residual: PartyRow(dcid=africa_residual, kind="residual", party_class="residual"),
+        FRA: PartyRow(dcid=FRA, kind="party", party_class="official", published=donor),
+        DEU: PartyRow(dcid=DEU, kind="party", party_class="official", published=donor),
+        gates: PartyRow(dcid=gates, kind="party", party_class="private", published=donor),
+        KEN: PartyRow(dcid=KEN, kind="party", party_class="official", published=recipient),
+        private_total: PartyRow(
+            dcid=private_total, kind="total", party_class="private", published=donor
+        ),
+        africa_total: PartyRow(
+            dcid=africa_total, kind="total", totals="africa", published=recipient
+        ),
+        africa_residual: PartyRow(
+            dcid=africa_residual, kind="residual", party_class="residual", published=recipient
+        ),
     }
 
     summary = index.facet_summary.variable("V-a")
@@ -156,6 +164,33 @@ def test_a_party_with_a_kind_per_dataset_counts_once_under_its_own_figures() -> 
         summary.party_counts(parties=parties, facet_ids=facet_ids)["donor"]
         for facet_ids in ({"f-crs", "f-dac2a"}, {"f-none"}, {"f-dac2a"})
     ] == [PartyCounts(parties=1), PartyCounts(parties=1), PartyCounts(totals=1)]
+
+
+def test_a_party_counts_under_its_kind_on_each_role_s_axis() -> None:
+    """A party published as a donor in A, where it is a party, and as a recipient in B, where it
+    is a total, counts as a party among the donors and a total among the recipients."""
+    mixed = "MixedParty"
+    table, horizon = coverage_table(
+        [("V-a", "f-1", mixed, KEN, [2020]), ("V-a", "f-1", FRA, mixed, [2020])]
+    )
+    index = CoverageIndex(table, {"V-a": _FLOW_ROLES}, horizon=horizon)
+    parties = {
+        mixed: PartyRow(
+            dcid=mixed,
+            kind="party",
+            party_class="official",
+            published=(("A", "origin"), ("B", "destination")),
+            dataset_kinds=(("B", "total"),),
+        )
+    }
+
+    summary = index.facet_summary.variable("V-a")
+
+    assert summary is not None
+    assert summary.party_counts(parties=parties) == {
+        "donor": PartyCounts(parties=1, unclassified=1),
+        "recipient": PartyCounts(totals=1, unclassified=1),
+    }
 
 
 def test_a_one_role_variable_has_no_parties_in_the_role_it_lacks() -> None:

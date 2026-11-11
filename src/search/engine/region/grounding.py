@@ -16,7 +16,9 @@ from typing import TYPE_CHECKING, cast
 from code_index import LevelOption
 from code_index.members import offers_slot
 from code_index.shared import get_index
+from code_index.types import ANY_AXIS
 from dfo_platform.executor import submit_with_context
+from dfo_platform.roles import role_key_axis
 from materialise import GraphReader
 from materialise.enrichment import party_count
 from materialise.roles import axis_noun
@@ -392,7 +394,9 @@ def role_scope_defaulted_warnings(
                     message=role_scope_defaulted_message(
                         discovered,
                         member_count=_scope_party_count(
-                            mat, members if members is not None else mat.scope_member_dcids
+                            mat,
+                            members if members is not None else mat.scope_member_dcids,
+                            role=discovered.axis,
                         )
                         if state_count
                         else None,
@@ -423,12 +427,15 @@ def role_scope_defaulted_warnings(
     return warnings
 
 
-def _scope_party_count(mat: Materialised, members: Collection[str] | None) -> int:
-    """How many of `members` the warning counts: the parties `enrichment.party_count`
-    keeps, read in the datasets that publish `mat`'s StatVars."""
+def _scope_party_count(mat: Materialised, members: Collection[str] | None, *, role: str) -> int:
+    """How many of `members`, the parties of the open `role`, the warning counts: the
+    parties `enrichment.party_count` keeps on the role's axis (`role_key_axis`), read in the
+    datasets that publish `mat`'s StatVars."""
     index = get_index()
+    axis = role_key_axis(role)
     return party_count(
         frozenset(members or ()),
+        axis=ANY_AXIS if axis is None else axis,
         parties=index.parties,
         datasets=index.statvar_provenances(mat.sv_dcids),
     )

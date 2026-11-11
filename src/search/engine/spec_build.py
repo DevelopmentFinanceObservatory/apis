@@ -1002,8 +1002,8 @@ def _role_axis_facts(
 ) -> list[RoleAxisFact] | None:
     """Project open role axes, returning None when no facts were supplied.
 
-    Each count is `party_count` of the population, read in `datasets`, the provenances
-    of the served StatVars. A missing member population yields ``member_count=None``
+    Each count is `party_count` of the population on its axis, read in `datasets`, the
+    provenances of the served StatVars. A missing member population yields ``member_count=None``
     and ``members_available=False``. The origin axis states whether its population holds
     a multilateral: one of its members where they are known, else one `datasets` publish
     on the axis (`RoleAxisFact.holds_multilaterals`).
@@ -1014,7 +1014,7 @@ def _role_axis_facts(
         RoleAxisFact(
             role=fact.role,
             member_count=(
-                party_count(fact.member_dcids, parties=parties, datasets=datasets)
+                party_count(fact.member_dcids, axis=fact.role, parties=parties, datasets=datasets)
                 if fact.member_dcids is not None
                 else None
             ),

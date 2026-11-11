@@ -8,7 +8,6 @@ import pytest
 
 from code_index.members import antichain_minimal_rows
 from code_index.shared import get_index
-from code_index.types import ANY_AXIS
 from entity_resolution.shared import shared_membership_policy
 from search.engine.bind import SlotBindingDraft
 from search.engine.retrieval.bound_values import (
@@ -238,8 +237,8 @@ class TestBuildSpecStatVars:
 
     def test_an_open_role_counts_the_parties_beside_the_totals_of_the_code_index(self):
         parties = get_index().parties
-        totals = [dcid for dcid, row in parties.items() if row.kind_over(ANY_AXIS) == "total"][:2]
-        members = [dcid for dcid, row in parties.items() if row.kind_over(ANY_AXIS) == "party"][:3]
+        totals = [dcid for dcid, row in parties.items() if row.kind_over("origin") == "total"][:2]
+        members = [dcid for dcid, row in parties.items() if row.kind_over("origin") == "party"][:3]
         population = frozenset((*totals, *members))
 
         spec = self._build(

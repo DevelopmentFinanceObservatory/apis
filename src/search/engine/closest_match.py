@@ -112,17 +112,16 @@ def reading_inputs(
     `measure_noun`, from what a Spec states whether assembly built it or a recorded response
     rebuilt it with its sentence facts: its evidence, its bound codes and its series codes.
 
-    Its member names are the served members' labels (`ResolvedSpec.sentence_facts`). Its
-    bound codes are the values bound on its what and how slots, in slot order: every
-    constraint value a member asserts on a bound slot is one of them
-    (`spec_build.build_stat_vars`). Its evidence (`measure_verdict.reading_evidence`, as
-    `admissibility.draft_evidence` builds a shape's) is its shape's five-tuple and the
-    constraint values its served members hold: each bound value under its slot's
-    constraint property, and the one value every served member declares on an axis the query
-    left open (`ResolvedSpec.open_axis_facts`, `varies` false and `undeclared_count` 0).
-    Members split across values, or some declaring none, do not all hold a value, so a value
-    only some members declare never answers the asked measure. Its series codes are the publisher codes that stand
-    for it (`ResolvedStatVars.source_codes`, `exact`). A Spec states no member constraint
+    Its member names are the served members' labels (`ResolvedSpec.sentence_facts`). Its bound codes
+    are the values bound on its what and how slots, in slot order: every constraint value a member
+    asserts on a bound slot is one of them (`spec_build.build_stat_vars`). Its evidence
+    (`measure_verdict.reading_evidence`, as `admissibility.draft_evidence` builds a shape's) is its
+    shape's five-tuple and the constraint values its served members hold: each bound value under its
+    slot's constraint property, and the one value every served member declares on an axis the query
+    left open (`ResolvedSpec.open_axis_facts`, `varies` false and `undeclared_count` 0). Members
+    split across values, or some declaring none, do not all hold a value, so a value only some
+    members declare never answers the asked measure. Its series codes are the publisher codes that
+    stand for it (`ResolvedStatVars.source_codes`, `exact`). A Spec states no member constraint
     properties and no denominator pairs, only the denominator's name."""
     resolved = spec.resolved
     bound = [

@@ -181,7 +181,7 @@ from materialise.bundle_naming import heading, member_slugs, sources_slug
 from materialise.bundle_sources import source_provenance
 from materialise.codes import MaterialisationWarning
 from materialise.content_version import mint_version_from_digest
-from materialise.enrichment import PARTY_FIELDS, EnrichmentLookup
+from materialise.enrichment import PARTY_FIELDS, EnrichmentLookup, row_party_cell
 from materialise.errors import OverCeilingError
 from materialise.formats import (
     DATA_SHEET_TITLE,
@@ -1092,10 +1092,11 @@ def _reshape_select_pivot_enrich(
         enrichment_plan = EnrichmentPlan(
             requests=parsed.enrichments,
             lookup=reads.fields_of(refs, fields={field for _, field in parsed.enrichments}),
+            parties=reads.enrichment.parties,
             # A pivot's index and columns group rows, so a cell that varied with the period
             # would split one party into several index rows. Its party cells are read for no
             # dataset and year, where a whole total's `party_whole` is empty (`whole_cell`).
-            parties=None if pivot is not None else reads.enrichment.parties,
+            per_row=pivot is None,
         )
     warning_order = (
         *decoded_column_names,
@@ -1833,19 +1834,14 @@ class _RenderReads:
     def fields_of(
         self, nodes: Sequence[str], *, fields: Collection[str]
     ) -> dict[str, dict[str, str]]:
-        """Each of `nodes` mapped to those of its enrichment `fields` that could be read. A
-        party's cells for the party fields (`PARTY_FIELDS`) are the ones the code index declares
-        for no dataset and year (`EnrichmentLookup.party_cells`), read with no graph call; a
-        party the index does not list has none. One `lookup` reads the graph fields of every
+        """Each of `nodes` mapped to those of its enrichment graph `fields` that could be read.
+        The party fields (`PARTY_FIELDS`) are left out: a party's cells depend on the axis of
+        the column that holds it, so readers take them from the code index per column
+        (`materialise.enrichment.row_party_cell`). One `lookup` reads the graph fields of every
         node, and runs only when one is asked for. A read that fails, or follows a failed one,
         leaves those fields out. An absent field's cells stay empty and count as
         `enrichment_unavailable`."""
         read: dict[str, dict[str, str]] = {node: {} for node in nodes}
-        if party_fields := set(fields).intersection(PARTY_FIELDS):
-            for node, node_fields in read.items():
-                for field_name, cell in self.enrichment.party_cells(node).items():
-                    if field_name in party_fields:
-                        node_fields[field_name] = cell
         graph_fields = set(fields).difference(PARTY_FIELDS)
         if not graph_fields or not nodes or self.failed:
             return read
@@ -2418,7 +2414,19 @@ def _stream_bare_pivot(
         for entity_column, field_name in parsed.enrichments:
             total_missing = enrichment_non_string_counts.get(entity_column, 0)
             for ref, row_count in enrichment_ref_counts.get(entity_column, {}).items():
-                if lookup_cell(lookup, ref, field_name) is None:
+                cell = (
+                    row_party_cell(
+                        field_name,
+                        ref,
+                        role=entity_column,
+                        parties=reads.enrichment.parties,
+                        period=None,
+                        provenance=None,
+                    )
+                    if field_name in PARTY_FIELDS
+                    else lookup_cell(lookup, ref, field_name)
+                )
+                if cell is None:
                     total_missing += row_count
             if total_missing:
                 missing_counts[(entity_column, field_name)] = total_missing

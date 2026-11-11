@@ -193,13 +193,14 @@ def cut_party_totals(
     roles: Sequence[str],
     parties: Mapping[str, PartyRow],
 ) -> PartyTotalsCut:
-    """The cut of the frame `frame_chunks` passes over, on its open party `roles`, with kinds
-    from the code index's `parties` for each row's dataset. Reads the frame once per role, each
-    pass after the cuts of the roles before it."""
+    """The cut of the frame `frame_chunks` passes over, on its open party `roles`, with kinds from
+    the code index's `parties` on each role's axis for each row's dataset. Reads the frame once per
+    role, each pass after the cuts of the roles before it."""
     left_out: dict[str, dict[_Provenance, tuple[str, ...]]] = {}
     for role in roles:
         totals: defaultdict[str | None, set[str]] = defaultdict(set)
         others = False
+        axis = role_key_axis(role)
         for chunk in frame_chunks():
             if role not in chunk.columns:
                 break
@@ -208,7 +209,9 @@ def cut_party_totals(
                 datasets = () if dataset is None else (dataset,)
                 if (
                     isinstance(ref, str)
-                    and party_kind_of(ref, parties=parties, datasets=datasets) == _TOTAL_KIND
+                    and axis is not None
+                    and party_kind_of(ref, axis=axis, parties=parties, datasets=datasets)
+                    == _TOTAL_KIND
                 ):
                     totals[dataset].add(ref)
                 else:
