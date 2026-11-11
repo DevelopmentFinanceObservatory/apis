@@ -629,8 +629,8 @@ def test_a_discarded_speculative_parse_cancels_its_second_sample_and_counts_it_o
         door = held.bind(_HeldSecondDoor(cancelled, asyncio.Event()))
         read = await raw_text._read_and_extract(_HIT_QUERY, llm=door, deadline=_far())
         cancelled_by_return = list(cancelled)
-        if held._tasks:
-            await asyncio.wait(set(held._tasks))
+        if held._running:
+            await asyncio.wait({second.task for second in held._running})
         await held.aclose()
         return read, cancelled_by_return, held.usage()
 
@@ -663,10 +663,10 @@ def test_a_failed_discarded_parse_retrieves_its_finished_second_samples_failure(
             lambda _loop, context: unretrieved.append(context)
         )
         samples = SecondSamples()
-        second = samples.start(failing)
+        second = samples.start(failing, stage="extraction")
         samples.count(second)
         parse = asyncio.create_task(failing())
-        await asyncio.wait([second, parse])
+        await asyncio.wait([second.task, parse])
         usage = await raw_text._discarded_usage(cast(Any, parse), samples)
         del samples, second, parse
         gc.collect()

@@ -30,6 +30,7 @@ from search.engine.bind import SlotBindingDraft
 from search.engine.binders import BindRequest, BindResult, GeminiBinder
 from search.engine.departures import OPERATIONS_NOT_RUN
 from search.engine.entry import parsed as parsed_entry
+from search.engine.errors import EngineInputError
 from search.engine.extract import ExtractedEntity, ExtractedOperation
 from search.engine.region import (
     candidate_collapse,
@@ -41,6 +42,7 @@ from search.engine.region import (
 from search.engine.region import trailing as trailing_module
 from search.engine.region.place_roles import query_role_axes
 from search.engine.region.place_set import PlaceNode, PlaceSet
+from search.engine.region.resubmit_request import resubmit_named_groups
 from search.engine.region.state import ResolveState
 from search.engine.region.whole_totals import covers_unpublished
 from search.engine.retrieval.bound_values import declared_datasets
@@ -64,6 +66,7 @@ from search.models import (
     ResubmitCandidate,
     ResubmitCandidatesEntry,
     ResubmitIdentityEntry,
+    ResubmitIdentityPayload,
     Spec,
     role_ref,
 )
@@ -3564,32 +3567,21 @@ def test_a_trailing_ask_and_the_resubmit_of_its_spec_read_the_whole_total_alike(
     assert (_whole_read(resubmit) is None) == (_whole_read(ask) is None)
 
 
-@pytest.mark.parametrize(
-    ("time", "group"),
-    [
-        pytest.param(
-            "2021",
-            {
-                "label": "all donors including private",
-                "whole_of": ["official", "private"],
-                "holds_multilaterals": True,
-                "side_classes": ["official", "private", "residual"],
-            },
-            id="read-whole",
-        ),
-        pytest.param(
-            "1995", {"label": "all donors including private"}, id="members-not-read-whole"
-        ),
-    ],
-)
-def test_a_whole_total_set_and_the_resubmit_of_its_spec_state_the_donor_group_alike(
-    monkeypatch: pytest.MonkeyPatch, time: str, group: dict[str, Any]
-):
-    """ "All donors including private" to Ethiopia binds the members of the whole total set,
-    the official and the private donors' totals, with the private donors' marker holding
-    2009 to 2024. In 2021 the role reads whole; in 1995 it does not, and the role keeps the
-    named set as a plain group, with no whole reading. A resubmit of the Spec, posting its
-    groups back, states the group alike."""
+# The donor group the first answer to "all donors including private" states, by year, with
+# the private donors' DAC2a marker holding 2009 to 2024.
+_DONOR_SET_GROUP = {
+    2021: {
+        "label": "all donors including private",
+        "whole_of": ["official", "private"],
+        "holds_multilaterals": True,
+        "side_classes": ["official", "private", "residual"],
+    },
+    1995: {"label": "all donors including private"},
+}
+
+
+def _with_private_donors_marker(monkeypatch: pytest.MonkeyPatch, years: tuple[int, int]) -> None:
+    """The private donors' total marked whole in DAC2a over `years`."""
     party = get_index().parties[_PRIVATE]
     monkeypatch.setitem(
         get_index().parties,
@@ -3597,26 +3589,31 @@ def test_a_whole_total_set_and_the_resubmit_of_its_spec_state_the_donor_group_al
         dataclasses.replace(
             party,
             whole=tuple(
-                dataclasses.replace(marker, years=(2009, 2024))
-                if marker.dataset == _DAC2A
-                else marker
+                dataclasses.replace(marker, years=years) if marker.dataset == _DAC2A else marker
                 for marker in party.whole
             ),
         ),
     )
-    _coverage(monkeypatch, years=tuple(range(1990, 2024)))
-    entities = [_TO_ETHIOPIA, {"role": "from", "text": "all donors including private"}]
 
-    ask = _part(_resolve({"entities": entities, "time": time, "variable": _VARIABLE}))
-    resubmit = _part(
+
+def _resubmitted(ask: DefinitePart, *, year: int | None = None, groups=None) -> DefinitePart:
+    """`ask`'s Spec resubmitted with its groups, or `groups`, over `year` where given."""
+    identity = ask.spec.definition.identity
+    if year is not None:
+        identity = identity.model_copy(
+            update={"requested_window": IdentityWindowRange(start_year=year, end_year=year)}
+        )
+    return _part(
         offline_resolve(
             ResolveRequest(
                 input=DatasetResubmitInput(
                     entries=[
                         ResubmitIdentityEntry(
                             variable_text=_VARIABLE,
-                            identity=ask.spec.definition.identity,
-                            entity_groups=ask.spec.resolved.entity_groups,
+                            identity=identity,
+                            entity_groups=ask.spec.resolved.entity_groups
+                            if groups is None
+                            else groups,
                         )
                     ]
                 )
@@ -3627,10 +3624,76 @@ def test_a_whole_total_set_and_the_resubmit_of_its_spec_state_the_donor_group_al
         )
     )
 
+
+@pytest.mark.parametrize(
+    ("asked", "resubmitted"),
+    [
+        pytest.param(2021, None, id="read-whole"),
+        pytest.param(1995, None, id="members-not-read-whole"),
+        pytest.param(1995, 2021, id="moved-into-years-read-whole"),
+        pytest.param(2021, 1995, id="moved-out-of-years-read-whole"),
+    ],
+)
+def test_a_whole_total_set_and_the_resubmit_of_its_spec_state_the_donor_group_alike(
+    monkeypatch: pytest.MonkeyPatch, asked: int, resubmitted: int | None
+):
+    """ "All donors including private" to Ethiopia binds the members of the whole total set,
+    the official and the private donors' totals, with the private donors' marker holding
+    2009 to 2024. In 2021 the role reads whole; in 1995 it does not, and the role keeps the
+    named set as a plain group, with no whole reading. A resubmit of the Spec, posting its
+    groups back, states the group a first answer over its own years states, its window
+    moved or not."""
+    _with_private_donors_marker(monkeypatch, (2009, 2024))
+    _coverage(monkeypatch, years=tuple(range(1990, 2024)))
+    entities = [_TO_ETHIOPIA, {"role": "from", "text": "all donors including private"}]
+
+    ask = _part(_resolve({"entities": entities, "time": str(asked), "variable": _VARIABLE}))
+    resubmit = _resubmitted(ask, year=resubmitted)
+
     assert _origin(ask.spec) == [_OFFICIAL, _PRIVATE]
-    assert _group(ask.spec, "origin") == group
-    assert resubmit.spec.definition.identity == ask.spec.definition.identity
-    assert _group(resubmit.spec, "origin") == _group(ask.spec, "origin")
+    assert _group(ask.spec, "origin") == _DONOR_SET_GROUP[asked]
+    assert _group(resubmit.spec, "origin") == _DONOR_SET_GROUP[resubmitted or asked]
+
+
+@pytest.mark.parametrize(
+    ("posted", "refused"),
+    [
+        pytest.param(
+            EntityGroup(
+                label="all donors including private", ref="dc/g/Africa", whole_of=["official"]
+            ),
+            False,
+            id="ref-whose-members-differ",
+        ),
+        pytest.param(
+            EntityGroup(
+                label="all donors including private", group_id="groups/G7", whole_of=["official"]
+            ),
+            True,
+            id="retired-group-id",
+        ),
+    ],
+)
+def test_a_whole_group_posted_on_a_role_not_read_whole_is_checked_as_any_group(
+    monkeypatch: pytest.MonkeyPatch, posted: EntityGroup, refused: bool
+):
+    """A whole group posted on a donor role the identity does not read whole (1995) is
+    checked as any posted group is: a dcid whose members are not the role's parties drops
+    the group, and a retired group id refuses at its pointer. Neither is carried as posted."""
+    _with_private_donors_marker(monkeypatch, (2009, 2024))
+    _coverage(monkeypatch, years=tuple(range(1990, 2024)))
+    entities = [_TO_ETHIOPIA, {"role": "from", "text": "all donors including private"}]
+    ask = _part(_resolve({"entities": entities, "time": "1995", "variable": _VARIABLE}))
+    payload = ResubmitIdentityPayload(
+        identity=ask.spec.definition.identity, entity_groups={"origin": posted}
+    )
+
+    if refused:
+        with pytest.raises(EngineInputError) as raised:
+            resubmit_named_groups(payload, graph=_graph(), deadline=None)
+        assert raised.value.code == "request_invalid"
+        return
+    assert resubmit_named_groups(payload, graph=_graph(), deadline=None) == ()
 
 
 def test_a_trailing_ask_naming_all_recipients_reads_them_whole_as_its_resubmit_does(
@@ -3830,19 +3893,21 @@ def test_two_named_donor_totals_read_as_the_whole_set_on_a_resubmit_of_their_ide
 
 
 @pytest.mark.parametrize(
-    ("part", "role", "window", "posted"),
+    ("part", "role", "window", "posted", "whole"),
     [
         pytest.param(
             [_TO_ETHIOPIA, {"role": "from", "text": "all donors"}],
             "origin",
             None,
             EntityGroup(label="official and private donors"),
-            id="group-posted-on-a-whole-set",
+            "all donors including private",
+            id="plain-group-posted-on-a-whole-set",
         ),
         pytest.param(
             _ALL_RECIPIENTS_NAMED,
             "destination",
             (1970, 1971),
+            None,
             None,
             id="whole-group-posted-before-the-marker",
         ),
@@ -3854,13 +3919,15 @@ def test_a_resubmit_reads_a_posted_role_whole_only_where_its_group_and_identity_
     role: str,
     window: tuple[int, int] | None,
     posted: EntityGroup | None,
+    whole: str | None,
 ):
-    """A resubmit reads a role it posts a group on as a whole population only where the group
-    states one (`EntityGroup.whole_of`) and the identity reads the role whole, as a first
-    answer's relabel does. A group posted without `whole_of` on official and private donors
-    gains no whole reading, and the whole recipients' group an answer served, posted beside
-    its identity moved to years before the total's marker (1984), drops: the role binds the
-    total as a party, as a first answer over those years does."""
+    """A resubmit reads a role it posts a group on as a whole population only where the
+    identity reads the role whole and the group states one (`EntityGroup.whole_of`) or is the
+    plain set a first answer states for a whole total set, posting no dcid, total or
+    `group_id`, as a first answer's relabel does: such a group posted on official and private
+    donors reads as "all donors including private". The whole recipients' group an answer
+    served, posted beside its identity moved to years before the total's marker (1984),
+    drops: the role binds the total as a party, as a first answer over those years does."""
     _coverage(monkeypatch, years=(1970, 1971, 2019, 2020, 2021))
     first = _spec(_resolve({"entities": part, "time": "2021", "variable": _VARIABLE}))
     identity = first.definition.identity
@@ -3891,5 +3958,8 @@ def test_a_resubmit_reads_a_posted_role_whole_only_where_its_group_and_identity_
     )
 
     answer = _part(response)
-    assert _group(answer.spec, role) is None
-    assert _whole_read(answer) is None
+    group = _group(answer.spec, role)
+    assert (None if group is None else (group["label"], bool(group.get("whole_of")))) == (
+        None if whole is None else (whole, True)
+    )
+    assert (_whole_read(answer) is not None) is (whole is not None)

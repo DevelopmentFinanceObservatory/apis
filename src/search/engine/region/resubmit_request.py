@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractContextManager
 
@@ -37,7 +37,7 @@ from search.engine.region.result import FacetAxisFilter
 from search.engine.region.whole_totals import containing_reading
 from search.engine.retrieval.bound_values import identity_dataset
 from search.engine.retrieval.facts import read_constraints
-from search.engine.retrieval.whole_reading import unread_whole_group, whole_groups_over_identity
+from search.engine.retrieval.whole_reading import plain_whole_set, whole_groups_over_identity
 from search.engine.unit.refs import expressible as _unit_request_expressible
 from search.engine.unit.refs import satisfies as _unit_request_satisfies
 from search.models import (
@@ -463,18 +463,6 @@ def _registry_named_group(
     )
 
 
-def _posted(group: EntityGroup) -> NamedGroup:
-    """`group` as posted, as a named group with no members of its own."""
-    return NamedGroup(
-        label=group.label,
-        dcid=group.ref,
-        member_dcids=frozenset(),
-        total=group.total,
-        group_id=group.group_id,
-        whole_of=tuple(group.whole_of or ()),
-    )
-
-
 def resubmit_named_groups(
     inp: ResubmitIdentityPayload, *, graph: EngineGraphClient, deadline: float | None
 ) -> tuple[NamedGroup, ...]:
@@ -495,26 +483,28 @@ def resubmit_named_groups(
     posts a `group_id` the membership registry holds and the registry's members are the
     role's entities, which restores the total the code index declares for it
     (`_registry_named_group`). A posted `group_id` the registry does not hold refuses
-    (`_registry_group`). Any other group posting no dcid drops, since nothing ties its label
-    to the role's entities, and so does a group on a role the identity binds no entity on. The posted dcids' types and labels are read side
-    by side, one batch each, under the fail-open budget (`degraded_reads.fail_open_reads`),
-    and their members after the types, under the request's deadline. Each dropped group is
+    (`_registry_group`). A group posting no dcid on a role binding exactly a whole total
+    set's members is kept as that set (`whole_reading.plain_whole_set`), as a first answer
+    states it. Any other group posting no dcid drops, since nothing ties its label to the
+    role's entities, and so does a group on a role the identity binds no entity on. The
+    posted dcids' types and labels are read side by side, one batch each, under the
+    fail-open budget (`degraded_reads.fail_open_reads`), and their members after the types,
+    under the request's deadline. Each dropped group is
     logged at info with the reason. A lost label or type read, or a `GraphInfraError` on the
     members read, drops the groups it covers, logged at warning and noted as a lost read
     (`degraded_reads.note_lost_read`), and the role's entities still bind.
 
     A role whose entities the identity's dataset reads as the whole population of its side
-    (`_whole_named_groups`) carries that population where the request posts a whole group
-    or none on it, so a first answer's whole total survives a resubmit that posts no group.
-    A whole group posted on a role the identity does not read whole is stated as a first
-    answer states it (`whole_reading.unread_whole_group`): dropped for one whole total, and
-    kept as the plain named set where the role binds a whole total set's members, as is a
-    group posting no dcid on such a role the identity does not read whole, which is how a
-    first answer states that set.
-    A role bound
-    to its side's containing total carries the total's group only where the request posts
-    none on it, as on a side the posted identity left open, so a resubmit of "ODA from DAC
-    donor countries" keeps the group its first answer named.
+    (`_whole_named_groups`) carries that population where the request posts a whole group,
+    the plain set a first answer states for a whole total set, or none on it, so a first
+    answer's whole total survives a resubmit that posts no group and a plain set read whole
+    in the resubmit's years reads whole. A whole group posted on a role the identity does
+    not read whole drops where it stands for one whole total, which the role then binds as
+    a party, as a first answer states it (`whole_reading.unread_whole_group`); any other is
+    checked as above, its `whole_of` set aside. A role bound to its side's containing total
+    carries the total's group only where the request posts none on it, as on a side the
+    posted identity left open, so a resubmit of "ODA from DAC donor countries" keeps the
+    group its first answer named.
     """
     kept: list[tuple[str, EntityGroup, frozenset[str], str | None]] = []
     whole = _whole_named_groups(inp.identity, posted=inp.entity_groups or {})
@@ -523,18 +513,15 @@ def resubmit_named_groups(
     for role, group in (inp.entity_groups or {}).items():
         if role in whole:
             continue
-        if group.whole_of:
-            if (plain := unread_whole_group(_posted(group), entities.get(role, ()))) is not None:
-                named.append(plain)
-            else:
-                logger.info(
-                    "resubmit dropped group %r on role %s: the identity does not read it whole",
-                    group.label,
-                    role,
-                )
-            continue
         _refuse_retired_group_id(group, role)
         registry_group = _registry_group(group, role)
+        if group.whole_of and group.total is not None:
+            logger.info(
+                "resubmit dropped group %r on role %s: the identity does not read it whole",
+                group.label,
+                role,
+            )
+            continue
         if role not in entities:
             logger.info(
                 "resubmit dropped group %s on role %s: the identity binds no entity there",
@@ -573,9 +560,7 @@ def resubmit_named_groups(
             elif registry_group is not None:
                 if restored := _registry_named_group(group, registry_group, role, role_members):
                     named.append(restored)
-            elif (
-                plain := unread_whole_group(_posted(group), role_entities)
-            ) is not None and not whole_groups_over_identity(inp.identity, (role,)):
+            elif (plain := plain_whole_set(role_entities)) is not None:
                 named.append(plain)
             else:
                 logger.info(
@@ -647,9 +632,10 @@ def _whole_named_groups(
     identity: BaseIdentity, *, posted: Mapping[EntityRoleKey, EntityGroup]
 ) -> dict[str, NamedGroup]:
     """The whole population of each flow role, by role key, read over the identity's window
-    as a first answer reads it (`whole_reading.whole_groups_over_identity`): on a role
-    `posted` carries a whole group on (`EntityGroup.whole_of`), or carries no group on. A
-    role posted with any other group gains none. A role that reads none and carries no
+    as a first answer reads it (`whole_reading.whole_groups_over_identity`), in one read: on
+    a role `posted` carries a whole group on (`EntityGroup.whole_of`), the plain set a first
+    answer states for a whole total set (`_posts_plain_whole_set`), or no group on. A role
+    posted with any other group gains none. A role that reads none and carries no
     posted group takes the containing total of its side (`whole_totals.containing_reading`:
     DAC1's `DACCountriesTotal`) with its registry group. Empty for an identity whose
     dataset the code index does not elect."""
@@ -661,7 +647,9 @@ def _whole_named_groups(
         (
             role
             for role in identity.entities
-            if (group := posted.get(role)) is None or group.whole_of
+            if (group := posted.get(role)) is None
+            or group.whole_of
+            or _posts_plain_whole_set(group, identity.entities[role])
         ),
     )
     for role, dcids in identity.entities.items():
@@ -671,6 +659,18 @@ def _whole_named_groups(
         if reading is not None and reading.axis == role_key_axis(role):
             groups[role] = reading.named_group()
     return groups
+
+
+def _posts_plain_whole_set(group: EntityGroup, dcids: Sequence[str]) -> bool:
+    """Whether `group` is the plain set a first answer states for a role binding exactly a
+    whole total set's members (`whole_reading.plain_whole_set`): it posts no dcid, total or
+    `group_id`."""
+    return (
+        group.ref is None
+        and group.total is None
+        and group.group_id is None
+        and plain_whole_set(dcids) is not None
+    )
 
 
 def _bound_total(group: EntityGroup, role: str, role_entities: frozenset[str]) -> str | None:

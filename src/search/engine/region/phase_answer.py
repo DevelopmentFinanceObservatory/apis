@@ -106,8 +106,8 @@ from search.engine.region.phase_shared import (
 )
 from search.engine.region.place_roles import request_named_groups
 from search.engine.region.related_read import (
+    cancel_related_reads,
     start_answer_related_read,
-    start_elected_related_read,
     with_related,
 )
 from search.engine.region.relaunch import _relaunch_place_options, _relaunch_slot_options
@@ -280,8 +280,8 @@ def _over_conversion_period(
     trailing request `settled` are the years its words cover. Otherwise both as they are,
     and a stale trailing answer departs as `settled` holds. The conversion's departure
     replaces the stale one, so the answer states its years once; a span a member passed
-    over in election shortened still says so, over the years shown
-    (`trailing.passed_over_departure`). Either way an answer
+    over in election shortened still says so, over the years shown, where the period still
+    starts at the year that member set (`trailing.passed_over_departure`). Either way an answer
     whose deflators leave out some entities' rows departs `year_unavailable` naming them
     (`convertibility.deflator_omission_departure`)."""
     stale = settled.departure if settled is not None else None
@@ -310,7 +310,8 @@ def _over_conversion_period(
         )
         if (
             settled is not None
-            and (passed := passed_over_departure(settled, shown=shown)) is not None
+            and (passed := passed_over_departure(settled, shown=shown, first_year=period.years[0]))
+            is not None
         ):
             state.depart(*passed)
     elif stale is not None:
@@ -493,10 +494,14 @@ async def _ground_elected_answer(state: ResolveState) -> RegionResult | None:
     # measures beside the unit decision; a trailing request reads them once it has settled
     # its years (`_over_answer_years`).
     if state.date_request is None or state.date_request.trailing is None:
-        start_elected_related_read(state, mat_result)
+        start_answer_related_read(state, mat_result)
 
     early = await _decide_bound_unit_convertibility(state, mat_result)
     if early is not None:
+        # A refusal states no related measures, so the read started for them stops.
+        if state.related_read is not None:
+            cancel_related_reads((state.related_read,))
+            state.related_read = None
         return early
 
     t0 = now_ms()

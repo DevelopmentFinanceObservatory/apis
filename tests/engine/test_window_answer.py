@@ -24,6 +24,7 @@ from search.engine.extract import DateRequest, dates_to_request
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import phase_answer, resolve_variable
 from search.engine.region.facets import FacetAdmission, FilteredAnswer
+from search.engine.region.grounding import requested_window_from_date_request
 from search.engine.region.result import RegionResult
 from search.engine.region.trailing import settle_trailing
 from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
@@ -889,7 +890,7 @@ def _two_flows(years: range) -> Materialised:
 
 
 @pytest.mark.parametrize(
-    ("held", "passed_over", "deflators_end", "facts"),
+    ("held", "passed_over", "deflators", "facts"),
     [
         (range(2000, 2025), None, 2023, [("2020 to 2023", "deflators")]),
         (range(2000, 2022), None, 2020, [("2017 to 2020", "deflators")]),
@@ -897,17 +898,24 @@ def _two_flows(years: range) -> Materialised:
         (
             range(2000, 2025),
             2020,
-            2023,
+            (2021, 2023),
             [("2021 to 2023", "deflators"), ("2021 to 2023", "passed_over")],
         ),
+        (range(2000, 2025), 2020, (2022, 2024), [("2022 to 2024", "deflators")]),
     ],
-    ids=["converted", "stale_and_converted", "stale", "shortened_and_converted"],
+    ids=[
+        "converted",
+        "stale_and_converted",
+        "stale",
+        "shortened_and_converted",
+        "shortened_and_converted_from_a_later_year",
+    ],
 )
 def test_a_trailing_answer_states_the_years_its_words_cover_once(
     monkeypatch,
     held: range,
     passed_over: int | None,
-    deflators_end: int | None,
+    deflators: int | tuple[int, int] | None,
     facts: list[tuple[str, str | None]],
 ):
     """ "The last five years" in constant dollars, in 2026, settles on the newest five years
@@ -916,7 +924,8 @@ def test_a_trailing_answer_states_the_years_its_words_cover_once(
     deflators to 2023, and for stale flows to 2021 and deflators to 2020, whose fact the
     conversion's replaces. Stale flows the deflators cover keep the stale fact alone. A span
     a member passed over in election shortened to 2021 to 2024 keeps saying so beside the
-    conversion's fact, over the years the narrowed answer shows."""
+    conversion's fact, over the years the narrowed answer shows, while the deflators still
+    start in 2021; deflators from 2022 set the first year, and only their fact stands."""
     monkeypatch.setattr(trailing_module, "current_year", lambda: 2026)
     mat = dataclasses.replace(_two_flows(held), passed_over_newest_year=passed_over)
     assert mat.read_plan is not None
@@ -930,12 +939,11 @@ def test_a_trailing_answer_states_the_years_its_words_cover_once(
     assert settled is not None
     first, last = settled.date_request.window.start_year, settled.date_request.window.end_year
     assert first is not None and last is not None
+    years = (first, deflators) if isinstance(deflators, int) else deflators
     period = (
         None
-        if deflators_end is None
-        else ConversionPeriod(
-            served=(first, last), years=(first, deflators_end), limited_by="deflators"
-        )
+        if years is None
+        else ConversionPeriod(served=(first, last), years=years, limited_by="deflators")
     )
     monkeypatch.setattr(phase_answer, "current_conversion_catalogue", lambda: None)
     monkeypatch.setattr(phase_answer, "survivor_declared_roles", lambda _mat: None)
@@ -1019,14 +1027,60 @@ def test_an_answer_with_fixed_years_starts_its_related_read_before_the_unit_deci
 
     monkeypatch.setattr(phase_answer, "_decide_bound_unit_convertibility", decide)
     monkeypatch.setattr(
-        phase_answer, "start_elected_related_read", lambda *_a: calls.append("related")
+        phase_answer, "start_answer_related_read", lambda *_a: calls.append("related")
     )
     request = (
         _trailing(request_text)
         if request_text.startswith("the last")
         else DateRequest(window=TimeWindow(start_year=2015, end_year=2020), latest=False)
     )
-    state = SimpleNamespace(mat_result=_two_flows(range(2000, 2025)), date_request=request)
+    state = SimpleNamespace(
+        mat_result=_two_flows(range(2000, 2025)), date_request=request, related_read=None
+    )
 
     assert asyncio.run(phase_answer._ground_elected_answer(cast(Any, state))) is stop
     assert calls == order
+
+
+class _HeldTask:
+    """A related read's task that records whether it was cancelled."""
+
+    def __init__(self) -> None:
+        self.cancelled = False
+
+    def cancel(self) -> None:
+        self.cancelled = True
+
+
+def test_a_refused_unit_decision_stops_the_related_read_the_pass_already_started(monkeypatch):
+    """An answer whose related read the pass already started over its years, for its one
+    flow, reads no second one before the bound-unit decision. The decision refuses, so the
+    answer states no related measures and that read is cancelled."""
+    request = DateRequest(window=TimeWindow(start_year=2015, end_year=2020), latest=False)
+    held = related_read_module.RelatedRead(
+        stat_var=_FLOW,
+        window=requested_window_from_date_request(request),
+        task=cast(Any, _HeldTask()),
+    )
+    started: list[object] = []
+    stop = cast(RegionResult, object())
+
+    async def decide(_state: object, _mat: object) -> RegionResult:
+        return stop
+
+    monkeypatch.setattr(phase_answer, "_decide_bound_unit_convertibility", decide)
+    monkeypatch.setattr(related_read_module, "_elected_measure_family", lambda *_a: (None, ()))
+    monkeypatch.setattr(
+        related_read_module, "start_related_read", lambda *_a, **_k: started.append(_k)
+    )
+    state = SimpleNamespace(
+        mat_result=dataclasses.replace(_two_flows(range(2000, 2025)), sv_dcids=[_FLOW]),
+        date_request=request,
+        related_read=held,
+        measure_family=None,
+        place=SimpleNamespace(roles=SimpleNamespace(roles=())),
+        shape_draft=SimpleNamespace(sv_arc_facts=None),
+    )
+
+    assert asyncio.run(phase_answer._ground_elected_answer(cast(Any, state))) is stop
+    assert (started, cast(_HeldTask, held.task).cancelled, state.related_read) == ([], True, None)

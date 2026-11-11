@@ -14,7 +14,7 @@ it live in `region.whole_totals`.
 from __future__ import annotations
 
 from collections.abc import Callable, Collection, Iterable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 from code_index.shared import get_index
 from code_index.types import POPULATION_CLASS, PartyClass, PartyRow, WholeMarker, WholeTotalSet
@@ -219,17 +219,24 @@ def identity_whole_groups(identity: BaseIdentity) -> dict[str, NamedGroup]:
 
 def unread_whole_group(group: NamedGroup, dcids: Collection[str]) -> NamedGroup | None:
     """A whole population (`group.whole_of`) whose identity does not read the role binding
-    `dcids` whole, as both doors state it (`spec_build._restate_whole_groups`,
-    `resubmit_request.resubmit_named_groups`): `None` where the group stands for one whole
-    total, which the role then binds as a party, and the plain named set of the role's
-    parties, labelled by the set's phrase, with no whole reading, where they are exactly the
-    members of one whole total set ("all donors including private" in a year a member's
-    marker does not hold). A resubmit reads a plain group it is posted back with, which
-    names no graph node, through the same rule."""
+    `dcids` whole, as both doors state it (`spec_build._restate_whole_groups`, and
+    `resubmit_request.resubmit_named_groups` for a posted group): `None` where the group
+    stands for one whole total, which the role then binds as a party, and otherwise the
+    plain named set of the role's parties (`plain_whole_set`)."""
+    return None if group.total is not None else plain_whole_set(dcids)
+
+
+def plain_whole_set(dcids: Collection[str]) -> NamedGroup | None:
+    """The plain named set of a role binding exactly the members of one whole total set,
+    labelled by the set's phrase, with no whole reading ("all donors including private" in
+    a year a member's marker does not hold), or `None` for any other parties. It names no
+    graph node and no total, so a resubmit reads a group it is posted back with, which
+    posts neither, through this rule."""
     members = frozenset(dcids)
-    if group.total is not None or (whole_set := whole_total_set_of(members)) is None:
+    whole_set = whole_total_set_of(members)
+    if whole_set is None:
         return None
-    return replace(group, label=whole_set.phrase, member_dcids=members, whole_of=())
+    return NamedGroup(label=whole_set.phrase, dcid=None, member_dcids=members)
 
 
 def whole_groups_over_identity(

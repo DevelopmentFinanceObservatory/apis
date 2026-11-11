@@ -240,13 +240,19 @@ def stale_departure(
 
 
 def passed_over_departure(
-    settled: SettledTrailing, *, shown: str
+    settled: SettledTrailing, *, shown: str, first_year: int
 ) -> tuple[Warning, DepartureFact] | None:
     """The disclosure that a member passed over in election shortened `settled`, for an
-    answer a conversion's period then narrowed to `shown` (`phase_answer._over_conversion_period`):
-    its `passed_over` fact over the years shown, stating no data years, which the
-    conversion's own fact states. None where no member passed over shortened the span."""
+    answer a conversion's period then narrowed to `shown`, starting in `first_year`
+    (`phase_answer._over_conversion_period`): its `passed_over` fact over the years shown,
+    stating no data years, which the conversion's own fact states. None where no member
+    passed over shortened the span, or where the period starts after the year the passed
+    over member's data ends, since the conversion's tables then set the first year shown."""
     if settled.departure is None or settled.departure[1].limited_by != "passed_over":
+        return None
+    window = settled.date_request.window
+    assert window is not None, "a settled span reads a plain range"
+    if first_year != window.start_year:
         return None
     fact = replace(settled.departure[1], shown=shown, data_years=None)
     warning = Warning(

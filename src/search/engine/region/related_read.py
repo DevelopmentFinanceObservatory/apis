@@ -125,25 +125,22 @@ def start_elected_related_read(state: ResolveState, mat_result: Materialised) ->
 
 
 def start_answer_related_read(state: ResolveState, mat_result: Materialised) -> None:
-    """The elected answer's related-measures read over its final years
-    (`state.date_request`), once a trailing span has settled and a conversion's period has
-    narrowed them, as a resubmit of the answer reads them. A read the pass already started
-    for the answer's one StatVar, outside a measure family, over those years stands
-    (`_ground_elected_answer`, `candidate_collapse`); any other read it holds is cancelled
-    and a read for the answer starts, as `start_elected_related_read` starts one."""
-    held = state.related_read
+    """The elected answer's related-measures read over the request's years
+    (`state.date_request`) into `state.related_read`, with the measure family its served
+    members exhibit into `state.measure_family`. A read the pass already started for the
+    answer's one StatVar, outside a measure family, over those years stands
+    (`candidate_collapse`, or before the unit decision in `_ground_elected_answer`); any
+    other read it holds is cancelled and one for the answer starts (`related_read_for`)."""
     family = _elected_measure_family(state, mat_result)
-    if (
-        held is not None
-        and mat_result.sv_dcids == [held.stat_var]
-        and family[0] is None
-        and held.window == requested_window_from_date_request(state.date_request)
-    ):
-        state.measure_family = family
-        return
-    if held is not None:
-        cancel_related_reads((held,))
-    _start_elected(state, mat_result, family)
+    state.measure_family = family
+    related_read_for(
+        state,
+        stat_vars=mat_result.sv_dcids,
+        measure_partition=family[0],
+        places=state.place.roles.roles,
+        arcs=state.shape_draft.sv_arc_facts,
+        date_request=state.date_request,
+    )
 
 
 def _start_elected(state: ResolveState, mat_result: Materialised, family: MeasureFamily) -> None:
@@ -251,9 +248,9 @@ def related_read_for(
     arcs: Mapping[str, Mapping] | None,
     date_request: DateRequest | None,
 ) -> RelatedRead | None:
-    """The pass's read when it reads the answer's one StatVar over the answer's years
-    (`date_request`), else a read started for the answer (`start_related_read`), replacing
-    the pass's."""
+    """The pass's read when it reads the answer's one StatVar, outside a measure family,
+    over the answer's years (`date_request`), else a read started for the answer
+    (`start_related_read`), replacing the pass's, which is cancelled."""
     held = state.related_read
     if (
         held is not None
@@ -262,6 +259,8 @@ def related_read_for(
         and held.window == requested_window_from_date_request(date_request)
     ):
         return held
+    if held is not None:
+        cancel_related_reads((held,))
     state.related_read = start_related_read(
         state,
         stat_vars=stat_vars,

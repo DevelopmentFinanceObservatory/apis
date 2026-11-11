@@ -271,7 +271,7 @@ class SearchSettings(BaseSettings):
     llm_timeout_s: float = 30
 
     # Seconds the second of two samples (`clients.llm.two_samples`) may run after its first
-    # is read. Past it the second is cut (`clients.llm.SecondSamples.cut_after`): its read is
+    # is read. Past it the second is cut (`clients.llm.SecondSample.cut_after`): its read is
     # not judged and nothing is stored. An SSE answer never waits for it; `done`, and so the
     # buffered JSON response, waits at most this bound after the extraction's first sample.
     # Both samples go out at the same moment. Over 120 such pairs of extraction and
