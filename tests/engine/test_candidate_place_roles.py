@@ -42,7 +42,7 @@ from materialise.graph import SubjectPage
 from search.engine.bind import SlotBindingDraft
 from search.engine.core import resolve_async
 from search.engine.degraded_reads import DegradedReads, recording_degraded_reads
-from search.engine.errors import GraphInfraError
+from search.engine.errors import GraphInfraError, GraphReadFailure
 from search.engine.extract import Extraction
 from search.engine.interpret import Recall
 from search.engine.quantity_read import QuantityOutput
@@ -2124,6 +2124,47 @@ def test_a_set_settles_by_declaration_only_where_one_dataset_declares_every_plac
     state.place_sets = place_sets(groups=_GHA_KEN_GROUP)
 
     assert settle_undirected_axis(state, [shape]) == settled
+
+
+class _ProvenanceNameGraph:
+    """Answers the provenance name read, or fails it with `fail`, and records whether each
+    read ran on a thread with a running event loop."""
+
+    def __init__(self, fail: bool) -> None:
+        self.fail = fail
+        self.on_loop: list[bool] = []
+
+    def node_arc_targets_many(self, dcids, *, properties, deadline):
+        try:
+            asyncio.get_running_loop()
+            self.on_loop.append(True)
+        except RuntimeError:
+            self.on_loop.append(False)
+        if self.fail:
+            raise GraphReadFailure("simulated provenance name read failure")
+        return {dcid: {"name": [SimpleNamespace(value="Listing Dataset")]} for dcid in dcids}
+
+
+@pytest.mark.parametrize(
+    ("fail", "listed_by", "lost"),
+    [(False, "Listing Dataset", []), (True, "provenance/Listing", ["provenance names"])],
+    ids=["read", "read_fails"],
+)
+def test_a_declaration_reading_names_its_dataset_off_the_event_loop(
+    monkeypatch: pytest.MonkeyPatch, fail, listed_by, lost
+) -> None:
+    """The dataset a declaration reading cites is named by a graph read that runs off the
+    event loop. A failed read names the dataset by its dcid and bars caching the answer."""
+    monkeypatch.setattr(phase_place_materialise, "shape_part_datasets", lambda shape, index: ())
+    graph = _ProvenanceNameGraph(fail)
+    state = _state(names_and_roles={}, places={})
+    state.graph = cast(Any, graph)
+    reading = UndirectedReading("origin", "declaration", listed_by=("provenance/Listing",))
+
+    with recording_degraded_reads() as degraded:
+        named = asyncio.run(phase_place_materialise._listing_source(state, reading))
+
+    assert (named, graph.on_loop, degraded.reads) == (listed_by, [False], lost)
 
 
 _FRA = "country/FRA"

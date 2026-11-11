@@ -798,19 +798,24 @@ class _MemoFakeResponse:
 
 class _MemoCountingClient:
     """Stands in for genai.Client: records every generate_content call and
-    answers every one of them with the same `answer`."""
+    answers each with the response `by_seed` holds for its seed, `answer` otherwise."""
 
     class _Models:
-        def __init__(self, answer: _MemoFakeResponse) -> None:
+        def __init__(
+            self, answer: _MemoFakeResponse, by_seed: dict[int, _MemoFakeResponse]
+        ) -> None:
             self.answer = answer
+            self.by_seed = by_seed
             self.calls: list[tuple[str, str, object]] = []
 
         async def generate_content(self, *, model, contents, config):
             self.calls.append((model, contents, config))
-            return self.answer
+            return self.by_seed.get(config.seed, self.answer)
 
-    def __init__(self, answer: _MemoFakeResponse) -> None:
-        self.models = self._Models(answer)
+    def __init__(
+        self, answer: _MemoFakeResponse, by_seed: dict[int, _MemoFakeResponse] | None = None
+    ) -> None:
+        self.models = self._Models(answer, by_seed or {})
         # `_fetch_text` uses `client.aio.models`; sharing `models` records calls on both paths.
         self.aio = SimpleNamespace(models=self.models)
 
@@ -862,12 +867,23 @@ def test_extract_reattaches_on_a_memo_hit_too(monkeypatch):
 # Spies prove excess input never reaches the scanners.
 
 
-def test_extract_clamps_oversized_variables_before_the_reattach_scan(monkeypatch):
+@pytest.mark.parametrize(
+    ("second_differs", "scans"),
+    [(False, 1), (True, 2)],
+    ids=["samples_equal", "samples_differ"],
+)
+def test_extract_clamps_oversized_variables_before_the_reattach_scan(
+    monkeypatch, second_differs, scans
+):
     """Variables clamp to the first `max_variables`.
 
     `raw_variable_count` records the distinct total. Reattachment scans all distinct variables
-    first, so a qualifier targeting a discarded variable stays unapplied.
+    first, so a qualifier targeting a discarded variable stays unapplied. The judge
+    post-processes the second sample only when its raw extraction differs from the first's.
     """
+    import search.engine.clients.llm as llm_module
+    from search.engine.clients.llm import LLM
+
     seen_lengths: list[int] = []
     original = extract_module._variable_preceding
 
@@ -879,16 +895,23 @@ def test_extract_clamps_oversized_variables_before_the_reattach_scan(monkeypatch
 
     n = settings().max_variables + 20
     query = "an oversized variables query naming type of finance 110"
-    llm = _stub_for(
-        query,
-        {
-            "variables": [f"measure {i}" for i in range(n)],
-            "entities": [],
-            "dropped_qualifiers": ["type of finance 110"],
-            "dates": [],
-        },
+    answer = Extraction(
+        kind="resolution",
+        variables=[f"measure {i}" for i in range(n)],
+        dropped_qualifiers=["type of finance 110"],
     )
-    result, _ = _run(extract(query, llm=llm))
+    client = _MemoCountingClient(
+        _MemoFakeResponse(parsed=answer),
+        by_seed={
+            2: _MemoFakeResponse(
+                parsed=answer.model_copy(update={"variables": answer.variables[::-1]})
+            )
+        }
+        if second_differs
+        else None,
+    )
+    monkeypatch.setattr(llm_module, "_get_client", lambda: client)
+    result, _ = _run(extract(query, llm=LLM(seed=1)))
     extraction = result.extraction
 
     assert len(extraction.variables) == settings().max_variables
@@ -897,8 +920,8 @@ def test_extract_clamps_oversized_variables_before_the_reattach_scan(monkeypatch
     # The spy ran (a coded phrase was present to trigger it) and saw every
     # one of the n distinct variables, not just the settings().max_variables
     # survivors.
-    # One scan per sample's reading, each before the clamp.
-    assert seen_lengths == [n, n]
+    # One scan per post-processed sample, each before the clamp.
+    assert seen_lengths == [n] * scans
 
 
 def test_clamped_variables_keeps_every_occurrence_of_an_admitted_variable_with_its_position():
@@ -1144,8 +1167,9 @@ def test_extract_clears_the_places_of_a_question_past_a_cap_it_does_not_resolve(
     result, _ = _run(extract(query, llm=llm))
     assert result.extraction.kind == kind
     assert result.extraction.entities == []
-    # Each sample's reading reaches the role scan empty.
-    assert scanned == [[], []]
+    # The first sample's reading reaches the role scan empty; the equal second is not
+    # post-processed.
+    assert scanned == [[]]
 
 
 def test_extract_keeps_the_places_of_a_question_at_the_cap_it_does_not_resolve():

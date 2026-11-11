@@ -1979,7 +1979,9 @@ async def _model_extraction(
     An `LLM` carrying an extraction store answers a query it holds for `year` with no call
     and zero usage, and the stored reading is agreed: the store holds only agreed readings.
     Otherwise two samples run concurrently, the second under another seed (`two_samples`),
-    and the first is served. Both are post-processed and agree when the two
+    and the first is served. Two equal raw `Extraction`s agree with no second post-processing,
+    since `_read_extraction` reads only the query, the year, settings and the bound release;
+    otherwise the second is post-processed too, and the two agree when their
     `ExtractionResult`s are equal, every field included. The second is judged as it
     answers, and an agreed reading is stored then; a disagreeing pair stores nothing. A
     refused or failed first sample raises and stores nothing; a second sample that is
@@ -2003,7 +2005,7 @@ async def _model_extraction(
             return reading, dict(MEMO_HIT_USAGE)
 
     def judge(first: Extraction, reading: ExtractionResult, second: Extraction) -> bool:
-        if reading != _second_reading(query, second, year=year):
+        if second != first and reading != _second_reading(query, second, year=year):
             logger.info("Extraction samples disagree; the reading is served unstored")
             return False
         if store is not None and key is not None:

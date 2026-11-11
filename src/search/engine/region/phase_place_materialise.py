@@ -305,7 +305,7 @@ async def _phase_place_bindings(state: ResolveState) -> RegionResult | None:
     if bound == "role_not_resolved":
         bound = _settle_direction(state)
     elif isinstance(bound, PlaceAssignment):
-        _state_read_direction(state, bound)
+        await _state_read_direction(state, bound)
     if bound == "role_incompatible":
         return await _role_incompatible_no_data(state)
     if bound == "role_not_resolved":
@@ -438,7 +438,7 @@ def _election_refusal(
     return state.no_data("variable_not_resolved", llm_usage=state.var_usage)
 
 
-def _state_read_direction(state: ResolveState, bound: PlaceAssignment) -> None:
+async def _state_read_direction(state: ResolveState, bound: PlaceAssignment) -> None:
     """State the direction a place named without one is read on where a rule settled it
     before election (`ResolveState.undirected_axis`) and the elected shape binds the place
     on that axis as named, as DAC1 binds "ODA in Germany" to the donor. The answer states
@@ -451,22 +451,25 @@ def _state_read_direction(state: ResolveState, bound: PlaceAssignment) -> None:
     if any(
         state.words_of(place_set.name) == name for place_set in bound.sets.get(reading.axis, ())
     ):
+        listed_by = await _listing_source(state, reading)
         state.inferred_facts.append(
-            direction_inferred(
-                name, reading.axis, read_by=reading.rule, listed_by=_listing_source(state, reading)
-            )
+            direction_inferred(name, reading.axis, read_by=reading.rule, listed_by=listed_by)
         )
 
 
-def _listing_source(state: ResolveState, reading: UndirectedReading) -> str | None:
+async def _listing_source(state: ResolveState, reading: UndirectedReading) -> str | None:
     """The name of the dataset a declaration reading cites, of those declaring every place
     of the set a provider (`UndirectedReading.listed_by`): the first by dcid the elected
-    shape answers from (`shape_part_datasets`), else the first. `None` for another rule."""
+    shape answers from (`shape_part_datasets`), else the first. `None` for another rule.
+    The name read (`refs.provenance_labels`) runs off the event loop."""
     if not reading.listed_by:
         return None
     own = set(shape_part_datasets(state.shape_draft, get_index())).intersection(reading.listed_by)
     dataset = min(own) if own else reading.listed_by[0]
-    return provenance_labels([dataset], state.graph, deadline=state.deadline).get(dataset, dataset)
+    labels = await asyncio.to_thread(
+        provenance_labels, [dataset], state.graph, deadline=state.deadline
+    )
+    return labels.get(dataset, dataset)
 
 
 def _settle_direction(
