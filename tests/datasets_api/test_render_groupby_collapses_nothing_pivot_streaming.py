@@ -288,7 +288,6 @@ def test_render_and_store_never_builds_a_concatenated_frame_chunks_for_this_comb
         artifact_store=FakeArtifactStore(),
         entity_columns=("recipient",),
         enrichment=EnrichmentLookup(_GRAPH),
-        parties={},
         code_index=_INDEX_ONE_CONTRIBUTOR,
         resolved_stat_var_refs=("dcid:SV_A",),
         pivot_max_output_cells=5_000_000,

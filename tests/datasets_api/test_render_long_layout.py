@@ -178,6 +178,17 @@ _COLLAPSE_HEADER = (*_LONG_HEADER[:9], *_LONG_HEADER[11:])
 """`_LONG_HEADER` after a groupby by purpose sums over the type of finance."""
 
 
+def _with_parties(index: CodeIndex, parties: Mapping[str, PartyRow]) -> CodeIndex:
+    """`index` holding `parties` as its party rows."""
+    return CodeIndex(
+        stamp=index.stamp,
+        declarations=index.declarations.values(),
+        codes=index.codes,
+        statvars=index.statvars,
+        parties=parties.values(),
+    )
+
+
 def _render(
     options: MintOptions,
     *,
@@ -211,10 +222,9 @@ def _render(
         artifact_store=store,
         entity_columns=_ENTITY_COLUMNS,
         enrichment=EnrichmentLookup(graph),
-        parties=parties,
         pivot_max_output_cells=5_000_000,
         groupby_fold_max_rows=2_000_000,
-        code_index=index,
+        code_index=_with_parties(index, parties),
         resolved_stat_var_refs=(
             tuple(stat_var_refs)
             if stat_var_refs is not None

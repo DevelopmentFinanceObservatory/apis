@@ -14,11 +14,12 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from dfo_frame_grammar import Frame
 
 from code_index.types import PartyRow
-from materialise.bundle_columns import PROVENANCE_COLUMN
+from dfo_platform.columns import PROVENANCE_COLUMN
 from materialise.enrichment import (
     ENRICHMENT_FIELDS,
     PARTY_KIND_FIELD,
     EnrichmentLookup,
+    pivot_party_cell,
     row_party_cell,
 )
 from materialise.errors import MaterialisationUsageError
@@ -376,7 +377,8 @@ def _enrichment_coverage_for_column(
 ) -> tuple[EnrichmentCoverage, ...]:
     # Role columns contain string dcids. `resolved` is the shared lookup
     # across all role columns; `party_kind` comes from `parties` on the
-    # column's axis for each row's provenance, as a long download fills it.
+    # column's axis, covered where a long download fills it for each row's
+    # provenance and a pivot fills it over every provenance the ref is in.
     refs = sorted({ref for ref in refs_seen if isinstance(ref, str)})
     if not refs:
         return ()
@@ -395,6 +397,15 @@ def _enrichment_coverage_for_column(
             )
             for provenance in provenances
         ]
+        kinds.append(
+            pivot_party_cell(
+                PARTY_KIND_FIELD,
+                ref,
+                role=role_column,
+                parties=parties,
+                datasets=[cell for cell in provenances if isinstance(cell, str)],
+            )
+        )
         if all(kind is not None for kind in kinds):
             fields[ref] = {**fields[ref], PARTY_KIND_FIELD: "covered"}
 

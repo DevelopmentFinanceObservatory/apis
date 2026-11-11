@@ -20,7 +20,12 @@ from code_index.shared import get_index
 from scripts.sentence_golden import golden_parts
 from search.engine import measure_verdict
 from search.engine.closest_match import closest_match_fact, reading_inputs
-from search.engine.measure_verdict import ReadingEvidence, measure_verdicts, property_evidence
+from search.engine.measure_verdict import (
+    ReadingEvidence,
+    measure_verdicts,
+    property_evidence,
+    reading_evidence,
+)
 from search.engine.qualifier_match import declared_measures_named
 from search.engine.quantity import DenominatorRead
 from search.engine.region.admissibility import rule_four_verdicts
@@ -607,25 +612,51 @@ def test_rule_four_reads_a_denominator_s_name_only_where_none_of_its_pairs_are_k
     )
 
 
-def test_rule_four_and_closest_match_read_a_denominator_known_by_name_alike() -> None:
+_HEALTH_SHARE_EVIDENCE = ReadingEvidence(
+    five_tuple=frozenset(
+        {
+            ("populationType", "EconomicActivity"),
+            ("measuredProperty", "amount"),
+            ("statType", "measuredValue"),
+        }
+    ),
+    properties=property_evidence(
+        [{"activitySource": "ExpenditureActivity", "expenditureType": "HealthcareExpenditure"}]
+    ),
+    denominator_name=_GDP_NAMED,
+)
+
+
+@pytest.mark.parametrize(
+    "spec_evidence",
+    [
+        pytest.param(_HEALTH_SHARE_EVIDENCE, id="no-pairs"),
+        pytest.param(
+            reading_evidence(
+                population_type="EconomicActivity",
+                measured_property="amount",
+                stat_type="measuredValue",
+                properties=_HEALTH_SHARE_EVIDENCE.properties,
+                noun=None,
+                denominator_pairs=(),
+                denominator_name=_GDP_NAMED,
+            ),
+            id="built-with-empty-pairs",
+        ),
+        pytest.param(
+            dataclasses.replace(_HEALTH_SHARE_EVIDENCE, denominator_pairs=frozenset()),
+            id="empty-pairs",
+        ),
+    ],
+)
+def test_rule_four_and_closest_match_read_a_denominator_known_by_name_alike(
+    spec_evidence: ReadingEvidence,
+) -> None:
     """A shape whose denominator the graph gives no pairs, and a Spec of the same members,
-    which states its denominator by name alone, hold the same evidence and read "GDP" alike."""
+    which states its denominator by name alone, hold the same evidence and read "GDP" alike.
+    Empty pairs are no pairs known, however the evidence holds them."""
     named = declared_measures_named("GDP")
     denominators = {"Amount_Gdp_Unread": DenominatorRead(kind="other", name=_GDP_NAMED, pairs=())}
-    spec_evidence = ReadingEvidence(
-        five_tuple=frozenset(
-            {
-                ("populationType", "EconomicActivity"),
-                ("measuredProperty", "amount"),
-                ("statType", "measuredValue"),
-            }
-        ),
-        properties=property_evidence(
-            [{"activitySource": "ExpenditureActivity", "expenditureType": "HealthcareExpenditure"}]
-        ),
-        denominator_name=_GDP_NAMED,
-    )
 
-    assert rule_four_verdicts(_HEALTH_SHARE, named, denominators) == measure_verdicts(
-        named, spec_evidence
-    )
+    assert rule_four_verdicts(_HEALTH_SHARE, named, denominators) == ["base"]
+    assert measure_verdicts(named, spec_evidence) == ["base"]

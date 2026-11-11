@@ -36,8 +36,8 @@ from dfo_frame_grammar import TIME_PERIOD_COLUMN, Frame
 
 from code_index.types import PartyRow
 from datasets_api.manifest_models import PartyTotalsLeftOutModel
+from dfo_platform.columns import PROVENANCE_COLUMN
 from dfo_platform.roles import role_key_axis
-from materialise.bundle_columns import PROVENANCE_COLUMN
 from materialise.content_version import stream_frame_sha256
 from materialise.enrichment import is_party_role, party_kind_of
 

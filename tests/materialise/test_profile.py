@@ -10,6 +10,7 @@ import json
 import random
 
 import httpx
+import pytest
 
 from code_index.types import PartyRow
 from dc_sdmx import SdmxClient
@@ -21,7 +22,12 @@ from materialise import (
 )
 from materialise.facets import FacetBinding
 from materialise.graph import Facet
-from materialise.profile import ColumnProfile, OutputProfile, compute_output_profile
+from materialise.profile import (
+    ColumnProfile,
+    OutputProfile,
+    compute_output_profile,
+    with_party_kind_coverage,
+)
 from materialise.reshape import (
     PivotAnalysis,
     Table,
@@ -682,21 +688,36 @@ def test_a_party_kind_is_covered_on_each_role_column_by_that_column_s_axis():
     assert covered == {("financingProvider", 1, 1), ("financingRecipient", 1, 1)}
 
 
-def test_a_party_whose_kind_differs_by_dataset_is_covered_as_the_long_download_fills_it():
-    """A total in D1 and a party in D2, both on the provider side, takes a kind in every row
-    of a long download, each row reading its own dataset, so the profile covers it. Read for
-    no dataset, as a pivot reads it, it takes none."""
+@pytest.mark.parametrize(
+    ("datasets", "covered"),
+    [
+        pytest.param((_D1, _D2), False, id="served-from-datasets-where-its-kinds-differ"),
+        pytest.param((_D1, _D1), True, id="served-from-one-dataset"),
+    ],
+)
+def test_a_party_whose_kind_differs_by_dataset_is_covered_where_every_layout_fills_it(
+    datasets: tuple[str, str], covered: bool
+):
+    """A total in D1 and a party in D2, both on the provider side. A long download reads
+    each row for its own dataset, and a pivot reads the party once over the datasets the frame
+    serves it from. Served from both, the pivot finds two kinds and fills none, so the profile
+    counts it uncovered beside a party both layouts fill; served from D1 alone, it is covered."""
     party = PartyRow(
         dcid="org/X",
         kind="party",
         published=((_D1, "origin"), (_D2, "origin")),
         dataset_kinds=((_D1, "total"),),
     )
-    parties = {"org/X": party}
+    other = PartyRow(dcid="org/Y", kind="party", published=((_D1, "origin"), (_D2, "origin")))
+    parties = {"org/X": party, "org/Y": other}
     columns = ("stat_var", "financingProvider", "time_period", "provenance", "value")
     table = Table(
         columns=columns,
-        rows=((_STAT_VAR, "org/X", "2015", _D1, 1.0), (_STAT_VAR, "org/X", "2015", _D2, 2.0)),
+        rows=tuple(
+            (_STAT_VAR, ref, period, dataset, 1.0)
+            for ref in ("org/X", "org/Y")
+            for period, dataset in zip(("2015", "2016"), datasets, strict=True)
+        ),
     )
 
     profile = compute_output_profile(
@@ -705,13 +726,75 @@ def test_a_party_whose_kind_differs_by_dataset_is_covered_as_the_long_download_f
         enrichment=EnrichmentLookup(FakeGraphReader()),
         parties=parties,
     )
-    filled, _warnings = enrich_columns(
-        table, requests=(("financingProvider", "party_kind"),), lookup={}, parties=parties
-    )
+    filled = {
+        per_row: enrich_columns(
+            table,
+            requests=(("financingProvider", "party_kind"),),
+            lookup={},
+            parties=parties,
+            per_row=per_row,
+        )[0]
+        for per_row in (True, False)
+    }
 
-    assert [
-        (coverage.covered, coverage.entities)
-        for coverage in profile.enrichments
-        if coverage.field == "party_kind"
-    ] == [(1, 1)]
-    assert [row[-1] for row in filled.rows] == ["total", "party"]
+    every_layout_fills = all(
+        row[-1] for layout in filled.values() for row in layout.rows if row[1] == "org/X"
+    )
+    [coverage] = [entry for entry in profile.enrichments if entry.field == "party_kind"]
+    assert (coverage.covered, coverage.missing) == ((2, ()) if covered else (1, (("org/X", ""),)))
+    assert every_layout_fills is covered
+
+
+@pytest.mark.parametrize(
+    "columns",
+    [
+        pytest.param(
+            ("stat_var", "financingProvider", "financingRecipient", "time_period", "provenance"),
+            id="with-provenance",
+        ),
+        pytest.param(
+            ("stat_var", "financingProvider", "financingRecipient", "time_period"),
+            id="without-provenance",
+        ),
+    ],
+)
+def test_a_recount_that_changes_nothing_keeps_every_entry_where_it_stands(
+    columns: tuple[str, ...],
+):
+    """A mint orders a profile's entries by its declared roles, here the reverse of the
+    frame's columns. Recounting `party_kind` over the same frame and party rows returns the
+    profile unchanged, entry order included, with or without a `provenance` column."""
+    party = PartyRow(
+        dcid="org/X",
+        kind="party",
+        published=((_D1, "origin"), (_D2, "destination")),
+        dataset_kinds=((_D2, "total"),),
+    )
+    other = PartyRow(dcid="org/Y", kind="party", published=((_D1, "destination"),))
+    parties = {"org/X": party, "org/Y": other}
+    cells = {
+        "stat_var": _STAT_VAR,
+        "financingProvider": "org/X",
+        "financingRecipient": "org/Y",
+        "time_period": "2015",
+        "provenance": _D1,
+    }
+    table = Table(
+        columns=(*columns, "value"),
+        rows=(
+            (*(cells[column] for column in columns), 1.0),
+            (*(cells[column] for column in columns), 2.0),
+        ),
+    )
+    profile = compute_output_profile(
+        table,
+        role_columns=("financingRecipient", "financingProvider"),
+        enrichment=EnrichmentLookup(FakeGraphReader()),
+        parties=parties,
+    )
+    assert [entry.column for entry in profile.enrichments if entry.field == "party_kind"] == [
+        "financingRecipient",
+        "financingProvider",
+    ]
+
+    assert with_party_kind_coverage(profile, lambda: iter((table,)), parties=parties) == profile

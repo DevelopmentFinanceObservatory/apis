@@ -24,6 +24,7 @@ catalogue build and one coverage index build.
 
 from __future__ import annotations
 
+import functools
 from collections import Counter, defaultdict
 from collections.abc import Collection, Iterable, Iterator, Mapping
 from dataclasses import dataclass
@@ -184,13 +185,14 @@ def _coverage_by_country(
             if facet in aid_facets:
                 spans[place].append((first, last))
 
-    def counted(dcid: str, role: Role, provenance: str | None) -> bool:
+    # Pairs repeat a party across many rows, so each (party, role, dataset) is judged once.
+    @functools.cache
+    def counted(dcid: str, role: Role, provenance: str) -> bool:
         # A one-role variable's rows hold `ABSENT_ENTITY` on the role it lacks.
         if dcid == ABSENT_ENTITY:
             return False
         party = parties.get(dcid)
-        datasets = () if provenance is None else (provenance,)
-        return party is None or party.kind_over(COVERAGE_ROLE_AXES[role], datasets) != "total"
+        return party is None or party.kind_over(COVERAGE_ROLE_AXES[role], (provenance,)) != "total"
 
     by_pair_facet = coverage.grouped(by=(*_ROLES, "facet_id"))
     donors: set[str] = set()

@@ -53,6 +53,7 @@ from dfo_frame_grammar import TIME_PERIOD_COLUMN, parse_time_period
 from dfo_frame_grammar.grammar import ComposedUnit, UnitRequest
 
 from code_index.types import ANY_AXIS, PartyRow
+from dfo_platform.columns import PROVENANCE_COLUMN
 from dfo_platform.roles import role_key_axis
 from materialise.enrichment import PARTY_FIELDS, is_party_role, is_whole_total, period_year
 from materialise.errors import MaterialisationUsageError
@@ -94,7 +95,6 @@ _TOTAL_CELLS = frozenset({TOTAL_CELL, WHOLE_TOTAL_CELL})
 """The `<role>_kind` cells of a total."""
 
 _METHOD_COLUMN = "measurementMethod"
-_PROVENANCE_COLUMN = "provenance"
 
 _CURRENCY_DCID_PREFIX = "Currency"
 """`CurrencyUnit` nodes are `Currency<ISO>`."""
@@ -469,7 +469,7 @@ def plan_long_projection(
     def add_kind(entity: str) -> None:
         at = position[entity]
         period_at = position.get(TIME_PERIOD_COLUMN)
-        provenance_at = position.get(_PROVENANCE_COLUMN)
+        provenance_at = position.get(PROVENANCE_COLUMN)
 
         def kind(row: Row, reads: NodeReads) -> str | None:
             return long_kind_cell(
@@ -545,8 +545,8 @@ def plan_long_projection(
 
     if _METHOD_COLUMN in position:
         take_method()
-    if _PROVENANCE_COLUMN in position:
-        take_named(_PROVENANCE_COLUMN)
+    if PROVENANCE_COLUMN in position:
+        take_named(PROVENANCE_COLUMN)
 
     for name in source:
         if name not in used:

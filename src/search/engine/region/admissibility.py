@@ -198,7 +198,7 @@ def draft_evidence(
             summary=shape_constraint_values(shape),
         ),
         noun=shape.label,
-        denominator_pairs=read.pairs if read is not None and read.pairs else None,
+        denominator_pairs=read.pairs if read is not None else None,
         denominator_name=read.name if read is not None else None,
     )
 

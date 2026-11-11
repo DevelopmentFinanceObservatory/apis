@@ -1416,7 +1416,6 @@ def _render_pass(
         artifact_store=artifact_store,
         entity_columns=prewrite.entity_columns,
         enrichment=deps.enrichment,
-        parties=deps.code_index.parties,
         pivot_max_output_cells=deps.settings.pivot_max_output_cells,
         groupby_fold_max_rows=deps.settings.groupby_fold_max_rows,
         code_index=deps.code_index,

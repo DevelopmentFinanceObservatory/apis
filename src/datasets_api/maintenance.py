@@ -134,21 +134,22 @@ line per version that fails and one `datasets_frame_summed_backfilled` line coun
 every deploy.
 
 `backfill-party-kind-coverage [--dry-run]` runs by hand once per environment after the services
-move to an image whose output profile counts `party_kind` coverage per row
-(`materialise.profile`), with `--dry-run` first. A profile minted before counted a party read for
-no dataset and on any axis, so the options document can call a party column's kind `partial`
-where a long download fills every cell. For each version row holding an output profile it reads
-the version's stored frame from any tier holding its bytes and counts each role column's
-`party_kind` coverage again under the served graph release's code index, each row read for its
-own dataset on the column's axis (`profile.with_party_kind_coverage`). A row whose count
-differs gets the new count in its `output_profile` column and in the `output_profile` of its
-`immutable_body`, written while the row still holds the profile it was counted from; every other
-entry keeps its place and value. A missing ref is named by a label the profile already holds,
-since the task reads no graph. A row whose frame no tier holds stays as it is. A second run
-changes nothing. It writes one `datasets_party_kind_backfill_failed` `ERROR` line per version
-that fails and one `datasets_party_kind_backfilled` line counting each `PartyKindOutcome`, the
-failures and whether it was a dry run, exits 1 when any version failed, and reads the settings
-`sweep` reads. `--dry-run` reads and counts but writes nothing.
+move to an image whose output profile counts a party in `party_kind` coverage where every
+layout fills its cells (`materialise.profile`), with `--dry-run` first. A profile minted before
+counted a party read for no dataset and on any axis, so the options document can misstate a
+party column's kind coverage. For each version row holding an output profile it reads the
+version's stored frame from any tier holding its bytes and counts each role column's
+`party_kind` coverage again with the mint's fold under the served graph release's code index
+(`profile.with_party_kind_coverage`). A row whose count differs gets the new count in its
+`output_profile` column and in the `output_profile` of its `immutable_body`, written under the
+version's link lock (`version_store.lock_version_links`) while the row still holds the profile
+it was counted from; the body's other keys and every other entry keep their place and value. A
+missing ref is named by a label the profile already holds, since the task reads no graph. A row
+whose frame no tier holds stays as it is. A second run changes nothing. It writes one
+`datasets_party_kind_backfill_failed` `ERROR` line per version that fails and one
+`datasets_party_kind_backfilled` line counting each `PartyKindOutcome`, the failures and
+whether it was a dry run, exits 1 when any version failed, and reads the settings `sweep`
+reads. `--dry-run` reads and counts but writes nothing.
 
 `backfill-within-sets [--apply]` runs by hand once per environment, after a deploy of this
 image has run `backfill-descriptions`. A record written before records held
@@ -423,7 +424,11 @@ from datasets_api.store_errors import (
     read_stored_frame,
 )
 from datasets_api.version_descriptions import mint_title
-from datasets_api.version_store import LiveVersionRecordWriter, rendering_key
+from datasets_api.version_store import (
+    LiveVersionRecordWriter,
+    lock_version_links,
+    rendering_key,
+)
 from datasets_api.versions import ArtifactRecord
 from datasets_api.warning_backfill import (
     Readers,
@@ -1828,22 +1833,18 @@ def _versions_with_profile(store: DatasetStore, *, after: tuple[str, str]) -> li
 
 
 def _stored_profile(
-    tx: Transaction, subject_id: str, content_version: str, *, lock: bool
-) -> tuple[dict[str, object], dict[str, object]] | None:
-    """The `output_profile` column and `immutable_body` of one version row, `None` for a row
-    no longer recorded or holding no profile. `lock` holds the row until the transaction
-    ends."""
+    tx: Transaction, subject_id: str, content_version: str
+) -> dict[str, object] | None:
+    """The `output_profile` column of one version row, `None` for a row no longer recorded
+    or holding no profile."""
     row = tx.fetch_one(
-        "SELECT output_profile, immutable_body FROM datasets.version_record "
-        "WHERE subject_id = %s AND content_version = %s" + (" FOR UPDATE" if lock else ""),
+        "SELECT output_profile FROM datasets.version_record "
+        "WHERE subject_id = %s AND content_version = %s",
         (subject_id, content_version),
     )
     if row is None or row["output_profile"] is None:
         return None
-    return (
-        cast("dict[str, object]", row["output_profile"]),
-        cast("dict[str, object]", row["immutable_body"]),
-    )
+    return cast("dict[str, object]", row["output_profile"])
 
 
 def _backfill_party_kind_of(
@@ -1859,12 +1860,14 @@ def _backfill_party_kind_of(
     """Count one version's `party_kind` coverage again from its stored frame
     (`profile.with_party_kind_coverage`) and, unless `dry_run`, write it to the row's
     `output_profile` column and to the `output_profile` of its `immutable_body` while the row
-    still holds the profile it was counted from. `None` for a row no longer recorded."""
+    still holds the profile it was counted from. The write takes the version's link lock
+    (`version_store.lock_version_links`), as the coverage fill does, and sets the body's
+    `output_profile` key alone, so it keeps every other writer's change to the body. `None`
+    for a row no longer recorded."""
     with store.transaction() as tx:
-        stored = _stored_profile(tx, subject_id, content_version, lock=False)
-    if stored is None:
+        profile_json = _stored_profile(tx, subject_id, content_version)
+    if profile_json is None:
         return None
-    profile_json, _body = stored
     frame = _stored_frame(
         artifact_store, reader.read_artifact_locations(subject_id, content_version)
     )
@@ -1878,16 +1881,14 @@ def _backfill_party_kind_of(
     if dry_run:
         return PartyKindOutcome.REFRESHED
     with store.transaction() as tx:
-        current = _stored_profile(tx, subject_id, content_version, lock=True)
-        if current is None or current[0] != profile_json:
+        lock_version_links(tx, subject_id=subject_id, content_version=content_version)
+        if _stored_profile(tx, subject_id, content_version) != profile_json:
             return PartyKindOutcome.CHANGED_UNDER_RUN
-        body = dict(current[1])
-        if "output_profile" in body:
-            body["output_profile"] = refreshed
         tx.execute(
-            "UPDATE datasets.version_record SET output_profile = %s, immutable_body = %s "
+            "UPDATE datasets.version_record SET output_profile = %s::jsonb, "
+            "immutable_body = jsonb_set(immutable_body, '{output_profile}', %s::jsonb, false) "
             "WHERE subject_id = %s AND content_version = %s",
-            (json.dumps(refreshed), json.dumps(body), subject_id, content_version),
+            (json.dumps(refreshed), json.dumps(refreshed), subject_id, content_version),
         )
     return PartyKindOutcome.REFRESHED
 
@@ -1900,9 +1901,9 @@ def run_backfill_party_kind_coverage(
     dry_run: bool,
 ) -> int:
     """Count the `party_kind` coverage of every version row's output profile again with the
-    rule a mint counts it by, each row of a party column read for its own dataset
-    (`profile.with_party_kind_coverage`), rewrite the rows that differ unless `dry_run`, emit
-    the count of each `PartyKindOutcome`, and return the number of versions that failed.
+    rule and fold a mint counts it by (`profile.with_party_kind_coverage`), rewrite the rows
+    that differ unless `dry_run`, emit the count of each `PartyKindOutcome`, and return the
+    number of versions that failed.
 
     Rows are read `PARTY_KIND_PAGE` at a time in key order. A row already holding the count is
     left alone, so a second run changes nothing. A version that fails is logged with its

@@ -31,14 +31,15 @@ one batched `node_arcs_many` read, so asking for `type` beside `label` costs no 
 
 PARTY_KIND_FIELD = "party_kind"
 """The party's kind (`party`, `total` or `residual`) the code index declares on the axis of the
-column that holds it, for the row's dataset (`party_cell`), read with no graph read. Where the row
-names no dataset and the party's kind differs between the datasets that publish it on that axis
-the kind is unavailable, as for a party the index does not list."""
+column that holds it, for the row's dataset (`party_cell`), read with no graph read. A pivot
+reads it over the datasets the frame serves the party from (`pivot_party_cell`). Where the row
+or the pivot reads datasets in which the party takes different kinds on that axis the kind is
+unavailable, as for a party the index does not list."""
 
 PARTY_CLASS_FIELD = "party_class"
 """The party's class (`official`, `private` or `residual`, `PartyRow.class_of`) in the row's
 dataset, for a total the one class its whole markers cover, empty otherwise. Unavailable where
-the row names no dataset and the party's kind differs between datasets."""
+the kind is (`PARTY_KIND_FIELD`)."""
 
 PARTY_WHOLE_FIELD = "party_whole"
 """`true` on a row whose party is a whole total for the row's dataset and year
@@ -238,11 +239,51 @@ def party_cell(
     and class are those of every dataset that publishes it on `axis`. `None` for a ref the rows
     do not list, and for the kind and class of a party that takes no one kind for the row
     (`PartyRow.kind_over`), so a reader counts the cell unavailable."""
-    party = parties.get(ref)
+    return _party_cell(
+        field,
+        parties.get(ref),
+        axis=axis,
+        datasets=() if provenance is None else (provenance,),
+        year=year,
+        provenance=provenance,
+    )
+
+
+def pivot_party_cell(
+    field: str,
+    ref: object,
+    *,
+    role: str,
+    parties: Mapping[str, PartyRow],
+    datasets: Collection[str],
+) -> str | None:
+    """The `<role>_<field>` cell a pivot writes for the party `ref`, one cell for every row
+    holding it in the `role` column: its kind and class on the role's axis over `datasets`,
+    the datasets the frame serves it from (`PartyRow.kind_over`, the one kind they agree on),
+    and its `party_whole` read for no dataset and year (`whole_cell`). `None` for a `ref`
+    that is not text, a role on no flow axis, and wherever `party_cell` gives none."""
+    if not isinstance(ref, str) or (axis := role_key_axis(role)) is None:
+        return None
+    return _party_cell(
+        field, parties.get(ref), axis=axis, datasets=datasets, year=None, provenance=None
+    )
+
+
+def _party_cell(
+    field: str,
+    party: PartyRow | None,
+    *,
+    axis: RoleAxis | AnyAxis,
+    datasets: Collection[str],
+    year: int | None,
+    provenance: str | None,
+) -> str | None:
+    """`party`'s `field` cell, its kind and class read over `datasets` and its `party_whole`
+    for `provenance` in `year`."""
     if party is None:
         return None
     if field in (PARTY_KIND_FIELD, PARTY_CLASS_FIELD):
-        kind = party.kind_over(axis, () if provenance is None else (provenance,))
+        kind = party.kind_over(axis, datasets)
         if kind is None:
             return None
         if field == PARTY_KIND_FIELD:

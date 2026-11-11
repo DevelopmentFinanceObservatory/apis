@@ -33,6 +33,10 @@ ROLE_NOUNS: Mapping[str, str] = MappingProxyType(
 UNKNOWN_ROLE_NOUN = "entity"
 """The noun of a role column whose role `ROLE_NOUNS` does not name."""
 
+PROVENANCE_COLUMN = "provenance"
+"""The frame column naming each row's source dataset, one of the frame grammar's facet identity
+columns (`dfo_frame_grammar.FACET_IDENTITY_COLUMNS`)."""
+
 RESERVED_COLUMN_NOUNS: Mapping[str, str] = MappingProxyType(
     {
         "stat_var": "variable",
@@ -41,7 +45,7 @@ RESERVED_COLUMN_NOUNS: Mapping[str, str] = MappingProxyType(
         "unit": "unit",
         "status": "status",
         "measurementMethod": "measurement method",
-        "provenance": "source dataset",
+        PROVENANCE_COLUMN: "source dataset",
     }
 )
 """The noun per reserved frame column, the frame grammar's own columns and facet identity

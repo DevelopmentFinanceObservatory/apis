@@ -63,6 +63,17 @@ def _statvar(dcid: str, *, purpose: str) -> StatVarRow:
     )
 
 
+_BOTH_SIDES: tuple[tuple[str, RoleAxis], ...] = (("p1", "origin"), ("p1", "destination"))
+"""A publication on both flow axes, so a fixture party reads its kind on either."""
+
+_PARTIES = {
+    party.dcid: party
+    for party in (
+        PartyRow(dcid=_KENYA, kind="party", published=_BOTH_SIDES),
+        PartyRow(dcid=_GHANA, kind="party", published=_BOTH_SIDES),
+        PartyRow(dcid=_DEVELOPING, kind="total", published=_BOTH_SIDES),
+    )
+}
 _INDEX = CodeIndex(
     stamp=IndexStamp(
         graph_endpoint="https://example.test/core/api",
@@ -86,18 +97,8 @@ _INDEX = CodeIndex(
         _statvar("SV_A", purpose=_PURPOSE_HEALTH.dcid),
         _statvar("SV_B", purpose=_PURPOSE_EDUCATION.dcid),
     ),
+    parties=_PARTIES.values(),
 )
-_BOTH_SIDES: tuple[tuple[str, RoleAxis], ...] = (("p1", "origin"), ("p1", "destination"))
-"""A publication on both flow axes, so a fixture party reads its kind on either."""
-
-_PARTIES = {
-    party.dcid: party
-    for party in (
-        PartyRow(dcid=_KENYA, kind="party", published=_BOTH_SIDES),
-        PartyRow(dcid=_GHANA, kind="party", published=_BOTH_SIDES),
-        PartyRow(dcid=_DEVELOPING, kind="total", published=_BOTH_SIDES),
-    )
-}
 _RESOLVED = ("dcid:SV_A", "dcid:SV_B")
 _IDENTITY = {
     "shape": {
@@ -152,7 +153,6 @@ def _render(
         artifact_store=artifact_store,
         entity_columns=("recipient",),
         enrichment=EnrichmentLookup(FakeMintGraphReader()),
-        parties=_PARTIES,
         code_index=_INDEX,
         resolved_stat_var_refs=_RESOLVED,
         pivot_max_output_cells=5_000_000,

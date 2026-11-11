@@ -154,6 +154,7 @@ from datasets_api.versions import (
 from dc_graph import GraphReadError
 from dfo_platform import Alternative
 from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
+from dfo_platform.columns import PROVENANCE_COLUMN
 from dfo_platform.config import PublicSiteSettings
 from dfo_platform.request_deadline import bounded_deadline
 from dfo_platform.validation import pointer_segment
@@ -181,7 +182,7 @@ from materialise.bundle_naming import heading, member_slugs, sources_slug
 from materialise.bundle_sources import source_provenance
 from materialise.codes import MaterialisationWarning
 from materialise.content_version import mint_version_from_digest
-from materialise.enrichment import PARTY_FIELDS, EnrichmentLookup, row_party_cell
+from materialise.enrichment import PARTY_FIELDS, EnrichmentLookup, pivot_party_cell
 from materialise.errors import OverCeilingError
 from materialise.formats import (
     DATA_SHEET_TITLE,
@@ -2238,8 +2239,9 @@ def _stream_bare_pivot(
     processing. `distinct_dcids` gathers the required refs during the fold.
 
     The fold counts rows per enrichment ref, and one `_RenderReads.fields_of` read after it
-    gives the whole-table missing-value warnings. Pivot output carries the index and pivoted
-    values.
+    gives the whole-table missing-value warnings. A party field counts as a pivot reads it,
+    over the datasets the fold finds the party in (`pivot_party_cell`). Pivot output carries
+    the index and pivoted values.
 
     `output_profile` describes the frame these chunks carry. Its facts for the requested pair let
     the fold refuse a cap before scanning and name the `varying` columns of a non-unique pair. A
@@ -2325,6 +2327,8 @@ def _stream_bare_pivot(
     # Non-string entity cells count as lookup misses for every field. Count them once per entity
     # column, separate from the ref counts.
     enrichment_non_string_counts: dict[str, int] = dict.fromkeys(enrichment_entity_columns, 0)
+    # The datasets each party is served from, which its one pivot cell reads its kind over.
+    party_datasets: dict[tuple[str, str], set[str]] = {}
 
     def _decoded_selected_chunks() -> Iterator[Table]:
         for chunk in rest_of_frame_chunks:
@@ -2344,6 +2348,11 @@ def _stream_bare_pivot(
                     cell = row[pos]
                     if isinstance(cell, str):
                         distinct_dcids.add(cell)
+            provenance_pos = (
+                decoded.columns.index(PROVENANCE_COLUMN)
+                if PROVENANCE_COLUMN in decoded.columns
+                else None
+            )
             for entity_column in enrichment_entity_columns:
                 entity_pos = decoded.columns.index(entity_column)
                 counts = enrichment_ref_counts[entity_column]
@@ -2351,6 +2360,9 @@ def _stream_bare_pivot(
                     ref = row[entity_pos]
                     if isinstance(ref, str):
                         counts[ref] = counts.get(ref, 0) + 1
+                        provenance = None if provenance_pos is None else row[provenance_pos]
+                        if isinstance(provenance, str):
+                            party_datasets.setdefault((entity_column, ref), set()).add(provenance)
                     else:
                         enrichment_non_string_counts[entity_column] += 1
             if select is not None:
@@ -2412,13 +2424,12 @@ def _stream_bare_pivot(
             total_missing = enrichment_non_string_counts.get(entity_column, 0)
             for ref, row_count in enrichment_ref_counts.get(entity_column, {}).items():
                 cell = (
-                    row_party_cell(
+                    pivot_party_cell(
                         field_name,
                         ref,
                         role=entity_column,
                         parties=reads.parties,
-                        period=None,
-                        provenance=None,
+                        datasets=party_datasets.get((entity_column, ref), ()),
                     )
                     if field_name in PARTY_FIELDS
                     else lookup_cell(lookup, ref, field_name)
@@ -2867,7 +2878,6 @@ def render_and_store(
     artifact_store: ArtifactStore,
     entity_columns: Sequence[str],
     enrichment: EnrichmentLookup,
-    parties: Mapping[str, PartyRow],
     pivot_max_output_cells: int,
     groupby_fold_max_rows: int,
     code_index: CodeIndex | None = None,
@@ -2904,9 +2914,11 @@ def render_and_store(
     caller's count of the frame `frame_chunks` holds. The wait ends at `deadline` and then
     raises `FoldPermitWaitExpired`.
 
-    `code_index` controls decoding, and the artifact carries its `enrichment_digest` as
-    `enrichment_stamp` when it holds party-kind cells (`versions.enrichment_stamp`, over
-    the role columns of the frame it renders). `resolved_stat_var_refs` and `provenance_refs`
+    `code_index` controls decoding and gives the party rows (`CodeIndex.parties`) that every
+    party cell, cut of totals and split of totals reads; a render without one reads no party
+    row. The artifact carries its `enrichment_digest` as `enrichment_stamp` when it holds
+    party-kind cells (`versions.enrichment_stamp`, over the role columns of the frame it
+    renders). `resolved_stat_var_refs` and `provenance_refs`
     support groupby population and source checks: `provenance_refs` are the provenances the
     frame's rows carry. `citation_refs` are the sources the bundle names and the datasets whose
     totals the file splits out, `provenance_refs` when `None`. A composite's rows carry its own
@@ -2928,7 +2940,7 @@ def render_and_store(
 
     `options.without_party_totals` cuts the group totals of the open party roles of `spec`'s
     identity out of the frame before any reshape (`datasets_api.party_totals`), reading the
-    kinds from `parties`, the code index's party rows. A cut that leaves rows out renders from the cut frame,
+    kinds from the code index's party rows. A cut that leaves rows out renders from the cut frame,
     which is a version of its own, so the artifact and any collapse of it belong to a version
     minted from their own frame (`RenderedDefinition.derived`). A cut that leaves nothing out
     renders the frame as it is.
@@ -2940,6 +2952,7 @@ def render_and_store(
     keeps its label.
     """
     check_options_supported(options, code_index=code_index)
+    parties = code_index.parties if code_index is not None else {}
     cited_refs = list(citation_refs) if citation_refs is not None else provenance_refs
     subject_id = str(spec.get("spec_id"))
     identity = spec.get("identity")
@@ -3687,9 +3700,6 @@ def render_and_store_frame_file(
         artifact_store=artifact_store,
         entity_columns=frame_entity_columns(next(frame_chunks()).columns),
         enrichment=enrichment,
-        # The frame layout writes no party field, and a spec with no identity holds no total
-        # to cut or split out, so the render reads no party row.
-        parties={},
         # The frame layout refuses a pivot, and `FRAME_FILE_OPTIONS` asks for no groupby, so
         # no fold ceiling is read.
         pivot_max_output_cells=0,

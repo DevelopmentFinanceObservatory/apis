@@ -33,6 +33,7 @@ import pyarrow.compute as pc
 import pyarrow.parquet as pq
 from dfo_frame_grammar import parse_time_period, unit_cell_to_json, unit_cells, unit_codes
 
+from dfo_platform.columns import PROVENANCE_COLUMN
 from materialise.continued_series import ContinuedSeries, continuation_leads
 from materialise.frame_build import Frame
 from materialise.method_status import StatusClass, method_status_classes, reported_provenances
@@ -43,7 +44,6 @@ _VALUE_COLUMN = "value"
 _UNIT_COLUMN = "unit"
 _STATUS_COLUMN = "status"
 _MEASUREMENT_METHOD_COLUMN = "measurementMethod"
-_PROVENANCE_COLUMN = "provenance"
 
 # `derive_columns` reserves these fixed columns. Remaining columns are
 # alphabetically sorted role-property dcids.
@@ -55,7 +55,7 @@ _FIXED_COLUMNS: frozenset[str] = frozenset(
         _UNIT_COLUMN,
         _STATUS_COLUMN,
         _MEASUREMENT_METHOD_COLUMN,
-        _PROVENANCE_COLUMN,
+        PROVENANCE_COLUMN,
     }
 )
 
@@ -178,7 +178,7 @@ def compute_series_statistics_table(frame: Frame) -> pa.Table:
         *((role, table.column(role)) for role in role_columns),
         ("__unit_code", codes.codes),
         (_MEASUREMENT_METHOD_COLUMN, table.column(_MEASUREMENT_METHOD_COLUMN)),
-        (_PROVENANCE_COLUMN, table.column(_PROVENANCE_COLUMN)),
+        (PROVENANCE_COLUMN, table.column(PROVENANCE_COLUMN)),
     )
     grain_columns: list[str] = []
     for name, array in key_sources:
@@ -279,7 +279,7 @@ def compute_series_statistics_table(frame: Frame) -> pa.Table:
         "list[str | None]", representative_rows.column(_MEASUREMENT_METHOD_COLUMN).to_pylist()
     )
     rep_provenance = cast(
-        "list[str | None]", representative_rows.column(_PROVENANCE_COLUMN).to_pylist()
+        "list[str | None]", representative_rows.column(PROVENANCE_COLUMN).to_pylist()
     )
 
     entities_column: list[list[dict[str, str]]] = []
