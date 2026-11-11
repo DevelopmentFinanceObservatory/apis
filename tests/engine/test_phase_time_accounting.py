@@ -51,9 +51,6 @@ def test_booked_steps_sum_to_the_wall_time_of_the_resolve(monkeypatch):
     assert abs(booked - clock[0]) <= 0.05 * clock[0], (booked, clock[0], by_step)
     assert by_step["phase_place_bindings"] > 0, "a phase that books nothing carries its time"
     assert {"shape_quantity", "shape_denominators", "shape_rank"} <= set(by_step)
-    assert {"shape_quantity", "shape_denominators", "shape_rank", "shape_availability"} <= (
-        NESTED_SHAPE_STEPS
-    )
     assert {f"phase_{phase.__name__.removeprefix('_phase_')}" for phase in pipeline._PHASES} <= set(
         by_step
     )

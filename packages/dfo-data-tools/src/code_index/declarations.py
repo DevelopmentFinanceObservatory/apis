@@ -1038,6 +1038,11 @@ class MeasureValueText:
 
 # Text overrides merge into measure rows.
 # Unmapped dcids keep graph names and aliases, and stay matchable.
+# A text names a value when it holds a whole name of the value (its label, a synonym or a
+# graph name) as a run of words, or a content word every name of the value holds
+# (`qualifier_match.measure_values_named`). Every name of `attributedAmount` holds
+# "attributed", so the bare word names it, whatever surrounds it. The synonyms below keep
+# the bare verb out of the names, which "deaths attributed to air pollution" would read.
 MEASURE_VALUE_TEXT: Mapping[str, MeasureValueText] = {
     "Nominal": MeasureValueText(
         label="nominal",

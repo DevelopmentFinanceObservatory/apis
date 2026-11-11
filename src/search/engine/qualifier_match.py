@@ -551,7 +551,11 @@ def measure_values_named(text: str, measure_index: MeasureIndex) -> frozenset[st
     (`measure_value_names`) as a run of its words, or one a content word of `text` names,
     a word every name of the value holds. "attributed climate finance" names
     `attributedAmount`, whose names are "attributed amount", "attributed aid" and
-    "attributed to donors"; "climate finance" names none."""
+    "attributed to donors"; "climate finance" names none.
+
+    The bare-word rule reads any content word of `text` wherever it stands, and the function
+    reads no negation: "excluding attributed amounts" names `attributedAmount` as
+    "attributed amounts" does."""
     tokens = word_tokens(text)
     words = [fold_word(token.text) for token in tokens]
     content = {
