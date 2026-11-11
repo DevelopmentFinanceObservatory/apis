@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import time
 from collections.abc import Callable, Coroutine
@@ -14,6 +15,7 @@ import pytest
 from pydantic import BaseModel
 
 import search.engine.clients.llm as llm_module
+from dfo_platform.cloud_logging import JsonFormatter
 from graph_generation import UNKNOWN_GENERATION, FakeGeneration, GenerationProvider
 from origin_catalogue import bound_catalogue
 from search.engine import config, response_cache_flow
@@ -903,17 +905,28 @@ def test_release_cancels_and_awaits_a_second_sample_still_running():
     assert asyncio.run(run()) == [True]
 
 
-def _second_sample_logs(caplog: pytest.LogCaptureFixture) -> list[tuple[str, str, object]]:
-    """Each second-sample log line as its level, `stage` field, and the `deadline` field of
-    a cut or the exception type of a failure."""
+def _second_sample_lines(caplog: pytest.LogCaptureFixture) -> list[dict[str, Any]]:
+    """Each second-sample log record as the JSON entry production writes for it
+    (`dfo_platform.cloud_logging.JsonFormatter`)."""
+    formatter = JsonFormatter(project=None)
     return [
-        (
-            record.levelname,
-            getattr(record, "stage", None),
-            getattr(record, "deadline", None) or (record.exc_info and record.exc_info[0]),
-        )
+        json.loads(formatter.format(record))
         for record in caplog.records
         if record.name == llm_module.__name__
+    ]
+
+
+def _second_sample_logs(caplog: pytest.LogCaptureFixture) -> list[tuple[str, str, object]]:
+    """Each second-sample log line as its written severity and `stage` field, and the
+    `deadline` field of a cut or the exception type of a failure."""
+    failures = [
+        record.exc_info and record.exc_info[0]
+        for record in caplog.records
+        if record.name == llm_module.__name__
+    ]
+    return [
+        (line["severity"], line.get("stage"), line.get("deadline") or failure)
+        for line, failure in zip(_second_sample_lines(caplog), failures, strict=True)
     ]
 
 
@@ -1084,11 +1097,8 @@ def test_a_cut_set_while_the_model_deadline_expires_does_not_raise(search_settin
         return expiring, await Agreement(second, lambda _answer: True).outcome()
 
     assert asyncio.run(run()) == (True, "cut")
-    [cut] = [record for record in caplog.records if record.name == llm_module.__name__]
-    assert (getattr(cut, "deadline", None), getattr(cut, "allowed_s", None)) == (
-        "llm_timeout_s",
-        0.0,
-    )
+    [cut] = _second_sample_lines(caplog)
+    assert (cut.get("deadline"), cut.get("allowed_s")) == ("llm_timeout_s", 0.0)
 
 
 def test_a_second_sample_reaching_its_model_deadline_after_its_first_is_cut(
@@ -1107,10 +1117,10 @@ def test_a_second_sample_reaching_its_model_deadline_after_its_first_is_cut(
         return await asyncio.wait_for(Agreement(second, lambda _answer: True).outcome(), 2)
 
     assert asyncio.run(run()) == "cut"
-    [cut] = [record for record in caplog.records if record.name == llm_module.__name__]
-    assert getattr(cut, "deadline", None) == "llm_timeout_s"
+    [cut] = _second_sample_lines(caplog)
+    assert cut.get("deadline") == "llm_timeout_s"
     # The 0.05 s model deadline allowed, not the 10 s cut; the bound leaves room for scheduling.
-    assert 0.0 <= getattr(cut, "allowed_s", -1.0) < 1.0
+    assert 0.0 <= cut.get("allowed_s", -1.0) < 1.0
 
 
 async def _broken() -> Sampled[None]:
@@ -1129,13 +1139,19 @@ def _broken_judge(_answer: object) -> bool:
 def test_a_defect_raises_from_its_outcome(second, judge):
     """Only a model failure, a refusal, a cut, a cancellation or a failed extraction-store
     write leaves a read unjudged. Any other exception, from the second sample or from the
-    judge reading it, is a defect, and `outcome()` raises it."""
+    judge reading it, is a defect, and `outcome()` raises it on every call."""
 
-    async def run() -> str:
-        return await Agreement(_held(second), judge).outcome()
+    async def run() -> list[str]:
+        agreement = Agreement(_held(second), judge)
+        raised = []
+        for _call in range(2):
+            try:
+                await agreement.outcome()
+            except KeyError:
+                raised.append("KeyError")
+        return raised
 
-    with pytest.raises(KeyError):
-        asyncio.run(run())
+    assert asyncio.run(run()) == ["KeyError", "KeyError"]
 
 
 def test_an_unheld_callers_defective_second_sample_raises(search_settings):
@@ -1226,20 +1242,41 @@ def test_closing_a_holder_cancels_a_second_sample_started_while_it_waits():
     assert asyncio.run(run()) is True
 
 
-def test_a_defect_its_holder_logged_is_not_raised_again_by_its_judge(caplog):
-    """A second sample's defect is reported once. Its holder closed first and logged it at
-    error, so its judge, awaited after, reads the read as failed and raises nothing."""
+@pytest.mark.parametrize(
+    ("judged_first", "logs"),
+    [(True, []), (False, [("ERROR", "extraction", KeyError)])],
+    ids=["judge-first", "holder-first"],
+)
+def test_a_second_samples_defect_is_logged_once_and_raised_by_its_judge(
+    caplog, judged_first: bool, logs: list[tuple[str, str, object]]
+):
+    """A second sample's defect reaches its judge's caller whichever comes first, and is
+    logged by its holder's close only where no judge raised it: the request logs one its
+    judge raised where it settles (`CacheScope._settle_extraction`)."""
     caplog.set_level(logging.INFO, logger=llm_module.__name__)
 
-    async def run() -> str:
+    async def run() -> list[str]:
         samples = SecondSamples()
         second = samples.start(_broken, stage="extraction")
         await asyncio.wait([second.task])
-        await samples.aclose()
-        return await Agreement(second, lambda _answer: True).outcome()
+        agreement = Agreement(second, lambda _answer: True)
+        judged: list[str] = []
 
-    assert asyncio.run(run()) == "failed"
-    assert _second_sample_logs(caplog) == [("ERROR", "extraction", KeyError)]
+        async def judge() -> None:
+            try:
+                judged.append(await agreement.outcome())
+            except KeyError:
+                judged.append("raised")
+
+        if judged_first:
+            await judge()
+        await samples.aclose()
+        if not judged_first:
+            await judge()
+        return judged
+
+    assert asyncio.run(run()) == ["raised"]
+    assert _second_sample_logs(caplog) == logs
 
 
 @pytest.mark.parametrize("agreed", [True, False], ids=["agreed", "disagreed"])
@@ -1272,6 +1309,46 @@ def test_both_layers_share_the_verdict_taken_at_response(monkeypatch, agreed: bo
 
     assert asyncio.run(run()) == (True, agreed)
     assert len(judged) == 1
+
+
+@pytest.mark.parametrize(
+    ("bundle", "layer2_lease", "layer1_stored"),
+    [
+        pytest.param(False, True, True, id="unstreamed"),
+        pytest.param(False, False, True, id="unstreamed-without-a-layer-2-lease"),
+        pytest.param(True, True, False, id="bundle"),
+    ],
+)
+def test_the_verdict_is_taken_where_the_entrys_bytes_are_final(
+    bundle: bool, layer2_lease: bool, layer1_stored: bool
+):
+    """A read cut recorded between `response` and `done` comes after an unstreamed
+    answer's bytes were final at `response`, where its verdict was taken, so layer 1 still
+    stores it, with or without a layer-2 lease to publish at `response`. A bundle's bytes
+    are final only at `done`, so the cut keeps it from storing."""
+    base = _base_response()
+    options = ResolveOptions(include_observations=True) if bundle else None
+    request = ResolveRequest(input=RawTextInput(query="q"), response_options=options)
+
+    async def run() -> bool:
+        cache = _new_cache()
+        query = "total population india"
+        reads = DegradedReads()
+        scope = _make_scope(cache, request=request, trailing=bundle, request_reads=reads)
+        assert await scope.lookup_raw(query) is None
+        if layer2_lease:
+            assert await scope.lookup_parsed(query=query, **_population_india_extraction()) is None
+        scope.note_extraction(FixedAgreement(True))
+        response, done = _terminal_events(base, start_ms=now_ms(), degraded_leg=False)
+        await scope.observe(response)
+        reads.cut.append("place options")
+        await scope.observe(done)
+        other = _make_scope(cache, request=request, trailing=bundle)
+        stored = await other.lookup_raw(query) is not None
+        await other.release()
+        return stored
+
+    assert asyncio.run(run()) is layer1_stored
 
 
 def test_an_unstreamed_response_is_encoded_once_for_both_layers(monkeypatch):

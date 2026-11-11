@@ -24,12 +24,13 @@ from collections.abc import Callable, Coroutine, Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, NoReturn, Protocol, TypeVar
 
 import httpx
 from pydantic import BaseModel, ValidationError
 
 import search.engine.config as config  # module-attribute access for runtime-resolved values
+from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
 from search.engine.clients.loop_local import LoopLocal
 from search.engine.errors import LLMInfraError, LLMOutputRefused
 from search.engine.response_cache import Lease, ResponseCache
@@ -82,8 +83,9 @@ _LLM_MEMO_LEADER_FAILED_DETAIL = "the shared in-flight Gemini structured-output 
 
 class _CallTiming:
     """When the memo-writing call holding this record (`_lead`) left the connection pool's
-    queue: the first httpcore trace event of its request (`_LoopLocalTransport`), the
-    client making one attempt per call (`_build_client`). A connection the call opens
+    queue: the first httpcore trace event of its latest request (`_LoopLocalTransport`).
+    The client makes one attempt per call and follows redirects (`_build_client`), each a
+    request of its own, so only the request that answered counts. A connection it opens
     counts, its handshake included, since a fresh call pays it too."""
 
     def __init__(self) -> None:
@@ -117,9 +119,11 @@ class _LoopLocalTransport(httpx.AsyncBaseTransport):
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         timing = _CALL_TIMING.get()
-        if timing is not None and "trace" not in request.extensions:
+        if timing is not None and request.extensions.get("trace") in (None, timing.trace):
             # httpcore traces a request only once the pool has handed it a connection, so the
-            # first event ends the pool wait.
+            # first event ends the pool wait. A redirect the client follows sends a new
+            # request carrying the first one's extensions, and starts the count again.
+            timing.sent_at = None
             request.extensions["trace"] = timing.trace
         return await self._pool().handle_async_request(request)
 
@@ -367,9 +371,15 @@ class SecondSample:
                     "%s: second sample reached its %s %.2f s after its first was read; cut, "
                     "its read unjudged",
                     self.stage,
-                    deadline,
+                    "llm_timeout_s" if deadline == "llm_timeout_s" else "settle bound",
                     allowed_s,
-                    extra={"stage": self.stage, "deadline": deadline, "allowed_s": allowed_s},
+                    extra={
+                        JSON_FIELDS_ATTR: {
+                            "stage": self.stage,
+                            "deadline": deadline,
+                            "allowed_s": allowed_s,
+                        }
+                    },
                 )
                 raise SecondSampleCut from exc
             raise LLMInfraError(
@@ -459,17 +469,19 @@ class SecondSamples:
                 task.cancel()
             await asyncio.gather(*running, return_exceptions=True)
         for second in self._held:
-            if second.task.cancelled() or not second.claim():
+            if second.task.cancelled():
                 continue
             exc = second.task.exception()
-            if exc is not None and not isinstance(
-                exc, SecondSampleCut | LLMInfraError | LLMOutputRefused
+            if (
+                exc is not None
+                and not isinstance(exc, SecondSampleCut | LLMInfraError | LLMOutputRefused)
+                and second.claim()
             ):
                 logger.error(
                     "%s: second sample raised a defect",
                     second.stage,
                     exc_info=exc,
-                    extra={"stage": second.stage},
+                    extra={JSON_FIELDS_ATTR: {"stage": second.stage}},
                 )
 
     def adopt(self, other: SecondSamples) -> None:
@@ -510,16 +522,16 @@ class Agreement:
         (`LLMOutputRefused`) is `failed` and logs a warning naming `stage`. A judge whose
         extraction-store write fails (`OSError`) is `failed` and logs an error naming
         `stage`. Any other exception, from the second sample or the judge, is a defect and
-        raises; a request catches it where it settles (`CacheScope._settle_extraction`). A
-        defect its holder already logged on closing (`SecondSamples.aclose`) is `failed`.
-        Cancelling this await leaves the second sample running for its holder to close
+        raises, on this call and every later one; a request catches it where it settles
+        (`CacheScope._settle_extraction`), which logs it. Raising claims it
+        (`SecondSample.claim`), so the holder's close does not log it again. Cancelling
+        this await leaves the second sample running for its holder to close
         (`SecondSamples.aclose`)."""
         if self._outcome is not None:
             return self._outcome
         stage = self._second.stage
         second = self._second.task
         await asyncio.wait([second])
-        claimed = self._second.claim()
         exc = None if second.cancelled() else second.exception()
         if second.cancelled() or isinstance(exc, SecondSampleCut):
             self._outcome = "cut"
@@ -528,14 +540,11 @@ class Agreement:
                 "%s: second sample failed; the read is unjudged",
                 stage,
                 exc_info=exc,
-                extra={"stage": stage},
+                extra={JSON_FIELDS_ATTR: {"stage": stage}},
             )
             self._outcome = "failed"
-        elif exc is not None and not claimed:
-            # Its holder closed first and logged the defect.
-            self._outcome = "failed"
         elif exc is not None:
-            raise exc
+            self._raise_defect(exc)
         else:
             try:
                 agreed = self._judge(second.result().answer)
@@ -543,12 +552,20 @@ class Agreement:
                 logger.exception(
                     "%s: storing the agreed read failed; the read is unjudged",
                     stage,
-                    extra={"stage": stage},
+                    extra={JSON_FIELDS_ATTR: {"stage": stage}},
                 )
                 self._outcome = "failed"
+            except Exception as defect:
+                self._raise_defect(defect)
             else:
                 self._outcome = "agreed" if agreed else "disagreed"
         return self._outcome
+
+    def _raise_defect(self, defect: BaseException) -> NoReturn:
+        """Claim `defect`'s report from the holder and raise it. No outcome is kept, so
+        every later call raises it again."""
+        self._second.claim()
+        raise defect
 
 
 @dataclass(frozen=True)

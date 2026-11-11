@@ -341,7 +341,7 @@ class CacheScope:
         # The response a request without trailing events publishes.
         self._response: ResolveResponse | None = None
         # The entry both layers publish, encoded once (`_entry`), and whether it may be
-        # stored, judged once (`_verdict`).
+        # stored, judged once (`_take_verdict`).
         self._encoded: tuple[bytes, int] | None = None
         self._storable_verdict: bool | None = None
         self._outcome: str = "inactive" if not self.active else "miss"
@@ -612,7 +612,9 @@ class CacheScope:
         (`_settle_extraction`), so settling never holds a streamed response back. A bundle
         request records events from `response` on, leaving out place options, which a hit
         runs again. Its bundle is complete only at `done`, where it publishes layer 2, then
-        settles, then publishes layer 1.
+        settles, then publishes layer 1. The storability verdict is taken where the entry's
+        bytes are final, `response` or a bundle's `done`, whether or not the request holds a
+        lease there (`_take_verdict`).
 
         Followers always receive the answer, even when `is_storable` rejects it; that
         verdict controls storage, not delivery. Fresh runs use `note_health`; hits carry
@@ -624,6 +626,7 @@ class CacheScope:
         if not self._bundle:
             if isinstance(event, ResponseEvent):
                 self._response = event.response
+                self._take_verdict()
                 await self._publish(layer=2)
             elif isinstance(event, DoneEvent) and self._response is not None:
                 await self._settle_extraction()
@@ -636,6 +639,7 @@ class CacheScope:
         ):
             self._recorded.append(event)
         if isinstance(event, DoneEvent):
+            self._take_verdict()
             await self._publish(layer=2)
             await self._settle_extraction()
             await self._publish(layer=1)
@@ -651,21 +655,24 @@ class CacheScope:
                 self._encoded = to_entry(self._response)
         return self._encoded
 
-    def _verdict(self) -> bool:
-        """Whether this request's entry may be stored: no fallback, no read cut, a stored
-        verdict that allows it where it served a hit, and the entry's own checks
-        (`_storable`). It is taken once, at the first publish, where the entry's bytes are
-        final: `response` for a request without trailing events, `done` for a bundle.
-        Both layers share it, and layer 1 also needs the reading agreed at `done`
-        (`_reading_agreed`)."""
-        if self._storable_verdict is None:
+    def _take_verdict(self) -> None:
+        """Judge once whether this request's entry may be stored, where its bytes are final
+        (`observe`): no fallback, no read cut, a stored verdict that allows it where it
+        served a hit, and the entry's own checks (`_storable`). Both layers publish under
+        it, whichever leases the request holds, and layer 1 also needs the reading agreed
+        at `done` (`_reading_agreed`). A check that raises is logged and stores nothing."""
+        if not self.active or self._storable_verdict is not None:
+            return
+        try:
             self._storable_verdict = (
                 not self._fallbacks.reasons
                 and not self._request_reads.cut
                 and self._served_storable
                 and self._storable()
             )
-        return self._storable_verdict
+        except Exception:
+            logger.exception("response cache verdict failed; serving the fresh answer uncached")
+            self._storable_verdict = False
 
     def _storable(self) -> bool:
         """Whether this request's entry may be stored (`is_bundle_storable`, `is_storable`)."""
@@ -689,7 +696,7 @@ class CacheScope:
         """Publish this request's entry to its lease on `layer`, if it holds one.
 
         Cache errors are logged and never reach the pipeline. Both layers share one
-        encoding and one storability verdict (`_entry`, `_verdict`), and layer 1 also
+        encoding and one storability verdict (`_entry`, `_take_verdict`), and layer 1 also
         needs an agreed reading
         (`note_extraction`). Entry lifetime comes from the generation stamp captured
         before lookup.
@@ -702,7 +709,8 @@ class CacheScope:
             # No lease means this request cannot publish a cache entry on this layer.
             return
         try:
-            verdict = self._verdict()
+            verdict = self._storable_verdict
+            assert verdict is not None, "observe takes the verdict before any publish"
             entry, size = self._entry()
             await self._cache.publish(
                 lease,

@@ -12,6 +12,7 @@ import threading
 import time
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -483,6 +484,64 @@ def test_the_memo_keeps_a_calls_model_time_without_its_wait_for_a_connection(
 
     assert live_s is not None
     assert 0.1 <= live_s < 0.7
+
+
+class _Redirecting(httpx.AsyncBaseTransport):
+    """A connection pool that answers its first request with a redirect 0.5 s after it is
+    sent and the redirected request 0.1 s after it is sent, each tracing its send as
+    httpcore does."""
+
+    def __init__(self) -> None:
+        self.requests = 0
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        self.requests += 1
+        await request.extensions["trace"]("connection.send_request_headers.started", {})
+        if self.requests == 1:
+            await asyncio.sleep(0.5)
+            return httpx.Response(302, headers={"location": "http://gemini.invalid/b"})
+        await asyncio.sleep(0.1)
+        return httpx.Response(200, content=b"{}")
+
+
+class _RedirectedModels:
+    """A Gemini double that posts over `transport` with redirects followed, as the built
+    client does (`_build_client`)."""
+
+    def __init__(self, transport: httpx.AsyncBaseTransport) -> None:
+        self._transport = transport
+
+    async def generate_content(self, *, model: str, contents: object, config: object):
+        client = httpx.AsyncClient(transport=self._transport, follow_redirects=True)
+        await client.post("http://gemini.invalid/a")
+        return SimpleNamespace(text='{"value": 1}', model_version=model, usage_metadata=None)
+
+
+def test_the_memo_keeps_the_time_of_the_request_that_answered(monkeypatch: pytest.MonkeyPatch):
+    """A memoised call the model redirects after 0.5 s, whose redirected request answers in
+    0.1 s, keeps that request's time: the redirected request starts the count again. The
+    upper bound leaves 0.4 s for a loaded machine's scheduling and still fails if the first
+    request is counted."""
+    pool = _Redirecting()
+    transport = llm_module._LoopLocalTransport(max_connections=1)
+    monkeypatch.setattr(transport, "_pool", lambda: pool)
+    monkeypatch.setattr(
+        llm_module,
+        "_get_client",
+        lambda: SimpleNamespace(aio=SimpleNamespace(models=_RedirectedModels(transport))),
+    )
+    llm = _memo_llm()
+
+    async def scenario() -> float | None:
+        await generate_structured_async(llm, prompt="p", system="s", schema=_Value)
+        repeat = await generate_structured_async(llm, prompt="p", system="s", schema=_Value)
+        return repeat.memo_live_s
+
+    live_s = asyncio.run(scenario())
+
+    assert pool.requests == 2
+    assert live_s is not None
+    assert 0.1 <= live_s < 0.5
 
 
 @pytest.mark.usefixtures("live_client_env", "loopback_transport")
