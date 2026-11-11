@@ -33,8 +33,13 @@ revision's `select` lists the members of exactly one dimension other than `stat_
 population is the members one ranking compares (`_ranked_population`). On a party role those
 are the members of the frame's kind cells, and on a place role those of its type cells
 (`dfo_analysis_engine.place_type.comparable_members`), so a group total or a place aggregate
-is left out unless the card shows it. Any other dimension, and a frame with no such cells,
-count every member. The members the card shows are always kept. When that population
+is left out unless the card shows it. A member whose cell is `untyped` names neither, so the
+ranking does not compare it, and it is left out too, typed members beside it or not; a frame
+whose cells are all `untyped` therefore holds no member beyond the card's. This is the rule
+dfo-ai's harness ranks a cut by (`harness.chart_binding.top_members` over the cells
+`harness.orchestrator_tools._held_cells` reads), under which a party frame minted with its
+type column alone compares no member either. Any other dimension, and a frame with no such
+cells, count every member. The members the card shows are always kept. When that population
 holds a member the card leaves out, as for a chart cut to its largest members, the bundle also
 holds `data/<card-slug>-all-members.<format>`. It holds every valued frame row of the
 population at the periods the card shows whose other `select`-bound dimensions match the card,
@@ -84,7 +89,6 @@ from assembler.pipeline.render import render_on_frame
 from assembler.pipeline.stored_revision import read_stored_revision
 from assembler.ports import FrameRef, FrameStore, ReleaseRegistry, ResolvedFrame, RevisionStore
 from dfo_analysis_engine.place_type import (
-    PARTY_ROLES,
     TYPED_ROLES,
     UNTYPED,
     comparable_members,
@@ -383,6 +387,12 @@ def export_component_data(
                             if all_members.aggregates_left_out
                             else ""
                         )
+                        + (
+                            f", and less {all_members.untyped_left_out} whose kind or type cell"
+                            " names neither"
+                            if all_members.untyped_left_out
+                            else ""
+                        )
                         + f". The {series_column} column holds the card's label on the rows "
                         "the card shows. A download without the bundle holds only the shown "
                         "rows."
@@ -533,13 +543,15 @@ class _AllMembers:
     periods the card shows. `shown` and `members` count the dimension's distinct values on
     the card and in `rows`. `aggregates_left_out` says the ranked population
     (`_ranked_population`) left out a member whose kind or type cell names a group total or
-    aggregate, and that holds a row at a period the card shows."""
+    aggregate, and that holds a row at a period the card shows. `untyped_left_out` counts the
+    members it left out whose cell is `UNTYPED` and that hold such a row."""
 
     dimension: str
     rows: tuple[_ExportRow, ...]
     shown: int
     members: int
     aggregates_left_out: bool
+    untyped_left_out: int
 
 
 @dataclass(frozen=True)
@@ -632,6 +644,7 @@ def _all_members(
     kept: list[_ExportRow] = []
     members: set[object] = set()
     aggregates_left_out = False
+    untyped_left_out: set[object] = set()
     for row, (own, continued) in zip(keyed.rows, keyed.keys, strict=True):
         if STATUS_COLUMN in index and row[index[STATUS_COLUMN]] is not None:
             continue
@@ -639,10 +652,11 @@ def _all_members(
         if fixed(own, period) not in wanted and fixed(continued, period) not in wanted:
             continue
         member = dict(own)[dimension]
-        left_out = population is not None and member not in population.compared
-        if left_out and member not in shown_members:
-            # A member whose cell is `UNTYPED` is not compared either, but names no aggregate.
-            aggregates_left_out = aggregates_left_out or member in population.typed
+        if population is not None and member in population.left_out - shown_members:
+            if member in population.untyped:
+                untyped_left_out.add(member)
+            else:
+                aggregates_left_out = True
             continue
         label = label_of.get((own, period), label_of.get((continued, period)))
         kept.append((label, row))
@@ -655,40 +669,49 @@ def _all_members(
         shown=len(shown_members),
         members=len(members),
         aggregates_left_out=aggregates_left_out,
+        untyped_left_out=len(untyped_left_out),
     )
 
 
 class _RankedPopulation(NamedTuple):
-    """The members of a dimension one ranking compares (`compared`), and those whose kind or
-    type cell the ranking read (`typed`), the compared among them."""
+    """The members of a dimension one ranking leaves out (`left_out`): those whose kind or
+    type cell names a group total or aggregate, and those whose cell is `UNTYPED`
+    (`untyped`)."""
 
-    compared: frozenset[object]
-    typed: frozenset[object]
+    left_out: frozenset[object]
+    untyped: frozenset[object]
 
 
 def _ranked_population(keyed: _KeyedFrame, *, dimension: str) -> _RankedPopulation | None:
-    """The members of `dimension` one ranking compares (`place_type.comparable_members`),
-    from the one cell that function reads for the role: a party role's kind cell, a place
-    role's type cell, with the members whose cell names a kind or type. A frame writes an
-    empty cell as `UNTYPED`, which names neither, so its member is not compared and is not
-    counted as an aggregate. `None`, every member, when `dimension` is no place or party role
-    or the frame carries no such cell for it, as a party frame minted with its type column
-    alone does."""
+    """The members of `dimension` one ranking leaves out, read from the cells dfo-ai's
+    harness reads (`harness.orchestrator_tools._held_cells`): each member's type cell, then
+    its kind cell where the frame carries one, the kind winning. Every member with a cell is
+    weighed by `place_type.comparable_members`, and those it does not compare are left out,
+    an `UNTYPED` cell among them, since it names no kind or type. So an untyped member is
+    left out whatever the other members' cells hold, a frame whose cells are all `UNTYPED`
+    compares none, and so does a party frame minted with its type column alone, since no
+    type cell is the kind `party`. `None`, every member, when `dimension` is no place or
+    party role or the frame carries neither column for it."""
     if dimension not in TYPED_ROLES:
         return None
-    column = kind_column(dimension) if dimension in PARTY_ROLES else type_column(dimension)
-    if column not in keyed.index:
+    columns = [
+        keyed.index[column]
+        for column in (type_column(dimension), kind_column(dimension))
+        if column in keyed.index
+    ]
+    if not columns:
         return None
-    position, cell_position = keyed.index[dimension], keyed.index[column]
+    position = keyed.index[dimension]
     cells = {
-        cast(str, row[position]): cast(str, row[cell_position])
+        cast(str, row[position]): cast(str, row[cell])
         for row in keyed.rows
-        if row[position] is not None and row[cell_position] not in (None, UNTYPED)
+        for cell in columns
+        if row[position] is not None and row[cell] is not None
     }
-    if not cells:
-        return None
+    compared = comparable_members(cells, dimension=dimension)
     return _RankedPopulation(
-        compared=comparable_members(cells, dimension=dimension), typed=frozenset(cells)
+        left_out=frozenset(cells) - compared,
+        untyped=frozenset(member for member, cell in cells.items() if cell == UNTYPED),
     )
 
 
