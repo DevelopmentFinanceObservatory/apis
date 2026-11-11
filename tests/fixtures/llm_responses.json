@@ -24314,5 +24314,149 @@
         "rating": 1.0
       }
     ]
+  },
+  "ExclusionRead@3c024839b279:15bcc532ac78051228e1d85b14f490114d7e298e": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:0b3fd32b9ab405c2c95e0d7eeb77d0466ec40df4": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:1cee606c048858cc9a0884e592f01b0a57762077": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:4f02c7619429320b825efddee1d75b62615983ff": {
+    "exclusions": []
+  },
+  "Extraction@840d8db0c01a:82890bece5b885150424c30e599a1935c180a662": {
+    "kind": "resolution",
+    "variables": [
+      "adaptation finance"
+    ],
+    "entities": [
+      {
+        "text": "Adaptation Fund",
+        "span": "Adaptation Fund",
+        "variables": [
+          0
+        ],
+        "cue": "Adaptation Fund",
+        "role": "source",
+        "members": false
+      },
+      {
+        "text": "Vietnam",
+        "span": "Viet Nam",
+        "variables": [
+          0
+        ],
+        "cue": "to",
+        "role": "recipient",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "Extraction@840d8db0c01a:273012a6756cc5c99e81c0bc29be0783b6b1d39a": {
+    "kind": "resolution",
+    "variables": [
+      "climate finance"
+    ],
+    "entities": [
+      {
+        "text": "Belgium",
+        "span": "Belgium",
+        "variables": [],
+        "cue": null,
+        "role": null,
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "reported to the UNFCCC"
+    ],
+    "dates": []
+  },
+  "Extraction@840d8db0c01a:ef74b6453d4020dbe62a1e51a7f77ee660f36374": {
+    "kind": "resolution",
+    "variables": [
+      "climate finance"
+    ],
+    "entities": [
+      {
+        "text": "Germany",
+        "span": "Germany",
+        "variables": [
+          0
+        ],
+        "cue": "from",
+        "role": "source",
+        "members": false
+      },
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "variables": [
+          0
+        ],
+        "cue": "to",
+        "role": "recipient",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2021",
+        "end": "2021"
+      }
+    ]
+  },
+  "Extraction@840d8db0c01a:48435603d766b9c096626e24907149654e8b92df": {
+    "kind": "resolution",
+    "variables": [
+      "attributed climate finance"
+    ],
+    "entities": [
+      {
+        "text": "France",
+        "span": "France",
+        "variables": [
+          0
+        ],
+        "cue": "from",
+        "role": "source",
+        "members": false
+      },
+      {
+        "text": "India",
+        "span": "India",
+        "variables": [
+          0
+        ],
+        "cue": "to",
+        "role": "recipient",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
   }
 }

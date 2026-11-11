@@ -1,0 +1,60 @@
+climate.disbursement_gross:
+  origin: dfo
+  dataset: provenance/ONEClimateFinance
+  shape:
+    population_type: FinancialFlow
+    measured_property: amount
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+    measurement_denominator: null
+  fixed: {financialFlowType: Disbursement, nettingBasis: Gross}
+climate.commitment:
+  origin: dfo
+  dataset: provenance/ONEClimateFinance
+  shape:
+    population_type: FinancialObligation
+    measured_property: amount
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+    measurement_denominator: null
+  fixed: {financialObligationType: Commitment}
+climate.attributed_disbursement_gross:
+  origin: dfo
+  dataset: provenance/ONEClimateFinance
+  shape:
+    population_type: FinancialFlow
+    measured_property: attributedAmount
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+    measurement_denominator: null
+  fixed: {financialFlowType: Disbursement, nettingBasis: Gross}
+climate.attributed_commitment:
+  origin: dfo
+  dataset: provenance/ONEClimateFinance
+  shape:
+    population_type: FinancialObligation
+    measured_property: attributedAmount
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+    measurement_denominator: null
+  fixed: {financialObligationType: Commitment}
+btr.disbursement_gross:
+  origin: dfo
+  dataset: provenance/UNFCCCBiennialTransparencyReports
+  shape:
+    population_type: FinancialFlow
+    measured_property: amount
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+    measurement_denominator: null
+  fixed: {financialFlowType: Disbursement, nettingBasis: Gross}
+btr.commitment:
+  origin: dfo
+  dataset: provenance/UNFCCCBiennialTransparencyReports
+  shape:
+    population_type: FinancialObligation
+    measured_property: amount
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+    measurement_denominator: null
+  fixed: {financialObligationType: Commitment}

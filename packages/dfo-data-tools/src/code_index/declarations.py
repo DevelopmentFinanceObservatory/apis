@@ -101,6 +101,7 @@ DAC1_BILATERAL_ODA = "DAC1AidType1015"
 DAC1_MULTILATERAL_ODA = "DAC1AidType2000"
 DAC2A_TOTAL_ODA = "DAC2aAidType206"
 DAC2A_IMPUTED_MULTILATERAL_ODA = "DAC2aAidType106"
+CLIMATE_FINANCE = "ClimateChangePolicyObjective"
 
 # The stacked composites of a donor's bilateral flows and its imputed share of multilateral
 # spending (`COMPOSITES`): one over the CRS and ONE's imputed multilateral table, one over
@@ -256,7 +257,7 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
         plain_name="climate objective",
         # A climate finance question that names no objective asks about the total.
         default=DeclaredDefault(
-            code="ClimateChangePolicyObjective",
+            code=CLIMATE_FINANCE,
             when_bound_under=(),
             when_open=True,
             note=(
@@ -1069,6 +1070,11 @@ CODE_SYNONYMS: Mapping[str, tuple[str, ...]] = {
     "CRSTypeOfFlow37": ("other private flows",),
     "DAC1AidType1820": ("refugee costs in donor countries",),
     "DAC2aAidType106": ("imputed",),
+    # ONE Data counts a project marked for both objectives once, as cross-cutting, so
+    # "adaptation" reads the adaptation-only part and the heading's short name says so.
+    "AdaptationOnlyClimateChangePolicyObjective": ("adaptation",),
+    "MitigationOnlyClimateChangePolicyObjective": ("mitigation",),
+    "CrossCuttingClimateChangePolicyObjective": ("cross-cutting",),
 }
 
 # Code synonyms `_strip_measure_words` keeps whole although a measure value's words sit inside
@@ -1174,6 +1180,12 @@ CODE_SHORT_NAMES: Mapping[str, str] = {
     "CRSTypeOfFlow40": "non-flow indicators",
     "CRSTypeOfFlow50": "other flows",
     "CRSTypeOfFlow60": "private sector instruments",
+    # A climate objective reads after "for" in a heading ("climate finance commitments for
+    # adaptation only"). The total names no part, and the climate label names it.
+    "AdaptationOnlyClimateChangePolicyObjective": "adaptation only",
+    "MitigationOnlyClimateChangePolicyObjective": "mitigation only",
+    "CrossCuttingClimateChangePolicyObjective": "adaptation and mitigation",
+    "UnspecifiedClimateChangePolicyObjective": "an unspecified objective",
     # Finance types read after "as" in a heading ("to Nigeria as grants").
     "CRSTypeOfFinance0": "non-flow items",
     "CRSTypeOfFinance1": "gross national income",
@@ -1257,7 +1269,67 @@ _MOBILISED = (
     "Finance from private sources that official development finance interventions, such as "
     "guarantees, syndicated loans and direct investment, mobilise for a project"
 )
+_CLIMATE = (("climatePolicyObjective", CLIMATE_FINANCE),)
+# The climate labels match every climate table, so their definitions leave out how much of a
+# project each one counts; the dataset descriptions state it.
+_CLIMATE_TARGET = "for activities that target climate change adaptation or mitigation"
+_ATTRIBUTED_CLIMATE = (
+    "A provider's share of the climate finance that development banks and climate funds {verb}, "
+    "in proportion to its core contributions to them"
+)
 MEASURE_PARTITION_LABELS: tuple[MeasurePartitionLabel, ...] = (
+    # The climate finance tables share partitions with the CRS, DAC and imputed tables, so
+    # their labels key on the objective as well (`MeasurePartitionLabel.codes`) and name its
+    # total. A part reads after the label ("climate finance commitments for adaptation only").
+    MeasurePartitionLabel(
+        axis_values=(
+            ("financialObligationType", "Commitment"),
+            ("measuredProperty", "amount"),
+            ("populationType", "FinancialObligation"),
+        ),
+        codes=_CLIMATE,
+        label="climate finance commitments",
+        named_values=_CLIMATE,
+        definition=f"Firm written obligations to give resources to a recipient {_CLIMATE_TARGET}.",
+    ),
+    MeasurePartitionLabel(
+        axis_values=(
+            ("financialFlowType", "Disbursement"),
+            ("measuredProperty", "amount"),
+            ("nettingBasis", "Gross"),
+            ("populationType", "FinancialFlow"),
+        ),
+        codes=_CLIMATE,
+        label="climate finance gross disbursements",
+        named_values=_CLIMATE,
+        definition=(
+            f"The amount released to recipients in a period {_CLIMATE_TARGET}, before any "
+            "repayments are subtracted."
+        ),
+    ),
+    MeasurePartitionLabel(
+        axis_values=(
+            ("financialObligationType", "Commitment"),
+            ("measuredProperty", "attributedAmount"),
+            ("populationType", "FinancialObligation"),
+        ),
+        codes=_CLIMATE,
+        label="attributed climate finance commitments",
+        named_values=_CLIMATE,
+        definition=f"{_ATTRIBUTED_CLIMATE.format(verb='commit')}.",
+    ),
+    MeasurePartitionLabel(
+        axis_values=(
+            ("financialFlowType", "Disbursement"),
+            ("measuredProperty", "attributedAmount"),
+            ("nettingBasis", "Gross"),
+            ("populationType", "FinancialFlow"),
+        ),
+        codes=_CLIMATE,
+        label="attributed climate finance gross disbursements",
+        named_values=_CLIMATE,
+        definition=f"{_ATTRIBUTED_CLIMATE.format(verb='disburse')}, before any repayments.",
+    ),
     MeasurePartitionLabel(
         axis_values=(
             ("financialObligationType", "Commitment"),
@@ -1330,8 +1402,7 @@ MEASURE_PARTITION_LABELS: tuple[MeasurePartitionLabel, ...] = (
             "recipients in proportion to where those agencies disbursed their funds that year."
         ),
     ),
-    # Only ONE Data Climate Finance holds this partition: each donor's share of what
-    # development banks and climate funds commit, credited by its core contributions to them.
+    # Only ONE Data Climate Finance holds this partition, under the climate label below.
     MeasurePartitionLabel(
         axis_values=(
             ("financialObligationType", "Commitment"),

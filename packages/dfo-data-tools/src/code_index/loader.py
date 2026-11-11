@@ -1081,6 +1081,7 @@ def _parse_measure_partition_label(payload: Mapping) -> MeasurePartitionLabel:
         label=payload["label"],
         named_values=tuple((prop, value) for prop, value in payload.get("named_values", ())),
         definition=payload.get("definition"),
+        codes=tuple((prop, code) for prop, code in payload.get("codes", ())),
     )
 
 

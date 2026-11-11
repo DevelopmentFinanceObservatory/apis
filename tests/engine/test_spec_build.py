@@ -23,6 +23,8 @@ from search.engine.retrieval.bound_values import (
 from search.engine.retrieval.member_facts import ArcsMemberFacts
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.engine.spec_build import (
+    NO_MEASURE_LABEL,
+    MeasureLabel,
     NamedGroup,
     RoleAxisFactInput,
     _shared_qualifiers,
@@ -433,8 +435,21 @@ def test_the_concept_of_a_dac1_provider_scope_names_the_total_it_scopes(
     since the provider options state the scope; the shape label keeps each code's own."""
     slots = [_aid_type_slot(code)]
 
-    assert _shared_qualifiers([], slots, None, index=get_index()) == (
+    assert _shared_qualifiers(NO_MEASURE_LABEL, slots, None, index=get_index()) == (
         [shape_qualifier],
+        ["official development assistance"],
+    )
+
+
+def test_a_value_the_measure_label_names_leaves_the_shape_label_and_keeps_the_concept():
+    """A label naming the bound code says it already, so the shape label does not repeat it
+    ("climate finance gross disbursements" stays bare for the climate objective's total),
+    and the concept label still names what the series count."""
+    slots = [_aid_type_slot("DAC1AidType1015")]
+    label = MeasureLabel("bilateral ODA", [], (("dac1AidType", "DAC1AidType1015"),))
+
+    assert _shared_qualifiers(label, slots, None, index=get_index()) == (
+        [],
         ["official development assistance"],
     )
 

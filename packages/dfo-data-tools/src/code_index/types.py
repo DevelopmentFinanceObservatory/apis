@@ -827,12 +827,19 @@ class MeasurePartitionLabel:
 
     `definition` is the authored sentence that says what the measure counts, taken from the
     publisher's glossary or methodology, or `None` where the export authors none.
+
+    `codes` are `(constraint property, code)` pairs a series must hold, at the code or a code
+    below it, for the label to name it (`label_for_pairs`'s `held_codes`). They split a
+    partition two tables share: ONE Data's attributed climate disbursements and the imputed
+    multilateral ODA rows hold one partition, and only the first hold
+    `climatePolicyObjective` at or below `ClimateChangePolicyObjective`.
     """
 
     axis_values: tuple[tuple[str, str], ...]
     label: str
     named_values: tuple[tuple[str, str], ...] = ()
     definition: str | None = None
+    codes: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -848,24 +855,32 @@ class PartitionLabelMatch:
 
 
 def label_for_pairs(
-    pairs: Sequence[tuple[str, str | None]], labels: Sequence[MeasurePartitionLabel]
+    pairs: Sequence[tuple[str, str | None]],
+    labels: Sequence[MeasurePartitionLabel],
+    *,
+    held_codes: Collection[tuple[str, str]] = frozenset(),
 ) -> PartitionLabelMatch | None:
-    """Match the most specific authored label whose pairs are contained in `pairs`.
+    """Match the most specific authored label whose pairs are contained in `pairs` and whose
+    `codes` the series holds.
 
-    `None` values in `pairs` are ignored. A tie between equally specific
-    labels raises `ValueError`. No match returns `None`.
+    `held_codes` are the `(property, code)` pairs the series holds, each code with its
+    ancestors (`code_index.labels.held_codes`). They decide a label's `codes` and count
+    toward its specificity, and are never uncovered text. `None` values in `pairs` are
+    ignored. A tie between equally specific labels raises `ValueError`. No match returns
+    `None`.
     """
     known = tuple((axis, value) for axis, value in pairs if value is not None)
     known_set = frozenset(known)
+    held = frozenset(held_codes)
 
     winner: MeasurePartitionLabel | None = None
     winner_size = -1
     tied = False
     for candidate in labels:
         candidate_pairs = frozenset(candidate.axis_values)
-        if not candidate_pairs <= known_set:
+        if not candidate_pairs <= known_set or not held.issuperset(candidate.codes):
             continue
-        size = len(candidate_pairs)
+        size = len(candidate_pairs) + len(candidate.codes)
         if size > winner_size:
             winner, winner_size, tied = candidate, size, False
         elif size == winner_size:

@@ -379,6 +379,18 @@ refs = ["provenance/ONEImputedMultilateralSectors"]
 names = ["Imputed Multilateral Sectors"]
 
 [[alias]]
+refs = ["source/UNFCCC"]
+names = ["UNFCCC", "UN Framework Convention on Climate Change"]
+
+[[alias]]
+refs = ["provenance/UNFCCCBiennialTransparencyReports"]
+names = ["Biennial Transparency Reports", "BTR", "BTRs"]
+
+[[alias]]
+refs = ["provenance/OECDClimateRelatedDevelopmentFinance"]
+names = ["Climate-related Development Finance", "CRDF", "OECD CRDF"]
+
+[[alias]]
 refs = ["provenance/IMFWorldEconomicOutlook"]
 names = ["World Economic Outlook", "IMF WEO"]
 

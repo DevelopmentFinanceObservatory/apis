@@ -16,7 +16,7 @@ from code_index.labels import (
     compose_measure_label,
 )
 from code_index.shared import get_index, get_measure_index
-from code_index.types import PartyRow, label_for_pairs
+from code_index.types import PartyRow
 from description.blocks import ranked_values
 from dfo_platform.roles import role_key_axis
 from materialise.enrichment import party_count
@@ -32,6 +32,7 @@ from search.engine.retrieval.bound_values import (
     apply_slot_summability,
     bound_source,
     identity_dataset,
+    label_for_partition,
     measure_without_price_basis,
     mint_sibling_identity,
     price_basis_sibling,
@@ -899,7 +900,7 @@ def measure_label_for_partition(partition: MeasurePartition | None) -> MeasureLa
     if partition is None:
         return NO_MEASURE_LABEL
     measure_index = get_measure_index()
-    partition_match = label_for_pairs(partition.values, measure_index.partition_labels)
+    partition_match = label_for_partition(partition, measure_index.partition_labels)
     if partition_match is None:
         return NO_MEASURE_LABEL
     return MeasureLabel(
@@ -1026,7 +1027,7 @@ def _axis_holds_multilaterals(
 
 
 def _shared_qualifiers(
-    measure_label_axes: Sequence[str],
+    measure_label: MeasureLabel,
     slots: Sequence[Slot],
     open_axis_facts: Sequence[OpenConstraintAxisFact] | None,
     *,
@@ -1040,13 +1041,17 @@ def _shared_qualifiers(
     from, else its members' labels joined ("official development assistance and private
     sector instruments" for CRS flows 10 and 60). Varying axes are omitted, and duplicate
     label text is removed case-insensitively. The shape label states the first list after
-    the measure label (`_composed_shape_label`). The second names what the series count with
-    no basis or provider scope (`ResolvedSpec.concept_label`): a code a provider option
-    reads as a scope of a published total in `index`, the release's code index, names that
-    total (`provider.provider_total_code`), so DAC1's bilateral ODA names "official
-    development assistance" as the total and its multilateral ODA do.
+    the measure label (`_composed_shape_label`), less any value the measure label names
+    (`MeasurePartitionLabel.named_values`): "climate finance gross disbursements" names the
+    climate objective's total, so the shape label leaves that total out. The second list
+    names what the series count with no basis or provider scope
+    (`ResolvedSpec.concept_label`) and keeps named values: a code a provider option reads
+    as a scope of a published total in `index`, the release's code index, names that total
+    (`provider.provider_total_code`), so DAC1's bilateral ODA names "official development
+    assistance" as the total and its multilateral ODA do.
     """
-    covered = set(measure_label_axes)
+    covered = set(measure_label.axes)
+    named = set(measure_label.named_values)
     shown: list[str] = []
     concept: list[str] = []
     for slot in slots:
@@ -1056,7 +1061,8 @@ def _shared_qualifiers(
         binding = slot.binding
         if isinstance(binding, BindingValue) and binding.value.ref is not None:
             covered.add(prop.ref)
-            shown.append(binding.value.ref.label)
+            if (prop.ref, binding.value.ref.ref) not in named:
+                shown.append(binding.value.ref.label)
             concept.append(_concept_value_label(prop.ref, binding.value.ref, index))
         elif isinstance(binding, BindingSet) and (label := _set_label(binding)) is not None:
             covered.add(prop.ref)
@@ -1066,7 +1072,8 @@ def _shared_qualifiers(
         if fact.property in covered or fact.varies or fact.value is None:
             continue
         covered.add(fact.property)
-        shown.append(fact.value.label)
+        if (fact.property, fact.value.ref) not in named:
+            shown.append(fact.value.label)
         concept.append(fact.value.label)
     return _distinct_labels(shown), _distinct_labels(concept)
 
@@ -1470,7 +1477,7 @@ def build_spec(
 
     # Identity is minted before the display label is composed. See _wire_shape_label.
     qualifiers, concept_qualifiers = (
-        _shared_qualifiers(measure_label.axes, slots, resolved_open_axis_facts, index=index)
+        _shared_qualifiers(measure_label, slots, resolved_open_axis_facts, index=index)
         if measure_partition is not None
         else ([], [])
     )

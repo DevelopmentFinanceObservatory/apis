@@ -1,0 +1,53 @@
+- id: climate-adaptation-fund-viet-nam
+  query: Adaptation Fund adaptation finance to Viet Nam in 2022
+  why: '"Adaptation" reads ONE Data''s adaptation-only part, since a project marked for both objectives counts as cross-cutting.'
+  tags: {theme: climate, entity: organisation, direction: both, unit: default, time: year, operation: none, breakdown: objective, door: raw_text, phrasing: casual}
+  # The deployed dev release's code index has no "adaptation" synonym yet.
+  known_failure: {issue: 278, checks: [disposition]}
+  expect:
+    definite:
+      measure:
+        family: [climate.disbursement_gross, climate.commitment]
+        bound: {climatePolicyObjective: AdaptationOnlyClimateChangePolicyObjective}
+      entities: [{dcid: AdaptationFund, role: origin}, {dcid: country/VNM, role: destination}]
+      window: {kind: range, start: 2022, end: 2022}
+      operations: []
+
+- id: climate-belgium-unfccc
+  query: climate finance Belgium reported to the UNFCCC
+  why: Naming the UNFCCC elects the Biennial Transparency Reports, which hold each party's own total for all recipients.
+  tags: {theme: climate, entity: country, direction: origin_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, dataset: named}
+  expect:
+    definite:
+      measure:
+        family: [btr.disbursement_gross, btr.commitment]
+        bound: {climatePolicyObjective: ClimateChangePolicyObjective}
+      provenance: {bound: true}
+      entities: [{dcid: country/BEL, role: origin}]
+      operations: []
+
+- id: climate-germany-kenya-total
+  query: climate finance from Germany to Kenya in 2021
+  why: A question naming no objective defaults to the total, so the parts are not summed beside it.
+  tags: {theme: climate, entity: country, direction: both, unit: default, time: year, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure:
+        family: [climate.disbursement_gross, climate.commitment]
+        bound: {climatePolicyObjective: ClimateChangePolicyObjective}
+      entities: [{dcid: country/DEU, role: origin}, {dcid: country/KEN, role: destination}]
+      window: {kind: range, start: 2021, end: 2021}
+      operations: []
+
+- id: climate-france-india-attributed
+  query: attributed climate finance from France to India in 2022
+  why: Attributed figures credit France with its share of what development banks and climate funds spend in India.
+  tags: {theme: climate, entity: country, direction: both, unit: default, time: year, operation: none, breakdown: none, door: raw_text, phrasing: technical}
+  expect:
+    definite:
+      measure:
+        family: [climate.attributed_disbursement_gross, climate.attributed_commitment]
+        bound: {climatePolicyObjective: ClimateChangePolicyObjective}
+      entities: [{dcid: country/FRA, role: origin}, {dcid: country/IND, role: destination}]
+      window: {kind: range, start: 2022, end: 2022}
+      operations: []
