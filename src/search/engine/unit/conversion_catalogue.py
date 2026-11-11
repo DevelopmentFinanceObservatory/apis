@@ -362,13 +362,6 @@ def current_conversion_catalogue() -> ConversionCatalogue | None:
     return bound if isinstance(bound, ConversionCatalogue) else None
 
 
-def served_recipe(provenances: Iterable[str]) -> ConversionRecipe | None:
-    """`ConversionCatalogue.served_recipe` under the catalogue bound to this request, None
-    where none is bound."""
-    catalogue = current_conversion_catalogue()
-    return catalogue.served_recipe(provenances) if catalogue is not None else None
-
-
 def conversion_catalogue_unavailable() -> bool:
     """Whether this request's scope bound no catalogue because its service has loaded none:
     the load is still running or has failed. False outside any request scope."""

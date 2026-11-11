@@ -38,17 +38,18 @@ at those periods, group totals, aggregates and `untyped` members included, in fr
 in one of those rows, its description names that column as marking the totals. On the place role,
 where those rows' places sit at more than one level
 (`dfo_analysis_engine.place_type.at_one_level`), it names the type column as giving each row's
-place type (`_column_note`). Dimensions `select` leaves unbound, `unit`, `measurementMethod` and
-`provenance` among them when unbound, are free, so a member served under another method or source
-is kept. The revision does not record whether the listed members were cut for display or chosen, so
-both get the same file. Each file's resource `description` and README row say which file is which,
-with "The card shows N of M; <file> holds all M." on the shown file. `ComponentExportMismatch`
-guards the shown file alone, and a bare file holds the shown rows. Each provenance ref the kept
-rows carry is cited from the frame manifest's citation, its licence and documentation included,
-through `materialise.bundle_sources`. Columns are documented by `materialise.bundle_columns`, and
-the codes table is labelled from `ResolvedFrame.labels` and the cited source names with no graph
-read, so a role's codes keep the kind `entity`. Links and the reproducing call sit under the public
-site origin the caller passes.
+place type (`_column_note`). `stat_var` is held to the StatVars the card's shown series hold, at
+the periods it shows them, even where `select` leaves it unbound. Every other dimension `select`
+leaves unbound, `unit`, `measurementMethod` and `provenance` among them when unbound, is free, so a
+member served under another method or source is kept. The revision does not record whether the
+listed members were cut for display or chosen, so both get the same file. Each file's resource
+`description` and README row say which file is which, with "The card shows N of M; <file> holds all
+M." on the shown file. `ComponentExportMismatch` guards the shown file alone, and a bare file holds
+the shown rows. Each provenance ref the kept rows carry is cited from the frame manifest's
+citation, its licence and documentation included, through `materialise.bundle_sources`. Columns are
+documented by `materialise.bundle_columns`, and the codes table is labelled from
+`ResolvedFrame.labels` and the cited source names with no graph read, so a role's codes keep the
+kind `entity`. Links and the reproducing call sit under the public site origin the caller passes.
 
 The revision's stored `created_at` is the bundle's prepared date and dates the file name, so one
 revision always serves one name. An export on a target frame takes both from that frame's
@@ -600,8 +601,11 @@ def _all_members(
 ) -> _AllMembers | None:
     """The valued frame rows of every member of the one dimension `select` lists, at the
     periods the card shows and with each dimension `select` binds to one value as the card
-    holds it, in frame order. Dimensions `select` leaves unbound, the facets among them, are
-    free, so a member served under another unit, method or source is kept. `None` when
+    holds it, in frame order. `stat_var` is held to the card's even where `select` leaves it
+    unbound, so a row is kept only for a StatVar a shown series holds at that period, and the
+    file holds no other measure. Every other dimension `select` leaves unbound, the facets
+    among them, is free, so a member served under another unit, method or source is kept.
+    `None` when
     `select` lists no dimension, more than one, or `stat_var`, the card's measure, or when
     the frame holds no member the card leaves out.
 
@@ -611,7 +615,8 @@ def _all_members(
     if len(listed) != 1 or listed[0] == STAT_VAR_COLUMN or not shown:
         return None
     (dimension,) = listed
-    bound = frozenset(select) - {dimension}
+    # The measure is the card's, bound or not.
+    bound = (frozenset(select) | {STAT_VAR_COLUMN}) - {dimension}
 
     def fixed(key: _CoordinateKey, period: str) -> tuple[_CoordinateKey, str]:
         return tuple(item for item in key if item[0] in bound), period

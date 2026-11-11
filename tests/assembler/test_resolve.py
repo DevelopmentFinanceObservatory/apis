@@ -7,10 +7,9 @@ import pytest
 import assembler.series_id as series_id_module
 from assembler.errors import BindingInvalid, ResourceExhausted
 from assembler.frame_view import compute_structural_view
+from assembler.limits import MAX_SERIES_PER_COMPONENT
 from assembler.ports import FrameRef, ResolvedFrame
 from assembler.resolve import (
-    COMPONENT_SERIES_LIMIT,
-    SeriesLimit,
     _group_by_coordinate,
     resolve_selectors,
 )
@@ -381,18 +380,6 @@ def test_series_count_estimate_refuses_before_touching_frame_rows():
 
 
 @pytest.mark.parametrize(
-    ("series_limit", "limit_name", "listed"),
-    [
-        pytest.param(COMPONENT_SERIES_LIMIT, "MAX_SERIES_PER_COMPONENT", 24, id="component"),
-        pytest.param(
-            SeriesLimit(name="MAX_LINE_CHART_SERIES", cap=8),
-            "MAX_LINE_CHART_SERIES",
-            8,
-            id="line-chart",
-        ),
-    ],
-)
-@pytest.mark.parametrize(
     ("stat_vars", "selectors", "named"),
     [
         pytest.param(
@@ -422,12 +409,11 @@ def test_series_count_estimate_refuses_before_touching_frame_rows():
         ),
     ],
 )
-def test_the_estimate_refusal_names_the_dimensions_it_multiplies(
-    series_limit, limit_name, listed, stat_vars, selectors, named
-):
+def test_the_estimate_refusal_names_the_dimensions_it_multiplies(stat_vars, selectors, named):
     """Five variables at six recipients estimate 30 series; one variable at 26 recipients
-    estimates 26. The refusal names each dimension with the count the estimate gives it,
-    and the number of values the chart takes."""
+    estimates 26. The refusal names the limit the estimate tests, `MAX_SERIES_PER_COMPONENT`,
+    each dimension with the count the estimate gives it, and the number of values a
+    component takes."""
     recipients = 6 if stat_vars > 1 else 26
     rows = [
         _row(stat_var=f"dcid:X{index:02d}", recipient=f"country/{place:03d}", period="2020")
@@ -435,15 +421,13 @@ def test_the_estimate_refusal_names_the_dimensions_it_multiplies(
         for place in range(recipients)
     ]
     with pytest.raises(ResourceExhausted) as excinfo:
-        resolve_selectors(
-            resolved_frame=_resolved_frame(rows),
-            selectors=selectors,
-            window=None,
-            series_limit=series_limit,
-        )
-    assert (excinfo.value.pointer, excinfo.value.limit_name) == ("/select", limit_name)
+        resolve_selectors(resolved_frame=_resolved_frame(rows), selectors=selectors, window=None)
+    assert (excinfo.value.pointer, excinfo.value.limit_name) == (
+        "/select",
+        "MAX_SERIES_PER_COMPONENT",
+    )
     for words in named:
-        assert words.format(listed=listed) in excinfo.value.detail
+        assert words.format(listed=MAX_SERIES_PER_COMPONENT) in excinfo.value.detail
 
 
 def test_series_count_estimate_runs_before_any_row_grouping(monkeypatch):

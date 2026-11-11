@@ -267,12 +267,7 @@ def _build_candidate(
     window = cast("Mapping[str, object] | None", drawn.get("window"))
     if window is not None:
         window = complete_window(window=window, resolved_frame=resolved_frame)
-    series = resolve_selectors(
-        resolved_frame=resolved_frame,
-        selectors=selectors,
-        window=window,
-        series_limit=series_limit,
-    )
+    series = resolve_selectors(resolved_frame=resolved_frame, selectors=selectors, window=window)
 
     def draw(
         *,

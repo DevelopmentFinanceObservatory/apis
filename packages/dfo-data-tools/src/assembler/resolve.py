@@ -94,13 +94,11 @@ def resolve_selectors(
     resolved_frame: ResolvedFrame,
     selectors: Sequence[Mapping[str, object]],
     window: Mapping[str, object] | None,
-    series_limit: SeriesLimit = COMPONENT_SERIES_LIMIT,
 ) -> tuple[ResolvedSeries, ...]:
-    """An estimate over `MAX_SERIES_PER_COMPONENT` refuses naming `series_limit`, the limit a
-    caller has to meet: a line chart held to its own cap passes the line chart's. The estimate
-    is the only series gate here, so a render draws a stored component whatever its resolved
-    series count; a line chart's write holds its resolved series to its cap itself
-    (`check_resolved_series`)."""
+    """An estimate over `MAX_SERIES_PER_COMPONENT` refuses naming that limit
+    (`COMPONENT_SERIES_LIMIT`), the one it tests. The estimate is the only series gate here,
+    so a render draws a stored component whatever its resolved series count; a line chart's
+    write holds its resolved series to its own cap itself (`check_resolved_series`)."""
     if len(selectors) > MAX_SELECTORS:
         raise ResourceExhausted(
             pointer="/select",
@@ -120,7 +118,6 @@ def resolve_selectors(
         coordinate_columns=coordinate_columns,
         facet_names=facet_names,
         dimension_by_name=dimension_by_name,
-        series_limit=series_limit,
     )
 
     continuation = resolved_frame.continuation
@@ -262,14 +259,13 @@ def _check_series_estimate(
     coordinate_columns: Sequence[str],
     facet_names: frozenset[str],
     dimension_by_name: Mapping[str, DimensionView],
-    series_limit: SeriesLimit,
 ) -> None:
     """Estimates the series upper bound from selector shapes and dimension counts before
     grouping rows. Bound dimensions use their requested value count. Unbound facets count
     1, because a facet that splits a series is refused separately. Other unbound
     dimensions use their frame-wide count (minimum 1).
 
-    A refusal names `series_limit` and the dimensions that multiply the largest selector's
+    A refusal names `MAX_SERIES_PER_COMPONENT` (`COMPONENT_SERIES_LIMIT`) and the dimensions that multiply the largest selector's
     estimate past one, each with the count it contributes, and says what brings the select
     within the limit (`series_limit_exhausted`)."""
     estimate = 0
@@ -297,7 +293,7 @@ def _check_series_estimate(
     if estimate <= MAX_SERIES_PER_COMPONENT:
         return
     raise series_limit_exhausted(
-        limit=series_limit,
+        limit=COMPONENT_SERIES_LIMIT,
         found=f"selectors expand to an estimated {estimate} series",
         counts=widest,
         kept=widest_listed[0] if len(widest_listed) == 1 else None,

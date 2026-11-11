@@ -222,7 +222,7 @@ def _prepare_candidate_context(state: ResolveState, candidates: list[_Candidate]
                     datasets=elected_datasets(cand.mat.member_facts),
                 )
             except DatasetDisagreementError:
-                if cand_index == 0 and state.elected_has_data:
+                if _is_elected(state, cand_index):
                     raise
                 # The mint refuses this alternate's identity, so it is dropped as an
                 # alternate whose walk the mint refuses is (`candidates._materialise_alt_shapes`);
@@ -709,6 +709,12 @@ class _CarrierFlags(NamedTuple):
     membership_unverified: bool
 
 
+def _is_elected(state: ResolveState, cand_index: int) -> bool:
+    """Whether candidate `cand_index` is the elected reading: the first candidate, where the
+    elected shape holds data (`ResolveState.elected_has_data`)."""
+    return cand_index == 0 and state.elected_has_data
+
+
 def _carrier_flags(cand: _Candidate, *, elected: bool) -> _CarrierFlags:
     """The flags candidate `cand`'s materialised result raises (`_CarrierFlags`)."""
     if elected:
@@ -794,7 +800,7 @@ def _finish_candidate(
     cand_shape, cand_bindings, cand_mat = cand.shape, cand.bindings, cand.mat
     # Candidate triples contain data. Flagged-unavailable results may have
     # ``available_at_place=False``. Place-less coverage uses ``None``.
-    cand_is_elected = cand_index == 0 and state.elected_has_data
+    cand_is_elected = _is_elected(state, cand_index)
     # A reading the status rule offers on a structural or nominated basis is a rival, and
     # so are the elected reading and its other directions and breakdowns beside one
     # (`rivalled`).
@@ -1103,7 +1109,7 @@ def _warn_for_candidates(
     if groundworks:
         state.warnings.extend(groundworks[0].entity_warnings)
     flags = [
-        _carrier_flags(cand, elected=cand_index == 0 and state.elected_has_data)
+        _carrier_flags(cand, elected=_is_elected(state, cand_index))
         for cand_index, cand in enumerate(prep.candidates)
     ]
     state.warnings.extend(

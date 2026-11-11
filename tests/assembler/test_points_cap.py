@@ -62,15 +62,19 @@ def _write_line_chart(*, frame, select, frame_store, revision_store, release_reg
 
 
 @pytest.mark.parametrize(
-    "count",
+    ("count", "limit_name"),
     [
-        pytest.param(lambda cap: cap + 1, id="one-over"),
-        # An estimate over MAX_SERIES_PER_COMPONENT names the line chart's cap.
-        pytest.param(lambda _cap: MAX_SERIES_PER_COMPONENT + 1, id="over-the-component-cap"),
+        pytest.param(lambda cap: cap + 1, "MAX_LINE_CHART_SERIES", id="one-over"),
+        # An estimate over MAX_SERIES_PER_COMPONENT names the limit the estimate tests.
+        pytest.param(
+            lambda _cap: MAX_SERIES_PER_COMPONENT + 1,
+            "MAX_SERIES_PER_COMPONENT",
+            id="over-the-component-cap",
+        ),
     ],
 )
 def test_a_line_chart_with_an_unbound_dimension_over_the_cap_refuses(
-    count, frame_store, revision_store, release, release_registry
+    count, limit_name, frame_store, revision_store, release, release_registry
 ):
     with pytest.raises(ResourceExhausted) as excinfo:
         _write_line_chart(
@@ -81,7 +85,7 @@ def test_a_line_chart_with_an_unbound_dimension_over_the_cap_refuses(
             release_registry=release_registry,
         )
     assert excinfo.value.pointer == "/select"
-    assert excinfo.value.limit_name == "MAX_LINE_CHART_SERIES"
+    assert excinfo.value.limit_name == limit_name
 
 
 def _sector_frame(*, recipients, sectors, periods=("2020", "2021")):

@@ -578,6 +578,48 @@ _TOTALS = "marks which rows are totals."
 _PLACE_TYPE = "gives each row's place type."
 
 
+def test_a_card_leaving_stat_var_unbound_keeps_the_all_members_file_to_its_measures(
+    frame_store, revision_store, release_registry
+):
+    """A bar chart listing 2 of 12 recipients with `stat_var` unbound shows the one StatVar
+    those recipients hold. The all-members file holds that StatVar for all 12 and leaves out
+    a second StatVar the frame holds only for a 13th recipient the card does not list."""
+    members = tuple(f"country/C{number:02d}" for number in range(12))
+    rows = [
+        *(
+            _row(recipient=member, period="2024", value=float(n))
+            for n, member in enumerate(members)
+        ),
+        _row(recipient="country/D00", period="2024", value=5.0, stat_var="dcid:Other"),
+    ]
+    frame_store.put(
+        resolved_frame=build_resolved_frame(
+            frame_ref=_FRAME_REF, role_keys=("recipient",), rows=rows
+        )
+    )
+    created = write_component(
+        intent={
+            "type": "bar_chart",
+            "frame_ref": _frame_ref_body(_FRAME_REF),
+            "title": "Largest members",
+            "select": {"recipient": list(members[:2])},
+            "window": {"start": "2024", "end": "2024"},
+        },
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+
+    files = _unzip(
+        _export(created, frame_store=frame_store, revision_store=revision_store, bundle=True).data
+    )
+    every = _csv_rows(files["data/largest-members-all-members.csv"])
+
+    assert {row["stat_var"] for row in every} == {_STAT_VAR}
+    assert {row["recipient"] for row in every} == set(members)
+    assert "The card shows 2 of 12" in files["README.md"].decode("utf-8")
+
+
 @pytest.mark.parametrize(
     ("role", "cell_column", "member_cell", "aggregate", "aggregate_cell", "counted", "note"),
     [

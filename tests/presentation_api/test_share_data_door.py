@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
 import presentation_api.retention as presentation_retention
+import presentation_api.share_slots as share_slots
 from assembler.errors import ConstraintViolation, FrameUnavailable, ReleaseMismatch
 from assembler.fakes import FakeFrameStore, FakeReleaseRegistry, FakeRevisionStore
 from assembler.ports import FrameRef, ResolvedFrame
@@ -611,16 +612,28 @@ def _deflated_apart() -> AnalysisRefused:
         ),
     ],
 )
+@pytest.mark.parametrize("classifies", [True, False], ids=["classified", "classifier-raises"])
 def test_a_live_slot_logs_the_code_of_the_refusal_that_left_it_stale(
     door: _Door,
     caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
     newest: object,
     drawn: Exception | None,
     line: str,
     fields: dict[str, str],
+    classifies: bool,
 ):
     """A refusal on refresh is found by its code in the slot's warning, a derived frame's by
-    the analysis refusal's own code and a card's by its constraint id."""
+    the analysis refusal's own code and a card's by its constraint id. A classifier that
+    raises leaves the warning without the fields, and the slot still serves stale."""
+    if not classifies:
+
+        def raises(exc: Exception) -> None:
+            raise LookupError("no status registered")
+
+        monkeypatch.setattr(share_slots, "classify_components_exception", raises)
+        monkeypatch.setattr(share_slots, "classify_datasets_exception", raises)
+        fields = {}
     share = door.share(door.card(), latest=True)
     door.newest.answer = cast("FrameRef | Exception", newest)
     if drawn is not None:

@@ -238,7 +238,8 @@ def serve_on_slot_frame[T](
         except Exception as exc:
             if check.frame == card.frame:
                 raise
-            failing, wait = check.frame, _transient_wait(exc)
+            refusal = _drawing_refusal(exc)
+            failing, wait = check.frame, _transient_wait(exc, refusal)
             # The newer frame does not fit the card's intent, or cannot be read. A permanent
             # failure serves the card's own frame, which its share pinned, until the next check;
             # a transient one serves the last good frame until the failure's wait.
@@ -261,7 +262,7 @@ def serve_on_slot_frame[T](
                 check.frame,
                 "" if wait is None else f" for {wait:g} s",
                 exc_info=True,
-                extra={JSON_FIELDS_ATTR: _drawing_refusal_fields(exc)},
+                extra={JSON_FIELDS_ATTR: _refusal_fields(refusal)},
             )
             try:
                 drawn = draw(check.frame)
@@ -503,11 +504,11 @@ def _replaying[T](draw: Callable[[FrameRef], T]) -> Callable[[FrameRef], T]:
     return replayed
 
 
-def _transient_wait(exc: Exception) -> float | None:
+def _transient_wait(exc: Exception, refusal: ProblemSpec | None) -> float | None:
     """The seconds after which a later read may draw where `exc` refused with nothing done, or
     `None` when it may not: a `FrameUnavailable` whose reason is transient
     (`FrameOutcome.transient`) waits its `retry_after_s`, or `_TRANSIENT_WAIT_S` when it names
-    none, and any other failure the components door classifies as retryable waits its
+    none, and any other failure whose `refusal` (`_drawing_refusal`) is retryable waits its
     `Retry-After`, at least `_TRANSIENT_WAIT_S` so a one-second header cannot drive a recheck
     every second. Each wait is held between `_MIN_RETRY_S` and `FRESHNESS_WINDOW`."""
     if isinstance(exc, FrameUnavailable):
@@ -515,35 +516,42 @@ def _transient_wait(exc: Exception) -> float | None:
             return None
         wait = exc.retry_after_s if exc.retry_after_s is not None else _TRANSIENT_WAIT_S
     else:
-        # The draw runs off the request's task, where no registry endpoint is bound.
-        with bound_registry_endpoint(SHARES_ENDPOINT):
-            spec = classify_components_exception(exc)
-        if spec is None or not spec.retryable:
+        if refusal is None or not refusal.retryable:
             return None
-        header = (spec.headers or {}).get("Retry-After", "")
+        header = (refusal.headers or {}).get("Retry-After", "")
         wait = max(float(header) if header.isdigit() else 0.0, _TRANSIENT_WAIT_S)
     return min(max(wait, _MIN_RETRY_S), FRESHNESS_WINDOW.total_seconds())
 
 
-def _drawing_refusal_fields(exc: Exception) -> dict[str, str]:
-    """The log fields naming the refusal `exc` a draw raised, as the components door classifies
-    it: `code`, and `constraint_id` for a constraint violation. None for a failure no refusal
-    names."""
-    # The draw runs off the request's task, where no registry endpoint is bound.
-    with bound_registry_endpoint(SHARES_ENDPOINT):
-        return _refusal_fields(classify_components_exception(exc))
+def _drawing_refusal(exc: Exception) -> ProblemSpec | None:
+    """The refusal `exc` a draw raised, as the components door classifies it, or None for a
+    failure no refusal names. A classifier that raises is logged and reads as None, so the
+    slot still serves a stale frame."""
+    try:
+        # The draw runs off the request's task, where no registry endpoint is bound.
+        with bound_registry_endpoint(SHARES_ENDPOINT):
+            return classify_components_exception(exc)
+    except Exception:
+        logger.exception("Cannot classify why a draw failed: %s", type(exc).__name__)
+        return None
 
 
 def _newest_refusal_fields(exc: Exception) -> dict[str, str]:
     """The log fields naming the refusal `exc` a newer-data check raised, as the Datasets route
     that raises it classifies it (`datasets_api.exports.resolve_endpoint`): `code`, the
     analysis refusal's own code for a derived frame's run, such as `unit_not_present` or
-    `cross_frame_unit_mismatch`. None for a failure no Datasets route names."""
-    endpoint = resolve_endpoint(exc)
-    if endpoint is None:
+    `cross_frame_unit_mismatch`. Empty for a failure no Datasets route names, and for one
+    the classifier itself fails on, which is logged, so the slot still serves its last
+    frame."""
+    try:
+        endpoint = resolve_endpoint(exc)
+        if endpoint is None:
+            return {}
+        with bound_registry_endpoint(endpoint):
+            return _refusal_fields(classify_datasets_exception(exc))
+    except Exception:
+        logger.exception("Cannot classify why newer data was not read: %s", type(exc).__name__)
         return {}
-    with bound_registry_endpoint(endpoint):
-        return _refusal_fields(classify_datasets_exception(exc))
 
 
 def _refusal_fields(spec: ProblemSpec | None) -> dict[str, str]:
