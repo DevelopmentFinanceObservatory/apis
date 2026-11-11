@@ -14,13 +14,14 @@ import pytest
 
 from search.engine.region import candidate_collapse
 from search.engine.region.candidate_admission import _AlternatesAdmission
-from search.engine.region.candidate_grounding import _GroundedCandidates
+from search.engine.region.candidate_grounding import _GroundedCandidate, _GroundedCandidates
 from search.engine.region.candidates import _Candidate
+from search.engine.region.convertibility import UnitCoverage
 from search.engine.region.place_context import PlaceContext
 from search.engine.region.state import ResolveState
 from search.engine.retrieval.retrieve import Materialised, NoDataDraft
 from search.engine.shape import ShapeDraft
-from search.models import CandidateBasis, Spec
+from search.models import CandidateBasis, CoverageBare, Spec
 from tests.engine._assemble_fixtures import _make_spec, _standard_shape_draft
 from tests.engine.test_candidate_grounding_thread import _state
 
@@ -33,42 +34,44 @@ def _shape(shape_id: str) -> ShapeDraft:
     return dataclasses.replace(_standard_shape_draft(), shape_id=shape_id, label=shape_id)
 
 
-def _candidate(shape: ShapeDraft, basis: CandidateBasis | None) -> _Candidate:
-    return _Candidate(
-        shape=shape,
-        bindings=[],
-        mat=cast(Materialised, None),
-        place=cast(PlaceContext, None),
-        walked=None,
-        basis=basis,
+def _entry(
+    spec: Spec, sv: str, shape: ShapeDraft, basis: CandidateBasis | None
+) -> _GroundedCandidate:
+    """A kept candidate reading StatVar `sv` on `shape`, offered on `basis`."""
+    mat = Materialised(sv_dcids=[sv], has_data=True, coverage=CoverageBare(has_data=True))
+    return _GroundedCandidate(
+        spec=spec,
+        candidate=_Candidate(
+            shape=shape,
+            bindings=[],
+            mat=mat,
+            place=cast(PlaceContext, None),
+            walked=None,
+            basis=basis,
+        ),
+        is_elected=False,
+        plan=None,
+        served_members=(),
+        confirmed_facets=(),
+        obs_entities={},
+        probe_entities={},
+        probe_slot_options=None,
+        role_axis_facts=(),
+        measure_partition=None,
+        measure_siblings=(),
+        open_axis_facts=(),
+        bulk_scope=None,
+        scope_members=None,
+        elected={},
+        unit_refusals={},
+        unit_coverage=UnitCoverage(),
+        unit_gate_reason=None,
     )
 
 
 def _grounded(*rows: tuple[Spec, str, ShapeDraft, CandidateBasis | None]) -> _GroundedCandidates:
     """Grounded candidates from (spec, StatVar, shape, basis) rows, in order."""
-    return _GroundedCandidates(
-        specs=[spec for spec, *_ in rows],
-        elected_spec_id=None,
-        cand_scores={},
-        cand_retrieved={},
-        cand_populations={},
-        cand_probe_inputs={},
-        cand_role_axis_facts={spec.spec_id: (shape, [], None) for spec, _, shape, _ in rows},
-        cand_entity_options_raw={},
-        cand_measure_partitions={},
-        cand_measure_siblings={},
-        cand_open_axis_facts={},
-        cand_obs_entities={spec.spec_id: ([sv], {}) for spec, sv, _, _ in rows},
-        cand_probe_entities={},
-        cand_elected={},
-        cand_bulk_scope={},
-        cand_plans={},
-        cand_confirmed_facets={},
-        cand_answered_roles={},
-        cand_places={},
-        answer_t0=0,
-        cand_candidates={spec.spec_id: _candidate(shape, basis) for spec, _, shape, basis in rows},
-    )
+    return _GroundedCandidates(entries={row[0].spec_id: _entry(*row) for row in rows}, answer_t0=0)
 
 
 def _settle(

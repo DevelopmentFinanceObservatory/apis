@@ -809,6 +809,45 @@ def test_a_candidate_set_warns_once_for_the_candidate_whose_conversion_omits_ent
     assert _omitted_warnings(result) == [_spec_by_sv(result, _SV_B).spec_id]
 
 
+def _narrow_to_nothing(monkeypatch, narrowed: tuple[str, ...]) -> None:
+    """Have each `narrowed` StatVar's conversion leave out Kenya's rows, as no currency names
+    it, and narrow its answer to a plan serving nothing under its elected unit, and any other
+    candidate's convert in full."""
+
+    def _convertible(mat, filtered, _elected, **_kwargs):
+        (sv,) = mat.sv_dcids
+        if sv not in narrowed:
+            return filtered, UnitCoverage()
+        assert filtered.plan is not None
+        return (
+            replace(filtered, plan=replace(filtered.plan, series=())),
+            UnitCoverage(omitted=frozenset({(sv, "observationAbout", _KEN)})),
+        )
+
+    monkeypatch.setattr(candidate_grounding_module, "convertible_answer", _convertible)
+
+
+@pytest.mark.parametrize(
+    ("narrowed", "answer"),
+    [
+        ((_SV_B,), ("definite", None, [_SV_A])),
+        ((_SV_A, _SV_B), ("no_data", "facet_not_available", [])),
+    ],
+    ids=["one_narrowed", "every_candidate_narrowed"],
+)
+def test_a_candidate_whose_conversion_leaves_nothing_served_is_dropped(
+    monkeypatch, narrowed, answer
+):
+    """Each candidate passes the bound-unit gate on the plan it read, and a conversion then
+    narrows some to plans serving nothing under their elected units. The gate's verdict on
+    the narrowed plan drops them: the other candidate answers alone, and with none left the
+    part answers `facet_not_available`."""
+    _narrow_to_nothing(monkeypatch, narrowed)
+    result = _run()
+    survivors = [item.ref.ref for spec in result.specs for item in spec.resolved.members]
+    assert (result.status, result.no_data_reason, survivors) == answer, result
+
+
 def test_a_definite_survivor_carries_its_omission_warning(monkeypatch):
     """The first candidate refuses a rate, so the second answers alone and carries the
     warning its conversion raised."""

@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import functools
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import cast
 
 from materialise import GraphReader
@@ -16,7 +16,6 @@ from materialise.rate_tables import RateTableCache
 from search.engine.clients.graph import Facet
 from search.engine.envelope import _emit_step, now_ms
 from search.engine.reading_coverage import covers
-from search.engine.region.bound_unit_gate import bound_unit_gate_reason, unit_served
 from search.engine.region.candidate_admission import _AlternatesAdmission
 from search.engine.region.candidate_grounding import (
     _GroundedCandidates,
@@ -55,7 +54,6 @@ from search.engine.region.codes import (
     _elect_no_data_reason,
     _ObsProbeResult,
 )
-from search.engine.region.convertibility import UnitCoverage
 from search.engine.region.equivalent_series import shared_cluster
 from search.engine.region.materialise_step import lone_breakdown_absent
 from search.engine.region.observations.dispatch import (
@@ -105,6 +103,7 @@ from search.models import (
     CandidateBasis,
     IdentityUnitRequest,
     Spec,
+    Warning,
 )
 
 
@@ -115,7 +114,7 @@ def _offer_place_warnings(
     context that the shape in play's do not hold (`stamp_offered_place_warnings`)."""
     stamp_offered_place_warnings(
         state.warnings,
-        [(spec.spec_id, grounded.cand_places[spec.spec_id]) for spec in offered],
+        [(spec.spec_id, grounded[spec.spec_id].candidate.place) for spec in offered],
         departure_facts=state.departure_facts,
     )
 
@@ -127,61 +126,32 @@ def _apply_bound_unit_filter(
     before measure folding. This order keeps a compatible sibling available as its own candidate.
     An empty input proceeds to the elected shape's no-data reason.
 
-    Each candidate passes the single-shape gate over its own read plan, which fetches nothing:
-    the plan serves a StatVar the unit decision serves under its elected unit (`bound_unit_gate.bound_unit_gate_reason`)
-    and every row it serves converts, as grounding found it (`cand_unit_coverage`). A candidate
-    whose rows do not convert is dropped, and its refusal is recorded beside its election's
-    (`cand_unit_refusals`). A passing candidate whose conversion omits the rows of entities
-    no currency names records its warning (`cand_unit_omitted`). Return the surviving specs
-    or a terminal no-match result.
+    A candidate passes when grounding found its answer passes the single-shape gate
+    (`bound_unit_gate.bound_unit_gate_reason`) and every row it serves converts
+    (`_GroundedCandidate.serves_bound_unit`). A flagged-unavailable carrier passes unchecked,
+    for the `NO_MEMBER_HAS_DATA_AT_PLACE` refusal. Return the surviving specs, or a terminal
+    no-match result when none survives.
     """
     if state.bound_unit_outcome is None or not unique_specs:
         return unique_specs
-    available: list[Spec] = []
-    _matched_specs: list[Spec] = []
-    for s in unique_specs:
-        if s.resolved.available_at_place is False:
-            # Preserve the carrier for the `NO_MEMBER_HAS_DATA_AT_PLACE` refusal below.
-            _matched_specs.append(s)
-            continue
-        _s_svs, _s_ents = grounded.cand_obs_entities.get(s.spec_id, ([], {}))
-        _gate_plan = grounded.cand_gate_plans.get(s.spec_id, grounded.cand_plans.get(s.spec_id))
-        _s_served = unit_served(grounded.cand_elected.get(s.spec_id), _s_svs)
-        if bound_unit_gate_reason(_gate_plan, _s_ents, _s_served) is None:
-            available.append(s)
-    for s in available:
-        coverage = grounded.cand_unit_coverage.get(s.spec_id, UnitCoverage())
-        if coverage.refusal is None:
-            _matched_specs.append(s)
-            omitted = coverage.omitted_warning(
-                catalogue=current_conversion_catalogue(), spec_id=s.spec_id
-            )
-            if omitted is not None:
-                grounded.cand_unit_omitted[s.spec_id] = omitted
-            continue
-        sv, exc = coverage.refusal
-        grounded.cand_unit_refusals[s.spec_id] = {
-            **grounded.cand_unit_refusals.get(s.spec_id, {}),
-            sv: exc,
-        }
-    _matched_specs.sort(key=unique_specs.index)
-    if not _matched_specs:
-        _refusal = _first_conversion_refusal(unique_specs, grounded)
-        if _refusal is not None:
-            _refusing, _exc = _refusal
-            # A bound outcome sets `unit_request`. Ty treats attributes as optional.
-            return unit_conversion_refusal(
-                state,
-                _exc,
-                unit_request=cast(IdentityUnitRequest, state.unit_request),
-                candidate=_refusing,
-            )
-        return state.no_data("facet_not_available", llm_usage=state.var_usage)
-    grounded.cand_scores = {s.spec_id: grounded.cand_scores[s.spec_id] for s in _matched_specs}
-    grounded.cand_retrieved = {
-        s.spec_id: grounded.cand_retrieved[s.spec_id] for s in _matched_specs
-    }
-    return _matched_specs
+    matched = [
+        s
+        for s in unique_specs
+        if s.resolved.available_at_place is False or grounded[s.spec_id].serves_bound_unit
+    ]
+    if matched:
+        return matched
+    _refusal = _first_conversion_refusal(unique_specs, grounded)
+    if _refusal is not None:
+        _refusing, _exc = _refusal
+        # A bound outcome sets `unit_request`. Ty treats attributes as optional.
+        return unit_conversion_refusal(
+            state,
+            _exc,
+            unit_request=cast(IdentityUnitRequest, state.unit_request),
+            candidate=_refusing,
+        )
+    return state.no_data("facet_not_available", llm_usage=state.var_usage)
 
 
 def _first_conversion_refusal(
@@ -197,10 +167,21 @@ def _first_conversion_refusal(
     resubmit of its definition meets the same refusal.
     """
     for s in unique_specs:
-        for exc in grounded.cand_unit_refusals.get(s.spec_id, {}).values():
+        entry = grounded[s.spec_id]
+        for exc in entry.unit_refusals.values():
             if isinstance(exc, UNIT_CONVERSION_REFUSALS):
-                return grounded.cand_candidates[s.spec_id], exc
+                return entry.candidate, exc
     return None
+
+
+def _unit_omitted_warning(grounded: _GroundedCandidates, spec_id: str) -> Warning | None:
+    """The `currency_unmapped_omitted` warning of a kept Spec whose conversion omits the rows
+    of entities no currency names (`UnitCoverage.omitted_warning`), stamped with its Spec.
+    Every Spec kept under a bound unit passed the bound-unit filter, and with none bound its
+    coverage is empty."""
+    return grounded[spec_id].unit_coverage.omitted_warning(
+        catalogue=current_conversion_catalogue(), spec_id=spec_id
+    )
 
 
 def _handle_sparse_survivors(
@@ -248,16 +229,14 @@ def _handle_sparse_survivors(
     # The elected reading of a family with no total is one of its breakdowns, so the others
     # with data answer in its place: one alone, several as candidates.
     breakdowns = [
-        spec for spec in unique_specs if grounded.cand_candidates[spec.spec_id].basis == "breakdown"
+        spec for spec in unique_specs if grounded[spec.spec_id].candidate.basis == "breakdown"
     ]
     if breakdowns:
         return breakdowns
     # Rule 1 installs only re-election's siblings as stand-ins (`_offered`). A registry twin
     # the diversion did not serve and a nominated rider stand in for nothing.
     stand_ins = [
-        spec
-        for spec in unique_specs
-        if grounded.cand_candidates[spec.spec_id].basis == "structural"
+        spec for spec in unique_specs if grounded[spec.spec_id].candidate.basis == "structural"
     ]
     if len(stand_ins) == 1:
         # One stand-in answers in the elected shape's place, as re-election installs one.
@@ -295,7 +274,7 @@ def _note_lone_breakdown(state: ResolveState, grounded: _GroundedCandidates, spe
     breakdown or one offered beside it (`ResolveState.breakdown_rivals`). The survivor then
     carries the `family_total_absent` fact naming that breakdown (`lone_breakdown_absent`)
     unless its own fact names its single member."""
-    survivor = grounded.cand_candidates[spec.spec_id]
+    survivor = grounded[spec.spec_id].candidate
     if spec.spec_id != grounded.elected_spec_id and survivor.basis != "breakdown":
         return
     if state.breakdown_rivals:
@@ -320,11 +299,11 @@ def _note_lone_breakdown(state: ResolveState, grounded: _GroundedCandidates, spe
 def _settle_lone_survivor(state: ResolveState, grounded: _GroundedCandidates, spec: Spec) -> None:
     """Judge the lone survivor a refusal carries on its own shape and bindings, the ones its
     trace records (`requirements.settle_flagged`)."""
-    candidate = grounded.cand_candidates[spec.spec_id]
+    candidate = grounded[spec.spec_id].candidate
     settle_flagged(state, candidate.shape, candidate.bindings, uncovered=candidate.uncovered)
 
 
-def _in_currency(facets: list[Facet], currency: str | None) -> bool:
+def _in_currency(facets: Sequence[Facet], currency: str | None) -> bool:
     """Whether no facet reports a unit other than `currency`, the one a twin cluster's
     members are equivalent in (`EquivalentCluster.currency`). Always true for a cluster
     naming none. A facet stating no unit passes, as nothing shows it reads another.
@@ -352,17 +331,15 @@ def _preferred_twin(
     when it covers the elected spec at the question's places and dates (`_covers`); else
     `None`, and the elected spec answers with the preferred twin among its equivalent
     readings."""
-    elected_dcids = grounded.cand_obs_entities[elected_spec_id][0]
+    elected = grounded[elected_spec_id]
     for twin in twins:
-        twin_dcids = grounded.cand_obs_entities[twin.spec_id][0]
-        cluster = shared_cluster(elected_dcids, twin_dcids)
+        twin_dcids = grounded[twin.spec_id].sv_dcids
+        cluster = shared_cluster(elected.sv_dcids, twin_dcids)
         if (
             cluster is not None
             and cluster.preferred in twin_dcids
-            and cluster.preferred not in elected_dcids
-            and _covers(
-                grounded.cand_plans.get(twin.spec_id), grounded.cand_plans.get(elected_spec_id)
-            )
+            and cluster.preferred not in elected.sv_dcids
+            and _covers(grounded[twin.spec_id].plan, elected.plan)
         ):
             return twin
     return None
@@ -381,8 +358,8 @@ def _meeting_stray_values(
         for spec in unique_specs
         if meets_stray_values(
             state.requirements,
-            grounded.cand_candidates[spec.spec_id].shape,
-            grounded.cand_candidates[spec.spec_id].bindings,
+            grounded[spec.spec_id].candidate.shape,
+            grounded[spec.spec_id].candidate.bindings,
         )
     ]
     return meeting or unique_specs[:1]
@@ -417,25 +394,25 @@ def _apply_twin_diversion(
     """
     _elected_spec = next((s for s in unique_specs if s.spec_id == grounded.elected_spec_id), None)
     if _elected_spec is not None:
-        _elected_sv_dcids = grounded.cand_obs_entities[_elected_spec.spec_id][0]
-        _elected_facets = grounded.cand_confirmed_facets.get(_elected_spec.spec_id, [])
+        _elected_sv_dcids = grounded[_elected_spec.spec_id].sv_dcids
+        _elected_facets = grounded[_elected_spec.spec_id].confirmed_facets
     elif not state.elected_has_data and isinstance(state.mat_result, Materialised | NoDataDraft):
         _elected_sv_dcids = state.mat_result.sv_dcids or []
-        _elected_facets = []
+        _elected_facets = ()
     else:
         return unique_specs, None
-    _elected_provenance_ids = _facet_provenance_ids(_elected_facets)
+    _elected_provenance_ids = _facet_provenance_ids(list(_elected_facets))
     _twins: list[Spec] = []
     _preferred_members: set[str] = set()
     _dropped_ids: set[str] = set()
     for s in unique_specs:
         if s is _elected_spec or s.resolved.available_at_place is False:
             continue
-        _candidate_sv_dcids = grounded.cand_obs_entities[s.spec_id][0]
+        _candidate_sv_dcids = grounded[s.spec_id].sv_dcids
         cluster = shared_cluster(_elected_sv_dcids, _candidate_sv_dcids)
         if cluster is None:
             continue
-        _candidate_facets = grounded.cand_confirmed_facets.get(s.spec_id, [])
+        _candidate_facets = grounded[s.spec_id].confirmed_facets
         if not all(
             _in_currency(facets, cluster.currency)
             for facets in (_elected_facets, _candidate_facets)
@@ -445,7 +422,7 @@ def _apply_twin_diversion(
         # With data on both sides, require known, disjoint provenance sets. This blocks
         # same-source twins split across tables. A stale registry entry with disjoint
         # provenance can pass. An elected shape with no data has no reading to duplicate.
-        _candidate_provenance_ids = _facet_provenance_ids(_candidate_facets)
+        _candidate_provenance_ids = _facet_provenance_ids(list(_candidate_facets))
         if _elected_spec is None or (
             _elected_provenance_ids
             and _candidate_provenance_ids
@@ -489,11 +466,6 @@ def _apply_twin_diversion(
     else:
         # Every twin of an elected shape with no data read another currency.
         unique_specs = [s for s in unique_specs if s.spec_id not in _dropped_ids]
-    _listed_ids = {t.spec_id for t in _listed} | _dropped_ids
-    grounded.cand_scores = {k: v for k, v in grounded.cand_scores.items() if k not in _listed_ids}
-    grounded.cand_retrieved = {
-        k: v for k, v in grounded.cand_retrieved.items() if k not in _listed_ids
-    }
     return unique_specs, _served_twin
 
 
@@ -518,12 +490,11 @@ async def _assemble_definite(
     (`_Candidate.uncovered`), and each code and value requirement its own answer leaves
     unmet.
     """
-    _survivor = grounded.cand_candidates[unique_specs[0].spec_id]
-    if unique_specs[0].spec_id != grounded.elected_spec_id:
+    _entry = grounded[unique_specs[0].spec_id]
+    _survivor = _entry.candidate
+    if not _entry.is_elected:
         install_place_warnings(
-            state.warnings,
-            grounded.cand_places[unique_specs[0].spec_id],
-            departure_facts=state.departure_facts,
+            state.warnings, _survivor.place, departure_facts=state.departure_facts
         )
     _survivor_unbound_qualifiers = settle_answer(
         state,
@@ -544,26 +515,19 @@ async def _assemble_definite(
     if not unique_specs[0].resolved.members:
         return state.no_data("no_observations", llm_usage=state.var_usage)
     _survivor_spec = unique_specs[0]
-    # The members and plan its candidate's conversion offer read
-    # (`candidate_grounding._finish_candidate`).
-    _served_members = grounded.cand_served_members[_survivor_spec.spec_id]
-    _plan = grounded.cand_plans.get(_survivor_spec.spec_id)
-    _served_plans = (_plan,) if _plan is not None else ()
     note_denominator_unverified(state, _survivor.shape, spec_id=_survivor_spec.spec_id)
-    if (omitted := grounded.cand_unit_omitted.get(_survivor_spec.spec_id)) is not None:
+    if (omitted := _unit_omitted_warning(grounded, _survivor_spec.spec_id)) is not None:
         state.warnings.append(omitted)
-    _obs_svs, _obs_entities = grounded.cand_obs_entities.get(_survivor_spec.spec_id, ([], {}))
-    _bulk_scope = grounded.cand_bulk_scope.get(_survivor_spec.spec_id)
     _preview = PreviewRead(
-        sv_dcids=tuple(_obs_svs),
-        obs_entities=_obs_entities,
-        plan=_plan,
+        sv_dcids=tuple(_entry.sv_dcids),
+        obs_entities=_entry.obs_entities,
+        plan=_entry.plan,
         # A ref-form unit filters literally; a request converts.
         facet_filter=None if state.unit_request is not None else state.unit_facet_filter,
-        bulk_places=_bulk_scope.places if _bulk_scope is not None else None,
-        member_facts=grounded.cand_candidates[_survivor_spec.spec_id].mat.member_facts,
+        bulk_places=_entry.bulk_scope.places if _entry.bulk_scope is not None else None,
+        member_facts=_survivor.mat.member_facts,
         unit_request=state.unit_request,
-        elected=grounded.cand_elected.get(_survivor_spec.spec_id),
+        elected=_entry.elected,
     )
     _reader = PreviewReader(
         read=_preview,
@@ -589,13 +553,12 @@ async def _assemble_definite(
     )
     try:
         # The related reads run beside the streamed preview and the options below.
-        _survivor_id = _survivor_spec.spec_id
         _related_read = related_read_for(
             state,
-            stat_vars=_obs_svs,
-            measure_partition=grounded.cand_measure_partitions.get(_survivor_id),
-            places=grounded.cand_places[_survivor_id].roles.roles,
-            arcs=grounded.cand_role_axis_facts[_survivor_id][0].sv_arc_facts,
+            stat_vars=_entry.sv_dcids,
+            measure_partition=_entry.measure_partition,
+            places=_survivor.place.roles.roles,
+            arcs=_survivor.shape.sv_arc_facts,
         )
         if state.bound_unit_outcome is not None:
             # State the unit lexicon version. A streamed answer also states its preview's
@@ -618,7 +581,9 @@ async def _assemble_definite(
         _options_t0 = now_ms()
         _survivor_spec = await _attach_candidate_slot_options(state, grounded, _survivor_spec)
         (_survivor_spec,) = await _attach_candidate_facet_options(state, grounded, [_survivor_spec])
-        _survivor_spec = await _attach_candidate_entity_options(state, grounded, _survivor_spec)
+        _survivor_spec, _entity_options_raw = await _attach_candidate_entity_options(
+            state, grounded, _survivor_spec
+        )
         state.timing["options"] = now_ms() - _options_t0
         _family = state.family_total_absent_departures((_survivor_spec,))
         # Place-option tasks run only when `materialise_graph` is available.
@@ -671,24 +636,33 @@ async def _assemble_definite(
         departure_facts={**state.departure_facts, **raised_facts(_family)},
         timing_by_step=dict(state.timing),
         llm_usage=state.var_usage,
-        slot_options_task=_make_slot_options_task(state, grounded, unique_specs),
+        slot_options_task=_make_slot_options_task(
+            state,
+            grounded,
+            unique_specs,
+            entity_options_raw=(
+                {_entry.spec_id: _entity_options_raw} if _entity_options_raw is not None else {}
+            ),
+        ),
         facet_probe=_candidate_facet_probe(state, grounded, unique_specs[0]),
-        slot_options_relaunch=_make_slot_options_relaunch(state, grounded, unique_specs[0]),
+        slot_options_relaunch=_make_slot_options_relaunch(
+            state, grounded, unique_specs[0], entity_options_raw=_entity_options_raw
+        ),
         place_options_task=_place_options_task,
         place_options_relaunch=(_relaunch_place_options_bound if _stream_place_options else None),
         observations_task=_obs_task,
         observations_relaunch=_obs_relaunch,
         preview_read=_preview,
-        member_population=grounded.cand_populations.get(_survivor_spec.spec_id),
-        answered_roles=grounded.cand_answered_roles[_survivor_spec.spec_id],
-        measure_partition=grounded.cand_measure_partitions.get(_survivor_spec.spec_id),
-        measure_siblings=grounded.cand_measure_siblings.get(_survivor_spec.spec_id, ()),
-        open_axis_facts=grounded.cand_open_axis_facts.get(_survivor_spec.spec_id, ()),
-        role_axis_facts=tuple(grounded.cand_role_axis_facts[_survivor_id][1]),
+        member_population=_entry.population,
+        answered_roles=_entry.answered_roles,
+        measure_partition=_entry.measure_partition,
+        measure_siblings=_entry.measure_siblings,
+        open_axis_facts=_entry.open_axis_facts,
+        role_axis_facts=_entry.role_axis_facts,
         # The members and plan its conversion offer reads, which a same-shape merge offers
         # conversions over (`RegionResult.served_members`).
-        served_members=_served_members,
-        served_plans=_served_plans,
+        served_members=_entry.served_members,
+        served_plans=_entry.served_plans,
     )
 
 
@@ -710,7 +684,7 @@ async def _assemble_candidate_set(
         spec.model_copy(
             update={
                 "resolved": spec.resolved.model_copy(
-                    update={"basis": grounded.cand_candidates[spec.spec_id].basis}
+                    update={"basis": grounded[spec.spec_id].candidate.basis}
                 )
             }
         )
@@ -725,14 +699,11 @@ async def _assemble_candidate_set(
     settle_candidate_set(
         state,
         [
-            (
-                grounded.cand_candidates[spec.spec_id].shape,
-                grounded.cand_candidates[spec.spec_id].bindings,
-            )
+            (grounded[spec.spec_id].candidate.shape, grounded[spec.spec_id].candidate.bindings)
             for spec in unique_specs
         ],
         served=[served_prices(spec) for spec in unique_specs],
-        uncovered=[grounded.cand_candidates[spec.spec_id].uncovered for spec in unique_specs],
+        uncovered=[grounded[spec.spec_id].candidate.uncovered for spec in unique_specs],
     )
     # State each candidate's unit lexicon version. Its identity already carries the binding,
     # and the outcome's warnings were merged earlier.
@@ -749,12 +720,12 @@ async def _assemble_candidate_set(
     _candidate_specs = await _attach_candidate_facet_options(state, grounded, unique_specs)
     for spec in _candidate_specs:
         note_denominator_unverified(
-            state, grounded.cand_candidates[spec.spec_id].shape, spec_id=spec.spec_id
+            state, grounded[spec.spec_id].candidate.shape, spec_id=spec.spec_id
         )
     state.warnings.extend(
         omitted
         for spec in _candidate_specs
-        if (omitted := grounded.cand_unit_omitted.get(spec.spec_id)) is not None
+        if (omitted := _unit_omitted_warning(grounded, spec.spec_id)) is not None
     )
     _family = state.family_total_absent_departures(_candidate_specs)
     return RegionResult(
@@ -775,10 +746,12 @@ async def _assemble_candidate_set(
         timing_by_step=dict(state.timing),
         llm_usage=state.var_usage,
         candidate_budget_truncated=candidate_budget_truncated,
-        slot_options_task=_make_slot_options_task(state, grounded, unique_specs),
-        answered_roles=grounded.cand_answered_roles[_candidate_specs[0].spec_id],
+        slot_options_task=_make_slot_options_task(
+            state, grounded, unique_specs, entity_options_raw={}
+        ),
+        answered_roles=grounded[_candidate_specs[0].spec_id].answered_roles,
         candidate_answered_roles=tuple(
-            grounded.cand_answered_roles[spec.spec_id] for spec in _candidate_specs
+            grounded[spec.spec_id].answered_roles for spec in _candidate_specs
         ),
     )
 
@@ -855,8 +828,8 @@ async def assemble_candidates(
 
     unique_specs = _fold_measure_sibling_candidates(
         unique_specs,
-        {spec_id: shape for spec_id, (shape, _, _) in grounded.cand_role_axis_facts.items()},
-        grounded.cand_measure_partitions,
+        {spec_id: entry.candidate.shape for spec_id, entry in grounded.entries.items()},
+        {spec_id: entry.measure_partition for spec_id, entry in grounded.entries.items()},
     )
 
     if (
@@ -883,7 +856,7 @@ async def assemble_candidates(
         unique_specs = [
             s
             for s in unique_specs
-            if serves_leg_quantity(state, grounded.cand_candidates[s.spec_id].shape)
+            if serves_leg_quantity(state, grounded[s.spec_id].candidate.shape)
         ]
         if not unique_specs:
             return await refuse_unserved_quantity(state)
@@ -895,9 +868,7 @@ async def assemble_candidates(
     if (
         len(unique_specs) == 1
         and _elected_left is not None
-        and not answers_for_the_elected_reading(
-            grounded.cand_candidates[unique_specs[0].spec_id].basis
-        )
+        and not answers_for_the_elected_reading(grounded[unique_specs[0].spec_id].candidate.basis)
     ):
         # A lone survivor reading another measure or direction does not answer by
         # elimination. The elected reading stands alone, and the definite path refuses
@@ -909,9 +880,8 @@ async def assemble_candidates(
     restate_scope_warning(
         state,
         [
-            grounded.cand_scopes[s.spec_id]
+            (grounded[s.spec_id].candidate.mat, grounded[s.spec_id].scope_members)
             for s in unique_specs
-            if s.spec_id in grounded.cand_scopes
         ],
     )
     if len(unique_specs) == 1:

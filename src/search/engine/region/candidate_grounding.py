@@ -9,7 +9,7 @@ import functools
 import logging
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass
 from typing import NamedTuple, cast
 
 from code_index.shared import get_index, get_measure_index
@@ -24,6 +24,7 @@ from search.engine.region.arcs import (
     inapplicable_slots_from_member_facts,
     unresolved_slots_from_member_facts,
 )
+from search.engine.region.bound_unit_gate import bound_unit_gate_reason, unit_served
 from search.engine.region.candidate_unit_election import (
     _candidate_unit_elections,
     _CandidateUnitElectionMemo,
@@ -71,7 +72,6 @@ from search.engine.region.option_coverage import (
     role_axis_facts_for_materialised,
     role_served_filter,
 )
-from search.engine.region.place_context import PlaceContext
 from search.engine.region.place_roles import request_named_groups
 from search.engine.region.requirements import answer_terms
 from search.engine.region.result import FacetAxisFilter, answered_roles
@@ -113,7 +113,6 @@ from search.engine.unit.refs import unit_currency
 from search.models import (
     Coverage,
     Entity,
-    EntityOptions,
     EntityRoleKey,
     Headline,
     IdentityFacetBinding,
@@ -138,6 +137,9 @@ class _CandidatePrep:
     the candidates that survive their unit elections (`candidates`), in input order."""
 
     candidates: list[_Candidate]
+    # Each candidate's observation entities by role and the warning their derivation raises
+    # (`_candidate_observation_entities`), derived once here for every reader.
+    obs_entities: list[tuple[dict[str, list[str]], Warning | None]]
 
     elected_raw: list[Mapping[str, tuple[Mapping[str, FacetSelection], ...]]]
     # Each candidate's definite unit refusals by StatVar (`CandidateUnitElections.refusals`).
@@ -148,11 +150,11 @@ class _CandidatePrep:
     # Each candidate under the request's facet filter (`filter_answer`), leaving out the rows
     # its conversion omits (`convertible_answer`).
     filtered: list[FilteredAnswer]
-    # What each candidate's elected conversion does to its rows, which the collapse's
-    # bound-unit filter reports, and the plan that filter's gate reads
-    # (`convertibility.unit_gate`).
+    # What each candidate's elected conversion does to its rows, and the bound-unit gate's
+    # verdict on the plan its answer serves once converted (`_CandidateConversion`), which
+    # the collapse's bound-unit filter reads.
     unit_coverage: list[UnitCoverage]
-    gate_plans: list[ReadPlan | None]
+    unit_gate_reasons: list[str | None]
     scope_members: list[list[str] | None]
     scope_labels: dict[str, str]
     scope_types: dict[str, str]
@@ -186,6 +188,7 @@ def _prepare_candidate_context(state: ResolveState, candidates: list[_Candidate]
     An alternate whose unit election raises `DatasetDisagreementError` is dropped with a
     warning, as an alternate whose mint raises it is; the elected shape's propagates.
     """
+    _cand_obs_entities = [_candidate_observation_entities(cand) for cand in candidates]
     if state.unit_request is not None:
         if state.materialise_graph is None or state.materialise_sdmx is None:
             raise EngineInfraError(
@@ -193,31 +196,21 @@ def _prepare_candidate_context(state: ResolveState, candidates: list[_Candidate]
                 "this bound unit request's own convertibility for the "
                 "also_plausible candidates fan-out"
             )
-        # Each election uses its candidate's probe places, a discovered scope's members once
-        # settled, and its role bindings.
-        _cand_role_bindings: list[dict[str, list[str]]] = []
-        for cand in candidates:
-            _dest_dcids, _origin_dcids = scope_axis_dcids(cand.mat, cand.place.probe_places)
-            _role_bindings, _ = _observation_entities(
-                cand.shape,
-                destination_dcids=_dest_dcids,
-                destination_dcid=cand.place.roles.obs_destination_dcid,
-                origin_dcids=_origin_dcids or cand.place.roles.origin_dcids,
-            )
-            _cand_role_bindings.append(_role_bindings)
+        # Each election binds its candidate's observation entities.
         _unit_election_memo: _CandidateUnitElectionMemo = {}
         # Share the request's coverage snapshot across every candidate election.
         _coverage_index = state.coverage.index
         _kept: list[_Candidate] = []
+        _kept_obs_entities: list[tuple[dict[str, list[str]], Warning | None]] = []
         _cand_elections = []
-        for cand_index, (cand, _role_bindings) in enumerate(
-            zip(candidates, _cand_role_bindings, strict=True)
+        for cand_index, (cand, observed) in enumerate(
+            zip(candidates, _cand_obs_entities, strict=True)
         ):
             try:
                 _election = _candidate_unit_elections(
                     cand.mat.sv_dcids,
                     unit_request=state.unit_request,
-                    role_bindings=_role_bindings,
+                    role_bindings=observed[0],
                     declared_roles=survivor_declared_roles(cand.mat),
                     probes=plan_probes(cand.mat.read_plan),
                     years=cand.mat.preview_years,
@@ -241,8 +234,10 @@ def _prepare_candidate_context(state: ResolveState, candidates: list[_Candidate]
                 )
                 continue
             _kept.append(cand)
+            _kept_obs_entities.append(observed)
             _cand_elections.append(_election)
         candidates = _kept
+        _cand_obs_entities = _kept_obs_entities
         _cand_elected_raw: list[Mapping[str, tuple[Mapping[str, FacetSelection], ...]]] = [
             e.elected for e in _cand_elections
         ]
@@ -285,12 +280,18 @@ def _prepare_candidate_context(state: ResolveState, candidates: list[_Candidate]
         )
 
     _cand_unit_coverage = [UnitCoverage() for _ in candidates]
-    _cand_gate_plans = [filtered.plan for filtered in _cand_filtered]
+    _cand_unit_gate_reasons: list[str | None] = [None for _ in candidates]
     if state.bound_unit_outcome is not None:
-        converted = _candidate_conversions(state, candidates, _cand_filtered, _cand_elected_raw)
+        converted = _candidate_conversions(
+            state,
+            candidates,
+            _cand_filtered,
+            _cand_elected_raw,
+            [entities for entities, _warning in _cand_obs_entities],
+        )
         _cand_filtered = [c.answer for c in converted]
         _cand_unit_coverage = [c.coverage for c in converted]
-        _cand_gate_plans = [c.gate_plan for c in converted]
+        _cand_unit_gate_reasons = [c.gate_reason for c in converted]
 
     _cand_scope_members = [
         stated_scope_members(cand.mat, filtered.plan)
@@ -303,13 +304,14 @@ def _prepare_candidate_context(state: ResolveState, candidates: list[_Candidate]
 
     return _CandidatePrep(
         candidates=candidates,
+        obs_entities=_cand_obs_entities,
         elected_raw=_cand_elected_raw,
         unit_refusals=_cand_unit_refusals,
         elected_units=_cand_elected_units,
         facets_in_elected_units=_cand_facets_in_elected_units,
         filtered=_cand_filtered,
         unit_coverage=_cand_unit_coverage,
-        gate_plans=_cand_gate_plans,
+        unit_gate_reasons=_cand_unit_gate_reasons,
         scope_members=_cand_scope_members,
         scope_labels=_cand_scope_labels,
         scope_types=_cand_scope_types,
@@ -334,12 +336,13 @@ def _candidate_observation_entities(
 @dataclass(frozen=True)
 class _CandidateConversion:
     """One candidate's answer once its elected conversion has run, what that conversion did
-    to its rows, and the plan the collapse's bound-unit gate reads: the answer's plan once
-    the conversion narrows it, else the plan `convertibility.unit_gate` read."""
+    to its rows, and the bound-unit gate's verdict (`bound_unit_gate_reason`): on the
+    answer's plan once the conversion narrows it, else the verdict
+    `convertibility.unit_gate` gave, None when the gate passes or no gate ran."""
 
     answer: FilteredAnswer
     coverage: UnitCoverage
-    gate_plan: ReadPlan | None
+    gate_reason: str | None
 
 
 def _candidate_conversions(
@@ -347,6 +350,7 @@ def _candidate_conversions(
     candidates: Sequence[_Candidate],
     filtered: Sequence[FilteredAnswer],
     elected: Sequence[Mapping[str, tuple[Mapping[str, FacetSelection], ...]]],
+    obs_entities: Sequence[Mapping[str, list[str]]],
 ) -> list[_CandidateConversion]:
     """Each candidate's conversion (`_CandidateConversion`), in input order.
 
@@ -358,20 +362,18 @@ def _candidate_conversions(
 
     def convert(index: int) -> _CandidateConversion:
         cand = candidates[index]
-        unconverted = _CandidateConversion(filtered[index], UnitCoverage(), filtered[index].plan)
         if cand.mat.available_at_place is False:
-            return unconverted
-        obs_entities, _warning = _candidate_observation_entities(cand)
+            return _CandidateConversion(filtered[index], UnitCoverage(), None)
         gate = unit_gate(
             cand.mat,
             filtered[index].plan,
             elected[index],
-            obs_entities,
+            obs_entities[index],
             graph=state.materialise_graph,
             deadline=state.deadline,
         )
         if gate.reason is not None:
-            return replace(unconverted, gate_plan=gate.plan)
+            return _CandidateConversion(filtered[index], UnitCoverage(), gate.reason)
         answer, coverage = convertible_answer(
             cand.mat,
             filtered[index],
@@ -384,8 +386,12 @@ def _candidate_conversions(
             date_request=state.date_request,
             coverage_index=state.coverage.index,
         )
-        gate_plan = answer.plan if answer is not filtered[index] else gate.plan
-        return _CandidateConversion(answer, coverage, gate_plan)
+        if answer is filtered[index]:
+            return _CandidateConversion(answer, coverage, gate.reason)
+        served = unit_served(elected[index], cand.mat.sv_dcids)
+        return _CandidateConversion(
+            answer, coverage, bound_unit_gate_reason(answer.plan, obs_entities[index], served)
+        )
 
     if len(candidates) < 2:
         return [convert(i) for i in range(len(candidates))]
@@ -419,6 +425,10 @@ class _CandidateGroundwork:
     stat_vars_member_count: int | None
     stat_vars_member_count_exact: bool
     entity_warnings: list[Warning]
+    # The entities the candidate's coverage probes bind by role
+    # (`coverage_probe_role_entities`), which its menus are counted over and its option
+    # probes read.
+    probe_entities: dict[str, list[str]]
     # The candidate's in-memory served test, None for a subject-place family.
     served_filter: RoleServedFilter | None
 
@@ -533,15 +543,16 @@ def _ground_one_candidate(
     # Count the menus over the candidate's own probe entities, as its probes read them. Its
     # identity binds a unit for a bound unit request or a twin's currency (`_finish_candidate`).
     facets_pinned = state.bound_unit_outcome is not None or _twin_unit_filter is not None
+    cand_probe_entities = coverage_probe_role_entities(
+        cand_shape,
+        cand_mat,
+        destination_dcids=cand.place.probe_places,
+        destination_dcid=cand.place.roles.obs_destination_dcid,
+        origin_dcids=cand.place.roles.origin_dcids,
+    )
     cand_served_filter = role_served_filter(
         cand_shape,
-        coverage_probe_role_entities(
-            cand_shape,
-            cand_mat,
-            destination_dcids=cand.place.probe_places,
-            destination_dcid=cand.place.roles.obs_destination_dcid,
-            origin_dcids=cand.place.roles.origin_dcids,
-        ),
+        cand_probe_entities,
         open_axes=cand.place.roles.open_axes,
         years=cand_mat.preview_years,
         coverage=state.coverage.index,
@@ -578,6 +589,7 @@ def _ground_one_candidate(
         stat_vars_member_count=cand_stat_vars_member_count,
         stat_vars_member_count_exact=cand_stat_vars_member_count_exact,
         entity_warnings=_cand_ground_warnings,
+        probe_entities=cand_probe_entities,
         served_filter=cand_served_filter,
     )
 
@@ -600,33 +612,91 @@ def _ground_each_candidate(
         return [future.result() for future in futures]
 
 
-@dataclass
+@dataclass(frozen=True)
 class _GroundedCandidate:
-    """A finished Spec and its candidate-specific collapse metadata."""
+    """One kept candidate's Spec and every fact the collapse and option probes read of it,
+    built once by `_finish_candidate`.
+
+    `spec` is the Spec as minted, with its unit conversion offer. The collapse rewrites the
+    Specs it is handed (basis, equivalent readings, options, lexicon version) under the same
+    `spec_id`, so it reads only the facts here and never `spec`.
+    """
 
     spec: Spec
+    candidate: _Candidate
     is_elected: bool
-    score: float | None
-    retrieved: bool
-    population: MemberPopulation | None
-    confirmed_facets: list[Facet]
-    role_axis_facts: tuple[ShapeDraft, list[RoleAxisFactInput], list[str] | None]
+    plan: ReadPlan | None
+    # The members the Spec serves, which its unit conversion offer reads with `plan`, and a
+    # definite survivor's region states (`RegionResult.served_members`).
+    served_members: tuple[MemberFacts, ...]
+    # Every facet the candidate's StatVars hold under the unit filter
+    # (`_CandidateGroundwork.confirmed_facets`), which the collapse compares provenance sets
+    # from. No answer cites them.
+    confirmed_facets: tuple[Facet, ...]
+    obs_entities: Mapping[str, list[str]]
+    probe_entities: Mapping[str, list[str]]
+    # The uncounted slot menus the option probes count, kept only when the request reads
+    # them.
+    probe_slot_options: tuple[SlotOptions, ...] | None
+    role_axis_facts: tuple[RoleAxisFactInput, ...]
     measure_partition: MeasurePartition | None
+    # The sibling partitions and open constraint axes a definite survivor's region carries,
+    # so a same-shape merge re-mints its measure label.
     measure_siblings: tuple[MeasurePartition, ...]
     open_axis_facts: tuple[OpenAxisFact, ...]
-    probe_entities: dict[str, list[str]]
-    probe_inputs: (
-        tuple[ShapeDraft, list[SlotBindingDraft], list[SlotOptions], list[str] | None] | None
-    )
-    obs_entities: tuple[list[str], dict[str, list[str]]]
-    elected_raw: Mapping[str, tuple[Mapping[str, FacetSelection], ...]]
     bulk_scope: BulkScope | None
-    plan: ReadPlan | None
-    # The members the Spec serves, which its unit conversion offer reads with `plan`.
-    served_members: tuple[MemberFacts, ...]
-    flags: _CarrierFlags
-    obs_warning: Warning | None
-    place: PlaceContext
+    # The scope the Spec lists (`_CandidatePrep.scope_members`), which the discovered-scope
+    # warning counts for the candidates a response keeps.
+    scope_members: tuple[str, ...] | None
+    # The candidate's unit elections by StatVar, empty with no unit request.
+    elected: Mapping[str, tuple[Mapping[str, FacetSelection], ...]]
+    # The candidate's definite unit refusals by StatVar, its election's and its
+    # conversion's (`UnitCoverage.refusal`), which answer a bound unit no candidate serves.
+    unit_refusals: Mapping[str, MaterialisationError]
+    unit_coverage: UnitCoverage
+    # The bound-unit gate's verdict on the plan its answer serves (`_CandidateConversion`).
+    unit_gate_reason: str | None
+
+    @property
+    def spec_id(self) -> str:
+        return self.spec.spec_id
+
+    @property
+    def sv_dcids(self) -> list[str]:
+        return self.candidate.mat.sv_dcids
+
+    @property
+    def population(self) -> MemberPopulation | None:
+        return self.candidate.mat.population
+
+    @property
+    def answered_roles(self) -> tuple[str, ...]:
+        """The roles the Spec answers under: those its candidate shape declares."""
+        return answered_roles(self.candidate.shape)
+
+    @property
+    def served_plans(self) -> tuple[ReadPlan, ...]:
+        return (self.plan,) if self.plan is not None else ()
+
+    @property
+    def serves_bound_unit(self) -> bool:
+        """Whether the answer passes the bound-unit gate and every row it serves converts."""
+        return self.unit_gate_reason is None and self.unit_coverage.refusal is None
+
+    @property
+    def probe_inputs(
+        self,
+    ) -> tuple[ShapeDraft, list[SlotBindingDraft], list[SlotOptions], list[str]] | None:
+        """The shape, bindings, uncounted menus and flat probe entities the slot-option
+        probes read, None when the request reads none."""
+        if self.probe_slot_options is None:
+            return None
+        return (
+            self.candidate.shape,
+            self.candidate.bindings,
+            list(self.probe_slot_options),
+            _flat_obs_entities(self.probe_entities),
+        )
 
 
 class _CarrierFlags(NamedTuple):
@@ -740,9 +810,6 @@ def _finish_candidate(
         sole_reading=cand_is_elected and state.status_plan.sole,
         retrieved=cand_shape.retrieved,
     )
-    # Probe the candidate's own places: its resolved region members, default scope or
-    # discovered members.
-    cand_destination_dcids = cand.place.probe_places
     # Keep uncovered slot options here. Probe coverage after dedupe and no-data filtering.
     cand_scope_member_dcids = prep.scope_members[cand_index]
     cand_scope = (
@@ -847,112 +914,69 @@ def _finish_candidate(
         members=cand_served_members,
         plans=(groundwork.plan,) if groundwork.plan is not None else (),
     )
-    cand_flags = _carrier_flags(cand, elected=cand_is_elected)
-
-    cand_places = cand.place.roles
-    _cand_probe_role_entities = coverage_probe_role_entities(
-        cand_shape,
-        cand_mat,
-        destination_dcids=cand_destination_dcids,
-        destination_dcid=cand_places.obs_destination_dcid,
-        origin_dcids=cand_places.origin_dcids,
+    # `build_spec` mints the Spec as `answer`, so it holds the id the dedup checked.
+    assert cand_spec.spec_id == answer.identity.spec_id, (
+        cand_spec.spec_id,
+        answer.identity.spec_id,
     )
-    # Retain inputs for both buffered and SSE probes.
-    cand_probe_inputs = (
-        (
-            cand_shape,
-            cand_bindings,
-            groundwork.slot_options_raw,
-            _flat_obs_entities(_cand_probe_role_entities),
-        )
-        if state.stream_slot_options or state.include_option_coverage
-        else None
-    )
-    cand_obs_entities, cand_obs_warn = _candidate_observation_entities(cand)
-    cand_bulk_scope = bulk_scope_for(cand.place, cand_mat, sdmx=state.sdmx)
-
+    coverage = prep.unit_coverage[cand_index]
+    unit_refusals = dict(prep.unit_refusals[cand_index])
+    if coverage.refusal is not None:
+        refused_sv, refusal = coverage.refusal
+        unit_refusals[refused_sv] = refusal
     return _GroundedCandidate(
         spec=cand_spec,
+        candidate=cand,
         is_elected=cand_is_elected,
-        score=cand_shape.representative_score,
-        retrieved=cand_shape.retrieved,
-        population=cand_mat.population,
-        confirmed_facets=groundwork.confirmed_facets,
-        role_axis_facts=(cand_shape, cand_role_axis_facts, cand_destination_dcids),
+        plan=groundwork.plan,
+        served_members=tuple(cand_served_members),
+        confirmed_facets=tuple(groundwork.confirmed_facets),
+        obs_entities=prep.obs_entities[cand_index][0],
+        probe_entities=groundwork.probe_entities,
+        # Retain inputs for both buffered and SSE probes.
+        probe_slot_options=(
+            tuple(groundwork.slot_options_raw)
+            if state.stream_slot_options or state.include_option_coverage
+            else None
+        ),
+        role_axis_facts=tuple(cand_role_axis_facts),
         measure_partition=cand_measure_partition,
         measure_siblings=cand_measure_siblings,
         open_axis_facts=cand_open_axis_facts,
-        probe_entities=_cand_probe_role_entities,
-        probe_inputs=cand_probe_inputs,
-        obs_entities=(list(cand_mat.sv_dcids), cand_obs_entities),
-        elected_raw=prep.elected_raw[cand_index],
-        bulk_scope=cand_bulk_scope,
-        plan=groundwork.plan,
-        served_members=tuple(cand_served_members),
-        flags=cand_flags,
-        obs_warning=cand_obs_warn,
-        place=cand.place,
+        bulk_scope=bulk_scope_for(cand.place, cand_mat, sdmx=state.sdmx),
+        scope_members=(
+            tuple(cand_scope_member_dcids) if cand_scope_member_dcids is not None else None
+        ),
+        elected=prep.elected_raw[cand_index],
+        unit_refusals=unit_refusals,
+        unit_coverage=coverage,
+        unit_gate_reason=prep.unit_gate_reasons[cand_index],
     )
 
 
-@dataclass
+@dataclass(frozen=True)
 class _GroundedCandidates:
-    """Deduped candidate Specs and ``spec_id``-keyed data for collapse and option probes.
+    """The kept candidates' records (`_GroundedCandidate`) by `spec_id`, one per Spec, in
+    candidate order. ``answer_t0`` excludes context preparation from answer timing."""
 
-    Spec order follows the candidates'. ``answer_t0`` excludes context preparation
-    from answer timing.
-    """
-
-    specs: list[Spec]
-    elected_spec_id: str | None
-    cand_scores: dict[str, float | None]
-    cand_retrieved: dict[str, bool]
-    cand_populations: dict[str, MemberPopulation | None]
-    cand_probe_inputs: dict[
-        str, tuple[ShapeDraft, list[SlotBindingDraft], list[SlotOptions], list[str] | None]
-    ]
-    cand_role_axis_facts: dict[str, tuple[ShapeDraft, list[RoleAxisFactInput], list[str] | None]]
-    cand_entity_options_raw: dict[str, list[EntityOptions]]
-    cand_measure_partitions: dict[str, MeasurePartition | None]
-    # Each candidate's sibling partitions and open constraint axes, which a definite
-    # survivor's region carries so a same-shape merge re-mints its measure label.
-    cand_measure_siblings: dict[str, tuple[MeasurePartition, ...]]
-    cand_open_axis_facts: dict[str, tuple[OpenAxisFact, ...]]
-    cand_obs_entities: dict[str, tuple[list[str], dict[str, list[str]]]]
-    cand_probe_entities: dict[str, dict[str, list[str]]]
-    cand_elected: dict[str, Mapping[str, tuple[Mapping[str, FacetSelection], ...]]]
-    cand_bulk_scope: dict[str, BulkScope]
-    cand_plans: dict[str, ReadPlan]
-    # Each candidate's confirmed facets (`_CandidateGroundwork.confirmed_facets`), which the
-    # collapse compares provenance sets from. No answer cites them.
-    cand_confirmed_facets: dict[str, list[Facet]]
-    cand_answered_roles: dict[str, tuple[str, ...]]
-    """The roles each Spec answers under: those its candidate shape declares."""
-    # Each candidate's place context, settled on its materialised result.
-    cand_places: dict[str, PlaceContext]
+    entries: Mapping[str, _GroundedCandidate]
     answer_t0: int
-    # Each candidate's carrier and the scope its Spec lists (`_CandidateContext.scope_members`),
-    # which the discovered-scope warning counts for the candidates a response keeps.
-    cand_scopes: dict[str, tuple[Materialised, list[str] | None]] = field(default_factory=dict)
-    # Each Spec's candidate (shape, bindings, materialised result and place context) and its
-    # definite unit refusals by StatVar, which answer a bound unit no candidate serves.
-    cand_candidates: dict[str, _Candidate] = field(default_factory=dict)
-    cand_unit_refusals: dict[str, Mapping[str, MaterialisationError]] = field(default_factory=dict)
-    # What each Spec's elected conversion does to its rows (`_CandidatePrep.unit_coverage`),
-    # and the plan its bound-unit gate reads (`_CandidatePrep.gate_plans`).
-    cand_unit_coverage: dict[str, UnitCoverage] = field(default_factory=dict)
-    cand_gate_plans: dict[str, ReadPlan | None] = field(default_factory=dict)
-    # The members each Spec serves, which its conversion offer reads and a definite
-    # survivor's region states (`RegionResult.served_members`).
-    cand_served_members: dict[str, tuple[MemberFacts, ...]] = field(default_factory=dict)
-    # Each passing candidate's `currency_unmapped_omitted` warning, stamped with its Spec, for
-    # the response that keeps it.
-    cand_unit_omitted: dict[str, Warning] = field(default_factory=dict)
+
+    def __getitem__(self, spec_id: str) -> _GroundedCandidate:
+        return self.entries[spec_id]
+
+    @property
+    def specs(self) -> list[Spec]:
+        return [entry.spec for entry in self.entries.values()]
+
+    @property
+    def elected_spec_id(self) -> str | None:
+        return next((spec_id for spec_id, e in self.entries.items() if e.is_elected), None)
 
 
 def scopes_on_axis(
     candidates: Sequence[Materialised],
-    scope_members: Sequence[list[str] | None],
+    scope_members: Sequence[Sequence[str] | None],
     *,
     axis: EntityRoleKey,
 ) -> set[frozenset[str]]:
@@ -968,7 +992,7 @@ def scopes_on_axis(
 
 
 def restate_scope_warning(
-    state: ResolveState, scopes: Sequence[tuple[Materialised, list[str] | None]]
+    state: ResolveState, scopes: Sequence[tuple[Materialised, Sequence[str] | None]]
 ) -> None:
     """Restate the elected shape's discovered-scope warning for the candidates a response
     states, each given as its carrier and the scope its Spec lists
@@ -1035,58 +1059,15 @@ def ground_candidates(state: ResolveState, candidates: list[_Candidate]) -> _Gro
         alternative.basis in ("structural", "nominated") for alternative in state.status_plan.rivals
     )
 
-    specs: list[Spec] = []
-    seen_spec_ids: set[str] = set()
-    elected_spec_id: str | None = None
-    cand_scores: dict[str, float | None] = {}
-    cand_retrieved: dict[str, bool] = {}
-    cand_populations: dict[str, MemberPopulation | None] = {}
-    cand_confirmed_facets: dict[str, list[Facet]] = {}
-    cand_role_axis_facts: dict[
-        str, tuple[ShapeDraft, list[RoleAxisFactInput], list[str] | None]
-    ] = {}
-    cand_measure_partitions: dict[str, MeasurePartition | None] = {}
-    cand_measure_siblings: dict[str, tuple[MeasurePartition, ...]] = {}
-    cand_open_axis_facts: dict[str, tuple[OpenAxisFact, ...]] = {}
-    cand_probe_entities: dict[str, dict[str, list[str]]] = {}
-    cand_probe_inputs: dict[
-        str, tuple[ShapeDraft, list[SlotBindingDraft], list[SlotOptions], list[str] | None]
-    ] = {}
-    cand_obs_entities: dict[str, tuple[list[str], dict[str, list[str]]]] = {}
-    cand_elected: dict[str, Mapping[str, tuple[Mapping[str, FacetSelection], ...]]] = {}
-    cand_bulk_scope: dict[str, BulkScope] = {}
-    cand_answered_roles: dict[str, tuple[str, ...]] = {}
-    cand_plans: dict[str, ReadPlan] = {}
-    cand_scopes: dict[str, tuple[Materialised, list[str] | None]] = {}
-    cand_places: dict[str, PlaceContext] = {}
-    cand_candidates: dict[str, _Candidate] = {}
-    cand_unit_refusals: dict[str, Mapping[str, MaterialisationError]] = {}
-    cand_unit_coverage: dict[str, UnitCoverage] = {}
-    cand_gate_plans: dict[str, ReadPlan | None] = {}
-    cand_served_members: dict[str, tuple[MemberFacts, ...]] = {}
-    role_unverified = False
-    membership_unverified = False
-    open_origin_defaulted = False
-    obs_warnings: list[Warning] = []
-    entity_warnings: list[Warning] | None = None
-
     groundworks = _ground_each_candidate(state, candidates, prep)
+    entries: dict[str, _GroundedCandidate] = {}
     for cand_index, (cand, groundwork) in enumerate(zip(candidates, groundworks, strict=True)):
         answer = _candidate_answer(state, cand_index, cand, groundwork, prep)
-        spec_id = answer.identity.spec_id
         # A candidate whose Spec an earlier one holds adds no Spec or record, and its Spec is
-        # not assembled. Its own reads still speak for the answer, so the flags and the
-        # observation warning they raise are kept. It follows the candidate it repeats, so it
-        # is never the elected one.
-        if spec_id in seen_spec_ids:
-            flags = _carrier_flags(cand, elected=False)
-            role_unverified = role_unverified or flags.role_declaration_unverified
-            open_origin_defaulted = open_origin_defaulted or flags.open_origin_defaulted
-            membership_unverified = membership_unverified or flags.membership_unverified
-            if (obs_warning := _candidate_observation_entities(cand)[1]) is not None:
-                obs_warnings.append(obs_warning)
+        # not assembled. It follows the candidate it repeats, so it is never the elected one.
+        if answer.identity.spec_id in entries:
             continue
-        grounded = _finish_candidate(
+        entry = _finish_candidate(
             state,
             cand_index,
             cand,
@@ -1100,86 +1081,37 @@ def ground_candidates(state: ResolveState, candidates: list[_Candidate]) -> _Gro
             rivalled=rivalled,
             answer=answer,
         )
-        # `build_spec` mints the Spec as `answer`, so it holds the id checked above.
-        assert grounded.spec.spec_id == spec_id, (grounded.spec.spec_id, spec_id)
-        if entity_warnings is None:
-            entity_warnings = groundwork.entity_warnings
-        if grounded.is_elected:
-            elected_spec_id = spec_id
-        role_unverified = role_unverified or grounded.flags.role_declaration_unverified
-        open_origin_defaulted = open_origin_defaulted or grounded.flags.open_origin_defaulted
-        membership_unverified = membership_unverified or grounded.flags.membership_unverified
-        if grounded.obs_warning is not None:
-            obs_warnings.append(grounded.obs_warning)
-        seen_spec_ids.add(spec_id)
-        specs.append(grounded.spec)
-        cand_answered_roles[spec_id] = answered_roles(cand.shape)
+        entries[entry.spec_id] = entry
         if cand.mat.family_total_absent is not None:
-            state.family_total_absent[spec_id] = cand.mat.family_total_absent
-        cand_scores[spec_id] = grounded.score
-        cand_retrieved[spec_id] = grounded.retrieved
-        cand_populations[spec_id] = grounded.population
-        cand_confirmed_facets[spec_id] = grounded.confirmed_facets
-        cand_role_axis_facts[spec_id] = grounded.role_axis_facts
-        cand_measure_partitions[spec_id] = grounded.measure_partition
-        cand_measure_siblings[spec_id] = grounded.measure_siblings
-        cand_open_axis_facts[spec_id] = grounded.open_axis_facts
-        cand_probe_entities[spec_id] = grounded.probe_entities
-        if grounded.probe_inputs is not None:
-            cand_probe_inputs[spec_id] = grounded.probe_inputs
-        cand_obs_entities[spec_id] = grounded.obs_entities
-        cand_elected[spec_id] = grounded.elected_raw
-        if grounded.bulk_scope is not None:
-            cand_bulk_scope[spec_id] = grounded.bulk_scope
-        if grounded.plan is not None:
-            cand_plans[spec_id] = grounded.plan
-        cand_scopes[spec_id] = (cand.mat, prep.scope_members[cand_index])
-        cand_places[spec_id] = grounded.place
-        cand_candidates[spec_id] = cand
-        cand_unit_refusals[spec_id] = prep.unit_refusals[cand_index]
-        cand_unit_coverage[spec_id] = prep.unit_coverage[cand_index]
-        cand_gate_plans[spec_id] = prep.gate_plans[cand_index]
-        cand_served_members[spec_id] = grounded.served_members
+            state.family_total_absent[entry.spec_id] = cand.mat.family_total_absent
 
-    state.warnings.extend(obs_warnings)
-    if entity_warnings:
-        state.warnings.extend(entity_warnings)
-    # Aggregate alternate carrier flags so each warning appears once.
+    _warn_for_candidates(state, prep, groundworks)
+    return _GroundedCandidates(entries=entries, answer_t0=answer_t0)
+
+
+def _warn_for_candidates(
+    state: ResolveState, prep: _CandidatePrep, groundworks: Sequence[_CandidateGroundwork]
+) -> None:
+    """Add the warnings the candidates' own reads raise, once each, over every candidate
+    that survives its unit election, a duplicate of a kept Spec included, since its reads
+    speak for the answer too: each observation warning in candidate order, the first
+    candidate's entity warnings, and one warning per carrier flag any candidate raises
+    (`_carrier_flags`)."""
+    state.warnings.extend(
+        warning for _entities, warning in prep.obs_entities if warning is not None
+    )
+    if groundworks:
+        state.warnings.extend(groundworks[0].entity_warnings)
+    flags = [
+        _carrier_flags(cand, elected=cand_index == 0 and state.elected_has_data)
+        for cand_index, cand in enumerate(prep.candidates)
+    ]
     state.warnings.extend(
         carrier_flag_warnings(
-            role_declaration_unverified=role_unverified,
-            open_origin_defaulted=open_origin_defaulted,
+            role_declaration_unverified=any(f.role_declaration_unverified for f in flags),
+            open_origin_defaulted=any(f.open_origin_defaulted for f in flags),
             # The elected shape's own unsettled membership already warned at binding.
-            membership_unverified=membership_unverified
+            membership_unverified=any(f.membership_unverified for f in flags)
             and all(warning.code != MEMBERSHIP_UNVERIFIED for warning in state.warnings),
         )
-    )
-
-    return _GroundedCandidates(
-        specs=specs,
-        elected_spec_id=elected_spec_id,
-        cand_scores=cand_scores,
-        cand_retrieved=cand_retrieved,
-        cand_populations=cand_populations,
-        cand_probe_inputs=cand_probe_inputs,
-        cand_role_axis_facts=cand_role_axis_facts,
-        cand_entity_options_raw={},
-        cand_measure_partitions=cand_measure_partitions,
-        cand_measure_siblings=cand_measure_siblings,
-        cand_open_axis_facts=cand_open_axis_facts,
-        cand_obs_entities=cand_obs_entities,
-        cand_probe_entities=cand_probe_entities,
-        cand_elected=cand_elected,
-        cand_bulk_scope=cand_bulk_scope,
-        cand_plans=cand_plans,
-        cand_confirmed_facets=cand_confirmed_facets,
-        cand_answered_roles=cand_answered_roles,
-        cand_places=cand_places,
-        answer_t0=answer_t0,
-        cand_scopes=cand_scopes,
-        cand_candidates=cand_candidates,
-        cand_unit_refusals=cand_unit_refusals,
-        cand_unit_coverage=cand_unit_coverage,
-        cand_gate_plans=cand_gate_plans,
-        cand_served_members=cand_served_members,
     )
