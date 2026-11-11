@@ -144,7 +144,7 @@ version's stored frame from any tier holding its bytes and counts each role colu
 `output_profile` column and in the `output_profile` of its `immutable_body`, written under the
 version's link lock (`version_store.lock_version_links`) and only over the profile it was
 counted from; the body's other keys and every other entry keep their place and value, and a new
-entry takes its place by the roles the mint declared. A missing ref is named by a label the
+entry takes its place by the profile's own role columns. A missing ref is named by a label the
 profile already holds, since the task reads no graph. A row whose frame no tier holds stays as
 it is. A second run changes nothing. It writes one `datasets_party_kind_backfill_failed`
 `ERROR` line per version that fails and one `datasets_party_kind_backfilled` line counting each
@@ -1834,24 +1834,17 @@ def _versions_with_profile(store: DatasetStore, *, after: tuple[str, str]) -> li
 
 def _stored_profile(
     tx: Transaction, subject_id: str, content_version: str
-) -> tuple[dict[str, object], tuple[str, ...]] | None:
-    """The `output_profile` column of one version row and the roles its mint declared, in
-    order, as its `coverage` lists them before `years` (`columnar.coverage`). `None` for a
-    row no longer recorded or holding no profile."""
+) -> dict[str, object] | None:
+    """The `output_profile` column of one version row, `None` for a row no longer recorded
+    or holding no profile."""
     row = tx.fetch_one(
-        "SELECT output_profile, coverage FROM datasets.version_record "
+        "SELECT output_profile FROM datasets.version_record "
         "WHERE subject_id = %s AND content_version = %s",
         (subject_id, content_version),
     )
     if row is None or row["output_profile"] is None:
         return None
-    coverage = cast("Mapping[str, Any]", row["coverage"] or {})
-    declared = tuple(
-        str(dimension["label"])
-        for dimension in coverage.get("dimensions", ())
-        if dimension["label"] != "years"
-    )
-    return cast("dict[str, object]", row["output_profile"]), declared
+    return cast("dict[str, object]", row["output_profile"])
 
 
 def _backfill_party_kind_of(
@@ -1871,13 +1864,12 @@ def _backfill_party_kind_of(
     it, so a profile any writer changed meanwhile stays. The write takes the version's link
     lock (`version_store.lock_version_links`), as the coverage fill does, and sets the body's
     `output_profile` key alone, so it keeps every other writer's change to the body. A new
-    entry takes its place by the roles the mint declared. `None` for a row no longer
+    entry takes its place by the profile's own role columns. `None` for a row no longer
     recorded."""
     with store.transaction() as tx:
-        stored = _stored_profile(tx, subject_id, content_version)
-    if stored is None:
+        profile_json = _stored_profile(tx, subject_id, content_version)
+    if profile_json is None:
         return None
-    profile_json, declared = stored
     frame = _stored_frame(
         artifact_store, reader.read_artifact_locations(subject_id, content_version)
     )
@@ -1887,7 +1879,6 @@ def _backfill_party_kind_of(
         OutputProfile.from_json(profile_json),
         lambda: iter((frame,)),
         parties=parties,
-        declared_roles=declared,
     ).to_json()
     if OutputProfile.from_json(refreshed) == OutputProfile.from_json(profile_json):
         return PartyKindOutcome.UNCHANGED

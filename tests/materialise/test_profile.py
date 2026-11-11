@@ -762,10 +762,10 @@ def test_a_party_whose_kind_differs_by_dataset_is_covered_where_every_layout_fil
 def test_a_recount_that_changes_nothing_keeps_every_entry_where_it_stands(
     columns: tuple[str, ...],
 ):
-    """A mint orders a profile's entries by its declared roles, here the reverse of the
-    frame's columns. Recounting `party_kind` over the same frame and party rows returns the
-    profile unchanged, entry order included, with or without a `provenance` column, and
-    writes entries a profile lacked in that order."""
+    """A mint writes a profile's entries in the frame's column order, whatever order its role
+    columns are given in, here the reverse. Recounting `party_kind` over the same frame and
+    party rows returns the profile unchanged, entry order included, with or without a
+    `provenance` column, and writes entries a profile lacked in that order."""
     party = PartyRow(
         dcid="org/X",
         kind="party",
@@ -795,8 +795,8 @@ def test_a_recount_that_changes_nothing_keeps_every_entry_where_it_stands(
         parties=parties,
     )
     assert [entry.column for entry in profile.enrichments if entry.field == "party_kind"] == [
-        "financingRecipient",
         "financingProvider",
+        "financingRecipient",
     ]
 
     without_kinds = replace(
@@ -805,12 +805,4 @@ def test_a_recount_that_changes_nothing_keeps_every_entry_where_it_stands(
     )
 
     for stored in (profile, without_kinds):
-        assert (
-            with_party_kind_coverage(
-                stored,
-                lambda: iter((table,)),
-                parties=parties,
-                declared_roles=("financingRecipient", "financingProvider"),
-            )
-            == profile
-        )
+        assert with_party_kind_coverage(stored, lambda: iter((table,)), parties=parties) == profile

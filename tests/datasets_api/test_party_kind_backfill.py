@@ -16,7 +16,7 @@ from datasets_api.maintenance import run_backfill_party_kind_coverage
 
 from . import test_serve_party_totals as party_totals
 from ._artifact_doubles import FakeArtifactStore
-from .test_version_file_selector import _PartyRig
+from .test_version_file_selector import _cut_family_code_index, _cut_with_groupby, _PartyRig
 
 _OTHER_DATASET = "provenance/OtherTable"
 
@@ -346,3 +346,36 @@ def test_a_version_that_fails_is_logged_and_left_alone_and_the_task_exits_1(monk
 class _Settings:
     artifact_bucket_working: str = "working-bucket"
     artifact_bucket_pinned: str = "pinned-bucket"
+
+
+def test_a_collapse_keeping_a_code_axis_is_counted_over_its_own_role_columns(capsys):
+    """A groupby that sums and keeps a code axis mints a derived version whose frame holds
+    `stat_var_testAxis` as a role column its base never declared. Recounting it reads the
+    profile's own role columns, so it changes nothing and fails no version."""
+    _, _, version_store, artifact_store, cut, _ = _cut_with_groupby(
+        ["recipient", "testAxis"], flow_summable=True, output={"format": "parquet", "bundle": False}
+    )
+    with version_store.transaction() as tx:
+        row = tx.fetch_one(
+            "SELECT output_profile FROM datasets.version_record WHERE content_version = %s",
+            (cut["content_version"],),
+        )
+    assert row is not None
+    assert "stat_var_testAxis" in [
+        column["name"] for column in row["output_profile"]["columns"] if column["kind"] == "role"
+    ]
+    capsys.readouterr()
+
+    failed = run_backfill_party_kind_coverage(
+        store=version_store,
+        artifact_store=artifact_store,
+        parties=_cut_family_code_index(flow_summable=True).parties,
+        dry_run=False,
+    )
+
+    [counts] = [
+        line
+        for line in map(json.loads, capsys.readouterr().out.splitlines())
+        if line.get("event") == "datasets_party_kind_backfilled"
+    ]
+    assert (failed, counts["refreshed"], counts["unchanged"]) == (0, 0, 2)
