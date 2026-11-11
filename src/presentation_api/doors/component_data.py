@@ -105,7 +105,7 @@ def add_component_data_route(
                 "`data/{slug}-all-members.{format}`: the frame's rows at the periods the card "
                 "shows for every member with a value there, totals included. Its description "
                 "names a party role's kind column where a row is a total, and the place "
-                "role's type column where the rows hold more than one place type. The frame "
+                "role's type column where the rows' places sit at more than one level. The frame "
                 "bounds that file, at most 250,000 rows.",
                 "content": {media_type: {} for media_type in COMPONENT_DATA_MEDIA_TYPES},
             }

@@ -95,6 +95,7 @@ from search.engine.retrieval.bound_values import (
     slot_expansions,
 )
 from search.engine.retrieval.elected_dataset import elected_datasets
+from search.engine.retrieval.member_facts import MemberFacts
 from search.engine.retrieval.read_plan import ReadPlan, plan_probes
 from search.engine.retrieval.retrieve import Materialised, MemberPopulation
 from search.engine.shape import ShapeDraft
@@ -621,11 +622,33 @@ class _GroundedCandidate:
     elected_raw: Mapping[str, tuple[Mapping[str, FacetSelection], ...]]
     bulk_scope: BulkScope | None
     plan: ReadPlan | None
+    # The members the Spec serves, which its unit conversion offer reads with `plan`.
+    served_members: tuple[MemberFacts, ...]
+    flags: _CarrierFlags
+    obs_warning: Warning | None
+    place: PlaceContext
+
+
+class _CarrierFlags(NamedTuple):
+    """What a candidate's own reads left unsettled, which the response warns of once
+    (`grounding.carrier_flag_warnings`). The elected candidate's warned at binding, so its
+    flags are all False."""
+
     role_declaration_unverified: bool
     open_origin_defaulted: bool
     membership_unverified: bool
-    obs_warning: Warning | None
-    place: PlaceContext
+
+
+def _carrier_flags(cand: _Candidate, *, elected: bool) -> _CarrierFlags:
+    """The flags candidate `cand`'s materialised result raises (`_CarrierFlags`)."""
+    if elected:
+        return _CarrierFlags(False, False, False)
+    return _CarrierFlags(
+        role_declaration_unverified=cand.mat.role_declaration_unverified,
+        open_origin_defaulted=cand.mat.open_origin_dcids is not None
+        and "origin" not in cand.place.roles.unnamed_wholes,
+        membership_unverified=cand.mat.membership_unverified,
+    )
 
 
 class _CandidateAnswer(NamedTuple):
@@ -824,14 +847,7 @@ def _finish_candidate(
         members=cand_served_members,
         plans=(groundwork.plan,) if groundwork.plan is not None else (),
     )
-    cand_role_declaration_unverified = (
-        False if cand_is_elected else cand_mat.role_declaration_unverified
-    )
-    cand_open_origin_defaulted = (
-        not cand_is_elected
-        and cand_mat.open_origin_dcids is not None
-        and "origin" not in cand.place.roles.unnamed_wholes
-    )
+    cand_flags = _carrier_flags(cand, elected=cand_is_elected)
 
     cand_places = cand.place.roles
     _cand_probe_role_entities = coverage_probe_role_entities(
@@ -872,9 +888,8 @@ def _finish_candidate(
         elected_raw=prep.elected_raw[cand_index],
         bulk_scope=cand_bulk_scope,
         plan=groundwork.plan,
-        role_declaration_unverified=cand_role_declaration_unverified,
-        open_origin_defaulted=cand_open_origin_defaulted,
-        membership_unverified=False if cand_is_elected else cand_mat.membership_unverified,
+        served_members=tuple(cand_served_members),
+        flags=cand_flags,
         obs_warning=cand_obs_warn,
         place=cand.place,
     )
@@ -927,6 +942,9 @@ class _GroundedCandidates:
     # and the plan its bound-unit gate reads (`_CandidatePrep.gate_plans`).
     cand_unit_coverage: dict[str, UnitCoverage] = field(default_factory=dict)
     cand_gate_plans: dict[str, ReadPlan | None] = field(default_factory=dict)
+    # The members each Spec serves, which its conversion offer reads and a definite
+    # survivor's region states (`RegionResult.served_members`).
+    cand_served_members: dict[str, tuple[MemberFacts, ...]] = field(default_factory=dict)
     # Each passing candidate's `currency_unmapped_omitted` warning, stamped with its Spec, for
     # the response that keeps it.
     cand_unit_omitted: dict[str, Warning] = field(default_factory=dict)
@@ -1045,6 +1063,7 @@ def ground_candidates(state: ResolveState, candidates: list[_Candidate]) -> _Gro
     cand_unit_refusals: dict[str, Mapping[str, MaterialisationError]] = {}
     cand_unit_coverage: dict[str, UnitCoverage] = {}
     cand_gate_plans: dict[str, ReadPlan | None] = {}
+    cand_served_members: dict[str, tuple[MemberFacts, ...]] = {}
     role_unverified = False
     membership_unverified = False
     open_origin_defaulted = False
@@ -1054,9 +1073,18 @@ def ground_candidates(state: ResolveState, candidates: list[_Candidate]) -> _Gro
     groundworks = _ground_each_candidate(state, candidates, prep)
     for cand_index, (cand, groundwork) in enumerate(zip(candidates, groundworks, strict=True)):
         answer = _candidate_answer(state, cand_index, cand, groundwork, prep)
-        # A candidate whose Spec an earlier one holds adds nothing: no Spec, record,
-        # warning or flag, and its Spec is not assembled.
-        if answer.identity.spec_id in seen_spec_ids:
+        spec_id = answer.identity.spec_id
+        # A candidate whose Spec an earlier one holds adds no Spec or record, and its Spec is
+        # not assembled. Its own reads still speak for the answer, so the flags and the
+        # observation warning they raise are kept. It follows the candidate it repeats, so it
+        # is never the elected one.
+        if spec_id in seen_spec_ids:
+            flags = _carrier_flags(cand, elected=False)
+            role_unverified = role_unverified or flags.role_declaration_unverified
+            open_origin_defaulted = open_origin_defaulted or flags.open_origin_defaulted
+            membership_unverified = membership_unverified or flags.membership_unverified
+            if (obs_warning := _candidate_observation_entities(cand)[1]) is not None:
+                obs_warnings.append(obs_warning)
             continue
         grounded = _finish_candidate(
             state,
@@ -1072,15 +1100,15 @@ def ground_candidates(state: ResolveState, candidates: list[_Candidate]) -> _Gro
             rivalled=rivalled,
             answer=answer,
         )
-        spec_id = grounded.spec.spec_id
+        # `build_spec` mints the Spec as `answer`, so it holds the id checked above.
+        assert grounded.spec.spec_id == spec_id, (grounded.spec.spec_id, spec_id)
         if entity_warnings is None:
             entity_warnings = groundwork.entity_warnings
         if grounded.is_elected:
             elected_spec_id = spec_id
-        else:
-            role_unverified = role_unverified or grounded.role_declaration_unverified
-            open_origin_defaulted = open_origin_defaulted or grounded.open_origin_defaulted
-            membership_unverified = membership_unverified or grounded.membership_unverified
+        role_unverified = role_unverified or grounded.flags.role_declaration_unverified
+        open_origin_defaulted = open_origin_defaulted or grounded.flags.open_origin_defaulted
+        membership_unverified = membership_unverified or grounded.flags.membership_unverified
         if grounded.obs_warning is not None:
             obs_warnings.append(grounded.obs_warning)
         seen_spec_ids.add(spec_id)
@@ -1111,6 +1139,7 @@ def ground_candidates(state: ResolveState, candidates: list[_Candidate]) -> _Gro
         cand_unit_refusals[spec_id] = prep.unit_refusals[cand_index]
         cand_unit_coverage[spec_id] = prep.unit_coverage[cand_index]
         cand_gate_plans[spec_id] = prep.gate_plans[cand_index]
+        cand_served_members[spec_id] = grounded.served_members
 
     state.warnings.extend(obs_warnings)
     if entity_warnings:
@@ -1152,4 +1181,5 @@ def ground_candidates(state: ResolveState, candidates: list[_Candidate]) -> _Gro
         cand_unit_refusals=cand_unit_refusals,
         cand_unit_coverage=cand_unit_coverage,
         cand_gate_plans=cand_gate_plans,
+        cand_served_members=cand_served_members,
     )

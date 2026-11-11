@@ -635,6 +635,17 @@ _PLACE_TYPE = "gives each row's place type."
             None,
             id="place-countries",
         ),
+        # Countries typed apart still share the Country level, so no type tells them apart.
+        pytest.param(
+            "observationAbout",
+            "observationAbout_type",
+            "Country",
+            "country/D00",
+            "Country,Place",
+            13,
+            None,
+            id="place-countries-typed-apart",
+        ),
         pytest.param(
             "financingRecipient",
             "financingRecipient_type",
@@ -663,9 +674,9 @@ def test_a_cut_card_counts_every_member_with_a_value_at_its_periods(
     """A card showing 8 of a frame's 12 members beside an aggregate larger than any of them
     counts every member with a value at the shown period, the aggregate included, and the
     all-members file's description names a party kind column where a kept row holds
-    `total`, and a place type column where the kept rows hold more than one type. An
-    aggregate `@`-suffixed with a period holds its one row there, outside the card's
-    window."""
+    `total`, and a place type column where the kept rows' places sit at more than one
+    level. An aggregate `@`-suffixed with a period holds its one row there, outside the
+    card's window."""
     members = tuple(f"country/C{number:02d}" for number in range(12))
     aggregate, _, aggregate_period = aggregate.partition("@")
     rows = [

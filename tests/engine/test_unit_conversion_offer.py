@@ -647,15 +647,21 @@ def test_no_warning_outside_a_request_scope():
     assert conversion_unavailable_warning(_usd()) is None
 
 
+@pytest.mark.parametrize("status", ["definite", "candidates"])
 @pytest.mark.parametrize(("bound", "warns"), [(None, True), (_CATALOGUE, False)])
-def test_a_definite_dollar_part_carries_the_warning_while_no_catalogue_is_loaded(bound, warns):
-    """The part assembled for a dollar answer, as the app's request scope binds the service's
-    catalogue or, before any load succeeds, none."""
-    spec = conjoin_spec(_PERSON_SHAPE, "any")
-    unit = ResolvedFacet(basis="fallback", ref="CurrencyUSD", currency="USD")
-    facets = {**spec.resolved.facets, "unit": unit}
-    spec = spec.model_copy(update={"resolved": spec.resolved.model_copy(update={"facets": facets})})
-    region = conjoin_region(spec, "aid")
+def test_a_dollar_part_carries_the_warning_while_no_catalogue_is_loaded(bound, warns, status):
+    """The part assembled for a dollar answer, or for a set of dollar readings, each of which
+    states its own offer, as the app's request scope binds the service's catalogue or,
+    before any load succeeds, none."""
+
+    def dollars(constraint: str) -> Spec:
+        spec = conjoin_spec(_PERSON_SHAPE, constraint)
+        unit = ResolvedFacet(basis="fallback", ref="CurrencyUSD", currency="USD")
+        facets = {**spec.resolved.facets, "unit": unit}
+        resolved = spec.resolved.model_copy(update={"facets": facets})
+        return spec.model_copy(update={"resolved": resolved})
+
+    region = conjoin_region(dollars("any"), "aid", status=status, extra_specs=(dollars("other"),))
     with bound_conversion_catalogue(bound):
         response = assemble_region(
             region,

@@ -95,10 +95,12 @@ def test_a_line_chart_select_without_an_array_cap_fails_the_load(release, reshap
         _line_chart_max_series(tolerant=reshape(release.intent_schemas_tolerant["line_chart"]))
 
 
-def test_a_release_without_a_line_chart_schema_fails_to_build(release):
-    tolerant = {k: v for k, v in release.intent_schemas_tolerant.items() if k != "line_chart"}
+@pytest.mark.parametrize("schemas", ["intent_schemas", "intent_schemas_tolerant"])
+def test_a_release_without_a_line_chart_schema_fails_to_build(release, schemas):
+    held = getattr(release, schemas)
+    without = {member: schema for member, schema in held.items() if member != "line_chart"}
     with pytest.raises(CatalogueShapeError):
-        dataclasses.replace(release, intent_schemas_tolerant=tolerant)
+        dataclasses.replace(release, **{schemas: without})
 
 
 def test_tolerant_intent_schemas_declare_no_required_fields(release):

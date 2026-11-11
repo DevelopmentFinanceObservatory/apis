@@ -546,9 +546,7 @@ async def _assemble_definite(
     _survivor_spec = unique_specs[0]
     # The members and plan its candidate's conversion offer read
     # (`candidate_grounding._finish_candidate`).
-    _served_members = tuple(
-        (_survivor.mat.member_facts or {})[dcid] for dcid in _survivor.mat.sv_dcids
-    )
+    _served_members = grounded.cand_served_members[_survivor_spec.spec_id]
     _plan = grounded.cand_plans.get(_survivor_spec.spec_id)
     _served_plans = (_plan,) if _plan is not None else ()
     note_denominator_unverified(state, _survivor.shape, spec_id=_survivor_spec.spec_id)
@@ -559,7 +557,7 @@ async def _assemble_definite(
     _preview = PreviewRead(
         sv_dcids=tuple(_obs_svs),
         obs_entities=_obs_entities,
-        plan=grounded.cand_plans.get(_survivor_spec.spec_id),
+        plan=_plan,
         # A ref-form unit filters literally; a request converts.
         facet_filter=None if state.unit_request is not None else state.unit_facet_filter,
         bulk_places=_bulk_scope.places if _bulk_scope is not None else None,

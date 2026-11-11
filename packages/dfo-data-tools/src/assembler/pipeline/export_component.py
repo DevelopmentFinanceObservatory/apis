@@ -36,8 +36,9 @@ the card shows whose other `select`-bound dimensions match the card, so every me
 at those periods, group totals, aggregates and `untyped` members included, in frame order, its
 `series` cell empty on rows the card does not show. On a party role whose kind column holds `total`
 in one of those rows, its description names that column as marking the totals. On the place role,
-where those rows hold more than one type cell, it names the type column as giving each row's place
-type (`_column_note`). Dimensions `select` leaves unbound, `unit`, `measurementMethod` and
+where those rows' places sit at more than one level
+(`dfo_analysis_engine.place_type.at_one_level`), it names the type column as giving each row's
+place type (`_column_note`). Dimensions `select` leaves unbound, `unit`, `measurementMethod` and
 `provenance` among them when unbound, are free, so a member served under another method or source
 is kept. The revision does not record whether the listed members were cut for display or chosen, so
 both get the same file. Each file's resource `description` and README row say which file is which,
@@ -84,6 +85,7 @@ from dfo_analysis_engine.place_type import (
     PARTY_ROLES,
     PLACE_ROLE,
     TOTAL_KIND,
+    at_one_level,
     kind_column,
     type_column,
 )
@@ -647,16 +649,19 @@ def _column_note(
     """The sentence naming the frame column that tells `rows` apart, with a leading space,
     or empty. On a party role, its kind column (`kind_column`) where a row holds
     `TOTAL_KIND`, as marking the totals. On the place role, its type column (`type_column`)
-    where the rows hold more than one type cell, as giving each row's place type, which
-    tells a region from a country."""
+    where the rows' places sit at more than one level (`place_type.at_one_level`), as giving
+    each row's place type, which tells a region from a country."""
     if dimension in PARTY_ROLES:
         column = kind_column(dimension)
         if column in index and any(row[index[column]] == TOTAL_KIND for row in rows):
             return f" The `{column}` column marks which rows are totals."
     elif dimension == PLACE_ROLE:
         column = type_column(dimension)
-        if column in index and len({row[index[column]] for row in rows}) > 1:
-            return f" The `{column}` column gives each row's place type."
+        if column in index:
+            cells = {cast(str, row[index[column]]) for row in rows}
+            places = {row[index[dimension]] for row in rows}
+            if not at_one_level(cells, place_count=lambda: len(places)):
+                return f" The `{column}` column gives each row's place type."
     return ""
 
 

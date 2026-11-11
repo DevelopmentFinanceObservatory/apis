@@ -49,8 +49,8 @@ class CatalogueRelease:
     line_chart_max_series: int = field(init=False)
     """Series a `line_chart` draws, the `maxItems` of its tolerant select schema's one array
     (`intent_schemas_tolerant`). Derived on construction, as `write_schemas` is, so a
-    release with no `line_chart` schema, or one naming no single cap, fails
-    (`CatalogueShapeError`)."""
+    release with no `line_chart` schema in `intent_schemas` or `intent_schemas_tolerant`, or
+    one naming no single cap, fails (`CatalogueShapeError`)."""
     write_schemas: Mapping[str, Mapping[str, object]] = field(init=False)
     """`intent_schemas` as a write validates against them: `line_chart`'s without its select
     array's `maxItems` (`without_select_list_cap`), the series cap a write checks only where
@@ -60,12 +60,16 @@ class CatalogueRelease:
     """`intent_schemas_tolerant` as a write validates against them, as `write_schemas`."""
 
     def __post_init__(self) -> None:
-        line_chart = self.intent_schemas_tolerant.get("line_chart")
-        if line_chart is None:
+        if (
+            "line_chart" not in self.intent_schemas
+            or "line_chart" not in self.intent_schemas_tolerant
+        ):
             msg = "the catalogue release holds no line_chart intent schema"
             raise CatalogueShapeError(msg)
         object.__setattr__(
-            self, "line_chart_max_series", _line_chart_max_series(tolerant=line_chart)
+            self,
+            "line_chart_max_series",
+            _line_chart_max_series(tolerant=self.intent_schemas_tolerant["line_chart"]),
         )
         object.__setattr__(self, "write_schemas", _write_schemas(self.intent_schemas))
         object.__setattr__(

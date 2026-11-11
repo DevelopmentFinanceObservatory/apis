@@ -1422,11 +1422,11 @@ def test_candidates_sharing_a_spec_id_offer_the_conversion_of_the_kept_one(
     monkeypatch: pytest.MonkeyPatch,
 ):
     """A second candidate grounding to the survivor's own Spec, its members declaring no
-    role and its role declaration unverified, adds nothing: its Spec is not assembled, it
-    adds no warning, and the answer's conversion and the members and plan a same-shape
-    merge offers conversions over (`RegionResult.served_members`) are the first
-    candidate's, whose donor role names the deflation basis, so a merge restates the offer
-    the answer shows."""
+    role and its role declaration unverified, adds no Spec: its Spec is not assembled, and
+    the answer's conversion and the members and plan a same-shape merge offers conversions
+    over (`RegionResult.served_members`) are the first candidate's, whose donor role names
+    the deflation basis, so a merge restates the offer the answer shows. Its own reads
+    still speak for the answer, so its unverified role declaration warns."""
     _cover(monkeypatch, _DAC1_MEMBERS, unit="CurrencyUSD")
     ground = candidate_grounding.ground_candidates
     finish = candidate_grounding._finish_candidate
@@ -1482,7 +1482,7 @@ def test_candidates_sharing_a_spec_id_offer_the_conversion_of_the_kept_one(
     part, _ = _converted(_asked("2016"), range(2016, 2017), binder=nominated)
 
     assert finished == [0]
-    assert ROLE_DECLARATION_UNVERIFIED not in {w.code for w in part.warnings}
+    assert ROLE_DECLARATION_UNVERIFIED in {w.code for w in part.warnings}
     ((roles, shown, restated),) = offers
     assert roles == ("financingProvider",)
     assert shown is not None
