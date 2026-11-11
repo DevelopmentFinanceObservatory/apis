@@ -656,11 +656,11 @@ class PartyRow:
 
     `kind` is the party's kind in every dataset `dataset_kinds` does not name, and `dataset_kinds`
     the `(dataset, kind)` pairs, sorted by dataset, where it takes another kind. IMF Concessional
-    Trust Funds (`IMFConcessionalTrustFunds`) is a `party` in the CRS, which publishes it and never
+    Trust Funds (`IMFConcessionalTrustFunds`) is a `party` in the CRS, which publishes it and omits
     the IMF, and a `total` in DAC2A, which publishes it beside the IMF it equals. A reader serving
     one dataset reads `kind_in`, and one serving several or none reads `kinds_over` or `kind_over`
-    on the axis of the role it serves, so a kind a dataset gives the party on one axis never reaches
-    a role on the other. `party_class` is the class of `kind`; where the party takes another kind it
+    on the axis of the role it serves, so a kind a dataset gives the party on one axis applies only
+    to roles on that axis. `party_class` is the class of `kind`; where the party takes another kind it
     takes that kind's class (`class_of`).
     """
 
@@ -724,8 +724,7 @@ class PartyRow:
         self, axis: RoleAxis | AnyAxis, datasets: Collection[str] = ()
     ) -> PartyKind | None:
         """The one kind of `kinds_over(axis, datasets)`, or `None` when the party takes
-        different kinds there or none, so a reader that needs one kind refuses rather than
-        guesses."""
+        different kinds there or none, so a reader that needs one kind refuses."""
         kinds = self.kinds_over(axis, datasets)
         return next(iter(kinds)) if len(kinds) == 1 else None
 

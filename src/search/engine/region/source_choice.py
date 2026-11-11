@@ -253,7 +253,7 @@ class ContestedOrganisation:
     that governs it, "to" where a mention of it follows "to", else "from" where one follows
     "from", else `None` (`source_scan.direction_word`), the position of its mention among
     the part's source mentions in the reading with it as the source (`mention`,
-    `source_scan.SourceScan.hit_mentions`; `None` where the part's mentions were full), and
+    from `source_scan.SourceScan.hit_mentions`, `None` where the part's mentions were full), and
     the entity its party reading names it by (`entity`, `raw_text._entity_key`)."""
 
     words: str

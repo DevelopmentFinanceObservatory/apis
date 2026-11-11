@@ -4083,8 +4083,8 @@ def judge_value_requirements(
     """The requirements of `requirements` judged by the values their words name
     (`ValueRule`, `value_requirements`) that an answer of `shape` read under `bindings`
     leaves unmet. With `read_words` false only the value rules judge, and no requirement is
-    met by its words, so a caller can judge before it has read the words: a requirement this
-    leaves met is met with them too.
+    met by its words, so a caller can judge before it has read the words, since a requirement
+    this leaves met is met with them too.
 
     The answer is the members of `shape` its bindings select (`_selected_members`). It applies a
     value its bindings bind, or one every selected member holds, as every member of a female
@@ -4094,7 +4094,7 @@ def judge_value_requirements(
     binding holds one of them, or every selected member does (`applies_one_of`). One value of such a
     set (origin ``set_value``) is applied when a binding or some selected member holds it, and so is
     a value drafted in a set on a slot the elected reading holds (`ValueRule.drafted_set`) where the
-    answer applies that set by membership, or where a broad reading applies it as below: members
+    answer applies that set by membership, or where a broad reading applies it as below. Members
     carrying health alone apply health of "health and education" and not education. These are judged
     by values alone: a word of a member's name states none of them. Any other requirement is also
     met by a run every word of which its series states (`_series_words`), as a Student population
@@ -5081,9 +5081,9 @@ def _log_bind_decision(state: ResolveState, decision: BindResult | None) -> None
 def _logged_verdicts(state: ResolveState) -> list[dict[str, str]]:
     """For each menu shape, in menu order, the verdict rule 4 read on each of the part's
     `ResolveState.named_measures`, keyed by the words of its first occurrence, as rule 4
-    stored them (`ResolveState.measure_verdicts`): for each admissible shape when the phase
-    judged them, and for a stand-in for a declined election when `_stand_in_declined` added
-    it. The line judges nothing; a shape with no stored verdicts logs none."""
+    stored them (`ResolveState.measure_verdicts`), for each admissible shape when the phase
+    judged them and for a stand-in for a declined election when `_stand_in_declined` added
+    it. The line judges nothing, and a shape with no stored verdicts logs none."""
     spans = state.named_measures
     words = [state.variable[slice(*span.occurrences[0])] for span in spans]
     return [

@@ -357,11 +357,6 @@ a `component_id` without duplicating the literal."""
 # Graph refs use other prefixes.
 _FAMILY_REF_PREFIX = "spec_"
 
-# The `provenance` column is labelled like stat_var and entity refs. measurementMethod keeps raw
-# refs. Unit dcid refs are labelled under their own cap. Converted units need no label. A
-# composed unit is labelled side by side, a string side as a unit ref and a StatVar side as a
-# stat_var ref.
-
 # A published derived frame's spec id. Its version stores no citation.
 _DERIVED_SPEC_PREFIX = "ops_"
 
@@ -599,6 +594,10 @@ def _provenance_cells(
     return frozenset(cast(str, row[index]) for row in rows if row[index] is not None)
 
 
+# The `provenance` column is labelled like stat_var and entity refs. measurementMethod keeps raw
+# refs. Unit dcid refs are labelled under their own cap. Converted units need no label. A
+# composed unit is labelled side by side, a string side as a unit ref and a StatVar side as a
+# stat_var ref.
 def _capped_refs(
     *,
     columns: Sequence[str],

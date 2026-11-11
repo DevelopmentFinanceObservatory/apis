@@ -1835,7 +1835,7 @@ class _RenderReads:
         self, nodes: Sequence[str], *, fields: Collection[str]
     ) -> dict[str, dict[str, str]]:
         """Each of `nodes` mapped to those of its enrichment graph `fields` that could be read.
-        The party fields (`PARTY_FIELDS`) are left out: a party's cells depend on the axis of
+        The party fields (`PARTY_FIELDS`) are left out. A party's cells depend on the axis of
         the column that holds it, so readers take them from the code index per column
         (`materialise.enrichment.row_party_cell`). One `lookup` reads the graph fields of every
         node, and runs only when one is asked for. A read that fails, or follows a failed one,
@@ -2922,7 +2922,7 @@ def render_and_store(
     raises `FoldPermitWaitExpired`.
 
     `code_index` controls decoding and gives the party rows (`CodeIndex.parties`) that every
-    party cell, cut of totals and split of totals reads; a render without one reads no party
+    party cell, cut of totals and split of totals reads. A render without one reads no party
     row. The artifact carries its `enrichment_digest` as `enrichment_stamp` when it holds
     party-kind cells (`versions.enrichment_stamp`, over the role columns of the frame it
     renders). `resolved_stat_var_refs` and `provenance_refs`

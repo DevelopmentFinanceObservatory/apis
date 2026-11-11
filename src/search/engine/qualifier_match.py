@@ -405,8 +405,8 @@ def with_role_preposition(
     (`role_text.ROLE_PREPOSITIONS`) before it, read as `tokens`, with any article between
     them, when only spaces separate those words: "debt service to the United States"
     reads as "debt service". A span in the possessive keeps its preposition, since the
-    place owns the noun after it and is not the preposition's object; the span takes the
-    article before it and a trailing apostrophe with it (`_past_apostrophe`): "debt
+    place owns the noun after it and is not the preposition's object. The span takes the
+    article before it and a trailing apostrophe with it (`_past_apostrophe`), so "debt
     relative to Ghana's GDP" and "debt relative to the United States' GDP" both read as
     "debt relative to GDP"."""
     words = [token for token in tokens if token.kind == "word"]

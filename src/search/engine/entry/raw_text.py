@@ -1185,8 +1185,8 @@ def _prepare_extraction(
     left_out: Sequence[LeftOut] = (),
 ) -> _ExtractionPrep:
     """Prepare deduped extraction fields, qualifiers, and warnings for `handle`.
-    ``query`` is the text with each of the ``left_out`` stretches blanked. The prep holds no
-    name corrections; `handle` adds them, read from `_ExtractionPrep.extraction`.
+    ``query`` is the text with each of the ``left_out`` stretches blanked. `handle` adds the
+    name corrections, read from `_ExtractionPrep.extraction`.
 
     An organisation the query names that is no source and that no entity covers
     (`source_scan.find_organisations`) joins the extraction's entities first, as if the
@@ -2128,7 +2128,7 @@ async def handle(
         }
     )
     prep = _prepare_extraction(extraction, extract_result, query=text, left_out=left_out)
-    # The prep's extraction holds the organisations the query names; nothing reads the
+    # The prep's extraction holds the organisations the query names. Nothing reads the
     # extraction it was prepared from.
     extraction = prep.extraction
     prep = dataclasses.replace(

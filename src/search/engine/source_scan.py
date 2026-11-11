@@ -425,7 +425,7 @@ def _names_an_organisation(query: str, run: Sequence[_Word]) -> bool:
     Any other run must start and end with a capital ("Global Fund", "International Finance
     Corporation"), so a generic phrase the pack holds as an alias, as "international
     finance" or "multilateral fund", names nothing. A name written in lower case reaches
-    the part only as an entity the extraction returns: the scan adds what no entity
+    the part only as an entity the extraction returns. The scan adds what no entity
     covers."""
     first, last = run[0].text, run[-1].text
     if len(run) == 1 and len(first) <= _ABBREVIATION_MAX_CHARS:

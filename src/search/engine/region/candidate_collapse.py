@@ -692,10 +692,9 @@ async def _record_unheld_values(
     that set (`ValueRule.drafted_set`), and named by the value's label
     (`value_labels.draft_value_labels`). Labels are read only for the values the value rules
     leave unmet on some answer (`judge_value_requirements` with `read_words` false), so a set
-    whose every answer binds or holds each drafted value reads no labels; the words rule then
-    judges those values by their labels. A value no
-    recorded term supports is the bind model's reading of the measure the phrase names,
-    not a value the user typed (`value_labels.model_only_values`), as LiveBirth is of
+    whose every answer binds or holds each drafted value reads no labels. The words rule then
+    judges those values by their labels. A value no recorded term supports is the bind
+    model's reading of the measure the phrase names, not a value the user typed (`value_labels.model_only_values`), as LiveBirth is of
     "birth rate", and records nothing. The requirement refuses nothing, so the set offers
     each candidate and departs the value once unless every candidate applies it
     (`requirements.settle_candidate_set`)."""
@@ -718,7 +717,7 @@ async def _record_unheld_values(
     ]
     pending = [pair for pair in drafted if not all(pair in held for held in bound)]
     # Judged first by the value rules alone, so labels are read only for the values some
-    # answer leaves unmet; the words rule then reads those labels.
+    # answer leaves unmet. The words rule then reads those labels.
     by_value = [
         _unheld_requirement(prop, value, value, drafted_sets[prop, value])
         for prop, value in pending

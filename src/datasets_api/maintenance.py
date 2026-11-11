@@ -143,7 +143,7 @@ version's stored frame from any tier holding its bytes and counts each role colu
 (`profile.with_party_kind_coverage`). A row whose count differs gets the new count in its
 `output_profile` column and in the `output_profile` of its `immutable_body`, written under the
 version's link lock (`version_store.lock_version_links`) and only over the profile it was
-counted from; the body's other keys and every other entry keep their place and value, and a new
+counted from. The body's other keys and every other entry keep their place and value, and a new
 entry takes its place by the profile's own role columns. A missing ref is named by a label the
 profile already holds, since the task reads no graph. A row whose frame no tier holds stays as
 it is. A second run changes nothing. It writes one `datasets_party_kind_backfill_failed`
@@ -1815,7 +1815,7 @@ class PartyKindOutcome(StrEnum):
     COPIES_DIFFER = "copies_differ"
     """The row's `output_profile` column and the `output_profile` of its `immutable_body`
     differ, so no copy is counted from and the row is left alone. No trigger keeps the two
-    equal after insert, so this needs a hand repair; the run logs it at `ERROR` and exits 1."""
+    equal after insert, so this needs a hand repair. The run logs it at `ERROR` and exits 1."""
 
 
 PARTY_KIND_PAGE = 100
@@ -1864,7 +1864,7 @@ def _backfill_party_kind_of(
     """Count one version's `party_kind` coverage again from its stored frame
     (`profile.with_party_kind_coverage`) and, unless `dry_run`, write it to the row's
     `output_profile` column and to the `output_profile` of its `immutable_body` while the row
-    still holds the profile it was counted from: the update compares the stored profile with
+    still holds the profile it was counted from. The update compares the stored profile with
     it, so a profile any writer changed meanwhile stays. The write takes the version's link
     lock (`version_store.lock_version_links`), as the coverage fill does, and sets the body's
     `output_profile` key alone, so it keeps every other writer's change to the body. Both

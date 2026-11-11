@@ -463,7 +463,7 @@ class ValueRule:
     values: frozenset[tuple[str, str]]
     code_systems: frozenset[str] = frozenset()
     # The values of the set the bind drafted `values` in, for a value the words name among
-    # others ("health and education"): an answer applies it when it applies the set by
+    # others ("health and education"). An answer applies it when it applies the set by
     # membership and a binding or some selected member holds the value. Empty otherwise.
     drafted_set: frozenset[tuple[str, str]] = frozenset()
 
