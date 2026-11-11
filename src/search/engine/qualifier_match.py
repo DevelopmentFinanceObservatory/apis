@@ -555,7 +555,9 @@ def measure_values_named(text: str, measure_index: MeasureIndex) -> frozenset[st
 
     The bare-word rule reads any content word of `text` wherever it stands, and the function
     reads no negation: "excluding attributed amounts" names `attributedAmount` as
-    "attributed amounts" does."""
+    "attributed amounts" does. On the raw-text door the exclusion read blanks an excluded
+    stretch before any reader (`exclusion_read.admit_exclusions`), so the variable this
+    reads holds no excluded word."""
     tokens = word_tokens(text)
     words = [fold_word(token.text) for token in tokens]
     content = {
