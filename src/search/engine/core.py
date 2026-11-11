@@ -119,8 +119,8 @@ class ResolveRecord:
     `extraction_agreed` says whether the samples of a raw_text request's exclusion read and
     of its extraction each agreed on its reading (`CacheScope.note_extraction`), None when the
     request extracted nothing, ended before it published its answer, ran with neither the
-    response cache nor an extraction store, or had a second sample cut by the settle bound
-    (`SEARCH_LLM_SECOND_SAMPLE_SETTLE_S`). `second_sample_usage`
+    response cache nor an extraction store, or had a second sample unjudged: cut by the
+    settle bound (`SEARCH_LLM_SECOND_SAMPLE_SETTLE_S`) or failed. `second_sample_usage`
     is what the second samples of its exclusion read and extraction cost
     (`CacheScope.second_sample_usage`), which the response does not wait for and the log
     line's `llm_usage` adds.

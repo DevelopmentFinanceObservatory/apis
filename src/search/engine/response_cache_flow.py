@@ -243,10 +243,12 @@ class CacheScope:
     Layer 1 stores an answer only when two samples of its query's exclusion read and two
     of its extraction each agreed on the reading (`note_extraction`), so layer 1 holds no
     reading that rests on one sample. The request's reads serve their first sample at once
-    and leave the second to the scope's holder (`hold_samples`); the scope settles their
-    agreement at `done`, waiting at most `llm_second_sample_settle_s` for a second still
-    running, and `release` cancels and awaits any second sample still running. The LLM memo replays each sample of a wording for
-    `llm_memo_ttl_s` whether or not they agreed. Cache clearing belongs to app wiring.
+    and leave the second to the scope's holder (`hold_samples`), which ends each second
+    `llm_second_sample_settle_s` after its first is read. A request without trailing events
+    publishes layer 2 at `response`; layer 1 publishes at `done`, once the agreements have
+    settled, and `release` cancels and awaits any second sample still running. The LLM memo
+    replays each sample of a wording for `llm_memo_ttl_s` whether or not they agreed. Cache
+    clearing belongs to app wiring.
     """
 
     def __init__(
@@ -557,24 +559,22 @@ class CacheScope:
 
     async def _settle_extraction(self) -> None:
         """Settle the noted agreements once (`clients.llm.settle`), which writes each agreed
-        read to the extraction store, waiting at most `llm_second_sample_settle_s` for a
-        second sample still running. A request with neither the response cache nor an
+        read to the extraction store; a second sample still running ends by its own deadline,
+        `llm_second_sample_settle_s` after its first was read. A request with neither the response cache nor an
         extraction store has nothing to write and settles nothing."""
         if self._settled or not self._agreements:
             return
         self._settled = True
         if not self.active and not self._stores_readings:
             return
-        self._extraction_agreed = await settle(
-            self._agreements, wait_s=config.settings().llm_second_sample_settle_s
-        )
+        self._extraction_agreed = await settle(self._agreements)
 
     @property
     def extraction_agreed(self) -> bool | None:
         """Whether this request's reading was agreed (`note_extraction`), `None` when
         it extracted nothing (a parsed request, or one a cache hit answered), ended before
-        it published, settled nothing (no response cache and no extraction store), or a
-        second sample outlasted the settle bound (`clients.llm.settle`)."""
+        it published, settled nothing (no response cache and no extraction store), or left a
+        read unjudged, its second sample cut or failed (`clients.llm.settle`)."""
         return self._extraction_agreed
 
     def note_health(
@@ -596,16 +596,20 @@ class CacheScope:
     async def observe(self, event: Event) -> None:
         """Take one event of the live stream; publish the answer once it is complete.
 
-        Every request publishes at `done`, which the pipeline sends after `response`, so the
-        settling of the reads' second samples (`_settle_extraction`) never holds the response
-        back. A bundle request records events from `response` on, leaving out
-        place options, which a hit runs again. Any other request publishes its response.
+        A request without trailing events publishes its response to layer 2 at `response`,
+        since layer 2 keys on the reading itself and its followers need no agreement, and to
+        layer 1 at `done`, once the reads' second samples have settled
+        (`_settle_extraction`), so settling never holds a streamed response back. A bundle
+        request records events from `response` on, leaving out place options, which a hit
+        runs again, and publishes both layers at `done`.
         """
         if not self._bundle:
             if isinstance(event, ResponseEvent):
                 self._response = event.response
+                await self._store_layers(event.response, layer1=False, layer2=True)
             elif isinstance(event, DoneEvent) and self._response is not None:
-                await self.store(self._response)
+                await self._settle_extraction()
+                await self._store_layers(self._response, layer1=True, layer2=False)
             return
         if isinstance(event, DoneEvent):
             await self._settle_extraction()
@@ -641,7 +645,12 @@ class CacheScope:
         flags.
         """
         assert not self._bundle, "a streamed request publishes its bundle through observe()"
+        await self._store_layers(response, layer1=False, layer2=True)
         await self._settle_extraction()
+        await self._store_layers(response, layer1=True, layer2=False)
+
+    async def _store_layers(self, response: ResolveResponse, *, layer1: bool, layer2: bool) -> None:
+        """Publish `response` to the leases this request owns on the layers named."""
         await self._publish(
             lambda: to_entry(response),
             lambda: is_storable(
@@ -650,14 +659,19 @@ class CacheScope:
                 degraded_leg=self._degraded_leg,
                 refused_at_build=self._refused_at_build,
             ),
+            layer1=layer1,
+            layer2=layer2,
         )
 
     async def _publish(
         self,
         encode: Callable[[], tuple[bytes, int]],
         storable: Callable[[], bool],
+        *,
+        layer1: bool = True,
+        layer2: bool = True,
     ) -> None:
-        """Publish an entry to any leases this request owns.
+        """Publish an entry to any leases this request owns on the layers named.
 
         Cache errors are logged and never reach the pipeline. Both leases share one
         encoding and verdict, and layer 1 also needs an agreed reading
@@ -667,7 +681,15 @@ class CacheScope:
         if not self.active:
             return
         assert self._cache is not None
-        if self._layer1_lease is None and self._layer2_lease is None:
+        leases = [
+            (layer, lease)
+            for layer, lease, named in (
+                (1, self._layer1_lease, layer1),
+                (2, self._layer2_lease, layer2),
+            )
+            if named and lease is not None
+        ]
+        if not leases:
             # No lease means this request cannot publish a cache entry.
             return
         try:
@@ -680,22 +702,20 @@ class CacheScope:
             timed_out = self._timed_out or self._served_timed_out
             degraded_leg = self._degraded_leg or self._served_degraded_leg
             entry, size = encode()
-            for lease, lease_storable in (
-                (self._layer1_lease, verdict and self._reading_agreed()),
-                (self._layer2_lease, verdict),
-            ):
-                if lease is not None:
-                    await self._cache.publish(
-                        lease,
-                        entry,
-                        size,
-                        storable=lease_storable,
-                        timed_out=timed_out,
-                        degraded_leg=degraded_leg,
-                        max_age_s=self._stamp.max_age_s,
-                    )
-            self._layer1_lease = None
-            self._layer2_lease = None
+            for layer, lease in leases:
+                await self._cache.publish(
+                    lease,
+                    entry,
+                    size,
+                    storable=verdict and (layer == 2 or self._reading_agreed()),
+                    timed_out=timed_out,
+                    degraded_leg=degraded_leg,
+                    max_age_s=self._stamp.max_age_s,
+                )
+                if layer == 1:
+                    self._layer1_lease = None
+                else:
+                    self._layer2_lease = None
         except Exception:
             logger.exception("response cache store failed; serving the fresh answer uncached")
 

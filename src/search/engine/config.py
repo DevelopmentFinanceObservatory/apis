@@ -270,14 +270,13 @@ class SearchSettings(BaseSettings):
     # pipeline deadline handling can proceed.
     llm_timeout_s: float = 30
 
-    # Seconds a request waits at `done` for the second of two samples
-    # (`clients.llm.two_samples`) still running before it settles their agreement
-    # (`clients.llm.settle`); the response never waits for it. Past the bound the second is
-    # cancelled and awaited, and the reading counts as cut: not agreed, nothing stored. Both
-    # samples go out at the same moment. Over 120 such pairs of extraction and exclusion-read
-    # calls against gemini-3.5-flash-lite, the second answered at most 0.66 s after the
-    # first, 0.36 s at the 95th percentile, so 1 s waits out a healthy second and caps what a
-    # stalled one adds to `done`.
+    # Seconds the second of two samples (`clients.llm.two_samples`) may run after its first
+    # is read. Past it the second is cut (`clients.llm.SecondSamples.cut_after`): its read is
+    # not judged and nothing is stored. An SSE answer never waits for it; `done`, and so the
+    # buffered JSON response, waits at most this bound after the extraction's first sample.
+    # Both samples go out at the same moment. Over 120 such pairs of extraction and
+    # exclusion-read calls against gemini-3.5-flash-lite, the second answered at most 0.66 s
+    # after the first, 0.36 s at the 95th percentile, so 1 s waits out a healthy second.
     llm_second_sample_settle_s: float = 1.0
 
     # clients/llm.py limits each event loop to this many HTTP/1.1 connections.

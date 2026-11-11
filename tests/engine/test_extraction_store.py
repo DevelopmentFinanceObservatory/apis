@@ -88,8 +88,8 @@ def _extract(query: str, llm: LLM):
 
 
 def _agreed(agreement: Agreement) -> bool:
-    """The verdict of an agreement an unheld read settled before it returned."""
-    return asyncio.run(agreement.settled())
+    """Whether an agreement an unheld read settled before it returned agreed."""
+    return asyncio.run(agreement.outcome()) == "agreed"
 
 
 def test_a_repeated_query_calls_the_model_once_and_another_spelling_reads_afresh(monkeypatch):
@@ -308,7 +308,7 @@ def test_a_held_read_serves_its_first_sample_while_the_second_runs(monkeypatch, 
             agreement, usage = await asyncio.wait_for(_held_read(stage, samples.bind(llm)), 5)
             served_with = (models.in_flight, _stored(stage, llm))
             models.gate.set()
-            return served_with, usage, await agreement.settled(), samples.usage()
+            return served_with, usage, await agreement.outcome() == "agreed", samples.usage()
         finally:
             await samples.aclose()
 
