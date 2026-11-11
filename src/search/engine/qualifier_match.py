@@ -469,14 +469,23 @@ def breakdown_spans(text: str, *, stops: Iterable[str] = ()) -> tuple[BreakdownS
     return tuple(spans)
 
 
-def match_unsupported_qualifier_phrases(text: str, *, terms: Collection[str]) -> tuple[str, ...]:
+def match_unsupported_qualifier_phrases(
+    text: str, *, terms: Collection[str], read: Collection[tuple[int, int]] = ()
+) -> tuple[str, ...]:
     """Return each word of ``text`` that is one of ``terms``, the words a code system declares
     it has no vocabulary for (`CodeSystemDeclaration.no_vocabulary_terms`), in text order.
 
     Each term is compared with whole word tokens, so ``non-concessionality`` and
-    ``non-concessional-like`` do not match the term ``non-concessional``.
+    ``non-concessional-like`` do not match the term ``non-concessional``. A word inside one
+    of the character ranges ``read`` (a span read as a code) is skipped: "climate" in
+    "investment climate" is part of a code's name.
     """
-    return tuple(token.text for token in word_tokens(text) if _normalize(token.text) in terms)
+    return tuple(
+        token.text
+        for token in word_tokens(text)
+        if _normalize(token.text) in terms
+        and not any(_ranges_overlap((token.start, token.end), span) for span in read)
+    )
 
 
 def _row_system(row: MatchableRow) -> str:

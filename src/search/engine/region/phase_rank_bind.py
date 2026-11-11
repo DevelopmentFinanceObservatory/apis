@@ -4230,7 +4230,9 @@ def _resolve_query_qualifiers(state: ResolveState) -> list[ResolvedQualifier]:
        Surviving phrases get ``no_vocabulary`` with no named codes.
     5. Match the words each code system the shape declares has no vocabulary for
        (``CodeSystemDeclaration.no_vocabulary_terms``) in variable text and optional query
-       text. Record ``no_vocabulary`` and refuse the qualifier.
+       text. Record ``no_vocabulary`` and refuse the qualifier. A word inside a phrase
+       an earlier record reads as codes is no term: "climate" in "investment climate",
+       a CRS purpose name.
     6. Typed-sidecar spans use the same admission and disposition rules, then deduplicate
        against text spans and ties. Their offsets belong to each sidecar phrase and stay out
        of the overlap check on ``variable``.
@@ -4400,10 +4402,18 @@ def _query_records(state: ResolveState) -> list[ResolvedQualifier]:
         for term in index.declarations[prop].no_vocabulary_terms
     )
     if no_vocabulary_terms:
+        code_phrases = {record.text for record in resolved if record.named}
         for text in (state.variable, state.query_text):
             if text is None:
                 continue
-            for phrase in match_unsupported_qualifier_phrases(text, terms=no_vocabulary_terms):
+            read = [
+                occurrence
+                for code_phrase in code_phrases
+                for occurrence in _all_normalized_text_ranges(code_phrase, text)
+            ]
+            for phrase in match_unsupported_qualifier_phrases(
+                text, terms=no_vocabulary_terms, read=read
+            ):
                 normalized_phrase = _normalize(phrase)
                 if normalized_phrase in already_recorded:
                     continue
