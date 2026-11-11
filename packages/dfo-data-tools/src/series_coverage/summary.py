@@ -26,7 +26,7 @@ import pyarrow as pa
 
 from code_index.types import PartyKind, PartyRow
 from dfo_platform.roles import RoleAxis
-from series_coverage.coverage_types import ROLE_AXES, Role
+from series_coverage.coverage_types import COVERAGE_ROLE_AXES, Role
 from series_coverage.schema import (
     ABSENT_ENTITY,
     DONOR_COLUMN,
@@ -57,7 +57,7 @@ class PartyCounts:
     does ("Africa, unallocated by country"). `unclassified` counts parties the code index
     does not list or publishes on no dataset on the role's axis. Each party counts once, under
     the first of `party`, `residual` and `total` it takes on the role's axis
-    (`coverage_types.ROLE_AXES`) in the datasets of the facets that hold it
+    (`coverage_types.COVERAGE_ROLE_AXES`) in the datasets of the facets that hold it
     (`PartyRow.kinds_over`, every dataset that publishes it there for a facet with no
     provenance), so the kinds sum to the distinct parties.
     One that is a total in DAC2A and a party in the CRS has figures of its own in the CRS and
@@ -142,7 +142,10 @@ class VariableSummary:
                     datasets = held[role][dcid]
                     if provenance is not None:
                         datasets.add(provenance)
-        return {role: _split_by_kind(held[role], parties, axis=ROLE_AXES[role]) for role in roles}
+        return {
+            role: _split_by_kind(held[role], parties, axis=COVERAGE_ROLE_AXES[role])
+            for role in roles
+        }
 
 
 def _split_by_kind(

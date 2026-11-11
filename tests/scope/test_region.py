@@ -4,10 +4,13 @@ trips to the base spec_id."""
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from code_index.scope_conventions import OPTION_LABELS, REGION_READINGS, RegionReading
 from code_index.shared import get_index
+from code_index.types import PartyRow
 from entity_resolution.shared import shared_membership_policy
 from search.engine.spec_id import identity_spec_id
 from search.models import BaseIdentity, EntityGroup, Operation, PartScope
@@ -19,6 +22,7 @@ from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.scope._axes import explicit, switch
 
 _CRS = "provenance/OECDCreditorReportingSystem"
+_DONOR_TABLE = "provenance/DonorTable"
 _ALL = "region:members_and_residuals"
 _MEMBERS = "region:members_only"
 _AFRICA_MEMBERS = ["country/GHA", "country/KEN", "country/TZA"]
@@ -91,6 +95,20 @@ def test_residuals_are_kept_out_of_member_lists_by_party_kind():
     assert all(is_residual(dcid, index) for dcid in _AFRICA_RESIDUALS)
     assert not any(is_residual(dcid, index) for dcid in (*_AFRICA_MEMBERS, "DACAfrica"))
     assert without_residuals(_SUMMED.entities["destination"], index) == _AFRICA_MEMBERS
+
+
+def test_a_residual_on_the_recipient_side_is_one_whatever_it_is_as_a_donor():
+    """A region reads its residuals on the recipient side, so a party that is a residual in
+    the dataset that publishes it as a recipient is one there, even where another dataset
+    publishes it as a donor of its own."""
+    party = PartyRow(
+        dcid="RegionUnallocated",
+        kind="residual",
+        published=((_CRS, "destination"), (_DONOR_TABLE, "origin")),
+        dataset_kinds=((_DONOR_TABLE, "party"),),
+    )
+
+    assert is_residual(party.dcid, SimpleNamespace(parties={party.dcid: party}))
 
 
 @pytest.mark.parametrize("group", [_AFRICA, None], ids=["by-group", "by-residuals-held"])

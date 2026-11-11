@@ -1194,10 +1194,14 @@ def _fill_lookup_columns(
         entity_column: table.columns.index(entity_column) for entity_column, _field in requests
     }
     period_at = (
-        table.columns.index(_TIME_PERIOD_COLUMN) if _TIME_PERIOD_COLUMN in table.columns else None
+        table.columns.index(_TIME_PERIOD_COLUMN)
+        if per_row and _TIME_PERIOD_COLUMN in table.columns
+        else None
     )
     provenance_at = (
-        table.columns.index(_PROVENANCE_COLUMN) if _PROVENANCE_COLUMN in table.columns else None
+        table.columns.index(_PROVENANCE_COLUMN)
+        if per_row and _PROVENANCE_COLUMN in table.columns
+        else None
     )
     missing_counts: dict[tuple[str, str], int] = {}
     new_rows = []
@@ -1212,10 +1216,8 @@ def _fill_lookup_columns(
                     ref,
                     role=entity_column,
                     parties=parties,
-                    period=None if period_at is None or not per_row else row[period_at],
-                    provenance=(
-                        None if provenance_at is None or not per_row else row[provenance_at]
-                    ),
+                    period=None if period_at is None else row[period_at],
+                    provenance=None if provenance_at is None else row[provenance_at],
                 )
             else:
                 value = lookup_cell(lookup, ref, field_name)
@@ -1980,15 +1982,14 @@ class EnrichmentPlan:
     of `(entity_column, field)` pairs, in the order `enrich_columns` should
     append their output columns. `parties` is the code index's rows, which give
     each row's party cells (`PARTY_FIELDS`) on its entity column's axis, for the
-    dataset and year of the row, or for no dataset and year when `per_row` is
-    false, as a pivot's index groups rows; `None` reads the cells from `lookup`,
-    as for every other field.
+    dataset and year of the row, or for no dataset and year where the plan
+    pivots (`ReshapePlan.pivot`), since a pivot's index groups rows; `None` reads
+    the cells from `lookup`, as for every other field.
     """
 
     requests: tuple[tuple[str, str], ...]
     lookup: Mapping[str, Mapping[str, str]]
     parties: Mapping[str, PartyRow] | None = None
-    per_row: bool = True
 
 
 @dataclass(frozen=True)
@@ -2146,7 +2147,10 @@ def apply_reshapes(
             requests=plan.enrichment.requests,
             lookup=plan.enrichment.lookup,
             parties=plan.enrichment.parties,
-            per_row=plan.enrichment.per_row,
+            # A pivot's index and columns group rows, so a cell that varied with the period
+            # would split one party into several index rows. Its party cells are read for no
+            # dataset and year, where a whole total's `party_whole` is empty (`whole_cell`).
+            per_row=plan.pivot is None,
         )
         warnings.extend(enrichment_warnings)
 

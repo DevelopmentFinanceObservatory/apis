@@ -4119,8 +4119,16 @@ def judge_value_requirements(
     }
     selected = _selected_members(shape, bindings)
     constraints = [read_constraints(arcs) for arcs in selected.values()]
-    names = [_casefolded_words(read_name(arcs, dcid) or "") for dcid, arcs in selected.items()]
-    stated = _series_words(shape) | _dataset_stated_words(shape, get_index(), state)
+    names = (
+        [_casefolded_words(read_name(arcs, dcid) or "") for dcid, arcs in selected.items()]
+        if read_words
+        else []
+    )
+    stated = (
+        _series_words(shape) | _dataset_stated_words(shape, get_index(), state)
+        if read_words
+        else frozenset()
+    )
     read_broadly = {
         (reading.property_dcid, reading.value_dcid)
         for disclosure in (state.slot_defaults.values() if state is not None else ())

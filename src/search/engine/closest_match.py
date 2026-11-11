@@ -6,11 +6,17 @@ the words hold that stands for the answer (`SourceCode.exact`) clears it.
 When the request's words for the variable name declared measures
 (`qualifier_match.declared_measures_named`: a label, `also_called` entry or declared acronym,
 whole, the longest declared name winning its words), it raises it when some name's verdict
-(`measure_verdict.measure_verdicts`) is neither holds nor base. The reading's shape and bound
-values holding the measure show it ("gross disbursements" answered with gross ODA
-disbursements). The name of the StatVar it divides by names its base, so "GDP" answered
-with any share of GDP raises none. Its noun or every StatVar name show a measure only where
-its pairs hold no declared measure, so "GDP" answered with GDP growth raises it.
+(`measure_verdict.measure_verdicts`) is neither holds nor base. The verdict reads the
+reading's five-tuple and, on each constraint property, the values its served members
+declare (`reading_inputs`): a bound slot's values, which every member declares, and the
+values on an axis the query left open, which every member declares when none is
+undeclared. The measure holds where every member declares a related value ("gross
+disbursements" answered with gross ODA disbursements). Members that split between the
+measure and another, or of which some declare nothing, read `some`, and the fact is raised:
+"GDP India" answered with GDP beside sector gross value added raises it. The name of the
+StatVar it divides by names its base, so "GDP" answered with any share of GDP raises none.
+Its noun or every StatVar name show a measure only where its values relate to no declared
+measure, so "GDP" answered with GDP growth raises it.
 
 When the words name no declared measure, it raises it unless a content word
 (`search.heading.words`) of them appears in the heading's measure noun, among the words
@@ -124,10 +130,11 @@ def reading_inputs(
     its shape's five-tuple and, on each constraint property, the values its served members
     declare and whether every one declares one (`measure_verdict.PropertyEvidence`): on a
     bound slot its bound values, which every member declares, and on an axis the query left
-    open the values `ResolvedSpec.open_axis_facts` lists, which every member declares when
-    none is undeclared. Its series codes are the publisher codes that stand for it
-    (`ResolvedStatVars.source_codes`, `exact`). A Spec states no denominator pairs, only the
-    denominator's name."""
+    open the values `ResolvedSpec.open_axis_facts` lists. Those are counts of the served
+    members, so every member declares one where none is undeclared (`undeclared_count` 0); a
+    Spec carries no family summary values. Its series codes are the publisher codes that
+    stand for it (`ResolvedStatVars.source_codes`, `exact`). A Spec states no denominator
+    pairs (`ReadingEvidence.denominator_pairs` is `None`), only the denominator's name."""
     resolved = spec.resolved
     bound = [
         (slot.key.property.ref if slot.key.property is not None else None, value.ref.ref)

@@ -80,48 +80,10 @@ def test_a_place_type_carries_every_type_of_the_place_sorted_and_comma_joined():
     assert graph.calls["node_arcs_many"] == 1
 
 
-def test_a_partys_kind_comes_from_its_index_row_whatever_its_graph_types():
-    """The index row decides the kind; a party it does not list has none, even when its graph
-    types once implied one (`DACGroup` a total, `Organization` a party)."""
-    graph = FakeGraphReader(
-        arcs={
-            "WorldBankGroup": {"typeOf": ("Organization",)},
-            "IDA": {"typeOf": ("Organization", "ProvisionalNode")},
-            "DACAfrica": {"typeOf": ("DACGroup",)},
-            "Bare": {"label": ("No types",)},
-        }
-    )
-    lookup = EnrichmentLookup(
-        graph,
-        parties=lambda: {
-            "WorldBankGroup": PartyRow(
-                dcid="WorldBankGroup", kind="total", published=((_DAC2A, "origin"),)
-            ),
-            "Bare": PartyRow(
-                dcid="Bare",
-                kind="residual",
-                party_class="residual",
-                published=((_DAC2A, "origin"),),
-            ),
-        },
-    )
-
-    result = lookup.lookup(["WorldBankGroup", "IDA", "DACAfrica", "Bare"])
-
-    assert {ref: fields.get("party_kind") for ref, fields in result.items()} == {
-        "WorldBankGroup": "total",
-        "IDA": None,
-        "DACAfrica": None,
-        "Bare": "residual",
-    }
-    assert result["DACAfrica"] == {"type": "DACGroup"}
-    assert graph.calls["node_arcs_many"] == 1
-
-
-def test_a_partys_kind_survives_a_graph_that_returns_no_node_for_it():
-    # The graph has no node for WorldBankGroup (or its read failed), yet the index declares it
-    # a total. A later call serves the kind from the cached entry without a graph read.
-    graph = FakeGraphReader(arcs={})
+def test_the_lookup_reads_graph_fields_alone_and_no_party_field():
+    """A party's cells depend on the axis of the column that holds it, so the lookup, which
+    reads no column, gives none of them, even for a ref the party rows list."""
+    graph = FakeGraphReader(arcs={"WorldBankGroup": {"typeOf": ("Organization",)}})
     lookup = EnrichmentLookup(
         graph,
         parties=lambda: {
@@ -131,13 +93,10 @@ def test_a_partys_kind_survives_a_graph_that_returns_no_node_for_it():
         },
     )
 
-    first = lookup.lookup(["WorldBankGroup", "country/NOWHERE"])
-    repeat = lookup.lookup(["WorldBankGroup", "country/NOWHERE"])
-
-    expected = {"WorldBankGroup": {"party_kind": "total"}, "country/NOWHERE": {}}
-    assert first == expected
-    assert repeat == expected
-    assert graph.calls["node_arcs_many"] == 1
+    assert lookup.lookup(["WorldBankGroup", "country/NOWHERE"]) == {
+        "WorldBankGroup": {"type": "Organization"},
+        "country/NOWHERE": {},
+    }
 
 
 _DAC2A = "provenance/OECDDAC2A"
@@ -352,39 +311,9 @@ def test_a_total_is_whole_only_in_the_dataset_and_years_of_its_marker(
     )
 
 
-def test_the_lookup_reads_only_the_kind_and_no_whole_total():
-    lookup = EnrichmentLookup(FakeGraphReader(arcs={}), parties=lambda: {"W": _WINDOWED})
-
-    assert lookup.lookup(["W"]) == {"W": {"party_kind": "total"}}
-
-
 def test_a_party_cell_refuses_a_field_that_is_not_a_party_field():
     with pytest.raises(ValueError, match="iso3"):
         party_cell("iso3", "W", axis="origin", parties={"W": _WINDOWED})
-
-
-def test_a_partys_kind_follows_the_party_rows_each_lookup_reads():
-    """The rows can change between lookups, as a graph release swap replaces the code index. A
-    cached ref takes the kind the current rows give, with no second graph read."""
-    graph = FakeGraphReader(arcs={"WorldBankGroup": {"typeOf": ("Organization",)}})
-    rows = {
-        "WorldBankGroup": PartyRow(
-            dcid="WorldBankGroup", kind="total", published=((_DAC2A, "origin"),)
-        )
-    }
-    lookup = EnrichmentLookup(graph, parties=lambda: rows)
-
-    before = lookup.lookup(["WorldBankGroup"])
-    rows = {
-        "WorldBankGroup": PartyRow(
-            dcid="WorldBankGroup", kind="party", published=((_DAC2A, "origin"),)
-        )
-    }
-    after = lookup.lookup(["WorldBankGroup"])
-
-    assert before["WorldBankGroup"]["party_kind"] == "total"
-    assert after["WorldBankGroup"] == {"type": "Organization", "party_kind": "party"}
-    assert graph.calls["node_arcs_many"] == 1
 
 
 def test_party_kinds_read_the_index_alone_for_flow_parties():

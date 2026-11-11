@@ -34,7 +34,7 @@ from materialise.roles import axis_for_role
 from origin_catalogue.context import current_catalogue, current_source_scope
 from series_coverage._bits import bit_length64, lowest_set_bit_index64, popcount64
 from series_coverage.coverage_types import (
-    ROLE_AXES,
+    COVERAGE_ROLE_AXES,
     BoundRoles,
     Estimate,
     FacetCoverage,
@@ -728,7 +728,7 @@ class CoverageIndex:
             if metadata.provenance_id in provenances
         }
         axes: dict[str, set[RoleAxis]] = {}
-        for role, axis in ROLE_AXES.items():
+        for role, axis in COVERAGE_ROLE_AXES.items():
             by_facet = self.grouped(by=(role, "facet_id"))
             for party, facet_id in zip(
                 _key_values(by_facet[role]), _key_values(by_facet[FACET_COLUMN]), strict=True

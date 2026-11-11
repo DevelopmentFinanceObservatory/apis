@@ -198,9 +198,10 @@ def cut_party_totals(
     role, each pass after the cuts of the roles before it."""
     left_out: dict[str, dict[_Provenance, tuple[str, ...]]] = {}
     for role in roles:
+        if (axis := role_key_axis(role)) is None:
+            continue  # A role on no flow axis holds no party kinds, so no totals to cut.
         totals: defaultdict[str | None, set[str]] = defaultdict(set)
         others = False
-        axis = role_key_axis(role)
         for chunk in frame_chunks():
             if role not in chunk.columns:
                 break
@@ -209,7 +210,6 @@ def cut_party_totals(
                 datasets = () if dataset is None else (dataset,)
                 if (
                     isinstance(ref, str)
-                    and axis is not None
                     and party_kind_of(ref, axis=axis, parties=parties, datasets=datasets)
                     == _TOTAL_KIND
                 ):

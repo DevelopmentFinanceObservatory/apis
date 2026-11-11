@@ -57,7 +57,7 @@ from search.models import (
     HeadlineYear,
     TimeWindow,
 )
-from series_coverage.coverage_types import ROLE_AXES
+from series_coverage.coverage_types import COVERAGE_ROLE_AXES
 
 if TYPE_CHECKING:
     from search.engine.extract import DateRequest
@@ -142,13 +142,13 @@ def _scope_party_count(
     members: Collection[str], *, role: CoverageRole, sv_dcids: Iterable[str]
 ) -> int:
     """How many of an open `role`'s `members` are parties on its axis
-    (`series_coverage.coverage_types.ROLE_AXES`, `enrichment.party_count`), read in the
+    (`series_coverage.coverage_types.COVERAGE_ROLE_AXES`, `enrichment.party_count`), read in the
     datasets that publish `sv_dcids`: the parties a frame minted `without_party_totals`
     holds, as the role's heading and warning count them."""
     index = get_index()
     return party_count(
         members,
-        axis=ROLE_AXES[role],
+        axis=COVERAGE_ROLE_AXES[role],
         parties=index.parties,
         datasets=index.statvar_provenances(sv_dcids),
     )

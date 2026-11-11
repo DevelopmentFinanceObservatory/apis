@@ -13,7 +13,7 @@ from typing import Final, Literal
 from dfo_platform.roles import RoleAxis
 
 Role = Literal["donor", "recipient"]
-ROLE_AXES: Final[Mapping[Role, RoleAxis]] = {"donor": "origin", "recipient": "destination"}
+COVERAGE_ROLE_AXES: Final[Mapping[Role, RoleAxis]] = {"donor": "origin", "recipient": "destination"}
 """The flow axis each coverage role's party column holds (`series_coverage.schema`)."""
 # Missing role keys leave that axis open. An empty frozenset matches no rows.
 BoundRoles = Mapping[Role, frozenset[str]]

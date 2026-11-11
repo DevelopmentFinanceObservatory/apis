@@ -11,6 +11,7 @@ import random
 
 import httpx
 
+from code_index.types import PartyRow
 from dc_sdmx import SdmxClient
 from materialise import (
     ConcatenatedFrameChunks,
@@ -636,3 +637,33 @@ def _random_grammar_shaped_table(rng: random.Random) -> Table:
                 row.append(rng.choice(choices[:width]))
         rows.append(tuple(row))
     return Table(columns=columns, rows=tuple(rows))
+
+
+_D1, _D2 = "provenance/D1", "provenance/D2"
+
+
+def test_a_party_kind_is_covered_on_each_role_column_by_that_column_s_axis():
+    """A total in the dataset that publishes it as a provider and a party in the one that
+    publishes it as a recipient has one kind on each axis, so each column covers it, as the
+    download fills its cells. Read across both axes it holds two kinds and none."""
+    party = PartyRow(
+        dcid="org/X",
+        kind="party",
+        published=((_D1, "origin"), (_D2, "destination")),
+        dataset_kinds=((_D1, "total"), (_D2, "party")),
+    )
+    columns = ("stat_var", "financingProvider", "financingRecipient", "time_period", "value")
+    table = Table(columns=columns, rows=((_STAT_VAR, "org/X", "org/X", "2015", 1.0),))
+
+    profile = compute_output_profile(
+        table,
+        role_columns=("financingProvider", "financingRecipient"),
+        enrichment=EnrichmentLookup(FakeGraphReader(), parties=lambda: {"org/X": party}),
+    )
+
+    covered = {
+        (coverage.column, coverage.covered, coverage.entities)
+        for coverage in profile.enrichments
+        if coverage.field == "party_kind"
+    }
+    assert covered == {("financingProvider", 1, 1), ("financingRecipient", 1, 1)}

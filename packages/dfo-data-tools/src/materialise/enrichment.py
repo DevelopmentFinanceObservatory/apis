@@ -14,7 +14,7 @@ import threading
 from collections import OrderedDict
 from collections.abc import Callable, Collection, Iterable, Mapping
 
-from code_index.types import ANY_AXIS, AnyAxis, PartyKind, PartyRow
+from code_index.types import AnyAxis, PartyKind, PartyRow
 from dc_graph import label_or_self_name
 from dfo_platform.roles import RoleAxis, role_key_axis
 from graph_release.context import served_origin_key
@@ -101,15 +101,14 @@ class EnrichmentLookup:
     def lookup(
         self, refs: Iterable[str], *, deadline: float | None = None
     ) -> Mapping[str, Mapping[str, str]]:
-        """Returns unique refs in input order, mapping available fields to values. Absent refs
-        map to `{}`, or to the `party_kind` their `parties` row gives for no dataset
-        (`party_cell`), which a party whose kind differs between datasets lacks. Cached refs
-        avoid graph calls. New refs are fetched in one unlocked batch, bounded by the absolute
-        monotonic `deadline` when given."""
+        """Returns unique refs in input order, mapping available graph fields to values. Absent
+        refs map to `{}`. The party fields depend on the axis of the column that holds a ref, so
+        readers take them from `party_cell` per column. Cached refs avoid graph calls. New refs
+        are fetched in one unlocked batch, bounded by the absolute monotonic `deadline` when
+        given."""
         requested = list(dict.fromkeys(refs))
         if not requested:
             return {}
-        parties = self._parties()
         hits, missing = self._hits_and_missing(requested)
         if missing:
             fetched = self._graph.node_arcs_many(
@@ -124,7 +123,7 @@ class EnrichmentLookup:
             }
             self._store(resolved)
             hits.update(resolved)
-        return {ref: _with_party_kind(ref, hits[ref], parties=parties) for ref in requested}
+        return {ref: hits[ref] for ref in requested}
 
     def _hits_and_missing(
         self, requested: list[str]
@@ -149,16 +148,6 @@ class EnrichmentLookup:
                 self._cache.move_to_end((ref, release))
             while len(self._cache) > _CACHE_CEILING:
                 self._cache.popitem(last=False)
-
-
-def _with_party_kind(
-    ref: str, fields: Mapping[str, str], *, parties: Mapping[str, PartyRow]
-) -> Mapping[str, str]:
-    """`fields` with `party_kind` set to the ref's cell for no dataset (`party_cell`), unchanged
-    for a ref that has none there. A copy, so the cached fields never carry a kind."""
-    if (kind := party_cell(PARTY_KIND_FIELD, ref, axis=ANY_AXIS, parties=parties)) is None:
-        return fields
-    return {**fields, PARTY_KIND_FIELD: kind}
 
 
 def _node_fields(dcid: str, node: Mapping[str, tuple[str, ...]]) -> dict[str, str]:

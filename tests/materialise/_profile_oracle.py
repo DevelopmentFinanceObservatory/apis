@@ -13,7 +13,14 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 
 from dfo_frame_grammar import Frame
 
-from materialise.enrichment import ENRICHMENT_FIELDS, EnrichmentLookup
+from code_index.types import PartyRow
+from dfo_platform.roles import role_key_axis
+from materialise.enrichment import (
+    ENRICHMENT_FIELDS,
+    PARTY_KIND_FIELD,
+    EnrichmentLookup,
+    party_cell,
+)
 from materialise.errors import MaterialisationUsageError
 from materialise.profile import (
     ColumnProfile,
@@ -217,7 +224,7 @@ def reference_output_profile_from_chunks(
         coverage
         for role_column in role_columns
         for coverage in _enrichment_coverage_for_column(
-            role_column, distinct_by_column[role_column], resolved
+            role_column, distinct_by_column[role_column], resolved, parties=enrichment.parties
         )
     )
 
@@ -347,26 +354,41 @@ def _pivot_feasibility(
 
 
 def _enrichment_coverage_for_column(
-    role_column: str, refs_seen: set[object], resolved: Mapping[str, Mapping[str, str]]
+    role_column: str,
+    refs_seen: set[object],
+    resolved: Mapping[str, Mapping[str, str]],
+    *,
+    parties: Mapping[str, PartyRow],
 ) -> tuple[EnrichmentCoverage, ...]:
     # Role columns contain string dcids. `resolved` is the shared lookup
-    # across all role columns; this function reads its own refs from it.
+    # across all role columns; `party_kind` comes from `parties` on the
+    # column's axis.
     refs = sorted({ref for ref in refs_seen if isinstance(ref, str)})
     if not refs:
         return ()
+    axis = role_key_axis(role_column)
+    fields: dict[str, Mapping[str, str]] = {}
+    for ref in refs:
+        fields[ref] = resolved.get(ref, {})
+        kind = (
+            party_cell(PARTY_KIND_FIELD, ref, axis=axis, parties=parties)
+            if axis is not None
+            else None
+        )
+        if kind is not None:
+            fields[ref] = {**fields[ref], PARTY_KIND_FIELD: kind}
 
     coverage: list[EnrichmentCoverage] = []
     for field_name in ENRICHMENT_FIELDS:
         if field_name not in SUPPORTED_ENRICHMENTS:
             continue
-        covered_refs = [ref for ref in refs if field_name in resolved.get(ref, {})]
+        covered_refs = [ref for ref in refs if field_name in fields[ref]]
         if not covered_refs:
             continue
-        missing_refs = [ref for ref in refs if field_name not in resolved.get(ref, {})]
+        missing_refs = [ref for ref in refs if field_name not in fields[ref]]
         truncated = len(missing_refs) > _MAX_NAMED_MISSING_REFS
         missing = tuple(
-            (ref, resolved.get(ref, {}).get("label", ""))
-            for ref in missing_refs[:_MAX_NAMED_MISSING_REFS]
+            (ref, fields[ref].get("label", "")) for ref in missing_refs[:_MAX_NAMED_MISSING_REFS]
         )
         coverage.append(
             EnrichmentCoverage(

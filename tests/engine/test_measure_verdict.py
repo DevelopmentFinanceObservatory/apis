@@ -15,6 +15,8 @@ from search.engine.measure_verdict import (
     ReadingEvidence,
     Verdict,
     measure_verdicts,
+    property_evidence,
+    reading_evidence,
 )
 from search.engine.qualifier_match import declared_measures_named
 
@@ -92,7 +94,7 @@ def _reading(
     members: tuple[frozenset[str], ...] | None = None,
     noun: str | None = None,
     member_names: tuple[str, ...] = (),
-    denominator_pairs: frozenset[tuple[str, str]] = frozenset(),
+    denominator_pairs: frozenset[tuple[str, str]] | None = None,
     denominator_name: str | None = None,
 ) -> ReadingEvidence:
     """The evidence of a reading whose five-tuple and constraint values are `pairs`, its
@@ -353,3 +355,35 @@ def test_measure_verdicts(
     named = declared_measures_named(variable_text)
 
     assert measure_verdicts(named, evidence) == verdicts
+
+
+@pytest.mark.parametrize(
+    ("member_value", "summary_value", "verdict"),
+    [
+        pytest.param(
+            "HealthcareExpenditure", "EducationExpenditure", "holds", id="members-hold-it"
+        ),
+        pytest.param(
+            "EducationExpenditure", "HealthcareExpenditure", "some", id="only-the-summary-holds-it"
+        ),
+    ],
+)
+def test_a_summary_value_reaches_some_and_never_decides_holds(
+    member_value: str, summary_value: str, verdict: Verdict
+) -> None:
+    """A held family's summary holds values without saying which members declare them, so
+    one of them neither stops the members' own values holding "health expenditure" nor
+    makes the measure held where no member declares it."""
+    evidence = reading_evidence(
+        population_type="EconomicActivity",
+        measured_property="amount",
+        stat_type="measuredValue",
+        properties=property_evidence(
+            [{"activitySource": "ExpenditureActivity", "expenditureType": member_value}],
+            summary=[("expenditureType", summary_value)],
+        ),
+        noun=None,
+        denominator_pairs=(),
+    )
+
+    assert measure_verdicts(declared_measures_named("health expenditure"), evidence) == [verdict]

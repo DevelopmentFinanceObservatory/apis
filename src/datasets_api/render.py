@@ -1093,10 +1093,6 @@ def _reshape_select_pivot_enrich(
             requests=parsed.enrichments,
             lookup=reads.fields_of(refs, fields={field for _, field in parsed.enrichments}),
             parties=reads.enrichment.parties,
-            # A pivot's index and columns group rows, so a cell that varied with the period
-            # would split one party into several index rows. Its party cells are read for no
-            # dataset and year, where a whole total's `party_whole` is empty (`whole_cell`).
-            per_row=pivot is None,
         )
     warning_order = (
         *decoded_column_names,

@@ -20,7 +20,14 @@ import pyarrow as pa
 import pyarrow.compute as pc
 from dfo_frame_grammar import Frame
 
-from materialise.enrichment import ENRICHMENT_FIELDS, EnrichmentLookup
+from code_index.types import PartyRow
+from dfo_platform.roles import role_key_axis
+from materialise.enrichment import (
+    ENRICHMENT_FIELDS,
+    PARTY_KIND_FIELD,
+    EnrichmentLookup,
+    party_cell,
+)
 from materialise.errors import MaterialisationUsageError
 from materialise.reshape import (
     SUPPORTED_ENRICHMENTS,
@@ -61,8 +68,8 @@ class ColumnProfile:
 class EnrichmentCoverage:
     """Coverage of one `(column, field)` enrichment pair over the frame's
     distinct refs in `column`. `entities` is the distinct ref count.
-    `covered` is how many of those refs the lookup gives `field` for: the
-    code index for `party_kind`, the graph for every other field.
+    `covered` is how many of those refs have `field`: the code index on the
+    column's axis for `party_kind`, the graph lookup for every other field.
     `missing` lists the refs without `field`, each paired with its label
     from the same lookup call, empty when the graph carries no label for
     that ref either. It is capped at `_MAX_NAMED_MISSING_REFS`, with
@@ -368,7 +375,7 @@ class OutputProfileFold:
             coverage
             for role_column in role_columns
             for coverage in _enrichment_coverage_for_column(
-                role_column, books[role_column], resolved
+                role_column, books[role_column], resolved, parties=enrichment.parties
             )
         )
 
@@ -650,13 +657,27 @@ def _pivot_feasibility(
 
 
 def _enrichment_coverage_for_column(
-    role_column: str, refs_seen: Collection[object], resolved: Mapping[str, Mapping[str, str]]
+    role_column: str,
+    refs_seen: Collection[object],
+    resolved: Mapping[str, Mapping[str, str]],
+    *,
+    parties: Mapping[str, PartyRow],
 ) -> tuple[EnrichmentCoverage, ...]:
-    # Role columns contain string dcids. `resolved` is the shared lookup
-    # across all role columns; this function reads its own refs from it.
+    """The coverage of each enrichment field on `role_column`, whose cells hold `refs_seen`:
+    a graph field from `resolved`, the lookup shared across role columns, and `party_kind`
+    from `parties` on the column's own axis (`party_cell` with `role_key_axis`), as the
+    download fills that column's cells for no dataset or year."""
     refs = sorted({ref for ref in refs_seen if isinstance(ref, str)})
     if not refs:
         return ()
+    axis = role_key_axis(role_column)
+    fields: dict[str, Mapping[str, str]] = {
+        ref: {**resolved.get(ref, {}), PARTY_KIND_FIELD: kind}
+        if axis is not None
+        and (kind := party_cell(PARTY_KIND_FIELD, ref, axis=axis, parties=parties)) is not None
+        else resolved.get(ref, {})
+        for ref in refs
+    }
 
     coverage: list[EnrichmentCoverage] = []
     for field_name in ENRICHMENT_FIELDS:
@@ -664,14 +685,13 @@ def _enrichment_coverage_for_column(
             role_column, field_name
         ):
             continue
-        covered_refs = [ref for ref in refs if field_name in resolved.get(ref, {})]
+        covered_refs = [ref for ref in refs if field_name in fields[ref]]
         if not covered_refs:
             continue
-        missing_refs = [ref for ref in refs if field_name not in resolved.get(ref, {})]
+        missing_refs = [ref for ref in refs if field_name not in fields[ref]]
         truncated = len(missing_refs) > _MAX_NAMED_MISSING_REFS
         missing = tuple(
-            (ref, resolved.get(ref, {}).get("label", ""))
-            for ref in missing_refs[:_MAX_NAMED_MISSING_REFS]
+            (ref, fields[ref].get("label", "")) for ref in missing_refs[:_MAX_NAMED_MISSING_REFS]
         )
         coverage.append(
             EnrichmentCoverage(

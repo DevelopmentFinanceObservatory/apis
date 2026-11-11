@@ -22,6 +22,7 @@ from search.engine import measure_verdict
 from search.engine.closest_match import closest_match_fact, reading_inputs
 from search.engine.measure_verdict import ReadingEvidence, measure_verdicts, property_evidence
 from search.engine.qualifier_match import declared_measures_named
+from search.engine.quantity import DenominatorRead
 from search.engine.region.admissibility import rule_four_verdicts
 from search.engine.shape import ShapeDraft
 from search.heading.departure_fact import DepartureFact
@@ -559,3 +560,46 @@ def test_rule_four_and_closest_match_read_a_split_reading_alike() -> None:
         "some"
     ]
     assert closest_match_fact(variable_text="GDP", evidence=evidence) is not None
+
+
+@pytest.mark.parametrize(
+    ("denominator_pairs", "verdicts"),
+    [
+        pytest.param((("populationType", "Person"),), ["contradicts"], id="pairs-read"),
+        pytest.param((), ["contradicts"], id="graph-gives-no-pairs"),
+    ],
+)
+def test_rule_four_refuses_a_contradiction_whatever_its_denominator_is_named(
+    denominator_pairs: tuple[tuple[str, str], ...], verdicts: list[str]
+) -> None:
+    """A health expenditure series divided by a StatVar named "Gross domestic product (GDP)"
+    whose pairs hold no declared measure contradicts "GDP" before bind, as it did before the
+    name could rescue a Spec: rule 4 reads the pairs the graph gives, never the name alone."""
+    member = {
+        "populationType": {"nodes": [{"dcid": "EconomicActivity"}]},
+        "measuredProperty": {"nodes": [{"dcid": "amount"}]},
+        "statType": {"nodes": [{"dcid": "measuredValue"}]},
+        "constraintProperties": {
+            "nodes": [{"dcid": "activitySource"}, {"dcid": "expenditureType"}]
+        },
+        "activitySource": {"nodes": [{"dcid": "ExpenditureActivity"}]},
+        "expenditureType": {"nodes": [{"dcid": "HealthcareExpenditure"}]},
+    }
+    draft = ShapeDraft(
+        shape_id="health_share",
+        label="health expenditure",
+        pop_type_dcid="EconomicActivity",
+        meas_prop_dcid="amount",
+        stat_type_dcid="measuredValue",
+        meas_qual_dcid=None,
+        meas_denom_dcid="Amount_Gdp_Unread",
+        slot_keys=(),
+        sv_arc_facts={"health_share_member": member},
+    )
+    denominators = {
+        "Amount_Gdp_Unread": DenominatorRead(
+            kind="other", name="Gross domestic product (GDP)", pairs=denominator_pairs
+        )
+    }
+
+    assert rule_four_verdicts(draft, declared_measures_named("GDP"), denominators) == verdicts

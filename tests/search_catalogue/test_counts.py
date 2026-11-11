@@ -8,6 +8,7 @@ from dataclasses import replace
 
 import pytest
 
+from code_index.types import PartyRow
 from origin_catalogue.catalogue import BaseVariable
 from search.catalogue.artifact import AidCounts, PlaceCounts, YearRange
 from search.catalogue.counts import catalogue_counts
@@ -35,7 +36,7 @@ def counted(tmp_path):
         catalogue=origin_snapshot(tmp_path / "origin"),
         coverage=build_test_index(),
         datasets={metadata.provenance_id for metadata in FACET_METADATA.values()},
-        totals=(),
+        parties={},
     )
 
 
@@ -108,7 +109,7 @@ def test_a_publisher_counts_only_where_its_own_provenance_holds_data(tmp_path):
         catalogue=replace(snapshot, tables=tables),
         coverage=coverage,
         datasets={AID_TABLE},
-        totals=(),
+        parties={},
     ).places
     assert (places["country/KEN"].publishers, places["country/USA"].publishers) == (1, 1)
     assert (places["country/KEN"].variables, places["country/USA"].variables) == (1, 1)
@@ -150,7 +151,7 @@ def test_the_aid_block_counts_the_rows_of_every_declared_dataset(tmp_path):
         catalogue=origin_snapshot(tmp_path),
         coverage=coverage,
         datasets={AID_TABLE, totals_table, receipts_table},
-        totals=(),
+        parties={},
     )
     assert counted.counts.aid == AidCounts(
         donors=2, recipients=2, years=YearRange(first=1961, last=2022)
@@ -193,7 +194,7 @@ def test_indicators_leave_out_a_withheld_coverage_variable(tmp_path):
         catalogue=replace(snapshot, tables=tables),
         coverage=coverage,
         datasets={AID_TABLE},
-        totals=(),
+        parties={},
     )
     # Three base and DFO variables, and V1.
     assert counted.counts.indicators == 4
@@ -219,10 +220,59 @@ def test_the_aid_block_leaves_out_the_parties_that_total_others(tmp_path):
         catalogue=origin_snapshot(tmp_path),
         coverage=coverage,
         datasets={AID_TABLE},
-        totals={"GroupOfSeven", "DACAfrica"},
+        parties={
+            "GroupOfSeven": PartyRow(
+                dcid="GroupOfSeven", kind="total", published=((AID_TABLE, "origin"),)
+            ),
+            "DACAfrica": PartyRow(
+                dcid="DACAfrica", kind="total", published=((AID_TABLE, "destination"),)
+            ),
+        },
     )
     assert counted.counts.aid == AidCounts(
         donors=1, recipients=1, years=YearRange(first=2018, last=2020)
     )
     assert counted.places["country/KEN"].aid.donors == 1
     assert counted.places["country/FRA"].aid.recipients == 1
+
+
+def test_a_party_that_totals_others_on_one_axis_counts_on_the_other(tmp_path):
+    """The IMF trust funds total other donors in the table that publishes them as a donor and
+    are a recipient of their own in the one that publishes them as a recipient: the aid block
+    leaves them out as a donor and counts them as a recipient."""
+    receipts = "provenance/ReceiptsTable"
+    receipts_facet = "facet-receipts"
+    table, horizon = coverage_table(
+        [
+            (V1, FACET_ACTUALS, "IMFTrustFunds", "country/KEN", [2018]),
+            (V1, receipts_facet, "country/FRA", "IMFTrustFunds", [2019]),
+        ]
+    )
+    coverage = CoverageIndex(
+        table,
+        {V1: RoleNames(donor="financingProvider", recipient="financingRecipient")},
+        {
+            FACET_ACTUALS: FacetMetadata(provenance_id=AID_TABLE),
+            receipts_facet: FacetMetadata(provenance_id=receipts),
+        },
+        horizon=horizon,
+    )
+    trust_funds = PartyRow(
+        dcid="IMFTrustFunds",
+        kind="party",
+        published=((AID_TABLE, "origin"), (receipts, "destination")),
+        dataset_kinds=((AID_TABLE, "total"),),
+    )
+
+    counted = catalogue_counts(
+        catalogue=origin_snapshot(tmp_path),
+        coverage=coverage,
+        datasets={AID_TABLE, receipts},
+        parties={"IMFTrustFunds": trust_funds},
+    )
+
+    assert counted.counts.aid == AidCounts(
+        donors=1, recipients=2, years=YearRange(first=2018, last=2019)
+    )
+    assert counted.places["country/FRA"].aid.recipients == 1
+    assert counted.places["country/KEN"].aid.donors == 0

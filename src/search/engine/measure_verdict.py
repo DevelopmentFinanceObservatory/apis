@@ -5,25 +5,29 @@
 share the name. `measure_verdicts` judges each name on a reading's `ReadingEvidence`,
 built by `reading_evidence` from a Spec (`closest_match.reading_inputs`) or from a shape
 draft (`admissibility.draft_evidence`). The evidence states the reading's five-tuple and,
-for each constraint property, the values its members declare and whether every member
-declares one (`PropertyEvidence`). A declared value is related to an alternative's value
-when the two are equal or one descends from the other in the code index. The verdicts, in
-this order:
+for each constraint property, the values its members declare, whether every member
+declares one, and the values a summary of its members holds (`PropertyEvidence`). A value
+is related to an alternative's value when the two are equal or one descends from the other
+in the code index. The verdicts, in this order:
 
 1. ``holds``: the reading's five-tuple holds an alternative's five-tuple keys, and on each
    constraint property the alternative keys on every member declares a value and every
-   declared value is related to the alternative's; and the reading relates to no declared
-   noun outside the name that refines it (potential GDP refines GDP);
-2. ``some``: as ``holds``, except that on some keyed property only some declared value is
-   related: the members split between related and unrelated values, or some declare none;
+   value the members declare is related to the alternative's, the summary's values aside;
+   and the reading relates to no declared noun outside the name that refines it
+   (potential GDP refines GDP);
+2. ``some``: as ``holds``, except that on some keyed property only some value the members
+   or their summary hold is related: the members split between related and unrelated
+   values, some declare none, or only the summary holds a related one;
 3. ``base``: the StatVar the reading divides by holds one;
 4. ``contradicts``: some alternative shares the reading's population type, and for every
    such alternative some constraint property it keys on has every member declaring a value
-   and no declared value related to its own. An alternative of another population type
+   and no value the members or their summary hold related to its own. An alternative of another population type
    says nothing of the reading, so "GDP", which names WEO's GDP (`EconomicProduction`) and
-   WDI's (`EconomicActivity`), contradicts a WDI series of gross national income. A name
-   whose alternative the denominator's name names (step 6) is ``base`` instead, so a
-   share of GDP whose numerator contradicts "GDP" divides by it;
+   WDI's (`EconomicActivity`), contradicts a WDI series of gross national income. Where
+   the reading does not state its denominator's pairs, as a Spec does not, a name whose
+   alternative the denominator's name names (step 6) is ``base`` instead, so a share of
+   GDP whose numerator contradicts "GDP" divides by it; a shape draft states them, and
+   step 3 has already read them;
 5. ``holds`` from names: the reading relates to no declared measure at all, and its measure
    noun, or every one of its member names, names an alternative (`declared_measures_named`
    again, so "GDP growth (annual %)" names "GDP growth" and not "GDP");
@@ -72,13 +76,24 @@ _FIVE_TUPLE_KEYS = frozenset(
 
 @dataclass(frozen=True, slots=True)
 class PropertyEvidence:
-    """What a reading's members declare on one constraint property: the `values` some
-    member declares, and whether `every_member` declares one. A value known only from a
-    summary of the members, which does not say which members declare it, adds to `values`
-    and never sets `every_member`."""
+    """What a reading's members state on one constraint property.
+
+    `values` are the values some member declares, read from the members themselves: their
+    arcs, a bound slot's values, or the served-member counts of an axis the query left open
+    (`ResolvedSpec.open_axis_facts`). `every_member` is whether every member declares one,
+    which those counts give when no served member is undeclared (`undeclared_count` 0).
+    `summary_values` are values a summary of the members holds without saying which members
+    declare them (a held family's `FamilySummary.values`): they can clear a contradiction or
+    reach ``some``, and never decide ``holds``."""
 
     values: frozenset[str]
     every_member: bool
+    summary_values: frozenset[str] = frozenset()
+
+    @property
+    def stated(self) -> frozenset[str]:
+        """Every value the members or their summary hold."""
+        return self.values | self.summary_values
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,14 +103,15 @@ class ReadingEvidence:
     `five_tuple` are its five-tuple pairs (`shape_pairs`); `properties` what its members
     declare on each constraint property (`PropertyEvidence`); `noun` its measure noun and
     `member_names` its members' names; `denominator_pairs` the five-tuple pairs and
-    constraint values of the StatVar it divides by, empty where unknown, and
-    `denominator_name` that StatVar's name."""
+    constraint values the graph gives the StatVar it divides by, empty where it gives none
+    and `None` where the reading does not state them (a Spec), and `denominator_name` that
+    StatVar's name."""
 
     five_tuple: Pairs = frozenset()
     properties: Mapping[str, PropertyEvidence] = field(default_factory=dict)
     noun: str | None = None
     member_names: tuple[str, ...] = ()
-    denominator_pairs: Pairs = frozenset()
+    denominator_pairs: Pairs | None = None
     denominator_name: str | None = None
 
 
@@ -107,7 +123,7 @@ def reading_evidence(
     properties: Mapping[str, PropertyEvidence],
     noun: str | None,
     member_names: Sequence[str] = (),
-    denominator_pairs: Iterable[tuple[str, str]] = (),
+    denominator_pairs: Iterable[tuple[str, str]] | None = None,
     denominator_name: str | None = None,
 ) -> ReadingEvidence:
     """The evidence of a reading of the five-tuple `population_type`, `measured_property`
@@ -118,7 +134,7 @@ def reading_evidence(
         properties=dict(properties),
         noun=noun,
         member_names=tuple(member_names),
-        denominator_pairs=frozenset(denominator_pairs),
+        denominator_pairs=None if denominator_pairs is None else frozenset(denominator_pairs),
         denominator_name=denominator_name,
     )
 
@@ -128,18 +144,23 @@ def property_evidence(
 ) -> dict[str, PropertyEvidence]:
     """The evidence on each constraint property of a reading whose members declare
     `members`, one `{property: value}` mapping per member, beside the (property, value)
-    pairs a `summary` of its members holds. A property every one of `members` declares has
-    `every_member`; a reading with no known members has it on no property, and a summary
-    value never sets it."""
-    values: dict[str, set[str]] = {}
-    for prop, value in [*(pair for member in members for pair in member.items()), *summary]:
-        values.setdefault(prop, set()).add(value)
+    pairs a `summary` of its members holds (`PropertyEvidence.summary_values`). A property
+    every one of `members` declares has `every_member`; a reading with no known members has
+    it on no property."""
+    declared: dict[str, set[str]] = {}
+    for member in members:
+        for prop, value in member.items():
+            declared.setdefault(prop, set()).add(value)
+    summarised: dict[str, set[str]] = {}
+    for prop, value in summary:
+        summarised.setdefault(prop, set()).add(value)
     return {
         prop: PropertyEvidence(
-            values=frozenset(found),
+            values=frozenset(declared.get(prop, ())),
             every_member=bool(members) and all(prop in member for member in members),
+            summary_values=frozenset(summarised.get(prop, ())),
         )
-        for prop, found in values.items()
+        for prop in {**declared, **summarised}
     }
 
 
@@ -165,7 +186,11 @@ def measure_verdicts(names: Sequence[NamedMeasure], evidence: ReadingEvidence) -
     population type is."""
     index = get_index()
     measures = get_measure_index()
-    verdicts = [_by_evidence(name.alternatives, evidence, measures.nouns, index) for name in names]
+    denominator = _statvar(evidence.denominator_pairs or frozenset())
+    verdicts = [
+        _by_evidence(name.alternatives, evidence, denominator, measures.nouns, index)
+        for name in names
+    ]
     if "unknown" not in verdicts and "contradicts" not in verdicts:
         return verdicts
 
@@ -174,38 +199,34 @@ def measure_verdicts(names: Sequence[NamedMeasure], evidence: ReadingEvidence) -
         return {alternative for name in named for alternative in name.alternatives}
 
     shown: set[MeasurePartitionLabel] = set()
-    if not _identifies(_Stated(evidence.five_tuple, evidence.properties), measures, index):
+    if not _identifies(evidence, measures, index):
         members = [declared(name) for name in evidence.member_names]
         shown = declared(evidence.noun) | (set.intersection(*members) if members else set())
     based = (
-        set()
-        if _identifies(_statvar(evidence.denominator_pairs), measures, index)
-        else declared(evidence.denominator_name)
+        set() if _identifies(denominator, measures, index) else declared(evidence.denominator_name)
     )
     return [
-        _by_names(verdict, name.alternatives, shown, based)
+        _by_names(
+            verdict,
+            name.alternatives,
+            shown,
+            based,
+            pairs_known=evidence.denominator_pairs is not None,
+        )
         for verdict, name in zip(verdicts, names, strict=True)
     ]
 
 
-@dataclass(frozen=True, slots=True)
-class _Stated:
-    """A reading's five-tuple and property evidence, or a StatVar's (`_statvar`)."""
-
-    five_tuple: Pairs
-    properties: Mapping[str, PropertyEvidence]
-
-
-def _statvar(pairs: Pairs) -> _Stated:
-    """One StatVar whose pairs are `pairs`: its one member declares every constraint value
-    it holds."""
+def _statvar(pairs: Pairs) -> ReadingEvidence:
+    """The evidence of one StatVar whose pairs are `pairs`: its one member declares every
+    constraint value it holds."""
     five_tuple = frozenset(pair for pair in pairs if pair[0] in _FIVE_TUPLE_KEYS)
     values: dict[str, set[str]] = {}
     for prop, value in pairs - five_tuple:
         values.setdefault(prop, set()).add(value)
-    return _Stated(
-        five_tuple,
-        {
+    return ReadingEvidence(
+        five_tuple=five_tuple,
+        properties={
             prop: PropertyEvidence(values=frozenset(found), every_member=True)
             for prop, found in values.items()
         },
@@ -217,13 +238,19 @@ def _by_names(
     alternatives: Sequence[MeasurePartitionLabel],
     shown: set[MeasurePartitionLabel],
     based: set[MeasurePartitionLabel],
+    *,
+    pairs_known: bool,
 ) -> Verdict:
-    """The verdict `verdict` from the evidence with the names read: a ``contradicts`` is
-    ``base`` where the denominator's name names an alternative (`based`); an ``unknown`` is
-    ``holds`` where the reading's names name one (`shown`), ``base`` where the denominator's
-    name does, and ``unknown`` otherwise."""
+    """The verdict `verdict` from the evidence with the names read. A ``contradicts`` is
+    ``base`` where the denominator's name names an alternative (`based`) and the reading
+    does not state its pairs (`pairs_known` false, as on a Spec), so a share of GDP whose
+    numerator contradicts "GDP" divides by it. A shape draft states the pairs the graph
+    gives, which decided ``base`` before the contradiction where they hold the measure, so
+    rule 4 refuses the contradiction as it did before. An ``unknown`` is ``holds`` where the
+    reading's names name an alternative (`shown`), ``base`` where the denominator's name
+    does, and ``unknown`` otherwise."""
     if verdict == "contradicts":
-        return "base" if based.intersection(alternatives) else verdict
+        return "base" if not pairs_known and based.intersection(alternatives) else verdict
     if verdict != "unknown":
         return verdict
     if shown.intersection(alternatives):
@@ -236,30 +263,30 @@ def _by_names(
 def _by_evidence(
     alternatives: Sequence[MeasurePartitionLabel],
     evidence: ReadingEvidence,
+    denominator: ReadingEvidence,
     nouns: Sequence[MeasurePartitionLabel],
     index: CodeIndex,
 ) -> Verdict:
-    """The verdict the reading's evidence and its denominator's pairs give: steps 1 to 4."""
-    stated = _Stated(evidence.five_tuple, evidence.properties)
-    if _held(alternatives, stated, nouns, index, every=True):
+    """The verdict the reading's `evidence` and its `denominator`'s give: steps 1 to 4."""
+    if _held(alternatives, evidence, nouns, index, every=True):
         return "holds"
-    if _held(alternatives, stated, nouns, index, every=False):
+    if _held(alternatives, evidence, nouns, index, every=False):
         return "some"
-    if _held(alternatives, _statvar(evidence.denominator_pairs), nouns, index, every=True):
+    if _held(alternatives, denominator, nouns, index, every=True):
         return "base"
     comparable = [
         alt
         for alt in alternatives
         if ("populationType", dict(alt.axis_values).get("populationType")) in evidence.five_tuple
     ]
-    if comparable and all(_contradicts(alt.axis_values, stated, index) for alt in comparable):
+    if comparable and all(_contradicts(alt.axis_values, evidence, index) for alt in comparable):
         return "contradicts"
     return "unknown"
 
 
 def _held(
     alternatives: Sequence[MeasurePartitionLabel],
-    stated: _Stated,
+    stated: ReadingEvidence,
     nouns: Sequence[MeasurePartitionLabel],
     index: CodeIndex,
     *,
@@ -283,11 +310,16 @@ def _held(
 
 
 def _holds(
-    axis_values: Iterable[tuple[str, str]], stated: _Stated, index: CodeIndex, *, every: bool
+    axis_values: Iterable[tuple[str, str]],
+    stated: ReadingEvidence,
+    index: CodeIndex,
+    *,
+    every: bool,
 ) -> bool:
     """Whether `stated` holds every one of `axis_values`: a five-tuple key's value equal, and
-    on a constraint property, with `every`, every member declaring a value and every declared
-    value related (`_related`), else some declared value related."""
+    on a constraint property, with `every`, every member declaring a value and every value
+    the members declare related (`_related`), the summary's values aside; else some value
+    the members or their summary hold related."""
     if not (stated.five_tuple or stated.properties):
         return False
     for axis, value in axis_values:
@@ -298,28 +330,36 @@ def _holds(
         found = stated.properties.get(axis)
         if found is None:
             return False
-        related = [_related(held, value, index) for held in found.values]
-        if not (found.every_member and all(related) if every else any(related)):
+        if every:
+            if not (
+                found.every_member
+                and found.values
+                and all(_related(held, value, index) for held in found.values)
+            ):
+                return False
+        elif not any(_related(held, value, index) for held in found.stated):
             return False
     return True
 
 
-def _contradicts(axis_values: Iterable[tuple[str, str]], stated: _Stated, index: CodeIndex) -> bool:
+def _contradicts(
+    axis_values: Iterable[tuple[str, str]], stated: ReadingEvidence, index: CodeIndex
+) -> bool:
     """Whether the reading, of the population type of the declared measure keyed on
     `axis_values`, measures something else: on some constraint property the measure keys
-    on every member declares a value and none of the values declared there is related to
-    the measure's. A member silent on the property contradicts nothing, and a reading whose
-    members are not known contradicts nothing."""
+    on every member declares a value and none of the values the members or their summary
+    hold there is related to the measure's. A member silent on the property contradicts
+    nothing, and a reading whose members are not known contradicts nothing."""
     return any(
         (found := stated.properties.get(prop)) is not None
         and found.every_member
-        and not any(_related(held, value, index) for held in found.values)
+        and not any(_related(held, value, index) for held in found.stated)
         for prop, value in dict(axis_values).items()
         if prop not in _FIVE_TUPLE_KEYS
     )
 
 
-def _identifies(stated: _Stated, measures: MeasureIndex, index: CodeIndex) -> bool:
+def _identifies(stated: ReadingEvidence, measures: MeasureIndex, index: CodeIndex) -> bool:
     """Whether `stated` relates to some declared measure: holds it on some member."""
     return any(
         _holds(measure.axis_values, stated, index, every=False)

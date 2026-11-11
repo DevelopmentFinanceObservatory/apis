@@ -183,10 +183,10 @@ def draft_evidence(
     """What `shape` states of its measure before bind (`measure_verdict.reading_evidence`):
     its five-tuple; on each constraint property the values the members whose arcs `arcs`
     holds declare and whether every one of them declares one, beside the values its own
-    members and its held family's summary hold (`shape_constraint_values`), which never
-    decide that every member declares one (`measure_verdict.property_evidence`); its label
-    as its noun; and the pairs and name the graph gives the StatVar it divides by, as
-    `denominators` read them."""
+    members and its held family's summary hold (`shape_constraint_values`) as summary values,
+    which can reach ``some`` and never decide ``holds`` (`measure_verdict.property_evidence`);
+    its label as its noun; and the pairs and name the graph gives the StatVar it divides by,
+    as `denominators` read them."""
     read = denominators.get(shape.meas_denom_dcid) if shape.meas_denom_dcid else None
     return reading_evidence(
         population_type=shape.pop_type_dcid,

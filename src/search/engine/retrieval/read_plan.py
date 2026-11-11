@@ -74,6 +74,7 @@ from search.models import TimeWindow, in_window
 from search.observations import PreviewMode, preview_mode
 from search.scope_window import read_range as _read_range
 from search.scope_window import role_read_years
+from series_coverage.coverage_types import COVERAGE_ROLE_AXES
 from statvar_members import AbsentReading, antichain_minimal_ids
 
 if TYPE_CHECKING:
@@ -1589,9 +1590,6 @@ type RoleEntity = tuple[str, str]
 """An entity on one role: its role key as an identity keys it (`spec_id.entity_role_key`:
 `observationAbout`, `origin` or `destination`) and its dcid."""
 
-_AXIS_FOR_COVERAGE_ROLE: Mapping[str, str] = {"recipient": "destination", "donor": "origin"}
-"""Each coverage role's flow axis, the role key an identity binds its entities under."""
-
 
 def unserved_entities(plan: ReadPlan | None) -> frozenset[RoleEntity]:
     """The entities `plan` was asked to read on each role and serves no point at on that
@@ -1618,12 +1616,12 @@ def unserved_entities(plan: ReadPlan | None) -> frozenset[RoleEntity]:
             return frozenset()
         role_names = plan.roles.role_names if plan.roles is not None else {}
         key_by_role_name = {
-            name: _AXIS_FOR_COVERAGE_ROLE.get(coverage_role, coverage_role)
+            name: COVERAGE_ROLE_AXES.get(coverage_role, coverage_role)
             for coverage_role, name in role_names.items()
         }
         asked = {("observationAbout", dcid) for dcid in plan.places}
         asked.update(
-            (_AXIS_FOR_COVERAGE_ROLE.get(coverage_role, coverage_role), dcid)
+            (COVERAGE_ROLE_AXES.get(coverage_role, coverage_role), dcid)
             for coverage_role, dcids in bound.items()
             for dcid in dcids
         )
@@ -1645,7 +1643,7 @@ def unserved_entities(plan: ReadPlan | None) -> frozenset[RoleEntity]:
                 for _sv, c, (first, last) in plan.member_pairs()
             )
         )
-        key = _AXIS_FOR_COVERAGE_ROLE.get(coverage_role, coverage_role)
+        key = COVERAGE_ROLE_AXES.get(coverage_role, coverage_role)
         unserved.update((key, dcid) for dcid in asked_dcids - served_dcids)
     return frozenset(unserved)
 
