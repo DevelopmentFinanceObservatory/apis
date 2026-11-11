@@ -575,16 +575,7 @@ def test_a_cut_bar_chart_bundles_every_member_of_its_frame_beside_the_shown_rows
 
 
 @pytest.mark.parametrize(
-    (
-        "role",
-        "cell_column",
-        "member_cell",
-        "aggregate",
-        "aggregate_cell",
-        "counted",
-        "excluded",
-        "untyped",
-    ),
+    ("role", "cell_column", "member_cell", "aggregate", "aggregate_cell", "counted"),
     [
         pytest.param(
             "financingRecipient",
@@ -592,38 +583,28 @@ def test_a_cut_bar_chart_bundles_every_member_of_its_frame_beside_the_shown_rows
             "party",
             "dac/AfricaTotal",
             "total",
-            12,
-            True,
-            0,
+            13,
             id="party-total",
         ),
-        # A party the code index gives no kind, whose empty cell the frame writes `untyped`,
-        # is not ranked, so the file leaves it out and says why.
         pytest.param(
             "financingRecipient",
             "financingRecipient_party_kind",
             "party",
             "dac/Unkinded",
             UNTYPED,
-            12,
-            False,
-            1,
+            13,
             id="member-without-a-kind",
         ),
-        # With no member typed the ranking compares none, so no file holds more than the
-        # card shows.
         pytest.param(
             "financingRecipient",
             "financingRecipient_party_kind",
             UNTYPED,
             "dac/Unkinded",
             UNTYPED,
-            None,
-            False,
-            0,
+            13,
             id="no-member-with-a-kind",
         ),
-        # An aggregate with no row at the shown period is left out of no file.
+        # An aggregate with no row at the shown period holds no row of either file.
         pytest.param(
             "financingRecipient",
             "financingRecipient_party_kind",
@@ -631,8 +612,6 @@ def test_a_cut_bar_chart_bundles_every_member_of_its_frame_beside_the_shown_rows
             "dac/AfricaTotal@2023",
             "total",
             12,
-            False,
-            0,
             id="party-total-at-another-period",
         ),
         pytest.param(
@@ -641,49 +620,37 @@ def test_a_cut_bar_chart_bundles_every_member_of_its_frame_beside_the_shown_rows
             "Country",
             "wb/LowIncome",
             "ProvisionalNode",
-            12,
-            True,
-            0,
+            13,
             id="place-aggregate",
         ),
-        # A mint whose options.columns name the party role's type column alone carries no
-        # kind cell. The ranking reads its type cells, none of which is the kind `party`, so
-        # it compares no member and no file holds more than the card.
         pytest.param(
             "financingRecipient",
             "financingRecipient_type",
             "Country",
             "dac/AfricaTotal",
             "Place",
-            None,
-            False,
-            0,
+            13,
             id="party-type-column-alone",
         ),
     ],
 )
-def test_a_cut_card_counts_the_members_a_ranking_compares(
+def test_a_cut_card_counts_every_member_its_frame_holds(
     role,
     cell_column,
     member_cell,
     aggregate,
     aggregate_cell,
     counted,
-    excluded,
-    untyped,
     tmp_path,
     frame_store,
     revision_store,
     release_registry,
 ):
-    """A frame holding 12 members and an aggregate larger than any of them counts 12, the
-    members dfo-ai's harness ranks a cut from, so the bundle's "8 of 12" agrees with the card's
-    "8 largest of 12", and the all-members file leaves the aggregate out and says so. A party
-    frame with type cells and no kind cells compares no member, as the ranking does. A member
-    whose cell is `untyped` is not ranked either, so the file leaves it out and counts it under
-    its own clause, whether or not the other members are typed; with none typed, no file holds
-    more than the card. `counted` None says the bundle holds no all-members file. An aggregate
-    `@`-suffixed with a period holds its one row there, outside the card's window."""
+    """A card showing 8 of a frame's 12 members beside an aggregate larger than any of them
+    counts every member valued at the shown period, the aggregate included, whatever its kind
+    or type cell holds, and the all-members file's description names the column that marks
+    the totals. An aggregate `@`-suffixed with a period holds its one row there, outside the
+    card's window."""
     members = tuple(f"country/C{number:02d}" for number in range(12))
     aggregate, _, aggregate_period = aggregate.partition("@")
     rows = [
@@ -726,10 +693,6 @@ def test_a_cut_card_counts_the_members_a_ranking_compares(
     files = _unzip(
         _export(created, frame_store=frame_store, revision_store=revision_store, bundle=True).data
     )
-    if counted is None:
-        assert "data/largest-members-all-members.csv" not in files
-        assert "The card shows" not in files["README.md"].decode("utf-8")
-        return
     every = _csv_rows(files["data/largest-members-all-members.csv"])
     (description,) = (
         resource["description"]
@@ -737,11 +700,10 @@ def test_a_cut_card_counts_the_members_a_ranking_compares(
         if resource["path"] == "data/largest-members-all-members.csv"
     )
 
-    assert {row[role] for row in every} == set(members)
+    assert len({row[role] for row in every}) == counted
+    assert set(members) <= {row[role] for row in every}
     assert f"The card shows 8 of {counted}" in files["README.md"].decode("utf-8")
-    assert ("less the group totals and aggregates" in description) is excluded
-    assert (f"less {untyped} whose kind or type cell names neither" in description) is bool(untyped)
-    assert ("names neither" in description) is bool(untyped)
+    assert f"`{cell_column}`" in description
 
 
 @pytest.mark.parametrize("member", ["bar_chart", "table", "stat_card"])

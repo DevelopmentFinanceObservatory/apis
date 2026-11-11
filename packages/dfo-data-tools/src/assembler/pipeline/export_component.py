@@ -29,28 +29,20 @@ cells starting with a formula trigger are neutralised.
 
 A bundle is a zip holding the file at `data/<card-slug>.<format>` beside
 `materialise.bundle.assemble_component_bundle`'s documents, `data/codes.csv` among them. When the
-revision's `select` lists the members of exactly one dimension other than `stat_var`, its
-population is the members one ranking compares (`_ranked_population`). On a party role those
-are the members of the frame's kind cells, and on a place role those of its type cells
-(`dfo_analysis_engine.place_type.comparable_members`), so a group total or a place aggregate
-is left out unless the card shows it. A member whose cell is `untyped` names neither, so the
-ranking does not compare it, and it is left out too, typed members beside it or not; a frame
-whose cells are all `untyped` therefore holds no member beyond the card's. This is the rule
-dfo-ai's harness ranks a cut by (`harness.chart_binding.top_members` over the cells
-`harness.orchestrator_tools._held_cells` reads), under which a party frame minted with its
-type column alone compares no member either. Any other dimension, and a frame with no such
-cells, count every member. The members the card shows are always kept. When that population
-holds a member the card leaves out, as for a chart cut to its largest members, the bundle also
-holds `data/<card-slug>-all-members.<format>`. It holds every valued frame row of the
-population at the periods the card shows whose other `select`-bound dimensions match the card,
-in frame order, its `series` cell empty on rows the card does not show. Dimensions `select`
-leaves unbound, `unit`, `measurementMethod` and `provenance` among them when unbound, are free,
-so a member served under another method or source is kept. The revision does not record
-whether the listed members were cut for display or chosen, so both get the file. Each file's
-resource `description` and README row say which file is which, with "The card shows N of M;
-<file> holds all M." on the shown file. `ComponentExportMismatch` guards the shown file alone,
-and a bare file holds the shown rows. Each
-provenance ref the kept rows carry is cited from the frame manifest's citation, its licence and
+revision's `select` lists the members of exactly one dimension other than `stat_var` and the
+frame holds a member of it the card leaves out, as for a chart cut to its largest members, the
+bundle also holds `data/<card-slug>-all-members.<format>`. It holds every valued frame row of
+every member the frame holds, group totals, aggregates and `untyped` members included, at the
+periods the card shows whose other `select`-bound dimensions match the card, in frame order,
+its `series` cell empty on rows the card does not show. Its description names the frame's kind
+and type columns of that dimension (`dfo_analysis_engine.place_type.kind_column`,
+`type_column`), which mark the rows that are totals. Dimensions `select` leaves unbound,
+`unit`, `measurementMethod` and `provenance` among them when unbound, are free, so a member
+served under another method or source is kept. The revision does not record whether the listed
+members were cut for display or chosen, so both get the same file. Each file's resource
+`description` and README row say which file is which, with "The card shows N of M; <file>
+holds all M." on the shown file. `ComponentExportMismatch` guards the shown file alone, and a
+bare file holds the shown rows. Each provenance ref the kept rows carry is cited from the frame manifest's citation, its licence and
 documentation included, through `materialise.bundle_sources`. Columns are documented by
 `materialise.bundle_columns`, and the codes table is labelled from `ResolvedFrame.labels` and
 the cited source names with no graph read, so a role's codes keep the kind `entity`. Links and
@@ -77,7 +69,7 @@ import zipfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, time
-from typing import Literal, NamedTuple, cast
+from typing import Literal, cast
 
 from dfo_frame_grammar import STAT_VAR_COLUMN, STATUS_COLUMN, TIME_PERIOD_COLUMN, VALUE_COLUMN
 from dfo_frame_grammar.grammar import unit_cell_from_json
@@ -90,8 +82,6 @@ from assembler.pipeline.stored_revision import read_stored_revision
 from assembler.ports import FrameRef, FrameStore, ReleaseRegistry, ResolvedFrame, RevisionStore
 from dfo_analysis_engine.place_type import (
     TYPED_ROLES,
-    UNTYPED,
-    comparable_members,
     kind_column,
     type_column,
 )
@@ -381,19 +371,9 @@ def export_component_data(
                     description=(
                         "Every frame row for the card's measure at the periods it shows, "
                         f"across all {all_members.members} {all_members.dimension} values the "
-                        "frame holds"
-                        + (
-                            ", less the group totals and aggregates its kind or type cells name"
-                            if all_members.aggregates_left_out
-                            else ""
-                        )
-                        + (
-                            f", and less {all_members.untyped_left_out} whose kind or type cell"
-                            " names neither"
-                            if all_members.untyped_left_out
-                            else ""
-                        )
-                        + f". The {series_column} column holds the card's label on the rows "
+                        "frame holds."
+                        + _total_columns_sentence(all_members.total_columns)
+                        + f" The {series_column} column holds the card's label on the rows "
                         "the card shows. A download without the bundle holds only the shown "
                         "rows."
                     ),
@@ -541,17 +521,14 @@ type _ExportRow = tuple[str | None, Sequence[object]]
 class _AllMembers:
     """The frame rows of every member of the one dimension a card's `select` lists, at the
     periods the card shows. `shown` and `members` count the dimension's distinct values on
-    the card and in `rows`. `aggregates_left_out` says the ranked population
-    (`_ranked_population`) left out a member whose kind or type cell names a group total or
-    aggregate, and that holds a row at a period the card shows. `untyped_left_out` counts the
-    members it left out whose cell is `UNTYPED` and that hold such a row."""
+    the card and in `rows`. `total_columns` are the frame's kind and type columns of the
+    dimension, which mark the rows that are totals."""
 
     dimension: str
     rows: tuple[_ExportRow, ...]
     shown: int
     members: int
-    aggregates_left_out: bool
-    untyped_left_out: int
+    total_columns: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -617,13 +594,12 @@ def _shown_rows(
 def _all_members(
     *, select: Mapping[str, object], keyed: _KeyedFrame, shown: Sequence[_ShownPoint]
 ) -> _AllMembers | None:
-    """The valued frame rows of every member of the one dimension `select` lists that a cut
-    of the card ranks from (`_ranked_population`), with the members the card shows, at the
+    """The valued frame rows of every member of the one dimension `select` lists, at the
     periods the card shows and with each dimension `select` binds to one value as the card
     holds it, in frame order. Dimensions `select` leaves unbound, the facets among them, are
     free, so a member served under another unit, method or source is kept. `None` when
     `select` lists no dimension, more than one, or `stat_var`, the card's measure, or when
-    the population holds no member the card leaves out.
+    the frame holds no member the card leaves out.
 
     The revision does not record whether the listed members were cut for display or chosen,
     so a card listing some of the frame's members gets this file either way."""
@@ -639,12 +615,9 @@ def _all_members(
     wanted = {fixed(point.coordinates, point.period) for point in shown}
     label_of = {(point.coordinates, point.period): point.series_label for point in shown}
     shown_members = {dict(point.coordinates)[dimension] for point in shown}
-    population = _ranked_population(keyed, dimension=dimension)
     index = keyed.index
     kept: list[_ExportRow] = []
     members: set[object] = set()
-    aggregates_left_out = False
-    untyped_left_out: set[object] = set()
     for row, (own, continued) in zip(keyed.rows, keyed.keys, strict=True):
         if STATUS_COLUMN in index and row[index[STATUS_COLUMN]] is not None:
             continue
@@ -652,12 +625,6 @@ def _all_members(
         if fixed(own, period) not in wanted and fixed(continued, period) not in wanted:
             continue
         member = dict(own)[dimension]
-        if population is not None and member in population.left_out - shown_members:
-            if member in population.untyped:
-                untyped_left_out.add(member)
-            else:
-                aggregates_left_out = True
-            continue
         label = label_of.get((own, period), label_of.get((continued, period)))
         kept.append((label, row))
         members.add(member)
@@ -668,51 +635,24 @@ def _all_members(
         rows=tuple(kept),
         shown=len(shown_members),
         members=len(members),
-        aggregates_left_out=aggregates_left_out,
-        untyped_left_out=len(untyped_left_out),
+        total_columns=tuple(
+            column
+            for column in (
+                (kind_column(dimension), type_column(dimension)) if dimension in TYPED_ROLES else ()
+            )
+            if column in index
+        ),
     )
 
 
-class _RankedPopulation(NamedTuple):
-    """The members of a dimension one ranking leaves out (`left_out`): those whose kind or
-    type cell names a group total or aggregate, and those whose cell is `UNTYPED`
-    (`untyped`)."""
-
-    left_out: frozenset[object]
-    untyped: frozenset[object]
-
-
-def _ranked_population(keyed: _KeyedFrame, *, dimension: str) -> _RankedPopulation | None:
-    """The members of `dimension` one ranking leaves out, read from the cells dfo-ai's
-    harness reads (`harness.orchestrator_tools._held_cells`): each member's type cell, then
-    its kind cell where the frame carries one, the kind winning. Every member with a cell is
-    weighed by `place_type.comparable_members`, and those it does not compare are left out,
-    an `UNTYPED` cell among them, since it names no kind or type. So an untyped member is
-    left out whatever the other members' cells hold, a frame whose cells are all `UNTYPED`
-    compares none, and so does a party frame minted with its type column alone, since no
-    type cell is the kind `party`. `None`, every member, when `dimension` is no place or
-    party role or the frame carries neither column for it."""
-    if dimension not in TYPED_ROLES:
-        return None
-    columns = [
-        keyed.index[column]
-        for column in (type_column(dimension), kind_column(dimension))
-        if column in keyed.index
-    ]
+def _total_columns_sentence(columns: Sequence[str]) -> str:
+    """The sentence naming the frame `columns` that mark which rows are totals, with a leading
+    space, empty when there are none."""
     if not columns:
-        return None
-    position = keyed.index[dimension]
-    cells = {
-        cast(str, row[position]): cast(str, row[cell])
-        for row in keyed.rows
-        for cell in columns
-        if row[position] is not None and row[cell] is not None
-    }
-    compared = comparable_members(cells, dimension=dimension)
-    return _RankedPopulation(
-        left_out=frozenset(cells) - compared,
-        untyped=frozenset(member for member, cell in cells.items() if cell == UNTYPED),
-    )
+        return ""
+    named = " and ".join(f"`{column}`" for column in columns)
+    verb = "mark" if len(columns) > 1 else "marks"
+    return f" The {named} column{'s' if len(columns) > 1 else ''} {verb} which rows are totals."
 
 
 def _export_table(
