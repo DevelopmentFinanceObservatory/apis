@@ -280,8 +280,8 @@ def _over_conversion_period(
     trailing request `settled` are the years its words cover. Otherwise both as they are,
     and a stale trailing answer departs as `settled` holds. The conversion's departure
     replaces the stale one, so the answer states its years once; a span a member passed
-    over in election shortened still says so, over the years shown, where the period still
-    starts at the year that member set (`trailing.passed_over_departure`). Either way an answer
+    over in election shortened says so, over the years shown, where the period starts at
+    the year that member set (`trailing.passed_over_departure`). Either way an answer
     whose deflators leave out some entities' rows departs `year_unavailable` naming them
     (`convertibility.deflator_omission_departure`)."""
     stale = settled.departure if settled is not None else None
@@ -490,8 +490,8 @@ async def _ground_elected_answer(state: ResolveState) -> RegionResult | None:
     # The phase spine narrows this result to ``Materialised``. The attribute loses that
     # narrowing here.
     mat_result = cast(Materialised, state.mat_result)
-    # A request whose years only a conversion's period can still narrow reads its related
-    # measures beside the unit decision; a trailing request reads them once it has settled
+    # A request whose years only a conversion's period can narrow reads its related
+    # measures beside the unit decision. A trailing request reads them once it has settled
     # its years (`_over_answer_years`).
     if state.date_request is None or state.date_request.trailing is None:
         start_answer_related_read(state, mat_result)

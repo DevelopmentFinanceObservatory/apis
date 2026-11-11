@@ -139,11 +139,11 @@ async def read_exclusions(
     (`clients.llm.two_samples`), and the first is served. They agree when they blank and
     disclose the same stretches (`admit_exclusions`), and the second, judged once it answers
     and its first is read, stores an agreed read as it came (`admit_exclusions` reads it
-    against the current index). A
-    disagreeing pair, or a second sample that fails, stores nothing and is not agreed. A
-    first call that fails or whose output fails validation raises as extraction does, and
-    stores nothing. An `LLM` bound to a request's `SecondSamples` serves the first without
-    waiting for the second, as extraction does (`extract._model_extraction`).
+    against the current index). A disagreeing pair, or a second sample that fails, stores
+    nothing and is not agreed. A first call that fails or whose output fails validation
+    raises as extraction does, and stores nothing. An `LLM` bound to a request's
+    `SecondSamples` serves the first without waiting for the second, as extraction does
+    (`extract._model_extraction`).
     """
     staged = for_stage(llm, "exclusion_read")
 

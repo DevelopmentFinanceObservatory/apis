@@ -496,18 +496,17 @@ class SecondSamples:
     exit (`CacheScope.release`).
 
     A second sample runs at most `llm_second_sample_settle_s` after its first is read
-    (`Agreement.read_first`); past it the sample is cut, holding its pool connection no
-    longer, and its read is not judged. A second that answers in time is judged once it
-    answers and its first is read, and an agreed read is written to the extraction store
-    then, whatever happens to the request after. An SSE answer never waits for a second
-    sample. `done`, and so the buffered JSON response, waits at most that bound after the
-    extraction's first sample, for layer 1 stores the answer only once every agreement has
-    ended, and an extraction store takes an agreed read only from a second that ends. A first sample the
+    (`Agreement.read_first`); past it the sample is cut, releases its pool connection, and
+    its read is not judged. A second that answers in time is judged once it answers and its
+    first is read, and an agreed read is written to the extraction store then, whatever
+    happens to the request after. An SSE answer never waits for a second sample. `done`,
+    and so the buffered JSON response, waits at most that bound after the extraction's first
+    sample, because layer 1 stores the answer only once every agreement has ended and an
+    extraction store takes an agreed read only from a second that ends. A first sample the
     LLM memo serves returns at once, so its second also gets the time the memo's live call
     took (`two_samples`): a buffered repeat of a wording whose second was cut waits about
     one model call once, its second then reaches the memo, and later repeats hit layer 1. A
-    second that takes longer than that and the bound is cut on every repeat, which is what
-    the bound is for."""
+    second that takes longer than that and the bound is cut on every repeat."""
 
     def __init__(self) -> None:
         self._started: list[Agreement] = []
@@ -628,9 +627,9 @@ async def two_samples[T, R](
     An `llm` bound to a request's `SecondSamples` returns once the first is read, with the
     first's usage: the second runs on under that holder, which counts its cost and closes
     it when the request ends, and is judged once it answers and its first is read. Any
-    other `llm` awaits
-    the second's end before returning, and the usage adds the second's (`Ended.usage`); a
-    defect in the second sample or the judge, logged where it happened, raises here.
+    other `llm` awaits the second's end before returning, and the usage adds the second's
+    (`Ended.usage`). A defect in the second sample or the judge, logged where it happened,
+    raises here.
     `stage` names the call in the lines a cut, failed or defective second logs."""
     held = held_by(llm)
     samples = held if held is not None else SecondSamples()

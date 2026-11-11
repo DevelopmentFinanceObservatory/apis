@@ -1579,8 +1579,9 @@ def _settle_places(
         return whole, total
     reading = whole.whole
     assert reading is not None  # `whole_total_candidates` sets every candidate's reading
-    # The fact names the years the words ask for, which a trailing `window` reaches past.
-    assert state.date_request is not None  # `window` is its window
+    # The fact names the years the words ask for, which the judged `window` of a trailing
+    # request reaches past.
+    assert state.date_request is not None  # `window` came from it
     asked = state.date_request.window or window
     fact = whole_total_ended_fact(
         requested=(asked.start_year, asked.end_year),

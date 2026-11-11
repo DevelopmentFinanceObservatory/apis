@@ -709,9 +709,8 @@ async def _read_and_extract(query: str, *, llm: SupportsLLM, deadline: float) ->
     stands; a discarded parse's second sample is cancelled with it. The discarded parse's
     tokens, its second sample's included, count in the usage when it had already finished,
     else it counts as uncounted calls (`_discarded_usage`): its requests were sent, and no
-    response reports their tokens. A read
-    whose every stretch is kept unblanked (`LeftOut.at` `None`) leaves the text as it was,
-    so the speculative parse stands.
+    response reports their tokens. A read whose every stretch is kept unblanked
+    (`LeftOut.at` `None`) leaves the text as it was, so the speculative parse stands.
 
     The read and the extraction each take two samples (`read_exclusions`, `extract`) and
     serve the first. A read whose samples disagree still decides the text from its first

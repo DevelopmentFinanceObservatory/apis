@@ -1027,8 +1027,8 @@ def shortened_trailing_fact(
     newest year a member ahead of the served one in election order holds
     (`region.trailing.settle_trailing`), so it shows fewer years than the span counts: the
     calendar years the words cover and the years the answer shows. `data_years` is the
-    years the data holds when its newest year is stale (`stale_trailing_fact`), else None,
-    since the years before the range can hold data."""
+    years the data holds when its newest year is stale (`stale_trailing_fact`). Otherwise
+    it is None, since the years before the range can hold data."""
     return DepartureFact(
         code="year_unavailable",
         binding_ref=WHEN_REF,

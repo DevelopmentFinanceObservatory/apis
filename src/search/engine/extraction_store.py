@@ -3,14 +3,15 @@
 `extract()` consults the store before it calls the model. The model's `Extraction` JSON,
 before any post-processing, is written to it when two samples agree on its reading: the
 second sample's task judges it against the first once it answers and its first is read
-(`clients.llm.Agreement`), whatever happens to the request after. A second sample that outlasts the settle bound
-(`SEARCH_LLM_SECOND_SAMPLE_SETTLE_S`), or that the request's end cancels, stores nothing. A
-key (`extraction_key`) hashes the query as sent, the extract version (the system
-prompt and the `Extraction` schema), the model id, seed and thinking level, and the
-number of samples whose agreement a stored reading passed (`AGREEMENT_SAMPLES`), so any
-edit to the prompt, the schema or the sampling policy reads afresh. `SEARCH_EXTRACT_STORE` selects the
-store: `off`, `memory` (an in-process LRU bounded in bytes, with no TTL) or
-`file:<path>` (JSON lines, recorded by one run and replayed by others).
+(`clients.llm.Agreement`), whatever happens to the request after. A second sample that
+outlasts the settle bound (`SEARCH_LLM_SECOND_SAMPLE_SETTLE_S`), or that the request's end
+cancels, stores nothing. A key (`extraction_key`) hashes the query as sent, the extract
+version (the system prompt and the `Extraction` schema), the model id, seed and thinking
+level, and the number of samples whose agreement a stored reading passed
+(`AGREEMENT_SAMPLES`), so any edit to the prompt, the schema or the sampling policy reads
+afresh. `SEARCH_EXTRACT_STORE` selects the store: `off`, `memory` (an in-process LRU
+bounded in bytes, with no TTL) or `file:<path>` (JSON lines, recorded by one run and
+replayed by others).
 """
 
 from __future__ import annotations

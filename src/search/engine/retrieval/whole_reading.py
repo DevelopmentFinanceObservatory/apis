@@ -202,9 +202,8 @@ def identity_whole_groups(identity: BaseIdentity) -> dict[str, NamedGroup]:
     roles it posts a whole group or no group on, so both label such a role alike, a span
     counted back from now included. An identity naming every member of a whole total set
     reads as that set on a resubmit that posts no group on the role, since the identity does
-    not carry the request's words:
-    "official donors" beside "private donors" answers two named parties, and a resubmit of
-    its identity reads "all donors including private"."""
+    not carry the request's words. "official donors" beside "private donors" answers two
+    named parties, and a resubmit of its identity reads "all donors including private"."""
     dataset = identity_dataset(identity)
     if dataset is None:
         return {}

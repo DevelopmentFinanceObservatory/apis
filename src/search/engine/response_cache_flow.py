@@ -240,25 +240,26 @@ class CacheScope:
     parsed request is active when the cache is enabled. A request that streams trailing
     events (`trailing`) stores its event bundle: the `response` event, the slot-options and
     observations events and the `done` event, published when `done` arrives (`observe`).
-    Place options stay out of it: they run on a best-effort budget and the options cache
+    Place options stay out of it. They run on a best-effort budget and the options cache
     keeps them, so a hit runs them again (`hit_events`). Any other request stores its
     response at the `response` event. A hit sends either entry through `hit_events`. A
-    follower of an in-flight streamed leader therefore waits
-    for the leader's `done` before it sends anything. The generation stamp is read once
-    and sets both the key and entry lifetime. New stamps produce new keys, leaving old
-    entries unreachable. `binder` is the binder the request was routed to. Its name and
-    model join the key, so answers two binders give never share one. Layer 2 serves one query's answer to any query with the same
-    extraction, which holds only while the bind reads the extraction alone: a binder that
-    reads the query's own text (`Binder.reads_query_text`) skips the extraction-keyed
-    lookup (`lookup_parsed`), and layer 1, which keys on the query, serves its repeats.
+    follower of an in-flight streamed leader therefore waits for the leader's `done`
+    before it sends anything. The generation stamp is read once and sets both the key
+    and entry lifetime. New stamps produce new keys, leaving old entries unreachable.
+    `binder` is the binder the request was routed to. Its name and model join the key,
+    so answers two binders give never share one. Layer 2 serves one query's answer to
+    any query with the same extraction, which holds only while the bind reads the
+    extraction alone. A binder that reads the query's own text
+    (`Binder.reads_query_text`) skips the extraction-keyed lookup (`lookup_parsed`),
+    and layer 1, which keys on the query, serves its repeats.
     `fallbacks` is the request's record of calls its binder served from a fallback
     (`binders.recording_fallbacks`). A request that holds any stores nothing, since its
-    answer is not the one its key names. `request_reads` is the request's record of the reads
-    it lost or cut (`degraded_reads`). A request whose record holds a read its own fail-open
-    budget cut stores nothing either: the answer stands on less than a later request may
-    read, though nothing it sends says so. The caller's
-    coverage snapshot contributes its stamp to the same scope; this class does
-    not read the coverage service again. The revision of the conversion catalogue and the
+    answer is not the one its key names. `request_reads` is the request's record of the
+    reads it lost or cut (`degraded_reads`). A request whose record holds a read its own
+    fail-open budget cut stores nothing either, because the answer stands on less than a
+    later request may read, though nothing it sends says so. The caller's coverage
+    snapshot contributes its stamp to the same scope, and this class does not read the
+    coverage service again. The revision of the conversion catalogue and the
     build and UN System setting of the origin catalogue the request bound join the scope
     too, so an answer computed under one catalogue is never served once another is live.
     Layer 1 stores an answer only when two samples of its query's exclusion read and two
@@ -269,9 +270,9 @@ class CacheScope:
     answers, and an agreed read enters the extraction store then, whatever happens to the
     request after. A request without trailing events publishes layer 2 at `response`;
     layer 1 publishes at `done`, once the agreements have ended, and `release` cancels and
-    awaits any second sample still running. The LLM memo
-    replays each sample of a wording for `llm_memo_ttl_s` whether or not they agreed. Cache
-    clearing belongs to app wiring.
+    awaits any second sample still running. The LLM memo replays each sample of a
+    wording for `llm_memo_ttl_s` whether or not they agreed. Cache clearing belongs to
+    app wiring.
     """
 
     def __init__(
@@ -586,11 +587,10 @@ class CacheScope:
         second sample ended; one still running ends by its own deadline,
         `llm_second_sample_settle_s` after its first was read. Only two things read the
         verdict, a layer-1 lease this request holds and an extraction store a second sample
-        writes to, so a request holding neither awaits nothing. Each
-        second sample logs its own ending, a defect included (`clients.llm.Agreement`). A
-        fault in settling itself is logged at error with its traceback and leaves the
-        reading unjudged: the answer is already computed, and only its storage depends on
-        the verdict."""
+        writes to, so a request holding neither awaits nothing. Each second sample logs its
+        own ending, a defect included (`clients.llm.Agreement`). A fault in settling itself
+        is logged at error with its traceback and leaves the reading unjudged. The answer is
+        already computed, and only its storage depends on the verdict."""
         if self._settled or not self._agreements:
             return
         self._settled = True
