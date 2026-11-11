@@ -16,9 +16,9 @@ publish the elected basis (`binders.house_policy`).
 where no binder runs, offers what the parsed door offered: every declared basis, available
 where the identity's dataset publishes it at a covered series and unavailable otherwise,
 with the basis the identity holds first in the preference, so a part's derived default is
-the basis it resolved and a switch is the only thing that moves it. Its labels name no
-deflation basis: the finished answer's conversion states that, and `with_deflation_basis`
-restates the labels from it where the scope attaches to the answer.
+the basis it resolved and a switch is the only thing that moves it. Its labels
+are written without a deflation basis. The finished answer's conversion states it, and
+`with_deflation_basis` restates the labels from it where the scope attaches to the answer.
 """
 
 from __future__ import annotations
@@ -538,7 +538,8 @@ def basis_rule(
     `option_not_covered` when the dataset publishes such a member with no series there, and
     `basis_not_published` otherwise. The headline is available when both bases it splices
     are (`_headline_availability`). A composite base is read through the identity its option was
-    set on (`table_document`). The labels name no deflation basis (`with_deflation_basis`)."""
+    set on (`table_document`). The labels are written without a deflation basis, which `with_deflation_basis`
+    adds from the answer."""
     dataset = basis_dataset(base, facts.index)
     held_id = held_option(base)
     if dataset is None or held_id is None:

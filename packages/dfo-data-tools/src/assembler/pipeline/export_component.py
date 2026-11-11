@@ -650,9 +650,8 @@ def _all_members(
     unbound, so a row is kept only for a StatVar a shown series holds at that period, and the
     file holds no other measure. Every other dimension `select` leaves unbound, the facets
     among them, is free, so a member served under another unit, method or source is kept.
-    `None` when
-    `select` lists no dimension, more than one, or `stat_var`, the card's measure, or when
-    the frame holds no member the card leaves out.
+    `None` when `select` lists no dimension, more than one, or `stat_var`, the card's
+    measure, or when the frame holds no member the card leaves out.
 
     The revision does not record whether the listed members were cut for display or chosen,
     so a card listing some of the frame's members gets this file either way."""

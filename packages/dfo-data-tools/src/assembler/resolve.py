@@ -266,9 +266,10 @@ def _check_series_estimate(
     1, because a facet that splits a series is refused separately. Other unbound
     dimensions use their frame-wide count (minimum 1).
 
-    A refusal names `MAX_SERIES_PER_COMPONENT` (`COMPONENT_SERIES_LIMIT`) and the dimensions that multiply the largest selector's
-    estimate past one, each with the count it contributes, and says what brings the select
-    within the limit (`series_limit_exhausted`)."""
+    A refusal names `MAX_SERIES_PER_COMPONENT` (`COMPONENT_SERIES_LIMIT`) and the dimensions
+    that multiply the largest selector's estimate past one, each with the count it
+    contributes, and says what brings the select within the limit
+    (`series_limit_exhausted`)."""
     estimate = 0
     widest: dict[str, int] = {}
     widest_listed: list[str] = []

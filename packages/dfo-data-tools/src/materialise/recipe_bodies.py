@@ -42,7 +42,7 @@ class ConversionRecipe:
     recipe_id: str
     exchange_rate_variable: str
     deflator_variable: str
-    # A mapping cannot be hashed, so the hash leaves it out; equality still compares it.
+    # A mapping cannot be hashed, so the hash leaves it out. Equality compares it.
     deflator_entity_roles: Mapping[str, DeflationBasis] = field(hash=False)
     flow_population_types: frozenset[str]
     forecast_policy: str
@@ -53,7 +53,7 @@ class ConversionRecipe:
 def recipe_body_digest(recipe: ConversionRecipe) -> str:
     """SHA-256 hex digest of recipe fields in the same canonical JCS form as
     content-version minting. Sets become sorted arrays and `None` becomes
-    JSON null. `deflator_entity_roles` contributes its sorted roles only: the basis
+    JSON null. `deflator_entity_roles` contributes its sorted roles only, since the basis
     each role maps to follows from the recipe's table and that role.
     """
     projection: dict[str, object] = {

@@ -25,7 +25,7 @@ code and answers false for every other mode. `presentation_api.refusals` names t
 retries a retryable refusal unchanged. Conflicts and some frame refusals need a refresh.
 Transient release, service, and timeout failures retry after a delay. `not_found`,
 `write_refused`, `refresh_not_permitted`, `render_target_mismatch`, and `internal_error` use
-`do_not_retry`. `resource_exhausted` uses `correct_and_retry`: every limit a drawing crosses
+`do_not_retry`. `resource_exhausted` uses `correct_and_retry`, since every limit a drawing crosses
 grows with the request's own select, window or intent, so a changed request fits.
 `CODE_RETRY_MODE` mirrors the release manifest. Each problem body states the mode for its own
 occurrence as `retry_mode` (`presentation_api.refusals.retry_mode`).

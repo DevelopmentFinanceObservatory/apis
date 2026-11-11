@@ -266,7 +266,7 @@ recipe row. Each database commits on its own, revisions first, so a run stopped 
 leaves the recipe to the next run. It skips a recipe whose stored hashes the stored recipe does
 not reproduce and one whose new replay key another frame's recipe holds. It leaves the pins of a
 recipe as they are where a pin's roots give no basis or several, or a root's version cannot
-tell, and still sorts that recipe's root options. Each skip (`RecipeSkip`) gets one
+tell, and sorts that recipe's root options. Each skip (`RecipeSkip`) gets one
 `datasets_recipe_normalise_skipped` line, which for an undetermined basis also names the pin's
 parameter, its roots and the cause (`BasisCause`). It writes one `datasets_recipes_normalised`
 line with the counts and exits 1 when it skipped any. `--dry-run` counts and changes nothing, and a
@@ -1971,7 +1971,7 @@ def run_normalise_recipes(
     Each recipe takes one outcome, so the summary's `normalised`, `unchanged` and skip counts
     add up to its `recipes`. A recipe whose sort is unreproducible or whose new replay key
     another recipe row holds is left whole under that reason, its line naming any undetermined
-    pin too. One whose pin alone is undetermined is `basis_undetermined`, and its sort is still
+    pin too. One whose pin alone is undetermined is `basis_undetermined`, and its sort is
     written under the replay key its line names.
 
     The revisions move first, in the Presentation database, then the recipe row, in the
@@ -2010,8 +2010,8 @@ def run_normalise_recipes(
                     )
                 if holder is not None:
                     skip = RecipeSkip.REPLAY_KEY_HELD
-        # A recipe takes one outcome. A sort it cannot take leaves it whole; otherwise an
-        # undetermined pin is its outcome, and the run still writes its sort.
+        # A recipe takes one outcome. A sort it cannot take leaves it whole. Otherwise an
+        # undetermined pin is its outcome, and the run writes its sort too.
         if skip is None and undetermined is not None:
             skip = RecipeSkip.BASIS_UNDETERMINED
         if skip is not None:
@@ -2103,8 +2103,9 @@ type _RootBases = Callable[[str, str], frozenset[DeflationBasis] | BasisCause]
 
 class _BasisUndetermined(Exception):
     """A pin of a constant-price unit without its basis, on op-spec parameter `parameter`,
-    whose roots give no basis or several: `roots` the `(spec_id, content_version)` of the one
-    root whose version cannot tell, or of every root feeding the pin, and `cause` why."""
+    whose roots give no basis or several. `roots` holds the `(spec_id, content_version)` of the
+    one root whose version cannot tell, or of every root feeding the pin, and `cause` says
+    why."""
 
     def __init__(
         self, *, parameter: str, roots: Sequence[tuple[str, str]], cause: BasisCause
@@ -2121,7 +2122,7 @@ def _normalised_recipe(
     """`recipe` with its root options sorted (`_with_sorted_options`) and each pin of a
     constant-price unit without its basis given its roots' basis (`_basis_pinned`), or `None`
     when neither changes it, and the pin whose roots give no basis or several. Each rewrite
-    applies on its own: a recipe whose pins stay as they are still takes the sort."""
+    applies on its own, so a recipe whose pins stay as they are takes the sort."""
     sorted_recipe = _with_sorted_options(recipe)
     rewritten = dict(recipe) if sorted_recipe is None else sorted_recipe
     try:

@@ -805,8 +805,8 @@ def _apply_conversion(
     """Replaces `OBS_VALUE` with the result's `repr()` (`""` for null) and `unit` with a
     per-row `{currency, prices, base_year, deflation_basis}` struct, null when the value is
     null. `basis` is whose prices deflated a constant-price row
-    (`ConversionRecipe.deflator_entity_roles`), `None` at current prices. Other columns and row order
-    stay unchanged."""
+    (`ConversionRecipe.deflator_entity_roles`), `None` at current prices. Other columns and
+    row order stay unchanged."""
     values = result.to_pylist()
     value_strings = pa.array(
         ["" if value is None else repr(value) for value in values], type=pa.string()

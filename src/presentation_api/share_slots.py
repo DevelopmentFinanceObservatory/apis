@@ -216,7 +216,7 @@ def serve_on_slot_frame[T](
     next check.
     `card.frame` must be set and `record` must be the card revision. `draw` replays the card
     revision's stored intent, so a refusal of it leaves as `StoredIntentRefused`
-    (`replaying_stored_intent`): the share's reader cannot change the intent.
+    (`replaying_stored_intent`), since the share's reader cannot change the intent.
 
     Raises:
         Any refusal of `draw` on the card's own frame.

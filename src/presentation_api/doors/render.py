@@ -54,8 +54,8 @@ or `refresh_then_retry` code whose occurrence is retryable.
 A refusal of the stored intent itself, an `AssemblerRefusal` the replay raises, leaves the route
 as `StoredIntentRefused` (`presentation_api.stored_intent`), which states the `retry_mode` of
 such a refusal (`presentation_api.refusals.retry_mode`): `do_not_retry` where the write routes
-would answer `correct_and_retry`. A refusal of the render request itself, its body, path, `schema_version`
-or headers, states the mode the write routes would.
+would answer `correct_and_retry`. A refusal of the render request itself, its body, path,
+`schema_version` or headers, states the mode the write routes would.
 """
 
 from __future__ import annotations

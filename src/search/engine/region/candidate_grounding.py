@@ -336,9 +336,9 @@ def _candidate_observation_entities(
 @dataclass(frozen=True)
 class _CandidateConversion:
     """One candidate's answer once its elected conversion has run, what that conversion did
-    to its rows, and the bound-unit gate's verdict (`bound_unit_gate_reason`): on the
-    answer's plan once the conversion narrows it, else the verdict
-    `convertibility.unit_gate` gave, None when the gate passes or no gate ran."""
+    to its rows, and the bound-unit gate's verdict (`bound_unit_gate_reason`), None when the
+    gate passes or no gate ran. The verdict reads the answer's plan once the conversion
+    narrows it, and is otherwise the one `convertibility.unit_gate` gave."""
 
     answer: FilteredAnswer
     coverage: UnitCoverage
@@ -619,7 +619,7 @@ class _GroundedCandidate:
 
     `spec` is the Spec as minted, with its unit conversion offer. The collapse rewrites the
     Specs it is handed (basis, equivalent readings, options, lexicon version) under the same
-    `spec_id`, so it reads only the facts here and never `spec`.
+    `spec_id`, so it reads only the facts here.
     """
 
     spec: Spec
@@ -710,8 +710,8 @@ class _CarrierFlags(NamedTuple):
 
 
 def _is_elected(state: ResolveState, cand_index: int) -> bool:
-    """Whether candidate `cand_index` is the elected reading: the first candidate, where the
-    elected shape holds data (`ResolveState.elected_has_data`)."""
+    """Whether candidate `cand_index` is the elected reading. That is the first candidate,
+    and only while the elected shape holds data (`ResolveState.elected_has_data`)."""
     return cand_index == 0 and state.elected_has_data
 
 

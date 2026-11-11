@@ -233,9 +233,9 @@ def _deflated_apart(left: UnitCell, right: UnitCell) -> bool:
     different deflation bases.
 
     The basis says whose prices deflate an amount, and it is the whole of the comparison.
-    The deflator table a recipe reads plays no part: a DAC deflator and a WEO deflator of
+    The deflator table a recipe reads plays no part. A DAC deflator and a WEO deflator of
     the same donor are that donor's prices from two source tables, as a current-price unit
-    already leaves its exchange-rate table out of its identity. A converted cell carries no
+    leaves its exchange-rate table out of its identity. A converted cell carries no
     recipe, so the unit key holds none either. Two bases read from one table, such as a
     debtor's `recipient` and the same country's `national`, refuse here, and the refusal
     asks for current prices, under which a share of the two amounts is the same.

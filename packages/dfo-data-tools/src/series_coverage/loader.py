@@ -2,7 +2,8 @@
 
 `checked_index` refuses rows whose year-mask popcount disagrees with `n_obs`, rows whose facet
 has no metadata, a facet whose observation period the year mask does not count, rows whose
-entities disagree with their variable's role names, and a table `CoverageIndex` refuses. `graph_release.views` builds the release's coverage view through it.
+entities disagree with their variable's role names, and a table `CoverageIndex` refuses.
+`graph_release.views` builds the release's coverage view through it.
 """
 
 from __future__ import annotations
