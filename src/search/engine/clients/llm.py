@@ -23,6 +23,7 @@ import struct
 from collections.abc import Callable, Coroutine, Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol, TypeVar
 
 import httpx
@@ -80,15 +81,26 @@ _LLM_MEMO_LEADER_FAILED_DETAIL = "the shared in-flight Gemini structured-output 
 
 
 class _CallTiming:
-    """When the live call holding this record (`LLM._fetch_text`) left the connection pool's
-    queue: the first httpcore trace event of its request (`_LoopLocalTransport`)."""
+    """When the last attempt of the memo-writing call holding this record (`_lead`) left
+    the connection pool's queue: the first httpcore trace event of that attempt's request
+    (`_LoopLocalTransport`). A connection the attempt opens counts, its handshake included,
+    since a fresh call pays it too. Each attempt restarts the count, so a failed attempt
+    and any wait before the next leave it out."""
 
     def __init__(self) -> None:
-        self.connected_at: float | None = None
+        self.sent_at: float | None = None
 
-    async def trace(self, _event: str, _info: dict[str, Any]) -> None:
-        if self.connected_at is None:
-            self.connected_at = asyncio.get_running_loop().time()
+    def attempt(self) -> Callable[[str, dict[str, Any]], Coroutine[Any, Any, None]]:
+        """The trace extension of one attempt's request."""
+        traced = False
+
+        async def trace(_event: str, _info: dict[str, Any]) -> None:
+            nonlocal traced
+            if not traced:
+                traced = True
+                self.sent_at = asyncio.get_running_loop().time()
+
+        return trace
 
 
 _CALL_TIMING: ContextVar[_CallTiming | None] = ContextVar("llm_call_timing", default=None)
@@ -117,7 +129,7 @@ class _LoopLocalTransport(httpx.AsyncBaseTransport):
         if timing is not None and "trace" not in request.extensions:
             # httpcore traces a request only once the pool has handed it a connection, so the
             # first event ends the pool wait.
-            request.extensions["trace"] = timing.trace
+            request.extensions["trace"] = timing.attempt()
         return await self._pool().handle_async_request(request)
 
     async def aclose(self) -> None:
@@ -294,9 +306,10 @@ class SecondSample:
     """One second sample of a read (`two_samples`): its task and the deadline that ends it,
     `llm_timeout_s` from its start or earlier, the cut time `cut_after` sets once its first
     sample is read. Either reschedules the task's own `asyncio.timeout`, so the cut stops the
-    call wherever it is. A cut raises `SecondSampleCut` from the task and logs one info line
-    naming `stage`; the model's own deadline raises `LLMInfraError`, as a memo follower's
-    does."""
+    call wherever it is. Once the first is read, either deadline raises `SecondSampleCut`
+    from the task and logs one info line naming `stage`, the deadline and the time it
+    allowed; before then the model's own deadline raises `LLMInfraError`, as a memo
+    follower's does."""
 
     def __init__(
         self, call: Callable[[], Coroutine[Any, Any, Sampled[Any]]], *, stage: str
@@ -304,7 +317,11 @@ class SecondSample:
         self.stage = stage
         self._model_at: float | None = None
         self._cut_at: float | None = None
-        self._cut_after_s: float | None = None
+        # When the first sample was read (`cut_after`).
+        self._read_at: float | None = None
+        # Whether the sample has been judged (`Agreement.outcome`), which reports its
+        # failure; `SecondSamples.aclose` reports one never judged.
+        self.judged = False
         self._scope: asyncio.Timeout | None = None
         self.task: asyncio.Task[Sampled[Any]] = asyncio.create_task(self._run(call))
 
@@ -312,18 +329,18 @@ class SecondSample:
         ends = [at for at in (self._model_at, self._cut_at) if at is not None]
         return min(ends, default=None)
 
-    def _cut(self) -> bool:
-        """Whether the sample ends by its cut: one was set, so its first was read. A cut
-        never falls after the model's own deadline (`cut_after`), so a sample that reaches
-        that deadline once its first was read is cut too."""
-        return self._cut_at is not None
+    def _clamped(self) -> None:
+        """Keep the cut no later than the model's own deadline."""
+        if self._cut_at is not None and self._model_at is not None:
+            self._cut_at = min(self._cut_at, self._model_at)
 
     def cut_after(self, delay_s: float) -> None:
         """End the sample `delay_s` from now, its first sample just read, or at the model's
         own deadline if that comes first. A sample already ending, or ended, keeps its
         end."""
-        self._cut_at = asyncio.get_running_loop().time() + delay_s
-        self._cut_after_s = delay_s
+        self._read_at = asyncio.get_running_loop().time()
+        self._cut_at = self._read_at + delay_s
+        self._clamped()
         if self._scope is not None and not self._scope.expired():
             self._scope.reschedule(self._when())
 
@@ -332,6 +349,7 @@ class SecondSample:
         lease, and the memo then cancels the live call (`_lead`). The coroutine is made
         here, so a task cancelled before it starts leaves none unawaited."""
         self._model_at = asyncio.get_running_loop().time() + config.settings().llm_timeout_s
+        self._clamped()
         try:
             async with asyncio.timeout_at(self._when()) as scope:
                 self._scope = scope
@@ -340,12 +358,19 @@ class SecondSample:
                 finally:
                     self._scope = None
         except TimeoutError as exc:
-            if self._cut():
+            if self._cut_at is not None and self._read_at is not None:
+                # The first was read, so the read goes unjudged whichever deadline ended it.
+                deadline = (
+                    "llm_timeout_s"
+                    if self._model_at is not None and self._cut_at >= self._model_at
+                    else "settle bound"
+                )
                 logger.info(
-                    "%s: second sample still running %s s after its first was read; cut, "
+                    "%s: second sample reached its %s %.2f s after its first was read; cut, "
                     "its read unjudged",
                     self.stage,
-                    self._cut_after_s,
+                    deadline,
+                    self._cut_at - self._read_at,
                 )
                 raise SecondSampleCut from exc
             raise LLMInfraError(
@@ -386,6 +411,7 @@ class SecondSamples:
 
     def __init__(self) -> None:
         self._running: set[SecondSample] = set()
+        self._held: list[SecondSample] = []
         self._served: list[SecondSample] = []
 
     def bind(self, llm: SupportsLLM) -> SupportsLLM:
@@ -406,6 +432,7 @@ class SecondSamples:
         return second
 
     def _hold(self, second: SecondSample) -> None:
+        self._held.append(second)
         self._running.add(second)
         second.task.add_done_callback(lambda _task: self._running.discard(second))
 
@@ -424,17 +451,30 @@ class SecondSamples:
         return total
 
     async def aclose(self) -> None:
-        """Cancel every second sample still running and await each one."""
+        """Cancel every second sample still running and await each one, then log at error,
+        naming its stage, any defect a second sample raised that no judge read
+        (`Agreement.outcome`): one discarded with its speculative parse, or held by a
+        request that ended before `done`."""
         tasks = [second.task for second in self._running]
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        for second in self._held:
+            if second.judged or second.task.cancelled():
+                continue
+            second.judged = True
+            exc = second.task.exception()
+            if exc is not None and not isinstance(
+                exc, SecondSampleCut | LLMInfraError | LLMOutputRefused
+            ):
+                logger.error("%s: second sample raised a defect", second.stage, exc_info=exc)
 
     def adopt(self, other: SecondSamples) -> None:
         """Hold `other`'s second samples here, the counted ones included, so this holder's
         `aclose` and `usage` cover them."""
         for second in other._running:
             self._hold(second)
+        self._held.extend(second for second in other._held if second not in other._running)
         self._served.extend(other._served)
 
 
@@ -445,8 +485,9 @@ def held_by(llm: SupportsLLM) -> SecondSamples | None:
 
 
 # How a read's two samples ended (`Agreement.outcome`): judged `agreed` or `disagreed`, or
-# unjudged, the second `cut` (past the settle bound, or cancelled with its request) or
-# `failed` (a model error or refusal, or a judge or extraction-store write that raised).
+# unjudged, the second `cut` (past the settle bound or its model deadline once its first was
+# read, or cancelled with its request) or `failed` (a model error or refusal, or an
+# extraction-store write that failed).
 type Outcome = Literal["agreed", "disagreed", "cut", "failed"]
 
 
@@ -455,22 +496,10 @@ class Agreement:
     its own deadline bounds (`SecondSample.cut_after`), judges it against the first once
     (`judge`, which writes an agreed read to the extraction store) and keeps the outcome."""
 
-    _second: SecondSample
-    _judge: Callable[[Any], bool]
-    _outcome: Outcome | None
-
     def __init__(self, second: SecondSample, judge: Callable[[Any], bool]) -> None:
         self._second = second
         self._judge = judge
-        self._outcome = None
-
-    @classmethod
-    def fixed(cls, verdict: bool) -> Agreement:
-        """A verdict known without a second sample: a stored read, or one built outside
-        `two_samples`. It holds no second, so its outcome is set here."""
-        agreement = cls.__new__(cls)
-        agreement._outcome = "agreed" if verdict else "disagreed"
-        return agreement
+        self._outcome: Outcome | None = None
 
     async def outcome(self) -> Outcome:
         """How the read's samples ended, awaiting the second first. A second sample cut or
@@ -486,6 +515,7 @@ class Agreement:
         stage = self._second.stage
         second = self._second.task
         await asyncio.wait([second])
+        self._second.judged = True
         exc = None if second.cancelled() else second.exception()
         if second.cancelled() or isinstance(exc, SecondSampleCut):
             self._outcome = "cut"
@@ -505,7 +535,22 @@ class Agreement:
         return self._outcome
 
 
-async def settle(agreements: Sequence[Agreement]) -> bool | None:
+@dataclass(frozen=True)
+class FixedAgreement:
+    """A verdict known without a second sample: a stored read, or one built outside
+    `two_samples`."""
+
+    verdict: bool
+
+    async def outcome(self) -> Outcome:
+        return "agreed" if self.verdict else "disagreed"
+
+
+# The agreement of a read's samples, judged or known (`settle`).
+type AnyAgreement = Agreement | FixedAgreement
+
+
+async def settle(agreements: Sequence[AnyAgreement]) -> bool | None:
     """The joint verdict of `agreements` (`Agreement.outcome`), each already bounded by its
     second's own deadline: False when any read disagreed, True when every read agreed, and
     None otherwise, some read being unjudged. Each cut and failure logs where it happens."""
@@ -695,7 +740,7 @@ def _note_spent(usage: dict | None) -> None:
 
 
 class Sampled[T](NamedTuple):
-    """One structured-output answer (`sample_structured`): the answer, its usage, and, for
+    """One structured-output answer (`generate_structured_async`): the answer, its usage, and, for
     an answer the LLM memo served, how long the live call it kept took (`_memo_value`),
     None for a call made live."""
 
@@ -705,20 +750,6 @@ class Sampled[T](NamedTuple):
 
 
 async def generate_structured_async[SchemaT: BaseModel](
-    llm: SupportsLLM,
-    *,
-    prompt: str,
-    system: str,
-    schema: type[SchemaT],
-) -> tuple[SchemaT, dict | None]:
-    """Run one structured-output request (`sample_structured`): its answer and usage."""
-    answer, usage, _memo_live_s = await sample_structured(
-        llm, prompt=prompt, system=system, schema=schema
-    )
-    return answer, usage
-
-
-async def sample_structured[SchemaT: BaseModel](
     llm: SupportsLLM,
     *,
     prompt: str,
@@ -805,8 +836,8 @@ _LIVE_S = struct.Struct("<d")
 
 
 def _memo_value(text: str, *, live_s: float) -> bytes:
-    """The memo's value for a live call that answered `text` after `live_s` seconds of the
-    model's time (`LLM._fetch_text`)."""
+    """The memo's value for a live call that answered `text` `live_s` seconds after its
+    last attempt left the connection pool's queue (`_CallTiming`)."""
     return _LIVE_S.pack(live_s) + text.encode()
 
 
@@ -853,11 +884,19 @@ async def _lead[SchemaT: BaseModel](
             await memo.abandon(lease)
 
     async def lead_and_settle():
+        # The memo keeps how long the model took (`_CallTiming`), which a second sample
+        # served this answer's twin is given (`two_samples`).
+        timing = _CallTiming()
+        token = _CALL_TIMING.set(timing)
+        started = asyncio.get_running_loop().time()
         try:
-            text, usage, live_s = await llm._fetch_text(prompt=prompt, config=config)
+            text, usage = await llm._fetch_text(prompt=prompt, config=config)
         except BaseException:
             await memo.abandon(lease)
             raise
+        finally:
+            _CALL_TIMING.reset(token)
+        live_s = asyncio.get_running_loop().time() - (timing.sent_at or started)
         try:
             parsed = _parse(text, schema, model=llm._model, usage=usage)
         except LLMOutputRefused:
@@ -1113,23 +1152,17 @@ class LLM:
         and text the schema cannot read raise ``LLMInfraError``; an answer the
         schema refuses on purpose raises ``LLMOutputRefused``.
         """
-        text, usage, _live_s = await self._fetch_text(
+        text, usage = await self._fetch_text(
             prompt=prompt, config=self._resolve_config(system=system, schema=schema)
         )
         return _parse(text, schema, model=self._model, usage=usage), usage
 
     async def _fetch_text(
         self, *, prompt: str, config: GenerateContentConfig
-    ) -> tuple[str, dict | None, float]:
-        """One live generate_content call: the model's text, empty when it sent none, its
-        usage, and how long the model took to answer, from the moment the call had a
-        connection (`_CallTiming`) and so leaving out any wait for one, or from the start
-        where no connection was traced. `_parse` reads the text against the request's
-        schema."""
+    ) -> tuple[str, dict | None]:
+        """One live generate_content call: the model's text, empty when it sent none, and
+        its usage. `_parse` reads the text against the request's schema."""
         client = self._client()
-        timing = _CallTiming()
-        token = _CALL_TIMING.set(timing)
-        started = asyncio.get_running_loop().time()
         try:
             response = await client.aio.models.generate_content(
                 model=self._model,
@@ -1138,9 +1171,6 @@ class LLM:
             )
         except Exception as exc:
             raise LLMInfraError(f"Gemini API error: {exc}") from exc
-        finally:
-            _CALL_TIMING.reset(token)
-        live_s = asyncio.get_running_loop().time() - (timing.connected_at or started)
 
         usage: dict | None = None
         usage_meta = getattr(response, "usage_metadata", None)
@@ -1165,4 +1195,4 @@ class LLM:
                 cache_hit_pct,
             )
 
-        return response.text or "", usage, live_s
+        return response.text or "", usage

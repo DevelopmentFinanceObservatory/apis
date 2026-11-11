@@ -27,10 +27,11 @@ from entity_resolution.pack import is_organisation_name
 from search.engine.clients.llm import (
     LLM,
     MEMO_HIT_USAGE,
-    Agreement,
+    AnyAgreement,
+    FixedAgreement,
     SupportsLLM,
     for_stage,
-    sample_structured,
+    generate_structured_async,
     schema_digest,
     two_samples,
 )
@@ -1961,7 +1962,7 @@ class ExtractionResult:
     dates_by_variable: Mapping[str, list[ExtractedDate]] = field(default_factory=dict)
     unit_texts: Mapping[str, str] = field(default_factory=dict)
     warnings: tuple[Warning, ...] = ()
-    agreed: Agreement = field(default=Agreement.fixed(True), compare=False)
+    agreed: AnyAgreement = field(default=FixedAgreement(True), compare=False)
 
 
 # The model calls an extraction that misses the store sends: one per agreement sample
@@ -2010,7 +2011,9 @@ async def _model_extraction(
         return True
 
     reading, usage, agreed = await two_samples(
-        lambda sampler: sample_structured(sampler, prompt=query, system=system, schema=Extraction),
+        lambda sampler: generate_structured_async(
+            sampler, prompt=query, system=system, schema=Extraction
+        ),
         llm,
         stage="extraction",
         read=lambda first: _read_extraction(query, first, year=year),

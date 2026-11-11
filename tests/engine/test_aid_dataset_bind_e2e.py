@@ -40,7 +40,7 @@ from search.engine import degraded_reads as degraded_reads_module
 from search.engine import exclusion_read
 from search.engine.bind import ShapeRating, SlotBindingDraft, _UniversalBindOutput
 from search.engine.binders import Binder, GeminiBinder, JevBinder, jev_assemble
-from search.engine.clients.llm import Agreement
+from search.engine.clients.llm import AnyAgreement, FixedAgreement
 from search.engine.degraded_reads import DegradedReads, note_unsettled_scope
 from search.engine.entry import raw_text
 from search.engine.errors import (
@@ -240,10 +240,10 @@ def _read_recorded_exclusions(monkeypatch: pytest.MonkeyPatch) -> None:
     """Read what each question leaves out from the recorded reads, through this module's
     doubles; any other double reads nothing left out."""
 
-    async def read(query: str, *, llm: object) -> tuple[ExclusionRead, dict | None, Agreement]:
+    async def read(query: str, *, llm: object) -> tuple[ExclusionRead, dict | None, AnyAgreement]:
         if isinstance(llm, _RecordedLLM | _ScriptedLLM):
             return await exclusion_read.read_exclusions(query, llm=llm)
-        return ExclusionRead(exclusions=[]), None, Agreement.fixed(True)
+        return ExclusionRead(exclusions=[]), None, FixedAgreement(True)
 
     monkeypatch.setattr(raw_text, "read_exclusions", read)
 
@@ -1477,8 +1477,10 @@ def test_a_cue_before_a_list_puts_every_place_of_it_on_its_end(monkeypatch: pyte
     """The model gives each listed place the "to" before the list as its cue, so the part
     answers both on the recipient end. The question leaves nothing out."""
 
-    async def nothing_left_out(query: str, *, llm: object) -> tuple[ExclusionRead, None, Agreement]:
-        return ExclusionRead(exclusions=[]), None, Agreement.fixed(True)
+    async def nothing_left_out(
+        query: str, *, llm: object
+    ) -> tuple[ExclusionRead, None, AnyAgreement]:
+        return ExclusionRead(exclusions=[]), None, FixedAgreement(True)
 
     monkeypatch.setattr(raw_text, "read_exclusions", nothing_left_out)
     llm = _ScriptedLLM(
@@ -2869,8 +2871,10 @@ def test_the_aid_type_default_binds_where_the_reply_bound_its_unnamed_root(
     official and private flows, matches no label or synonym of the code, so the same
     override applies and the warning shows it. The question leaves nothing out."""
 
-    async def nothing_left_out(query: str, *, llm: object) -> tuple[ExclusionRead, None, Agreement]:
-        return ExclusionRead(exclusions=[]), None, Agreement.fixed(True)
+    async def nothing_left_out(
+        query: str, *, llm: object
+    ) -> tuple[ExclusionRead, None, AnyAgreement]:
+        return ExclusionRead(exclusions=[]), None, FixedAgreement(True)
 
     monkeypatch.setattr(raw_text, "read_exclusions", nothing_left_out)
     members = _dac1_aid_type_siblings("DAC1AidType1010", "DAC1AidType5", "DAC1AidType1015")

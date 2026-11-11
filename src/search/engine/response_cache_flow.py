@@ -24,7 +24,7 @@ from search.engine.bind_repair import (
     declared_default_words_named,
 )
 from search.engine.binders import Binder, Fallbacks
-from search.engine.clients.llm import LLM, Agreement, SecondSamples, SupportsLLM, settle
+from search.engine.clients.llm import LLM, AnyAgreement, SecondSamples, SupportsLLM, settle
 from search.engine.deadline import _await_bounded
 from search.engine.degraded_reads import DegradedReads
 from search.engine.enrichment import stream_place_options
@@ -323,7 +323,7 @@ class CacheScope:
         self._layer2_key: str | None = None
         # The second samples of this request's reads, closed by `release`.
         self._samples = SecondSamples()
-        self._agreements: tuple[Agreement, ...] = ()
+        self._agreements: tuple[AnyAgreement, ...] = ()
         # Whether the request's reads write agreed readings to an extraction store.
         self._stores_readings = False
         self._settled = False
@@ -340,10 +340,8 @@ class CacheScope:
         self._replay: StoredBundle | None = None
         # The response a request without trailing events publishes.
         self._response: ResolveResponse | None = None
-        # The entry both layers publish, encoded once (`_entry`), and whether it may be
-        # stored, decided once (`_verdict`).
+        # The entry both layers publish, encoded once (`_entry`).
         self._encoded: tuple[bytes, int] | None = None
-        self._storable_verdict: bool | None = None
         self._outcome: str = "inactive" if not self.active else "miss"
 
     @property
@@ -546,7 +544,7 @@ class CacheScope:
         self._stores_readings = isinstance(llm, LLM) and llm.extraction_store is not None
         return self._samples.bind(llm)
 
-    def note_extraction(self, *agreed: Agreement) -> None:
+    def note_extraction(self, *agreed: AnyAgreement) -> None:
         """Record the agreements this request's reading rests on: the two samples of its
         exclusion read and the two of its extraction (`entry.raw_text._DoorRead.agreed`).
         The scope settles them when it publishes (`_settle_extraction`). An answer whose
@@ -652,17 +650,16 @@ class CacheScope:
         return self._encoded
 
     def _verdict(self) -> bool:
-        """Whether this request's entry may be stored, decided once for both layers: no
-        fallback, no read cut, a stored verdict that allows it where it served a hit, and the
-        entry's own checks (`_storable`)."""
-        if self._storable_verdict is None:
-            self._storable_verdict = (
-                not self._fallbacks.reasons
-                and not self._request_reads.cut
-                and self._served_storable
-                and self._storable()
-            )
-        return self._storable_verdict
+        """Whether this request's entry may be stored now: no fallback, no read cut, a
+        stored verdict that allows it where it served a hit, and the entry's own checks
+        (`_storable`). Each layer asks at its own publish point, so a read cut or a health
+        flag recorded between `response` and `done` still keeps layer 1 from storing."""
+        return (
+            not self._fallbacks.reasons
+            and not self._request_reads.cut
+            and self._served_storable
+            and self._storable()
+        )
 
     def _storable(self) -> bool:
         """Whether this request's entry may be stored (`is_bundle_storable`, `is_storable`)."""
@@ -686,7 +683,8 @@ class CacheScope:
         """Publish this request's entry to its lease on `layer`, if it holds one.
 
         Cache errors are logged and never reach the pipeline. Both layers share one
-        encoding and verdict (`_entry`, `_verdict`), and layer 1 also needs an agreed reading
+        encoding (`_entry`); each judges storability when it publishes (`_verdict`), and
+        layer 1 also needs an agreed reading
         (`note_extraction`). Entry lifetime comes from the generation stamp captured
         before lookup.
         """

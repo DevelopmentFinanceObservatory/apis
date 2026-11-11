@@ -29,10 +29,10 @@ from code_index.shared import get_index, get_measure_index
 from code_index.tokens import Token, word_tokens
 from search.engine.clients.llm import (
     LLM,
-    Agreement,
+    AnyAgreement,
     SupportsLLM,
     for_stage,
-    sample_structured,
+    generate_structured_async,
     two_samples,
 )
 from search.engine.extract import _extract_version
@@ -131,7 +131,7 @@ def stored_exclusion_read(query: str, *, llm: SupportsLLM) -> ExclusionRead | No
 
 async def read_exclusions(
     query: str, *, llm: SupportsLLM
-) -> tuple[ExclusionRead, dict | None, Agreement]:
+) -> tuple[ExclusionRead, dict | None, AnyAgreement]:
     """The stretches of `query` that ask to leave something out, the calls' token usage, and
     the agreement of two samples of the read on them.
 
@@ -155,7 +155,7 @@ async def read_exclusions(
         return True
 
     return await two_samples(
-        lambda sampler: sample_structured(
+        lambda sampler: generate_structured_async(
             sampler, prompt=query, system=EXCLUSION_READ_SYSTEM_PROMPT, schema=ExclusionRead
         ),
         staged,

@@ -39,7 +39,7 @@ from search.engine.assemble import (
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import (
     UNCOUNTED_CALLS,
-    Agreement,
+    AnyAgreement,
     SecondSamples,
     SupportsLLM,
     held_by,
@@ -664,7 +664,7 @@ class _DoorRead:
     usage: dict | None
     reading: QueryReading
     timing: dict[str, int]
-    agreed: tuple[Agreement, ...]
+    agreed: tuple[AnyAgreement, ...]
 
 
 async def _discarded_usage(

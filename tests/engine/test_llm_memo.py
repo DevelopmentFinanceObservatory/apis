@@ -98,8 +98,10 @@ def _memo(**kwargs) -> LLMMemo:
     )
 
 
-def _call(llm, *, prompt="p", system="s", schema=_DummySchema):
-    return generate_structured_async(llm, prompt=prompt, system=system, schema=schema)
+async def _call(llm, *, prompt="p", system="s", schema=_DummySchema):
+    """The answer and usage of one call (`generate_structured_async`)."""
+    sampled = await generate_structured_async(llm, prompt=prompt, system=system, schema=schema)
+    return sampled.answer, sampled.usage
 
 
 def _response() -> _FakeResponse:

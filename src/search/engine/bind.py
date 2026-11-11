@@ -1133,7 +1133,7 @@ async def bind_universal(
         refused=refused,
         availability=availability,
     )
-    output, usage = await generate_structured_async(
+    output, usage, _memo_live_s = await generate_structured_async(
         for_stage(llm, "bind"),
         prompt=prompt,
         system=_MEASURING_BIND_SYSTEM_PROMPT,

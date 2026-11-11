@@ -22,6 +22,7 @@ from search.engine.clients.llm import (
     LLM,
     UNCOUNTED_CALLS,
     Agreement,
+    FixedAgreement,
     Sampled,
     SecondSample,
     SecondSamples,
@@ -499,7 +500,7 @@ async def _test_store_publishes_both_leases_when_this_request_holds_both(
 
         scope.note_extraction(Agreement(_held(second), lambda _second: agreed))
     else:
-        scope.note_extraction(Agreement.fixed(agreed))
+        scope.note_extraction(FixedAgreement(agreed))
     waiter = _make_scope(cache)
     waiting = asyncio.ensure_future(waiter.lookup_raw(query))
     await asyncio.sleep(0)
@@ -1077,11 +1078,15 @@ def test_a_cut_set_while_the_model_deadline_expires_does_not_raise(search_settin
     assert asyncio.run(run()) == (True, "cut")
 
 
-def test_a_second_sample_reaching_its_model_deadline_after_its_first_is_cut(search_settings):
+def test_a_second_sample_reaching_its_model_deadline_after_its_first_is_cut(
+    search_settings, caplog
+):
     """A second whose cut would fall after its own `llm_timeout_s` deadline, as when the
     memo's live call took longer than the time left, ends at that deadline, and since its
-    first was read its end reads as cut, logged as one."""
+    first was read its end reads as cut. Its log line names the model deadline and the time
+    it allowed, not the 10 s cut it never reached."""
     search_settings(llm_timeout_s=0.05)
+    caplog.set_level(logging.INFO, logger=llm_module.__name__)
 
     async def run() -> str:
         second = _held(_never)
@@ -1089,6 +1094,9 @@ def test_a_second_sample_reaching_its_model_deadline_after_its_first_is_cut(sear
         return await asyncio.wait_for(Agreement(second, lambda _answer: True).outcome(), 2)
 
     assert asyncio.run(run()) == "cut"
+    [line] = [r.getMessage() for r in caplog.records if r.name == llm_module.__name__]
+    assert "llm_timeout_s" in line
+    assert "10.00" not in line
 
 
 async def _broken() -> Sampled[None]:
@@ -1167,16 +1175,56 @@ def test_a_defective_second_sample_leaves_a_requests_answer_intact(caplog):
     ] == [(response_cache_flow.__name__, KeyError)]
 
 
-def test_an_agreement_holds_a_second_sample_or_a_fixed_verdict():
-    """An `Agreement` is built around a second sample, or with a known verdict through
-    `Agreement.fixed`, which holds no second; no constructor takes both or neither."""
+def test_closing_a_holder_logs_a_defect_no_judge_read(caplog):
+    """A second sample whose read is never judged, as one discarded with its speculative
+    parse, still reports a defect it raised when its holder closes, at error, naming its
+    stage. A model failure it raised logs nothing there."""
+    caplog.set_level(logging.INFO, logger=llm_module.__name__)
 
-    async def run() -> list[str]:
-        return [await Agreement.fixed(True).outcome(), await Agreement.fixed(False).outcome()]
+    async def failing() -> Sampled[None]:
+        raise LLMInfraError("503")
 
-    assert asyncio.run(run()) == ["agreed", "disagreed"]
-    with pytest.raises(TypeError):
-        Agreement(None, lambda _answer: True, verdict=True)
+    async def run() -> None:
+        samples = SecondSamples()
+        broken = samples.start(_broken, stage="extraction")
+        failed = samples.start(failing, stage="exclusion_read")
+        await asyncio.wait([broken.task, failed.task])
+        await samples.aclose()
+
+    asyncio.run(run())
+
+    assert [
+        (r.levelname, r.getMessage().split(":")[0], r.exc_info and r.exc_info[0])
+        for r in caplog.records
+        if r.name == llm_module.__name__
+    ] == [("ERROR", "extraction", KeyError)]
+
+
+def test_a_read_cut_after_the_response_keeps_layer1_from_storing():
+    """A request without trailing events publishes layer 2 at `response`. A read cut it
+    records after that, before `done`, keeps layer 1 from storing the answer: each layer
+    judges storability when it publishes."""
+    base = _base_response()
+
+    async def run() -> tuple[bool, bool]:
+        cache = _new_cache()
+        extraction = _population_india_extraction()
+        query = "total population india"
+        reads = DegradedReads()
+        scope = _make_scope(cache, request_reads=reads)
+        assert await scope.lookup_raw(query) is None
+        assert await scope.lookup_parsed(query=query, **extraction) is None
+        scope.note_extraction(FixedAgreement(True))
+        response, done = _terminal_events(base, start_ms=now_ms(), degraded_leg=False)
+        await scope.observe(response)
+        reads.cut.append("place options")
+        await scope.observe(done)
+        other = _make_scope(cache)
+        layer2 = await other.lookup_parsed(query="another wording", **extraction) is not None
+        await other.release()
+        return layer2, await _new_scope_hits_layer1(cache, query)
+
+    assert asyncio.run(run()) == (True, False)
 
 
 def test_an_unstreamed_response_is_encoded_once_for_both_layers(monkeypatch):
@@ -1261,7 +1309,7 @@ class _Value(BaseModel):
 
 
 def _timed_sample(sampler: SupportsLLM) -> Coroutine[Any, Any, Sampled[_Value]]:
-    return llm_module.sample_structured(sampler, prompt="q", system="s", schema=_Value)
+    return llm_module.generate_structured_async(sampler, prompt="q", system="s", schema=_Value)
 
 
 def test_a_repeat_whose_first_the_memo_serves_gives_its_second_the_live_calls_time(
@@ -1329,7 +1377,9 @@ def test_only_the_first_samples_own_answer_widens_its_seconds_cut(search_setting
         assert isinstance(sampler, LLM)
         if sampler._seed == 2:
             await asyncio.Event().wait()
-        await llm_module.sample_structured(sampler, prompt="other", system="s", schema=_Value)
+        await llm_module.generate_structured_async(
+            sampler, prompt="other", system="s", schema=_Value
+        )
         return Sampled("first", None, None)
 
     async def run() -> str:

@@ -265,16 +265,16 @@ def _doubles_read_no_exclusion(request: pytest.FixtureRequest) -> Iterator[None]
     if raw_text is None or request.node.get_closest_marker("reads_exclusions"):
         yield
         return
-    from search.engine.clients.llm import Agreement
+    from search.engine.clients.llm import AnyAgreement, FixedAgreement
     from search.engine.exclusion_read import ExclusionRead
     from tests.fixtures import FakeLLM
 
     read_exclusions = raw_text.read_exclusions
 
-    async def read(query: str, *, llm: object) -> tuple[ExclusionRead, None, Agreement]:
+    async def read(query: str, *, llm: object) -> tuple[ExclusionRead, None, AnyAgreement]:
         if isinstance(llm, FakeLLM) and llm.recorded:
             return await read_exclusions(query, llm=llm)
-        return ExclusionRead(exclusions=[]), None, Agreement.fixed(True)
+        return ExclusionRead(exclusions=[]), None, FixedAgreement(True)
 
     raw_text.read_exclusions = read
     try:

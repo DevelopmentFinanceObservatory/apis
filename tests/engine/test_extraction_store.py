@@ -174,13 +174,13 @@ def test_a_new_calendar_year_calls_the_model_again_with_that_year(monkeypatch):
     """A stored reading lives for the year its prompt named; the next year asks again."""
     llm, models = _llm(monkeypatch, MemoryExtractionStore(max_bytes=1024 * 1024))
     systems: list[str] = []
-    send = extract_module.sample_structured
+    send = extract_module.generate_structured_async
 
     async def recording(llm, *, prompt, system, schema):
         systems.append(system)
         return await send(llm, prompt=prompt, system=system, schema=schema)
 
-    monkeypatch.setattr(extract_module, "sample_structured", recording)
+    monkeypatch.setattr(extract_module, "generate_structured_async", recording)
     for day in (date(2026, 12, 31), date(2027, 1, 1), date(2027, 6, 1)):
         monkeypatch.setattr(extract_module, "date", SimpleNamespace(today=lambda day=day: day))
         _extract(_QUERY, llm)
@@ -223,7 +223,7 @@ def test_a_refused_or_failed_sample_is_not_stored(
             raise outcome
         return Sampled(outcome, None, None)
 
-    monkeypatch.setattr(extract_module, "sample_structured", answer)
+    monkeypatch.setattr(extract_module, "generate_structured_async", answer)
     if failing_seed == 1:
         with pytest.raises(type(failure)):
             _extract(_QUERY, llm)
