@@ -2,6 +2,8 @@
   query: Adaptation Fund adaptation finance to Viet Nam in 2022
   why: '"Adaptation" reads ONE Data''s adaptation-only part, since a project marked for both objectives counts as cross-cutting.'
   tags: {theme: climate, entity: organisation, direction: both, unit: default, time: year, operation: none, breakdown: objective, door: raw_text, phrasing: casual}
+  # The deployed dev release's code index has no "adaptation" synonym yet.
+  known_failure: {issue: 278, checks: [disposition]}
   expect:
     definite:
       measure:
