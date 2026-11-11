@@ -27,6 +27,7 @@ from code_index.types import CodeRow, StatVarRow
 from dc_graph import ArcTarget, Facet, FacetDefaultPolicy
 from origin_catalogue import Catalogue
 from origin_catalogue.origins import UN_ID_PREFIX
+from search.engine.retrieval.code_reads import carried_values, reads_code
 from search.scope.basis import CONVENTION_DATASETS, names_a_basis, sibling_measures
 from statvar_members import FiveTuple
 
@@ -67,8 +68,12 @@ class DetectedSV:
     score: float
     type_of: str | None  # candidate.typeOf, used to decide Topic expansion.
     sentence: str | None  # candidate.metadata.sentence, carried for diagnostics and labels.
-    # A row `with_rival_families` adds for its five-tuple, which the resolve did not return.
+    # A row `with_rival_families` or `with_reading_families` adds for its five-tuple, which
+    # the resolve did not return.
     rival: bool = False
+    # On a rival row, whether `with_reading_families` added it for a query phrase no recalled
+    # family of its five-tuple reads.
+    closure: bool = False
     # On a rival row of a family measuring another convention basis of recalled families
     # (`with_rival_families`), those families (`family_ref`). Its shape joins the house
     # policies' pool only beside one of them.
@@ -304,10 +309,10 @@ def with_reading_families(
     reads, in descending score.
 
     `phrases` holds the code rows each phrase of the query names, read in every code system
-    (`qualifier_match.read_by_vocabulary`). A family reads a phrase when one of its rows
-    carries one of the phrase's codes, or a descendant of one, on the code's property, as
-    `bound_values.query_phrases_read` counts a shape's phrases. The resolve ranks
-    sentences, and a sentence states no code: for "adaptation disbursements" it returns the
+    (`qualifier_match.read_by_vocabulary`). A family reads a phrase when its rows read one
+    of the phrase's codes (`family_reads`), by the rule the family election reads a shape's
+    phrases by (`retrieval.code_reads`). The resolve ranks sentences, and a sentence states
+    no code: for "adaptation disbursements" it returns the
     CRS's disbursements, which hold no climate objective, and not the climate finance
     disbursements that share the CRS's five-tuple and hold the adaptation objective. Within
     a five-tuple the family reading more of the query's phrases is elected
@@ -320,8 +325,9 @@ def with_reading_families(
 
     A row added here is the family's broadest admitted row (`_broadest_admitted_row`),
     takes the best score of the five-tuple's hits, and is marked `DetectedSV.rival` as a
-    row of `with_rival_families` is, so it displaces only shapes of its own five-tuple."""
-    readers = [code_values(codes, index) for codes in phrases]
+    row of `with_rival_families` is, so it displaces only shapes of its own five-tuple, and
+    `DetectedSV.closure`, so the pool's log tells the two apart."""
+    readers = [tuple(codes) for codes in phrases]
     if not readers:
         return tuple(hits)
     best: dict[FiveTuple, float] = {}
@@ -339,15 +345,15 @@ def with_reading_families(
     rows: list[DetectedSV] = []
     for five_tuple, score in best.items():
         unread = [
-            values
-            for values in readers
-            if not any(family_reads(family, values, index=index) for family in pooled[five_tuple])
+            codes
+            for codes in readers
+            if not any(family_reads(family, codes, index=index) for family in pooled[five_tuple])
         ]
         if not unread:
             continue
         for family in index.families_by_five_tuple[five_tuple]:
             if id(family) in held or not any(
-                family_reads(family, values, index=index) for values in unread
+                family_reads(family, codes, index=index) for codes in unread
             ):
                 continue
             row = _broadest_admitted_row(family, catalogue=catalogue, index=index)
@@ -360,6 +366,7 @@ def with_reading_families(
                         type_of="StatisticalVariable",
                         sentence=None,
                         rival=True,
+                        closure=True,
                     )
                 )
     if not rows:
@@ -367,40 +374,32 @@ def with_reading_families(
     return tuple(sorted((*hits, *rows), key=lambda c: c.score, reverse=True))
 
 
-def code_values(codes: Iterable[CodeRow], index: CodeIndex) -> dict[str, frozenset[str]]:
-    """Each code system of `codes`, mapped to its codes among them and their descendants
-    (`CodeIndex.descendants`)."""
-    values: dict[str, set[str]] = {}
-    for code in codes:
-        values.setdefault(code.code_system, set()).update(index.descendants(code.dcid))
-    return {system: frozenset(held) for system, held in values.items()}
-
-
 @per_index
 def _family_values(
     index: CodeIndex,
 ) -> dict[tuple[FiveTuple, frozenset[str]], dict[str, frozenset[str]]]:
-    """Each index family's constraint values by property, keyed by five-tuple and family
+    """Each index family's values by property (`code_reads.carried_values`): its rows'
+    constraint values and its five-tuple's axis values, keyed by five-tuple and family
     properties."""
-    found: dict[tuple[FiveTuple, frozenset[str]], dict[str, frozenset[str]]] = {}
-    for families in index.families_by_five_tuple.values():
-        for family in families:
-            values: dict[str, set[str]] = {}
-            for row in family.rows:
-                for prop, value in row.constraint_properties.items():
-                    values.setdefault(prop, set()).add(value)
-            found[family.five_tuple, family.properties] = {
-                prop: frozenset(held) for prop, held in values.items()
-            }
-    return found
+    return {
+        (family.five_tuple, family.properties): carried_values(
+            (row.constraint_properties for row in family.rows),
+            {
+                "populationType": family.five_tuple.population_type,
+                "measuredProperty": family.five_tuple.measured_property,
+                "measurementQualifier": family.five_tuple.measurement_qualifier,
+            },
+        )
+        for families in index.families_by_five_tuple.values()
+        for family in families
+    }
 
 
-def family_reads(
-    family: IndexFamily, values: Mapping[str, AbstractSet[str]], *, index: CodeIndex
-) -> bool:
-    """Whether a row of `family` carries one of `values` on its code system."""
+def family_reads(family: IndexFamily, codes: Iterable[CodeRow], *, index: CodeIndex) -> bool:
+    """Whether the rows of `family` read one of `codes`, the codes of one query phrase
+    (`code_reads.reads_code`)."""
     carried = _family_values(index)[family.five_tuple, family.properties]
-    return any(not held.isdisjoint(carried.get(system, ())) for system, held in values.items())
+    return any(reads_code(carried, code.code_system, code.dcid, index=index) for code in codes)
 
 
 def family_ref(family: IndexFamily) -> str:

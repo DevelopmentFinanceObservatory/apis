@@ -232,14 +232,18 @@ def test_loader_rejects_a_stated_word_that_is_malformed(row: dict):
         parse_index(payload)
 
 
-def test_loader_reads_the_words_a_dataset_notes():
+def test_loader_reads_the_words_and_phrases_a_dataset_notes():
     payload = _fixture()
-    payload["datasets"][0]["noted_words"] = [{"word": "aid", "note": "Wider than aid."}]
+    payload["datasets"][0]["noted_words"] = [
+        {"word": "aid", "note": "Wider than aid."},
+        {"word": "official development assistance", "note": "Wider than aid."},
+    ]
 
     index = parse_index(payload)
 
     assert index.datasets[_CRS_PROVENANCE].noted_words == (
         NotedWord(word="aid", note="Wider than aid."),
+        NotedWord(word="official development assistance", note="Wider than aid."),
     )
 
 
@@ -247,12 +251,22 @@ def test_loader_reads_the_words_a_dataset_notes():
     "rows",
     [
         [{"word": "Aid", "note": "Wider than aid."}],
-        [{"word": "official aid", "note": "Wider than aid."}],
+        [{"word": "official  aid", "note": "Wider than aid."}],
+        [{"word": " aid", "note": "Wider than aid."}],
+        [{"word": "non-oda, aid", "note": "Wider than aid."}],
         [{"word": "aid", "note": " "}],
         [{"word": "aid", "note": None}],
         [{"word": "aid", "note": "Wider."}, {"word": "aid", "note": "Wider still."}],
     ],
-    ids=["uppercase", "two-words", "blank-note", "no-note", "noted-twice"],
+    ids=[
+        "uppercase",
+        "double-space",
+        "leading-space",
+        "separator",
+        "blank-note",
+        "no-note",
+        "noted-twice",
+    ],
 )
 def test_loader_rejects_a_noted_word_that_is_malformed(rows: list[dict]):
     payload = _fixture()

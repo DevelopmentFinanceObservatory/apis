@@ -59,7 +59,7 @@ from search.engine.binders.house_policy import (
     differ_on_basis,
     shape_facts,
 )
-from search.engine.clients.graph import code_values, family_reads, family_ref
+from search.engine.clients.graph import family_reads, family_ref
 from search.engine.config import settings
 from search.engine.degraded_reads import fail_open_reads
 from search.engine.departures import qualifier_property
@@ -991,17 +991,29 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
 
 def _log_pool_origins(shapes: Sequence[ShapeDraft]) -> None:
     """Log where each shape of the pool came from: `recalled` when a confirmed member is a
-    direct recall, `injected` when every member is a row recall added for its five-tuple
+    direct recall, `closure` when every member is a row recall added for a query phrase no
+    recalled family of its five-tuple reads (`clients.graph.with_reading_families`),
+    `injected` when every member is another row recall added for its five-tuple
     (`clients.graph.with_rival_families`), and `derived` otherwise."""
-    origins: dict[str, list[str]] = {"recalled": [], "injected": [], "derived": []}
+    origins: dict[str, list[str]] = {"recalled": [], "closure": [], "injected": [], "derived": []}
     for shape in shapes:
-        origin = "injected" if shape.rival else "recalled" if shape.recalled else "derived"
+        origin = (
+            "closure"
+            if shape.closure
+            else "injected"
+            if shape.rival
+            else "recalled"
+            if shape.recalled
+            else "derived"
+        )
         origins[origin].append(shape.shape_id)
     logger.info(
-        "shape pool: %d recalled, %d injected, %d derived; injected %s",
+        "shape pool: %d recalled, %d closure, %d injected, %d derived; closure %s; injected %s",
         len(origins["recalled"]),
+        len(origins["closure"]),
         len(origins["injected"]),
         len(origins["derived"]),
+        origins["closure"],
         origins["injected"],
         extra={"pool_origins": origins},
     )
@@ -1588,16 +1600,18 @@ def _rival_held_qualifiers(state: ResolveState) -> tuple[ResolvedQualifier, ...]
     CRS does not. Election keeps the family reading more of the query
     (`elect_five_tuple_family`), but a named source, a tie on the phrases read or a rival
     recall left out can still elect the family that drops the word, and the answer would
-    report the CRS total. A family records a code as recall's closure reads it
-    (`clients.graph.family_reads`), on the index alone, so the check holds whatever recall
-    pooled. Families of one five-tuple are rivals when both bear roles or neither does, as
-    election pairs them.
+    report the CRS total. A family records a code as recall's closure and the election read
+    it (`clients.graph.family_reads`, `retrieval.code_reads`), on the index alone, so the
+    check holds whatever recall pooled. Families of one five-tuple are rivals when both bear
+    roles or neither does, as election pairs them.
 
     A word counts as read where a span of the shape's own reading covers it, a menu choice
-    reads it (`_chosen_ranges`), or the series or its datasets state it, as
-    `_unread_qualifier_runs` reads them: "bilateral" in "bilateral ODA", DAC1 aid type
-    1015, is read on a CRS shape. A shape the index does not carry has no family to compare,
-    and a term no rival records keeps the handling of the checks beside this one.
+    reads it (`_chosen_ranges`), the series or its datasets state it, as
+    `_unread_qualifier_runs` reads them, or those datasets note it (`dataset_noted_words`):
+    "bilateral" in "bilateral ODA", DAC1 aid type 1015, is read on a CRS shape, and "ODA" in
+    "climate ODA" on ONE Data Climate Finance, which notes that its figures count other
+    official flows too. A shape the index does not carry has no family to compare, and a
+    term no rival records keeps the handling of the checks beside this one.
     """
     index = get_index()
     shape = state.shape_draft
@@ -1613,7 +1627,11 @@ def _rival_held_qualifiers(state: ResolveState) -> tuple[ResolvedQualifier, ...]
     if not rivals:
         return ()
     variable = state.variable
-    stated = _series_words(shape) | _dataset_stated_words(shape, index, state)
+    stated = (
+        _series_words(shape)
+        | _dataset_stated_words(shape, index, state)
+        | _noted_words_read(shape, index, state)
+    )
     if _ratio_words(shape):
         stated |= FUNCTION_WORDS
     read = [
@@ -1631,10 +1649,9 @@ def _rival_held_qualifiers(state: ResolveState) -> tuple[ResolvedQualifier, ...]
             continue
         if not _unread_words(variable, span, read):
             continue
-        values = code_values(code_rows, index)
-        if family_reads(own, values, index=index):
+        if family_reads(own, code_rows, index=index):
             continue
-        holders = [family for family in rivals if family_reads(family, values, index=index)]
+        holders = [family for family in rivals if family_reads(family, code_rows, index=index)]
         if holders:
             records.append(
                 _unavailable_record(span, code_rows, held_by=_serving_datasets(holders, index))
@@ -1675,49 +1692,57 @@ def _unavailable_qualifiers(state: ResolveState) -> list[ResolvedQualifier]:
     each as an unbound record with evidence ``"unavailable"``, in query order, with the
     elected shape as its near match.
 
-    On every part they are the terms another family of the shape's five-tuple records and
-    the shape leaves unread (`_rival_held_qualifiers`), in every coverage mode: "adaptation"
-    on a CRS answer, which ONE Data Climate Finance records. On a part naming a source
-    (`_names_source`) they are also the terms none of its tables' rows holds
-    (`_undeclared_qualifiers`) and the terms naming
-    only codes no shape can bind (`_unbindable_qualifiers`), in every coverage mode:
-    "multilateral ODA" names DAC1 aid type 2000, which a CRS part cannot apply, so the CRS
-    ODA answer is the near match. On a part naming no source the unbindable terms join
-    under ``SearchSettings.qualifier_coverage="refuse"`` only. In log mode
+    They are the terms another family of the shape's five-tuple records and the shape
+    leaves unread (`_rival_held_qualifiers`): "adaptation" on a CRS answer, which ONE Data
+    Climate Finance records. They are also the terms naming only codes no shape can bind
+    (`_unbindable_qualifiers`): "multilateral ODA" names DAC1 aid type 2000, which a CRS part
+    cannot apply, so the CRS ODA answer is the near match. On a part naming a source
+    (`_names_source`) both join in every coverage mode, with the terms none of its tables'
+    rows holds (`_undeclared_qualifiers`). On a part naming no source they join under
+    ``SearchSettings.qualifier_coverage="refuse"`` only, and in log mode
     `_withheld_qualifiers` holds them. A term two checks record keeps the first record,
     in that order, so a rival-held term names the datasets that record it.
     """
-    variable = state.variable
-    spans = state.variable_spans_in_every_system
-    chosen = _chosen_ranges(state)
-    records = list(_rival_held_qualifiers(state))
-    recorded = {(record.start, record.end) for record in records}
-    unbindable = [
-        record
-        for record in _unbindable_qualifiers(
-            variable, spans, state.shape_draft, state.variable_spans_by_vocabulary, chosen
-        )
-        if (record.start, record.end) not in recorded
-    ]
     if not _names_source(state):
-        if settings().qualifier_coverage == "refuse":
-            records += unbindable
-        return sorted(records, key=lambda record: record.start or 0)
-    records += unbindable
+        if settings().qualifier_coverage != "refuse":
+            return []
+        return sorted(_inapplicable_terms(state), key=lambda record: record.start or 0)
+    records = _inapplicable_terms(state)
     recorded = {(record.start, record.end) for record in records}
     records += [
         record
         for record in _undeclared_qualifiers(
-            variable,
-            spans,
+            state.variable,
+            state.variable_spans_in_every_system,
             [state.shape_draft],
             state.variable_spans_by_vocabulary,
-            chosen,
+            _chosen_ranges(state),
             state=state,
         )
         if (record.start, record.end) not in recorded
     ]
     return sorted(records, key=lambda record: record.start or 0)
+
+
+def _inapplicable_terms(state: ResolveState) -> list[ResolvedQualifier]:
+    """The terms another family of the elected shape's five-tuple records and the shape
+    leaves unread (`_rival_held_qualifiers`), then the terms naming only codes no shape can
+    bind (`_unbindable_qualifiers`) that no rival-held record covers, which a part refuses
+    on or, in log mode on a part naming no source, departs as not applied."""
+    records = list(_rival_held_qualifiers(state))
+    recorded = {(record.start, record.end) for record in records}
+    records += [
+        record
+        for record in _unbindable_qualifiers(
+            state.variable,
+            state.variable_spans_in_every_system,
+            state.shape_draft,
+            state.variable_spans_by_vocabulary,
+            _chosen_ranges(state),
+        )
+        if (record.start, record.end) not in recorded
+    ]
+    return records
 
 
 def _unelected_qualifiers(state: ResolveState) -> tuple[ResolvedQualifier, ...]:
@@ -1748,19 +1773,13 @@ def _names_source(state: ResolveState) -> bool:
 
 def _withheld_qualifiers(state: ResolveState) -> tuple[ResolvedQualifier, ...]:
     """The unavailable records `_unavailable_qualifiers` leaves out of the part's records:
-    in log mode, on a part naming no source, the terms naming only codes no shape can bind
-    (`_unbindable_qualifiers`). The part answers without them and departs each as not
-    applied: "ODA goods donations from France to Kenya" answers ODA and says "goods
-    donations" was not applied. Empty otherwise."""
+    in log mode, on a part naming no source, the terms a rival family records and the terms
+    naming only codes no shape can bind (`_inapplicable_terms`). The part answers without
+    them and departs each as not applied: "ODA goods donations from France to Kenya"
+    answers ODA and says "goods donations" was not applied. Empty otherwise."""
     if _names_source(state) or settings().qualifier_coverage == "refuse":
         return ()
-    return _unbindable_qualifiers(
-        state.variable,
-        state.variable_spans_in_every_system,
-        state.shape_draft,
-        state.variable_spans_by_vocabulary,
-        _chosen_ranges(state),
-    )
+    return tuple(_inapplicable_terms(state))
 
 
 def _unavailable_record(
@@ -2412,8 +2431,8 @@ def _names_answering_dataset(phrase: str, state: ResolveState, index: CodeIndex)
     label_words = _answering_dataset_label_words(state, index)
     if not words or label_words is None:
         return False
-    noted = {noted.word for noted in dataset_noted_words(state.shape_draft, index, state)}
-    return words <= label_words | _dataset_stated_words(state.shape_draft, index, state) | noted
+    stated = _dataset_stated_words(state.shape_draft, index, state)
+    return words <= label_words | stated | _noted_words_read(state.shape_draft, index, state)
 
 
 def _casefolded_words(text: str) -> frozenset[str]:
@@ -2518,6 +2537,15 @@ def dataset_noted_words(
         for dataset in datasets
         for noted in dataset.noted_words
         if noted.word in common and part_states(state, noted.word)
+    )
+
+
+def _noted_words_read(shape: ShapeDraft, index: CodeIndex, state: ResolveState) -> frozenset[str]:
+    """The casefolded words of each entry the datasets `shape` answers from note that the
+    part states (`dataset_noted_words`): "aid", and "official", "development" and
+    "assistance" where the part states "official development assistance"."""
+    return frozenset(
+        part for noted in dataset_noted_words(shape, index, state) for part in noted.word.split(" ")
     )
 
 
@@ -2670,7 +2698,7 @@ def _conversational_words(
     known = set(FUNCTION_WORDS | AMOUNT_WORDS | DATA_WORDS | FLOW_VERBS | _series_words(shape))
     known |= _answering_dataset_label_words(state, index, shape) or frozenset()
     known |= _dataset_stated_words(shape, index, state)
-    known |= {noted.word for noted in dataset_noted_words(shape, index, state)}
+    known |= _noted_words_read(shape, index, state)
     declarations = [
         index.declarations[prop] for prop in shape_vocabulary(shape) if prop in index.declarations
     ]
@@ -4231,11 +4259,12 @@ def _resolve_query_qualifiers(state: ResolveState) -> list[ResolvedQualifier]:
     Ten sources contribute records:
 
     1. The variable's code terms the elected shape cannot apply (`_unavailable_qualifiers`),
-       each ``unbound`` with evidence ``"unavailable"``. They are terms naming only codes no
-       shape can bind whose words the shape's own reading leaves unread and, on a part
-       naming a source, terms none of its rows holds. A part naming a source records them
-       in every coverage mode. A part naming none records the unbindable terms in refuse
-       mode only. A span of the shape's own reading at the same offsets, an
+       each ``unbound`` with evidence ``"unavailable"``. They are terms a rival family of
+       the shape's five-tuple records, terms naming only codes no shape can bind whose
+       words the shape's own reading leaves unread and, on a part naming a source, terms
+       none of its rows holds. A part naming a source records them in every coverage mode.
+       A part naming none records the rival-held and unbindable terms in refuse mode only.
+       A span of the shape's own reading at the same offsets, an
        unplaced phrase overlapping one, and a tie or sidecar span of the same text record
        nothing more.
     2. Variable spans, as the elected shape's own vocabulary reads them

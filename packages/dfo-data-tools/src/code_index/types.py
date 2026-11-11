@@ -323,8 +323,9 @@ class NotedWord:
     """One word a question uses for a table's rows that their figures do not mean exactly
     (`DatasetDeclaration.noted_words`).
 
-    `word` is one lowercase word and `note` the sentence an answer from the table states
-    when the question holds the word. "Aid" on ONE Data Climate Finance reads the table's
+    `word` is one lowercase word or a phrase of them joined by single spaces ("official
+    development assistance"), and `note` the sentence an answer from the table states when
+    the question holds the word. "Aid" on ONE Data Climate Finance reads the table's
     climate finance, which counts other official flows as well as ODA, and the note says so.
     """
 

@@ -28,6 +28,7 @@ from itertools import pairwise
 from typing import Literal, Protocol
 
 from code_index.query import CodeIndex, fold_word
+from code_index.shared import per_index
 from code_index.tokens import (
     Token,
     TokenLookup,
@@ -37,6 +38,7 @@ from code_index.tokens import (
     word_tokens,
 )
 from code_index.types import CodeRow, MeasureIndex, MeasureValueRow
+from dfo_platform.lru_memo import LruMemo
 from search.engine.function_words import FUNCTION_WORDS
 
 MatchSource = Literal["code", "label", "synonym"]
@@ -753,6 +755,7 @@ class _Lexicon:
     read in several vocabularies builds them once."""
 
     index: CodeIndex
+    measure_index: MeasureIndex | None
     measure_lookup: TokenLookup[MeasureValueRow]
     system_markers: Mapping[str, _SystemMarkers]
     max_width: int
@@ -762,6 +765,7 @@ class _Lexicon:
 def _lexicon(index: CodeIndex, measure_index: MeasureIndex | None) -> _Lexicon:
     return _Lexicon(
         index=index,
+        measure_index=measure_index,
         measure_lookup=_measure_lookup(measure_index),
         system_markers=_all_system_markers(index),
         max_width=_max_phrase_words(index, measure_index),
@@ -928,7 +932,11 @@ def _read(
     words that row's label covers stays that of every system together. One overlapping a
     span the vocabulary reads is left out.
     """
-    raw = _recognise_raw(query, lexicon, vocabulary)
+    raw = (
+        _scan_everywhere(query, lexicon)
+        if vocabulary is None
+        else _recognise_raw(query, lexicon, vocabulary)
+    )
     if measure_spans is not None:
         kept = [r for r in raw if not _is_measure_span(r)]
         kept += [
@@ -977,6 +985,34 @@ def _project(raw: tuple[_RawSpan, ...], *, located: bool) -> VocabularyReading:
     )
 
 
+# The texts each index's scans in every code system are kept for (`_scan_everywhere`): a
+# request reads a few texts per part, and one part reads its variable twice.
+_EVERYWHERE_SCANS = 512
+
+
+@per_index
+def _everywhere_scans(
+    _index: CodeIndex,
+) -> LruMemo[tuple[str, int], tuple[MeasureIndex | None, tuple[_RawSpan, ...]]]:
+    """The scans in every code system of texts read on one index, by text and measure
+    index object, each with that measure index."""
+    return LruMemo(_EVERYWHERE_SCANS)
+
+
+def _scan_everywhere(text: str, lexicon: _Lexicon) -> tuple[_RawSpan, ...]:
+    """`_recognise_raw`'s scan of `text` in every code system with `lexicon`, kept per
+    index, text and measure index (`_everywhere_scans`). Every reader of a text in every
+    system reads this scan."""
+    memo = _everywhere_scans(lexicon.index)
+    key = (text, id(lexicon.measure_index))
+    kept = memo.get(key)
+    if kept is not None and kept[0] is lexicon.measure_index:
+        return kept[1]
+    raw = _recognise_raw(text, lexicon, None)
+    memo.put(key, (lexicon.measure_index, raw))
+    return raw
+
+
 @dataclass(frozen=True, slots=True)
 class TextReading:
     """One text read in every code system together (`everywhere`) and in each vocabulary
@@ -999,13 +1035,15 @@ def read_by_vocabulary(
     Each vocabulary's reading sees only its own code systems (`VocabularyReading`), so a
     shape reads a text in its own systems' labels and never receives two readings of one
     token from two parses. Measure values take the reading in every code system, shared by
-    every vocabulary. Each match and tie row carries its offsets in its own text.
+    every vocabulary. Each match and tie row carries its offsets in its own text. The scan
+    in every code system is kept per text (`_scan_everywhere`), so recall's reading of a
+    variable (`interpret._detect`) and the bind phase's share one scan.
     """
     lexicon = _lexicon(index, measure_index)
     vocabularies = tuple(dict.fromkeys(vocabularies))
     readings: list[TextReading] = []
     for text in texts:
-        everywhere = _recognise_raw(text, lexicon, None)
+        everywhere = _scan_everywhere(text, lexicon)
         measure_spans = tuple(span for span in everywhere if _is_measure_span(span))
         readings.append(
             TextReading(
@@ -1152,8 +1190,7 @@ def label_runs(
     aid type 250) and "non-DAC countries" are each one run. A party run is no longer than
     the longest party label."""
     runs = [
-        (span.start, span.end)
-        for span in _recognise_raw(query, _lexicon(index, measure_index), None)
+        (span.start, span.end) for span in _scan_everywhere(query, _lexicon(index, measure_index))
     ]
     parties, longest = _party_lookup(index)
     tokens = tokenize(query)
@@ -1274,7 +1311,7 @@ def match_qualifier_readings(
     A span naming any other mix of rows stays refused. See `QualifierReadings` for how a
     caller chooses between the two readings.
     """
-    raw = _recognise_raw(query, _lexicon(index, measure_index), None)
+    raw = _scan_everywhere(query, _lexicon(index, measure_index))
     readings: list[QualifierReadings] = []
     for r in raw:
         if len(r.rows) != 2:

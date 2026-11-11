@@ -10,6 +10,7 @@ from typing import cast, get_args
 
 from code_index.declarations import COMPOSITES
 from code_index.query import CodeIndex, DuplicateDcid, fold_text, partly_stated_five_tuples
+from code_index.tokens import tokenize
 from code_index.types import (
     PARTY_CLASSES,
     PARTY_KINDS,
@@ -673,15 +674,16 @@ def _parse_party_words(provenance: str, rows: Sequence[Mapping]) -> tuple[PartyW
 
 
 def _parse_noted_words(provenance: str, rows: Sequence[Mapping]) -> tuple[NotedWord, ...]:
-    """A datasets row's `noted_words`, refusing a word that is not a single lowercase word,
-    a note that is not a non-empty string, and a word noted twice. Absent reads as empty."""
+    """A datasets row's `noted_words`, refusing an entry that is not lowercase words joined
+    by single spaces ("aid", "official development assistance"), a note that is not a
+    non-empty string, and an entry noted twice. Absent reads as empty."""
     noted: list[NotedWord] = []
     for row in rows:
         word, note = row["word"], row["note"]
-        if invalid_when_named_entry([word]) is not None or len(word.split()) != 1:
+        if invalid_when_named_entry([word]) is not None or not _is_word_phrase(word):
             raise IndexFormatError(
-                f"datasets row for {provenance!r} notes {word!r}, which is not a single "
-                "lowercase word"
+                f"datasets row for {provenance!r} notes {word!r}, which is not lowercase "
+                "words joined by single spaces"
             )
         if not isinstance(note, str) or not note.strip():
             raise IndexFormatError(f"datasets row for {provenance!r} notes {word!r} with no note")
@@ -689,6 +691,15 @@ def _parse_noted_words(provenance: str, rows: Sequence[Mapping]) -> tuple[NotedW
             raise IndexFormatError(f"datasets row for {provenance!r} notes {word!r} twice")
         noted.append(NotedWord(word=word, note=note))
     return tuple(noted)
+
+
+def _is_word_phrase(text: str) -> bool:
+    """Whether `text` is one or more words (`code_index.tokens.tokenize`) joined by
+    single spaces, with no separator."""
+    tokens = tokenize(text)
+    return all(token.kind == "word" for token in tokens) and (
+        " ".join(token.text for token in tokens) == text
+    )
 
 
 def _check_declared_word(provenance: str, word: str, prop: str) -> None:

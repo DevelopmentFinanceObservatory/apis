@@ -107,6 +107,7 @@ from search.engine.errors import (
     RoleSignatureError,
 )
 from search.engine.reading_coverage import covers
+from search.engine.retrieval.code_reads import carried_values, reads_code
 from search.engine.retrieval.facts import (
     FiveTuple,
     _dcids_for,
@@ -3909,16 +3910,22 @@ def index_carries_shape(shape: ShapeDraft, index: CodeIndex | None = None) -> bo
 def held_codes(shape: ShapeDraft) -> Callable[[QualifierMatch], bool]:
     """Whether `shape`'s family holds a match's value, read once and kept per code.
 
-    A code's family holds it when some member asserts the code's property at the code or
-    one of its descendants. The members are the rows of its family that its part may answer
-    from for a shape the index carries, its recalled members for any other
-    (`five_tuple_member_facts`), read on the first call. A measure value on a five-tuple
-    axis ("grant equivalent" names `measuredProperty` `grantEquivalent`) is held when the
-    shape's five-tuple carries it, and one on a constraint axis ("net" names
-    `nettingBasis` `Net`) as a code is.
+    The members are the rows of its family that its part may answer from for a shape the
+    index carries, its recalled members for any other (`five_tuple_member_facts`), read on
+    the first call for a code of a constraint axis, and they hold a value as
+    `code_reads.reads_code` reads rows: at the code or one of its descendants on its
+    property, and a measure value on a five-tuple axis where the shape's five-tuple carries
+    it.
     """
     index = get_index()
-    constraints: list[dict[str, str]] | None = None
+    axes = carried_values(
+        (),
+        {
+            axis: getattr(shape, field_name)
+            for axis, field_name in _MEASURE_AXIS_DRAFT_FIELDS.items()
+        },
+    )
+    constraints: dict[str, frozenset[str]] | None = None
     held: dict[tuple[str, str], bool] = {}
 
     def holds(match: QualifierMatch) -> bool:
@@ -3926,15 +3933,15 @@ def held_codes(shape: ShapeDraft) -> Callable[[QualifierMatch], bool]:
         key = (match.code_system, match.code_dcid)
         if key in held:
             return held[key]
-        field_name = _MEASURE_AXIS_DRAFT_FIELDS.get(match.code_system)
-        if field_name is not None:
-            held[key] = getattr(shape, field_name) == match.code_dcid
-            return held[key]
-        if constraints is None:
-            member_facts, _index_sourced = five_tuple_member_facts(shape)
-            constraints = [member.read_constraints() for member in member_facts.values()]
-        values = frozenset(index.descendants(match.code_dcid)) | {match.code_dcid}
-        held[key] = any(member.get(match.code_system) in values for member in constraints)
+        carried = axes
+        if match.code_system not in _MEASURE_AXIS_DRAFT_FIELDS:
+            if constraints is None:
+                member_facts, _index_sourced = five_tuple_member_facts(shape)
+                constraints = carried_values(
+                    member.read_constraints() for member in member_facts.values()
+                )
+            carried = constraints
+        held[key] = reads_code(carried, match.code_system, match.code_dcid, index=index)
         return held[key]
 
     return holds

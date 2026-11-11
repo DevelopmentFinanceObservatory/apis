@@ -27,6 +27,7 @@ from code_index.types import (
     IndexStamp,
     StatVarRow,
 )
+from search.engine import qualifier_match
 from search.engine.interpret import recall
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region.pipeline import resolve_variable
@@ -200,15 +201,20 @@ def _dataset(provenance: str, rank: int) -> DatasetDeclaration:
 
 
 def _index(
-    codes: tuple[CodeRow, ...] = _CODES, datasets: tuple[DatasetDeclaration, ...] | None = None
+    codes: tuple[CodeRow, ...] = _CODES,
+    datasets: tuple[DatasetDeclaration, ...] | None = None,
+    *,
+    rows: tuple[StatVarRow, ...] = _ROWS,
+    systems: dict[str, tuple[bool, str]] = _SYSTEMS,
 ) -> CodeIndex:
-    """The test index, holding `codes`, and `datasets` in place of the three test tables."""
+    """The test index, holding `codes` of `systems` and `rows`, and `datasets` in place of
+    the three test tables."""
     return CodeIndex(
         stamp=IndexStamp(
             graph_endpoint="test",
             exported_at="2026-01-01T00:00:00Z",
             code_counts={
-                system: sum(code.code_system == system for code in codes) for system in _SYSTEMS
+                system: sum(code.code_system == system for code in codes) for system in systems
             },
             statvar_shape_counts={},
             content_hash="recall-reading-families",
@@ -222,22 +228,26 @@ def _index(
                 absent_reading="not_declared",
                 plain_name=plain_name,
             )
-            for system, (hierarchical, plain_name) in _SYSTEMS.items()
+            for system, (hierarchical, plain_name) in systems.items()
         ),
         codes=codes,
-        statvars=_ROWS,
+        statvars=rows,
         datasets=datasets or (_dataset(_CRS, 0), _dataset(_DAC1, 1), _dataset(_CLIMATE, 2)),
     )
 
 
 def _graph(
-    query: str, recalled: tuple[tuple[str, float], ...], series: dict[str, str] | None = None
+    query: str,
+    recalled: tuple[tuple[str, float], ...],
+    series: dict[str, str] | None = None,
+    *,
+    rows: tuple[StatVarRow, ...] = _ROWS,
 ) -> FakeGraph:
-    """The test graph, recalling `recalled` for `query`, with `series` (dcid to label) as
-    further series outside the index."""
+    """The test graph of index `rows`, recalling `recalled` for `query`, with `series`
+    (dcid to label) as further series outside the index."""
     return FakeGraph(
         nodes={
-            **{row.dcid: _row_node(row) for row in _ROWS},
+            **{row.dcid: _row_node(row) for row in rows},
             _SDG_CLIMATE: _series_node("Climate-specific financial support provided"),
             _WB_AGRICULTURE: _series_node("Agriculture, value added (% of GDP)"),
             **{dcid: _series_node(label) for dcid, label in (series or {}).items()},
@@ -328,9 +338,9 @@ def test_a_family_reading_an_unread_code_of_a_recalled_five_tuple_joins_the_pool
     assert {c.dcid for c in result.candidates} == recalled_dcids | joined
 
 
-def _coverage() -> FakeCoverageService:
-    """Each index row's series from Germany, to Kenya where the row declares a recipient,
-    in 2021 and 2022, one facet per dataset."""
+def _coverage(rows: tuple[StatVarRow, ...] = _ROWS) -> FakeCoverageService:
+    """Each of index `rows`' series from Germany, to Kenya where the row declares a
+    recipient, in 2021 and 2022, one facet per dataset."""
     return FakeCoverageService(
         build_coverage_index(
             [
@@ -341,7 +351,7 @@ def _coverage() -> FakeCoverageService:
                     _KEN if "financingRecipient" in row.observation_properties else ABSENT_ENTITY,
                     [2021, 2022],
                 )
-                for row in _ROWS
+                for row in rows
             ],
             role_names={
                 row.dcid: RoleNames(
@@ -350,7 +360,7 @@ def _coverage() -> FakeCoverageService:
                     if "financingRecipient" in row.observation_properties
                     else None,
                 )
-                for row in _ROWS
+                for row in rows
             },
         )
     )
@@ -390,7 +400,7 @@ class _ElectFirst:
 def test_the_injected_climate_family_is_elected_with_the_objective_the_query_reads(
     query, variable, recalled, climate, objective, caplog
 ):
-    """The injected family is logged as injected, displaces the recalled family of its
+    """The injected family is logged as a closure row, displaces the recalled family of its
     five-tuple that reads none of the query (`elect_five_tuple_family`), and answers with
     the objective the variable names."""
     binder = MenuRecordingBinder()
@@ -416,8 +426,9 @@ def test_the_injected_climate_family_is_elected_with_the_objective_the_query_rea
             )
         )
 
-    pool_logs = [r.getMessage() for r in caplog.records if r.getMessage().startswith("shape pool")]
-    assert len(pool_logs) == 1 and "1 injected" in pool_logs[0], pool_logs
+    (pool_log,) = [r for r in caplog.records if r.getMessage().startswith("shape pool")]
+    assert len(pool_log.pool_origins["closure"]) == 1, pool_log.pool_origins
+    assert pool_log.pool_origins["injected"] == [], pool_log.pool_origins
     assert len(binder.menus) == 1
     menu = binder.menus[0]
     assert climate.dcid in menu[0], menu
@@ -426,3 +437,42 @@ def test_the_injected_climate_family_is_elected_with_the_objective_the_query_rea
     identity = result.specs[0].definition.identity
     slots = {slot.property: slot.binding for slot in identity.slots}
     assert slots["climatePolicyObjective"].ref == objective, identity
+
+
+def test_a_part_scans_its_variable_in_every_system_once(monkeypatch):
+    """Recall's closure reads the variable in every code system, and the bind phase's readers
+    take that scan (`qualifier_match._scan_everywhere`) without scanning it again."""
+    scans: list[str] = []
+    scan = qualifier_match._recognise_raw
+
+    def counting(text, lexicon, vocabulary):
+        if vocabulary is None and text == "adaptation disbursements":
+            scans.append(text)
+        return scan(text, lexicon, vocabulary)
+
+    monkeypatch.setattr(qualifier_match, "_recognise_raw", counting)
+    query = "germany adaptation disbursements 2022"
+    graph = _graph(query, ((_CRS_HEALTH.dcid, 0.8),))
+    with serving_index(_index()):
+        coverage = _coverage()
+        result = asyncio.run(
+            resolve_variable(
+                "adaptation disbursements",
+                entities=["Germany"],
+                date_request=None,
+                detect_query=query,
+                role_query=query,
+                entity_roles=door_roles_for_test_query(query, ["Germany"]),
+                pac=True,
+                graph=graph,
+                resolver=make_resolver(graph),
+                llm=_ElectFirst(),
+                binder=MenuRecordingBinder(),
+                sdmx=FakeSdmxClient(observations={}),
+                base_timing={},
+                coverage=coverage.snapshot(),
+            )
+        )
+
+    assert result.status == "definite", result
+    assert scans == ["adaptation disbursements"]

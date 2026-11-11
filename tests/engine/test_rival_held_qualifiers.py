@@ -17,6 +17,7 @@ import pytest
 
 from search.engine.binders import GeminiBinder
 from search.engine.quantity_read import QuantityOutput
+from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
 from search.engine.region.pipeline import resolve_variable
 from tests.engine._binders import elected_reply
 from tests.engine._fake_sdmx import FakeSdmxClient
@@ -121,7 +122,7 @@ def test_a_term_only_a_rival_family_records_refuses_naming_its_dataset(query, va
     five-tuple records it, so the part refuses on it and names ONE Data Climate Finance.
     Under the named CRS, election never sees the climate family; in the tie, the CRS reads
     "health" and the climate family "adaptation", so neither leaves and the binder elects
-    the CRS."""
+    the CRS. Refuse is the default coverage mode."""
     result = _resolve(
         query,
         variable,
@@ -208,3 +209,48 @@ def test_a_shape_reading_its_terms_or_meeting_no_rival_records_nothing(
         else {ref.ref for ref in result.elected_stat_vars or ()}
     )
     assert answered == {answers}, result
+
+
+@pytest.mark.parametrize(
+    ("query", "variable", "source", "refuses"),
+    [
+        pytest.param(
+            "CRS adaptation disbursements from Germany 2022",
+            "adaptation disbursements",
+            _CRS,
+            True,
+            id="named-crs-refuses",
+        ),
+        pytest.param(
+            "adaptation disbursements for health from Germany in 2022",
+            "adaptation disbursements for health",
+            None,
+            False,
+            id="unnamed-departs",
+        ),
+    ],
+)
+def test_a_rival_held_term_follows_the_coverage_mode_in_log_mode(
+    search_settings, query, variable, source, refuses
+):
+    """In log mode a part naming no source answers the CRS and departs "adaptation" as not
+    applied, as it departs a term naming codes no shape can bind; a part naming the CRS
+    refuses on it in every mode."""
+    search_settings(qualifier_coverage="log")
+    result = _resolve(
+        query,
+        variable,
+        ((_CRS_HEALTH.dcid, 0.8),),
+        _CRS_HEALTH.dcid,
+        entities=["Germany"],
+        source=source,
+    )
+
+    if refuses:
+        assert result.no_data_reason == "qualifier_not_bound", result
+        assert [q.text for q in result.unbound_qualifiers] == ["adaptation"]
+        return
+    assert result.no_data_reason != "qualifier_not_bound", result
+    assert result.unbound_qualifiers == ()
+    dropped = [w for w in result.warnings if w.code == QUERY_QUALIFIER_DROPPED]
+    assert len(dropped) == 1 and "adaptation" in dropped[0].message, result.warnings

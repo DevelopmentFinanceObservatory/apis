@@ -261,37 +261,47 @@ async def _detect(
     states, or one of `party_words` (`_without_stated_words`), the graph is searched
     concurrently on the text without it, and the series of the datasets that state or name
     a party for a removed word join the pool (`_states_a_word`, `_pooled`). A failure of
-    either search raises."""
+    either search raises. `variable` is read off the event loop while the graph searches
+    (`_code_phrases`)."""
     index = get_index()
     unstated = _without_stated_words(text, index, party_words)
+    phrases = asyncio.to_thread(_code_phrases, variable, index)
     if unstated is None:
-        detection = await asyncio.to_thread(graph.detect_svs, text)
+        detection, read = await asyncio.gather(asyncio.to_thread(graph.detect_svs, text), phrases)
     else:
         rest, removed = unstated
-        first, second = await asyncio.gather(
+        first, second, read = await asyncio.gather(
             asyncio.to_thread(graph.detect_svs, text),
             asyncio.to_thread(graph.detect_svs, rest),
+            phrases,
         )
         detection = _pooled(
             first, second, lambda dcid: _states_a_word(dcid, removed, index, party_words)
         )
-    return _with_reading_families(detection, variable, index)
+    return _with_reading_families(detection, read, index)
 
 
-def _with_reading_families(detection: Detection, variable: str, index: CodeIndex) -> Detection:
-    """`detection` with a row of each family of a five-tuple among its hits that reads a
-    phrase of `variable` no recalled family there reads (`with_reading_families`), in its
-    hits and in its candidates as they stand (`stand_candidates`).
-
-    `variable` is read in every code system with the reader the bind phase reads it with
+def _code_phrases(variable: str, index: CodeIndex) -> list[list[CodeRow]]:
+    """The code rows of each span of `variable` read in every code system, for each span
+    naming one or more codes, with the reader the bind phase reads it with
     (`read_by_vocabulary`, as `phase_rank_bind._read_sources` calls it), so recall adds a
-    family for exactly the phrases the later checks find in the variable."""
+    family for exactly the phrases the later checks find in the variable. The reader keeps
+    the scan, so the bind phase reads the variable without scanning it again."""
     (reading,) = read_by_vocabulary((variable,), index, get_measure_index(), vocabularies=())
-    phrases = [
+    return [
         codes
         for span in reading.everywhere.spans
         if (codes := [row for row in span.rows if isinstance(row, CodeRow)])
     ]
+
+
+def _with_reading_families(
+    detection: Detection, phrases: Sequence[Sequence[CodeRow]], index: CodeIndex
+) -> Detection:
+    """`detection` with a row of each family of a five-tuple among its hits that reads one
+    of `phrases`, the code rows of each code phrase of the variable (`_code_phrases`), that
+    no recalled family there reads (`with_reading_families`), in its hits and in its
+    candidates as they stand (`stand_candidates`)."""
     if not phrases:
         return detection
     catalogue = current_catalogue()

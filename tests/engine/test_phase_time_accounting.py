@@ -87,5 +87,5 @@ def test_the_pool_log_names_each_shape_s_origin(caplog):
 
     (record,) = [r for r in caplog.records if r.getMessage().startswith("shape pool:")]
     origins = record.pool_origins
-    assert set(origins) == {"recalled", "injected", "derived"}
+    assert set(origins) == {"recalled", "closure", "injected", "derived"}
     assert sum(map(len, origins.values())) > 0
