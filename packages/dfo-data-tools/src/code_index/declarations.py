@@ -1070,6 +1070,11 @@ CODE_SYNONYMS: Mapping[str, tuple[str, ...]] = {
     "CRSTypeOfFlow37": ("other private flows",),
     "DAC1AidType1820": ("refugee costs in donor countries",),
     "DAC2aAidType106": ("imputed",),
+    # The climate tables' measure labels name the total ("climate finance commitments"), so
+    # the heading's noun is also a query's: "climate finance" and bare "climate" ("Germany
+    # climate commitments") read it. Matching is per vocabulary, so the words read nothing on
+    # a CRS or DAC shape, and "investment climate" stays the longer CRS purpose span.
+    "ClimateChangePolicyObjective": ("climate finance", "climate"),
     # ONE Data counts a project marked for both objectives once, as cross-cutting, so
     # "adaptation" reads the adaptation-only part and the heading's short name says so.
     "AdaptationOnlyClimateChangePolicyObjective": ("adaptation",),

@@ -55,7 +55,7 @@ from code_index.declarations import (
     WholeWindow,
 )
 from code_index.members import key_sets_cover
-from code_index.tokens import Token, TokenLookup, singular, tokenize
+from code_index.tokens import Token, TokenLookup, singular, tokenize, word_tokens
 from code_index.types import (
     KIND_CLASSES,
     BroadReading,
@@ -1873,6 +1873,8 @@ def _verify_measure_label_named_values(
     row reading the label, and a row reading a label with `named_values` must hold one of
     them: a label naming the imputed multilateral ODA aid type does not name a climate row
     that holds none. A pair that fails names nothing and silences nothing in a heading.
+    Each named value must also carry a label or synonym whose words all lie inside the label,
+    so a query naming the measure as its heading does ("climate finance") reads the value.
     Empty axes make validation a no-op, as in `_verify_measure_partition_labels`."""
     if not axes:
         return
@@ -1916,6 +1918,25 @@ def _verify_measure_label_named_values(
             f"{len(unnamed)} StatVar row(s) read a measure label naming none of their codes, "
             f"first {unnamed[:5]!r} -- key a label for them on the codes they hold"
         )
+    texts = {(row["code_system"], row["dcid"]): (row["label"], *row["synonyms"]) for row in codes}
+    unworded = [
+        (label.label, pair)
+        for label in labels
+        for pair in label.named_values
+        if not any(_words_within(text, label.label) for text in texts[pair])
+    ]
+    if unworded:
+        raise ExportRefused(
+            f"{len(unworded)} measure label named value(s) carry no label or synonym whose "
+            f"words all lie inside the label, so a query using the heading's noun reads none "
+            f"of them: {unworded!r} -- give the code a synonym from the label in CODE_SYNONYMS"
+        )
+
+
+def _words_within(text: str, label: str) -> bool:
+    """Whether `text` has words and each, casefolded, is a word of `label`."""
+    words = {token.text.casefold() for token in word_tokens(text)}
+    return bool(words) and words <= {token.text.casefold() for token in word_tokens(label)}
 
 
 def _held_codes(
