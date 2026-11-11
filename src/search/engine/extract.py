@@ -1980,12 +1980,12 @@ async def _model_extraction(
     and zero usage, and the stored reading is agreed: the store holds only agreed readings.
     Otherwise two samples run concurrently, the second under another seed (`two_samples`),
     and the first is served. Both are post-processed and agree when the two
-    `ExtractionResult`s are equal, every field included. Settling the agreement stores an
-    agreed reading; a disagreeing pair stores nothing. A refused or failed first sample
-    raises and stores nothing; a second sample that is refused or fails, or whose reading
-    post-processing refuses (`_second_reading`), leaves the first not agreed. An `LLM` bound
-    to a request's `SecondSamples` serves the first without waiting for the second and
-    settles when the request needs the verdict; any other settles before it returns.
+    `ExtractionResult`s are equal, every field included. The second is judged as it
+    answers, and an agreed reading is stored then; a disagreeing pair stores nothing. A
+    refused or failed first sample raises and stores nothing; a second sample that is
+    refused or fails, or whose reading post-processing refuses (`_second_reading`), leaves
+    the first not agreed. An `LLM` bound to a request's `SecondSamples` serves the first
+    without waiting for the second; any other awaits the second before it returns.
     Memoising clients coalesce identical concurrent queries, and the seed keeps the two
     samples' memo keys apart.
     """

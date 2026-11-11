@@ -26,9 +26,9 @@ from search.engine.clients.llm import (
     Agreement,
     FixedAgreement,
     Sampled,
-    SecondSample,
     SecondSamples,
     SupportsLLM,
+    settle,
     two_samples,
 )
 from search.engine.degraded_reads import DegradedReads
@@ -38,7 +38,7 @@ from search.engine.events import DoneEvent
 from search.engine.extract import ExtractedEntity
 from search.engine.response_cache import ResponseCache
 from search.engine.response_cache_flow import CacheScope
-from search.engine.response_cache_keys import is_storable, to_entry
+from search.engine.response_cache_keys import is_bundle_storable, is_storable, to_entry
 from search.engine.stated_scope import part_scope_intakes
 from search.engine.unit.conversion_catalogue import (
     ConversionCatalogue,
@@ -500,7 +500,7 @@ async def _test_store_publishes_both_leases_when_this_request_holds_both(
             await asyncio.sleep(0.01)
             return Sampled(None, None, None)
 
-        scope.note_extraction(Agreement(_held(second), lambda _second: agreed))
+        scope.note_extraction(_judged(second, lambda _second: agreed))
     else:
         scope.note_extraction(FixedAgreement(agreed))
     waiter = _make_scope(cache)
@@ -853,7 +853,7 @@ def test_an_unstreamed_response_passes_before_its_second_sample_and_publishes_at
             await gate.wait()
             return Sampled(None, None, None)
 
-        scope.note_extraction(Agreement(_held(second), lambda _second: True))
+        scope.note_extraction(_judged(second))
         response, done = _terminal_events(base, start_ms=now_ms(), degraded_leg=False)
         await asyncio.wait_for(scope.observe(response), 5)
         published_at_response = scope._layer1_lease is None
@@ -895,7 +895,7 @@ def test_release_cancels_and_awaits_a_second_sample_still_running():
 
         task = asyncio.create_task(request())
         await served.wait()
-        seconds = [second.task for second in scope._samples._running]
+        seconds = [second.task for second in scope._samples._started]
         assert [second.done() for second in seconds] == [False]
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
@@ -930,9 +930,15 @@ def _second_sample_logs(caplog: pytest.LogCaptureFixture) -> list[tuple[str, str
     ]
 
 
-def _held(call: Callable[[], Coroutine[Any, Any, Sampled[Any]]]) -> SecondSample:
-    """`call()` run as an extraction's second sample, held apart from any request."""
-    return SecondSamples().start(call, stage="extraction")
+def _judged(
+    call: Callable[[], Coroutine[Any, Any, Sampled[Any]]],
+    judge: Callable[[Any], bool] = lambda _answer: True,
+) -> Agreement:
+    """`call()` run as an extraction's second sample, held apart from any request, its
+    first read at once and judged by `judge`, cut 10 s after that."""
+    agreement = SecondSamples().start(call, stage="extraction")
+    agreement.read_first(judge, delay_s=10.0)
+    return agreement
 
 
 async def _never() -> Sampled[None]:
@@ -992,7 +998,7 @@ def test_a_second_sample_that_never_finishes_is_cut_at_the_settle_bound_and_stor
         await scope.release()
         return (
             elapsed,
-            await agreement.outcome(),
+            (await agreement.ended()).outcome,
             judged,
             scope.extraction_agreed,
             await _new_scope_hits_layer1(cache, query),
@@ -1023,7 +1029,7 @@ def test_an_unheld_callers_stalled_second_sample_is_cut_at_the_settle_bound(sear
             ),
             5,
         )
-        return time.monotonic() - started, await agreement.outcome(), usage
+        return time.monotonic() - started, (await agreement.ended()).outcome, usage
 
     elapsed, outcome, usage = asyncio.run(run())
 
@@ -1047,11 +1053,11 @@ def test_a_held_second_sample_is_cut_at_the_settle_bound_before_done(search_sett
             read=lambda answer: answer,
             judge=lambda *_answers: True,
         )
-        [second] = scope._samples._running
+        [second] = scope._samples._started
         await asyncio.sleep(0.3)
         ended = second.task.done()
         await scope.release()
-        return ended, await agreement.outcome()
+        return ended, (await agreement.ended()).outcome
 
     assert asyncio.run(run()) == (True, "cut")
     assert _second_sample_logs(caplog) == [("INFO", "extraction", "settle_bound")]
@@ -1085,7 +1091,7 @@ def test_a_cut_set_while_the_model_deadline_expires_does_not_raise(search_settin
     caplog.set_level(logging.INFO, logger=llm_module.__name__)
 
     async def run() -> tuple[bool, str]:
-        second = _held(_never)
+        second = SecondSamples().start(_never, stage="extraction")
         await asyncio.sleep(0)
         time.sleep(0.03)
         # The first yield runs the due timeout, which marks its scope expiring and
@@ -1093,8 +1099,8 @@ def test_a_cut_set_while_the_model_deadline_expires_does_not_raise(search_settin
         await asyncio.sleep(0)
         await asyncio.sleep(0)
         expiring = second._scope is not None and second._scope.expired()
-        second.cut_after(1.0)
-        return expiring, await Agreement(second, lambda _answer: True).outcome()
+        second.read_first(lambda _answer: True, delay_s=1.0)
+        return expiring, (await second.ended()).outcome
 
     assert asyncio.run(run()) == (True, "cut")
     [cut] = _second_sample_lines(caplog)
@@ -1112,9 +1118,9 @@ def test_a_second_sample_reaching_its_model_deadline_after_its_first_is_cut(
     caplog.set_level(logging.INFO, logger=llm_module.__name__)
 
     async def run() -> str:
-        second = _held(_never)
-        second.cut_after(10.0)
-        return await asyncio.wait_for(Agreement(second, lambda _answer: True).outcome(), 2)
+        second = SecondSamples().start(_never, stage="extraction")
+        second.read_first(lambda _answer: True, delay_s=10.0)
+        return (await asyncio.wait_for(second.ended(), 2)).outcome
 
     assert asyncio.run(run()) == "cut"
     [cut] = _second_sample_lines(caplog)
@@ -1127,59 +1133,246 @@ async def _broken() -> Sampled[None]:
     raise KeyError("missing")
 
 
-def _broken_judge(_answer: object) -> bool:
-    raise KeyError("missing")
-
-
-@pytest.mark.parametrize(
-    ("second", "judge"),
-    [(_broken, lambda _answer: True), (_agreeing, _broken_judge)],
-    ids=["second-sample", "judge"],
-)
-def test_a_defect_raises_from_its_outcome(second, judge):
-    """Only a model failure, a refusal, a cut, a cancellation or a failed extraction-store
-    write leaves a read unjudged. Any other exception, from the second sample or from the
-    judge reading it, is a defect, and `outcome()` raises it on every call."""
-
-    async def run() -> list[str]:
-        agreement = Agreement(_held(second), judge)
-        raised = []
-        for _call in range(2):
-            try:
-                await agreement.outcome()
-            except KeyError:
-                raised.append("KeyError")
-        return raised
-
-    assert asyncio.run(run()) == ["KeyError", "KeyError"]
-
-
-def test_an_unheld_callers_defective_second_sample_raises(search_settings):
-    """A caller outside a request settles its read before `two_samples` returns, so a defect
-    in the second sample reaches it."""
+def _ending_sample(second: str):
+    """A sample whose seed-1 call answers after one turn of the loop, as a model call
+    would, and whose seed-2 call answers at once, never answers, fails at the model or
+    raises a defect, as `second` says."""
 
     async def sample(sampler: SupportsLLM) -> Sampled[str]:
         assert isinstance(sampler, LLM)
-        if sampler._seed == 2:
+        if sampler._seed != 2:
+            await asyncio.sleep(0)
+        elif second == "never":
+            await asyncio.Event().wait()
+        elif second == "fails":
+            raise LLMInfraError("503")
+        elif second == "defect":
             raise KeyError("missing")
-        return Sampled("first", None, None)
+        return Sampled(f"answer {sampler._seed}", None, None)
 
-    with pytest.raises(KeyError):
-        asyncio.run(
+    return sample
+
+
+@pytest.mark.parametrize(
+    ("second", "verdict", "outcome", "defect"),
+    [
+        pytest.param("answers", "agree", "agreed", None, id="agreed"),
+        pytest.param("answers", "disagree", "disagreed", None, id="disagreed"),
+        pytest.param("never", "agree", "cut", None, id="cut"),
+        pytest.param("fails", "agree", "failed", None, id="model-failure"),
+        pytest.param("answers", "store-fails", "failed", None, id="store-failure"),
+        pytest.param("defect", "agree", "failed", KeyError, id="second-sample-defect"),
+        pytest.param("answers", "defect", "failed", KeyError, id="judge-defect"),
+    ],
+)
+def test_an_agreements_end_reads_the_same_every_time(
+    search_settings, second: str, verdict: str, outcome: str, defect: type | None
+):
+    """A held read's second sample ends once: every `ended()` returns the same value, and
+    its judge, which writes the agreed read to the store, runs at most once. A defect, from
+    the second sample or its judge, ends `failed` with the exception kept, and a caller
+    outside a request has it raised."""
+    search_settings(llm_second_sample_settle_s=0.05)
+    judged: list[tuple[object, ...]] = []
+    stored: list[object] = []
+
+    def judge(first: object, served: object, answer: object) -> bool:
+        judged.append((first, served, answer))
+        if verdict == "defect":
+            raise KeyError("missing")
+        if verdict == "store-fails":
+            raise OSError("disk full")
+        if verdict == "agree":
+            stored.append(first)
+        return verdict == "agree"
+
+    def read(llm: SupportsLLM):
+        return two_samples(
+            _ending_sample(second), llm, stage="extraction", read=lambda a: a, judge=judge
+        )
+
+    async def run() -> list[llm_module.Ended]:
+        samples = SecondSamples()
+        try:
+            _served, _usage, agreement = await read(samples.bind(LLM(seed=1)))
+            return [await agreement.ended(), await agreement.ended()]
+        finally:
+            await samples.aclose()
+
+    once, again = asyncio.run(run())
+
+    assert once == again
+    assert (once.outcome, once.defect and type(once.defect)) == (outcome, defect)
+    assert len(judged) <= 1
+    assert len(stored) <= 1
+    if defect is not None:
+        with pytest.raises(defect):
+            asyncio.run(read(LLM(seed=1)))
+
+
+@pytest.mark.parametrize(
+    "ending",
+    ["settled-then-released", "released-then-settled", "never-settled", "ended-before-done"],
+)
+def test_a_second_samples_defect_is_logged_once(caplog, ending: str):
+    """A second sample's defect is logged once, at error with its `stage`, by the task that
+    hit it, however the request goes on: settled at `done` and released, released before
+    anything settles it, never settled because its speculative parse was discarded, or
+    ended before `done`."""
+    caplog.set_level(logging.INFO)
+    base = _base_response()
+
+    async def run() -> None:
+        scope = _make_scope(_new_cache())
+        assert await scope.lookup_raw("total population india") is None
+        speculative = SecondSamples()
+        llm = LLM(seed=1)
+        bound = speculative.bind(llm) if ending == "never-settled" else scope.hold_samples(llm)
+        _served, _usage, agreement = await two_samples(
+            _ending_sample("defect"),
+            bound,
+            stage="extraction",
+            read=lambda answer: answer,
+            judge=lambda *_answers: True,
+        )
+        response, done = _terminal_events(base, start_ms=now_ms(), degraded_leg=False)
+        if ending == "never-settled":
+            await speculative.aclose()
+        elif ending == "released-then-settled":
+            await scope.release()
+            await settle([agreement])
+        else:
+            scope.note_extraction(agreement)
+            await scope.observe(response)
+            if ending == "settled-then-released":
+                await scope.observe(done)
+        await scope.release()
+
+    asyncio.run(run())
+
+    formatter = JsonFormatter(project=None)
+    errors = [
+        json.loads(formatter.format(record))
+        for record in caplog.records
+        if record.levelno >= logging.ERROR
+    ]
+    assert [(line["severity"], line.get("stage")) for line in errors] == [("ERROR", "extraction")]
+
+
+def test_a_closed_holder_makes_no_model_call():
+    """A read whose request's holder has closed calls the model for its first sample alone:
+    its second is cancelled before it calls, so no model call outlives the request, and the
+    read is unjudged."""
+    calls: list[int | None] = []
+    judged: list[object] = []
+
+    async def sample(sampler: SupportsLLM) -> Sampled[str]:
+        assert isinstance(sampler, LLM)
+        calls.append(sampler._seed)
+        return Sampled("answer", None, None)
+
+    async def run() -> bool | None:
+        samples = SecondSamples()
+        await samples.aclose()
+        _served, _usage, agreement = await two_samples(
+            sample,
+            samples.bind(LLM(seed=1)),
+            stage="extraction",
+            read=lambda answer: answer,
+            judge=lambda *answers: judged.append(answers) or True,
+        )
+        await asyncio.sleep(0.01)
+        return await settle([agreement])
+
+    assert asyncio.run(run()) is None
+    assert (calls, judged) == ([1], [])
+
+
+@pytest.mark.parametrize("first_fails", [False, True], ids=["first-read", "first-fails"])
+def test_a_second_that_ends_before_its_first_is_judged_against_the_served_first(
+    first_fails: bool,
+):
+    """A second sample that answers before its first is judged once the first is read,
+    against the first and what the read served of it. A first that fails leaves the second
+    unjudged and cancelled, and stores nothing."""
+    judged: list[tuple[object, ...]] = []
+
+    async def run() -> tuple[object, bool]:
+        gate = asyncio.Event()
+
+        async def sample(sampler: SupportsLLM) -> Sampled[str]:
+            assert isinstance(sampler, LLM)
+            if sampler._seed == 2:
+                return Sampled("second", None, None)
+            await gate.wait()
+            if first_fails:
+                raise LLMInfraError("503")
+            return Sampled("first", None, None)
+
+        samples = SecondSamples()
+        reading = asyncio.create_task(
             two_samples(
                 sample,
-                LLM(seed=1),
+                samples.bind(LLM(seed=1)),
                 stage="extraction",
-                read=lambda answer: answer,
-                judge=lambda *_answers: True,
+                read=str.upper,
+                judge=lambda *answers: judged.append(answers) or True,
             )
         )
+        await asyncio.sleep(0.01)
+        gate.set()
+        try:
+            _served, _usage, agreement = await reading
+            verdict: object = await settle([agreement])
+        except LLMInfraError:
+            verdict = "raised"
+        [second] = samples._started
+        await samples.aclose()
+        return verdict, second.task.cancelled()
+
+    if first_fails:
+        assert asyncio.run(run()) == ("raised", True)
+        assert judged == []
+    else:
+        assert asyncio.run(run()) == (True, False)
+        assert judged == [("first", "FIRST", "second")]
+
+
+def test_an_agreed_reading_is_stored_when_the_request_fails_after_extraction():
+    """An agreed read enters the extraction store when its two samples agree, so a request
+    whose graph read fails after extraction, and never reaches `done`, still leaves the
+    reading stored for its retry."""
+    stored: list[object] = []
+
+    def judge(first: object, _served: object, second: object) -> bool:
+        stored.append(first)
+        return True
+
+    async def run() -> None:
+        scope = _make_scope(_new_cache())
+        try:
+            _served, _usage, agreement = await two_samples(
+                _ending_sample("answers"),
+                scope.hold_samples(LLM(seed=1)),
+                stage="extraction",
+                read=lambda answer: answer,
+                judge=judge,
+            )
+            scope.note_extraction(agreement)
+            await asyncio.sleep(0)  # the graph read the request awaits next
+            raise RuntimeError("graph read failed")
+        finally:
+            await scope.release()
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(run())
+    assert stored == ["answer 1"]
 
 
 def test_a_defective_second_sample_leaves_a_requests_answer_intact(caplog):
     """A request whose second sample raises a defect settles at `done` without failing: the
-    defect is logged at error with its traceback, the reading is unjudged, layer 2 keeps
-    the answer and layer 1 stores nothing under the query."""
+    second sample's task logs the defect at error with its traceback, the reading is
+    unjudged, layer 2 keeps the answer and layer 1 stores nothing under the query."""
     caplog.set_level(logging.INFO)
     base = _base_response()
 
@@ -1190,7 +1383,7 @@ def test_a_defective_second_sample_leaves_a_requests_answer_intact(caplog):
         scope = _make_scope(cache)
         assert await scope.lookup_raw(query) is None
         assert await scope.lookup_parsed(query=query, **extraction) is None
-        scope.note_extraction(Agreement(_held(_broken), lambda _answer: True))
+        scope.note_extraction(_judged(_broken))
         await observe_answer(scope, base)
         other = _make_scope(cache)
         layer2 = await other.lookup_parsed(query="another wording", **extraction) is not None
@@ -1202,112 +1395,63 @@ def test_a_defective_second_sample_leaves_a_requests_answer_intact(caplog):
     errors = [record for record in caplog.records if record.levelname == "ERROR"]
     assert [
         (record.name, record.exc_info is not None and record.exc_info[0]) for record in errors
-    ] == [(response_cache_flow.__name__, KeyError)]
-
-
-def test_closing_a_holder_logs_a_defect_no_judge_read(caplog):
-    """A second sample whose read is never judged, as one discarded with its speculative
-    parse, still reports a defect it raised when its holder closes, at error, naming its
-    stage. A model failure it raised logs nothing there."""
-    caplog.set_level(logging.INFO, logger=llm_module.__name__)
-
-    async def failing() -> Sampled[None]:
-        raise LLMInfraError("503")
-
-    async def run() -> None:
-        samples = SecondSamples()
-        broken = samples.start(_broken, stage="extraction")
-        failed = samples.start(failing, stage="exclusion_read")
-        await asyncio.wait([broken.task, failed.task])
-        await samples.aclose()
-
-    asyncio.run(run())
-
-    assert _second_sample_logs(caplog) == [("ERROR", "extraction", KeyError)]
-
-
-def test_closing_a_holder_cancels_a_second_sample_started_while_it_waits():
-    """A second sample started while its holder's close awaits the ones it cancelled is
-    cancelled too, so no model call outlives the request."""
-
-    async def run() -> bool:
-        samples = SecondSamples()
-        samples.start(_never, stage="extraction")
-        closing = asyncio.create_task(samples.aclose())
-        await asyncio.sleep(0)
-        late = samples.start(_never, stage="exclusion_read")
-        await asyncio.wait_for(closing, 2)
-        return late.task.cancelled()
-
-    assert asyncio.run(run()) is True
+    ] == [(llm_module.__name__, KeyError)]
 
 
 @pytest.mark.parametrize(
-    ("judged_first", "logs"),
-    [(True, []), (False, [("ERROR", "extraction", KeyError)])],
-    ids=["judge-first", "holder-first"],
+    ("bundle", "layer2_lease"),
+    [
+        pytest.param(False, True, id="unstreamed"),
+        pytest.param(False, False, id="unstreamed-without-a-layer-2-lease"),
+        pytest.param(True, True, id="bundle"),
+    ],
 )
-def test_a_second_samples_defect_is_logged_once_and_raised_by_its_judge(
-    caplog, judged_first: bool, logs: list[tuple[str, str, object]]
+def test_both_layers_share_the_verdict_taken_at_response(
+    monkeypatch, bundle: bool, layer2_lease: bool
 ):
-    """A second sample's defect reaches its judge's caller whichever comes first, and is
-    logged by its holder's close only where no judge raised it: the request logs one its
-    judge raised where it settles (`CacheScope._settle_extraction`)."""
-    caplog.set_level(logging.INFO, logger=llm_module.__name__)
+    """A request judges its entry storable once, where its bytes are final, and every layer
+    it publishes to receives that one verdict with its timeout and degraded-leg status. A
+    timeout noted between `response` and `done` comes after an unstreamed answer's verdict,
+    and before a bundle's."""
+    judged: list[object] = []
 
-    async def run() -> list[str]:
-        samples = SecondSamples()
-        second = samples.start(_broken, stage="extraction")
-        await asyncio.wait([second.task])
-        agreement = Agreement(second, lambda _answer: True)
-        judged: list[str] = []
+    def counting(check: Callable[..., bool]) -> Callable[..., bool]:
+        def judge(entry: object, **flags: Any) -> bool:
+            judged.append(entry)
+            return check(entry, **flags)
 
-        async def judge() -> None:
-            try:
-                judged.append(await agreement.outcome())
-            except KeyError:
-                judged.append("raised")
+        return judge
 
-        if judged_first:
-            await judge()
-        await samples.aclose()
-        if not judged_first:
-            await judge()
-        return judged
+    monkeypatch.setattr(response_cache_flow, "is_storable", counting(is_storable))
+    monkeypatch.setattr(response_cache_flow, "is_bundle_storable", counting(is_bundle_storable))
+    published: list[tuple[bool, bool, bool]] = []
+    publish = ResponseCache.publish
 
-    assert asyncio.run(run()) == ["raised"]
-    assert _second_sample_logs(caplog) == logs
+    async def recording(self, lease, value, size, **flags: Any) -> None:
+        published.append((flags["storable"], flags["timed_out"], flags["degraded_leg"]))
+        await publish(self, lease, value, size, **flags)
 
-
-@pytest.mark.parametrize("agreed", [True, False], ids=["agreed", "disagreed"])
-def test_both_layers_share_the_verdict_taken_at_response(monkeypatch, agreed: bool):
-    """A request without trailing events judges its answer storable once, at `response`,
-    where its bytes are final, and both layers publish under that verdict. Layer 1 also
-    needs the reading agreed at `done`: a disagreeing reading leaves only layer 2."""
-    judged: list[ResolveResponse] = []
-
-    def counting(response: ResolveResponse, **flags: bool) -> bool:
-        judged.append(response)
-        return is_storable(response, **flags)
-
-    monkeypatch.setattr(response_cache_flow, "is_storable", counting)
+    monkeypatch.setattr(ResponseCache, "publish", recording)
     base = _base_response()
+    options = ResolveOptions(include_observations=True) if bundle else None
+    request = ResolveRequest(input=RawTextInput(query="q"), response_options=options)
 
-    async def run() -> tuple[bool, bool]:
-        cache = _new_cache()
-        extraction = _population_india_extraction()
+    async def run() -> None:
         query = "total population india"
-        scope = _make_scope(cache)
+        scope = _make_scope(_new_cache(), request=request, trailing=bundle)
         assert await scope.lookup_raw(query) is None
-        assert await scope.lookup_parsed(query=query, **extraction) is None
-        scope.note_extraction(FixedAgreement(agreed))
-        await observe_answer(scope, base)
-        other = _make_scope(cache)
-        layer2 = await other.lookup_parsed(query="another wording", **extraction) is not None
-        await other.release()
-        return layer2, await _new_scope_hits_layer1(cache, query)
+        if layer2_lease:
+            assert await scope.lookup_parsed(query=query, **_population_india_extraction()) is None
+        scope.note_extraction(FixedAgreement(True))
+        response, done = _terminal_events(base, start_ms=now_ms(), degraded_leg=False)
+        await scope.observe(response)
+        scope.note_health(timed_out=True)
+        await scope.observe(done)
 
-    assert asyncio.run(run()) == (True, agreed)
+    asyncio.run(run())
+
+    verdict = (False, True, False) if bundle else (True, False, False)
+    assert published == [verdict] * (2 if layer2_lease else 1)
     assert len(judged) == 1
 
 
@@ -1397,7 +1541,7 @@ def test_a_bundle_publishes_layer2_at_done_before_its_second_sample_settles():
             await gate.wait()
             return Sampled(None, None, None)
 
-        scope.note_extraction(Agreement(_held(second), lambda _answer: True))
+        scope.note_extraction(_judged(second))
         response, done = _terminal_events(base, start_ms=now_ms(), degraded_leg=False)
         await scope.observe(response)
         finishing = asyncio.create_task(scope.observe(done))
@@ -1465,7 +1609,7 @@ def test_a_repeat_whose_first_the_memo_serves_gives_its_second_the_live_calls_ti
         )
         scope.note_extraction(agreement)
         await observe_answer(scope, base)
-        outcome = await agreement.outcome()
+        outcome = (await agreement.ended()).outcome
         elapsed = time.monotonic() - started
         await scope.release()
         return outcome, elapsed
@@ -1526,7 +1670,7 @@ def test_only_the_first_samples_own_answer_widens_its_seconds_cut(search_setting
             ),
             2,
         )
-        return await agreement.outcome()
+        return (await agreement.ended()).outcome
 
     assert asyncio.run(run()) == "cut"
 
@@ -1552,7 +1696,7 @@ def test_a_failed_second_sample_leaves_the_reading_unjudged():
         await observe_answer(scope, base)
         await scope.release()
         return (
-            await agreement.outcome(),
+            (await agreement.ended()).outcome,
             scope.extraction_agreed,
             await _new_scope_hits_layer1(cache, query),
         )
@@ -1579,7 +1723,7 @@ def test_an_unstreamed_response_publishes_layer2_at_response_and_layer1_at_done(
             await gate.wait()
             return Sampled(None, None, None)
 
-        scope.note_extraction(Agreement(_held(second), lambda _answer: True))
+        scope.note_extraction(_judged(second))
         response, done = _terminal_events(base, start_ms=now_ms(), degraded_leg=False)
         await scope.observe(response)
         other = _make_scope(cache)
@@ -1606,8 +1750,8 @@ def test_a_request_without_cache_or_extraction_store_settles_nothing_at_done():
     async def run() -> tuple[bool, bool | None]:
         scope = _make_scope(None)
         scope.hold_samples(LLM(seed=1))
-        second = _held(_never)
-        scope.note_extraction(Agreement(second, lambda _answer: True))
+        second = _judged(_never)
+        scope.note_extraction(second)
         response, done = _terminal_events(base, start_ms=now_ms(), degraded_leg=False)
         await scope.observe(response)
         # Well under the default 1 s settle bound.
@@ -1631,9 +1775,9 @@ def test_a_finished_agreeing_sample_is_stored_past_the_soft_deadline():
         scope = _make_scope(cache, deadline=time.monotonic() - 1)
         assert await scope.lookup_raw(query) is None
         judged: list[object] = []
-        second = _held(_agreeing)
+        second = _judged(_agreeing, lambda answer: judged.append(answer) or True)
         await asyncio.wait([second.task])
-        scope.note_extraction(Agreement(second, lambda answer: judged.append(answer) or True))
+        scope.note_extraction(second)
         await observe_answer(scope, base)
         return judged, scope.extraction_agreed, await _new_scope_hits_layer1(cache, query)
 
@@ -1657,7 +1801,7 @@ def test_an_extraction_store_write_that_fails_does_not_fail_the_request(caplog):
         scope = _make_scope(cache)
         assert await scope.lookup_raw(query) is None
         assert await scope.lookup_parsed(query=query, **extraction) is None
-        scope.note_extraction(Agreement(_held(_agreeing), judge))
+        scope.note_extraction(_judged(_agreeing, judge))
         waiter = _make_scope(cache)
         waiting = asyncio.ensure_future(waiter.lookup_raw(query))
         await asyncio.sleep(0)

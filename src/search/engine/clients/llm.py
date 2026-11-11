@@ -24,7 +24,7 @@ from collections.abc import Callable, Coroutine, Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple, NoReturn, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol, TypeVar
 
 import httpx
 from pydantic import BaseModel, ValidationError
@@ -295,18 +295,55 @@ def reseeded(llm: SupportsLLM) -> SupportsLLM:
 class SecondSampleCut(Exception):
     """A second sample still running once its first was read and it reached the earlier of
     its deadlines: `llm_second_sample_settle_s` after that read, widened by a memo-served
-    first's live time, or `llm_timeout_s` from its own start (`SecondSample.cut_after`).
+    first's live time, or `llm_timeout_s` from its own start (`Agreement.read_first`).
     Its read is not judged."""
 
 
-class SecondSample:
-    """One second sample of a read (`two_samples`): its task and the deadline that ends it,
-    `llm_timeout_s` from its start or earlier, the cut time `cut_after` sets once its first
-    sample is read. Either reschedules the task's own `asyncio.timeout`, so the cut stops the
-    call wherever it is. Once the first is read, either deadline raises `SecondSampleCut`
-    from the task and logs one info line naming `stage`, the deadline and the time it
-    allowed; before then the model's own deadline raises `LLMInfraError`, as a memo
-    follower's does."""
+# How a read's two samples ended (`Ended`): judged `agreed` or `disagreed`, or unjudged, the
+# second `cut` (past the settle bound or its model deadline once its first was read, or
+# cancelled with its request) or `failed` (a model error or refusal, an extraction-store
+# write that failed, or a defect).
+type Outcome = Literal["agreed", "disagreed", "cut", "failed"]
+
+
+@dataclass(frozen=True, slots=True)
+class Ended:
+    """How a read's second sample ended, recorded once by its own task (`Agreement`):
+    the outcome, what the second sample cost, and the exception a defect raised, set only
+    with outcome `failed`."""
+
+    outcome: Outcome
+    usage: dict | None
+    defect: Exception | None = None
+
+
+# The end of a second sample cancelled or cut: its request was sent, and no response reports
+# its tokens.
+_CUT = Ended("cut", {UNCOUNTED_CALLS: 1})
+
+
+class Agreement:
+    """The second sample of a read (`two_samples`) and how it ended (`ended`).
+
+    Its task runs the call under a deadline, `llm_timeout_s` from its start or earlier, the
+    cut `read_first` sets once the first sample is read; either reschedules the task's own
+    `asyncio.timeout`, so the cut stops the call wherever it is. Once the call answers and
+    the first is read, the task judges the second against the first (`read_first`'s judge,
+    which writes an agreed read to the extraction store). It returns how the read ended
+    (`Ended`) and raises nothing but its cancellation, so each ending is classified, judged
+    and logged once, by the task:
+
+    - Once the first is read, either deadline cuts the sample (`SecondSampleCut`) and logs
+      one info line naming `stage`, the deadline and the time it allowed. Before then the
+      model's own deadline is a model failure (`LLMInfraError`), as a memo follower's is.
+    - A model failure or refusal (`LLMInfraError`, `LLMOutputRefused`) is `failed` and logs
+      a warning naming `stage`.
+    - A judge whose extraction-store write fails (`OSError`) is `failed` and logs an error
+      naming `stage`.
+    - Any other exception, from the call or the judge, is a defect: `failed` with the
+      exception kept (`Ended.defect`), logged once at error with its traceback and `stage`.
+      Inside a request the reading is unjudged and the answer intact; a caller outside one
+      has it raised (`two_samples`)."""
 
     def __init__(
         self, call: Callable[[], Coroutine[Any, Any, Sampled[Any]]], *, stage: str
@@ -314,41 +351,83 @@ class SecondSample:
         self.stage = stage
         self._model_at: float | None = None
         self._cut_at: float | None = None
-        # When the first sample was read (`cut_after`).
+        # When the first sample was read (`read_first`).
         self._read_at: float | None = None
-        # Whether its end has been reported, by its judge (`Agreement.outcome`) or by its
-        # holder closing (`SecondSamples.aclose`), whichever claims it first (`claim`).
-        self._claimed = False
         self._scope: asyncio.Timeout | None = None
-        self.task: asyncio.Task[Sampled[Any]] = asyncio.create_task(self._run(call))
+        # The judge of the second's answer, set with the cut when the first is read.
+        self._judge: asyncio.Future[Callable[[Any], bool]] = (
+            asyncio.get_running_loop().create_future()
+        )
+        self.task: asyncio.Task[Ended] = asyncio.create_task(self._run(call))
 
     def _when(self) -> float | None:
         ends = [at for at in (self._model_at, self._cut_at) if at is not None]
         return min(ends, default=None)
-
-    def claim(self) -> bool:
-        """Claim the report of how the sample ended: True for the first caller only, so a
-        defect it raised is reported once."""
-        first = not self._claimed
-        self._claimed = True
-        return first
 
     def _clamped(self) -> None:
         """Keep the cut no later than the model's own deadline."""
         if self._cut_at is not None and self._model_at is not None:
             self._cut_at = min(self._cut_at, self._model_at)
 
-    def cut_after(self, delay_s: float) -> None:
-        """End the sample `delay_s` from now, its first sample just read, or at the model's
-        own deadline if that comes first. A sample already ending, or ended, keeps its
-        end."""
+    def read_first(self, judge: Callable[[Any], bool], *, delay_s: float) -> None:
+        """Take the first sample's `judge` of the second's answer and end the sample
+        `delay_s` from now, or at the model's own deadline if that comes first. A sample
+        already ending, or ended, keeps its end."""
         self._read_at = asyncio.get_running_loop().time()
         self._cut_at = self._read_at + delay_s
         self._clamped()
         if self._scope is not None and not self._scope.expired():
             self._scope.reschedule(self._when())
+        self._judge.set_result(judge)
 
-    async def _run(self, call: Callable[[], Coroutine[Any, Any, Sampled[Any]]]) -> Sampled[Any]:
+    async def ended(self) -> Ended:
+        """How the sample ended, awaiting its task: `cut` for a cancelled one. Every call
+        returns the same value. Cancelling this await leaves the task running for its
+        holder to close (`SecondSamples.aclose`)."""
+        if not self.task.done():
+            await asyncio.wait([self.task])
+        return _ended(self.task)
+
+    async def _run(self, call: Callable[[], Coroutine[Any, Any, Sampled[Any]]]) -> Ended:
+        try:
+            second = await self._sample(call)
+        except SecondSampleCut:
+            return _CUT
+        except (LLMInfraError, LLMOutputRefused) as exc:
+            logger.warning(
+                "%s: second sample failed; the read is unjudged",
+                self.stage,
+                exc_info=exc,
+                extra={JSON_FIELDS_ATTR: {"stage": self.stage}},
+            )
+            refused = exc.usage if isinstance(exc, LLMOutputRefused) else None
+            return Ended("failed", refused or {UNCOUNTED_CALLS: 1})
+        except Exception as defect:
+            return self._defect(defect, usage={UNCOUNTED_CALLS: 1})
+        judge = await self._judge
+        try:
+            agreed = judge(second.answer)
+        except OSError:
+            logger.exception(
+                "%s: storing the agreed read failed; the read is unjudged",
+                self.stage,
+                extra={JSON_FIELDS_ATTR: {"stage": self.stage}},
+            )
+            return Ended("failed", second.usage)
+        except Exception as defect:
+            return self._defect(defect, usage=second.usage)
+        return Ended("agreed" if agreed else "disagreed", second.usage)
+
+    def _defect(self, defect: Exception, *, usage: dict | None) -> Ended:
+        logger.error(
+            "%s: second sample raised a defect; the read is unjudged",
+            self.stage,
+            exc_info=defect,
+            extra={JSON_FIELDS_ATTR: {"stage": self.stage}},
+        )
+        return Ended("failed", usage, defect=defect)
+
+    async def _sample(self, call: Callable[[], Coroutine[Any, Any, Sampled[Any]]]) -> Sampled[Any]:
         """`call()` within this deadline. Cancelling a memo leader's caller releases its
         lease, and the memo then cancels the live call (`_lead`). The coroutine is made
         here, so a task cancelled before it starts leaves none unawaited."""
@@ -387,41 +466,37 @@ class SecondSample:
             ) from exc
 
 
-def _sample_usage(sample: asyncio.Task[Sampled[Any]]) -> dict | None:
-    """The usage of a finished second sample: its tokens, a refusal's reported tokens, or one
-    uncounted call (`UNCOUNTED_CALLS`) for one that failed, was cut or was cancelled, since
-    its request was sent and no response reports its tokens."""
-    if sample.cancelled():
-        return {UNCOUNTED_CALLS: 1}
-    if (exc := sample.exception()) is None:
-        return sample.result().usage
-    refused = exc.usage if isinstance(exc, LLMOutputRefused) else None
-    return refused or {UNCOUNTED_CALLS: 1}
+def _ended(task: asyncio.Task[Ended]) -> Ended:
+    """How a finished second sample's task ended (`Agreement`): `cut` when cancelled."""
+    return _CUT if task.cancelled() else task.result()
 
 
 class SecondSamples:
     """The second samples one request's reads start (`two_samples`), owned until the
     request ends. `bind` gives a copy of an `LLM` whose reads hand their second sample to
     this holder and serve their first at once; `aclose` cancels every second sample still
-    running and awaits it, so no model call outlives the request. `usage` sums what the
-    second samples of served first samples cost. `CacheScope` holds one per request and
-    closes it on every exit (`CacheScope.release`).
+    running and awaits it, so no model call outlives the request, and a sample started
+    after it is cancelled before it calls the model. `usage` sums what the second samples of
+    served first samples cost. `CacheScope` holds one per request and closes it on every
+    exit (`CacheScope.release`).
 
     A second sample runs at most `llm_second_sample_settle_s` after its first is read
-    (`SecondSample.cut_after`); past it the sample is cut, holding its pool connection no
-    longer, and its read is not judged. An SSE answer never waits for a second sample.
-    `done`, and so the buffered JSON response, waits at most that bound after the
-    extraction's first sample, for the request settles every agreement at `done` before
-    layer 1 stores the answer. A first sample the LLM memo serves returns at once, so its
-    second also gets the time the memo's live call took (`two_samples`): a buffered repeat
-    of a wording whose second was cut waits about one model call once, its second then
-    reaches the memo, and later repeats hit layer 1. A second that takes longer than that
-    and the bound is cut on every repeat, which is what the bound is for."""
+    (`Agreement.read_first`); past it the sample is cut, holding its pool connection no
+    longer, and its read is not judged. A second that answers in time is judged at once,
+    and an agreed read is written to the extraction store then, whatever happens to the
+    request after. An SSE answer never waits for a second sample. `done`, and so the
+    buffered JSON response, waits at most that bound after the extraction's first sample,
+    for layer 1 stores the answer only once every agreement has ended. A first sample the
+    LLM memo serves returns at once, so its second also gets the time the memo's live call
+    took (`two_samples`): a buffered repeat of a wording whose second was cut waits about
+    one model call once, its second then reaches the memo, and later repeats hit layer 1. A
+    second that takes longer than that and the bound is cut on every repeat, which is what
+    the bound is for."""
 
     def __init__(self) -> None:
-        self._running: set[SecondSample] = set()
-        self._held: list[SecondSample] = []
-        self._served: list[SecondSample] = []
+        self._started: list[Agreement] = []
+        self._served: list[Agreement] = []
+        self._closed = False
 
     def bind(self, llm: SupportsLLM) -> SupportsLLM:
         """`llm` holding its reads' second samples here: a shallow copy sharing its client,
@@ -434,138 +509,53 @@ class SecondSamples:
 
     def start(
         self, call: Callable[[], Coroutine[Any, Any, Sampled[Any]]], *, stage: str
-    ) -> SecondSample:
-        """Run `call()` as a second sample held here (`SecondSample`)."""
-        second = SecondSample(call, stage=stage)
-        self._hold(second)
-        return second
+    ) -> Agreement:
+        """Run `call()` as a second sample held here (`Agreement`), cancelled before it
+        calls the model when this holder is closed."""
+        agreement = Agreement(call, stage=stage)
+        if self._closed:
+            agreement.task.cancel()
+        self._started.append(agreement)
+        return agreement
 
-    def _hold(self, second: SecondSample) -> None:
-        self._held.append(second)
-        self._running.add(second)
-        second.task.add_done_callback(lambda _task: self._running.discard(second))
-
-    def count(self, second: SecondSample) -> None:
-        """Count `second`'s cost in `usage`: its first was served. A second whose first failed
-        is counted with that failure by the caller."""
-        self._served.append(second)
+    def count(self, agreement: Agreement) -> None:
+        """Count `agreement`'s second sample in `usage`: its first was served. A second
+        whose first failed is counted with that failure by the caller."""
+        self._served.append(agreement)
 
     def usage(self) -> dict | None:
         """The summed usage of the counted second samples that have finished
-        (`_sample_usage`); after `aclose`, all of them."""
+        (`Ended.usage`); after `aclose`, all of them."""
         total: dict | None = None
-        for second in self._served:
-            if second.task.done():
-                total = sum_usage(total, _sample_usage(second.task))
+        for agreement in self._served:
+            if agreement.task.done():
+                total = sum_usage(total, _ended(agreement.task).usage)
         return total
 
     async def aclose(self) -> None:
-        """Cancel every second sample still running and await each one, those started while
-        it waits included, then log at error, naming its stage, any defect a second sample
-        raised that no judge claimed (`SecondSample.claim`): one discarded with its
-        speculative parse, or held by a request that ended before `done`."""
-        while running := [second.task for second in self._running if not second.task.done()]:
-            for task in running:
-                task.cancel()
-            await asyncio.gather(*running, return_exceptions=True)
-        for second in self._held:
-            if second.task.cancelled():
-                continue
-            exc = second.task.exception()
-            if (
-                exc is not None
-                and not isinstance(exc, SecondSampleCut | LLMInfraError | LLMOutputRefused)
-                and second.claim()
-            ):
-                logger.error(
-                    "%s: second sample raised a defect",
-                    second.stage,
-                    exc_info=exc,
-                    extra={JSON_FIELDS_ATTR: {"stage": second.stage}},
-                )
+        """Close the holder, cancel every second sample still running and await them."""
+        self._closed = True
+        running = [agreement.task for agreement in self._started if not agreement.task.done()]
+        for task in running:
+            task.cancel()
+        await asyncio.gather(*running, return_exceptions=True)
 
     def adopt(self, other: SecondSamples) -> None:
-        """Hold `other`'s second samples here, the counted ones included, so this holder's
-        `aclose` and `usage` cover them."""
-        for second in other._running:
-            self._hold(second)
-        self._held.extend(second for second in other._held if second not in other._running)
+        """Take over `other`'s second samples, the counted ones included, so this holder's
+        `aclose` and `usage` cover them and `other` holds none. A closed holder cancels the
+        ones still running."""
+        self._started.extend(other._started)
         self._served.extend(other._served)
+        other._started, other._served = [], []
+        if self._closed:
+            for agreement in self._started:
+                agreement.task.cancel()
 
 
 def held_by(llm: SupportsLLM) -> SecondSamples | None:
     """The request holder `llm` hands its reads' second samples to (`SecondSamples.bind`),
     None when it settles each read before returning."""
     return llm._second_samples if isinstance(llm, LLM) else None
-
-
-# How a read's two samples ended (`Agreement.outcome`): judged `agreed` or `disagreed`, or
-# unjudged, the second `cut` (past the settle bound or its model deadline once its first was
-# read, or cancelled with its request) or `failed` (a model error or refusal, or an
-# extraction-store write that failed).
-type Outcome = Literal["agreed", "disagreed", "cut", "failed"]
-
-
-class Agreement:
-    """Whether two samples of one read agreed. `outcome()` awaits the second sample, which
-    its own deadline bounds (`SecondSample.cut_after`), judges it against the first once
-    (`judge`, which writes an agreed read to the extraction store) and keeps the outcome."""
-
-    def __init__(self, second: SecondSample, judge: Callable[[Any], bool]) -> None:
-        self._second = second
-        self._judge = judge
-        self._outcome: Outcome | None = None
-
-    async def outcome(self) -> Outcome:
-        """How the read's samples ended, awaiting the second first. A second sample cut or
-        cancelled is `cut`. One that failed at the model (`LLMInfraError`) or was refused
-        (`LLMOutputRefused`) is `failed` and logs a warning naming `stage`. A judge whose
-        extraction-store write fails (`OSError`) is `failed` and logs an error naming
-        `stage`. Any other exception, from the second sample or the judge, is a defect and
-        raises, on this call and every later one; a request catches it where it settles
-        (`CacheScope._settle_extraction`), which logs it. Raising claims it
-        (`SecondSample.claim`), so the holder's close does not log it again. Cancelling
-        this await leaves the second sample running for its holder to close
-        (`SecondSamples.aclose`)."""
-        if self._outcome is not None:
-            return self._outcome
-        stage = self._second.stage
-        second = self._second.task
-        await asyncio.wait([second])
-        exc = None if second.cancelled() else second.exception()
-        if second.cancelled() or isinstance(exc, SecondSampleCut):
-            self._outcome = "cut"
-        elif isinstance(exc, LLMInfraError | LLMOutputRefused):
-            logger.warning(
-                "%s: second sample failed; the read is unjudged",
-                stage,
-                exc_info=exc,
-                extra={JSON_FIELDS_ATTR: {"stage": stage}},
-            )
-            self._outcome = "failed"
-        elif exc is not None:
-            self._raise_defect(exc)
-        else:
-            try:
-                agreed = self._judge(second.result().answer)
-            except OSError:
-                logger.exception(
-                    "%s: storing the agreed read failed; the read is unjudged",
-                    stage,
-                    extra={JSON_FIELDS_ATTR: {"stage": stage}},
-                )
-                self._outcome = "failed"
-            except Exception as defect:
-                self._raise_defect(defect)
-            else:
-                self._outcome = "agreed" if agreed else "disagreed"
-        return self._outcome
-
-    def _raise_defect(self, defect: BaseException) -> NoReturn:
-        """Claim `defect`'s report from the holder and raise it. No outcome is kept, so
-        every later call raises it again."""
-        self._second.claim()
-        raise defect
 
 
 @dataclass(frozen=True)
@@ -575,8 +565,8 @@ class FixedAgreement:
 
     verdict: bool
 
-    async def outcome(self) -> Outcome:
-        return "agreed" if self.verdict else "disagreed"
+    async def ended(self) -> Ended:
+        return Ended("agreed" if self.verdict else "disagreed", None)
 
 
 # The agreement of a read's samples, judged or known (`settle`).
@@ -584,10 +574,10 @@ type AnyAgreement = Agreement | FixedAgreement
 
 
 async def settle(agreements: Sequence[AnyAgreement]) -> bool | None:
-    """The joint verdict of `agreements` (`Agreement.outcome`), each already bounded by its
+    """The joint verdict of `agreements` (`Agreement.ended`), each already bounded by its
     second's own deadline: False when any read disagreed, True when every read agreed, and
-    None otherwise, some read being unjudged. Each cut and failure logs where it happens."""
-    outcomes = [await agreement.outcome() for agreement in agreements]
+    None otherwise, some read being unjudged. Each ending logs where it happens."""
+    outcomes = [(await agreement.ended()).outcome for agreement in agreements]
     if "disagreed" in outcomes:
         return False
     return True if all(outcome == "agreed" for outcome in outcomes) else None
@@ -604,43 +594,44 @@ async def two_samples[T, R](
     """Two concurrent samples of one call, `sample(llm)` and `sample(reseeded(llm))`: the
     first as `read` makes it, its usage, and the `Agreement` that judges the second against
     it (`judge(first, read(first), second)`). A first sample that fails, or that `read`
-    refuses, raises and cancels the second. Once the first is read, the second runs at most
-    `llm_second_sample_settle_s` more, and at most `llm_timeout_s` from its start
-    (`SecondSample.cut_after`). A first served from the memo took no model call, so the
-    second also gets what the call the memo kept took live beyond the first's wait
-    (`Sampled.memo_live_s`): a fresh call of the same wording needs about that long. A
-    second slower than that and the bound is cut on every repeat.
+    refuses, raises and cancels the second, which is then never judged. Once the first is
+    read, the second runs at most `llm_second_sample_settle_s` more, and at most
+    `llm_timeout_s` from its start (`Agreement.read_first`). A first served from the memo
+    took no model call, so the second also gets what the call the memo kept took live beyond
+    the first's wait (`Sampled.memo_live_s`): a fresh call of the same wording needs about
+    that long. A second slower than that and the bound is cut on every repeat.
 
     An `llm` bound to a request's `SecondSamples` returns once the first is read, with the
     first's usage: the second runs on under that holder, which counts its cost and closes
-    it when the request ends, and the request settles the agreement when it needs the
-    outcome. Any other `llm` settles the agreement before returning, and the usage adds the
-    second's (`_sample_usage`); a defect in the second sample or the judge raises
-    (`Agreement.outcome`). `stage` names the call in the lines a cut or failed second
-    logs."""
+    it when the request ends, and is judged as soon as it answers. Any other `llm` awaits
+    the second's end before returning, and the usage adds the second's (`Ended.usage`); a
+    defect in the second sample or the judge, logged where it happened, raises here.
+    `stage` names the call in the lines a cut, failed or defective second logs."""
     held = held_by(llm)
     samples = held if held is not None else SecondSamples()
     try:
-        second = samples.start(lambda: sample(reseeded(llm)), stage=stage)
+        agreement = samples.start(lambda: sample(reseeded(llm)), stage=stage)
         started = asyncio.get_running_loop().time()
         try:
             first = await sample(llm)
             served = read(first.answer)
         except BaseException:
-            second.task.cancel()
-            await asyncio.gather(second.task, return_exceptions=True)
+            agreement.task.cancel()
+            await asyncio.gather(agreement.task, return_exceptions=True)
             raise
         waited_s = asyncio.get_running_loop().time() - started
-        second.cut_after(
-            max(0.0, (first.memo_live_s or 0.0) - waited_s)
-            + config.settings().llm_second_sample_settle_s
+        agreement.read_first(
+            lambda second: judge(first.answer, served, second),
+            delay_s=max(0.0, (first.memo_live_s or 0.0) - waited_s)
+            + config.settings().llm_second_sample_settle_s,
         )
-        samples.count(second)
-        agreement = Agreement(second, lambda answer: judge(first.answer, served, answer))
+        samples.count(agreement)
         if held is not None:
             return served, first.usage, agreement
-        await agreement.outcome()
-        return served, sum_usage(first.usage, samples.usage()), agreement
+        ended = await agreement.ended()
+        if ended.defect is not None:
+            raise ended.defect
+        return served, sum_usage(first.usage, ended.usage), agreement
     finally:
         if held is None:
             await samples.aclose()

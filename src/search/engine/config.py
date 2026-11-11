@@ -272,7 +272,7 @@ class SearchSettings(BaseSettings):
 
     # Seconds the second of two samples (`clients.llm.two_samples`) may run after its first
     # is read, added to what the live call took when the LLM memo served the first. Past it
-    # the second is cut (`clients.llm.SecondSample.cut_after`): its read is not judged and
+    # the second is cut (`clients.llm.Agreement.read_first`): its read is not judged and
     # nothing is stored. An SSE answer never waits for it; `done`, and so the buffered JSON
     # response, waits at most this bound after the extraction's first sample, or about one
     # model call more for a repeat of a wording whose second was cut: once where the repeat's

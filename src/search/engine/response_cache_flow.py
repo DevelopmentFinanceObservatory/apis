@@ -12,7 +12,8 @@ import asyncio
 import logging
 from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from contextlib import aclosing
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
+from functools import cached_property
 from typing import TYPE_CHECKING, Literal
 
 import search.engine.config as config  # module-attribute access for runtime-resolved values
@@ -212,6 +213,26 @@ def compute_layer2_signals(
 _NO_USAGE = {"input_tokens": 0, "output_tokens": 0, "cached_tokens": 0}
 
 
+@dataclass(frozen=True)
+class _Final:
+    """A request's cache entry once its bytes are final, and the verdict both layers publish
+    it under (`CacheScope._finalise`): whether it may be stored before layer 1's agreement,
+    and the timeout and degraded-leg status of this run or the leader it followed."""
+
+    # The response, or a bundle's recorded events from `response` to `done`.
+    entry: ResolveResponse | tuple[Event, ...]
+    storable: bool
+    timed_out: bool
+    degraded_leg: bool
+
+    @cached_property
+    def encoded(self) -> tuple[bytes, int]:
+        """The entry's bytes and size, encoded once for both layers."""
+        if isinstance(self.entry, tuple):
+            return to_bundle(self.entry)
+        return to_entry(self.entry)
+
+
 class CacheScope:
     """One request's access to the two-layer response cache.
 
@@ -244,9 +265,11 @@ class CacheScope:
     of its extraction each agreed on the reading (`note_extraction`), so layer 1 holds no
     reading that rests on one sample. The request's reads serve their first sample at once
     and leave the second to the scope's holder (`hold_samples`), which ends each second
-    `llm_second_sample_settle_s` after its first is read. A request without trailing events
-    publishes layer 2 at `response`; layer 1 publishes at `done`, once the agreements have
-    settled, and `release` cancels and awaits any second sample still running. The LLM memo
+    `llm_second_sample_settle_s` after its first is read. Each second is judged as it
+    answers, and an agreed read enters the extraction store then, whatever happens to the
+    request after. A request without trailing events publishes layer 2 at `response`;
+    layer 1 publishes at `done`, once the agreements have ended, and `release` cancels and
+    awaits any second sample still running. The LLM memo
     replays each sample of a wording for `llm_memo_ttl_s` whether or not they agreed. Cache
     clearing belongs to app wiring.
     """
@@ -338,12 +361,9 @@ class CacheScope:
         self._recorded: list[Event] = []
         # The stored bundle a hit replays.
         self._replay: StoredBundle | None = None
-        # The response a request without trailing events publishes.
-        self._response: ResolveResponse | None = None
-        # The entry both layers publish, encoded once (`_entry`), and whether it may be
-        # stored, judged once (`_take_verdict`).
-        self._encoded: tuple[bytes, int] | None = None
-        self._storable_verdict: bool | None = None
+        # The entry both layers publish and its verdict, taken once its bytes are final
+        # (`_finalise`).
+        self._final: _Final | None = None
         self._outcome: str = "inactive" if not self.active else "miss"
 
     @property
@@ -562,13 +582,14 @@ class CacheScope:
         return self._samples.usage()
 
     async def _settle_extraction(self) -> None:
-        """Settle the noted agreements once (`clients.llm.settle`), which writes each agreed
-        read to the extraction store; a second sample still running ends by its own
-        deadline, `llm_second_sample_settle_s` after its first was read. A request with
-        neither the response cache nor an extraction store has nothing to write and settles
-        nothing. A defect raised while settling (`Agreement.outcome`) is logged at error
-        with its traceback and leaves the reading unjudged: the answer is already computed,
-        and only its storage depends on the verdict."""
+        """Settle the noted agreements once (`clients.llm.settle`), awaiting how each
+        second sample ended; one still running ends by its own deadline,
+        `llm_second_sample_settle_s` after its first was read. A request without the
+        response cache or an extraction store needs no verdict and awaits nothing. Each
+        second sample logs its own ending, a defect included (`clients.llm.Agreement`). A
+        fault in settling itself is logged at error with its traceback and leaves the
+        reading unjudged: the answer is already computed, and only its storage depends on
+        the verdict."""
         if self._settled or not self._agreements:
             return
         self._settled = True
@@ -612,9 +633,10 @@ class CacheScope:
         (`_settle_extraction`), so settling never holds a streamed response back. A bundle
         request records events from `response` on, leaving out place options, which a hit
         runs again. Its bundle is complete only at `done`, where it publishes layer 2, then
-        settles, then publishes layer 1. The storability verdict is taken where the entry's
-        bytes are final, `response` or a bundle's `done`, whether or not the request holds a
-        lease there (`_take_verdict`).
+        settles, then publishes layer 1. The entry and its storability verdict are taken
+        once, where the entry's bytes are final, `response` or a bundle's `done`, whether or
+        not the request holds a lease there (`_finalise`), and both layers publish that one
+        value.
 
         Followers always receive the answer, even when `is_storable` rejects it; that
         verdict controls storage, not delivery. Fresh runs use `note_health`; hits carry
@@ -625,12 +647,11 @@ class CacheScope:
         """
         if not self._bundle:
             if isinstance(event, ResponseEvent):
-                self._response = event.response
-                self._take_verdict()
-                await self._publish(layer=2)
-            elif isinstance(event, DoneEvent) and self._response is not None:
+                self._final = self._finalise(event.response)
+                await self._publish(layer=2, final=self._final)
+            elif isinstance(event, DoneEvent) and self._final is not None:
                 await self._settle_extraction()
-                await self._publish(layer=1)
+                await self._publish(layer=1, final=self._final)
             return
         if (
             self.active
@@ -639,65 +660,60 @@ class CacheScope:
         ):
             self._recorded.append(event)
         if isinstance(event, DoneEvent):
-            self._take_verdict()
-            await self._publish(layer=2)
+            self._final = self._finalise(tuple(self._recorded))
+            await self._publish(layer=2, final=self._final)
             await self._settle_extraction()
-            await self._publish(layer=1)
+            await self._publish(layer=1, final=self._final)
 
-    def _entry(self) -> tuple[bytes, int]:
-        """This request's cache entry and its size, encoded once for both layers: its
-        bundle, or its response."""
-        if self._encoded is None:
-            if self._bundle:
-                self._encoded = to_bundle(self._recorded)
-            else:
-                assert self._response is not None
-                self._encoded = to_entry(self._response)
-        return self._encoded
-
-    def _take_verdict(self) -> None:
-        """Judge once whether this request's entry may be stored, where its bytes are final
-        (`observe`): no fallback, no read cut, a stored verdict that allows it where it
-        served a hit, and the entry's own checks (`_storable`). Both layers publish under
-        it, whichever leases the request holds, and layer 1 also needs the reading agreed
-        at `done` (`_reading_agreed`). A check that raises is logged and stores nothing."""
-        if not self.active or self._storable_verdict is not None:
-            return
+    def _finalise(self, entry: ResolveResponse | tuple[Event, ...]) -> _Final:
+        """`entry` with the verdict both layers publish it under, taken where its bytes are
+        final (`observe`): storable when it holds no fallback, no read cut, a stored verdict
+        that allows it where it served a hit, and passes the entry's own checks
+        (`is_storable`, `is_bundle_storable`). Layer 1 also needs the reading agreed at
+        `done` (`_reading_agreed`). A check that raises is logged and stores nothing; an
+        inactive scope judges nothing."""
+        final = _Final(
+            entry,
+            storable=False,
+            timed_out=self._timed_out or self._served_timed_out,
+            degraded_leg=self._degraded_leg or self._served_degraded_leg,
+        )
+        if not self.active:
+            return final
         try:
-            self._storable_verdict = (
+            storable = (
                 not self._fallbacks.reasons
                 and not self._request_reads.cut
                 and self._served_storable
-                and self._storable()
+                and self._storable(entry)
             )
         except Exception:
             logger.exception("response cache verdict failed; serving the fresh answer uncached")
-            self._storable_verdict = False
+            return final
+        return replace(final, storable=storable)
 
-    def _storable(self) -> bool:
-        """Whether this request's entry may be stored (`is_bundle_storable`, `is_storable`)."""
-        if self._bundle:
+    def _storable(self, entry: ResolveResponse | tuple[Event, ...]) -> bool:
+        """Whether `entry` may be stored (`is_bundle_storable`, `is_storable`)."""
+        if isinstance(entry, tuple):
             return is_bundle_storable(
-                self._recorded,
+                entry,
                 timed_out=self._timed_out,
                 degraded_leg=self._degraded_leg,
                 trailing_incomplete=self._trailing_incomplete,
                 refused_at_build=self._refused_at_build,
             )
-        assert self._response is not None
         return is_storable(
-            self._response,
+            entry,
             timed_out=self._timed_out,
             degraded_leg=self._degraded_leg,
             refused_at_build=self._refused_at_build,
         )
 
-    async def _publish(self, *, layer: Literal[1, 2]) -> None:
-        """Publish this request's entry to its lease on `layer`, if it holds one.
+    async def _publish(self, *, layer: Literal[1, 2], final: _Final) -> None:
+        """Publish `final` to this request's lease on `layer`, if it holds one.
 
-        Cache errors are logged and never reach the pipeline. Both layers share one
-        encoding and one storability verdict (`_entry`, `_take_verdict`), and layer 1 also
-        needs an agreed reading
+        Cache errors are logged and never reach the pipeline. Both layers publish the one
+        entry and verdict (`_finalise`), and layer 1 also needs an agreed reading
         (`note_extraction`). Entry lifetime comes from the generation stamp captured
         before lookup.
         """
@@ -709,16 +725,14 @@ class CacheScope:
             # No lease means this request cannot publish a cache entry on this layer.
             return
         try:
-            verdict = self._storable_verdict
-            assert verdict is not None, "observe takes the verdict before any publish"
-            entry, size = self._entry()
+            entry, size = final.encoded
             await self._cache.publish(
                 lease,
                 entry,
                 size,
-                storable=verdict and (layer == 2 or self._reading_agreed()),
-                timed_out=self._timed_out or self._served_timed_out,
-                degraded_leg=self._degraded_leg or self._served_degraded_leg,
+                storable=final.storable and (layer == 2 or self._reading_agreed()),
+                timed_out=final.timed_out,
+                degraded_leg=final.degraded_leg,
                 max_age_s=self._stamp.max_age_s,
             )
             if layer == 1:

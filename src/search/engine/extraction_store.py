@@ -1,11 +1,11 @@
 """Stores of the model's extraction of a query, so a repeated query reads the same way.
 
 `extract()` consults the store before it calls the model. The model's `Extraction` JSON,
-before any post-processing, is written to it when the request reaches `done` and two
-samples agree on its reading (`response_cache_flow.CacheScope`, `clients.llm.settle`). A
-request that ends before `done`, or whose second sample outlasts the settle bound
-(`SEARCH_LLM_SECOND_SAMPLE_SETTLE_S`), stores nothing. A caller outside a request settles
-before `extract()` returns and writes then. A key (`extraction_key`) hashes the query as sent, the extract version (the system
+before any post-processing, is written to it when two samples agree on its reading: the
+second sample's task judges it against the first as it answers (`clients.llm.Agreement`),
+whatever happens to the request after. A second sample that outlasts the settle bound
+(`SEARCH_LLM_SECOND_SAMPLE_SETTLE_S`), or that the request's end cancels, stores nothing. A
+key (`extraction_key`) hashes the query as sent, the extract version (the system
 prompt and the `Extraction` schema), the model id, seed and thinking level, and the
 number of samples whose agreement a stored reading passed (`AGREEMENT_SAMPLES`), so any
 edit to the prompt, the schema or the sampling policy reads afresh. `SEARCH_EXTRACT_STORE` selects the
