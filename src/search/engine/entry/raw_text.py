@@ -133,7 +133,7 @@ from search.engine.source_scope import (
     compile_sources,
     source_dictionary,
 )
-from search.engine.source_spans import read_sources, unclaimed_words
+from search.engine.source_spans import read_sources, unclaimed_stretches, unclaimed_words
 from search.engine.stated_scope import part_scope_intakes, without_scope_phrases
 from search.engine.surface_resolution import corrected_surfaces, is_surface, named_dcids
 from search.engine.unit.bind import names_price_basis, names_unit_request
@@ -875,8 +875,12 @@ class _ExtractionPrep:
     `unit_text` is the dropped phrases that bind as one unit request
     (`_split_unit_phrases`); they stay out of `dropped_qualifier_phrases`.
     `text` is the query with each stretch it asks to leave out blanked, which every reader of
-    its words takes. `exclusions` are those stretches, less each that leaves out sources alone,
-    which its mentions apply (`SourceScan.source_stretches`), `exclusion_warnings` one
+    its words takes. `unclaimed` are the stretches of `text` that hold a word no part,
+    entity, date, unit, operation or source mention claims
+    (`source_spans.unclaimed_stretches`): "attributed" in "Germany attributed climate
+    finance commitments 2022" where extraction reads the variable "climate finance
+    commitments". A blanked word is in none. `exclusions` are the blanked stretches, less
+    each that leaves out sources alone, which its mentions apply (`SourceScan.source_stretches`), `exclusion_warnings` one
     `query_qualifier_dropped` warning for each and `exclusion_targets` the positions in
     `unique` of the measures each qualifies (`SourceScan.stretch_targets`), both parallel to
     it. `per_variable_exclusions` runs parallel to `unique`: the stretches qualifying each
@@ -942,6 +946,7 @@ class _ExtractionPrep:
     per_variable_compiled_codes: list[PartCode | None]
     per_variable_scope_intakes: list[ScopeIntake]
     text: str
+    unclaimed: tuple[str, ...] = ()
     exclusions: tuple[LeftOut, ...] = ()
     exclusion_warnings: tuple[Warning, ...] = ()
     exclusion_targets: tuple[tuple[int, ...], ...] = ()
@@ -1370,6 +1375,24 @@ def _prepare_extraction(
         else None
         for code, scope in zip(per_variable_source_codes, per_variable_source_scopes, strict=True)
     ]
+    per_variable_unit_texts = [
+        _part_unit_text(extract_result.unit_texts.get(v), unit_text) for v in unique
+    ]
+    claimed = [
+        *interpretation_variables,
+        *(operation.phrase for operations in per_variable_operations for operation in operations),
+        *(
+            text
+            for entity in extraction.entities
+            for text in (entity.text, entity.span, entity.cue)
+            if text
+        ),
+        *(bound for date in extraction.dates for bound in (date.start, date.end) if bound),
+        *([unit_text] if unit_text else []),
+        *(text for text in per_variable_unit_texts if text),
+        *(m.text for mentions in per_variable_sources for m in mentions if m.text),
+        *(code for code in per_variable_source_codes if code),
+    ]
 
     return _ExtractionPrep(
         date_request=date_request,
@@ -1401,9 +1424,7 @@ def _prepare_extraction(
         entity_words=entity_words,
         entity_surfaces=entity_surfaces,
         unit_text=unit_text,
-        per_variable_unit_texts=[
-            _part_unit_text(extract_result.unit_texts.get(v), unit_text) for v in unique
-        ],
+        per_variable_unit_texts=per_variable_unit_texts,
         separate=list(reading.separate),
         read_connectives=reading.read_connectives,
         per_variable_sources=per_variable_sources,
@@ -1412,6 +1433,9 @@ def _prepare_extraction(
         per_variable_compiled_codes=per_variable_compiled_codes,
         per_variable_scope_intakes=intakes,
         text=query,
+        unclaimed=unclaimed_stretches(
+            query, claimed=claimed, read_connectives=reading.read_connectives
+        ),
         exclusions=exclusions,
         exclusion_warnings=exclusion_warnings,
         exclusion_targets=exclusion_targets,
@@ -1432,29 +1456,9 @@ def _disclosed_exclusions(left_out: Sequence[LeftOut]) -> tuple[LeftOut, ...]:
     )
 
 
-def _log_unclaimed_words(prep: _ExtractionPrep, extraction: Extraction, *, query: str) -> None:
-    """Log, once, the words of `query` that no part, entity, time or unit text claims and
-    that are not function words (`source_spans.unclaimed_words`)."""
-    claimed = [
-        *prep.interpretation_variables,
-        *(
-            operation.phrase
-            for operations in prep.per_variable_operations
-            for operation in operations
-        ),
-        *(
-            text
-            for entity in extraction.entities
-            for text in (entity.text, entity.span, entity.cue)
-            if text
-        ),
-        *(bound for date in extraction.dates for bound in (date.start, date.end) if bound),
-        *([prep.unit_text] if prep.unit_text else []),
-        *(text for text in prep.per_variable_unit_texts if text),
-        *(m.text for mentions in prep.per_variable_sources for m in mentions if m.text),
-        *(code for code in prep.per_variable_source_codes if code),
-    ]
-    words = unclaimed_words(query, claimed=claimed, read_connectives=prep.read_connectives)
+def _log_unclaimed_words(prep: _ExtractionPrep) -> None:
+    """Log, once, the words of `prep.unclaimed` that are not function words."""
+    words = unclaimed_words(" ".join(prep.unclaimed), claimed=())
     if words:
         logger.info("raw_query_coverage unclaimed=%s", ",".join(words))
 
@@ -1515,6 +1519,7 @@ async def _handle_single_variable(
             ],
             per_variable_exclusions=prep.per_variable_exclusions,
             query_text=prep.text,
+            unclaimed=prep.unclaimed,
             per_variable_qualifiers=prep.per_variable_qualifiers,
             per_variable_operations=prep.per_variable_operations,
             per_variable_open_axes=prep.per_variable_open_axes,
@@ -1853,7 +1858,7 @@ async def handle(
             stated_scopes=prep.per_variable_scope_intakes,
             llm_usage=extract_usage,
         )
-    _log_unclaimed_words(prep, extraction, query=text)
+    _log_unclaimed_words(prep)
     if scope is not None and cached is not None:
         async with aclosing(
             scope.hit_events(

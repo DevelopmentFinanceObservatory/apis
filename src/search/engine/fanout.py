@@ -445,6 +445,7 @@ async def _stream_one_variable(
     open_axes: frozenset[RoleAxis] = frozenset(),
     separate: bool = False,
     query_text: str | None = None,
+    unclaimed: tuple[str, ...] = (),
     qualifiers: tuple[CodedQualifier, ...] | None = None,
     materialise_graph: GraphReader | None = None,
     materialise_sdmx: MaterialiseSdmxClient | None = None,
@@ -531,6 +532,7 @@ async def _stream_one_variable(
             operations=operations,
             open_axes=asked_open_axes(open_axes, operations),
             query_text=query_text and (without_scope_phrases(query_text, scope_intake) or None),
+            unclaimed=unclaimed,
             qualifiers=qualifiers,
             pac=pac,
             graph=graph,
@@ -871,6 +873,7 @@ def _launch_variable_tasks(
     stream_observations: bool,
     dropped_qualifier_phrases: list[str] | None,
     query_text: str | None,
+    unclaimed: tuple[str, ...],
     materialise_graph: GraphReader | None,
     materialise_sdmx: MaterialiseSdmxClient | None,
     rate_cache: RateTableCache | None,
@@ -942,6 +945,7 @@ def _launch_variable_tasks(
                 open_axes=_leg_open_axes(overrides, i),
                 separate=_leg_separate(overrides, i),
                 query_text=query_text,
+                unclaimed=unclaimed,
                 materialise_graph=materialise_graph,
                 materialise_sdmx=materialise_sdmx,
                 rate_cache=rate_cache,
@@ -1037,6 +1041,7 @@ async def _run_variables_streaming(
     per_variable_exclusions: list[PartExclusions] | None = None,
     per_variable_scope_intakes: list[ScopeIntake] | None = None,
     query_text: str | None = None,
+    unclaimed: tuple[str, ...] = (),
     materialise_graph: GraphReader | None = None,
     materialise_sdmx: MaterialiseSdmxClient | None = None,
     rate_cache: RateTableCache | None = None,
@@ -1078,7 +1083,8 @@ async def _run_variables_streaming(
     give each leg its own `entity_surfaces` and `entity_words`.
     `per_variable_scope_intakes` gives each leg its posted scope entries and total intent,
     and `None` gives every leg none.
-    `query_text` is supplied only for a single-variable request.
+    `query_text` is supplied only for a single-variable request, and so are `unclaimed`, the
+    stretches of it no reader of the extraction claims (`source_spans.unclaimed_stretches`).
     `unit_text_best_effort` marks every leg's unit text as the raw-text door's typed phrase.
     `door` is the door every leg was posted on (`resolve_variable`).
     """
@@ -1147,6 +1153,7 @@ async def _run_variables_streaming(
         stream_observations=stream_observations,
         dropped_qualifier_phrases=dropped_qualifier_phrases,
         query_text=query_text,
+        unclaimed=unclaimed,
         materialise_graph=materialise_graph,
         materialise_sdmx=materialise_sdmx,
         rate_cache=rate_cache,

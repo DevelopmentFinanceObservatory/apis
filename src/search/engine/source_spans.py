@@ -181,14 +181,45 @@ def unclaimed_words(
     query: str, *, claimed: Iterable[str], read_connectives: frozenset[int] = frozenset()
 ) -> tuple[str, ...]:
     """The words of `query` no `claimed` text holds, casefolded and in query order, less
-    `FUNCTION_WORDS` and the connectives at `read_connectives`."""
-    held = {token.text.casefold() for text in claimed for token in word_tokens(text)}
+    `FUNCTION_WORDS` and the connectives at `read_connectives`: the content words of its
+    `unclaimed_stretches`."""
+    stretches = unclaimed_stretches(query, claimed=claimed, read_connectives=read_connectives)
     return tuple(
         dict.fromkeys(
             folded
-            for token in word_tokens(query)
-            if token.start not in read_connectives
-            and (folded := token.text.casefold()) not in FUNCTION_WORDS
-            and folded not in held
+            for stretch in stretches
+            for token in word_tokens(stretch)
+            if (folded := token.text.casefold()) not in FUNCTION_WORDS
         )
     )
+
+
+def unclaimed_stretches(
+    query: str, *, claimed: Iterable[str], read_connectives: frozenset[int] = frozenset()
+) -> tuple[str, ...]:
+    """The stretches of `query` that hold a content word no `claimed` text holds, in query
+    order, each from its first such word to its last. A content word a `claimed` text holds
+    and a connective at `read_connectives` end a stretch; a function word does not, so
+    "attributed to donors" stays one stretch. With "climate finance commitments",
+    "Germany" and "2022" claimed, "Germany attributed climate finance commitments 2022"
+    leaves the stretch "attributed"."""
+    held = {token.text.casefold() for text in claimed for token in word_tokens(text)}
+    stretches: list[str] = []
+    first: int | None = None
+    last = 0
+    for token in word_tokens(query):
+        folded = token.text.casefold()
+        connective = token.start in read_connectives
+        if folded in FUNCTION_WORDS and not connective:
+            continue
+        if connective or folded in held:
+            if first is not None:
+                stretches.append(query[first:last])
+            first = None
+            continue
+        if first is None:
+            first = token.start
+        last = token.end
+    if first is not None:
+        stretches.append(query[first:last])
+    return tuple(stretches)

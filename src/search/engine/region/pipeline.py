@@ -175,6 +175,7 @@ async def resolve_variable(
     operations: Sequence[Operation] = (),
     open_axes: frozenset[RoleAxis] = frozenset(),
     query_text: str | None = None,
+    unclaimed: tuple[str, ...] = (),
     qualifiers: tuple[CodedQualifier, ...] | None = None,
     pac: bool,
     graph: EngineGraphClient,
@@ -215,7 +216,9 @@ async def resolve_variable(
     request that leave something out and qualify this part, with the requirements judging
     its answers on them (`state.exclusion_requirements`); the result names those every
     answer meets (`RegionResult.met_exclusions`). `query_text` adds the query, each such stretch blanked,
-    as a match source for a single-variable request. `qualifiers` adds a typed source. Its phrase-relative spans stay separate from variable spans. The raw-text door
+    as a match source for a single-variable request, and `unclaimed` the stretches of it no
+    reader of the extraction claims, whose measure values the part names
+    (`ResolveState.unclaimed`). `qualifiers` adds a typed source. Its phrase-relative spans stay separate from variable spans. The raw-text door
     supplies both qualifier inputs.
 
     `admission` checks derived shape roles before election. Direct callers default to
@@ -318,6 +321,7 @@ async def resolve_variable(
             operations=tuple(operations),
             open_axes=open_axes,
             query_text=query_text,
+            unclaimed=unclaimed,
             qualifiers=qualifiers,
             door=door,
             pool=pool,

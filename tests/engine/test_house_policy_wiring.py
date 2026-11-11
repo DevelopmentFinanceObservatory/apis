@@ -1130,18 +1130,21 @@ def _cf_bind(
     variable: str,
     binder: GeminiBinder | JevBinder,
     reply: _UniversalBindOutput | None,
+    unclaimed: tuple[str, ...] = (),
 ) -> int:
     """The menu index the part answers with for `variable` through `_phase_bind`, the
-    Gemini binder answering `reply`."""
+    Gemini binder answering `reply`, with `unclaimed` the query's stretches no reader of
+    the extraction claims."""
     state = _state(shapes, llm=_StubLLM(reply))
     state.variable = variable
+    state.unclaimed = unclaimed
     state.binder = binder
     assert asyncio.run(_phase_bind(state)) is None
     return _elected_index(state)
 
 
 @pytest.mark.parametrize(
-    ("shapes", "variable", "binder", "reply", "elected"),
+    ("shapes", "variable", "binder", "reply", "elected", "unclaimed"),
     [
         pytest.param(
             _CF_DISBURSEMENTS_MENU,
@@ -1149,6 +1152,7 @@ def _cf_bind(
             _cf_jev(_CF_DISBURSEMENTS_JEV, {0: 0.55, 1: 0.445, 2: 0.0}),
             None,
             0,
+            (),
             id="jev-disbursements-read-as-attributed",
         ),
         pytest.param(
@@ -1157,6 +1161,7 @@ def _cf_bind(
             _cf_jev(_CF_COMMITMENTS_JEV, {0: 0.35, 1: 0.01, 2: 0.61}),
             None,
             0,
+            (),
             id="jev-commitments-electing-attributed",
         ),
         pytest.param(
@@ -1165,6 +1170,7 @@ def _cf_bind(
             GeminiBinder(),
             _reply(2, rated=(2,)),
             0,
+            (),
             id="gemini-commitments-rating-attributed-alone",
         ),
         pytest.param(
@@ -1173,6 +1179,7 @@ def _cf_bind(
             _cf_jev(_CF_COMMITMENTS_JEV | {"mv|attributedAmount": 0.1}, {0: 0.9, 2: 0.1}),
             None,
             2,
+            (),
             id="jev-attributed-commitments-electing-amounts",
         ),
         pytest.param(
@@ -1181,6 +1188,7 @@ def _cf_bind(
             _cf_jev(_CF_DISBURSEMENTS_JEV | {"mv|attributedAmount": 0.1}, {0: 0.9, 1: 0.1}),
             None,
             1,
+            (),
             id="jev-attributed-aid-electing-amounts",
         ),
         pytest.param(
@@ -1189,7 +1197,17 @@ def _cf_bind(
             GeminiBinder(),
             _reply(0, rated=(0,)),
             1,
+            (),
             id="gemini-attributed-aid-rating-amounts-alone",
+        ),
+        pytest.param(
+            _CF_COMMITMENTS_MENU,
+            "climate finance commitments",
+            _cf_jev(_CF_COMMITMENTS_JEV, {0: 0.35, 1: 0.01, 2: 0.61}),
+            None,
+            2,
+            ("attributed",),
+            id="jev-attributed-left-outside-the-variable",
         ),
     ],
 )
@@ -1199,9 +1217,12 @@ def test_an_unnamed_basis_value_follows_the_declared_preference(
     binder: GeminiBinder | JevBinder,
     reply: _UniversalBindOutput | None,
     elected: int,
+    unclaimed: tuple[str, ...],
 ):
     """Amounts and attributed amounts of one dataset's flow differ on the basis axis alone,
     and ``prefer`` lists the amount. A phrase that names no attribution answers with the
     amounts, whatever the binder scored, read or rated; one naming attributed amounts, by
-    "attributed" or "attributed aid", answers with them, whatever the binder elected."""
-    assert _cf_bind(shapes, variable, binder, reply) == elected
+    "attributed" or "attributed aid", answers with them, whatever the binder elected. A
+    word extraction left outside the variable names them as one inside it does: "Germany
+    attributed climate finance commitments 2022" leaves "attributed" unclaimed."""
+    assert _cf_bind(shapes, variable, binder, reply, unclaimed) == elected

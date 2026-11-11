@@ -1991,16 +1991,30 @@ def _phrases_reader(
     state: ResolveState, query: _QueryQualifiers
 ) -> Callable[[ShapeDraft], frozenset[str]]:
     """The query phrases each shape's family reads (`query_phrases_read`), in the shape's
-    own vocabulary's matches and ties in `query`, each shape read once."""
+    own vocabulary's matches and ties in `query`, each shape read once.
+
+    A family reading a phrase of its own codes also reads each word its datasets note that
+    the part states (`dataset_noted_words`), so a noted word qualifies a reading and never
+    starts one. "Climate ODA from Germany to Kenya" reads {"climate", "oda"} on ONE Data
+    Climate Finance and {"oda"} on the CRS, so the family election keeps the climate
+    table; "ODA to Kenya" reads nothing of the climate table's own codes, so its noted
+    "ODA" reads nothing there either."""
+    index = get_index()
     read: dict[int, frozenset[str]] = {}
 
     def phrases_read(shape: ShapeDraft) -> frozenset[str]:
         if id(shape) not in read:
-            read[id(shape)] = query_phrases_read(
+            own = query_phrases_read(
                 state.held_codes_of(shape),
                 for_shape(query.matches, shape),
                 for_shape(query.ties, shape),
             )
+            noted = (
+                frozenset(noted.word for noted in dataset_noted_words(shape, index, state))
+                if own
+                else frozenset()
+            )
+            read[id(shape)] = own | noted
         return read[id(shape)]
 
     return phrases_read
@@ -2524,8 +2538,9 @@ def dataset_noted_words(
     Finance.
 
     The coverage rule reads each such word (`_conversational_words`) and the answer states
-    each one's note (`phase_election._repair_bindings`). Recall and the family election
-    read none, so "aid to Kenya" draws no climate finance table into its pool."""
+    each one's note (`phase_election._repair_bindings`). The family election reads one
+    only on a family that reads a phrase of its own codes (`_phrases_reader`), and recall
+    reads none, so "aid to Kenya" draws no climate finance table into its pool."""
     datasets = declared_datasets(shape, index)
     if not datasets:
         return ()
@@ -4760,8 +4775,11 @@ class _HousePolicyStep:
     A menu shape the binder left out of its pool joins it when it differs from the pick on
     a basis measure axis alone (`_basis_variants`), so the declared preference on that
     axis (`house_policy` `declared_basis`) decides between the two whatever the binder
-    scored them. `named_values` are the measure values the part's phrase names
-    (`qualifier_match.measure_values_named`), which that policy reads."""
+    scored them. `named_values` are the measure values the part's words name
+    (`qualifier_match.measure_values_named`), which that policy reads: those its variable
+    names and those the query's stretches no reader of the extraction claims name
+    (`ResolveState.unclaimed`), so a measure word extraction leaves outside the variable
+    still counts."""
 
     shapes: Sequence[ShapeDraft]
     frame: Frame
@@ -5068,7 +5086,12 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
         undirected_axis=state.undirected_axis,
         siblings=state.basis_siblings,
         read_sibling=read_sibling,
-        named_values=measure_values_named(variable, get_measure_index()),
+        named_values=frozenset().union(
+            *(
+                measure_values_named(text, get_measure_index())
+                for text in (variable, *state.unclaimed)
+            )
+        ),
     )
     request = BindRequest(
         variable=variable,

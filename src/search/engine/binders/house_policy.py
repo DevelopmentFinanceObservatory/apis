@@ -167,8 +167,9 @@ class Context:
     `wanted_dataset` are `None` when the part names no place and admits no code that
     declares a kind. `undirected` says a place is named without a direction, which gives
     a part outside a sector no basis until election settles its shape. `named_values`
-    are the canonical measure values the part's phrase names
-    (`qualifier_match.measure_values_named`).
+    are the canonical measure values the part's words name
+    (`qualifier_match.measure_values_named`): its variable's, and on a single-variable
+    raw-text request those of the query's stretches no reader of the extraction claims.
     """
 
     pre_ge: bool
