@@ -33,6 +33,7 @@ from search.engine.qualifier_match import (
     match_qualifier_ties,
     match_qualifiers,
     match_unsupported_qualifier_phrases,
+    measure_values_named,
     qualifier_occurrences,
     read_by_vocabulary,
 )
@@ -593,6 +594,25 @@ def test_measure_value_plural_reaches_its_singular_registered_label():
     assert len(matches) == 1
     assert matches[0].code_system == "financialObligationType"
     assert matches[0].code_dcid == "Commitment"
+
+
+@pytest.mark.parametrize(
+    ("text", "named"),
+    [
+        pytest.param(
+            "attributed climate finance", {"attributedAmount"}, id="a-word-every-name-holds"
+        ),
+        pytest.param("aid attributed to donors", {"attributedAmount"}, id="a-whole-name"),
+        pytest.param("climate finance commitments", {"Commitment"}, id="no-attribution"),
+        pytest.param("aid in real terms", {"RealValue"}, id="a-name-sharing-no-word"),
+        pytest.param("amount of aid", set(), id="an-unmatchable-value"),
+    ],
+)
+def test_a_text_names_a_measure_value_by_a_word_or_a_whole_name(text: str, named: set[str]):
+    """A measure value is named by a content word every one of its names holds, or by a
+    whole name: "real terms", "constant prices" and "inflation-adjusted" share no word, so
+    only a whole name of them names `RealValue`. `amount` takes no query text."""
+    assert measure_values_named(text, get_measure_index()) == named
 
 
 def test_gross_and_nominal_measure_words_are_unambiguous_against_the_real_index():

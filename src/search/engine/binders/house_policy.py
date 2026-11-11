@@ -12,7 +12,7 @@ explicit or carried entry asks for: `Context.basis`. That basis decides the thre
 it bears on, whatever words name the measure. A part the conventions do not read
 falls back to the window and to gross.
 
-The six policies run in order, each over the survivors of the one before:
+The seven policies run in order, each over the survivors of the one before:
 
 1. `nominal_vs_va`: among output (EconomicActivity `amount`) and value-added shapes,
    nominal output (Nominal where only some output shapes are) over value added, when a
@@ -28,15 +28,20 @@ The six policies run in order, each over the survivors of the one before:
 4. `commit_vs_disb`: among FinancialObligation shapes and FinancialFlow shapes with a
    `financialFlowType` slot, the obligations on a commitments basis, else a flow whose slot
    offers Disbursement.
-5. `default_dataset`: a shape whose family the part's wanted dataset
+5. `declared_basis`: among shapes that differ on a basis measure axis alone
+   (`differ_on_basis`), the value the phrase names when the axis's ``prefer`` leaves it
+   out (`Context.named_values`), else a value ``prefer`` lists, so attributed amounts
+   answer only a phrase naming them. Values ``prefer`` lists are left to the policies
+   above, as amount against grant equivalent is.
+6. `default_dataset`: a shape whose family the part's wanted dataset
    (`Context.wanted_dataset`) publishes: the dataset the basis convention reads, else the
    house default for the kind of question. An opt-in table is its own dataset, so the
    imputed multilateral sectors family fits no house default. A basis the wanted dataset
    does not publish leaves none of its shapes standing, so the policy keeps the shapes of
    the dataset that does. A recipient's grant equivalents are the CRS's.
-6. `data_at_places`: a shape with data at the named places.
+7. `data_at_places`: a shape with data at the named places.
 
-The four convention policies (`CONVENTION_POLICIES`) run first, so a dataset default
+The five convention policies (`CONVENTION_POLICIES`) run first, so a dataset default
 never sets aside a shape a convention would keep: a donor's loans go to the disbursements
 of one dataset, not the commitments of the house default.
 
@@ -68,6 +73,7 @@ from operator import attrgetter
 from typing import Literal, get_args
 
 from code_index.query import CodeIndex
+from code_index.shared import get_measure_index
 from code_index.types import HouseDefaultCase
 from search.engine.bind import stated_reading
 from search.engine.frame import Frame
@@ -86,6 +92,7 @@ type PolicyName = Literal[
     "amount_vs_ge",
     "net_vs_gross",
     "commit_vs_disb",
+    "declared_basis",
     "default_dataset",
     "data_at_places",
 ]
@@ -95,6 +102,7 @@ POLICY_ORDER: tuple[PolicyName, ...] = (
     "amount_vs_ge",
     "net_vs_gross",
     "commit_vs_disb",
+    "declared_basis",
     "default_dataset",
     "data_at_places",
 )
@@ -107,6 +115,7 @@ CONVENTION_POLICIES: tuple[PolicyName, ...] = (
     "amount_vs_ge",
     "net_vs_gross",
     "commit_vs_disb",
+    "declared_basis",
 )
 
 # The first year donors report official development assistance as grant equivalent.
@@ -157,7 +166,9 @@ class Context:
     convention reads, else the kind's declared house default. `dataset_case` and
     `wanted_dataset` are `None` when the part names no place and admits no code that
     declares a kind. `undirected` says a place is named without a direction, which gives
-    a part outside a sector no basis until election settles its shape.
+    a part outside a sector no basis until election settles its shape. `named_values`
+    are the canonical measure values the part's phrase names
+    (`qualifier_match.measure_values_named`).
     """
 
     pre_ge: bool
@@ -165,6 +176,7 @@ class Context:
     wanted_dataset: str | None
     basis: BasisElection | None = None
     undirected: bool = False
+    named_values: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -257,6 +269,7 @@ def context_of(
     pool_datasets: Sequence[str],
     basis_entries: Sequence[Entry] = (),
     undirected_axis: RoleAxis | None = None,
+    named_values: Collection[str] = (),
 ) -> Context:
     """The part's context over the pool before any policy narrows it.
 
@@ -274,7 +287,8 @@ def context_of(
     of them a convention reads. `basis_entries`, the part's measure-basis entries with explicit first
     (`ScopeState.entries_on`), win over the convention. A place named without a direction
     is read on `undirected_axis` where one is given (`availability.undirected_axis`), so the
-    part is the question its directed twin asks.
+    part is the question its directed twin asks. `named_values` are the measure values the
+    part's phrase names.
     """
     window = frame.window.value
     if window == "all":
@@ -314,6 +328,7 @@ def context_of(
         wanted_dataset=wanted or (wanted_datasets.get(case) if case else None),
         basis=basis,
         undirected="undirected" in directions,
+        named_values=frozenset(named_values),
     )
 
 
@@ -347,6 +362,51 @@ def _amount_or_ge(shapes: Sequence[ShapeFacts], ctx: Context) -> list[int]:
 def _netting(shapes: Sequence[ShapeFacts], ctx: Context) -> list[int]:
     wanted = (ctx.basis.measure.netting_basis if ctx.basis is not None else None) or "Gross"
     return [s.index for s in shapes if s.netting is not None and wanted in s.netting]
+
+
+def differ_on_basis(a: ShapeFacts, b: ShapeFacts) -> str | None:
+    """The basis measure axis (`MeasureAxis.role`) whose ``prefer`` ranks `a` against `b`:
+    the two hold different values of the axis, declared measure values that ``prefer``
+    does not both list, and agree on every other fact but data at the places. None when
+    there is no such axis. Two values ``prefer`` lists are a convention's to choose
+    between (`amount_vs_ge`)."""
+    measure_index = get_measure_index()
+    for axis in measure_index.axes:
+        field_name = _AXIS_FACTS.get(axis.axis)
+        if axis.role != "basis" or field_name is None:
+            continue
+        values = {getattr(a, field_name), getattr(b, field_name)}
+        declared = {row.dcid for row in measure_index.values if row.axis == axis.axis}
+        if (
+            len(values) == 2
+            and values <= declared
+            and not values <= set(axis.prefer)
+            and replace(
+                a, index=b.index, available=b.available, **{field_name: getattr(b, field_name)}
+            )
+            == b
+        ):
+            return axis.axis
+    return None
+
+
+def _declared_basis(shapes: Sequence[ShapeFacts], ctx: Context) -> list[int]:
+    measure_index = get_measure_index()
+    prefer = {axis.axis: axis.prefer for axis in measure_index.axes}
+
+    def rank(s: ShapeFacts, axis: str) -> int:
+        value = getattr(s, _AXIS_FACTS[axis]) or ""
+        if value in prefer[axis]:
+            return 1
+        return 0 if measure_index.canonical_reading(value) in ctx.named_values else 2
+
+    def outranked(s: ShapeFacts) -> bool:
+        return any(
+            (axis := differ_on_basis(s, t)) is not None and rank(t, axis) < rank(s, axis)
+            for t in shapes
+        )
+
+    return [s.index for s in shapes if not outranked(s)]
 
 
 def _default_dataset(shapes: Sequence[ShapeFacts], ctx: Context) -> list[int]:
@@ -405,6 +465,7 @@ _POLICIES: Mapping[
     "amount_vs_ge": (_flow_amount_or_ge, _amount_or_ge),
     "net_vs_gross": (_netted, _netting),
     "commit_vs_disb": (_flow_or_obligation, _disbursed),
+    "declared_basis": (_any_shape, _declared_basis),
     "default_dataset": (_any_shape, _default_dataset),
     "data_at_places": (_any_shape, _with_data),
 }

@@ -1078,3 +1078,130 @@ def test_a_move_to_a_basis_sibling_holds_it_to_the_drafts_the_policies_judged(_p
     assert [shape.shape_id for shape in state.capped_shapes] == ["pick", "source", "sibling"]
     assert state.bind_result.chosen_shape_index == state.basis_seat == 2
     assert state.basis_siblings == []
+
+
+# Bind menus recorded for climate finance questions: one dataset's amounts and attributed
+# amounts of one flow, which differ on the basis axis alone, beside another reading.
+_CF_DATASET = ("provenance/ONEClimateFinance",)
+_CF_FLOW = _shape("cf_flow", datasets=_CF_DATASET)
+_CF_ATTRIBUTED_FLOW = _shape(
+    "cf_attributed_flow", datasets=_CF_DATASET, measured_property="attributedAmount"
+)
+_CF_GRANT_EQUIVALENT = _shape(
+    "cf_grant_equivalent", datasets=(_HOUSE["donor"],), measured_property="grantEquivalent"
+)
+_CF_COMMITMENTS = _shape(
+    "cf_commitments", datasets=_CF_DATASET, population_type="FinancialObligation"
+)
+_CF_ATTRIBUTED_COMMITMENTS = _shape(
+    "cf_attributed_commitments",
+    datasets=_CF_DATASET,
+    population_type="FinancialObligation",
+    measured_property="attributedAmount",
+)
+# "germany adaptation disbursements 2022": Jev rated the two flows alike and read
+# "adaptation disbursements" as naming attributed amounts at 0.47, which narrowed its pool
+# to the attributed flow.
+_CF_DISBURSEMENTS_MENU = [_CF_FLOW, _CF_ATTRIBUTED_FLOW, _CF_GRANT_EQUIVALENT]
+_CF_DISBURSEMENTS_JEV = {
+    "m|0": 0.885,
+    "m|1": 0.895,
+    "m|2": 0.66,
+    "mv|attributedAmount": 0.47,
+    "mv|grantEquivalent": 0.38,
+}
+# "climate finance commitments from Japan in 2021": Jev elected the attributed
+# commitments, 0.61 to 0.35.
+_CF_COMMITMENTS_MENU = [_CF_COMMITMENTS, _CF_FLOW, _CF_ATTRIBUTED_COMMITMENTS]
+_CF_COMMITMENTS_JEV = {"m|0": 0.635, "m|1": 0.21, "m|2": 0.495}
+
+
+def _cf_jev(nouls: Mapping[str, float], elect: Mapping[int, float]) -> JevBinder:
+    stored: dict[str, dict] = {k: {"type": "noul", "noul": v} for k, v in nouls.items()}
+    stored["elect"] = {
+        "type": "choice",
+        "probabilities": {f"Shape {i}": p for i, p in elect.items()},
+    }
+    return JevBinder(ask=FakeAsk(stored))
+
+
+def _cf_bind(
+    shapes: list[ShapeDraft],
+    variable: str,
+    binder: GeminiBinder | JevBinder,
+    reply: _UniversalBindOutput | None,
+) -> int:
+    """The menu index the part answers with for `variable` through `_phase_bind`, the
+    Gemini binder answering `reply`."""
+    state = _state(shapes, llm=_StubLLM(reply))
+    state.variable = variable
+    state.binder = binder
+    assert asyncio.run(_phase_bind(state)) is None
+    return _elected_index(state)
+
+
+@pytest.mark.parametrize(
+    ("shapes", "variable", "binder", "reply", "elected"),
+    [
+        pytest.param(
+            _CF_DISBURSEMENTS_MENU,
+            "adaptation disbursements",
+            _cf_jev(_CF_DISBURSEMENTS_JEV, {0: 0.55, 1: 0.445, 2: 0.0}),
+            None,
+            0,
+            id="jev-disbursements-read-as-attributed",
+        ),
+        pytest.param(
+            _CF_COMMITMENTS_MENU,
+            "climate finance commitments",
+            _cf_jev(_CF_COMMITMENTS_JEV, {0: 0.35, 1: 0.01, 2: 0.61}),
+            None,
+            0,
+            id="jev-commitments-electing-attributed",
+        ),
+        pytest.param(
+            _CF_COMMITMENTS_MENU,
+            "climate finance commitments",
+            GeminiBinder(),
+            _reply(2, rated=(2,)),
+            0,
+            id="gemini-commitments-rating-attributed-alone",
+        ),
+        pytest.param(
+            _CF_COMMITMENTS_MENU,
+            "attributed climate finance commitments",
+            _cf_jev(_CF_COMMITMENTS_JEV | {"mv|attributedAmount": 0.1}, {0: 0.9, 2: 0.1}),
+            None,
+            2,
+            id="jev-attributed-commitments-electing-amounts",
+        ),
+        pytest.param(
+            _CF_DISBURSEMENTS_MENU,
+            "attributed aid",
+            _cf_jev(_CF_DISBURSEMENTS_JEV | {"mv|attributedAmount": 0.1}, {0: 0.9, 1: 0.1}),
+            None,
+            1,
+            id="jev-attributed-aid-electing-amounts",
+        ),
+        pytest.param(
+            _CF_DISBURSEMENTS_MENU,
+            "attributed aid",
+            GeminiBinder(),
+            _reply(0, rated=(0,)),
+            1,
+            id="gemini-attributed-aid-rating-amounts-alone",
+        ),
+    ],
+)
+def test_an_unnamed_basis_value_follows_the_declared_preference(
+    shapes: list[ShapeDraft],
+    variable: str,
+    binder: GeminiBinder | JevBinder,
+    reply: _UniversalBindOutput | None,
+    elected: int,
+):
+    """Amounts and attributed amounts of one dataset's flow differ on the basis axis alone,
+    and ``prefer`` lists the amount. A phrase that names no attribution answers with the
+    amounts, whatever the binder scored, read or rated; one naming attributed amounts, by
+    "attributed" or "attributed aid", answers with them, whatever the binder elected."""
+    assert _cf_bind(shapes, variable, binder, reply) == elected

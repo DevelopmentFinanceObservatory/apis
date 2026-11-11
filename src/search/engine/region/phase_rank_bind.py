@@ -35,6 +35,7 @@ from search.engine.bind import (
     rank_elected,
     sole_option_properties,
     split_stray_bindings,
+    stated_reading,
 )
 from search.engine.bind_repair import (
     _label_has_negated_occurrence,
@@ -54,6 +55,7 @@ from search.engine.binders.house_policy import (
     apply_house_policies,
     chooses_on,
     context_of,
+    differ_on_basis,
     shape_facts,
 )
 from search.engine.clients.graph import family_ref
@@ -94,6 +96,8 @@ from search.engine.qualifier_match import (
     governing_connectives,
     joins,
     match_unsupported_qualifier_phrases,
+    measure_value_names,
+    measure_values_named,
     names_plain_name,
     plural_forms,
     read_by_vocabulary,
@@ -3259,13 +3263,7 @@ def _uncarried_measure_words(
     for value in measure_index.values:
         if value.same_reading_as is not None:
             continue
-        reading = measure_index.reading_set(value.dcid)
-        names = [
-            {fold_word(word.text) for word in word_tokens(text)}
-            for row in measure_index.values
-            if row.axis == value.axis and row.dcid in reading
-            for text in (row.label, *row.synonyms)
-        ]
+        names = [set(name) for name in measure_value_names(measure_index, value.dcid)]
         match = QualifierMatch(
             code_system=value.axis,
             code_dcid=value.dcid,
@@ -4578,7 +4576,13 @@ class _HousePolicyStep:
     menu alone: a sibling the policies elect stands as its source, and the step records the
     move (`basis_move`) for the engine to answer on the sibling
     (`_answer_on_basis_sibling`); the choice drops no sibling and states the facts and the
-    policies that set aside menu shapes."""
+    policies that set aside menu shapes.
+
+    A menu shape the binder left out of its pool joins it when it differs from the pick on
+    a basis measure axis alone (`_basis_variants`), so the declared preference on that
+    axis (`house_policy` `declared_basis`) decides between the two whatever the binder
+    scored them. `named_values` are the measure values the part's phrase names
+    (`qualifier_match.measure_values_named`), which that policy reads."""
 
     shapes: Sequence[ShapeDraft]
     frame: Frame
@@ -4589,6 +4593,7 @@ class _HousePolicyStep:
     undirected_axis: RoleAxis | None = None
     siblings: Sequence[ShapeDraft] = ()
     read_sibling: Callable[[ShapeDraft], tuple[_ShapeRead, bool | None]] | None = None
+    named_values: frozenset[str] = frozenset()
     calls: int = 0
     basis_move: _BasisMove | None = None
     sibling_reads: dict[int, tuple[_ShapeRead, bool | None]] = field(
@@ -4610,13 +4615,15 @@ class _HousePolicyStep:
         self.basis_move = None
         pick = pool.measuring[0]
         joined: dict[int, int] = {}
+        variants: tuple[int, ...] = ()
         if holds is not None and drafts is not None:
             joined = self._joining(pool.measuring, holds)
+            variants = self._basis_variants(pool.measuring)
             holds = {
                 **holds,
                 **{
                     k: holds_mentioned_values(self.shapes[pick], self.shape(k), drafts)
-                    for k in joined
+                    for k in (*joined, *variants)
                 },
             }
 
@@ -4625,7 +4632,7 @@ class _HousePolicyStep:
                 return None
             return {**values, **{k: values[i] for k, i in joined.items() if i in values}}
 
-        measuring = (*pool.measuring, *joined)
+        measuring = (*pool.measuring, *variants, *joined)
         choice = apply_house_policies(
             self._facts_of(measuring),
             PolicyPool(measuring=measuring, election=beside(pool.election)),
@@ -4679,6 +4686,23 @@ class _HousePolicyStep:
             joined[k] = source
         return joined
 
+    def _basis_variants(self, pool: Sequence[int]) -> tuple[int, ...]:
+        """The menu shapes outside `pool` that differ from its first index, the pick, on a
+        basis measure axis alone (`house_policy.differ_on_basis`), state its denominator
+        and admit the qualifiers it admits."""
+        pick = pool[0]
+        facts = self._facts_of(range(self.menu))
+        admitted = {(m.code_system, m.code_dcid) for m in self.qualifiers_of(pick)}
+        denominator = stated_reading(self.shapes[pick]).denominator
+        return tuple(
+            k
+            for k in range(self.menu)
+            if k not in pool
+            and differ_on_basis(facts[pick], facts[k]) is not None
+            and stated_reading(self.shapes[k]).denominator == denominator
+            and {(m.code_system, m.code_dcid) for m in self.qualifiers_of(k)} == admitted
+        )
+
     def _family(self, index: int) -> str | None:
         if index not in self._families:
             self._families[index] = _family_ref(self.shapes[index])
@@ -4723,6 +4747,7 @@ class _HousePolicyStep:
                 ),
                 basis_entries=self.basis_entries,
                 undirected_axis=self.undirected_axis,
+                named_values=self.named_values,
             )
         return self._contexts[key]
 
@@ -4853,6 +4878,7 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
         available = None if series is None else has_data_where_asked(state, shape, series=series)
         return _shape_qualifiers(state, shape), available
 
+    variable = _bind_variable(state, menu)
     policies = _HousePolicyStep(
         shapes=state.capped_shapes,
         frame=state.frame,
@@ -4863,9 +4889,10 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
         undirected_axis=state.undirected_axis,
         siblings=state.basis_siblings,
         read_sibling=read_sibling,
+        named_values=measure_values_named(variable, get_measure_index()),
     )
     request = BindRequest(
-        variable=_bind_variable(state, menu),
+        variable=variable,
         shapes=menu,
         admitted_qualifiers=admitted_qualifiers,
         admitted_ties=admitted_ties,

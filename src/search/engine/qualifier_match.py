@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from itertools import pairwise
 from typing import Literal, Protocol
 
-from code_index.query import CodeIndex
+from code_index.query import CodeIndex, fold_word
 from code_index.tokens import (
     Token,
     TokenLookup,
@@ -519,6 +519,48 @@ def _measure_lookup(measure_index: MeasureIndex | None) -> TokenLookup[MeasureVa
         if row.matchable
         for text in (row.label, *row.synonyms)
     )
+
+
+def measure_value_names(measure_index: MeasureIndex, dcid: str) -> list[tuple[str, ...]]:
+    """The folded words (`fold_word`) of each name of `dcid`'s reading, in order: the label
+    and each synonym of every value on its axis that spells the reading
+    (`MeasureIndex.reading_set`)."""
+    reading = measure_index.reading_set(dcid)
+    axes = {row.axis for row in measure_index.values if row.dcid == dcid}
+    return [
+        tuple(fold_word(word.text) for word in word_tokens(text))
+        for row in measure_index.values
+        if row.axis in axes and row.dcid in reading
+        for text in (row.label, *row.synonyms)
+    ]
+
+
+def measure_values_named(text: str, measure_index: MeasureIndex) -> frozenset[str]:
+    """The canonical matchable measure values `text` names: a value `text` holds a name of
+    (`measure_value_names`) as a run of its words, or one a content word of `text` names,
+    a word every name of the value holds. "attributed climate finance" names
+    `attributedAmount`, whose names are "attributed amount", "attributed aid" and
+    "attributed to donors"; "climate finance" names none."""
+    tokens = word_tokens(text)
+    words = [fold_word(token.text) for token in tokens]
+    content = {
+        fold_word(token.text) for token in tokens if token.text.casefold() not in FUNCTION_WORDS
+    }
+    named: set[str] = set()
+    for value in measure_index.values:
+        if value.same_reading_as is not None or not value.matchable:
+            continue
+        names = measure_value_names(measure_index, value.dcid)
+        shared = frozenset.intersection(*(frozenset(name) for name in names))
+        if not content.isdisjoint(shared) or any(_holds_run(words, name) for name in names):
+            named.add(value.dcid)
+    return frozenset(named)
+
+
+def _holds_run(words: Sequence[str], run: Sequence[str]) -> bool:
+    """Whether `run` occurs in `words` as consecutive words."""
+    n = len(run)
+    return n > 0 and any(tuple(words[i : i + n]) == tuple(run) for i in range(len(words) - n + 1))
 
 
 # Each index's longest code label or synonym in words, by index object id. A weakref
