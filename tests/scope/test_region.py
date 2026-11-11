@@ -67,6 +67,7 @@ def _facts(
         index=get_index(),
         coverage=empty_coverage_snapshot(),
         part=PartFacts(
+            deflated_by=None,
             operations=operations,
             entity_groups={} if group is None else {"destination": group},
             datasets=(_CRS,),
@@ -264,6 +265,7 @@ def test_a_region_the_oecd_counts_otherwise_has_no_axis_off_dac_data():
         index=get_index(),
         coverage=empty_coverage_snapshot(),
         part=PartFacts(
+            deflated_by=None,
             entity_groups={"destination": EntityGroup(ref=row.region, label=row.name)},
             datasets=("provenance/WorldBankWDI",),
         ),

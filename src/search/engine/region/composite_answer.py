@@ -103,7 +103,7 @@ from search.scope.composite import (
     served_components,
 )
 from search.scope.region import region_groups
-from search.scope.tables import ScopeFacts
+from search.scope.tables import PartFacts, ScopeFacts
 from series_coverage.shared import CoverageSnapshot
 
 if TYPE_CHECKING:
@@ -179,7 +179,8 @@ def composite_served(identity: BaseIdentity, *, reads: ComponentReads) -> list[S
     own, so no source scope a part's own reads ran under narrows them. The answer the
     composite is restated as (`assemble_composite`) and its preview read these same
     components."""
-    facts = ScopeFacts(index=get_index(), coverage=reads.coverage)
+    # The components' years are read with no option labelled.
+    facts = ScopeFacts(index=get_index(), coverage=reads.coverage, part=PartFacts(deflated_by=None))
     document = identity.model_dump(mode="json", exclude_none=True)
     with bound_catalogue(reads.catalogue):
         return served_components(document, facts=facts)
@@ -569,7 +570,10 @@ def as_merged_composite(
             identity,
             spec_id,
             served=served,
-            facts=ScopeFacts(index=get_index(), coverage=reads.coverage),
+            # The restated answer's headline, members and download label no option.
+            facts=ScopeFacts(
+                index=get_index(), coverage=reads.coverage, part=PartFacts(deflated_by=None)
+            ),
         )
     warnings = tuple(
         warning.model_copy(update={"spec_id": spec_id})

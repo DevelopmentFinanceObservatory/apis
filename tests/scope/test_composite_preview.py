@@ -25,7 +25,7 @@ from search.scope.composite import (
     compose_observations,
     composite_download,
 )
-from search.scope.tables import ScopeFacts
+from search.scope.tables import PartFacts, ScopeFacts
 from series_coverage.schema import RoleNames
 from tests.code_index.aid_identity import education_aid_identity
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
@@ -177,7 +177,11 @@ def _download(
     return composite_download(
         components,
         BaseIdentity.model_validate(education_aid_identity(source=_CRS_INCLUSIVE.provenance)),
-        facts=ScopeFacts(index=get_index(), coverage=FakeCoverageService(coverage).snapshot()),
+        facts=ScopeFacts(
+            index=get_index(),
+            coverage=FakeCoverageService(coverage).snapshot(),
+            part=PartFacts(deflated_by=None),
+        ),
     )
 
 

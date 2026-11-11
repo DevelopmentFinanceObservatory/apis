@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import cast
 
 from code_index.query import CodeIndex, IndexFamily
+from materialise.recipe_bodies import DeflationBasis
 from search.models import EntityGroup, Operation, Option, ScopeAxis
 from search.scope.edits import AXIS_BINDING, PUBLISHED_BINDING, ScopeTableError
 from series_coverage.shared import CoverageSnapshot
@@ -99,9 +100,15 @@ class CompileFacts:
 class PartFacts:
     """What the part asks beside its identity, which a rule reads on both doors alike: its
     operations, the groups its roles stand for by role key (`ResolvedSpec.entity_groups`,
-    or those a dataset_resubmit posts), and the datasets its identity is served from, empty
-    when unknown."""
+    or those a dataset_resubmit posts), the datasets its identity is served from, empty
+    when unknown, and whose prices its answer's constant-price conversion deflates by.
 
+    `deflated_by` is the answer's `UnitConversion.deflation_basis`
+    (`search.engine.unit.conversion`), the one statement of it the byline and the
+    measure-basis option labels read. A caller with no answer yet, or one that labels no
+    option, passes `None`, and the labels name no basis."""
+
+    deflated_by: DeflationBasis | None
     operations: tuple[Operation, ...] = ()
     entity_groups: Mapping[str, EntityGroup] = field(default_factory=dict)
     datasets: tuple[str, ...] = ()
@@ -126,7 +133,7 @@ class ScopeFacts:
 
     index: CodeIndex
     coverage: CoverageSnapshot
-    part: PartFacts = field(default_factory=PartFacts)
+    part: PartFacts
     _scans: dict[tuple[int, tuple[str, ...]], tuple[IndexFamily, FamilyValues]] = field(
         default_factory=dict, init=False, compare=False, repr=False
     )

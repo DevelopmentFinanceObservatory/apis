@@ -18,7 +18,7 @@ from code_index.shared import get_index
 from datasets_api.config import DatasetsBuildSettings
 from search.models import BaseIdentity
 from search.scope.composite import composite_download, served_components
-from search.scope.tables import ScopeFacts
+from search.scope.tables import PartFacts, ScopeFacts
 from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 
@@ -179,7 +179,9 @@ def test_the_in_memory_count_is_the_minted_frame_s(identity: dict, populated: _P
         artifact_store=FakeArtifactStore(),
         settings=DatasetsBuildSettings.from_env(),
     )
-    facts = ScopeFacts(index=get_index(), coverage=coverage.snapshot())
+    facts = ScopeFacts(
+        index=get_index(), coverage=coverage.snapshot(), part=PartFacts(deflated_by=None)
+    )
 
     minted = _mint(client, identity=identity)
     counted = composite_download(
@@ -215,7 +217,9 @@ def test_a_member_the_snapshot_does_not_hold_leaves_the_counts_null_and_keeps_th
     identity = _identity()
 
     def count(held: _Populated):
-        facts = ScopeFacts(index=get_index(), coverage=_coverage(held).snapshot())
+        facts = ScopeFacts(
+            index=get_index(), coverage=_coverage(held).snapshot(), part=PartFacts(deflated_by=None)
+        )
         return composite_download(
             served_components(identity, facts=facts),
             BaseIdentity.model_validate(identity),
@@ -247,7 +251,9 @@ def test_the_snapshot_settles_a_component_s_years_only_while_it_holds_every_memb
     partial = {dcid: held for dcid, held in populated.items() if dcid != missing}
 
     def settled(held: _Populated) -> dict[str, bool]:
-        facts = ScopeFacts(index=get_index(), coverage=_coverage(held).snapshot())
+        facts = ScopeFacts(
+            index=get_index(), coverage=_coverage(held).snapshot(), part=PartFacts(deflated_by=None)
+        )
         return {
             item.component.role: item.years.settled
             for item in served_components(_identity(), facts=facts)

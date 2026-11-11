@@ -91,7 +91,11 @@ from search.engine.region.requirements import (
     settle_flagged,
 )
 from search.engine.region.result import RegionResult
-from search.engine.region.scope_decision import decide_spec_scope, guarded_scope_decision
+from search.engine.region.scope_decision import (
+    decide_spec_scope,
+    finished_scope_decision,
+    guarded_scope_decision,
+)
 from search.engine.region.state import ResolveState, raised_facts
 from search.engine.region.un_system import member_labels
 from search.engine.region.whole_totals import whole_total_warnings
@@ -570,9 +574,10 @@ async def _assemble_definite(
         deadline=state.deadline,
         coverage=state.coverage,
     )
-    # The scope is decided from the survivor's Spec beside the reads below and before its
-    # preview launches, so an answer restated as a composite reads no preview of the one
-    # table it resolved. `pipeline._with_scope_choices` states the decision.
+    # Whether the answer is a composite is decided from the survivor's Spec beside the reads
+    # below, so a streamed answer restated as a composite reads no eager preview of the one
+    # table it resolved. The scope the answer states is decided again from the finished Spec
+    # (`finished_scope_decision`), and `pipeline._with_scope_choices` states that one.
     _decision_task = asyncio.create_task(
         asyncio.to_thread(
             guarded_scope_decision,
@@ -639,14 +644,21 @@ async def _assemble_definite(
             _relaunch_place_options_bound(_survivor_spec) if _stream_place_options else None
         )
         _survivor_spec = await with_related(_survivor_spec, _related_read)
+        # Decided before the observation task launches, since no await may follow it.
+        state.scope_decision = await asyncio.to_thread(
+            finished_scope_decision,
+            _survivor_spec,
+            selection=state.scope_selection,
+            operations=state.operations,
+            coverage=state.coverage,
+        )
         # No await follows the observation task's launch. Passing it live to `RegionResult`
         # keeps it reachable if cancellation follows.
         _obs_task: asyncio.Task[_ObsProbeResult] | None = None
         _obs_relaunch: Callable[[str], asyncio.Task[_ObsProbeResult]] | None = None
         # A composite's preview reads each component once the answer is restated
         # (`pipeline._with_composite_preview`).
-        state.scope_decision = await _decision_task
-        composite = state.scope_decision.composite
+        composite = (await _decision_task).composite
         if not composite and state.stream_observations:
             _obs_relaunch = _reader.relaunch(member_labels((_survivor_spec,)))
             _obs_task = _obs_relaunch(_survivor_spec.spec_id)

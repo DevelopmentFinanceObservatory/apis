@@ -54,7 +54,7 @@ from search.scope.edits import ScopeTableError, apply_binding
 from search.scope.provider import _settled, inclusive_reach, provider_rule, settle_provider
 from search.scope.rules import AXIS_RULES
 from search.scope.state import AxisRecord, ScopeState
-from search.scope.tables import ScopeFacts
+from search.scope.tables import PartFacts, ScopeFacts
 from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from tests.engine._fake_coverage import (
     FakeCoverageService,
@@ -741,7 +741,11 @@ def _facts(rows: Sequence[tuple] | None = None) -> ScopeFacts:
     `_coverage_rows(_ALL_YEARS)`'s."""
     default, extra = _coverage_rows(_ALL_YEARS)
     index = build_coverage_index(list(rows) if rows is not None else default, **extra)
-    return ScopeFacts(index=get_index(), coverage=FakeCoverageService(index).snapshot())
+    return ScopeFacts(
+        index=get_index(),
+        coverage=FakeCoverageService(index).snapshot(),
+        part=PartFacts(deflated_by=None),
+    )
 
 
 def _total() -> ScopeState:
@@ -951,6 +955,7 @@ def test_the_inclusive_scope_serves_the_years_the_imputed_table_covers_not_those
     facts = ScopeFacts(
         index=get_index(),
         coverage=FakeCoverageService(build_coverage_index(rows, **extra)).snapshot(),
+        part=PartFacts(deflated_by=None),
     )
     identity = _bilateral_identity()
 
@@ -1065,7 +1070,9 @@ def test_the_contributions_scope_leaves_a_dac1_totals_spec_id_as_it_is(monkeypat
     spec = _ask_dac1(monkeypatch, cell)
     scope = _scope(spec)
     choice = _provider(spec)
-    facts = ScopeFacts(index=get_index(), coverage=empty_coverage_snapshot())
+    facts = ScopeFacts(
+        index=get_index(), coverage=empty_coverage_snapshot(), part=PartFacts(deflated_by=None)
+    )
     without_provider = {axis: rule for axis, rule in AXIS_RULES.items() if axis != "provider"}
 
     with_rule = build_part_scope(base=scope.base.identity, entries=[], records={}, facts=facts)
@@ -1312,7 +1319,11 @@ def _dac1_facts(*codes: str, extra: Sequence[tuple] = ()) -> ScopeFacts:
         role_names=dict.fromkeys(members, RoleNames(donor="financingProvider", recipient=None)),
         facet_metadata={"dac1": FacetMetadata(provenance_id=_DAC1, unit="USD")},
     )
-    return ScopeFacts(index=get_index(), coverage=FakeCoverageService(index).snapshot())
+    return ScopeFacts(
+        index=get_index(),
+        coverage=FakeCoverageService(index).snapshot(),
+        part=PartFacts(deflated_by=None),
+    )
 
 
 _EVERY_DAC1_SCOPE = ["bilateral", "contributions", "multilateral"]
@@ -1692,7 +1703,11 @@ def test_two_switches_whose_options_conflict_refuse_the_conflict_whatever_each_e
     rows += [(dcid, "crs", _USA, _KEN, list(_BILATERAL_YEARS)) for dcid in net]
     extra["role_names"] |= dict.fromkeys(net, _FLOW)
     index = build_coverage_index(rows, **extra)
-    facts = ScopeFacts(index=get_index(), coverage=FakeCoverageService(index).snapshot())
+    facts = ScopeFacts(
+        index=get_index(),
+        coverage=FakeCoverageService(index).snapshot(),
+        part=PartFacts(deflated_by=None),
+    )
     entries = [switch("provider:inclusive"), switch("measure_basis:net")]
 
     compiled = build_part_scope(
@@ -1982,7 +1997,9 @@ def test_a_carried_inclusive_scope_on_dac1_bilateral_oda_is_dropped_with_the_rea
     """DAC1's bilateral ODA is a total of another table than the CRS, so a carried
     inclusive scope is not offered there. The part keeps bilateral ODA under its own rule and
     reports the entry with the reason."""
-    facts = ScopeFacts(index=get_index(), coverage=empty_coverage_snapshot())
+    facts = ScopeFacts(
+        index=get_index(), coverage=empty_coverage_snapshot(), part=PartFacts(deflated_by=None)
+    )
     identity = _dac1_identity(_DAC1_BILATERAL_ODA, (_USA,))
     entry = carried("provider:inclusive")
 
@@ -2217,7 +2234,11 @@ def _dac2a_facts(imputed_years: Sequence[int], *, donor: str = _USA) -> ScopeFac
         role_names=dict.fromkeys(members, _FLOW),
         facet_metadata={"dac2a": FacetMetadata(provenance_id=_DAC2A, unit="USD")},
     )
-    return ScopeFacts(index=get_index(), coverage=FakeCoverageService(index).snapshot())
+    return ScopeFacts(
+        index=get_index(),
+        coverage=FakeCoverageService(index).snapshot(),
+        part=PartFacts(deflated_by=None),
+    )
 
 
 @pytest.mark.parametrize(

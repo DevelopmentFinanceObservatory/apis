@@ -1,20 +1,23 @@
-"""The scope a definite answer states, decided from its identity and the part's facts
-before its preview launches.
+"""The scope a definite answer states, decided from its identity and the part's facts.
 
-The answer phase decides it once the answer's identity is known
-(`spec_build.answer_identity`), and the candidates path from its survivor's Spec, so an
-answer the binders settle as a composite reads no preview of the one table it resolved.
-`pipeline._with_scope_choices` states the decision on the finished answer, and decides it
-there for an answer neither path decided."""
+The answer phase and the candidates path decide early whether the answer is a composite,
+from its identity before its Spec is built or from its survivor's Spec, so an answer the
+binders settle as a composite reads no preview of the one table it resolved. That early
+decision states no basis in its labels (`PartFacts.deflated_by` is `None`) and is read for
+`ScopeDecision.composite` alone. Every scope an answer states is decided again from the
+finished Spec (`decide_spec_scope`), whose facts carry the deflation basis its conversion
+states, and `pipeline._with_scope_choices` states it."""
 
 from __future__ import annotations
 
 import dataclasses
+import functools
 import logging
 from collections.abc import Callable, Iterable, Mapping, Sequence
 
 from code_index.composites import CompositeNotServable, composite_ref
 from code_index.shared import get_index
+from materialise.recipe_bodies import DeflationBasis
 from search.engine.degraded_reads import LOST_READ_ERRORS, note_degraded_read
 from search.engine.departures import datasets_served
 from search.models import (
@@ -59,11 +62,13 @@ def answer_scope_facts(
     sources: Iterable[ProvenanceRef],
     operations: Sequence[Operation],
     coverage: CoverageSnapshot,
+    deflated_by: DeflationBasis | None,
 ) -> ScopeFacts:
     """What the axis rules read of the part an answer stating `entity_groups`, `facets`
     and `sources` answers: the bound release's code index, `coverage`, the part's
-    `operations`, the groups its roles stand for and the datasets it is served from
-    (`departures.datasets_served`)."""
+    `operations`, the groups its roles stand for, the datasets it is served from
+    (`departures.datasets_served`) and whose prices its conversion deflates by
+    (`deflated_by`, `PartFacts.deflated_by`)."""
     return ScopeFacts(
         index=get_index(),
         coverage=coverage,
@@ -71,6 +76,7 @@ def answer_scope_facts(
             operations=tuple(operations),
             entity_groups=entity_groups,
             datasets=tuple(sorted(datasets_served(facets, sources))),
+            deflated_by=deflated_by,
         ),
     )
 
@@ -78,13 +84,16 @@ def answer_scope_facts(
 def scope_facts(
     spec: Spec, *, operations: Sequence[Operation], coverage: CoverageSnapshot
 ) -> ScopeFacts:
-    """What the axis rules read of the part `spec` answers (`answer_scope_facts`)."""
+    """What the axis rules read of the part `spec` answers (`answer_scope_facts`), with the
+    deflation basis its conversion states (`UnitConversion.deflation_basis`)."""
+    conversion = spec.resolved.unit_conversion
     return answer_scope_facts(
         entity_groups=spec.resolved.entity_groups or {},
         facets=spec.resolved.facets,
         sources=spec.resolved.trace.resolved_sources,
         operations=operations,
         coverage=coverage,
+        deflated_by=None if conversion is None else conversion.deflation_basis,
     )
 
 
@@ -102,6 +111,26 @@ def decide_spec_scope(
         spec.definition.identity,
         selection=selection,
         facts=scope_facts(spec, operations=operations, coverage=coverage),
+    )
+
+
+def finished_scope_decision(
+    spec: Spec,
+    *,
+    selection: ScopeState,
+    operations: Sequence[Operation],
+    coverage: CoverageSnapshot,
+) -> ScopeDecision:
+    """The scope the finished answer `spec` states (`decide_spec_scope`), or none where the
+    decision raises (`guarded_scope_decision`). Its measure-basis labels name the deflation
+    basis `spec`'s conversion states."""
+    return guarded_scope_decision(
+        spec.spec_id,
+        functools.partial(
+            decide_spec_scope, spec, selection=selection, operations=operations, coverage=coverage
+        ),
+        operations=operations,
+        coverage=coverage,
     )
 
 
@@ -141,7 +170,12 @@ def guarded_scope_decision(
         )
         note_degraded_read("scope decision")
     facts = answer_scope_facts(
-        entity_groups={}, facets={}, sources=(), operations=operations, coverage=coverage
+        entity_groups={},
+        facets={},
+        sources=(),
+        operations=operations,
+        coverage=coverage,
+        deflated_by=None,
     )
     return ScopeDecision(spec_id=spec_id, facts=facts, scope=None, composite=False)
 

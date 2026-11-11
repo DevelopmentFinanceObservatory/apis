@@ -28,13 +28,7 @@ from typing import Literal
 
 from code_index.composites import provenance_datasets
 from code_index.labels import PRICES_BY_QUALIFIER
-from code_index.members import (
-    FamilyQuery,
-    SourceNotInFamily,
-    family_for_five_tuple,
-    identity_family_query,
-    query_family,
-)
+from code_index.members import identity_family_query, query_family
 from code_index.query import CodeIndex
 from code_index.scope_conventions import (
     BASIS_MEASURES,
@@ -51,8 +45,6 @@ from code_index.scope_conventions import (
 )
 from code_index.shared import per_index
 from materialise.recipe_bodies import DeflationBasis
-from materialise.recipes import deflation_basis
-from materialise.roles import declared_roles
 from search.models import (
     BaseIdentity,
     Entry,
@@ -459,54 +451,15 @@ def basis_dataset(identity: BaseIdentity, index: CodeIndex) -> str | None:
     it, else None: `identity` holds a declared basis (`held_measure`), the conventions read
     its shape (`identity_part_shape`), and its family is published by a dataset the
     conventions read (`CONVENTION_DATASETS`)."""
-    found = _basis_family(identity, index)
-    return found[0] if found is not None else None
-
-
-def _basis_family(identity: BaseIdentity, index: CodeIndex) -> tuple[str, FamilyQuery] | None:
-    """`basis_dataset` with the query of the family the identity reads, None where it gives
-    None."""
     if held_measure(identity) is None or identity_part_shape(identity, index) is None:
         return None
     document = table_document(identity, index)
     if document is None:
         return None
-    query = identity_family_query(index, document)
-    family = query_family(index, query)
+    family = query_family(index, identity_family_query(index, document))
     if family is None:
         return None
-    dataset = next((dataset for dataset in family.datasets if dataset in CONVENTION_DATASETS), None)
-    return None if dataset is None else (dataset, query)
-
-
-def _deflated_by(
-    identity: BaseIdentity, query: FamilyQuery, facts: ScopeFacts
-) -> DeflationBasis | None:
-    """Whose prices deflate `identity`'s conversion to constant prices, as an answer's
-    conversion states it (`search.engine.unit.conversion`): under the one recipe the datasets
-    the part is served from name in the bound conversion catalogue
-    (`conversion_catalogue.served_recipe`), from the roles the identity's served members
-    declare (`materialise.recipes.deflation_basis`). The served members are the rows of the
-    dataset the index elects for `query` (`code_index.members.family_for_five_tuple`), and
-    that dataset serves the part when its facts name none (`PartFacts.datasets`). None
-    without a constant-price unit request, a bound catalogue, one recipe or one basis."""
-    unit = (identity.facets or {}).get("unit")
-    if not (isinstance(unit, IdentityFacetValueRequest) and unit.request.prices == "constant"):
-        return None
-    try:
-        served = family_for_five_tuple(facts.index, query)
-    except SourceNotInFamily:
-        return None
-    datasets = facts.part.datasets or (() if served.provenance is None else (served.provenance,))
-    # The conversion catalogue imports the graph client, which imports this module.
-    from search.engine.unit.conversion_catalogue import served_recipe
-
-    recipe = served_recipe(datasets)
-    if recipe is None:
-        return None
-    return deflation_basis(
-        recipe, role_sets=(declared_roles(row.observation_properties) for row in served.rows)
-    )
+    return next((dataset for dataset in family.datasets if dataset in CONVENTION_DATASETS), None)
 
 
 def offers_basis_of(scope: PartScope, identity: BaseIdentity) -> bool:
@@ -553,20 +506,19 @@ def basis_rule(
     `option_not_covered` when the dataset publishes such a member with no series there, and
     `basis_not_published` otherwise. The headline is available when both bases it splices
     are (`_headline_availability`). A composite base is read through the identity its option was
-    set on (`table_document`)."""
-    found = _basis_family(base, facts.index)
+    set on (`table_document`). A label at constant prices names whose prices deflate the part
+    as its answer's conversion states it (`PartFacts.deflated_by`)."""
+    dataset = basis_dataset(base, facts.index)
     held_id = held_option(base)
-    if found is None or held_id is None:
+    if dataset is None or held_id is None:
         return None
-    dataset, query = found
-    deflated_by = _deflated_by(base, query, facts)
     headline = _offers_headline(base, dataset)
     measures = [basis_binding(row) for row in BASIS_MEASURES]
     bindings = [*measures, *((HEADLINE_BINDING,) if headline else ())]
     options = [
         Option(
             option_id=(option_id := measure_basis_option_id(row.basis)),
-            label=basis_label(row, base, deflated_by=deflated_by),
+            label=basis_label(row, base, deflated_by=facts.part.deflated_by),
             binding=binding,
             availability=(
                 OptionAvailability(status="available")

@@ -217,6 +217,8 @@ def _compiled_scope(
                 operations=tuple(entry.operations),
                 entity_groups=groups,
                 datasets=() if dataset is None else (dataset,),
+                # The entry compile states option ids, and no answer states a conversion yet.
+                deflated_by=None,
             ),
         ),
     )
@@ -441,7 +443,10 @@ async def handle(
         started = now_ms()
         entry, scope = _served_entry(entry, index=index, coverage=params.coverage)
         served_entry_ms = now_ms() - started
-        facts = ScopeFacts(index=get_index(), coverage=params.coverage)
+        # The window election labels no option, so the part states no deflation basis.
+        facts = ScopeFacts(
+            index=get_index(), coverage=params.coverage, part=PartFacts(deflated_by=None)
+        )
         # A composite posted with no scope entries reads as a compiled one does.
         identity = (
             elect_latest_window(entry.identity, facts) if scope is None else scope.compiled.identity

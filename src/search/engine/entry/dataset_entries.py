@@ -51,7 +51,7 @@ from search.models import (
     Warning,
 )
 from search.scope.provider import without_uncounted_inclusive
-from search.scope.tables import ScopeFacts
+from search.scope.tables import PartFacts, ScopeFacts
 from series_coverage.shared import CoverageSnapshot
 
 
@@ -66,9 +66,9 @@ def served_posted_identity(
     scope a carried entry (`scope.provider.without_uncounted_inclusive`). Reads coverage
     and scans families, so callers run it off the event loop."""
     bound = with_containing_total(identity, coverage=coverage.index)
-    return without_uncounted_inclusive(
-        bound, entries, facts=ScopeFacts(index=get_index(), coverage=coverage)
-    )
+    # The provider check labels no option, so the part states no deflation basis.
+    facts = ScopeFacts(index=get_index(), coverage=coverage, part=PartFacts(deflated_by=None))
+    return without_uncounted_inclusive(bound, entries, facts=facts)
 
 
 def spec_resubmit_input_for_identity(entry: ResubmitIdentityEntry) -> ResubmitIdentityPayload:

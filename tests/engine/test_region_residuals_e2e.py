@@ -383,7 +383,8 @@ def test_a_switch_between_a_regions_two_readings_names_the_group_each_reads(
 
 def test_the_scope_builds_off_the_event_loop(monkeypatch: pytest.MonkeyPatch) -> None:
     """A search and a switch build their scope in a worker thread, so a scope build's
-    coverage reads never block the event loop."""
+    coverage reads never block the event loop. The search builds it twice: whether the answer
+    is a composite before its preview, then the scope its finished answer states."""
     on_loop: list[bool] = []
 
     def recording(build):
@@ -425,4 +426,4 @@ def test_the_scope_builds_off_the_event_loop(monkeypatch: pytest.MonkeyPatch) ->
         )
     )
 
-    assert on_loop == [False, False]
+    assert on_loop == [False, False, False]

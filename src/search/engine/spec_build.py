@@ -1264,7 +1264,7 @@ def answer_identity(
 ) -> AnswerIdentity:
     """The identity `build_spec` mints from these of its arguments, and what it states
     beside it (`AnswerIdentity`). The answer phase reads it before the options are counted,
-    so the scope an answer states can be decided before its preview launches."""
+    so whether the answer is a composite can be decided before its preview launches."""
     if pin_served_provenance and (served := served_provenances(plan)):
         slots = with_served_provenance(slots, served)
         if facets is not None and (provenance_facet := facets.get("provenance")) is not None:

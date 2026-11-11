@@ -17,6 +17,7 @@ from __future__ import annotations
 import dataclasses
 import re
 from collections.abc import Sequence
+from types import SimpleNamespace
 from typing import NamedTuple
 
 import pytest
@@ -29,9 +30,16 @@ from search.engine.bind import SlotBindingDraft
 from search.engine.binders import JevBinder, StatedWordsRequest
 from search.engine.departures import served_datasets
 from search.engine.quantity_read import QuantityOutput
+from search.engine.region.scope_decision import finished_scope_decision
+from search.engine.retrieval.facts import FiveTuple
 from search.engine.spec_id import identity_spec_id
 from search.engine.stated_words_read import StatedWordsOutput
-from search.engine.unit.conversion_catalogue import ConversionCatalogue, bound_conversion_catalogue
+from search.engine.unit.conversion import with_unit_conversion
+from search.engine.unit.conversion_catalogue import (
+    ConversionCatalogue,
+    RecipeTables,
+    bound_conversion_catalogue,
+)
 from search.models import (
     BaseIdentity,
     ChoiceOrigin,
@@ -46,12 +54,15 @@ from search.models import (
     ParsedEntity,
     ParsedInput,
     ParsedPart,
+    ProvenanceRef,
     Resolution,
+    ResolvedFacet,
     ResolveRequest,
     ResubmitIdentityEntry,
     SourceMention,
     Spec,
 )
+from search.render.plan import render_sentence_plan
 from search.scope.basis import (
     applicable_convention,
     basis_binding,
@@ -61,6 +72,7 @@ from search.scope.basis import (
     window_class,
 )
 from search.scope.edits import apply_binding
+from search.scope.state import ScopeState
 from search.scope.tables import PartFacts, ScopeFacts
 from search.scope.vocabulary import measure_basis_option_id
 from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
@@ -72,6 +84,7 @@ from tests.engine._quantity import NO_QUANTITY, NO_RATING
 from tests.fixtures import FakeGraph
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue, provenance_row
 from tests.scope.test_option_labels import _DAC1_TOTAL
+from unit_words.price_basis import deflation_phrase
 
 _USA = "country/USA"
 _KEN = "country/KEN"
@@ -959,51 +972,33 @@ def test_a_basis_label_states_the_prices_and_currency_the_part_is_served_in(
 
 
 _CONSTANT_NGN = {"currency": "NGN", "prices": "constant", "base_year": 2024}
-# A dataset the part is served from beside DAC1, naming another recipe.
-_IMF_SERVED = "imf_served"
 
 
 @pytest.mark.parametrize(
-    ("recipes", "datasets", "unit_request", "expected"),
+    ("deflated_by", "unit_request", "expected"),
     [
         pytest.param(
-            {DAC1: "ConversionRecipeDAC"},
-            (),
+            "donor",
             _CONSTANT_NGN,
             "net disbursements, constant 2024 NGN, donor prices",
-            id="constant-names-the-donor",
+            id="constant-names-the-basis",
         ),
         pytest.param(
-            {DAC1: "ConversionRecipeDAC"},
-            (),
+            "donor",
             {"currency": "NGN", "prices": "current"},
             "net disbursements, current NGN",
             id="current-deflates-by-no-one",
         ),
         pytest.param(
-            {},
-            (),
-            _CONSTANT_NGN,
-            "net disbursements, constant 2024 NGN",
-            id="no-recipe-names-no-one",
-        ),
-        # The answer's conversion takes one recipe over every dataset the part is served
-        # from, and two recipes give it none.
-        pytest.param(
-            {DAC1: "ConversionRecipeDAC", _IMF_SERVED: "ConversionRecipeIMF"},
-            (DAC1, _IMF_SERVED),
-            _CONSTANT_NGN,
-            "net disbursements, constant 2024 NGN",
-            id="datasets-naming-two-recipes-name-no-one",
+            None, _CONSTANT_NGN, "net disbursements, constant 2024 NGN", id="no-basis-stated"
         ),
     ],
 )
-def test_a_basis_option_names_whose_prices_deflate_the_part(
-    recipes: dict[str, str], datasets: tuple[str, ...], unit_request: dict, expected: str
+def test_a_basis_option_names_the_basis_the_parts_facts_state(
+    deflated_by: str | None, unit_request: dict, expected: str
 ):
-    """The one recipe the datasets serving the part name in the bound catalogue, DAC1's
-    where the part's facts name none, deflates by the donor the served members declare, as
-    the conversion does."""
+    """The label names whose prices deflate the part as its facts carry it from the answer's
+    conversion (`PartFacts.deflated_by`), and only at constant prices."""
     identity = _DAC1_TOTAL.model_copy(
         update={
             "facets": {
@@ -1013,19 +1008,113 @@ def test_a_basis_option_names_whose_prices_deflate_the_part(
             }
         }
     )
-    catalogue = ConversionCatalogue(
-        recipes=recipes, tables={}, national_currencies={}, default_base_year=2024
-    )
     facts = ScopeFacts(
-        index=get_index(), coverage=empty_coverage_snapshot(), part=PartFacts(datasets=datasets)
+        index=get_index(),
+        coverage=empty_coverage_snapshot(),
+        part=PartFacts(deflated_by=deflated_by),
     )
 
-    with bound_conversion_catalogue(catalogue):
-        table = basis_rule(identity, None, facts)
+    table = basis_rule(identity, None, facts)
 
     assert table is not None
     labels = {option.option_id: option.label for option in table.options}
     assert labels[measure_basis_option_id("net")] == expected
+
+
+def _tables() -> RecipeTables:
+    """Naira and dollar rates and the DAC countries' deflator over 2000 to 2026."""
+    years = frozenset(range(2000, 2027))
+    return RecipeTables(
+        rate_years={"NGN": years, "USD": years},
+        deflator_years={"DACCountriesTotal": years},
+        base_year_min=2000,
+        base_year_max=2025,
+    )
+
+
+# A dataset the part is served from beside DAC1, naming another recipe.
+_IMF_SERVED = "provenance/IMF_WEO"
+
+
+def _constant_ngn_answer(datasets: tuple[str, ...]) -> Spec:
+    """The 2016 United States donor total, a DAC1 answer counted on net flows in US dollars,
+    served from `datasets` and offered conversion under the bound catalogue's recipes for
+    them by members declaring the donor role, then stating a request for constant 2024
+    naira."""
+    spec = _ask("aid", time="2016", recipient=False)
+    facets = {
+        **spec.resolved.facets,
+        "unit": ResolvedFacet(basis="fallback", ref="CurrencyUSD", currency="USD"),
+    }
+    sources = [ProvenanceRef(ref=dataset, label=dataset) for dataset in datasets]
+    resolved = spec.resolved.model_copy(
+        update={
+            "facets": {key: value for key, value in facets.items() if key != "provenance"},
+            "trace": spec.resolved.trace.model_copy(update={"resolved_sources": sources}),
+            # The conversion is stated afresh below, from these datasets.
+            "unit_conversion": None,
+        }
+    )
+    five = FiveTuple("FinancialFlow", "amount", "measuredValue", "Nominal", None)
+    member = SimpleNamespace(
+        read_five_tuple=lambda: five, read_declared_roles=lambda: ("financingProvider",)
+    )
+    spec = with_unit_conversion(
+        spec.model_copy(update={"resolved": resolved}), members=[member], plans=()
+    )
+    unit = IdentityFacetValueRequest.model_validate({"state": "value", "request": _CONSTANT_NGN})
+    identity = spec.definition.identity
+    identity = identity.model_copy(update={"facets": {**(identity.facets or {}), "unit": unit}})
+    return spec.model_copy(
+        update={"definition": spec.definition.model_copy(update={"identity": identity})}
+    )
+
+
+@pytest.mark.parametrize(
+    ("recipes", "datasets", "deflated_by"),
+    [
+        pytest.param({DAC1: "ConversionRecipeDAC"}, (DAC1,), "donor", id="one-recipe"),
+        # The answer's conversion takes one recipe over every dataset the part is served
+        # from, and two recipes give it none, so neither the label nor the byline names one.
+        pytest.param(
+            {DAC1: "ConversionRecipeDAC", _IMF_SERVED: "ConversionRecipeIMF"},
+            (DAC1, _IMF_SERVED),
+            None,
+            id="datasets-naming-two-recipes",
+        ),
+    ],
+)
+def test_one_answer_states_one_deflation_basis(
+    recipes: dict[str, str], datasets: tuple[str, ...], deflated_by: str | None
+):
+    """The measure-basis option label, the byline and `UnitConversion.deflation_basis` of
+    one constant-price answer name the same basis, since the scope stated on the finished
+    answer reads its conversion (`scope_facts`)."""
+    catalogue = ConversionCatalogue(
+        recipes=recipes,
+        tables={"ConversionRecipeDAC": _tables(), "ConversionRecipeIMF": _tables()},
+        national_currencies={},
+        default_base_year=2024,
+    )
+    with bound_conversion_catalogue(catalogue):
+        spec = _constant_ngn_answer(datasets)
+    conversion = spec.resolved.unit_conversion
+
+    decision = finished_scope_decision(
+        spec, selection=ScopeState(), operations=(), coverage=empty_coverage_snapshot()
+    )
+
+    assert (None if conversion is None else conversion.deflation_basis) == deflated_by
+    assert decision.scope is not None
+    (choice,) = (c for c in decision.scope.choices if c.axis == "measure_basis")
+    label = next(o.label for o in choice.options if o.option_id == "measure_basis:net")
+    (unit,) = [token.text for token in render_sentence_plan(spec) if token.axis == "unit"]
+    if deflated_by is None:
+        assert label == "net disbursements, constant 2024 NGN"
+        assert "prices" not in unit
+    else:
+        assert label.endswith(f", {deflation_phrase(deflated_by)}")
+        assert unit.endswith(f", {deflation_phrase(deflated_by)}")
 
 
 @pytest.mark.parametrize("cell", ["sector", "donor-only-2016"])
