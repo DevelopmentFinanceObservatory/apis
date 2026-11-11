@@ -1027,7 +1027,7 @@ def _axis_holds_multilaterals(
 
 
 def _shared_qualifiers(
-    measure_label_axes: Sequence[str],
+    measure_label: MeasureLabel,
     slots: Sequence[Slot],
     open_axis_facts: Sequence[OpenConstraintAxisFact] | None,
     *,
@@ -1037,7 +1037,9 @@ def _shared_qualifiers(
     as the shape label states them and as the concept label does.
 
     Single bound values and constant open-axis values each add their label, unless the
-    measure label covers their axis. A set binding adds the label of the group it was drawn
+    measure label covers their axis or names the value itself
+    (`MeasurePartitionLabel.named_values`): "climate finance gross disbursements" names the
+    climate objective's total, so a part bound to that total adds nothing. A set binding adds the label of the group it was drawn
     from, else its members' labels joined ("official development assistance and private
     sector instruments" for CRS flows 10 and 60). Varying axes are omitted, and duplicate
     label text is removed case-insensitively. The shape label states the first list after
@@ -1047,7 +1049,8 @@ def _shared_qualifiers(
     total (`provider.provider_total_code`), so DAC1's bilateral ODA names "official
     development assistance" as the total and its multilateral ODA do.
     """
-    covered = set(measure_label_axes)
+    covered = set(measure_label.axes)
+    named = set(measure_label.named_values)
     shown: list[str] = []
     concept: list[str] = []
     for slot in slots:
@@ -1055,6 +1058,13 @@ def _shared_qualifiers(
         if prop is None or prop.ref in covered:
             continue
         binding = slot.binding
+        if (
+            isinstance(binding, BindingValue)
+            and binding.value.ref is not None
+            and (prop.ref, binding.value.ref.ref) in named
+        ):
+            covered.add(prop.ref)
+            continue
         if isinstance(binding, BindingValue) and binding.value.ref is not None:
             covered.add(prop.ref)
             shown.append(binding.value.ref.label)
@@ -1067,6 +1077,8 @@ def _shared_qualifiers(
         if fact.property in covered or fact.varies or fact.value is None:
             continue
         covered.add(fact.property)
+        if (fact.property, fact.value.ref) in named:
+            continue
         shown.append(fact.value.label)
         concept.append(fact.value.label)
     return _distinct_labels(shown), _distinct_labels(concept)
@@ -1471,7 +1483,7 @@ def build_spec(
 
     # Identity is minted before the display label is composed. See _wire_shape_label.
     qualifiers, concept_qualifiers = (
-        _shared_qualifiers(measure_label.axes, slots, resolved_open_axis_facts, index=index)
+        _shared_qualifiers(measure_label, slots, resolved_open_axis_facts, index=index)
         if measure_partition is not None
         else ([], [])
     )
