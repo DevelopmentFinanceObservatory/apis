@@ -76,7 +76,7 @@ from search.render.no_data import (
 )
 from search.render.plan import render_sentence_plan
 from search.render.tokens import plan_words, sentence_from_plan
-from search.scope.basis import offers_basis_of
+from search.scope.basis import offers_basis_of, with_deflation_basis
 from search.scope.build import served_scope
 from skills_index import SkillsIndex
 
@@ -221,7 +221,9 @@ def with_scope_choices(spec: Spec, scope: PartScope) -> Spec:
     """Attach how the part was counted under ``resolved.scope_choices``, its compiled record
     restated from ``spec``'s own definition: the identity the part serves, which the resolve
     may have canonicalised after the scope compiled. A compiled record of ``spec`` itself
-    stands as it is, since a composite's states the years each component serves. An
+    stands as it is, since a composite's states the years each component serves. Its
+    measure-basis labels name whose prices deflate the answer as ``spec``'s conversion states
+    it (`scope.basis.with_deflation_basis`). An
     alternative measure on a basis the measure-basis choice offers
     (`scope.basis.offers_basis_of`) leaves ``resolved.alternative_measures``, since the choice
     is the part's one route to it. Update ``resolved`` because ``model_copy(update=...)``
@@ -232,6 +234,12 @@ def with_scope_choices(spec: Spec, scope: PartScope) -> Spec:
         else scope.model_copy(
             update={"compiled": served_scope(spec.spec_id, spec.definition.identity)}
         )
+    )
+    # The measure-basis labels name the basis the answer's conversion states, as its byline
+    # does.
+    conversion = spec.resolved.unit_conversion
+    served = with_deflation_basis(
+        served, None if conversion is None else conversion.deflation_basis
     )
     update: dict[str, object] = {"scope_choices": served}
     alternatives = spec.resolved.alternative_measures

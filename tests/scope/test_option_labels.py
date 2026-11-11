@@ -9,7 +9,7 @@ import pytest
 from code_index.shared import get_index
 from search.models import BaseIdentity, EntityGroup
 from search.scope.rules import AXIS_RULES
-from search.scope.tables import PartFacts, ScopeFacts
+from search.scope.tables import ScopeFacts
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.scope.test_region import _LISTED, _RANK, _SUMMED
 from tests.scope.test_region import _facts as _region_facts
@@ -56,9 +56,7 @@ _CASES = {
     ),
     "dac1-total": (
         _DAC1_TOTAL,
-        ScopeFacts(
-            index=get_index(), coverage=empty_coverage_snapshot(), part=PartFacts(deflated_by=None)
-        ),
+        ScopeFacts(index=get_index(), coverage=empty_coverage_snapshot()),
     ),
 }
 

@@ -20,17 +20,21 @@ from collections.abc import Sequence
 from types import SimpleNamespace
 from typing import NamedTuple
 
+import httpx
 import pytest
 
 from code_index.declarations import DAC1
 from code_index.scope_conventions import BASIS_MEASURES
 from code_index.shared import get_index
+from dc_sdmx import SdmxClient as MaterialiseSdmxClient
+from materialise.rate_tables import RateTableCache
 from origin_catalogue import BASE
+from search.engine.assemble import with_scope_choices
 from search.engine.bind import SlotBindingDraft
 from search.engine.binders import JevBinder, StatedWordsRequest
+from search.engine.binders.base import Binder
 from search.engine.departures import served_datasets
 from search.engine.quantity_read import QuantityOutput
-from search.engine.region.scope_decision import finished_scope_decision
 from search.engine.retrieval.facts import FiveTuple
 from search.engine.spec_id import identity_spec_id
 from search.engine.stated_words_read import StatedWordsOutput
@@ -67,24 +71,31 @@ from search.scope.basis import (
     applicable_convention,
     basis_binding,
     basis_label,
-    basis_rule,
     identity_basis_record,
     window_class,
 )
 from search.scope.edits import apply_binding
-from search.scope.state import ScopeState
-from search.scope.tables import PartFacts, ScopeFacts
-from search.scope.vocabulary import measure_basis_option_id
 from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
-from tests.engine._binders import FakeAsk, MenuRecordingBinder, elected_reply
-from tests.engine._fake_coverage import empty_coverage_snapshot, patch_coverage
+from tests.engine._binders import FakeAsk, FixedBinder, MenuRecordingBinder, elected_reply
+from tests.engine._fake_coverage import patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._harness import offline_resolve
+from tests.engine._harness import (
+    MATERIALISE_BASE_URL,
+    ObsFacetFixture,
+    _csv_header,
+    build_materialise_double,
+    offline_resolve,
+)
 from tests.engine._quantity import NO_QUANTITY, NO_RATING
 from tests.fixtures import FakeGraph
+from tests.materialise._rate_table_support import (
+    CONVERTIBLE_STAT_VAR_ARCS,
+    RateTableServer,
+    conversion_arcs,
+    recipe_table_bodies,
+)
+from tests.materialise.conftest import FakeGraphReader
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue, provenance_row
-from tests.scope.test_option_labels import _DAC1_TOTAL
-from unit_words.price_basis import deflation_phrase
 
 _USA = "country/USA"
 _KEN = "country/KEN"
@@ -223,9 +234,10 @@ def _coverage(monkeypatch: pytest.MonkeyPatch) -> None:
     _cover(monkeypatch, _DAC1_MEMBERS)
 
 
-def _cover(monkeypatch: pytest.MonkeyPatch, dac1: tuple[str, ...]) -> None:
+def _cover(monkeypatch: pytest.MonkeyPatch, dac1: tuple[str, ...], *, unit: str = "USD") -> None:
     """Series for the United States over 2005 to 2024 in every DAC2a and CRS member and in
-    the DAC1 members `dac1`, which may hold members of other DAC1 aid types."""
+    the DAC1 members `dac1`, which may hold members of other DAC1 aid types, all in
+    `unit`."""
     donor_only = RoleNames(donor="financingProvider", recipient=None)
     flow = RoleNames(donor="financingProvider", recipient="financingRecipient")
     patch_coverage(
@@ -240,9 +252,9 @@ def _cover(monkeypatch: pytest.MonkeyPatch, dac1: tuple[str, ...]) -> None:
             **dict.fromkeys((*_DAC2A_MEMBERS, *_CRS_MEMBERS), flow),
         },
         facet_metadata={
-            "dac1": FacetMetadata(provenance_id=_DAC1, unit="USD"),
-            "dac2a": FacetMetadata(provenance_id=_DAC2A, unit="USD"),
-            "crs": FacetMetadata(provenance_id=_CRS, unit="USD"),
+            "dac1": FacetMetadata(provenance_id=_DAC1, unit=unit),
+            "dac2a": FacetMetadata(provenance_id=_DAC2A, unit=unit),
+            "crs": FacetMetadata(provenance_id=_CRS, unit=unit),
         },
     )
 
@@ -971,62 +983,13 @@ def test_a_basis_label_states_the_prices_and_currency_the_part_is_served_in(
     assert basis_label(net, _net_identity(qualifier, unit_request)) == expected
 
 
-_CONSTANT_NGN = {"currency": "NGN", "prices": "constant", "base_year": 2024}
-
-
-@pytest.mark.parametrize(
-    ("deflated_by", "unit_request", "expected"),
-    [
-        pytest.param(
-            "donor",
-            _CONSTANT_NGN,
-            "net disbursements, constant 2024 NGN, donor prices",
-            id="constant-names-the-basis",
-        ),
-        pytest.param(
-            "donor",
-            {"currency": "NGN", "prices": "current"},
-            "net disbursements, current NGN",
-            id="current-deflates-by-no-one",
-        ),
-        pytest.param(
-            None, _CONSTANT_NGN, "net disbursements, constant 2024 NGN", id="no-basis-stated"
-        ),
-    ],
-)
-def test_a_basis_option_names_the_basis_the_parts_facts_state(
-    deflated_by: str | None, unit_request: dict, expected: str
-):
-    """The label names whose prices deflate the part as its facts carry it from the answer's
-    conversion (`PartFacts.deflated_by`), and only at constant prices."""
-    identity = _DAC1_TOTAL.model_copy(
-        update={
-            "facets": {
-                "unit": IdentityFacetValueRequest.model_validate(
-                    {"state": "value", "request": unit_request}
-                )
-            }
-        }
-    )
-    facts = ScopeFacts(
-        index=get_index(),
-        coverage=empty_coverage_snapshot(),
-        part=PartFacts(deflated_by=deflated_by),
-    )
-
-    table = basis_rule(identity, None, facts)
-
-    assert table is not None
-    labels = {option.option_id: option.label for option in table.options}
-    assert labels[measure_basis_option_id("net")] == expected
-
-
 def _tables() -> RecipeTables:
-    """Naira and dollar rates and the DAC countries' deflator over 2000 to 2026."""
+    """Naira and dollar rates and the DAC countries' and the United States' deflators over
+    2000 to 2026."""
     years = frozenset(range(2000, 2027))
     return RecipeTables(
         rate_years={"NGN": years, "USD": years},
-        deflator_years={"DACCountriesTotal": years},
+        deflator_years={"DACCountriesTotal": years, _USA: years},
         base_year_min=2000,
         base_year_max=2025,
     )
@@ -1036,11 +999,11 @@ def _tables() -> RecipeTables:
 _IMF_SERVED = "provenance/IMF_WEO"
 
 
-def _constant_ngn_answer(datasets: tuple[str, ...]) -> Spec:
+def _ngn_answer(datasets: tuple[str, ...], prices: dict) -> Spec:
     """The 2016 United States donor total, a DAC1 answer counted on net flows in US dollars,
     served from `datasets` and offered conversion under the bound catalogue's recipes for
-    them by members declaring the donor role, then stating a request for constant 2024
-    naira."""
+    them by members declaring the donor role, then stating a request for naira at
+    `prices`."""
     spec = _ask("aid", time="2016", recipient=False)
     facets = {
         **spec.resolved.facets,
@@ -1062,7 +1025,9 @@ def _constant_ngn_answer(datasets: tuple[str, ...]) -> Spec:
     spec = with_unit_conversion(
         spec.model_copy(update={"resolved": resolved}), members=[member], plans=()
     )
-    unit = IdentityFacetValueRequest.model_validate({"state": "value", "request": _CONSTANT_NGN})
+    unit = IdentityFacetValueRequest.model_validate(
+        {"state": "value", "request": {"currency": "NGN", **prices}}
+    )
     identity = spec.definition.identity
     identity = identity.model_copy(update={"facets": {**(identity.facets or {}), "unit": unit}})
     return spec.model_copy(
@@ -1070,26 +1035,43 @@ def _constant_ngn_answer(datasets: tuple[str, ...]) -> Spec:
     )
 
 
+_CONSTANT_2024 = {"prices": "constant", "base_year": 2024}
+
+
 @pytest.mark.parametrize(
-    ("recipes", "datasets", "deflated_by"),
+    ("recipes", "datasets", "prices", "expected"),
     [
-        pytest.param({DAC1: "ConversionRecipeDAC"}, (DAC1,), "donor", id="one-recipe"),
+        pytest.param(
+            {DAC1: "ConversionRecipeDAC"},
+            (DAC1,),
+            _CONSTANT_2024,
+            "net disbursements, constant 2024 NGN, donor prices",
+            id="constant-names-the-basis",
+        ),
+        pytest.param(
+            {DAC1: "ConversionRecipeDAC"},
+            (DAC1,),
+            {"prices": "current"},
+            "net disbursements, current NGN",
+            id="current-names-none",
+        ),
         # The answer's conversion takes one recipe over every dataset the part is served
         # from, and two recipes give it none, so neither the label nor the byline names one.
         pytest.param(
             {DAC1: "ConversionRecipeDAC", _IMF_SERVED: "ConversionRecipeIMF"},
             (DAC1, _IMF_SERVED),
-            None,
+            _CONSTANT_2024,
+            "net disbursements, constant 2024 NGN",
             id="datasets-naming-two-recipes",
         ),
     ],
 )
-def test_one_answer_states_one_deflation_basis(
-    recipes: dict[str, str], datasets: tuple[str, ...], deflated_by: str | None
+def test_the_basis_labels_name_the_basis_the_answers_conversion_states(
+    recipes: dict[str, str], datasets: tuple[str, ...], prices: dict, expected: str
 ):
-    """The measure-basis option label, the byline and `UnitConversion.deflation_basis` of
-    one constant-price answer name the same basis, since the scope stated on the finished
-    answer reads its conversion (`scope_facts`)."""
+    """The scope attaching to an answer (`assemble.with_scope_choices`) restates its
+    measure-basis labels from the answer's `UnitConversion.deflation_basis`, which its byline
+    reads too, so the two name the same basis at constant prices and none otherwise."""
     catalogue = ConversionCatalogue(
         recipes=recipes,
         tables={"ConversionRecipeDAC": _tables(), "ConversionRecipeIMF": _tables()},
@@ -1097,24 +1079,202 @@ def test_one_answer_states_one_deflation_basis(
         default_base_year=2024,
     )
     with bound_conversion_catalogue(catalogue):
-        spec = _constant_ngn_answer(datasets)
-    conversion = spec.resolved.unit_conversion
+        spec = _ngn_answer(datasets, prices)
+    scope = spec.resolved.scope_choices
+    assert scope is not None
+    base = scope.base.model_copy(update={"identity": spec.definition.identity})
 
-    decision = finished_scope_decision(
-        spec, selection=ScopeState(), operations=(), coverage=empty_coverage_snapshot()
+    stated = with_scope_choices(spec, scope.model_copy(update={"base": base}))
+
+    assert _net_label(stated) == expected
+    (unit,) = [token.text for token in render_sentence_plan(stated) if token.axis == "unit"]
+    assert unit.endswith(", donor prices") == expected.endswith(", donor prices")
+
+
+def _net_label(spec: Spec) -> str:
+    scope = spec.resolved.scope_choices
+    assert scope is not None
+    (choice,) = (c for c in scope.choices if c.axis == "measure_basis")
+    return next(o.label for o in choice.options if o.option_id == "measure_basis:net")
+
+
+# A series a candidates answer is offered beside the DAC1 total, which reads no data in the
+# asked unit, so the DAC1 total survives alone (`candidate_collapse`).
+_RIVAL = "Test_RivalAidSeries"
+
+
+def _rival_node() -> dict:
+    return {
+        "label": "Rival aid series",
+        "type": "StatisticalVariable",
+        "arcs": {
+            "typeOf": _nodes("StatisticalVariable"),
+            "name": {"nodes": [{"value": "Rival aid series"}]},
+            "populationType": _nodes("FinancialFlow"),
+            "measuredProperty": _nodes("amountRival"),
+            "statType": _nodes("measuredValue"),
+            "measurementQualifier": _nodes("Nominal"),
+            "observationProperties": _nodes("financingProvider"),
+        },
+    }
+
+
+def _materialise(years: range) -> tuple[FakeGraphReader, MaterialiseSdmxClient]:
+    """The DAC1 members' US dollar series for the United States as donor in `years`, under
+    the DAC recipe, and the rival's in euros under none; the DAC recipe's rates and
+    deflators over 2000 to 2026."""
+    fixture = ObsFacetFixture(
+        facet_id="dac1",
+        points=tuple((str(year), 1.0) for year in years),
+        provenance_id=_DAC1,
+        unit="CurrencyUSD",
+    )
+    rival = ObsFacetFixture(
+        facet_id="rival",
+        points=tuple((str(year), 2.0) for year in years),
+        provenance_id="dc/base/Rival",
+        unit="CurrencyEUR",
+    )
+    graph, _, _ = build_materialise_double(
+        {
+            **{(sv, (("financingProvider", _USA),)): [fixture] for sv in _DAC1_MEMBERS},
+            (_RIVAL, (("financingProvider", _USA),)): [rival],
+        }
+    )
+    graph._arcs = {
+        **{sv: dict(CONVERTIBLE_STAT_VAR_ARCS) for sv in _DAC1_MEMBERS},
+        **conversion_arcs(
+            recipe_id="ConversionRecipeDAC", provenance_id=_DAC1, currencies=["CurrencyUSD"]
+        ),
+        "CurrencyEUR": {"typeOf": ("CurrencyUnit",)},
+    }
+    served = range(2000, 2027)
+
+    def no_rows(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text=_csv_header(["financingProvider"]),
+            headers={"content-type": "application/vnd.sdmx.data+csv;version=2.0.0"},
+        )
+
+    tables = RateTableServer(
+        recipe_table_bodies(
+            "ConversionRecipeDAC",
+            rates={"CurrencyUSD": dict.fromkeys(served, 1.0)},
+            deflators={_USA: dict.fromkeys(served, 100.0)},
+        ),
+        fallback=no_rows,
+    )
+    return graph, tables.client(base_url=MATERIALISE_BASE_URL)
+
+
+def _converted(
+    request: ResolveRequest, years: range, *, binder: Binder | None = None
+) -> tuple[DefinitePart, str]:
+    """`request` answered in constant 2024 US dollars under the DAC recipe, and its byline's
+    unit words. `binder` replaces the configured binder."""
+    catalogue = ConversionCatalogue(
+        recipes={_DAC1: "ConversionRecipeDAC"},
+        tables={"ConversionRecipeDAC": _tables()},
+        national_currencies={},
+        default_base_year=2024,
+    )
+    graph = FakeGraph(
+        nodes={
+            _USA: {"label": "United States", "type": "Country"},
+            **{dcid: _member_node(dcid) for dcid in _DAC1_MEMBERS},
+            _RIVAL: _rival_node(),
+        },
+        detect={"aid": {"svs": [*_DAC1_MEMBERS, _RIVAL], "cosine_scores": [0.9] * 4}},
+        resolve={"United States": _USA},
+    )
+    materialise_graph, materialise_sdmx = _materialise(years)
+    with bound_conversion_catalogue(catalogue):
+        response = offline_resolve(
+            request,
+            graph=graph,
+            llm=_PickingLLM(),
+            sdmx=FakeSdmxClient(observations={}, availability={}),
+            materialise_graph=materialise_graph,
+            materialise_sdmx=materialise_sdmx,
+            rate_cache=RateTableCache(),
+            binder=binder,
+        )
+    assert isinstance(response, Resolution), response
+    (part,) = response.parts
+    assert isinstance(part, DefinitePart), part
+    (unit,) = [token.text for token in response.sentence_plan if token.axis == "unit"]
+    return part, unit
+
+
+def _asked(time: str) -> ResolveRequest:
+    return ResolveRequest(
+        input=ParsedInput(
+            parts=[
+                ParsedPart(
+                    variable_text="aid",
+                    entities=[ParsedEntity(text="United States", role_text="from")],
+                    time_text=time,
+                    unit_text="constant 2024 US dollars",
+                )
+            ]
+        )
     )
 
-    assert (None if conversion is None else conversion.deflation_basis) == deflated_by
-    assert decision.scope is not None
-    (choice,) = (c for c in decision.scope.choices if c.axis == "measure_basis")
-    label = next(o.label for o in choice.options if o.option_id == "measure_basis:net")
-    (unit,) = [token.text for token in render_sentence_plan(spec) if token.axis == "unit"]
-    if deflated_by is None:
-        assert label == "net disbursements, constant 2024 NGN"
-        assert "prices" not in unit
-    else:
-        assert label.endswith(f", {deflation_phrase(deflated_by)}")
-        assert unit.endswith(f", {deflation_phrase(deflated_by)}")
+
+def _resubmitted(fresh: Spec) -> ResolveRequest:
+    """`fresh`'s base identity posted back with a switch to the basis it holds."""
+    scope = fresh.resolved.scope_choices
+    assert scope is not None
+    switch = Entry(
+        axis="measure_basis",
+        option_id="measure_basis:net",
+        provenance="explicit",
+        origin=ChoiceOrigin(choice_id=f"{scope.id}:measure_basis"),
+    )
+    return ResolveRequest(
+        input=DatasetResubmitInput(
+            entries=[
+                ResubmitIdentityEntry(
+                    variable_text="aid",
+                    identity=scope.base.identity,
+                    scope_entries=[*scope.entries, switch],
+                )
+            ]
+        )
+    )
+
+
+@pytest.mark.parametrize("door", ["fresh", "resubmit", "candidates", "composite"])
+def test_one_answer_states_one_deflation_basis(monkeypatch: pytest.MonkeyPatch, door: str):
+    """Every door's answer in constant prices names whose prices deflate it once, in its
+    `UnitConversion.deflation_basis`, and its measure-basis labels and byline both read it:
+    a fresh search, a resubmit switching an option, a candidates answer whose rival reads no
+    data in the asked unit (`candidate_collapse`), and the OECD headline composite over 2015
+    to 2020."""
+    # The bound-unit decision reads the coverage's facets in the graph's unit dcids.
+    _cover(monkeypatch, _DAC1_MEMBERS, unit="CurrencyUSD")
+    fresh, fresh_unit = _converted(_asked("2016"), range(2016, 2017))
+    match door:
+        case "fresh":
+            part, unit = fresh, fresh_unit
+        case "resubmit":
+            part, unit = _converted(_resubmitted(fresh.spec), range(2016, 2017))
+        case "candidates":
+            nominated = FixedBinder(elected_reply(0, also_plausible=[1]))
+            part, unit = _converted(_asked("2016"), range(2016, 2017), binder=nominated)
+        case _:
+            part, unit = _converted(_asked("2015-2020"), range(2015, 2021))
+            assert _basis_choice(part.spec)[0] == "measure_basis:oecd_headline"
+            assert part.spec.resolved.facets["provenance"].ref == _HEADLINE
+
+    conversion = part.spec.resolved.unit_conversion
+    assert conversion is not None
+    assert conversion.deflation_basis == "donor"
+    assert _net_label(part.spec).endswith(", donor prices")
+    assert unit == "Constant 2024 US dollars, donor prices"
+    if door == "resubmit":
+        assert _net_label(part.spec) == _net_label(fresh.spec)
 
 
 @pytest.mark.parametrize("cell", ["sector", "donor-only-2016"])

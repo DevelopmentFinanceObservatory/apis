@@ -42,7 +42,7 @@ from search.models import (
 from search.scope.build import build_part_scope
 from search.scope.sector import read_sector, sector_concept, sector_rule
 from search.scope.state import AxisRecord, ScopeState
-from search.scope.tables import PartFacts, ScopeFacts
+from search.scope.tables import ScopeFacts
 from series_coverage.schema import FacetMetadata, RoleNames
 from tests.code_index.aid_identity import CRS_PROVENANCE
 from tests.engine._binders import elected_reply
@@ -658,9 +658,7 @@ def test_every_declared_grouping_is_read_from_a_word_the_matcher_reads_on_its_sy
 
 
 def _facts() -> ScopeFacts:
-    return ScopeFacts(
-        index=get_index(), coverage=empty_coverage_snapshot(), part=PartFacts(deflated_by=None)
-    )
+    return ScopeFacts(index=get_index(), coverage=empty_coverage_snapshot())
 
 
 def _base(binding: dict | None) -> BaseIdentity:

@@ -1,8 +1,7 @@
-"""Whether a fresh answer is a composite is decided before its preview launches
-(`phase_answer._decide_answer_scope`), and the scope it states is decided again from its
-finished Spec (`scope_decision.finished_scope_decision`). An answer the binders settle as a
-composite then reads no preview of the one table it resolved, streamed or buffered; any other
-answer reads its preview as before."""
+"""A fresh answer's scope is decided once, before its preview launches
+(`phase_answer._decide_answer_scope`). An answer the binders settle as a composite then reads
+no preview of the one table it resolved, streamed or buffered; any other answer reads its
+preview as before."""
 
 from __future__ import annotations
 
@@ -144,8 +143,8 @@ def _table_reads(monkeypatch: pytest.MonkeyPatch, *, refuse: bool) -> list[str]:
 
 @pytest.mark.parametrize("stream", [False, True], ids=["buffered", "streamed"])
 def test_a_composite_answer_reads_no_preview_of_its_table_identity(monkeypatch, stream):
-    """The scope is decided before the preview launches and again from the finished answer,
-    each time a composite, and the composite previews its components alone."""
+    """The scope is decided once, before the preview launches, and the composite previews
+    its components alone."""
     first, _ = _components(monkeypatch)
     decided = _decisions(monkeypatch)
     _table_reads(monkeypatch, refuse=True)
@@ -160,9 +159,9 @@ def test_a_composite_answer_reads_no_preview_of_its_table_identity(monkeypatch, 
 
     assert spec.spec_id == first.spec_id
     assert _dates(observations) == _BOTH
-    assert [(d.spec_id, d.composite) for d in decided] == [(decided[0].spec_id, True)] * 2
-    assert decided[-1].scope is not None
-    assert decided[-1].scope.compiled.spec_id == first.spec_id
+    assert [(d.spec_id, d.composite) for d in decided] == [(decided[0].spec_id, True)]
+    assert decided[0].scope is not None
+    assert decided[0].scope.compiled.spec_id == first.spec_id
 
 
 @pytest.mark.parametrize(
@@ -171,9 +170,9 @@ def test_a_composite_answer_reads_no_preview_of_its_table_identity(monkeypatch, 
     ids=["buffered", "streamed"],
 )
 def test_a_single_table_answer_reads_its_preview_as_before(monkeypatch, stream, expected):
-    """A scope that settles no composite leaves the answer's preview reads as they were. It
-    is decided before the preview and again from the finished answer, each time for the
-    answer it states, over the one identity the Spec is minted from."""
+    """A scope that settles no composite leaves the answer's preview reads as they were,
+    and is decided once, for the answer it states, over the one identity the Spec is minted
+    from."""
     _components(monkeypatch)
     decided = _decisions(monkeypatch)
     minted = _identities(monkeypatch)
@@ -183,7 +182,7 @@ def test_a_single_table_answer_reads_its_preview_as_before(monkeypatch, stream, 
 
     assert reads == expected
     assert minted == [spec.spec_id]
-    assert [(d.spec_id, d.composite) for d in decided] == [(spec.spec_id, False)] * 2
+    assert [(d.spec_id, d.composite) for d in decided] == [(spec.spec_id, False)]
     assert spec.resolved.scope_choices is not None
 
 
@@ -250,9 +249,9 @@ def _raising_decisions(
 def _assert_decision_error_logged(
     caplog: pytest.LogCaptureFixture, error: type[Exception] = CompositeNotServable
 ) -> None:
-    """The early decision and the one from the finished answer each logged `error`."""
-    raised = [r.exc_info[0] for r in caplog.records if r.exc_info is not None]
-    assert raised == [error, error]
+    (record,) = [r for r in caplog.records if r.exc_info is not None]
+    assert record.exc_info is not None
+    assert record.exc_info[0] is error
 
 
 @pytest.mark.parametrize("stream", [False, True], ids=["buffered", "streamed"])
@@ -286,7 +285,7 @@ def test_a_raising_scope_decision_keeps_the_answer_as_a_single_table(
     assert spec.resolved.scope_choices is None
     assert stream or spec.resolved.observations is not None
     assert reads == (["observations", "relaunch"] if stream else ["observations"])
-    assert asked == [spec.spec_id] * 2
+    assert asked == [spec.spec_id]
     _assert_decision_error_logged(caplog, type(error()))
     (done,) = [e for e in events if isinstance(e, DoneEvent)]
     assert done.degraded_leg is degraded
@@ -310,7 +309,6 @@ def test_a_raising_scope_decision_keeps_a_candidates_survivor_as_a_single_table(
         raise CompositeNotServable("no component", ref="dfo-composite", pointer="/facets")
 
     monkeypatch.setattr(candidate_collapse, "decide_spec_scope", raises)
-    monkeypatch.setattr(scope_decision, "decide_spec_scope", raises)
     outcome: list[tuple[RegionResult | None, ScopeDecision | None]] = []
 
     async def body(state: ResolveState) -> None:
@@ -391,50 +389,3 @@ def test_a_candidates_survivor_restated_as_a_composite_reads_no_table_preview(mo
     assert result.observations_task is None
     assert result.observations_relaunch is None
     assert reads == []
-
-
-def test_a_candidates_survivor_states_the_scope_decided_from_its_finished_spec(monkeypatch):
-    """The early decision answers whether the survivor is a composite alone. The scope the
-    answer states is decided again from the survivor's finished Spec, whose facts carry the
-    deflation basis its conversion states (`scope_decision.finished_scope_decision`)."""
-    early = []
-
-    def sentinel(spec: Spec, **kwargs: Any) -> ScopeDecision:
-        decision = ScopeDecision(spec_id="early", facts=None, scope=None, composite=False)  # type: ignore[arg-type]  # read for `composite` alone
-        early.append(decision)
-        return decision
-
-    monkeypatch.setattr(candidate_collapse, "decide_spec_scope", sentinel)
-    read: list[Spec] = []
-    real = scope_decision.decide_spec_scope
-
-    def finished(spec: Spec, **kwargs: Any) -> ScopeDecision:
-        read.append(spec)
-        return real(spec, **kwargs)
-
-    monkeypatch.setattr(scope_decision, "decide_spec_scope", finished)
-    outcome: list[tuple[RegionResult | None, ScopeDecision | None]] = []
-
-    async def body(state: ResolveState) -> None:
-        async with scoped_concurrency():
-            result = await resolve_candidates(state, rate_cache=RateTableCache())
-            if result is not None and result.observations_task is not None:
-                result.observations_task.cancel()
-        outcome.append((result, state.scope_decision))
-
-    _resolve_candidates_in_pass(monkeypatch, body)
-
-    ((result, decision),) = outcome
-    assert result is not None
-    assert result.status == "definite"
-    assert len(early) == 1
-    assert decision is not None
-    assert decision is not early[0]
-    (spec,) = read
-    assert decision.spec_id == spec.spec_id == result.spec.spec_id
-    assert spec.resolved.unit_conversion == result.spec.resolved.unit_conversion
-    assert decision.facts.part.deflated_by == (
-        None
-        if result.spec.resolved.unit_conversion is None
-        else result.spec.resolved.unit_conversion.deflation_basis
-    )

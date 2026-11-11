@@ -595,13 +595,13 @@ def _stating_unpublished_wholes(result: RegionResult, state: ResolveState) -> Re
 
 def _with_scope_choices(result: RegionResult, state: ResolveState) -> RegionResult:
     """`result` stating how its definite answer was counted (`RegionResult.scope_choices`),
-    the scope the answer phase or the candidates path decided from its finished Spec
-    (`ResolveState.scope_decision`, `scope_decision.finished_scope_decision`), else one
-    decided here from the answer (`scope_decision.decide_spec_scope`). A result that is not
-    definite states none. The scope is built in memory, and the rules read the bound
-    release's code index, the request's coverage snapshot and the part's operations, groups,
-    served datasets and the deflation basis its conversion states (`scope_facts`). Only a
-    dataset_resubmit's posted `scope_entries` refuse 422.
+    the scope the answer phase or the candidates path decided for it before its preview
+    launched (`ResolveState.scope_decision`), else one decided here from the answer
+    (`scope_decision.decide_spec_scope`). A result
+    that is not definite states none. The scope is built in memory, and the rules read the
+    bound release's code index, the request's coverage snapshot and the part's operations,
+    groups and served datasets (`scope_facts`). Only a dataset_resubmit's posted
+    `scope_entries` refuse 422.
 
     When the binders settle a composite option (the inclusive provider scope, the OECD
     headline per year), the scope's base is the composite, and the answer is restated as it

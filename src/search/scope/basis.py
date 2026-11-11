@@ -16,7 +16,9 @@ publish the elected basis (`binders.house_policy`).
 where no binder runs, offers what the parsed door offered: every declared basis, available
 where the identity's dataset publishes it at a covered series and unavailable otherwise,
 with the basis the identity holds first in the preference, so a part's derived default is
-the basis it resolved and a switch is the only thing that moves it.
+the basis it resolved and a switch is the only thing that moves it. Its labels name no
+deflation basis: the finished answer's conversion states that, and `with_deflation_basis`
+restates the labels from it where the scope attaches to the answer.
 """
 
 from __future__ import annotations
@@ -99,6 +101,9 @@ CONVENTION_DATASETS: frozenset[str] = frozenset(row.dataset for row in MEASURE_B
 axis."""
 
 _MEASURES: Mapping[MeasureBasis, BasisMeasure] = {row.basis: row for row in BASIS_MEASURES}
+_ROWS_BY_OPTION: Mapping[str, BasisMeasure] = {
+    measure_basis_option_id(row.basis): row for row in BASIS_MEASURES
+}
 _RECIPIENT_DIRECTIONS = ("destination", "both")
 
 
@@ -478,6 +483,32 @@ def offers_basis_of(scope: PartScope, identity: BaseIdentity) -> bool:
     )
 
 
+def with_deflation_basis(scope: PartScope, deflated_by: DeflationBasis | None) -> PartScope:
+    """`scope` with each declared basis option of its measure-basis choice labelled on its
+    base identity (`basis_label`), naming whose prices deflate the part at constant prices:
+    `deflated_by`, the answer's `UnitConversion.deflation_basis`, which its byline reads too.
+    The headline option keeps its label."""
+    identity = scope.base.identity
+    choices = [
+        choice
+        if choice.axis != "measure_basis"
+        else choice.model_copy(
+            update={
+                "options": [
+                    option
+                    if (row := _ROWS_BY_OPTION.get(option.option_id)) is None
+                    else option.model_copy(
+                        update={"label": basis_label(row, identity, deflated_by=deflated_by)}
+                    )
+                    for option in choice.options
+                ]
+            }
+        )
+        for choice in scope.choices
+    ]
+    return scope.model_copy(update={"choices": choices})
+
+
 def oda_flows(basis: BasisMeasure, held: Collection[str]) -> tuple[str, ...]:
     """The CRS types of flow an ODA flow binding reads as on `basis`, of those `held`, the
     codes a shape's flow slot offers."""
@@ -506,8 +537,7 @@ def basis_rule(
     `option_not_covered` when the dataset publishes such a member with no series there, and
     `basis_not_published` otherwise. The headline is available when both bases it splices
     are (`_headline_availability`). A composite base is read through the identity its option was
-    set on (`table_document`). A label at constant prices names whose prices deflate the part
-    as its answer's conversion states it (`PartFacts.deflated_by`)."""
+    set on (`table_document`). The labels name no deflation basis (`with_deflation_basis`)."""
     dataset = basis_dataset(base, facts.index)
     held_id = held_option(base)
     if dataset is None or held_id is None:
@@ -518,7 +548,7 @@ def basis_rule(
     options = [
         Option(
             option_id=(option_id := measure_basis_option_id(row.basis)),
-            label=basis_label(row, base, deflated_by=facts.part.deflated_by),
+            label=basis_label(row, base),
             binding=binding,
             availability=(
                 OptionAvailability(status="available")

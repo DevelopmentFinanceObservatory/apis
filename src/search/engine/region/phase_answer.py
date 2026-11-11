@@ -119,7 +119,7 @@ from search.engine.region.scope_decision import (
     ScopeDecision,
     answer_scope_facts,
     decide_scope,
-    finished_scope_decision,
+    decide_spec_scope,
     guarded_scope_decision,
 )
 from search.engine.region.state import MeasureFamily, ResolveState, raised_facts
@@ -774,12 +774,10 @@ class _AnswerScope:
 def _decide_answer_scope(
     state: ResolveState, mat_result: Materialised, slots: list[Slot], setup: _DefiniteSetup
 ) -> _AnswerScope:
-    """Whether the answer `_build_definite_spec` builds from `slots` is a composite
+    """The scope the answer `_build_definite_spec` builds from `slots` states
     (`scope_decision.decide_scope`), decided over the identity `build_spec` mints from the
     same arguments (`spec_build.answer_identity`) before the options are counted, so a
-    composite answer launches no preview of the one table it resolved. The Spec's unit
-    conversion does not exist yet, so its labels state no basis, and the scope the answer
-    states is decided again from the finished Spec (`_finished_scope`). `build_spec` takes
+    composite answer launches no preview of the one table it resolved. `build_spec` takes
     that identity as given, since every argument it reads (`state`, `slots`,
     `mat_result.open_axes` and `setup.facet_bindings`) holds unchanged from here to there.
     A decision that raises leaves the answer as a single table that states no scope
@@ -807,8 +805,6 @@ def _decide_answer_scope(
             sources=answer.resolved_sources,
             operations=state.operations,
             coverage=state.coverage,
-            # Read for `ScopeDecision.composite` alone, before any conversion is stated.
-            deflated_by=None,
         )
         return decide_scope(
             answer.spec_id, answer.identity, selection=state.scope_selection, facts=facts
@@ -1221,19 +1217,20 @@ async def _assemble_carve_outs(
 
 
 async def _finished_scope(state: ResolveState, spec: Spec) -> ScopeDecision:
-    """The scope the finished answer `spec` states, decided from it
-    (`scope_decision.finished_scope_decision`) and kept for `pipeline._with_scope_choices`
-    (`ResolveState.scope_decision`). The decision made before the preview launched read
-    whether the answer is a composite alone."""
-    early = cast(ScopeDecision, state.scope_decision)
-    if early.spec_id != spec.spec_id:
-        logger.warning(
-            "scope decided for %s before the preview launched, but the answer is %s",
-            early.spec_id,
-            spec.spec_id,
-        )
+    """The scope `spec` states, as decided before its preview launched
+    (`ResolveState.scope_decision`). A decision made for another `spec_id` is decided again
+    from `spec` (`scope_decision.decide_spec_scope`) and kept for
+    `pipeline._with_scope_choices`."""
+    decision = cast(ScopeDecision, state.scope_decision)
+    if decision.spec_id == spec.spec_id:
+        return decision
+    logger.warning(
+        "scope decided for %s before the preview launched, but the answer is %s",
+        decision.spec_id,
+        spec.spec_id,
+    )
     state.scope_decision = await asyncio.to_thread(
-        finished_scope_decision,
+        decide_spec_scope,
         spec,
         selection=state.scope_selection,
         operations=state.operations,

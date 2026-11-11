@@ -871,10 +871,9 @@ class ResolveState:
     # the record of each axis they settle, from which the pass's definite answer states its
     # scope choices (`pipeline._with_scope_choices`).
     scope_selection: ScopeState = field(default_factory=ScopeState)
-    # The scope the definite answer states, decided from its finished Spec
-    # (`scope_decision.finished_scope_decision`), which `pipeline._with_scope_choices` states
-    # for that answer. Before the Spec is finished it holds the early decision, read only for
-    # whether the answer is a composite. None until then.
+    # The scope the definite answer states, decided before its preview launches
+    # (`phase_answer._decide_answer_scope`), which `pipeline._with_scope_choices` reuses for
+    # that answer. None until then.
     scope_decision: ScopeDecision | None = None
     # Shared warnings list; mutations here affect every stage holding the list.
     warnings: list[Warning]

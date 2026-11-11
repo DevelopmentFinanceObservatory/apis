@@ -16,7 +16,7 @@ from search.scope import rules as scope_rules
 from search.scope.build import build_part_scope
 from search.scope.compile import Refusal
 from search.scope.state import AxisRecord, ScopeState
-from search.scope.tables import PartFacts, ScopeFacts
+from search.scope.tables import ScopeFacts
 from search.scope.vocabulary import (
     MEASURE_BASIS_OPTIONS,
     PROVIDER_OPTIONS,
@@ -38,9 +38,7 @@ from tests.scope._axes import (
     tables,
 )
 
-_FACTS = ScopeFacts(
-    index=get_index(), coverage=empty_coverage_snapshot(), part=PartFacts(deflated_by=None)
-)
+_FACTS = ScopeFacts(index=get_index(), coverage=empty_coverage_snapshot())
 
 
 def _rules(seen: list):

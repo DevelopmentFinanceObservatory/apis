@@ -91,11 +91,7 @@ from search.engine.region.requirements import (
     settle_flagged,
 )
 from search.engine.region.result import RegionResult
-from search.engine.region.scope_decision import (
-    decide_spec_scope,
-    finished_scope_decision,
-    guarded_scope_decision,
-)
+from search.engine.region.scope_decision import decide_spec_scope, guarded_scope_decision
 from search.engine.region.state import ResolveState, raised_facts
 from search.engine.region.un_system import member_labels
 from search.engine.region.whole_totals import whole_total_warnings
@@ -103,7 +99,7 @@ from search.engine.retrieval.read_plan import ReadPlan, plan_coverage, serves_no
 from search.engine.retrieval.retrieve import Materialised, NoDataDraft
 from search.engine.retrieval.standard import Narrow
 from search.engine.unit.bind import with_unit_lexicon_version
-from search.engine.unit.conversion import served_prices
+from search.engine.unit.conversion import served_prices, with_unit_conversion
 from search.engine.unit.conversion_catalogue import current_conversion_catalogue
 from search.models import (
     CandidateBasis,
@@ -547,7 +543,15 @@ async def _assemble_definite(
     # A `has_data` result with no StatVars signals a missing series.
     if not unique_specs[0].resolved.members:
         return state.no_data("no_observations", llm_usage=state.var_usage)
-    _survivor_spec = unique_specs[0]
+    # The survivor states the conversions it offers, as a single-table answer does
+    # (`phase_answer._build_definite_spec`).
+    _survivor_spec = with_unit_conversion(
+        unique_specs[0],
+        members=[(_survivor.mat.member_facts or {})[dcid] for dcid in _survivor.mat.sv_dcids],
+        plans=tuple(
+            plan for plan in (grounded.cand_plans.get(unique_specs[0].spec_id),) if plan is not None
+        ),
+    )
     note_denominator_unverified(state, _survivor.shape, spec_id=_survivor_spec.spec_id)
     if (omitted := grounded.cand_unit_omitted.get(_survivor_spec.spec_id)) is not None:
         state.warnings.append(omitted)
@@ -574,10 +578,9 @@ async def _assemble_definite(
         deadline=state.deadline,
         coverage=state.coverage,
     )
-    # Whether the answer is a composite is decided from the survivor's Spec beside the reads
-    # below, so a streamed answer restated as a composite reads no eager preview of the one
-    # table it resolved. The scope the answer states is decided again from the finished Spec
-    # (`finished_scope_decision`), and `pipeline._with_scope_choices` states that one.
+    # The scope is decided from the survivor's Spec beside the reads below and before its
+    # preview launches, so an answer restated as a composite reads no preview of the one
+    # table it resolved. `pipeline._with_scope_choices` states the decision.
     _decision_task = asyncio.create_task(
         asyncio.to_thread(
             guarded_scope_decision,
@@ -644,21 +647,14 @@ async def _assemble_definite(
             _relaunch_place_options_bound(_survivor_spec) if _stream_place_options else None
         )
         _survivor_spec = await with_related(_survivor_spec, _related_read)
-        # Decided before the observation task launches, since no await may follow it.
-        state.scope_decision = await asyncio.to_thread(
-            finished_scope_decision,
-            _survivor_spec,
-            selection=state.scope_selection,
-            operations=state.operations,
-            coverage=state.coverage,
-        )
         # No await follows the observation task's launch. Passing it live to `RegionResult`
         # keeps it reachable if cancellation follows.
         _obs_task: asyncio.Task[_ObsProbeResult] | None = None
         _obs_relaunch: Callable[[str], asyncio.Task[_ObsProbeResult]] | None = None
         # A composite's preview reads each component once the answer is restated
         # (`pipeline._with_composite_preview`).
-        composite = (await _decision_task).composite
+        state.scope_decision = await _decision_task
+        composite = state.scope_decision.composite
         if not composite and state.stream_observations:
             _obs_relaunch = _reader.relaunch(member_labels((_survivor_spec,)))
             _obs_task = _obs_relaunch(_survivor_spec.spec_id)
