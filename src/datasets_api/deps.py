@@ -104,8 +104,7 @@ class Deps:
     # The code index a request reads (`code_index`): the caller's when it supplied one, else
     # `get_index()`, which can change between requests.
     code_index_source: Callable[[], CodeIndex]
-    # Wraps `graph` and caches country-code and label lookups for the lifespan. Party kinds
-    # come from `code_index_source` on every lookup.
+    # Wraps `graph` and caches country-code and label lookups for the lifespan.
     enrichment: EnrichmentLookup
     materialiser_build: str
     now: Clock
@@ -380,7 +379,7 @@ async def open_deps(
             coverage=overrides.coverage,
             rate_cache=overrides.rate_cache,
             code_index_source=code_index_source,
-            enrichment=EnrichmentLookup(graph, parties=lambda: code_index_source().parties),
+            enrichment=EnrichmentLookup(graph),
             materialiser_build=build_commit(),
             now=overrides.now,
             variable_breadth=variable_breadth,

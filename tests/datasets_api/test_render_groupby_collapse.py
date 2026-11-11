@@ -135,7 +135,7 @@ _BY_NO_CRS_AXIS = MintOptions(groupby=GroupbyOptions(by=["financingProvider"], o
 
 
 def _enrichment() -> EnrichmentLookup:
-    return EnrichmentLookup(FakeMintGraphReader(), parties=lambda: {})
+    return EnrichmentLookup(FakeMintGraphReader())
 
 
 class TestFullCollapseMultiMember:
@@ -144,7 +144,7 @@ class TestFullCollapseMultiMember:
             _TABLE,
             options=_BY_NO_CRS_AXIS,
             entity_columns=_ENTITY_COLUMNS,
-            reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
+            reads=_RenderReads(enrichment=_enrichment(), parties={}, known={}, deadline=None),
             code_index=_INDEX,
             resolved_stat_var_refs=(),
             provenance_refs=("p1",),
@@ -166,7 +166,7 @@ class TestFullCollapseMultiMember:
             _TABLE,
             options=_BY_NO_CRS_AXIS,
             entity_columns=_ENTITY_COLUMNS,
-            reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
+            reads=_RenderReads(enrichment=_enrichment(), parties={}, known={}, deadline=None),
             code_index=_INDEX,
             resolved_stat_var_refs=(),
             provenance_refs=("p1",),
@@ -182,7 +182,7 @@ class TestFullCollapseMultiMember:
             _TABLE,
             options=_BY_NO_CRS_AXIS,
             entity_columns=_ENTITY_COLUMNS,
-            reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
+            reads=_RenderReads(enrichment=_enrichment(), parties={}, known={}, deadline=None),
             code_index=_INDEX,
             resolved_stat_var_refs=(),
             provenance_refs=("p1",),
@@ -201,7 +201,7 @@ class TestFullCollapseMultiMember:
             _TABLE,
             options=_BY_NO_CRS_AXIS,
             entity_columns=_ENTITY_COLUMNS,
-            reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
+            reads=_RenderReads(enrichment=_enrichment(), parties={}, known={}, deadline=None),
             code_index=_INDEX,
             resolved_stat_var_refs=(),
             provenance_refs=("p1",),
@@ -218,7 +218,7 @@ class TestFullCollapseMultiMember:
                 _TABLE,
                 options=_BY_NO_CRS_AXIS,
                 entity_columns=_ENTITY_COLUMNS,
-                reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
+                reads=_RenderReads(enrichment=_enrichment(), parties={}, known={}, deadline=None),
                 code_index=_INDEX,
                 resolved_stat_var_refs=(),
                 provenance_refs=("p1",),
@@ -237,7 +237,7 @@ class TestFullCollapseSoleContributor:
             self._SOLE_TABLE,
             options=_BY_NO_CRS_AXIS,
             entity_columns=_ENTITY_COLUMNS,
-            reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
+            reads=_RenderReads(enrichment=_enrichment(), parties={}, known={}, deadline=None),
             code_index=_INDEX,
             resolved_stat_var_refs=(),
             provenance_refs=("p1",),
@@ -255,7 +255,7 @@ class TestFullCollapseSoleContributor:
             self._SOLE_TABLE,
             options=_BY_NO_CRS_AXIS,
             entity_columns=_ENTITY_COLUMNS,
-            reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
+            reads=_RenderReads(enrichment=_enrichment(), parties={}, known={}, deadline=None),
             code_index=_INDEX,
             resolved_stat_var_refs=(),
             provenance_refs=("p1",),
@@ -279,7 +279,7 @@ class TestFullCollapseEmpty:
             self._NO_ROWS,
             options=_BY_NO_CRS_AXIS,
             entity_columns=_ENTITY_COLUMNS,
-            reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
+            reads=_RenderReads(enrichment=_enrichment(), parties={}, known={}, deadline=None),
             code_index=_INDEX,
             resolved_stat_var_refs=("dcid:SV_A",),
             provenance_refs=("p1",),
@@ -298,7 +298,7 @@ class TestFullCollapseEmpty:
                 self._NO_ROWS,
                 options=_BY_NO_CRS_AXIS,
                 entity_columns=_ENTITY_COLUMNS,
-                reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
+                reads=_RenderReads(enrichment=_enrichment(), parties={}, known={}, deadline=None),
                 code_index=_INDEX,
                 resolved_stat_var_refs=("dcid:SV_A",),
                 provenance_refs=("p1",),

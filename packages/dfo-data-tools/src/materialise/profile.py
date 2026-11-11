@@ -169,11 +169,15 @@ def _enrichment_coverage_from_json(body: Mapping[str, Any]) -> EnrichmentCoverag
 
 
 def compute_output_profile(
-    frame: TableLike, *, role_columns: Sequence[str], enrichment: EnrichmentLookup
+    frame: TableLike,
+    *,
+    role_columns: Sequence[str],
+    enrichment: EnrichmentLookup,
+    parties: Mapping[str, PartyRow],
 ) -> OutputProfile:
     """Wrap `frame` as a one-chunk stream and delegate to the chunked implementation."""
     return compute_output_profile_from_chunks(
-        lambda: iter((frame,)), role_columns=role_columns, enrichment=enrichment
+        lambda: iter((frame,)), role_columns=role_columns, enrichment=enrichment, parties=parties
     )
 
 
@@ -182,6 +186,7 @@ def compute_output_profile_from_chunks(
     *,
     role_columns: Sequence[str],
     enrichment: EnrichmentLookup,
+    parties: Mapping[str, PartyRow],
 ) -> OutputProfile:
     """Compute the exact profile from a fresh chunk iterator on each pass.
     Pass one gathers distinct counts, functional dependencies, and duplicate
@@ -196,8 +201,11 @@ def compute_output_profile_from_chunks(
     `role_columns` must exist in the first chunk, and every chunk must share
     its column order. The iterator must yield at least one chunk, including
     for an empty result; pivot pairs follow that shared column order.
+
+    `enrichment` reads the role columns' graph fields and `parties`, the code index's party
+    rows (`CodeIndex.parties`), their party kinds.
     """
-    fold = OutputProfileFold(role_columns=role_columns, enrichment=enrichment)
+    fold = OutputProfileFold(role_columns=role_columns, enrichment=enrichment, parties=parties)
     for chunk in frame_chunks():
         fold.add(chunk)
     return fold.finish(frame_chunks)
@@ -209,9 +217,16 @@ class OutputProfileFold:
     `finish` runs the second pass, when one is needed, over `frame_chunks`, which yields the
     chunks `add` was given in the same order."""
 
-    def __init__(self, *, role_columns: Sequence[str], enrichment: EnrichmentLookup) -> None:
+    def __init__(
+        self,
+        *,
+        role_columns: Sequence[str],
+        enrichment: EnrichmentLookup,
+        parties: Mapping[str, PartyRow],
+    ) -> None:
         self._role_columns = tuple(role_columns)
         self._enrichment = enrichment
+        self._parties = parties
         self._columns: tuple[str, ...] | None = None
         self._total_rows = 0
 
@@ -398,7 +413,7 @@ class OutputProfileFold:
                 role_column,
                 books[role_column],
                 resolved,
-                parties=enrichment.parties,
+                parties=self._parties,
                 datasets=self._datasets_of(role_column),
             )
         )

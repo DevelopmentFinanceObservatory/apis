@@ -132,7 +132,8 @@ def _materialise_crs_fixture():
         [request],
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
+        enrichment=EnrichmentLookup(graph),
+        parties={},
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -176,7 +177,8 @@ def _materialise_observation_about_fixture():
         [request],
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
+        enrichment=EnrichmentLookup(graph),
+        parties={},
         materialiser_build="build-123",
         capability_version="cap-v1",
     )
@@ -300,7 +302,8 @@ def test_multiple_role_columns_share_one_enrichment_lookup_call():
     profile = compute_output_profile(
         table,
         role_columns=("provider", "recipient"),
-        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
+        enrichment=EnrichmentLookup(graph),
+        parties={},
     )
 
     assert graph.calls["node_arcs_many"] == 1
@@ -329,7 +332,8 @@ class TestComputeOutputProfileEdgeCases:
         return compute_output_profile(
             table,
             role_columns=("recipient",),
-            enrichment=EnrichmentLookup(graph, parties=lambda: {}),
+            enrichment=EnrichmentLookup(graph),
+            parties={},
         )
 
     def test_zero_row_frame_reports_columns_with_empty_pivots_and_enrichments(self):
@@ -449,7 +453,8 @@ def _assert_pivot_feasibility_agrees_with_analyse_pivot(table: Table) -> None:
     profile = compute_output_profile(
         table,
         role_columns=(),
-        enrichment=EnrichmentLookup(FakeGraphReader(), parties=lambda: {}),
+        enrichment=EnrichmentLookup(FakeGraphReader()),
+        parties={},
     )
     assert profile.pivots, "fixture produced no pivot pairs to compare"
     for feasibility in profile.pivots:
@@ -577,7 +582,8 @@ class TestPivotFeasibilityAgreesWithAnalysePivot:
             profile = compute_output_profile(
                 table,
                 role_columns=(),
-                enrichment=EnrichmentLookup(FakeGraphReader(), parties=lambda: {}),
+                enrichment=EnrichmentLookup(FakeGraphReader()),
+                parties={},
             )
             for feasibility in profile.pivots:
                 expected = analyse_pivot(
@@ -664,7 +670,8 @@ def test_a_party_kind_is_covered_on_each_role_column_by_that_column_s_axis():
     profile = compute_output_profile(
         table,
         role_columns=("financingProvider", "financingRecipient"),
-        enrichment=EnrichmentLookup(FakeGraphReader(), parties=lambda: {"org/X": party}),
+        enrichment=EnrichmentLookup(FakeGraphReader()),
+        parties={"org/X": party},
     )
 
     covered = {
@@ -695,7 +702,8 @@ def test_a_party_whose_kind_differs_by_dataset_is_covered_as_the_long_download_f
     profile = compute_output_profile(
         table,
         role_columns=("financingProvider",),
-        enrichment=EnrichmentLookup(FakeGraphReader(), parties=lambda: parties),
+        enrichment=EnrichmentLookup(FakeGraphReader()),
+        parties=parties,
     )
     filled, _warnings = enrich_columns(
         table, requests=(("financingProvider", "party_kind"),), lookup={}, parties=parties

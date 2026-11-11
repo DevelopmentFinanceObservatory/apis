@@ -185,7 +185,7 @@ class _Rig:
             ceiling=1_000_000,
             member_concurrency=1,
             enumerator=MemberEnumerator(),
-            enrichment=EnrichmentLookup(graph, parties=lambda: {}),
+            enrichment=EnrichmentLookup(graph),
             code_index=get_index(),
             rate_cache=RateTableCache(),
             coverage=FakeCoverageService(_index(indexed)),

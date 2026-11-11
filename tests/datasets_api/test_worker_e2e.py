@@ -103,7 +103,7 @@ def api_and_worker(
         ceiling=1_000_000,
         member_concurrency=4,
         enumerator=MemberEnumerator(),
-        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
+        enrichment=EnrichmentLookup(graph),
         code_index=get_index(),
         rate_cache=RateTableCache(),
         # The worker probes role-bearing facets from this index.

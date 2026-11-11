@@ -60,6 +60,7 @@ def reference_output_profile_from_chunks(
     *,
     role_columns: Sequence[str],
     enrichment: EnrichmentLookup,
+    parties: Mapping[str, PartyRow],
 ) -> OutputProfile:
     """Compute the exact profile from a fresh chunk iterator on each pass.
     State is bounded by distinct column values and candidate pivot keys,
@@ -235,7 +236,7 @@ def reference_output_profile_from_chunks(
             role_column,
             distinct_by_column[role_column],
             resolved,
-            parties=enrichment.parties,
+            parties=parties,
             datasets=datasets_by_column[role_column] if PROVENANCE_COLUMN in positions else None,
         )
     )

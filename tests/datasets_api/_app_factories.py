@@ -245,11 +245,7 @@ def mint_deps(
         ceiling=ceiling,
         member_concurrency=member_concurrency,
         enumerator=enumerator if enumerator is not None else MemberEnumerator(),
-        enrichment=(
-            enrichment
-            if enrichment is not None
-            else EnrichmentLookup(graph, parties=lambda: index.parties)
-        ),
+        enrichment=(enrichment if enrichment is not None else EnrichmentLookup(graph)),
         code_index=index,
         rate_cache=rate_cache if rate_cache is not None else RateTableCache(),
         coverage=coverage if coverage is not None else get_coverage_service(),

@@ -67,7 +67,7 @@ from artifact_store.inventory import InventoryBatch, InventoryEntry
 from code_index.composites import ComponentIdentity, composite_ref
 from code_index.members import absent_member_reads_zero
 from code_index.query import CodeIndex
-from code_index.types import CompositeDeclaration
+from code_index.types import CompositeDeclaration, PartyRow
 from dataset_store.clock import utc_now
 from dataset_store.snapshot import (
     ManifestFacts,
@@ -623,6 +623,7 @@ def _materialise_scoped(
                     materialiser_build=materialiser_build,
                     capability_version=capability_version,
                     enrichment=enrichment,
+                    parties=code_index.parties,
                     member_concurrency=member_concurrency,
                     rate_cache=rate_cache,
                     coverage=coverage_index,
@@ -747,6 +748,7 @@ def _materialise_components(
             window=identity_requested_window(stored.identity),
             role_columns=requests[0].declared_roles,
             enrichment=enrichment,
+            parties=code_index.parties,
         )
     check_ceiling(composed.coverage, ceiling=ceiling)
     return replace(composed, output_profile_seconds=seconds), tuple(runs)
@@ -1414,6 +1416,7 @@ def _render_pass(
         artifact_store=artifact_store,
         entity_columns=prewrite.entity_columns,
         enrichment=deps.enrichment,
+        parties=deps.code_index.parties,
         pivot_max_output_cells=deps.settings.pivot_max_output_cells,
         groupby_fold_max_rows=deps.settings.groupby_fold_max_rows,
         code_index=deps.code_index,
@@ -1478,7 +1481,9 @@ def _render_pass(
         trace=replace(result.trace, party_totals_left_out=derived.party_totals_left_out),
         coverage=derived_coverage(result.coverage, derived),
         series_statistics=derived_statistics,
-        output_profile=derived_output_profile(derived, enrichment=deps.enrichment),
+        output_profile=derived_output_profile(
+            derived, enrichment=deps.enrichment, parties=deps.code_index.parties
+        ),
     )
     _check_work_deadline(deps, "rendering the derived version's canonical frame")
     derived_frame_record = render_and_store_canonical_frame(
@@ -1572,11 +1577,14 @@ def derived_statistics_file(
 
 
 def derived_output_profile(
-    derived: DerivedVersion, *, enrichment: EnrichmentLookup
+    derived: DerivedVersion, *, enrichment: EnrichmentLookup, parties: Mapping[str, PartyRow]
 ) -> OutputProfile:
     """The output profile of `derived`'s frame over its role columns."""
     return compute_output_profile_from_chunks(
-        derived.frame_chunks, role_columns=derived.role_columns, enrichment=enrichment
+        derived.frame_chunks,
+        role_columns=derived.role_columns,
+        enrichment=enrichment,
+        parties=parties,
     )
 
 

@@ -12,7 +12,7 @@ import functools
 import re
 import threading
 from collections import OrderedDict
-from collections.abc import Callable, Collection, Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping
 
 from code_index.types import AnyAxis, PartyKind, PartyRow
 from dc_graph import label_or_self_name
@@ -74,29 +74,14 @@ class EnrichmentLookup:
     most-recently used. An entry also keys on the bound release (`served_origin_key`), which
     answers a DFO variable's `name` and `typeOf`.
 
-    `parties` returns the code index's party rows (`CodeIndex.parties`) for the readers that
-    fill party cells per column (`party_cell`, `row_party_cell`); the lookup reads none of
-    them. It is called on each read, since the index can change between requests.
-
     The lock guards cache access only. Graph calls run unlocked, so concurrent misses may
     duplicate requests. Results use each call's own hits and fetches, even if another call
     evicts them. A lookup returns every requested ref, even when the request exceeds the cap."""
 
-    def __init__(
-        self,
-        graph: GraphReader,
-        *,
-        parties: Callable[[], Mapping[str, PartyRow]],
-    ) -> None:
+    def __init__(self, graph: GraphReader) -> None:
         self._graph = graph
-        self._parties = parties
         self._lock = threading.Lock()
         self._cache: OrderedDict[tuple[str, str], Mapping[str, str]] = OrderedDict()
-
-    @property
-    def parties(self) -> Mapping[str, PartyRow]:
-        """The party rows the `parties` callable returns on this read."""
-        return self._parties()
 
     def lookup(
         self, refs: Iterable[str], *, deadline: float | None = None

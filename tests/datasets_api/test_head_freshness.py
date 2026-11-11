@@ -155,7 +155,7 @@ class _Rig:
             ceiling=1_000_000,
             member_concurrency=4,
             enumerator=MemberEnumerator(),
-            enrichment=EnrichmentLookup(self.graph, parties=lambda: {}),
+            enrichment=EnrichmentLookup(self.graph),
             code_index=get_index(),
             rate_cache=RateTableCache(),
             coverage=_coverage_service(),
@@ -234,7 +234,7 @@ def _cut_rig(version_store: FakeVersionRecordDatasetStore) -> _Rig:
         sdmx=SdmxClient(base_url="https://datacommons.one.org/core/api", transport=rig.transport),
         coverage=party_totals._coverage_service(),
         code_index=index,
-        enrichment=EnrichmentLookup(rig.graph, parties=lambda: index.parties),
+        enrichment=EnrichmentLookup(rig.graph),
     )
     recomputed = recompute_identity(party_totals._IDENTITY)
     rig.deps.registry.register_definition(

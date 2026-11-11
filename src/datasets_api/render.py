@@ -1092,7 +1092,7 @@ def _reshape_select_pivot_enrich(
         enrichment_plan = EnrichmentPlan(
             requests=parsed.enrichments,
             lookup=reads.fields_of(refs, fields={field for _, field in parsed.enrichments}),
-            parties=reads.enrichment.parties,
+            parties=reads.parties,
         )
     warning_order = (
         *decoded_column_names,
@@ -1791,9 +1791,10 @@ class _RenderReads:
     outright: a cited source's label, a summed family's label. Every other value is read
     through `enrichment` by `lookup` against one absolute `deadline`, the render's. After one
     read fails, `lookup` refuses without reading, so a graph outage costs the render at most
-    one read's wait."""
+    one read's wait. A party's fields come from `parties`, the code index's party rows."""
 
     enrichment: EnrichmentLookup
+    parties: Mapping[str, PartyRow]
     known: Mapping[str, str]
     deadline: float | None
     failed: bool = False
@@ -1803,6 +1804,7 @@ class _RenderReads:
         cls,
         *,
         enrichment: EnrichmentLookup,
+        parties: Mapping[str, PartyRow],
         citations: Mapping[str, CitationSource],
         family: tuple[str, str] | None,
         deadline: float | None,
@@ -1812,6 +1814,7 @@ class _RenderReads:
             known[family[0]] = family[1]
         return cls(
             enrichment=enrichment,
+            parties=parties,
             known=known,
             deadline=deadline,
         )
@@ -2070,9 +2073,7 @@ class _LongLayout:
                 grain=self.grain,
             )
         self._read_names(self.projection.refs_to_name(table))
-        projected = self.projection.apply(
-            table, names=self.names, parties=self.reads.enrichment.parties
-        )
+        projected = self.projection.apply(table, names=self.names, parties=self.reads.parties)
         self.unavailable.update(projected.unavailable)
         if self.totals is None:
             return cast(Table, projected.table)
@@ -2415,7 +2416,7 @@ def _stream_bare_pivot(
                         field_name,
                         ref,
                         role=entity_column,
-                        parties=reads.enrichment.parties,
+                        parties=reads.parties,
                         period=None,
                         provenance=None,
                     )
@@ -2866,6 +2867,7 @@ def render_and_store(
     artifact_store: ArtifactStore,
     entity_columns: Sequence[str],
     enrichment: EnrichmentLookup,
+    parties: Mapping[str, PartyRow],
     pivot_max_output_cells: int,
     groupby_fold_max_rows: int,
     code_index: CodeIndex | None = None,
@@ -2926,7 +2928,7 @@ def render_and_store(
 
     `options.without_party_totals` cuts the group totals of the open party roles of `spec`'s
     identity out of the frame before any reshape (`datasets_api.party_totals`), reading the
-    kinds from `enrichment.parties`. A cut that leaves rows out renders from the cut frame,
+    kinds from `parties`, the code index's party rows. A cut that leaves rows out renders from the cut frame,
     which is a version of its own, so the artifact and any collapse of it belong to a version
     minted from their own frame (`RenderedDefinition.derived`). A cut that leaves nothing out
     renders the frame as it is.
@@ -2945,7 +2947,7 @@ def render_and_store(
         cut_party_totals(
             frame_chunks,
             roles=open_party_roles(identity, entity_columns),
-            parties=enrichment.parties,
+            parties=parties,
         )
         if options.without_party_totals and frame_mode is FrameMode.RAW
         else None
@@ -2968,6 +2970,7 @@ def render_and_store(
     )
     name_reads = _RenderReads.for_render(
         enrichment=enrichment,
+        parties=parties,
         citations=citations,
         family=(
             (f"{_STAT_VAR_REF_PREFIX}{subject_id}", subject_label)
@@ -2980,7 +2983,7 @@ def render_and_store(
         options,
         identity=identity,
         entity_columns=entity_columns,
-        parties=enrichment.parties,
+        parties=parties,
         datasets=cited_refs,
     )
     with phase("render"):
@@ -3684,6 +3687,9 @@ def render_and_store_frame_file(
         artifact_store=artifact_store,
         entity_columns=frame_entity_columns(next(frame_chunks()).columns),
         enrichment=enrichment,
+        # The frame layout writes no party field, and a spec with no identity holds no total
+        # to cut or split out, so the render reads no party row.
+        parties={},
         # The frame layout refuses a pivot, and `FRAME_FILE_OPTIONS` asks for no groupby, so
         # no fold ceiling is read.
         pivot_max_output_cells=0,

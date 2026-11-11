@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from dfo_frame_grammar import FRAME_GRAMMAR_VERSION, frame_sha256
 
+from code_index.types import PartyRow
 from dc_sdmx import ContainedIn, EntityFilter
 
 # `pipeline` imports this module during initialisation. `MaterialisationResult` resolves when
@@ -208,6 +209,7 @@ def _finish_member(
     materialiser_build: str,
     capability_version: str,
     enrichment: EnrichmentLookup,
+    parties: Mapping[str, PartyRow],
     dependencies: Dependencies,
     graph_revision: str | None,
 ) -> pipeline.MaterialisationResult:
@@ -222,7 +224,10 @@ def _finish_member(
     series_statistics = statistics_sink.finish()
     profile_start = time.perf_counter()
     output_profile = compute_output_profile(
-        outcome.frame, role_columns=request.declared_roles, enrichment=enrichment
+        outcome.frame,
+        role_columns=request.declared_roles,
+        enrichment=enrichment,
+        parties=parties,
     )
     output_profile_seconds = time.perf_counter() - profile_start
     method_periods: dict[str, tuple[str, str]] = {}
@@ -323,6 +328,7 @@ def _finish_group(
     materialiser_build: str,
     capability_version: str,
     enrichment: EnrichmentLookup,
+    parties: Mapping[str, PartyRow],
     dependencies: Dependencies,
     graph_revision: str | None,
     absent_reads_zero: bool = False,
@@ -343,6 +349,7 @@ def _finish_group(
         outcome.frame_chunks,
         role_columns=requests[0].declared_roles,
         enrichment=enrichment,
+        parties=parties,
     )
     output_profile_seconds = time.perf_counter() - profile_start
 
