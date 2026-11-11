@@ -53,7 +53,7 @@ from assembler.bind import (
     selects_per_period,
     without_unselected_points,
 )
-from assembler.catalogue import CatalogueRelease, without_select_list_cap
+from assembler.catalogue import CatalogueRelease
 from assembler.errors import (
     AssemblerRefusal,
     BindingInvalid,
@@ -148,7 +148,7 @@ def _build_candidate(
     if is_create:
         member = _resolve_type(intent=patch, release=release)
         _validate_intent(
-            schema=release.intent_schemas_tolerant[member],
+            schema=release.write_schemas_tolerant[member],
             intent=patch,
             release=release,
             member=member,
@@ -158,14 +158,14 @@ def _build_candidate(
         assert current is not None  # guaranteed by write_component before this is called
         member = cast(str, current.stored_intent["type"])
         _validate_intent(
-            schema=release.intent_schemas_tolerant[member],
+            schema=release.write_schemas_tolerant[member],
             intent=patch,
             release=release,
             member=member,
         )
         merged = merge_intent(current=current.stored_intent, patch=patch)
     _validate_intent(
-        schema=release.intent_schemas[member], intent=merged, release=release, member=member
+        schema=release.write_schemas[member], intent=merged, release=release, member=member
     )
     if "select" in merged:
         # The stored intent and the component it draws do not depend on the order a caller
@@ -867,12 +867,10 @@ def _validate_intent(
 ) -> None:
     """Validates an intent and raises `SchemaInvalid` for the first violation.
 
-    A line chart's intent is validated without its select array's `maxItems`, the series cap
-    a write checks only where it applies (`without_select_list_cap`,
-    `_refuse_line_chart_list_past_cap`). Missing required fields carry the member's minimal
-    intent. Other errors carry its legal field names."""
-    if member == "line_chart":
-        schema = without_select_list_cap(schema)
+    `schema` is the member's write schema (`CatalogueRelease.write_schemas`), so a line
+    chart's intent is validated without its select array's `maxItems`, the series cap a
+    write checks only where it applies (`_refuse_line_chart_list_past_cap`). Missing required
+    fields carry the member's minimal intent. Other errors carry its legal field names."""
     validator = jsonschema.Draft202012Validator(schema)
     errors = sorted(validator.iter_errors(intent), key=jsonschema.exceptions.relevance)
     if not errors:

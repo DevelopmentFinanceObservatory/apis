@@ -47,6 +47,12 @@ class CatalogueRelease:
     retry_modes: Mapping[str, str]
     line_chart_max_series: int
     """Series a `line_chart` draws, the `maxItems` of its select's one array."""
+    write_schemas: Mapping[str, Mapping[str, object]]
+    """`intent_schemas` as a write validates against them: `line_chart`'s without its select
+    array's `maxItems` (`without_select_list_cap`), the series cap a write checks only where
+    it applies."""
+    write_schemas_tolerant: Mapping[str, Mapping[str, object]]
+    """`intent_schemas_tolerant` as a write validates against them, as `write_schemas`."""
     referenced_schemas: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
 
 
@@ -187,6 +193,16 @@ def without_select_list_cap(schema: Mapping[str, object]) -> dict[str, object]:
     }
 
 
+def _write_schemas(
+    schemas: Mapping[str, Mapping[str, object]],
+) -> Mapping[str, Mapping[str, object]]:
+    """`schemas` with `line_chart`'s select list cap dropped (`without_select_list_cap`)."""
+    return {
+        member: without_select_list_cap(schema) if member == "line_chart" else schema
+        for member, schema in schemas.items()
+    }
+
+
 def load_release(*, catalogue_dir: Path | None = None) -> CatalogueRelease:
     """Loads and digest-verifies a catalogue bundle, and the schemas it references, into
     `CatalogueRelease`.
@@ -230,6 +246,8 @@ def load_release(*, catalogue_dir: Path | None = None) -> CatalogueRelease:
         line_chart_max_series=_line_chart_max_series(
             tolerant=intent_schemas_tolerant["line_chart"]
         ),
+        write_schemas=_write_schemas(intent_schemas),
+        write_schemas_tolerant=_write_schemas(intent_schemas_tolerant),
         referenced_schemas={
             schema_id: json.loads(content) for schema_id, content in referenced.items()
         },
