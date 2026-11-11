@@ -954,10 +954,33 @@ def test_a_frame_missing_a_shown_row_refuses(frame_store, revision_store, releas
         _export(created, frame_store=frame_store, revision_store=revision_store)
 
 
+_CONSTANT_USD = {"currency": "USD", "prices": "constant", "base_year": 2024}
+_PERSON = {"stat_var": "dcid:Count_Person"}
+
+
+@pytest.mark.parametrize(
+    ("unit", "stored_key", "drawn_key"),
+    [
+        pytest.param(
+            {**_CONSTANT_USD, "deflation_basis": "donor"},
+            "USD/constant/2024",
+            "USD/constant/2024/donor",
+            id="converted",
+        ),
+        pytest.param(
+            {"numerator": {**_CONSTANT_USD, "deflation_basis": "donor"}, "denominator": _PERSON},
+            '{"denominator":{"stat_var":"dcid:Count_Person"},'
+            '"numerator":{"base_year":2024,"currency":"USD","prices":"constant"}}',
+            '{"denominator":{"stat_var":"dcid:Count_Person"},'
+            '"numerator":{"base_year":2024,"currency":"USD","deflation_basis":"donor",'
+            '"prices":"constant"}}',
+            id="composed",
+        ),
+    ],
+)
 def test_coordinates_stored_without_a_deflation_basis_match_a_re_minted_frame(
-    frame_store, revision_store, release_registry
+    unit, stored_key, drawn_key, frame_store, revision_store, release_registry
 ):
-    unit = {"currency": "USD", "prices": "constant", "base_year": 2024, "deflation_basis": "donor"}
     frame = Frame.build(
         role_keys=("recipient",),
         rows=[
@@ -985,12 +1008,10 @@ def test_coordinates_stored_without_a_deflation_basis_match_a_re_minted_frame(
     )
     records = revision_store._revisions[created.component_id]
     stored = [
-        {**entry, "coordinates": {**entry["coordinates"], "unit": "USD/constant/2024"}}
+        {**entry, "coordinates": {**entry["coordinates"], "unit": stored_key}}
         for entry in records[-1].series_coordinates
     ]
-    assert {entry["coordinates"]["unit"] for entry in records[-1].series_coordinates} == {
-        "USD/constant/2024/donor"
-    }
+    assert {entry["coordinates"]["unit"] for entry in records[-1].series_coordinates} == {drawn_key}
     records[-1] = dataclasses.replace(records[-1], series_coordinates=stored)
 
     rows = _csv_rows(_export(created, frame_store=frame_store, revision_store=revision_store).data)

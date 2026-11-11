@@ -621,30 +621,55 @@ def _constant(currency, basis=None):
     return unit if basis is None else {**unit, "deflation_basis": basis}
 
 
+def _per_person(currency, basis=None):
+    return {
+        "numerator": _constant(currency, basis),
+        "denominator": {"stat_var": "dcid:Count_Person"},
+    }
+
+
+_USD_PER_PERSON = (
+    '{"denominator":{"stat_var":"dcid:Count_Person"},'
+    '"numerator":{"base_year":2024,"currency":"USD","prices":"constant"}}'
+)
+
+
 @pytest.mark.parametrize(
-    ("bases", "bound"),
+    ("units", "value", "bound"),
     [
-        pytest.param(("donor", "donor"), "USD/constant/2024/donor", id="re-minted frame"),
-        pytest.param((None, None), "USD/constant/2024", id="frame without bases"),
+        pytest.param(
+            (_constant("USD", "donor"), _constant("EUR", "donor")),
+            "USD/constant/2024",
+            "USD/constant/2024/donor",
+            id="re-minted frame",
+        ),
+        pytest.param(
+            (_constant("USD"), _constant("EUR")),
+            "USD/constant/2024",
+            "USD/constant/2024",
+            id="frame without bases",
+        ),
+        pytest.param(
+            (_per_person("USD", "donor"), _per_person("EUR", "donor")),
+            _USD_PER_PERSON,
+            _USD_PER_PERSON.replace('"prices"', '"deflation_basis":"donor","prices"'),
+            id="composed unit on a re-minted frame",
+        ),
     ],
 )
-def test_a_stored_basis_less_unit_binds_the_one_cell_the_frame_holds_for_it(bases, bound):
-    usd_basis, eur_basis = bases
+def test_a_unit_without_a_basis_binds_the_one_cell_the_frame_holds_for_it(units, value, bound):
     rf = _unit_resolved_frame(
-        [
-            ["dcid:X", "country/ETH", _constant("USD", usd_basis), "2020", 1.0],
-            ["dcid:X", "country/ETH", _constant("EUR", eur_basis), "2020", 2.0],
-        ]
+        [["dcid:X", "country/ETH", unit, "2020", float(n)] for n, unit in enumerate(units)]
     )
     series = resolve_selectors(
         resolved_frame=rf,
-        selectors=[{"bindings": [{"dimension": "unit", "values": ["USD/constant/2024"]}]}],
+        selectors=[{"bindings": [{"dimension": "unit", "values": [value]}]}],
         window=None,
     )
     assert [dict(s.coordinates)["unit"] for s in series] == [bound]
 
 
-def test_a_stored_basis_less_unit_refuses_a_frame_holding_it_under_two_bases():
+def test_a_unit_without_a_basis_refuses_a_frame_holding_it_under_two_bases():
     rf = _unit_resolved_frame(
         [
             ["dcid:X", "country/ETH", _constant("USD", "donor"), "2020", 1.0],

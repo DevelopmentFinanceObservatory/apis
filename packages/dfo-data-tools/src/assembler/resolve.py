@@ -26,7 +26,7 @@ from assembler.ports import Continuation, DimensionView, ResolvedFrame, Structur
 from assembler.series_id import Coordinates, mint_series_ids
 from dfo_platform.codes import RegisteredLimitName
 from materialise.bundle_columns import MEASUREMENT_METHOD_COLUMN
-from materialise.unit_cells import StoredUnitAmbiguous, stored_unit_key
+from materialise.unit_cells import UnitKeyAmbiguous, bind_unit_key
 
 __all__ = [
     "COMPONENT_SERIES_LIMIT",
@@ -363,13 +363,13 @@ def _resolve_by_id(
     return match, groups[match]
 
 
-def _stored_unit_values(values: Sequence[str], *, held: frozenset[str]) -> tuple[str, ...]:
-    """A `unit` binding's values with each stored basis-less key read as the frame cell it
-    binds (`stored_unit_key`). A key the frame holds under several bases refuses as
+def _bound_unit_values(values: Sequence[str], *, held: frozenset[str]) -> tuple[str, ...]:
+    """A `unit` binding's values, each read as the frame cell it binds (`bind_unit_key`). A
+    value naming no deflation basis that the frame holds under several bases refuses as
     `BindingInvalid`, listing those cells."""
     try:
-        return tuple(stored_unit_key(value, held=held) for value in values)
-    except StoredUnitAmbiguous as exc:
+        return tuple(bind_unit_key(value, held=held) for value in values)
+    except UnitKeyAmbiguous as exc:
         raise BindingInvalid(
             pointer=f"/select/{UNIT_COLUMN}",
             dimension=UNIT_COLUMN,
@@ -404,7 +404,7 @@ def _resolve_by_bindings(
             )
         values = tuple(_binding_values(binding))
         if dimension_name == UNIT_COLUMN:
-            values = _stored_unit_values(values, held=legal_values[dimension_name])
+            values = _bound_unit_values(values, held=legal_values[dimension_name])
         unknown = [value for value in values if value not in legal_values[dimension_name]]
         if unknown:
             view = dimension_by_name[dimension_name]

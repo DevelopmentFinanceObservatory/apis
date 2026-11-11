@@ -439,6 +439,34 @@ def _converted_frame(frame_ref: FrameRef, *, bases: tuple[str | None, ...]):
     )
 
 
+def test_a_write_binding_a_key_without_a_basis_draws_the_frame_s_one_cell(
+    frame_store, revision_store, release_registry
+):
+    """A fresh `select` binding `unit` to `USD/constant/2024` draws the frame's one cell for
+    that currency, prices and base year, `USD/constant/2024/donor`."""
+    frame = _converted_frame(malaria_ethiopia_frame_ref(), bases=("donor",))
+    frame_store.put(resolved_frame=frame)
+    created = write_component(
+        intent={
+            "type": "line_chart",
+            "frame_ref": {
+                "spec_id": frame.frame_ref.spec_id,
+                "content_version": frame.frame_ref.content_version,
+            },
+            "select": {
+                "stat_var": "dcid:MalariaGrantDisbursements",
+                "recipient": "country/ETH",
+                "unit": "USD/constant/2024",
+            },
+        },
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+    (entry,) = revision_store._revisions[created.component_id][-1].series_coordinates
+    assert entry["coordinates"]["unit"] == "USD/constant/2024/donor"
+
+
 @pytest.mark.parametrize(
     ("bases", "refused"),
     [
