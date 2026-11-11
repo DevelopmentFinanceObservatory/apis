@@ -954,6 +954,52 @@ def test_a_frame_missing_a_shown_row_refuses(frame_store, revision_store, releas
         _export(created, frame_store=frame_store, revision_store=revision_store)
 
 
+def test_coordinates_stored_without_a_deflation_basis_match_a_re_minted_frame(
+    frame_store, revision_store, release_registry
+):
+    unit = {"currency": "USD", "prices": "constant", "base_year": 2024, "deflation_basis": "donor"}
+    frame = Frame.build(
+        role_keys=("recipient",),
+        rows=[
+            {**_row(recipient=recipient, period=str(year), value=float(year)), "unit": unit}
+            for recipient in ("country/ETH", "country/KEN")
+            for year in (2020, 2021, 2022)
+        ],
+    )
+    document = json.loads(canonical_frame_bytes(frame))
+    frame_store.put(
+        resolved_frame=ResolvedFrame(
+            frame_ref=_FRAME_REF,
+            frame=document,
+            structural_view=compute_structural_view(frame=document, continuation=None),
+            manifest={"schema_version": 1},
+            labels={},
+            retrieved_on=FIXTURE_RETRIEVED_ON,
+        )
+    )
+    created = write_component(
+        intent={**_INTENTS["line_chart"], "frame_ref": _frame_ref_body(_FRAME_REF)},
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+    records = revision_store._revisions[created.component_id]
+    stored = [
+        {**entry, "coordinates": {**entry["coordinates"], "unit": "USD/constant/2024"}}
+        for entry in records[-1].series_coordinates
+    ]
+    assert {entry["coordinates"]["unit"] for entry in records[-1].series_coordinates} == {
+        "USD/constant/2024/donor"
+    }
+    records[-1] = dataclasses.replace(records[-1], series_coordinates=stored)
+
+    rows = _csv_rows(_export(created, frame_store=frame_store, revision_store=revision_store).data)
+
+    assert [(row["series"], row["time_period"]) for row in rows] == _shown(
+        created.resolved_payload["component"]
+    )
+
+
 def test_a_note_holds_no_data(frame_store, revision_store, release_registry):
     created = write_component(
         intent={"type": "note_narration", "text": "Disbursements rose."},

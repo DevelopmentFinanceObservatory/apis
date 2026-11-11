@@ -17,7 +17,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import NamedTuple, cast
 
-from dfo_frame_grammar import TIME_PERIOD_COLUMN
+from dfo_frame_grammar import TIME_PERIOD_COLUMN, UNIT_COLUMN
 
 from assembler.errors import BindingInvalid, ResourceExhausted, escape_pointer_segment
 from assembler.frame_view import dimension_columns, facet_dimension_names, series_keys
@@ -26,6 +26,7 @@ from assembler.ports import Continuation, DimensionView, ResolvedFrame, Structur
 from assembler.series_id import Coordinates, mint_series_ids
 from dfo_platform.codes import RegisteredLimitName
 from materialise.bundle_columns import MEASUREMENT_METHOD_COLUMN
+from materialise.unit_cells import StoredUnitAmbiguous, stored_unit_key
 
 __all__ = [
     "COMPONENT_SERIES_LIMIT",
@@ -362,6 +363,22 @@ def _resolve_by_id(
     return match, groups[match]
 
 
+def _stored_unit_values(values: Sequence[str], *, held: frozenset[str]) -> tuple[str, ...]:
+    """A `unit` binding's values with each stored basis-less key read as the frame cell it
+    binds (`stored_unit_key`). A key the frame holds under several bases refuses as
+    `BindingInvalid`, listing those cells."""
+    try:
+        return tuple(stored_unit_key(value, held=held) for value in values)
+    except StoredUnitAmbiguous as exc:
+        raise BindingInvalid(
+            pointer=f"/select/{UNIT_COLUMN}",
+            dimension=UNIT_COLUMN,
+            legal_values=exc.cells,
+            truncated=False,
+            detail=str(exc),
+        ) from exc
+
+
 def _resolve_by_bindings(
     *,
     selector_index: int,
@@ -386,6 +403,8 @@ def _resolve_by_bindings(
                 detail=f"{dimension_name!r} is not a dimension this frame declares",
             )
         values = tuple(_binding_values(binding))
+        if dimension_name == UNIT_COLUMN:
+            values = _stored_unit_values(values, held=legal_values[dimension_name])
         unknown = [value for value in values if value not in legal_values[dimension_name]]
         if unknown:
             view = dimension_by_name[dimension_name]

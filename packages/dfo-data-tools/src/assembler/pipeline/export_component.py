@@ -3,7 +3,8 @@
 `export_component_data` reads one stored revision and collects the `(series, period)` pairs the
 card shows a value for: each valued point of a line or bar chart series, each valued table row, and
 a stat card's headline period plus both of its change basis periods. Series ids map to frame
-coordinates through the revision's `series_coordinates`. The frame loads through `FrameStore.load`,
+coordinates through the revision's `series_coordinates`, a stored `unit` coordinate read as the
+frame cell it binds (`unit_cells.stored_unit_key`). The frame loads through `FrameStore.load`,
 which rechecks revocation and expiry, and a frame row is kept when its period and either of its
 `frame_view.series_keys` keys, its own cells or its key under the frame's continuation
 (`ResolvedFrame.continuation`), as `resolve_selectors` groups them, name a shown pair. Every shown
@@ -73,7 +74,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, time
 from typing import Literal, cast
 
-from dfo_frame_grammar import STAT_VAR_COLUMN, STATUS_COLUMN, TIME_PERIOD_COLUMN, VALUE_COLUMN
+from dfo_frame_grammar import (
+    STAT_VAR_COLUMN,
+    STATUS_COLUMN,
+    TIME_PERIOD_COLUMN,
+    UNIT_COLUMN,
+    VALUE_COLUMN,
+)
 from dfo_frame_grammar.grammar import unit_cell_from_json
 
 from assembler.bind import role_columns
@@ -122,6 +129,7 @@ from materialise.formats import (
 )
 from materialise.projection import period_cell, period_grain
 from materialise.reshape import Table as ReshapeTable
+from materialise.unit_cells import StoredUnitAmbiguous, stored_unit_key
 
 __all__ = [
     "ComponentExportFile",
@@ -298,6 +306,7 @@ def export_component_data(
     if resolved_frame is None:
         resolved_frame = frame_store.load(frame_ref=frame_ref)
     keyed = _keyed_frame(resolved_frame)
+    shown = _bind_stored_units(shown, keyed=keyed, mismatch=mismatch)
     table, provenance_refs, generated = _export_table(
         resolved_frame=resolved_frame,
         rows=_shown_rows(keyed=keyed, shown=shown, mismatch=mismatch),
@@ -558,6 +567,38 @@ def _keyed_frame(resolved_frame: ResolvedFrame) -> _KeyedFrame:
         rows=rows,
         keys=tuple(zip(cell_keys, continued_keys, strict=True)),
     )
+
+
+def _bind_stored_units(
+    shown: Sequence[_ShownPoint],
+    *,
+    keyed: _KeyedFrame,
+    mismatch: Callable[[str], ComponentExportMismatch],
+) -> tuple[_ShownPoint, ...]:
+    """`shown` with each stored `unit` coordinate read as the frame cell it binds
+    (`stored_unit_key`), so coordinates stored before converted units named their deflation
+    basis match a frame whose cells name it. A unit the frame holds under several bases
+    raises `ComponentExportMismatch`."""
+    held = frozenset(
+        value
+        for row_keys in keyed.keys
+        for key in row_keys
+        for name, value in key
+        if name == UNIT_COLUMN and isinstance(value, str)
+    )
+
+    def bound(point: _ShownPoint) -> _ShownPoint:
+        coordinates = dict(point.coordinates)
+        unit = coordinates.get(UNIT_COLUMN)
+        if not isinstance(unit, str):
+            return point
+        try:
+            coordinates[UNIT_COLUMN] = stored_unit_key(unit, held=held)
+        except StoredUnitAmbiguous as exc:
+            raise mismatch(str(exc)) from exc
+        return dataclasses.replace(point, coordinates=_coordinate_key(coordinates))
+
+    return tuple(bound(point) for point in shown)
 
 
 def _shown_rows(

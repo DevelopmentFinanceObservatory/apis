@@ -6,22 +6,26 @@ Presentation groups, lists and selects a unit by `unit_key_text`. `shared_unit_k
 one case in which two different cells share that text. `unit_cell_text` is the text a tabular
 writer gives a `Frame` cell that holds a converted or composed unit. `unit_identity` is what
 two series' units are compared by on a card, and `composed_unit_words` is a composed unit's two
-sides as display text.
+sides as display text. `stored_unit_key` matches a unit key stored before converted units
+named their deflation basis against the cells of the frame being drawn.
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
-from typing import cast
+from collections.abc import Collection, Mapping, Sequence
+from typing import cast, get_args
 
+from dfo_frame_grammar import DeflationBasis
 from dfo_frame_grammar.grammar import ComposedUnit, UnitRequest
 from dfo_spec_kit.identity import canonicalize
 
 __all__ = [
+    "StoredUnitAmbiguous",
     "composed_unit_sides",
     "composed_unit_words",
     "shared_unit_key",
+    "stored_unit_key",
     "unit_cell_text",
     "unit_identity",
     "unit_key_text",
@@ -95,6 +99,53 @@ def shared_unit_key(*, cells: Sequence[object]) -> str | None:
             if key in refs:
                 return key
     return None
+
+
+_DEFLATION_BASES: frozenset[str] = frozenset(get_args(DeflationBasis))
+
+
+class StoredUnitAmbiguous(ValueError):
+    """A stored unit key without a deflation basis meets a frame holding that unit under more
+    than one basis. `cells` are those cells' key texts, sorted."""
+
+    def __init__(self, key: str, *, cells: Sequence[str]) -> None:
+        super().__init__(
+            f"stored unit {key!r} names no deflation basis, and the frame holds it under "
+            f"{len(cells)}: {', '.join(cells)}"
+        )
+        self.key = key
+        self.cells = tuple(cells)
+
+
+def stored_unit_key(key: str, *, held: Collection[str]) -> str:
+    """Returns the key text of the frame cell a stored unit key binds, among `held`, the key
+    texts of the frame's `unit` cells.
+
+    A key `held` contains binds itself, so a key that names its basis matches exactly. A key
+    stored before converted units named their deflation basis reads
+    `currency/prices[/base_year]`. Where the frame holds that unit under exactly one basis,
+    as `currency/prices[/base_year]/basis`, the key binds that cell, and where it holds none
+    the key is returned as it is. Composed units are matched by their JCS text alone.
+
+    New writes name the basis, so this rule applies only to stored select values and series
+    coordinates. Select matching (`assembler.resolve`) and export coordinate matching
+    (`assembler.pipeline.export_component`) both call it, so the two read a stored unit
+    alike. It can be deleted once no stored revision holds a basis-less constant unit.
+
+    Raises:
+        StoredUnitAmbiguous: the frame holds the unit under more than one basis.
+    """
+    if key in held:
+        return key
+    prefix = f"{key}/"
+    cells = sorted(
+        cell
+        for cell in held
+        if cell.startswith(prefix) and cell.removeprefix(prefix) in _DEFLATION_BASES
+    )
+    if len(cells) > 1:
+        raise StoredUnitAmbiguous(key, cells=cells)
+    return cells[0] if cells else key
 
 
 def unit_identity(
