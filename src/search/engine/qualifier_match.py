@@ -479,7 +479,7 @@ def match_unsupported_qualifier_phrases(
 
     Each term is compared with whole word tokens, so ``non-concessionality`` and
     ``non-concessional-like`` do not match the term ``non-concessional``. A word inside one
-    of the character ranges ``read`` (a span read as a code) is skipped: "climate" in
+    of the character ranges ``read`` (a span read as a code) is skipped, as "climate" in
     "investment climate" is part of a code's name.
     """
     return tuple(
@@ -551,10 +551,10 @@ def measure_values_named(text: str, measure_index: MeasureIndex) -> frozenset[st
     (`measure_value_names`) as a run of its words, or one a content word of `text` names,
     a word every name of the value holds. "attributed climate finance" names
     `attributedAmount`, whose names are "attributed amount", "attributed aid" and
-    "attributed to donors"; "climate finance" names none.
+    "attributed to donors". "climate finance" names none.
 
     The bare-word rule reads any content word of `text` wherever it stands, and the function
-    reads no negation: "excluding attributed amounts" names `attributedAmount` as
+    reads no negation, so "excluding attributed amounts" names `attributedAmount` as
     "attributed amounts" does. On the raw-text door the exclusion read blanks an excluded
     stretch before any reader (`exclusion_read.admit_exclusions`), so neither the variable
     nor a stretch no reader claims (`source_spans.unclaimed_stretches`) holds an excluded

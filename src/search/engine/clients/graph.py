@@ -321,7 +321,7 @@ def with_reading_families(
 
     The closure stays within the five-tuples among the hits, so a phrase brings in no
     family of a five-tuple the resolve did not return, and a phrase some family among the
-    hits reads brings in none: "health aid" with CRS rows recalled gains nothing.
+    hits reads brings in none. "Health aid" with CRS rows recalled gains nothing.
 
     A row added here is the family's broadest admitted row (`_broadest_admitted_row`),
     takes the best score of the five-tuple's hits, and is marked `DetectedSV.rival` as a

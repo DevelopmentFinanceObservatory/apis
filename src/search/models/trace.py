@@ -81,8 +81,8 @@ class ResolvedQualifier(StrictModel):
 
     `held_by` names, on an `"unavailable"` term the elected shape leaves unread, the
     datasets serving another table family of the answer's five-tuple and role class that
-    records one of its codes (`phase_rank_bind._rival_held_qualifiers`): "adaptation" on
-    a CRS answer names ONE Data Climate Finance. The refusal names them.
+    records one of its codes (`phase_rank_bind._rival_held_qualifiers`). For "adaptation"
+    on a CRS answer it names ONE Data Climate Finance. The refusal names them.
     """
 
     text: str = Field(

@@ -411,8 +411,10 @@ class DatasetDeclaration:
     `noted_words` lists the words a question uses for the table's rows that their figures
     do not mean exactly (`NotedWord`): "aid" on the climate finance tables, whose figures
     count other official flows as well as ODA. A part answering from the table reads the
-    word and states the note. Recall and the family election read no noted word, so the
-    word draws no question to the table, and "aid to Kenya" keeps its DAC and CRS answers.
+    word and states the note. Recall reads no noted word, and the family election reads one
+    only on a family that reads a phrase of its own codes, so the word alone draws no
+    question to the table: "climate ODA" answers from it, and "aid to Kenya" keeps its DAC
+    and CRS answers.
 
     `party_words` lists the words that name a party of the table's rows (`PartyWord`).
     "Multilateral" names DAC2a's and DAC2b's provider `DACMultilaterals`, the DAC's

@@ -807,10 +807,10 @@ class ResolveState:
     # Verbatim query for qualifier matching; set only for a single-variable
     # raw-text request, where query-level phrases have an unambiguous owner.
     query_text: str | None = None
-    # The stretches of `query_text` no reader of the extraction claims, set with it: the
+    # The stretches of `query_text` no reader of the extraction claims, set with it by the
     # raw-text door's `source_spans.unclaimed_stretches`. The part names the measure values
     # they name as it names those of its variable (`phase_rank_bind._phase_bind`), so
-    # "attributed" left outside the variable still names attributed amounts.
+    # "attributed" left outside the variable names attributed amounts as well.
     unclaimed: tuple[str, ...] = ()
     # Typed qualifier sidecar for this variable, populated by raw-text extraction.
     # Its spans address each phrase, not `variable`; `detect_query` includes its recall text.

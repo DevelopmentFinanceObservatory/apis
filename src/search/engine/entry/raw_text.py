@@ -877,10 +877,11 @@ class _ExtractionPrep:
     `text` is the query with each stretch it asks to leave out blanked, which every reader of
     its words takes. `unclaimed` are the stretches of `text` that hold a word no part,
     entity, date, unit, operation or source mention claims
-    (`source_spans.unclaimed_stretches`): "attributed" in "Germany attributed climate
-    finance commitments 2022" where extraction reads the variable "climate finance
-    commitments". A blanked word is in none. `exclusions` are the blanked stretches, less
-    each that leaves out sources alone, which its mentions apply (`SourceScan.source_stretches`), `exclusion_warnings` one
+    (`source_spans.unclaimed_stretches`). In "Germany attributed climate finance
+    commitments 2022", where extraction reads the variable "climate finance commitments",
+    "attributed" is one. A blanked word is in none. `exclusions` are the blanked stretches,
+    less each that leaves out sources alone, which its mentions apply
+    (`SourceScan.source_stretches`), `exclusion_warnings` one
     `query_qualifier_dropped` warning for each and `exclusion_targets` the positions in
     `unique` of the measures each qualifies (`SourceScan.stretch_targets`), both parallel to
     it. `per_variable_exclusions` runs parallel to `unique`: the stretches qualifying each

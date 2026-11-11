@@ -183,8 +183,8 @@ class ShapeDraft:
     # not build.
     scored_members: frozenset[str] = field(default=frozenset(), compare=False)
     # True when every confirmed member is a row recall added for its five-tuple past the
-    # cut (`clients.graph.with_rival_families`, `with_reading_families`). Such a shape displaces only shapes of its
-    # own five-tuple (`place_roles.without_unasked_axes`).
+    # cut (`clients.graph.with_rival_families`, `with_reading_families`). Such a shape
+    # displaces only shapes of its own five-tuple (`place_roles.without_unasked_axes`).
     rival: bool = field(default=False, compare=False)
     # True when every confirmed member is a rival row recall added for a query phrase no
     # recalled family of its five-tuple reads (`clients.graph.with_reading_families`).

@@ -306,7 +306,8 @@ def no_data_phrase(
 
     For qualifier_not_bound, any ``unbound`` terms take precedence and
     identify categories the search could not apply, each dataset that records one of them
-    (`ResolvedQualifier.held_by`) named after (`_held_by_sentences`). Otherwise, ``no_vocabulary``
+    (`ResolvedQualifier.held_by`) named after (`_held_by_sentences`). Otherwise,
+    ``no_vocabulary``
     terms name distinctions the data does not record and advise omitting them.
     With neither, a part read under a source ``scope`` says no series comes from the
     sources it names, or from any source but those it leaves out (`_scope_verdict`).

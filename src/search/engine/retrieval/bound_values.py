@@ -4006,8 +4006,9 @@ def elect_five_tuple_family(
     1. A family reading fewer of the query's phrases than another (`reads_fewer`) leaves.
        `phrases_read` gives the phrases each family's own codes read
        (`query_phrases_read`), and on the region path the words its datasets note beside
-       them (`phase_rank_bind._phrases_reader`). "Imputed multilateral ODA to basic education" reads the
-       sector only on the sectors table, so DAC2a's imputed multilateral total leaves, and
+       them (`phase_rank_bind._phrases_reader`). "Imputed multilateral ODA to basic
+       education" reads the sector only on the sectors table, so DAC2a's imputed multilateral
+       total leaves, and
        "net disbursements" reads a netting basis only the CRS rows hold, so the debt
        series leaves. The rule holds for every pair, indexed or not. `stated_words` gives
        the query words a family's datasets state of every row it would read. The family

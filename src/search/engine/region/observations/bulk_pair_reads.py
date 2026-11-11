@@ -20,8 +20,8 @@ role columns.
 A bulk request names the union of its reads' dcids on each role, so it asks for exactly the
 reads' series only when its reads differ on one role at most. A time period's reads of a
 group are therefore split into requests whose reads share every role's dcids but one, and
-share the dcids of that one role per variable: the role that gives the fewest requests. The
-request is split further by the client when it exceeds the URL budget.
+share the dcids of that one role per variable. The varying role is the one that gives the
+fewest requests. The client splits a request further when it exceeds the URL budget.
 
 Every case the selection cannot reproduce goes to the wrapped client, request by request: a
 request no planned read matches, a bulk read that fails, crosses its row or byte cap or the
@@ -84,8 +84,8 @@ class PlannedRead:
         return self.declared_roles, frozenset(role for role, _dcids in self.bound)
 
     def requests(self, period: _Period) -> bool:
-        """Whether materialise's read may ask for `period`: no time filter outside `latest`;
-        `LATEST`, or the one year its member elected, under it
+        """Whether materialise's read may ask for `period`. Outside `latest` it sets no time
+        filter. Under `latest` it asks for `LATEST` or the one year its member elected
         (`materialise.generation._time_period_for_window`)."""
         if not self.latest:
             return period is None
@@ -134,7 +134,7 @@ def _bound_key(entities: Mapping[str, EntityFilter]) -> _Bound | None:
 
 def _plan_requests(reads: Sequence[PlannedRead]) -> dict[tuple[str, _Bound], _Request]:
     """`reads`, which share a group, split into requests whose product of filters is the set of
-    series their reads need: the reads of a request share every role's dcids but those of one
+    series their reads need. The reads of a request share every role's dcids but those of one
     role `varying`, and share the union of that role's dcids per variable. The role chosen is
     the one giving the fewest requests, the first of the group's filtered roles on a tie."""
     roles = [role for role, _dcids in reads[0].bound]

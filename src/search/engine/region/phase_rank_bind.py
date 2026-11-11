@@ -1607,7 +1607,7 @@ def _rival_held_qualifiers(state: ResolveState) -> tuple[ResolvedQualifier, ...]
 
     A word counts as read where a span of the shape's own reading covers it, a menu choice
     reads it (`_chosen_ranges`), the series or its datasets state it, as
-    `_unread_qualifier_runs` reads them, or those datasets note it (`dataset_noted_words`):
+    `_unread_qualifier_runs` reads them, or those datasets note it (`dataset_noted_words`).
     "bilateral" in "bilateral ODA", DAC1 aid type 1015, is read on a CRS shape, and "ODA" in
     "climate ODA" on ONE Data Climate Finance, which notes that its figures count other
     official flows too. A shape the index does not carry has no family to compare, and a
@@ -1670,8 +1670,8 @@ def _bears_roles(family: IndexFamily) -> bool:
 def _serving_datasets(families: Sequence[IndexFamily], index: CodeIndex) -> list[GraphRef]:
     """The declared datasets an unscoped question answers `families` from
     (`code_index.members.eligible_among`), lowest rank first within each family, each once,
-    by provenance and label: ONE Data Climate Finance for the climate finance family, whose
-    other publishers are opt-in."""
+    by provenance and label. For the climate finance family that is ONE Data Climate Finance,
+    whose other publishers are opt-in."""
     served: dict[str, GraphRef] = {}
     for family in families:
         declared = sorted(
@@ -1693,8 +1693,8 @@ def _unavailable_qualifiers(state: ResolveState) -> list[ResolvedQualifier]:
     elected shape as its near match.
 
     They are the terms another family of the shape's five-tuple records and the shape
-    leaves unread (`_rival_held_qualifiers`): "adaptation" on a CRS answer, which ONE Data
-    Climate Finance records. They are also the terms naming only codes no shape can bind
+    leaves unread (`_rival_held_qualifiers`), such as "adaptation" on a CRS answer, which ONE
+    Data Climate Finance records. They are also the terms naming only codes no shape can bind
     (`_unbindable_qualifiers`): "multilateral ODA" names DAC1 aid type 2000, which a CRS part
     cannot apply, so the CRS ODA answer is the near match. On a part naming a source
     (`_names_source`) both join in every coverage mode, with the terms none of its tables'
@@ -1994,8 +1994,8 @@ def _phrases_reader(
     own vocabulary's matches and ties in `query`, each shape read once.
 
     A family reading a phrase of its own codes also reads each word its datasets note that
-    the part states (`dataset_noted_words`), so a noted word qualifies a reading and never
-    starts one. "Climate ODA from Germany to Kenya" reads {"climate", "oda"} on ONE Data
+    the part states (`dataset_noted_words`), so a noted word only qualifies a reading.
+    "Climate ODA from Germany to Kenya" reads {"climate", "oda"} on ONE Data
     Climate Finance and {"oda"} on the CRS, so the family election keeps the climate
     table; "ODA to Kenya" reads nothing of the climate table's own codes, so its noted
     "ODA" reads nothing there either."""
@@ -2534,8 +2534,8 @@ def dataset_noted_words(
     """The noted words of the part that every dataset `shape` answers from declares
     (`DatasetDeclaration.noted_words`, `bound_values.declared_datasets`), each dataset's
     declaration in turn. The part states a word as it states a dataset's stated word
-    (`place_roles.part_states`): "aid" in "adaptation aid from Germany" on ONE Data Climate
-    Finance.
+    (`place_roles.part_states`), such as "aid" in "adaptation aid from Germany" on ONE Data
+    Climate Finance.
 
     The coverage rule reads each such word (`_conversational_words`) and the answer states
     each one's note (`phase_election._repair_bindings`). The family election reads one
@@ -2557,7 +2557,7 @@ def dataset_noted_words(
 
 def _noted_words_read(shape: ShapeDraft, index: CodeIndex, state: ResolveState) -> frozenset[str]:
     """The casefolded words of each entry the datasets `shape` answers from note that the
-    part states (`dataset_noted_words`): "aid", and "official", "development" and
+    part states (`dataset_noted_words`), such as "aid", and "official", "development" and
     "assistance" where the part states "official development assistance"."""
     return frozenset(
         part for noted in dataset_noted_words(shape, index, state) for part in noted.word.split(" ")
@@ -4306,8 +4306,8 @@ def _resolve_query_qualifiers(state: ResolveState) -> list[ResolvedQualifier]:
     5. Match the words each code system the shape declares has no vocabulary for
        (``CodeSystemDeclaration.no_vocabulary_terms``) in variable text and optional query
        text. Record ``no_vocabulary`` and refuse the qualifier. A word inside a phrase
-       an earlier record reads as codes is no term: "climate" in "investment climate",
-       a CRS purpose name.
+       an earlier record reads as codes is skipped, as "climate" is in "investment
+       climate", a CRS purpose name.
     6. Typed-sidecar spans use the same admission and disposition rules, then deduplicate
        against text spans and ties. Their offsets belong to each sidecar phrase and stay out
        of the overlap check on ``variable``.
@@ -4776,10 +4776,10 @@ class _HousePolicyStep:
     a basis measure axis alone (`_basis_variants`), so the declared preference on that
     axis (`house_policy` `declared_basis`) decides between the two whatever the binder
     scored them. `named_values` are the measure values the part's words name
-    (`qualifier_match.measure_values_named`), which that policy reads: those its variable
-    names and those the query's stretches no reader of the extraction claims name
-    (`ResolveState.unclaimed`), so a measure word extraction leaves outside the variable
-    still counts."""
+    (`qualifier_match.measure_values_named`), which that policy reads. They are the values
+    its variable names and those the query's stretches no reader of the extraction claims
+    name (`ResolveState.unclaimed`), so a measure word extraction leaves outside the
+    variable counts as well."""
 
     shapes: Sequence[ShapeDraft]
     frame: Frame

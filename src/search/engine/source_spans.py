@@ -181,8 +181,8 @@ def unclaimed_words(
     query: str, *, claimed: Iterable[str], read_connectives: frozenset[int] = frozenset()
 ) -> tuple[str, ...]:
     """The words of `query` no `claimed` text holds, casefolded and in query order, less
-    `FUNCTION_WORDS` and the connectives at `read_connectives`: the content words of its
-    `unclaimed_stretches`."""
+    `FUNCTION_WORDS` and the connectives at `read_connectives`. These are the content words
+    of the `unclaimed_stretches`."""
     stretches = unclaimed_stretches(query, claimed=claimed, read_connectives=read_connectives)
     return tuple(
         dict.fromkeys(

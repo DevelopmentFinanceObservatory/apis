@@ -302,7 +302,7 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
 # Data's commitment series, and the UNFCCC reports give each party's own totals by its own
 # method, so each answers only a question that names it. ONE Data Climate Finance and the CRDF
 # count every official provider's climate finance, other official flows as well as ODA, so
-# "aid", "ODA" and "official development assistance" name their rows loosely: a part
+# "aid", "ODA" and "official development assistance" name their rows loosely. A part
 # answering from either reads the word and says the figure is wider than aid alone
 # (`DatasetDeclaration.noted_words`). A UNFCCC report totals what its party counts by its own
 # method, which can reach past official finance, so no one note holds and the words stay
@@ -1100,7 +1100,7 @@ CODE_SYNONYMS: Mapping[str, tuple[str, ...]] = {
     "DAC1AidType1820": ("refugee costs in donor countries",),
     "DAC2aAidType106": ("imputed",),
     # The climate tables' measure labels name the total ("climate finance commitments"), so
-    # the heading's noun is also a query's: "climate finance" and bare "climate" ("Germany
+    # the heading's noun is also a query's. "climate finance" and bare "climate" ("Germany
     # climate commitments") read it. Matching is per vocabulary, so the words read nothing on
     # a CRS or DAC shape, and "investment climate" stays the longer CRS purpose span.
     "ClimateChangePolicyObjective": ("climate finance", "climate"),

@@ -729,9 +729,9 @@ def _bulk_pair_sdmx(
     member_facts: Mapping[str, MemberFacts] | None,
     deadline: float | None,
 ) -> MaterialiseSdmxClient:
-    """The SDMX client `dispatches` read through: one that serves every SDMX read of theirs
-    from one bulk request per time period (`bulk_pair_reads.BulkPairSdmx`). A UN variable
-    reads the graph and makes no SDMX read."""
+    """The SDMX client `dispatches` read through. It serves every SDMX read of theirs from one
+    bulk request per time period (`bulk_pair_reads.BulkPairSdmx`). A UN variable reads the
+    graph and makes no SDMX read."""
     bulk = BulkPairSdmx(
         inner,
         [
@@ -748,7 +748,7 @@ def _bulk_pair_sdmx(
         ],
         deadline=deadline,
     )
-    # Materialise types its client as the concrete `SdmxClient`; `BulkPairSdmx` serves the
+    # Materialise types its client as the concrete `SdmxClient`. `BulkPairSdmx` serves the
     # one method a preview read streams by and hands every other call to `inner`.
     return cast(MaterialiseSdmxClient, bulk)
 
