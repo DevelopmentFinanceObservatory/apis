@@ -356,15 +356,23 @@ def answer_headline(
     plan: ReadPlan, coverage_index: CoverageIndex, *, date_request: DateRequest | None
 ) -> Headline | None:
     """The headline of a role-bearing plan: the latest year its served rows reach inside its
-    years, with that year's counts, and under `latest` the newest year a member elected
-    (`latest_election`), with the counts of the members serving it. The rows a conversion
-    leaves out (`ReadPlan.omitted`) count for nothing. None for a plan that is not
-    role-bearing, and for a span counted back from now that has not settled its years: its
-    plan reads every span it may settle on (`extract.read_window`), and its answer states
-    the headline of the range it settles on (`region.trailing.settle_trailing`)."""
-    if plan.roles is None or (date_request is not None and date_request.trailing is not None):
+    years clipped to the years the request names (`DateRequest.window`), with that year's
+    counts, and under `latest` the newest year a member elected (`latest_election`), with
+    the counts of the members serving it. The rows a conversion leaves out
+    (`ReadPlan.omitted`) count for nothing. The clip keeps the count inside the years the
+    headline names: a span counted back from now that keeps its request reads every span it
+    may settle on (`extract.read_window`), years before the ones it names. None for a plan
+    that is not role-bearing."""
+    if plan.roles is None:
         return None
     window = plan.years if isinstance(plan.years, TimeWindow) else None
+    first = window.start_year if window is not None else None
+    last = window.end_year if window is not None else None
+    asked = date_request.window if date_request is not None else None
+    if asked is not None and asked.start_year is not None:
+        first = asked.start_year if first is None else max(first, asked.start_year)
+    if asked is not None and asked.end_year is not None:
+        last = asked.end_year if last is None else min(last, asked.end_year)
     elected = latest_election(plan, plan.years)
     return headline_from_coverage_index(
         coverage_index,
@@ -374,8 +382,8 @@ def answer_headline(
         date_request=date_request,
         served=counted_rows(plan, elected),
         excluded=coverage_exclusions(plan),
-        first_year=window.start_year if window is not None else None,
-        last_year=window.end_year if window is not None else None,
+        first_year=first,
+        last_year=last,
         elected=elected,
     )
 
