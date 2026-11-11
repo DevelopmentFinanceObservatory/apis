@@ -163,7 +163,7 @@
       conjunction: two_questions,
       probe: [stability],
     }
-  known_failure: { issue: 103, checks: [disposition, parts] }
+  known_failure: { issue: 1156, checks: [disposition, parts] }
   repeat: 5
   expect:
     parts:

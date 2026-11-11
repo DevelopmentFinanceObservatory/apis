@@ -151,12 +151,12 @@
 
 - id: dq-dac-050
   query: Korea total aid in 1980
-  why: Korea, named without a direction, gives ODA from 1987 and received it until 1999, so in 1980 only its receipts hold data and it is the recipient.
+  why: Korea gave ODA from 1987 and received it until 1999, so in 1980 it is the recipient, and the official donors' total takes the open donor side.
   tags: {theme: aid, entity: country, direction: destination_only, unit: default, time: year, operation: none, breakdown: none, door: raw_text, phrasing: casual}
   expect:
     definite:
       measure: {family: [dac2a.oda_net_received, dac2a.oda_gross_received]}
-      entities: [{dcid: country/KOR, role: destination}]
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KOR, role: destination}]
       window: {kind: range, start: 1980, end: 1980}
 
 - id: dq-dac-051
