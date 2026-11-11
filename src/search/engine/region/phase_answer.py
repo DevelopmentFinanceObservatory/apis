@@ -1230,13 +1230,11 @@ async def _finished_scope(state: ResolveState, spec: Spec) -> ScopeDecision:
         spec.spec_id,
     )
     state.scope_decision = await asyncio.to_thread(
-        functools.partial(
-            decide_guarded,
-            spec,
-            selection=state.scope_selection,
-            operations=state.operations,
-            coverage=state.coverage,
-        )
+        decide_guarded,
+        spec,
+        selection=state.scope_selection,
+        operations=state.operations,
+        coverage=state.coverage,
     )
     return state.scope_decision
 

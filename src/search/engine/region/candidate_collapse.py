@@ -99,7 +99,7 @@ from search.engine.retrieval.read_plan import ReadPlan, plan_coverage, serves_no
 from search.engine.retrieval.retrieve import Materialised, NoDataDraft
 from search.engine.retrieval.standard import Narrow
 from search.engine.unit.bind import with_unit_lexicon_version
-from search.engine.unit.conversion import served_prices, with_unit_conversion
+from search.engine.unit.conversion import served_prices
 from search.engine.unit.conversion_catalogue import current_conversion_catalogue
 from search.models import (
     CandidateBasis,
@@ -543,18 +543,14 @@ async def _assemble_definite(
     # A `has_data` result with no StatVars signals a missing series.
     if not unique_specs[0].resolved.members:
         return state.no_data("no_observations", llm_usage=state.var_usage)
-    # The survivor states the conversions its candidate offers over the members and plan
-    # that candidate serves, as a single-table answer does
-    # (`phase_answer._build_definite_spec`).
+    _survivor_spec = unique_specs[0]
+    # The members and plan its candidate's conversion offer read
+    # (`candidate_grounding._finish_candidate`).
     _served_members = tuple(
         (_survivor.mat.member_facts or {})[dcid] for dcid in _survivor.mat.sv_dcids
     )
-    _served_plans = tuple(
-        plan for plan in (grounded.cand_plans.get(unique_specs[0].spec_id),) if plan is not None
-    )
-    _survivor_spec = with_unit_conversion(
-        unique_specs[0], members=_served_members, plans=_served_plans
-    )
+    _plan = grounded.cand_plans.get(_survivor_spec.spec_id)
+    _served_plans = (_plan,) if _plan is not None else ()
     note_denominator_unverified(state, _survivor.shape, spec_id=_survivor_spec.spec_id)
     if (omitted := grounded.cand_unit_omitted.get(_survivor_spec.spec_id)) is not None:
         state.warnings.append(omitted)
@@ -586,13 +582,11 @@ async def _assemble_definite(
     # table it resolved. `pipeline._with_scope_choices` states the decision.
     _decision_task = asyncio.create_task(
         asyncio.to_thread(
-            functools.partial(
-                decide_guarded,
-                _survivor_spec,
-                selection=state.scope_selection,
-                operations=state.operations,
-                coverage=state.coverage,
-            )
+            decide_guarded,
+            _survivor_spec,
+            selection=state.scope_selection,
+            operations=state.operations,
+            coverage=state.coverage,
         )
     )
     try:

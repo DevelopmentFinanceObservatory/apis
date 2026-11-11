@@ -10,7 +10,7 @@ import logging
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
-from typing import cast
+from typing import NamedTuple, cast
 
 from code_index.shared import get_index, get_measure_index
 from dfo_platform.executor import submit_with_context
@@ -99,13 +99,15 @@ from search.engine.retrieval.read_plan import ReadPlan, plan_probes
 from search.engine.retrieval.retrieve import Materialised, MemberPopulation
 from search.engine.shape import ShapeDraft
 from search.engine.spec_build import (
+    AnswerIdentity,
     RoleAxisFactInput,
+    answer_identity,
     bind_when_slot,
     build_shape_model,
     build_spec,
     build_stat_vars,
 )
-from search.engine.unit.conversion import bound_prices
+from search.engine.unit.conversion import bound_prices, with_unit_conversion
 from search.engine.unit.refs import unit_currency
 from search.models import (
     Coverage,
@@ -113,6 +115,7 @@ from search.models import (
     EntityOptions,
     EntityRoleKey,
     Headline,
+    IdentityFacetBinding,
     IdentityFacetValueRequest,
     IdentityUnitRequest,
     ProvenanceRef,
@@ -625,6 +628,53 @@ class _GroundedCandidate:
     place: PlaceContext
 
 
+class _CandidateAnswer(NamedTuple):
+    """The identity a candidate's Spec is minted as (`spec_build.answer_identity`) and the
+    facet bindings it holds."""
+
+    identity: AnswerIdentity
+    facet_bindings: dict[str, IdentityFacetBinding] | None
+
+
+def _candidate_answer(
+    state: ResolveState,
+    cand_index: int,
+    cand: _Candidate,
+    groundwork: _CandidateGroundwork,
+    prep: _CandidatePrep,
+) -> _CandidateAnswer:
+    """The identity candidate `cand_index`'s Spec will be minted as, read before the rest
+    of its Spec is assembled, so a candidate whose `spec_id` an earlier one holds can be
+    skipped at no further cost."""
+    facet_bindings: dict[str, IdentityFacetBinding] | None = (
+        # A bound outcome guarantees a unit request. The type checker cannot carry that
+        # attribute invariant through this access.
+        {"unit": IdentityFacetValueRequest(request=cast(IdentityUnitRequest, state.unit_request))}
+        if state.bound_unit_outcome is not None
+        else (
+            {"unit": cluster_currency_binding(groundwork.confirmed_facets)}
+            if prep.twin_unit_filters[cand_index] is not None
+            else None
+        )
+    )
+    identity = answer_identity(
+        groundwork.shape_model,
+        groundwork.slots,
+        groundwork.stat_vars,
+        groundwork.entities,
+        identity_entities=groundwork.identity_entities,
+        open_roles=cand.mat.open_axes,
+        requested_window=requested_window_from_date_request(state.date_request),
+        facet_bindings=facet_bindings,
+        facets=groundwork.facets,
+        resolved_sources=groundwork.source_refs,
+        plan=groundwork.plan,
+        pin_served_provenance=state.pin_served_provenance,
+        named_groups=request_named_groups(state, cand.place.roles),
+    )
+    return _CandidateAnswer(identity=identity, facet_bindings=facet_bindings)
+
+
 def _finish_candidate(
     state: ResolveState,
     cand_index: int,
@@ -638,8 +688,10 @@ def _finish_candidate(
     measure_elected_properties: frozenset[str],
     defaulted_properties: frozenset[str],
     rivalled: bool,
+    answer: _CandidateAnswer,
 ) -> _GroundedCandidate:
-    """Assemble one candidate's Spec and the metadata used by candidate collapse.
+    """Assemble one candidate's Spec, minted as `answer` (`_candidate_answer`), and the
+    metadata used by candidate collapse.
 
     `rivalled` holds when the status rule offers a structural or nominated rival beside
     the elected reading.
@@ -708,17 +760,6 @@ def _finish_candidate(
     cand_role_axis_facts = role_axis_facts_for_materialised(
         cand_mat, shape=cand_shape, plan=groundwork.plan
     )
-    cand_facet_bindings = (
-        # A bound outcome guarantees a unit request. The type checker cannot carry that
-        # attribute invariant through this access.
-        {"unit": IdentityFacetValueRequest(request=cast(IdentityUnitRequest, state.unit_request))}
-        if state.bound_unit_outcome is not None
-        else (
-            {"unit": cluster_currency_binding(groundwork.confirmed_facets)}
-            if prep.twin_unit_filters[cand_index] is not None
-            else None
-        )
-    )
     cand_spec = build_spec(
         shape=groundwork.shape_model,
         slots=groundwork.slots,
@@ -750,7 +791,8 @@ def _finish_candidate(
         measure_siblings=cand_measure_siblings,
         open_axis_facts=cand_open_axis_facts,
         role_axis_facts=cand_role_axis_facts,
-        facet_bindings=cand_facet_bindings,
+        facet_bindings=answer.facet_bindings,
+        answer=answer.identity,
         text_recognized_properties=(
             text_recognized_properties if cand_bindings is state.bindings else frozenset()
         ),
@@ -761,7 +803,7 @@ def _finish_candidate(
             state,
             cand_shape,
             cand_bindings,
-            served=bound_prices(cand_facet_bindings),
+            served=bound_prices(answer.facet_bindings),
             uncovered=cand.uncovered,
         ),
         measure_elected_properties=(
@@ -775,6 +817,13 @@ def _finish_candidate(
     )
     check_breakdown_settled(cand_shape, cand.walked, cand_spec)
     cand_spec = apply_declaration_version(cand_spec, cand_bindings)
+    # Each candidate states the conversions it offers, as a single-table answer does
+    # (`phase_answer._build_definite_spec`), from its own members and plan.
+    cand_spec = with_unit_conversion(
+        cand_spec,
+        members=cand_served_members,
+        plans=(groundwork.plan,) if groundwork.plan is not None else (),
+    )
     cand_role_declaration_unverified = (
         False if cand_is_elected else cand_mat.role_declaration_unverified
     )
@@ -1004,6 +1053,11 @@ def ground_candidates(state: ResolveState, candidates: list[_Candidate]) -> _Gro
 
     groundworks = _ground_each_candidate(state, candidates, prep)
     for cand_index, (cand, groundwork) in enumerate(zip(candidates, groundworks, strict=True)):
+        answer = _candidate_answer(state, cand_index, cand, groundwork, prep)
+        # A candidate whose Spec an earlier one holds adds nothing: no Spec, record,
+        # warning or flag, and its Spec is not assembled.
+        if answer.identity.spec_id in seen_spec_ids:
+            continue
         grounded = _finish_candidate(
             state,
             cand_index,
@@ -1016,6 +1070,7 @@ def ground_candidates(state: ResolveState, candidates: list[_Candidate]) -> _Gro
             measure_elected_properties=measure_elected_properties,
             defaulted_properties=defaulted_properties,
             rivalled=rivalled,
+            answer=answer,
         )
         spec_id = grounded.spec.spec_id
         if entity_warnings is None:
@@ -1028,10 +1083,6 @@ def ground_candidates(state: ResolveState, candidates: list[_Candidate]) -> _Gro
             membership_unverified = membership_unverified or grounded.membership_unverified
         if grounded.obs_warning is not None:
             obs_warnings.append(grounded.obs_warning)
-        # A later candidate grounding to a kept Spec adds nothing, so every record of a
-        # `spec_id` is that of the candidate whose Spec is kept.
-        if spec_id in seen_spec_ids:
-            continue
         seen_spec_ids.add(spec_id)
         specs.append(grounded.spec)
         cand_answered_roles[spec_id] = answered_roles(cand.shape)

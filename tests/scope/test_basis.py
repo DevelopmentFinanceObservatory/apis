@@ -22,6 +22,7 @@ from typing import Any, NamedTuple
 
 import httpx
 import pytest
+from dfo_frame_grammar import DeflationBasis
 
 from code_index.declarations import DAC1
 from code_index.scope_conventions import BASIS_MEASURES
@@ -36,6 +37,7 @@ from search.engine.binders.base import Binder
 from search.engine.departures import served_datasets
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import candidate_collapse, candidate_grounding, pipeline
+from search.engine.region.codes import ROLE_DECLARATION_UNVERIFIED
 from search.engine.region.result import RegionResult
 from search.engine.region.state import ResolveState
 from search.engine.retrieval.facts import FiveTuple
@@ -49,6 +51,7 @@ from search.engine.unit.conversion_catalogue import (
 )
 from search.models import (
     BaseIdentity,
+    CandidatesPart,
     ChoiceOrigin,
     DatasetResubmitInput,
     DefinitePart,
@@ -61,6 +64,7 @@ from search.models import (
     ParsedEntity,
     ParsedInput,
     ParsedPart,
+    PartScope,
     ProvenanceRef,
     Resolution,
     ResolvedFacet,
@@ -75,8 +79,10 @@ from search.scope.basis import (
     applicable_convention,
     basis_binding,
     basis_label,
+    deflation_phrase,
     identity_basis_record,
     window_class,
+    with_deflation_basis,
 )
 from search.scope.edits import apply_binding
 from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
@@ -1096,6 +1102,43 @@ def test_the_basis_labels_name_the_basis_the_answers_conversion_states(
     assert unit.endswith(", donor prices") == expected.endswith(", donor prices")
 
 
+@pytest.mark.parametrize(
+    ("stale", "deflated_by", "expected"),
+    [
+        ("recipient", "donor", "net disbursements, constant 2024 NGN, donor prices"),
+        ("donor", None, "net disbursements, constant 2024 NGN"),
+    ],
+    ids=["another-basis", "no-basis"],
+)
+def test_restating_the_basis_replaces_a_stale_label(
+    stale: DeflationBasis, deflated_by: DeflationBasis | None, expected: str
+):
+    """A scope whose labels name a stale deflation basis is relabelled from its base
+    (`with_deflation_basis`), so the labels name `deflated_by` alone, or no basis."""
+    catalogue = ConversionCatalogue(
+        recipes={DAC1: "ConversionRecipeDAC"},
+        tables={"ConversionRecipeDAC": _tables()},
+        national_currencies={},
+        default_base_year=2024,
+    )
+    with bound_conversion_catalogue(catalogue):
+        spec = _ngn_answer((DAC1,), _CONSTANT_2024)
+    scope = spec.resolved.scope_choices
+    assert scope is not None
+    base = scope.base.model_copy(update={"identity": spec.definition.identity})
+    labelled = with_deflation_basis(scope.model_copy(update={"base": base}), stale)
+    assert _scope_net_label(labelled).endswith(deflation_phrase(stale))
+
+    restated = with_deflation_basis(labelled, deflated_by)
+
+    assert _scope_net_label(restated) == expected
+
+
+def _scope_net_label(scope: PartScope) -> str:
+    (choice,) = (c for c in scope.choices if c.axis == "measure_basis")
+    return next(o.label for o in choice.options if o.option_id == "measure_basis:net")
+
+
 def _net_label(spec: Spec) -> str:
     scope = spec.resolved.scope_choices
     assert scope is not None
@@ -1124,10 +1167,13 @@ def _rival_node() -> dict:
     }
 
 
-def _materialise(years: range) -> tuple[FakeGraphReader, MaterialiseSdmxClient]:
+def _materialise(
+    years: range, *, rival_in_dollars: bool = False
+) -> tuple[FakeGraphReader, MaterialiseSdmxClient]:
     """The DAC1 members' US dollar series for the United States as donor in `years`, under
-    the DAC recipe, and the rival's in euros under none; the DAC recipe's rates and
-    deflators over 2000 to 2026."""
+    the DAC recipe, and the rival's in euros under none, or with `rival_in_dollars` in US
+    dollars under the DAC recipe too; the DAC recipe's rates and deflators over 2000 to
+    2026."""
     fixture = ObsFacetFixture(
         facet_id="dac1",
         points=tuple((str(year), 1.0) for year in years),
@@ -1137,8 +1183,8 @@ def _materialise(years: range) -> tuple[FakeGraphReader, MaterialiseSdmxClient]:
     rival = ObsFacetFixture(
         facet_id="rival",
         points=tuple((str(year), 2.0) for year in years),
-        provenance_id="dc/base/Rival",
-        unit="CurrencyEUR",
+        provenance_id=_DAC1 if rival_in_dollars else "dc/base/Rival",
+        unit="CurrencyUSD" if rival_in_dollars else "CurrencyEUR",
     )
     graph, _, _ = build_materialise_double(
         {
@@ -1147,7 +1193,10 @@ def _materialise(years: range) -> tuple[FakeGraphReader, MaterialiseSdmxClient]:
         }
     )
     graph._arcs = {
-        **{sv: dict(CONVERTIBLE_STAT_VAR_ARCS) for sv in _DAC1_MEMBERS},
+        **{
+            sv: dict(CONVERTIBLE_STAT_VAR_ARCS)
+            for sv in (*_DAC1_MEMBERS, *((_RIVAL,) if rival_in_dollars else ()))
+        },
         **conversion_arcs(
             recipe_id="ConversionRecipeDAC", provenance_id=_DAC1, currencies=["CurrencyUSD"]
         ),
@@ -1173,11 +1222,15 @@ def _materialise(years: range) -> tuple[FakeGraphReader, MaterialiseSdmxClient]:
     return graph, tables.client(base_url=MATERIALISE_BASE_URL)
 
 
-def _converted(
-    request: ResolveRequest, years: range, *, binder: Binder | None = None
-) -> tuple[DefinitePart, str]:
-    """`request` answered in constant 2024 US dollars under the DAC recipe: its first part,
-    and its byline's unit words. `binder` replaces the configured binder."""
+def _resolved(
+    request: ResolveRequest,
+    years: range,
+    *,
+    binder: Binder | None = None,
+    rival_in_dollars: bool = False,
+) -> Resolution:
+    """`request` answered under the DAC recipe's conversion catalogue, over the series
+    `_materialise` serves. `binder` replaces the configured binder."""
     catalogue = ConversionCatalogue(
         recipes={_DAC1: "ConversionRecipeDAC"},
         tables={"ConversionRecipeDAC": _tables()},
@@ -1196,7 +1249,7 @@ def _converted(
         },
         resolve={"United States": _USA},
     )
-    materialise_graph, materialise_sdmx = _materialise(years)
+    materialise_graph, materialise_sdmx = _materialise(years, rival_in_dollars=rival_in_dollars)
     with bound_conversion_catalogue(catalogue):
         response = offline_resolve(
             request,
@@ -1209,6 +1262,15 @@ def _converted(
             binder=binder,
         )
     assert isinstance(response, Resolution), response
+    return response
+
+
+def _converted(
+    request: ResolveRequest, years: range, *, binder: Binder | None = None
+) -> tuple[DefinitePart, str]:
+    """`request` answered in constant 2024 US dollars under the DAC recipe: its first part,
+    and its byline's unit words. `binder` replaces the configured binder."""
+    response = _resolved(request, years, binder=binder)
     part = response.parts[0]
     assert isinstance(part, DefinitePart), part
     # Parts folded into one answer share its Spec, whose byline the unit words are.
@@ -1318,6 +1380,31 @@ def test_one_answer_states_one_deflation_basis(monkeypatch: pytest.MonkeyPatch, 
         assert _net_label(part.spec) == _net_label(fresh.spec)
 
 
+def test_each_spec_of_a_constant_price_candidate_set_names_its_deflation_basis(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A candidates answer whose rival also reads in US dollars under the DAC recipe keeps
+    both readings, and each Spec of the set states its own conversion offer, so its byline
+    names whose prices deflate it."""
+    _cover(monkeypatch, (*_DAC1_MEMBERS, _RIVAL), unit="CurrencyUSD")
+    nominated = FixedBinder(elected_reply(0, also_plausible=[1]))
+
+    response = _resolved(_asked("2016"), range(2016, 2017), binder=nominated, rival_in_dollars=True)
+
+    (part,) = response.parts
+    assert isinstance(part, CandidatesPart), part
+    specs = part.candidates.specs
+    assert len(specs) == 2
+    for spec in specs:
+        conversion = spec.resolved.unit_conversion
+        assert conversion is not None
+        assert conversion.deflation_basis == "donor"
+        (unit,) = [
+            token.text for token in spec.resolved.sentence_plan or () if token.axis == "unit"
+        ]
+        assert unit.endswith(", donor prices"), unit
+
+
 class _Roleless:
     """`facts`, a served member's facts, declaring no role."""
 
@@ -1335,19 +1422,31 @@ def test_candidates_sharing_a_spec_id_offer_the_conversion_of_the_kept_one(
     monkeypatch: pytest.MonkeyPatch,
 ):
     """A second candidate grounding to the survivor's own Spec, its members declaring no
-    role, adds nothing: the answer is the first candidate's, and its conversion and the
-    members and plan a same-shape merge offers conversions over
-    (`RegionResult.served_members`) are that candidate's, whose donor role names the
-    deflation basis, so a merge restates the offer the answer shows."""
+    role and its role declaration unverified, adds nothing: its Spec is not assembled, it
+    adds no warning, and the answer's conversion and the members and plan a same-shape
+    merge offers conversions over (`RegionResult.served_members`) are the first
+    candidate's, whose donor role names the deflation basis, so a merge restates the offer
+    the answer shows."""
     _cover(monkeypatch, _DAC1_MEMBERS, unit="CurrencyUSD")
     ground = candidate_grounding.ground_candidates
+    finish = candidate_grounding._finish_candidate
+    finished: list[int] = []
+
+    def counted(state: ResolveState, cand_index: int, *args: Any, **kwargs: Any) -> Any:
+        finished.append(cand_index)
+        return finish(state, cand_index, *args, **kwargs)
 
     def sharing(state: ResolveState, candidates: list[Any]) -> Any:
         first = candidates[0]
         roleless = {
             dcid: _Roleless(facts) for dcid, facts in (first.mat.member_facts or {}).items()
         }
-        twin = dataclasses.replace(first, mat=dataclasses.replace(first.mat, member_facts=roleless))
+        twin = dataclasses.replace(
+            first,
+            mat=dataclasses.replace(
+                first.mat, member_facts=roleless, role_declaration_unverified=True
+            ),
+        )
         return ground(state, [*candidates, twin])
 
     offers: list[tuple[tuple[str, ...], UnitConversion | None, UnitConversion | None]] = []
@@ -1376,11 +1475,14 @@ def test_candidates_sharing_a_spec_id_offer_the_conversion_of_the_kept_one(
         return stated(result, state)
 
     monkeypatch.setattr(candidate_collapse, "ground_candidates", sharing)
+    monkeypatch.setattr(candidate_grounding, "_finish_candidate", counted)
     monkeypatch.setattr(pipeline, "_with_scope_choices", captured)
     nominated = FixedBinder(elected_reply(0, also_plausible=[1]))
 
-    _converted(_asked("2016"), range(2016, 2017), binder=nominated)
+    part, _ = _converted(_asked("2016"), range(2016, 2017), binder=nominated)
 
+    assert finished == [0]
+    assert ROLE_DECLARATION_UNVERIFIED not in {w.code for w in part.warnings}
     ((roles, shown, restated),) = offers
     assert roles == ("financingProvider",)
     assert shown is not None

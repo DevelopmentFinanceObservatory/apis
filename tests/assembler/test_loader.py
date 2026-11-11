@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from assembler.catalogue import (
@@ -91,6 +93,12 @@ def _with_two_array_caps(schema):
 def test_a_line_chart_select_without_an_array_cap_fails_the_load(release, reshape):
     with pytest.raises(CatalogueShapeError):
         _line_chart_max_series(tolerant=reshape(release.intent_schemas_tolerant["line_chart"]))
+
+
+def test_a_release_without_a_line_chart_schema_fails_to_build(release):
+    tolerant = {k: v for k, v in release.intent_schemas_tolerant.items() if k != "line_chart"}
+    with pytest.raises(CatalogueShapeError):
+        dataclasses.replace(release, intent_schemas_tolerant=tolerant)
 
 
 def test_tolerant_intent_schemas_declare_no_required_fields(release):
