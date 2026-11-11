@@ -75,6 +75,7 @@ from search.engine.shape import (
     required_role_names,
     role_names_by_axis,
 )
+from search.heading.departure_fact import UndirectedRule
 from search.models import EntityRoleKey, Entry, RoleAxis
 from search.role_kinds import entity_kind_of, role_takes
 from search.scope.region import (
@@ -214,42 +215,56 @@ def _required_role_axis(shape: ShapeDraft) -> RoleAxis | None:
     return axis_for_role(required[0]) if len(required) == 1 else None
 
 
+# The rules that settle an undirected place's axis from the query's own structure, which
+# outrank a shape's one required role (`_undirected_place_axis`).
+_QUERY_RULES: frozenset[UndirectedRule] = frozenset({"operation", "complement"})
+
+
 def _undirected_place_axis(
     state: ResolveState, shape: ShapeDraft, place_set: PlaceSet
 ) -> RoleAxis | None:
     """Return the flow axis `place_set`, named without a direction, fills on `shape`. A set
     that holds members is a group here: a resolver group, continent or subregion.
 
-    It is the axis the part settles for the place before the menu seats
-    (`ResolveState.undirected_axis`, `undirected.settle_undirected_axis`) where `shape`
-    declares a role on it, so every shape, alternate and policy reads the place on one
-    side. The settling rule reads a single place beside an operation over one flow axis on
-    the other axis: "top creditors of external debt of Kenya" reads Kenya as the debtor.
+    A rule the query's own structure settles comes first (`ResolveState.undirected`, rule
+    `operation` or `complement`, `undirected.settle_undirected_axis`) where `shape`
+    declares a role on its axis: "top creditors of external debt of Kenya" ranks over the
+    creditors and reads Kenya as the debtor, and "Germany budget support to low income
+    countries" reads Germany on the side the group leaves free.
 
-    Otherwise, on a shape that declares no role on the settled axis and on every shape
-    while the axis stays open, it is the axis of the shape's one required role. A ratio
-    whose datasets declare the axis whose party's own total it divides by
-    (`bound_values.ratio_base_axis`) reads the place, a group too, as that party while the
-    axis stays open. Where the part settles the axis, the settled axis comes first: "ODA as
-    a share of GNI for Norway" settles Norway as the provider, the one side its data
-    holds, so DAC2a's share of the recipient's GNI reads Norway on its donor side, the
-    ratio's base is not Norway's, and DAC1's share of the donor's GNI answers. This holds
-    for the elected shape and every alternate alike. Otherwise an alternate takes the axis
-    the elected shape (`state.shape_draft`) assigned the place to, when it declares a role
-    on that axis: an alternate reads the variable another way, not the place, so a debt
-    total's recipient stays the recipient of a by-creditor alternate,
-    and a place the elected shape reads on the one direction with data
+    Next comes the axis of the shape's one required role, the one role every recalled
+    member declares (`required_role_names`). Recalled members are a sample of the family,
+    so a debt shape requires the debtor alone when recall returns a total beside its
+    by-creditor members, and both roles when it returns by-creditor members only. On the
+    first, "Germany external debt stocks" reads Germany as the debtor though coverage
+    settles Germany as a creditor, the side a currency share by creditor holds.
+
+    On a shape that leaves the direction open, the axis a rule read from data settles
+    (rule `coverage` or `declaration`) comes next where `shape` declares a role on it.
+    "ODA as a share of GNI for Norway" settles Norway as the provider, the one side its
+    data holds, so DAC2a's share of the recipient's GNI reads Norway on its donor side, the
+    ratio's base is not Norway's, and DAC1's share of the donor's GNI answers. While the
+    axis stays open, a ratio whose datasets declare the axis whose party's own total it
+    divides by (`bound_values.ratio_base_axis`) reads the place, a group too, as that
+    party. These hold for the elected shape and every alternate alike. Otherwise an
+    alternate takes the axis the elected shape (`state.shape_draft`) assigned the place
+    to, when it declares a role on that axis: an alternate reads the variable another way,
+    not the place, so a debt total's recipient stays the recipient of a by-creditor
+    alternate, and a place the elected shape reads on the one direction with data
     (`phase_place_materialise._settle_direction`) keeps that direction on every alternate
     the status rule weighs. That axis is read from the elected shape's assignment as
     admitted (`state.elected_place_roles`), taken before the role-class election narrowed
     it, since the narrowed shape can require two roles.
     """
     names = role_names_by_axis(shape)
-    if state.undirected_axis in names:
-        return state.undirected_axis
+    settled = state.undirected
+    if settled is not None and settled.rule in _QUERY_RULES and settled.axis in names:
+        return settled.axis
     axis = _required_role_axis(shape)
     if axis is not None:
         return axis
+    if settled is not None and settled.axis in names:
+        return settled.axis
     base = ratio_base_axis(shape, get_index())
     if base is not None and base in names:
         return base
@@ -514,9 +529,9 @@ def on_undirected_axis(state: ResolveState, shapes: Sequence[ShapeDraft]) -> lis
     "Aid from Germany in Kenya" reads Kenya as the recipient. DAC1's donor totals declare
     only the donor axis, which Germany holds, so they could read Kenya only as a second
     donor, "from Germany and Kenya", and they leave the menu for DAC2a. "Germany external
-    debt stocks" names no directed place, so the debt stocks, which read Germany as the
-    debtor, stay though a currency share by creditor holds Germany as a creditor and
-    settles that axis.
+    debt stocks" names no directed place, so the debt stocks stay though a currency share
+    by creditor holds Germany as a creditor and settles that axis, and their one required
+    role reads Germany as the debtor (`_undirected_place_axis`).
 
     It runs only once the axis is settled, the case where the part reads the place on one
     side. Every shape stays when none would survive."""

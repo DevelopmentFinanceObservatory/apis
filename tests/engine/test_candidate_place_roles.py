@@ -1986,6 +1986,91 @@ def test_a_group_named_first_without_a_direction_takes_the_axis_its_partner_leav
     assert settled_place_roles(shape, bound).origin_dcids == [_DEU]
 
 
+_DEBTOR_ONLY_REQUIRED = frozenset({"financingProvider"})
+
+
+def _germany_undirected() -> ResolveState:
+    return _state(names_and_roles={}, places={"Germany": _DEU})
+
+
+def _germany_beside_a_rank_over_debtors() -> ResolveState:
+    state = _germany_undirected()
+    state.operations = (Operation(verb="rank", phrase="top 10 debtors", over="destination"),)
+    return state
+
+
+def _germany_beside_low_income_recipients() -> ResolveState:
+    return _low_income_and_germany(["Germany", _LOW_INCOME], {_LOW_INCOME: "destination"})
+
+
+@pytest.mark.parametrize(
+    ("optional", "rule", "state_for", "axis"),
+    [
+        pytest.param(
+            _DEBTOR_ONLY_REQUIRED,
+            "coverage",
+            _germany_undirected,
+            "destination",
+            id="required-debtor-outranks-coverage",
+        ),
+        pytest.param(
+            _DEBTOR_ONLY_REQUIRED,
+            "declaration",
+            _germany_undirected,
+            "destination",
+            id="required-debtor-outranks-declaration",
+        ),
+        # Recall returned only by-creditor members, so the shape requires both roles.
+        pytest.param(
+            frozenset(),
+            "coverage",
+            _germany_undirected,
+            "origin",
+            id="by-creditor-sample-takes-the-settled-axis",
+        ),
+        pytest.param(
+            _DEBTOR_ONLY_REQUIRED,
+            "operation",
+            _germany_beside_a_rank_over_debtors,
+            "origin",
+            id="operation-outranks-the-required-role",
+        ),
+        pytest.param(
+            _DEBTOR_ONLY_REQUIRED,
+            "complement",
+            _germany_beside_low_income_recipients,
+            "origin",
+            id="complement-outranks-the-required-role",
+        ),
+    ],
+)
+def test_the_settling_rule_and_the_one_required_role_order_an_undirected_place(
+    optional, rule, state_for, axis
+) -> None:
+    """A rule the query's own structure settles, a rank over the other axis ("top 10
+    debtors of China") or a directed partner on the other axis ("Germany budget support to
+    low income countries"), places the place on a shape requiring one role. A rule read from
+    data, coverage or a declaration, comes after that role: "Germany external debt stocks"
+    settles Germany as a creditor by coverage, and a debt total that requires the debtor
+    and declares an optional creditor reads Germany as the debtor. A shape whose recalled
+    members all declare both roles requires both and takes the settled axis."""
+    shape = dataclasses.replace(
+        _shape_for(
+            _economic_activity_arcs("Nominal", {}, ("financingProvider", "financingRecipient"))
+        ),
+        optional_roles=optional,
+    )
+    state = state_for()
+    state.undirected = UndirectedReading("origin", rule)
+
+    bound = bind_place_roles(state, shape)
+
+    assert not isinstance(bound, str), bound
+    roles_bound = settled_place_roles(shape, bound)
+    sides = {"destination": roles_bound.destination_dcids, "origin": roles_bound.origin_dcids}
+    assert [side for side, dcids in sides.items() if _DEU in dcids] == [axis]
+
+
 def test_a_group_beside_a_rank_and_no_directed_place_settles_no_axis() -> None:
     """ "Top recipients of aid in Africa" names no place with a direction, so no partner
     leaves Africa a side, no dataset declares the group a provider and the empty coverage
