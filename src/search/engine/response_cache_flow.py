@@ -340,8 +340,10 @@ class CacheScope:
         self._replay: StoredBundle | None = None
         # The response a request without trailing events publishes.
         self._response: ResolveResponse | None = None
-        # The entry both layers publish, encoded once (`_entry`).
+        # The entry both layers publish, encoded once (`_entry`), and whether it may be
+        # stored, judged once (`_verdict`).
         self._encoded: tuple[bytes, int] | None = None
+        self._storable_verdict: bool | None = None
         self._outcome: str = "inactive" if not self.active else "miss"
 
     @property
@@ -650,16 +652,20 @@ class CacheScope:
         return self._encoded
 
     def _verdict(self) -> bool:
-        """Whether this request's entry may be stored now: no fallback, no read cut, a
-        stored verdict that allows it where it served a hit, and the entry's own checks
-        (`_storable`). Each layer asks at its own publish point, so a read cut or a health
-        flag recorded between `response` and `done` still keeps layer 1 from storing."""
-        return (
-            not self._fallbacks.reasons
-            and not self._request_reads.cut
-            and self._served_storable
-            and self._storable()
-        )
+        """Whether this request's entry may be stored: no fallback, no read cut, a stored
+        verdict that allows it where it served a hit, and the entry's own checks
+        (`_storable`). It is taken once, at the first publish, where the entry's bytes are
+        final: `response` for a request without trailing events, `done` for a bundle.
+        Both layers share it, and layer 1 also needs the reading agreed at `done`
+        (`_reading_agreed`)."""
+        if self._storable_verdict is None:
+            self._storable_verdict = (
+                not self._fallbacks.reasons
+                and not self._request_reads.cut
+                and self._served_storable
+                and self._storable()
+            )
+        return self._storable_verdict
 
     def _storable(self) -> bool:
         """Whether this request's entry may be stored (`is_bundle_storable`, `is_storable`)."""
@@ -683,8 +689,8 @@ class CacheScope:
         """Publish this request's entry to its lease on `layer`, if it holds one.
 
         Cache errors are logged and never reach the pipeline. Both layers share one
-        encoding (`_entry`); each judges storability when it publishes (`_verdict`), and
-        layer 1 also needs an agreed reading
+        encoding and one storability verdict (`_entry`, `_verdict`), and layer 1 also
+        needs an agreed reading
         (`note_extraction`). Entry lifetime comes from the generation stamp captured
         before lookup.
         """

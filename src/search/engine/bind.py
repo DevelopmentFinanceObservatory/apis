@@ -1133,13 +1133,13 @@ async def bind_universal(
         refused=refused,
         availability=availability,
     )
-    output, usage, _memo_live_s = await generate_structured_async(
+    sampled = await generate_structured_async(
         for_stage(llm, "bind"),
         prompt=prompt,
         system=_MEASURING_BIND_SYSTEM_PROMPT,
         schema=bind_schema(len(shapes)),
     )
-    return ground_bind_output(output, shapes), usage
+    return ground_bind_output(sampled.answer, shapes), sampled.usage
 
 
 def ground_bind_output(

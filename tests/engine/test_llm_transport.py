@@ -12,7 +12,6 @@ import threading
 import time
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -484,67 +483,6 @@ def test_the_memo_keeps_a_calls_model_time_without_its_wait_for_a_connection(
 
     assert live_s is not None
     assert 0.1 <= live_s < 0.7
-
-
-class _TwoAttempts(httpx.AsyncBaseTransport):
-    """A connection pool whose first attempt fails 0.5 s after it is sent and whose second
-    answers 0.1 s after it is sent, each tracing its send as httpcore does."""
-
-    def __init__(self) -> None:
-        self.attempts = 0
-
-    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-        self.attempts += 1
-        await request.extensions["trace"]("connection.connect_tcp.started", {})
-        if self.attempts == 1:
-            await asyncio.sleep(0.5)
-            raise httpx.ConnectError("reset")
-        await asyncio.sleep(0.1)
-        return httpx.Response(200, content=b"{}")
-
-
-class _RetryingModels:
-    """A Gemini double that sends its request over `transport` and retries once, after a
-    0.3 s backoff, when the first attempt fails."""
-
-    def __init__(self, transport: httpx.AsyncBaseTransport) -> None:
-        self._transport = transport
-
-    async def generate_content(self, *, model: str, contents: object, config: object):
-        client = httpx.AsyncClient(transport=self._transport)
-        try:
-            await client.post("http://gemini.invalid/")
-        except httpx.ConnectError:
-            await asyncio.sleep(0.3)
-            await client.post("http://gemini.invalid/")
-        return SimpleNamespace(text='{"value": 1}', model_version=model, usage_metadata=None)
-
-
-def test_the_memo_keeps_a_retried_calls_last_attempt_alone(monkeypatch: pytest.MonkeyPatch):
-    """A memoised call whose first attempt fails after 0.5 s and whose retry, sent after a
-    0.3 s backoff, answers in 0.1 s keeps the last attempt's time: the failed attempt and
-    the backoff leave it. The upper bound leaves 0.4 s for scheduling and still fails if
-    either is counted."""
-    pool = _TwoAttempts()
-    transport = llm_module._LoopLocalTransport(max_connections=1)
-    monkeypatch.setattr(transport, "_pool", lambda: pool)
-    monkeypatch.setattr(
-        llm_module,
-        "_get_client",
-        lambda: SimpleNamespace(aio=SimpleNamespace(models=_RetryingModels(transport))),
-    )
-    llm = _memo_llm()
-
-    async def scenario() -> float | None:
-        await generate_structured_async(llm, prompt="p", system="s", schema=_Value)
-        repeat = await generate_structured_async(llm, prompt="p", system="s", schema=_Value)
-        return repeat.memo_live_s
-
-    live_s = asyncio.run(scenario())
-
-    assert pool.attempts == 2
-    assert live_s is not None
-    assert 0.1 <= live_s < 0.5
 
 
 @pytest.mark.usefixtures("live_client_env", "loopback_transport")
