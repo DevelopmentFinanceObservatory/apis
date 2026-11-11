@@ -487,10 +487,8 @@ def with_deflation_basis(scope: PartScope, deflated_by: DeflationBasis | None) -
     """`scope` with each declared basis option of its measure-basis choice labelled on its
     base identity (`basis_label`), naming whose prices deflate the part at constant prices:
     `deflated_by`, the answer's `UnitConversion.deflation_basis`, which its byline reads too.
-    The headline option keeps its label, and with no `deflated_by` the scope is returned
-    unchanged."""
-    if deflated_by is None:
-        return scope
+    The headline option keeps its label. Every label is restated from `scope.base`, with or
+    without a basis, so no label stated over another identity survives."""
     identity = scope.base.identity
     choices = [
         choice

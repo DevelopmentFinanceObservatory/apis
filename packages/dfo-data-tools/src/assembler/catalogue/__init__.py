@@ -45,9 +45,11 @@ class CatalogueRelease:
     constraints: tuple[ConstraintSpec, ...]
     formatter_profile: Mapping[str, object]
     retry_modes: Mapping[str, str]
-    line_chart_max_series: int
-    """Series a `line_chart` draws, the `maxItems` of its select's one array."""
     referenced_schemas: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
+    line_chart_max_series: int = field(init=False)
+    """Series a `line_chart` draws, the `maxItems` of its tolerant select schema's one array
+    (`intent_schemas_tolerant`). Derived on construction, as `write_schemas` is, so a load
+    whose schema names no single cap fails (`CatalogueShapeError`)."""
     write_schemas: Mapping[str, Mapping[str, object]] = field(init=False)
     """`intent_schemas` as a write validates against them: `line_chart`'s without its select
     array's `maxItems` (`without_select_list_cap`), the series cap a write checks only where
@@ -57,6 +59,11 @@ class CatalogueRelease:
     """`intent_schemas_tolerant` as a write validates against them, as `write_schemas`."""
 
     def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "line_chart_max_series",
+            _line_chart_max_series(tolerant=self.intent_schemas_tolerant["line_chart"]),
+        )
         object.__setattr__(self, "write_schemas", _write_schemas(self.intent_schemas))
         object.__setattr__(
             self, "write_schemas_tolerant", _write_schemas(self.intent_schemas_tolerant)
@@ -250,9 +257,6 @@ def load_release(*, catalogue_dir: Path | None = None) -> CatalogueRelease:
         constraints=CONSTRAINT_REGISTRY,
         formatter_profile=cast("Mapping[str, object]", manifest["formatter_profile"]),
         retry_modes=cast("Mapping[str, str]", manifest["retry_modes"]),
-        line_chart_max_series=_line_chart_max_series(
-            tolerant=intent_schemas_tolerant["line_chart"]
-        ),
         referenced_schemas={
             schema_id: json.loads(content) for schema_id, content in referenced.items()
         },

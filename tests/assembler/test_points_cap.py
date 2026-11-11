@@ -16,6 +16,7 @@ from assembler.pipeline import write_component
 from assembler.ports import FrameRef
 from assembler.testing import build_resolved_frame
 
+from ._catalogue import with_line_chart_cap
 from ._pipeline_support import _multi_recipient_frame, computed_record
 
 # -- line chart series cap ----------------------------------------------------
@@ -511,9 +512,7 @@ def test_a_revision_of_a_stored_over_cap_line_chart_is_held_to_the_cap_when_it_c
         frame_store=frame_store,
         revision_store=revision_store,
         # A release whose cap the stored select fits, as an earlier release's may have.
-        release_registry=FakeReleaseRegistry(
-            release=dataclasses.replace(release, line_chart_max_series=cap + 1)
-        ),
+        release_registry=FakeReleaseRegistry(release=with_line_chart_cap(release, cap + 1)),
     )
 
     def revise():

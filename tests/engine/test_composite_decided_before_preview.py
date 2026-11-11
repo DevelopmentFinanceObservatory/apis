@@ -18,7 +18,7 @@ from search.engine import spec_build
 from search.engine.concurrency import scoped_concurrency
 from search.engine.errors import GraphInfraError
 from search.engine.events import DoneEvent, ResponseEvent
-from search.engine.region import candidate_collapse, phase_answer, scope_decision
+from search.engine.region import phase_answer, pipeline, scope_decision
 from search.engine.region.candidates import resolve_candidates
 from search.engine.region.observations.dispatch import PreviewRead, PreviewReader
 from search.engine.region.result import RegionResult
@@ -246,10 +246,35 @@ def test_a_raising_decision_for_the_finished_answer_keeps_it_as_a_single_table(
         raise _not_servable()
 
     monkeypatch.setattr(phase_answer, "_decide_answer_scope", mismatched)
-    monkeypatch.setattr(phase_answer, "decide_spec_scope", raises)
+    monkeypatch.setattr(scope_decision, "decide_spec_scope", raises)
 
     with caplog.at_level(logging.WARNING, logger=scope_decision.logger.name):
         spec = _answered(_stream(_fresh(_BILATERAL))) if stream else _buffered(_BILATERAL)
+
+    assert spec.resolved.scope_choices is None
+    _assert_decision_error_logged(caplog)
+
+
+def test_a_raising_decision_for_an_undecided_answer_keeps_it_as_a_single_table(monkeypatch, caplog):
+    """An answer reaching `pipeline._with_scope_choices` with no decision is decided there,
+    guarded as every decision is: a decision that raises leaves the answer as one table that
+    states no scope, and the error is logged."""
+    _components(monkeypatch)
+    real = pipeline._stating_unpublished_wholes
+
+    def undecided(result: RegionResult, state: ResolveState) -> RegionResult:
+        state.scope_decision = None
+        return real(result, state)
+
+    def raises(*args: Any, **kwargs: Any) -> ScopeDecision:
+        raise _not_servable()
+
+    monkeypatch.setattr(pipeline, "_stating_unpublished_wholes", undecided)
+    # The answer phase decides through its own `decide_scope`, so only the late decision raises.
+    monkeypatch.setattr(scope_decision, "decide_scope", raises)
+
+    with caplog.at_level(logging.WARNING, logger=scope_decision.logger.name):
+        spec = _buffered(_BILATERAL)
 
     assert spec.resolved.scope_choices is None
     _assert_decision_error_logged(caplog)
@@ -337,7 +362,7 @@ def test_a_raising_scope_decision_keeps_a_candidates_survivor_as_a_single_table(
     def raises(spec: Spec, **kwargs: Any) -> ScopeDecision:
         raise CompositeNotServable("no component", ref="dfo-composite", pointer="/facets")
 
-    monkeypatch.setattr(candidate_collapse, "decide_spec_scope", raises)
+    monkeypatch.setattr(scope_decision, "decide_spec_scope", raises)
     outcome: list[tuple[RegionResult | None, ScopeDecision | None]] = []
 
     async def body(state: ResolveState) -> None:
@@ -395,12 +420,12 @@ def test_a_candidates_survivor_restated_as_a_composite_reads_no_table_preview(mo
     reads: list[str] = []
     monkeypatch.setattr(PreviewReader, "observations", lambda self: reads.append("observations"))
     monkeypatch.setattr(PreviewReader, "relaunch", lambda self, labels: reads.append("relaunch"))
-    real = candidate_collapse.decide_spec_scope
+    real = scope_decision.decide_spec_scope
 
     def composite(spec: Spec, **kwargs: Any) -> ScopeDecision:
         return dataclasses.replace(real(spec, **kwargs), composite=True)
 
-    monkeypatch.setattr(candidate_collapse, "decide_spec_scope", composite)
+    monkeypatch.setattr(scope_decision, "decide_spec_scope", composite)
     outcome: list[RegionResult | None] = []
 
     async def body(state: ResolveState) -> None:

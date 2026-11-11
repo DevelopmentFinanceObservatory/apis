@@ -105,7 +105,7 @@ from search.engine.spec_build import (
     build_spec,
     build_stat_vars,
 )
-from search.engine.unit.conversion import bound_prices, with_unit_conversion
+from search.engine.unit.conversion import bound_prices
 from search.engine.unit.refs import unit_currency
 from search.models import (
     Coverage,
@@ -775,13 +775,6 @@ def _finish_candidate(
     )
     check_breakdown_settled(cand_shape, cand.walked, cand_spec)
     cand_spec = apply_declaration_version(cand_spec, cand_bindings)
-    # Each candidate states the conversions it offers, as a single-table answer does
-    # (`phase_answer._build_definite_spec`).
-    cand_spec = with_unit_conversion(
-        cand_spec,
-        members=cand_served_members,
-        plans=(groundwork.plan,) if groundwork.plan is not None else (),
-    )
     cand_role_declaration_unverified = (
         False if cand_is_elected else cand_mat.role_declaration_unverified
     )
@@ -1035,12 +1028,15 @@ def ground_candidates(state: ResolveState, candidates: list[_Candidate]) -> _Gro
             membership_unverified = membership_unverified or grounded.membership_unverified
         if grounded.obs_warning is not None:
             obs_warnings.append(grounded.obs_warning)
-        if spec_id not in seen_spec_ids:
-            seen_spec_ids.add(spec_id)
-            specs.append(grounded.spec)
-            cand_answered_roles[spec_id] = answered_roles(cand.shape)
-            if cand.mat.family_total_absent is not None:
-                state.family_total_absent[spec_id] = cand.mat.family_total_absent
+        # A later candidate grounding to a kept Spec adds nothing, so every record of a
+        # `spec_id` is that of the candidate whose Spec is kept.
+        if spec_id in seen_spec_ids:
+            continue
+        seen_spec_ids.add(spec_id)
+        specs.append(grounded.spec)
+        cand_answered_roles[spec_id] = answered_roles(cand.shape)
+        if cand.mat.family_total_absent is not None:
+            state.family_total_absent[spec_id] = cand.mat.family_total_absent
         cand_scores[spec_id] = grounded.score
         cand_retrieved[spec_id] = grounded.retrieved
         cand_populations[spec_id] = grounded.population

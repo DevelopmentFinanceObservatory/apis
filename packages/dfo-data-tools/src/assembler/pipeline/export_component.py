@@ -1,13 +1,13 @@
 """Exports the frame rows behind a component revision's shown values as CSV, XLSX, or Parquet.
 
 `export_component_data` reads one stored revision and collects the `(series, period)` pairs the
-card shows a value for: each valued point of a line or bar chart series, each valued table row,
-and a stat card's headline period plus both of its change basis periods. Series ids map to frame
-coordinates through the revision's `series_coordinates`. The frame loads through
-`FrameStore.load`, which rechecks revocation and expiry, and a frame row is kept when its
-period and either of its `frame_view.series_keys` keys, its own cells or its key under the
-frame's continuation (`ResolvedFrame.continuation`), as `resolve_selectors` groups them, name a shown pair. Every shown pair
-must match exactly one row, observed and holding the value the card shows, or the export
+card shows a value for: each valued point of a line or bar chart series, each valued table row, and
+a stat card's headline period plus both of its change basis periods. Series ids map to frame
+coordinates through the revision's `series_coordinates`. The frame loads through `FrameStore.load`,
+which rechecks revocation and expiry, and a frame row is kept when its period and either of its
+`frame_view.series_keys` keys, its own cells or its key under the frame's continuation
+(`ResolvedFrame.continuation`), as `resolve_selectors` groups them, name a shown pair. Every shown
+pair must match exactly one row, observed and holding the value the card shows, or the export
 raises `ComponentExportMismatch` and serves nothing. A table's rows are traced by their
 `series_id`. A table revision stored before rows carried it raises
 `ComponentPredatesRowIdentities`, and one whose rows carry it on only some rows, or carry a
@@ -29,33 +29,32 @@ cells starting with a formula trigger are neutralised.
 
 A bundle is a zip holding the file at `data/<card-slug>.<format>` beside
 `materialise.bundle.assemble_component_bundle`'s documents, `data/codes.csv` among them. When the
-revision's `select` lists the members of exactly one dimension other than `stat_var` and the
-frame holds a member of it the card leaves out, as for a chart cut to its largest members, the
-bundle also holds `data/<card-slug>-all-members.<format>`. It holds every valued frame row of
-every member the frame holds, group totals, aggregates and `untyped` members included, at the
-periods the card shows whose other `select`-bound dimensions match the card, in frame order,
-its `series` cell empty on rows the card does not show. Its description names the frame's kind
-and type columns of that dimension (`dfo_analysis_engine.place_type.kind_column`,
-`type_column`), which mark the rows that are totals. Dimensions `select` leaves unbound,
-`unit`, `measurementMethod` and `provenance` among them when unbound, are free, so a member
-served under another method or source is kept. The revision does not record whether the listed
-members were cut for display or chosen, so both get the same file. Each file's resource
-`description` and README row say which file is which, with "The card shows N of M; <file>
-holds all M." on the shown file. `ComponentExportMismatch` guards the shown file alone, and a
-bare file holds the shown rows. Each provenance ref the kept rows carry is cited from the frame manifest's citation, its licence and
+revision's `select` lists the members of exactly one dimension other than `stat_var` and the frame
+holds a member of it the card leaves out, as for a chart cut to its largest members, the bundle
+also holds `data/<card-slug>-all-members.<format>`. It holds the valued frame rows at the periods
+the card shows whose other `select`-bound dimensions match the card, so every member with a value
+at those periods, group totals, aggregates and `untyped` members included, in frame order, its
+`series` cell empty on rows the card does not show. On a party role whose kind column
+(`dfo_analysis_engine.place_type.kind_column`) holds a kind among those rows, its description names
+that column as marking the totals. Dimensions `select` leaves unbound, `unit`, `measurementMethod`
+and `provenance` among them when unbound, are free, so a member served under another method or
+source is kept. The revision does not record whether the listed members were cut for display or
+chosen, so both get the same file. Each file's resource `description` and README row say which file
+is which, with "The card shows N of M; <file> holds all M." on the shown file.
+`ComponentExportMismatch` guards the shown file alone, and a bare file holds the shown rows. Each
+provenance ref the kept rows carry is cited from the frame manifest's citation, its licence and
 documentation included, through `materialise.bundle_sources`. Columns are documented by
-`materialise.bundle_columns`, and the codes table is labelled from `ResolvedFrame.labels` and
-the cited source names with no graph read, so a role's codes keep the kind `entity`. Links and
-the reproducing call sit under the public site origin the caller passes.
+`materialise.bundle_columns`, and the codes table is labelled from `ResolvedFrame.labels` and the
+cited source names with no graph read, so a role's codes keep the kind `entity`. Links and the
+reproducing call sit under the public site origin the caller passes.
 
-The revision's stored `created_at` is the bundle's prepared date and dates the file name, so
-one revision always serves one name. An export on a target frame takes both from that frame's
-`retrieved_on`, at midnight UTC. `FrameStore.load` reads the graph's labels for the frame's
-codes, and the sources' documentation for a derived frame or a root frame whose stored citation
-left fields empty. Bytes match from one request to the next while those reads are unchanged. Names follow
-`materialise.bundle_naming`: `dfo_<card-slug>_<YYYY-MM-DD>_<format>_r<revision>.zip` for a
-bundle and `dfo_<card-slug>_<YYYY-MM-DD>_r<revision>.<format>` for a bare file, the date
-in UTC.
+The revision's stored `created_at` is the bundle's prepared date and dates the file name, so one
+revision always serves one name. An export on a target frame takes both from that frame's
+`retrieved_on`, at midnight UTC. `FrameStore.load` reads the graph's labels for the frame's codes,
+and the sources' documentation for a derived frame or a root frame whose stored citation left
+fields empty. Bytes match from one request to the next while those reads are unchanged. Names
+follow `materialise.bundle_naming`: `dfo_<card-slug>_<YYYY-MM-DD>_<format>_r<revision>.zip` for a
+bundle and `dfo_<card-slug>_<YYYY-MM-DD>_r<revision>.<format>` for a bare file, the date in UTC.
 
 This module imports the `formats` extra, so `assembler.pipeline` does not re-export it.
 """
@@ -81,9 +80,9 @@ from assembler.pipeline.render import render_on_frame
 from assembler.pipeline.stored_revision import read_stored_revision
 from assembler.ports import FrameRef, FrameStore, ReleaseRegistry, ResolvedFrame, RevisionStore
 from dfo_analysis_engine.place_type import (
-    TYPED_ROLES,
+    PARTY_KINDS,
+    PARTY_ROLES,
     kind_column,
-    type_column,
 )
 from materialise.bundle import (
     ArtifactEntry,
@@ -370,9 +369,13 @@ def export_component_data(
                     refs=all_refs,
                     description=(
                         "Every frame row for the card's measure at the periods it shows, "
-                        f"across all {all_members.members} {all_members.dimension} values the "
-                        "frame holds."
-                        + _total_columns_sentence(all_members.total_columns)
+                        f"across all {all_members.members} {all_members.dimension} values "
+                        "with a value at those periods."
+                        + (
+                            f" The `{all_members.total_column}` column marks which rows are totals."
+                            if all_members.total_column is not None
+                            else ""
+                        )
                         + f" The {series_column} column holds the card's label on the rows "
                         "the card shows. A download without the bundle holds only the shown "
                         "rows."
@@ -521,14 +524,14 @@ type _ExportRow = tuple[str | None, Sequence[object]]
 class _AllMembers:
     """The frame rows of every member of the one dimension a card's `select` lists, at the
     periods the card shows. `shown` and `members` count the dimension's distinct values on
-    the card and in `rows`. `total_columns` are the frame's kind and type columns of the
-    dimension, which mark the rows that are totals."""
+    the card and in `rows`. `total_column` is the dimension's kind column where one of
+    `rows` holds a party kind (`PARTY_KINDS`) in it, which marks the totals, else None."""
 
     dimension: str
     rows: tuple[_ExportRow, ...]
     shown: int
     members: int
-    total_columns: tuple[str, ...]
+    total_column: str | None
 
 
 @dataclass(frozen=True)
@@ -630,29 +633,19 @@ def _all_members(
         members.add(member)
     if len(members) <= len(shown_members):
         return None
+    column = kind_column(dimension)
+    marks_totals = (
+        dimension in PARTY_ROLES
+        and column in index
+        and any(row[index[column]] in PARTY_KINDS for _, row in kept)
+    )
     return _AllMembers(
         dimension=dimension,
         rows=tuple(kept),
         shown=len(shown_members),
         members=len(members),
-        total_columns=tuple(
-            column
-            for column in (
-                (kind_column(dimension), type_column(dimension)) if dimension in TYPED_ROLES else ()
-            )
-            if column in index
-        ),
+        total_column=column if marks_totals else None,
     )
-
-
-def _total_columns_sentence(columns: Sequence[str]) -> str:
-    """The sentence naming the frame `columns` that mark which rows are totals, with a leading
-    space, empty when there are none."""
-    if not columns:
-        return ""
-    named = " and ".join(f"`{column}`" for column in columns)
-    verb = "mark" if len(columns) > 1 else "marks"
-    return f" The {named} column{'s' if len(columns) > 1 else ''} {verb} which rows are totals."
 
 
 def _export_table(

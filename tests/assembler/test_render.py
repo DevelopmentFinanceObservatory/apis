@@ -23,6 +23,7 @@ from assembler.testing import (
     malaria_ethiopia_rows,
 )
 
+from ._catalogue import with_line_chart_cap
 from ._pipeline_support import _malaria_intent, _multi_recipient_frame, _stored_resolved_frame
 
 _TARGET = FrameRef(
@@ -329,9 +330,7 @@ def test_a_line_chart_stored_over_the_series_cap_renders(
         },
         frame_store=frame_store,
         revision_store=revision_store,
-        release_registry=FakeReleaseRegistry(
-            release=dataclasses.replace(release, line_chart_max_series=len(recipients))
-        ),
+        release_registry=FakeReleaseRegistry(release=with_line_chart_cap(release, len(recipients))),
     )
     frame_store.put(resolved_frame=_moved_frame(recipients=recipients))
 

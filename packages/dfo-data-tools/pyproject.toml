@@ -30,8 +30,8 @@ dependencies = [
     "rfc8785>=0.1.4",
     # skills_index.frontmatter parses a skill's front matter with YAML's base loader.
     "pyyaml>=6.0",
-    # assembler's component export counts a cut card's members by
-    # dfo_analysis_engine.place_type.comparable_members, the ranking population.
+    # assembler's component export names a party role's kind column
+    # (dfo_analysis_engine.place_type.kind_column) as marking an all-members file's totals.
     "dfo-analysis-engine",
 ]
 

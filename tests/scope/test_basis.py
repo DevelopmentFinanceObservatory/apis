@@ -18,7 +18,7 @@ import dataclasses
 import re
 from collections.abc import Sequence
 from types import SimpleNamespace
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import httpx
 import pytest
@@ -35,6 +35,9 @@ from search.engine.binders import JevBinder, StatedWordsRequest
 from search.engine.binders.base import Binder
 from search.engine.departures import served_datasets
 from search.engine.quantity_read import QuantityOutput
+from search.engine.region import candidate_collapse, candidate_grounding, pipeline
+from search.engine.region.result import RegionResult
+from search.engine.region.state import ResolveState
 from search.engine.retrieval.facts import FiveTuple
 from search.engine.spec_id import identity_spec_id
 from search.engine.stated_words_read import StatedWordsOutput
@@ -58,7 +61,6 @@ from search.models import (
     ParsedEntity,
     ParsedInput,
     ParsedPart,
-    PartScope,
     ProvenanceRef,
     Resolution,
     ResolvedFacet,
@@ -66,6 +68,7 @@ from search.models import (
     ResubmitIdentityEntry,
     SourceMention,
     Spec,
+    UnitConversion,
 )
 from search.render.plan import render_sentence_plan
 from search.scope.basis import (
@@ -76,7 +79,6 @@ from search.scope.basis import (
     window_class,
 )
 from search.scope.edits import apply_binding
-from search.scope.vocabulary import measure_basis_option_id
 from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from tests.engine._binders import FakeAsk, FixedBinder, MenuRecordingBinder, elected_reply
 from tests.engine._fake_coverage import patch_coverage
@@ -1085,36 +1087,13 @@ def test_the_basis_labels_name_the_basis_the_answers_conversion_states(
     scope = spec.resolved.scope_choices
     assert scope is not None
 
-    stated = with_scope_choices(spec, _decided_over(scope, spec.definition.identity))
+    base = scope.base.model_copy(update={"identity": spec.definition.identity})
+
+    stated = with_scope_choices(spec, scope.model_copy(update={"base": base}))
 
     assert _net_label(stated) == expected
     (unit,) = [token.text for token in render_sentence_plan(stated) if token.axis == "unit"]
     assert unit.endswith(", donor prices") == expected.endswith(", donor prices")
-
-
-def _decided_over(scope: PartScope, identity: BaseIdentity) -> PartScope:
-    """`scope` as a decision over `identity` states it: that base, and each measure-basis
-    option labelled on it with no deflation basis (`basis.basis_rule`)."""
-    rows = {measure_basis_option_id(row.basis): row for row in BASIS_MEASURES}
-    choices = [
-        choice
-        if choice.axis != "measure_basis"
-        else choice.model_copy(
-            update={
-                "options": [
-                    option.model_copy(
-                        update={"label": basis_label(rows[option.option_id], identity)}
-                    )
-                    if option.option_id in rows
-                    else option
-                    for option in choice.options
-                ]
-            }
-        )
-        for choice in scope.choices
-    ]
-    base = scope.base.model_copy(update={"identity": identity})
-    return scope.model_copy(update={"base": base, "choices": choices})
 
 
 def _net_label(spec: Spec) -> str:
@@ -1337,6 +1316,76 @@ def test_one_answer_states_one_deflation_basis(monkeypatch: pytest.MonkeyPatch, 
     assert _net_label(part.spec).endswith(", donor prices")
     if door == "resubmit":
         assert _net_label(part.spec) == _net_label(fresh.spec)
+
+
+class _Roleless:
+    """`facts`, a served member's facts, declaring no role."""
+
+    def __init__(self, facts: Any) -> None:
+        self._facts = facts
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._facts, name)
+
+    def read_declared_roles(self) -> tuple[str, ...]:
+        return ()
+
+
+def test_candidates_sharing_a_spec_id_offer_the_conversion_of_the_kept_one(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A second candidate grounding to the survivor's own Spec, its members declaring no
+    role, adds nothing: the answer is the first candidate's, and its conversion and the
+    members and plan a same-shape merge offers conversions over
+    (`RegionResult.served_members`) are that candidate's, whose donor role names the
+    deflation basis, so a merge restates the offer the answer shows."""
+    _cover(monkeypatch, _DAC1_MEMBERS, unit="CurrencyUSD")
+    ground = candidate_grounding.ground_candidates
+
+    def sharing(state: ResolveState, candidates: list[Any]) -> Any:
+        first = candidates[0]
+        roleless = {
+            dcid: _Roleless(facts) for dcid, facts in (first.mat.member_facts or {}).items()
+        }
+        twin = dataclasses.replace(first, mat=dataclasses.replace(first.mat, member_facts=roleless))
+        return ground(state, [*candidates, twin])
+
+    offers: list[tuple[tuple[str, ...], UnitConversion | None, UnitConversion | None]] = []
+    stated = pipeline._with_scope_choices
+
+    def captured(result: RegionResult, state: ResolveState) -> RegionResult:
+        assert result.status == "definite", result.status
+        # The offer a merge restates, read under the request's conversion catalogue.
+        bare = result.spec.resolved.model_copy(update={"unit_conversion": None})
+        restated = with_unit_conversion(
+            result.spec.model_copy(update={"resolved": bare}),
+            members=result.served_members,
+            plans=result.served_plans,
+        )
+        offers.append(
+            (
+                tuple(
+                    role
+                    for member in result.served_members
+                    for role in member.read_declared_roles()
+                ),
+                result.spec.resolved.unit_conversion,
+                restated.resolved.unit_conversion,
+            )
+        )
+        return stated(result, state)
+
+    monkeypatch.setattr(candidate_collapse, "ground_candidates", sharing)
+    monkeypatch.setattr(pipeline, "_with_scope_choices", captured)
+    nominated = FixedBinder(elected_reply(0, also_plausible=[1]))
+
+    _converted(_asked("2016"), range(2016, 2017), binder=nominated)
+
+    ((roles, shown, restated),) = offers
+    assert roles == ("financingProvider",)
+    assert shown is not None
+    assert shown.deflation_basis == "donor"
+    assert restated == shown
 
 
 @pytest.mark.parametrize("cell", ["sector", "donor-only-2016"])

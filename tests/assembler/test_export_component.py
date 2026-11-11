@@ -575,7 +575,7 @@ def test_a_cut_bar_chart_bundles_every_member_of_its_frame_beside_the_shown_rows
 
 
 @pytest.mark.parametrize(
-    ("role", "cell_column", "member_cell", "aggregate", "aggregate_cell", "counted"),
+    ("role", "cell_column", "member_cell", "aggregate", "aggregate_cell", "counted", "marked"),
     [
         pytest.param(
             "financingRecipient",
@@ -584,25 +584,8 @@ def test_a_cut_bar_chart_bundles_every_member_of_its_frame_beside_the_shown_rows
             "dac/AfricaTotal",
             "total",
             13,
+            True,
             id="party-total",
-        ),
-        pytest.param(
-            "financingRecipient",
-            "financingRecipient_party_kind",
-            "party",
-            "dac/Unkinded",
-            UNTYPED,
-            13,
-            id="member-without-a-kind",
-        ),
-        pytest.param(
-            "financingRecipient",
-            "financingRecipient_party_kind",
-            UNTYPED,
-            "dac/Unkinded",
-            UNTYPED,
-            13,
-            id="no-member-with-a-kind",
         ),
         # An aggregate with no row at the shown period holds no row of either file.
         pytest.param(
@@ -612,7 +595,19 @@ def test_a_cut_bar_chart_bundles_every_member_of_its_frame_beside_the_shown_rows
             "dac/AfricaTotal@2023",
             "total",
             12,
+            True,
             id="party-total-at-another-period",
+        ),
+        # A kind column whose cells name no kind marks no total.
+        pytest.param(
+            "financingRecipient",
+            "financingRecipient_party_kind",
+            UNTYPED,
+            "dac/Unkinded",
+            UNTYPED,
+            13,
+            False,
+            id="no-member-with-a-kind",
         ),
         pytest.param(
             "observationAbout",
@@ -621,6 +616,7 @@ def test_a_cut_bar_chart_bundles_every_member_of_its_frame_beside_the_shown_rows
             "wb/LowIncome",
             "ProvisionalNode",
             13,
+            False,
             id="place-aggregate",
         ),
         pytest.param(
@@ -630,27 +626,29 @@ def test_a_cut_bar_chart_bundles_every_member_of_its_frame_beside_the_shown_rows
             "dac/AfricaTotal",
             "Place",
             13,
+            False,
             id="party-type-column-alone",
         ),
     ],
 )
-def test_a_cut_card_counts_every_member_its_frame_holds(
+def test_a_cut_card_counts_every_member_with_a_value_at_its_periods(
     role,
     cell_column,
     member_cell,
     aggregate,
     aggregate_cell,
     counted,
+    marked,
     tmp_path,
     frame_store,
     revision_store,
     release_registry,
 ):
     """A card showing 8 of a frame's 12 members beside an aggregate larger than any of them
-    counts every member valued at the shown period, the aggregate included, whatever its kind
-    or type cell holds, and the all-members file's description names the column that marks
-    the totals. An aggregate `@`-suffixed with a period holds its one row there, outside the
-    card's window."""
+    counts every member with a value at the shown period, the aggregate included, and the
+    all-members file's description names the party kind column as marking the totals only
+    where its cells name a kind. An aggregate `@`-suffixed with a period holds its one row
+    there, outside the card's window."""
     members = tuple(f"country/C{number:02d}" for number in range(12))
     aggregate, _, aggregate_period = aggregate.partition("@")
     rows = [
@@ -703,7 +701,8 @@ def test_a_cut_card_counts_every_member_its_frame_holds(
     assert len({row[role] for row in every}) == counted
     assert set(members) <= {row[role] for row in every}
     assert f"The card shows 8 of {counted}" in files["README.md"].decode("utf-8")
-    assert f"`{cell_column}`" in description
+    assert (f"`{cell_column}`" in description) is marked
+    assert f"all {counted} {role} values with a value at those periods" in description
 
 
 @pytest.mark.parametrize("member", ["bar_chart", "table", "stat_card"])

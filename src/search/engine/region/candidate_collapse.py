@@ -91,7 +91,7 @@ from search.engine.region.requirements import (
     settle_flagged,
 )
 from search.engine.region.result import RegionResult
-from search.engine.region.scope_decision import decide_spec_scope, guarded_scope_decision
+from search.engine.region.scope_decision import decide_guarded
 from search.engine.region.state import ResolveState, raised_facts
 from search.engine.region.un_system import member_labels
 from search.engine.region.whole_totals import whole_total_warnings
@@ -99,7 +99,7 @@ from search.engine.retrieval.read_plan import ReadPlan, plan_coverage, serves_no
 from search.engine.retrieval.retrieve import Materialised, NoDataDraft
 from search.engine.retrieval.standard import Narrow
 from search.engine.unit.bind import with_unit_lexicon_version
-from search.engine.unit.conversion import served_prices
+from search.engine.unit.conversion import served_prices, with_unit_conversion
 from search.engine.unit.conversion_catalogue import current_conversion_catalogue
 from search.models import (
     CandidateBasis,
@@ -543,7 +543,18 @@ async def _assemble_definite(
     # A `has_data` result with no StatVars signals a missing series.
     if not unique_specs[0].resolved.members:
         return state.no_data("no_observations", llm_usage=state.var_usage)
-    _survivor_spec = unique_specs[0]
+    # The survivor states the conversions its candidate offers over the members and plan
+    # that candidate serves, as a single-table answer does
+    # (`phase_answer._build_definite_spec`).
+    _served_members = tuple(
+        (_survivor.mat.member_facts or {})[dcid] for dcid in _survivor.mat.sv_dcids
+    )
+    _served_plans = tuple(
+        plan for plan in (grounded.cand_plans.get(unique_specs[0].spec_id),) if plan is not None
+    )
+    _survivor_spec = with_unit_conversion(
+        unique_specs[0], members=_served_members, plans=_served_plans
+    )
     note_denominator_unverified(state, _survivor.shape, spec_id=_survivor_spec.spec_id)
     if (omitted := grounded.cand_unit_omitted.get(_survivor_spec.spec_id)) is not None:
         state.warnings.append(omitted)
@@ -575,17 +586,13 @@ async def _assemble_definite(
     # table it resolved. `pipeline._with_scope_choices` states the decision.
     _decision_task = asyncio.create_task(
         asyncio.to_thread(
-            guarded_scope_decision,
-            _survivor_spec.spec_id,
             functools.partial(
-                decide_spec_scope,
+                decide_guarded,
                 _survivor_spec,
                 selection=state.scope_selection,
                 operations=state.operations,
                 coverage=state.coverage,
-            ),
-            operations=state.operations,
-            coverage=state.coverage,
+            )
         )
     )
     try:
@@ -688,12 +695,8 @@ async def _assemble_definite(
         role_axis_facts=tuple(grounded.cand_role_axis_facts[_survivor_id][1]),
         # The members and plan its conversion offer reads, which a same-shape merge offers
         # conversions over (`RegionResult.served_members`).
-        served_members=tuple(
-            (_survivor.mat.member_facts or {})[dcid] for dcid in _survivor.mat.sv_dcids
-        ),
-        served_plans=tuple(
-            plan for plan in (grounded.cand_plans.get(_survivor_id),) if plan is not None
-        ),
+        served_members=_served_members,
+        served_plans=_served_plans,
     )
 
 
