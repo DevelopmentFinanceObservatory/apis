@@ -50,7 +50,7 @@ from search.engine.retrieval.read_plan import (
     unserved_entities,
     unserved_members,
 )
-from search.engine.retrieval.whole_reading import whole_groups_over_identity
+from search.engine.retrieval.whole_reading import unread_whole_group, whole_groups_over_identity
 from search.engine.shape import (
     ShapeDraft,
     SlotKeyDraft,
@@ -1244,21 +1244,34 @@ def _restate_whole_groups(
     """`named_groups` with each whole population (`NamedGroup.whole_of`) read again over
     `identity`'s own dataset and window (`whole_reading.whole_groups_over_identity`), the reading
     a resubmit of the Spec restores: kept where the identity reads the role it stands for
-    as that whole population, and dropped where it does not. The roles read are those the
+    as that whole population, and otherwise stated as both doors state it
+    (`whole_reading.unread_whole_group`): dropped where it stands for one whole total, and
+    kept as the plain named set where the role binds a whole total set's members. The roles
+    read are those the
     request named as one whole population alone (`place_roles._named_wholes`) or was offered
     one on (`place_roles.whole_total_candidates`), whatever the years the binding judged, so
     the label depends only on the identity and its roles, as a resubmit's does. A request
     whose years settle only once its series are read ("the last five years") so states the
     whole populations of the range it settled on. No other role gains a reading, so
     "official donors" beside "private donors" stays two named parties."""
-    whole_roles = set(
-        role_entity_groups((group for group in named_groups if group.whole_of), entities)
-    )
-    if not whole_roles:
+    wholes = tuple(group for group in named_groups if group.whole_of)
+    if not wholes:
         return named_groups
-    read = whole_groups_over_identity(identity, whole_roles)
+    dcids_by_role = _dcids_by_role(entities)
+    roles = {
+        role: group
+        for role, dcids in dcids_by_role.items()
+        if (group := _role_group(wholes, dcids)) is not None
+    }
+    read = whole_groups_over_identity(identity, roles)
+    unread = (
+        plain
+        for role in sorted(roles.keys() - read.keys())
+        if (plain := unread_whole_group(roles[role], dcids_by_role[role])) is not None
+    )
     return (
         *(group for group in named_groups if not group.whole_of),
+        *unread,
         *(read[role] for role in sorted(read)),
     )
 

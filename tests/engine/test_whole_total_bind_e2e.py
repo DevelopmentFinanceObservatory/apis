@@ -3564,6 +3564,75 @@ def test_a_trailing_ask_and_the_resubmit_of_its_spec_read_the_whole_total_alike(
     assert (_whole_read(resubmit) is None) == (_whole_read(ask) is None)
 
 
+@pytest.mark.parametrize(
+    ("time", "group"),
+    [
+        pytest.param(
+            "2021",
+            {
+                "label": "all donors including private",
+                "whole_of": ["official", "private"],
+                "holds_multilaterals": True,
+                "side_classes": ["official", "private", "residual"],
+            },
+            id="read-whole",
+        ),
+        pytest.param(
+            "1995", {"label": "all donors including private"}, id="members-not-read-whole"
+        ),
+    ],
+)
+def test_a_whole_total_set_and_the_resubmit_of_its_spec_state_the_donor_group_alike(
+    monkeypatch: pytest.MonkeyPatch, time: str, group: dict[str, Any]
+):
+    """ "All donors including private" to Ethiopia binds the members of the whole total set,
+    the official and the private donors' totals, with the private donors' marker holding
+    2009 to 2024. In 2021 the role reads whole; in 1995 it does not, and the role keeps the
+    named set as a plain group, with no whole reading. A resubmit of the Spec, posting its
+    groups back, states the group alike."""
+    party = get_index().parties[_PRIVATE]
+    monkeypatch.setitem(
+        get_index().parties,
+        _PRIVATE,
+        dataclasses.replace(
+            party,
+            whole=tuple(
+                dataclasses.replace(marker, years=(2009, 2024))
+                if marker.dataset == _DAC2A
+                else marker
+                for marker in party.whole
+            ),
+        ),
+    )
+    _coverage(monkeypatch, years=tuple(range(1990, 2024)))
+    entities = [_TO_ETHIOPIA, {"role": "from", "text": "all donors including private"}]
+
+    ask = _part(_resolve({"entities": entities, "time": time, "variable": _VARIABLE}))
+    resubmit = _part(
+        offline_resolve(
+            ResolveRequest(
+                input=DatasetResubmitInput(
+                    entries=[
+                        ResubmitIdentityEntry(
+                            variable_text=_VARIABLE,
+                            identity=ask.spec.definition.identity,
+                            entity_groups=ask.spec.resolved.entity_groups,
+                        )
+                    ]
+                )
+            ),
+            graph=_graph(),
+            llm=_ScriptedLLM(_VARIABLE),
+            sdmx=FakeSdmxClient(observations={}, availability={}),
+        )
+    )
+
+    assert _origin(ask.spec) == [_OFFICIAL, _PRIVATE]
+    assert _group(ask.spec, "origin") == group
+    assert resubmit.spec.definition.identity == ask.spec.definition.identity
+    assert _group(resubmit.spec, "origin") == _group(ask.spec, "origin")
+
+
 def test_a_trailing_ask_naming_all_recipients_reads_them_whole_as_its_resubmit_does(
     monkeypatch: pytest.MonkeyPatch,
 ):

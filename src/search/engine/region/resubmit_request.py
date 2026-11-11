@@ -37,7 +37,7 @@ from search.engine.region.result import FacetAxisFilter
 from search.engine.region.whole_totals import containing_reading
 from search.engine.retrieval.bound_values import identity_dataset
 from search.engine.retrieval.facts import read_constraints
-from search.engine.retrieval.whole_reading import whole_groups_over_identity
+from search.engine.retrieval.whole_reading import unread_whole_group, whole_groups_over_identity
 from search.engine.unit.refs import expressible as _unit_request_expressible
 from search.engine.unit.refs import satisfies as _unit_request_satisfies
 from search.models import (
@@ -463,6 +463,18 @@ def _registry_named_group(
     )
 
 
+def _posted(group: EntityGroup) -> NamedGroup:
+    """`group` as posted, as a named group with no members of its own."""
+    return NamedGroup(
+        label=group.label,
+        dcid=group.ref,
+        member_dcids=frozenset(),
+        total=group.total,
+        group_id=group.group_id,
+        whole_of=tuple(group.whole_of or ()),
+    )
+
+
 def resubmit_named_groups(
     inp: ResubmitIdentityPayload, *, graph: EngineGraphClient, deadline: float | None
 ) -> tuple[NamedGroup, ...]:
@@ -494,6 +506,11 @@ def resubmit_named_groups(
     A role whose entities the identity's dataset reads as the whole population of its side
     (`_whole_named_groups`) carries that population where the request posts a whole group
     or none on it, so a first answer's whole total survives a resubmit that posts no group.
+    A whole group posted on a role the identity does not read whole is stated as a first
+    answer states it (`whole_reading.unread_whole_group`): dropped for one whole total, and
+    kept as the plain named set where the role binds a whole total set's members, as is a
+    group posting no dcid on such a role the identity does not read whole, which is how a
+    first answer states that set.
     A role bound
     to its side's containing total carries the total's group only where the request posts
     none on it, as on a side the posted identity left open, so a resubmit of "ODA from DAC
@@ -507,11 +524,14 @@ def resubmit_named_groups(
         if role in whole:
             continue
         if group.whole_of:
-            logger.info(
-                "resubmit dropped group %r on role %s: the identity does not read it whole",
-                group.label,
-                role,
-            )
+            if (plain := unread_whole_group(_posted(group), entities.get(role, ()))) is not None:
+                named.append(plain)
+            else:
+                logger.info(
+                    "resubmit dropped group %r on role %s: the identity does not read it whole",
+                    group.label,
+                    role,
+                )
             continue
         _refuse_retired_group_id(group, role)
         registry_group = _registry_group(group, role)
@@ -553,6 +573,10 @@ def resubmit_named_groups(
             elif registry_group is not None:
                 if restored := _registry_named_group(group, registry_group, role, role_members):
                     named.append(restored)
+            elif (
+                plain := unread_whole_group(_posted(group), role_entities)
+            ) is not None and not whole_groups_over_identity(inp.identity, (role,)):
+                named.append(plain)
             else:
                 logger.info(
                     "resubmit dropped group %r on role %s: it names no graph node",

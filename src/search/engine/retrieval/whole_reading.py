@@ -14,7 +14,7 @@ it live in `region.whole_totals`.
 from __future__ import annotations
 
 from collections.abc import Callable, Collection, Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from code_index.shared import get_index
 from code_index.types import POPULATION_CLASS, PartyClass, PartyRow, WholeMarker, WholeTotalSet
@@ -215,6 +215,21 @@ def identity_whole_groups(identity: BaseIdentity) -> dict[str, NamedGroup]:
         if reading is not None and reading.axis == role_key_axis(role):
             groups[role] = reading.named_group()
     return groups
+
+
+def unread_whole_group(group: NamedGroup, dcids: Collection[str]) -> NamedGroup | None:
+    """A whole population (`group.whole_of`) whose identity does not read the role binding
+    `dcids` whole, as both doors state it (`spec_build._restate_whole_groups`,
+    `resubmit_request.resubmit_named_groups`): `None` where the group stands for one whole
+    total, which the role then binds as a party, and the plain named set of the role's
+    parties, labelled by the set's phrase, with no whole reading, where they are exactly the
+    members of one whole total set ("all donors including private" in a year a member's
+    marker does not hold). A resubmit reads a plain group it is posted back with, which
+    names no graph node, through the same rule."""
+    members = frozenset(dcids)
+    if group.total is not None or (whole_set := whole_total_set_of(members)) is None:
+        return None
+    return replace(group, label=whole_set.phrase, member_dcids=members, whole_of=())
 
 
 def whole_groups_over_identity(
