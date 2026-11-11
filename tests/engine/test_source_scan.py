@@ -23,6 +23,7 @@ from scripts.stage_origin_catalogue_fixture import stage_fixture
 from search.engine import config
 from search.engine.binders import GeminiBinder
 from search.engine.clients.graph import DetectedSV, Detection, settled_un
+from search.engine.concurrency import scoped_concurrency
 from search.engine.conjoin import combine_regions
 from search.engine.entry import raw_text
 from search.engine.envelope import now_ms
@@ -53,6 +54,7 @@ from search.engine.region.source_choice import (
     read_as_source,
     read_organisations,
 )
+from search.engine.response_cache import ResponseCache
 from search.engine.shape import ShapeDraft
 from search.engine.source_code import SeriesCodeMembers, SourceCodeRefusal
 from search.engine.source_scan import (
@@ -69,11 +71,13 @@ from search.engine.source_scope import (
     source_dictionary,
 )
 from search.heading.departure_fact import DirectionWord, PartyReason
-from search.models import GraphRef, NoDataReason, SourceMention
+from search.models import GraphRef, NoDataReason, RawTextInput, SourceMention
 from tests.engine._builders import conjoin_spec
 from tests.engine._conjoin_fixtures import _ECON_SHAPE, _PERSON_SHAPE, _region
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine.test_raw_text_handle_close_order import _params, _stub_region
+from tests.engine.test_response_cache_flow import _make_scope
 from tests.fixtures import FakeGraph, FakeLLM, make_resolver
 
 _EVAL_FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "origin_catalogue_eval"
@@ -572,6 +576,93 @@ def test_the_raw_text_door_recovers_the_global_fund_as_the_provider(
     assert [role.axis for role in prep.per_variable_entity_roles[0]["Global Fund"]] == ["origin"]
     assert prep.per_variable_sources == [()]
     assert prep.per_variable_party_readings is None
+
+
+class _KeyingScope:
+    """A cache scope that misses and keeps the layer-2 key a real scope builds from the
+    lookup the door makes."""
+
+    def __init__(self) -> None:
+        self.key: str | None = None
+
+    async def lookup_parsed(self, **kwargs):
+        scope = _make_scope(ResponseCache(max_bytes=10_000_000, max_entry_bytes=10_000_000))
+        await scope.lookup_parsed(**kwargs)
+        self.key = scope._layer2_key
+        await scope.release()
+        return None
+
+    def note_health(self, *, timed_out: bool, degraded_leg: bool) -> None:
+        pass
+
+
+def _layer2_key(query: str, extraction: Extraction, catalogue: CatalogueSnapshot) -> str | None:
+    """The layer-2 key the raw-text door looks `query` up under, `extraction` its parse and
+    no stretch of it left out."""
+    scope = _KeyingScope()
+
+    async def _extract(query, *, llm):
+        return ExtractionResult(extraction=extraction, qualifiers={}), None
+
+    async def _resolve_variable(variable, **kwargs):
+        return _stub_region(variable)
+
+    async def _combiner(regions, **kwargs):
+        yield None
+
+    async def _read_exclusions(query, *, llm):
+        return ExclusionRead(exclusions=[]), None
+
+    async def _run() -> None:
+        graph = FakeGraph()
+        async with scoped_concurrency():
+            async for _ in raw_text.handle(
+                RawTextInput(query=query),
+                graph=graph,
+                resolver=make_resolver(graph),
+                admission=Admission(graph=graph),
+                llm=FakeLLM(),
+                sdmx=FakeSdmxClient(observations={}, availability={}),
+                materialise_graph=None,
+                materialise_sdmx=None,
+                start_ms=0,
+                params=_params(),
+                scope=scope,  # ty: ignore[invalid-argument-type]
+            ):
+                pass
+
+    with (
+        bound_catalogue(catalogue),
+        patch("search.engine.entry.raw_text.extract", _extract),
+        patch("search.engine.entry.raw_text.read_exclusions", _read_exclusions),
+        patch("search.engine.fanout.resolve_variable", _resolve_variable),
+        patch("search.engine.entry.raw_text._stream_combined_regions", _combiner),
+    ):
+        asyncio.run(_run())
+    return scope.key
+
+
+def test_an_organisation_the_door_adds_with_no_role_keys_layer2_apart(
+    catalogue: CatalogueSnapshot,
+):
+    """ "health aid and education aid with GAVI in Kenya": the door adds GAVI as an entity
+    of both parts and grounds no role for it, so the parts' roles match the query without
+    it, and a query of two parts keys on no query text. The layer-2 key holds the entities
+    of the extraction the door prepared, so the two queries key apart."""
+    extraction = Extraction(
+        kind="resolution",
+        variables=["health aid", "education aid"],
+        entities=[ExtractedEntity(text="Kenya", span="Kenya")],
+    )
+
+    with_gavi = _layer2_key(
+        "health aid and education aid with GAVI in Kenya", extraction, catalogue
+    )
+    without = _layer2_key("health aid and education aid in Kenya", extraction, catalogue)
+
+    assert with_gavi is not None
+    assert without is not None
+    assert with_gavi != without
 
 
 def test_a_lower_case_organisation_reaches_the_part_through_the_extraction(

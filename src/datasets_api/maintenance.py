@@ -1812,6 +1812,10 @@ class PartyKindOutcome(StrEnum):
     """No tier holds the bytes of the version's stored frame, so the row is left alone."""
     CHANGED_UNDER_RUN = "changed_under_run"
     """The row's profile changed between the read and the write, so the row is left alone."""
+    COPIES_DIFFER = "copies_differ"
+    """The row's `output_profile` column and the `output_profile` of its `immutable_body`
+    differ, so no copy is counted from and the row is left alone. No trigger keeps the two
+    equal after insert, so this needs a hand repair; the run logs it at `ERROR` and exits 1."""
 
 
 PARTY_KIND_PAGE = 100
@@ -1834,17 +1838,17 @@ def _versions_with_profile(store: DatasetStore, *, after: tuple[str, str]) -> li
 
 def _stored_profile(
     tx: Transaction, subject_id: str, content_version: str
-) -> dict[str, object] | None:
-    """The `output_profile` column of one version row, `None` for a row no longer recorded
-    or holding no profile."""
+) -> tuple[dict[str, object], object] | None:
+    """The `output_profile` column of one version row and the `output_profile` of its
+    `immutable_body`, `None` for a row no longer recorded or holding no profile."""
     row = tx.fetch_one(
-        "SELECT output_profile FROM datasets.version_record "
-        "WHERE subject_id = %s AND content_version = %s",
+        "SELECT output_profile, immutable_body -> 'output_profile' AS body_profile "
+        "FROM datasets.version_record WHERE subject_id = %s AND content_version = %s",
         (subject_id, content_version),
     )
     if row is None or row["output_profile"] is None:
         return None
-    return cast("dict[str, object]", row["output_profile"])
+    return cast("dict[str, object]", row["output_profile"]), row["body_profile"]
 
 
 def _backfill_party_kind_of(
@@ -1863,13 +1867,17 @@ def _backfill_party_kind_of(
     still holds the profile it was counted from: the update compares the stored profile with
     it, so a profile any writer changed meanwhile stays. The write takes the version's link
     lock (`version_store.lock_version_links`), as the coverage fill does, and sets the body's
-    `output_profile` key alone, so it keeps every other writer's change to the body. A new
-    entry takes its place by the profile's own role columns. `None` for a row no longer
-    recorded."""
+    `output_profile` key alone, so it keeps every other writer's change to the body. Both
+    copies are compared, as `warning_backfill` compares its two, and a row whose copies
+    differ is refused (`PartyKindOutcome.COPIES_DIFFER`). A new entry takes its place by the
+    profile's own role columns. `None` for a row no longer recorded."""
     with store.transaction() as tx:
-        profile_json = _stored_profile(tx, subject_id, content_version)
-    if profile_json is None:
+        stored = _stored_profile(tx, subject_id, content_version)
+    if stored is None:
         return None
+    profile_json, body_profile = stored
+    if body_profile != profile_json:
+        return PartyKindOutcome.COPIES_DIFFER
     frame = _stored_frame(
         artifact_store, reader.read_artifact_locations(subject_id, content_version)
     )
@@ -1890,12 +1898,14 @@ def _backfill_party_kind_of(
             "UPDATE datasets.version_record SET output_profile = %s::jsonb, "
             "immutable_body = jsonb_set(immutable_body, '{output_profile}', %s::jsonb, false) "
             "WHERE subject_id = %s AND content_version = %s AND output_profile = %s::jsonb "
+            "AND immutable_body -> 'output_profile' = %s::jsonb "
             "RETURNING subject_id",
             (
                 json.dumps(refreshed),
                 json.dumps(refreshed),
                 subject_id,
                 content_version,
+                json.dumps(profile_json),
                 json.dumps(profile_json),
             ),
         )
@@ -1912,11 +1922,12 @@ def run_backfill_party_kind_coverage(
     """Count the `party_kind` coverage of every version row's output profile again with the
     rule and fold a mint counts it by (`profile.with_party_kind_coverage`), rewrite the rows
     that differ unless `dry_run`, emit the count of each `PartyKindOutcome`, and return the
-    number of versions that failed.
+    number of versions that failed or whose two profile copies differ.
 
     Rows are read `PARTY_KIND_PAGE` at a time in key order. A row already holding the count is
     left alone, so a second run changes nothing. A version that fails is logged with its
-    traceback and left as it is."""
+    traceback and left as it is, and one whose copies differ is logged at `ERROR`
+    (`datasets_party_kind_backfill_copies_differ`) and left as it is."""
     reader = LiveSnapshotReader(store=store)
     counts = dict.fromkeys(PartyKindOutcome, 0)
     failed = 0
@@ -1946,6 +1957,13 @@ def run_backfill_party_kind_coverage(
                     traceback=traceback.format_exc(),
                 )
                 continue
+            if outcome is PartyKindOutcome.COPIES_DIFFER:
+                emit(
+                    "datasets_party_kind_backfill_copies_differ",
+                    severity="ERROR",
+                    subject_id=subject_id,
+                    content_version=content_version,
+                )
             if outcome is not None:
                 counts[outcome] += 1
         if len(page) < PARTY_KIND_PAGE:
@@ -1957,7 +1975,7 @@ def run_backfill_party_kind_coverage(
         failed=failed,
         dry_run=dry_run,
     )
-    return failed
+    return failed + counts[PartyKindOutcome.COPIES_DIFFER]
 
 
 def _backfill_party_kind_coverage(dry_run: bool) -> int:

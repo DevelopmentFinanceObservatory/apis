@@ -379,3 +379,36 @@ def test_a_collapse_keeping_a_code_axis_is_counted_over_its_own_role_columns(cap
         if line.get("event") == "datasets_party_kind_backfilled"
     ]
     assert (failed, counts["refreshed"], counts["unchanged"]) == (0, 0, 2)
+
+
+def test_a_row_whose_two_profile_copies_differ_is_refused_loudly_and_left_alone(capsys):
+    """The `output_profile` column and the body's copy can drift apart after insert, since no
+    trigger keeps them equal. Such a row is counted `copies_differ`, logged at `ERROR`, keeps
+    both copies, and the run exits non-zero."""
+    version = _minted_then_counted_under_the_earlier_rule()
+    with version.rig.version_store.transaction() as tx:
+        _set_body_key(tx, version.manifest, "output_profile", version.minted)
+    capsys.readouterr()
+
+    exit_count = run_backfill_party_kind_coverage(
+        store=version.rig.version_store,
+        artifact_store=version.rig.artifact_store,
+        parties=version.index.parties,
+        dry_run=False,
+    )
+
+    lines = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    [counts] = [line for line in lines if line.get("event") == "datasets_party_kind_backfilled"]
+    [refused] = [
+        line for line in lines if line.get("event") == "datasets_party_kind_backfill_copies_differ"
+    ]
+    assert exit_count == 1
+    assert (counts["copies_differ"], counts["refreshed"], counts["failed"]) == (1, 0, 0)
+    assert (refused["severity"], refused["content_version"]) == (
+        "ERROR",
+        version.manifest["content_version"],
+    )
+    assert _profiles(version.rig.version_store, version.manifest) == (
+        version.earlier,
+        version.minted,
+    )

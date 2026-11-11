@@ -21,9 +21,10 @@ from __future__ import annotations
 
 import re
 import weakref
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
+from functools import lru_cache, partial
 from itertools import pairwise
 from typing import Literal, Protocol
 
@@ -477,22 +478,50 @@ def declared_measures_named(text: str) -> list[NamedMeasure]:
 
     A measure noun's or partition label's names are its label and `also_called` entries,
     and each declared acronym (`CodeIndex.variable_aliases`) whose expansion is one of
-    them, a table built once per code and measure index (`_measure_names`): "GNI" names
-    the noun "gross national income". An acronym whose expansion names no declared measure
-    ("PPG") names none. A name occurs where its words stand whole in `text`, hyphens read
-    as spaces and a last word's possessive allowed
+    them (`_measure_names`): "GNI" names the noun "gross national income". An acronym whose
+    expansion names no declared measure ("PPG") names none. A name occurs where its words
+    stand whole in `text`, hyphens read as spaces and a last word's possessive allowed
     (`token_occurrences`). The longest declared name wins its words: an occurrence inside
     a longer occurrence names nothing, so "GDP growth" names "GDP growth" and not "GDP".
     A declared name in parentheses straight after an occurrence, as an acronym restating it,
     joins that occurrence (`_with_parenthesised_name`): "Potential gross domestic product
     (GDP)" names potential GDP alone. Occurrences that name the same declarations form one
-    entry."""
+    entry.
+
+    The answer depends on `text` and the two indexes alone, so it is memoised by text for
+    each pair of indexes (`_measures_named_in`)."""
+    return list(_measures_named_in(get_index(), get_measure_index())(text))
+
+
+# The texts whose named measures each pair of indexes keeps, most recent first, across the
+# requests of one release: its variables, measure nouns and member labels.
+_NAMED_TEXTS = 4096
+
+
+def _measures_named_in(
+    index: CodeIndex, measures: MeasureIndex
+) -> Callable[[str], tuple[NamedMeasure, ...]]:
+    """`declared_measures_named` over `index` and `measures`, memoised by text and built once
+    per pair of indexes (`_measure_name_readers`). Neither index changes once loaded, so a
+    memoised answer is the one a fresh read gives."""
+    readers = _measure_name_readers(index)
+    held = readers.get(id(measures))
+    if held is not None and held[0] is measures:
+        return held[1]
+    reader = lru_cache(maxsize=_NAMED_TEXTS)(
+        partial(_named_in, names=_measure_names(index, measures))
+    )
+    readers[id(measures)] = (measures, reader)
+    return reader
+
+
+def _named_in(
+    text: str, *, names: Sequence[tuple[MeasurePartitionLabel, str]]
+) -> tuple[NamedMeasure, ...]:
+    """The measures of `names`, a name table (`_measure_names`), that `text` names, as
+    `declared_measures_named` states."""
     tokens = tokenize(text.replace("-", " "))
-    found = [
-        (entry, span)
-        for entry, name in _measure_names(get_index(), get_measure_index())
-        for span in token_occurrences(tokens, name)
-    ]
+    found = [(entry, span) for entry, name in names for span in token_occurrences(tokens, name)]
     spans = {span for _entry, span in found}
     found = [(entry, _with_parenthesised_name(text, span, spans)) for entry, span in found]
     by_span: dict[tuple[int, int], dict[MeasurePartitionLabel, None]] = {}
@@ -504,9 +533,9 @@ def declared_measures_named(text: str) -> list[NamedMeasure]:
     by_alternatives: dict[tuple[MeasurePartitionLabel, ...], list[tuple[int, int]]] = {}
     for span, alternatives in sorted(by_span.items()):
         by_alternatives.setdefault(tuple(alternatives), []).append(span)
-    return [
+    return tuple(
         NamedMeasure(alternatives, tuple(spans)) for alternatives, spans in by_alternatives.items()
-    ]
+    )
 
 
 def _measure_names(
@@ -515,11 +544,7 @@ def _measure_names(
     """Each name of each partition label and measure noun of `measures`, with the entry it
     names, hyphens read as spaces: its label, its `also_called` entries, and each of
     `index`'s declared acronyms (`CodeIndex.variable_aliases`) whose expansion is one of
-    them. Built once per pair of indexes (`_measure_name_tables`)."""
-    tables = _measure_name_tables(index)
-    held = tables.get(id(measures))
-    if held is not None and held[0] is measures:
-        return held[1]
+    them."""
     names: list[tuple[MeasurePartitionLabel, str]] = []
     for entry in (*measures.partition_labels, *measures.nouns):
         own = [entry.label, *entry.also_called]
@@ -530,16 +555,14 @@ def _measure_names(
             if expansion.casefold() in folded
         ]
         names += [(entry, name.replace("-", " ")) for name in own]
-    table = tuple(names)
-    tables[id(measures)] = (measures, table)
-    return table
+    return tuple(names)
 
 
 @per_index
-def _measure_name_tables(
+def _measure_name_readers(
     _index: CodeIndex,
-) -> dict[int, tuple[MeasureIndex, tuple[tuple[MeasurePartitionLabel, str], ...]]]:
-    """The name tables `_measure_names` built for `_index`, keyed by the measure index each
+) -> dict[int, tuple[MeasureIndex, Callable[[str], tuple[NamedMeasure, ...]]]]:
+    """The readers `_measures_named_in` built for `_index`, keyed by the measure index each
     was built from, which each entry holds so its key stays its own."""
     return {}
 

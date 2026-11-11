@@ -191,8 +191,8 @@ def _role_columns(output_profile: str | None) -> str | None:
 _JSONB_REPLACE = re.compile(r"jsonb_set\((\w+), '\{(\w+)\}', %s::jsonb, false\)")
 """A `jsonb_set` that sets one existing top-level key and adds none (`create_missing` false),
 SQLite's `json_replace`."""
-_JSONB_EQUALS = re.compile(r"(\w+) = %s::jsonb")
-"""A JSONB column compared with a parameter in a `WHERE` clause."""
+_JSONB_EQUALS = re.compile(r"(\w+(?: -> '\w+')?) = %s::jsonb")
+"""A JSONB column, or one key of it, compared with a parameter in a `WHERE` clause."""
 
 
 def _to_sqlite(sql: str) -> str:
@@ -226,6 +226,7 @@ _JSON_COLUMNS = frozenset(
         "trace",
         "warnings",
         "output_profile",
+        "body_profile",
         "role_columns",
         "series_conversions",
         "input_content_versions",

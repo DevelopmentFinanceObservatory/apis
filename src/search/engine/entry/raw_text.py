@@ -939,6 +939,9 @@ class _ExtractionPrep:
     or all of them as entities in place of sources (`_party_readings`), one of which the part
     runs in place of its own where the data read one of them as a party
     (`source_choice.read_organisations`), and `None` for any other part.
+    `extraction` is the extraction with the organisations the query names joined to its
+    entities (`_with_organisations`), the one every reader after `_prepare_extraction` takes:
+    the name corrections, the layer-2 key and `unclaimed`.
     """
 
     date_request: DateRequest | None
@@ -970,6 +973,7 @@ class _ExtractionPrep:
     per_variable_compiled_codes: list[PartCode | None]
     per_variable_scope_intakes: list[ScopeIntake]
     text: str
+    extraction: Extraction
     unclaimed: tuple[str, ...] = ()
     exclusions: tuple[LeftOut, ...] = ()
     exclusion_warnings: tuple[Warning, ...] = ()
@@ -1179,12 +1183,10 @@ def _prepare_extraction(
     *,
     query: str,
     left_out: Sequence[LeftOut] = (),
-    name_corrections: tuple[NameCorrection, ...] = (),
 ) -> _ExtractionPrep:
     """Prepare deduped extraction fields, qualifiers, and warnings for `handle`.
-    ``query`` is the text with each of the ``left_out`` stretches blanked.
-    ``name_corrections`` are the names the extraction read in place of the query's words
-    (`_name_corrections`), which every part receives (`_ExtractionPrep.onto`).
+    ``query`` is the text with each of the ``left_out`` stretches blanked. The prep holds no
+    name corrections; `handle` adds them, read from `_ExtractionPrep.extraction`.
 
     An organisation the query names that is no source and that no entity covers
     (`source_scan.find_organisations`) joins the extraction's entities first, as if the
@@ -1444,6 +1446,7 @@ def _prepare_extraction(
         per_variable_compiled_codes=per_variable_compiled_codes,
         per_variable_scope_intakes=intakes,
         text=query,
+        extraction=extraction,
         unclaimed=unclaimed_stretches(
             query, claimed=claimed, read_connectives=reading.read_connectives
         ),
@@ -1451,7 +1454,6 @@ def _prepare_extraction(
         exclusion_warnings=exclusion_warnings,
         exclusion_targets=exclusion_targets,
         per_variable_exclusions=per_variable_exclusions,
-        name_corrections=name_corrections,
         per_variable_party_readings=_party_readings(
             scan,
             extraction,
@@ -2125,11 +2127,12 @@ async def handle(
             )
         }
     )
-    prep = _prepare_extraction(
-        extraction,
-        extract_result,
-        query=text,
-        left_out=left_out,
+    prep = _prepare_extraction(extraction, extract_result, query=text, left_out=left_out)
+    # The prep's extraction holds the organisations the query names; nothing reads the
+    # extraction it was prepared from.
+    extraction = prep.extraction
+    prep = dataclasses.replace(
+        prep,
         name_corrections=await _name_corrections(
             extraction.entities, query=text, resolver=resolver, deadline=params.deadline
         ),

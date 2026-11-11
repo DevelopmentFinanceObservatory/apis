@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 
+from search.engine import qualifier_match
 from search.engine.measure_verdict import (
     PropertyEvidence,
     ReadingEvidence,
@@ -387,3 +388,23 @@ def test_a_summary_value_reaches_some_and_never_decides_holds(
     )
 
     assert measure_verdicts(declared_measures_named("health expenditure"), evidence) == [verdict]
+
+
+def test_a_text_is_read_for_its_named_measures_once_per_pair_of_indexes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`measure_verdicts` reads the noun and every member name of each reading it judges, so
+    a text read again under the same indexes takes the answer already read."""
+    text = "GDP growth of the memo test"
+    tokenized: list[str] = []
+    tokenize = qualifier_match.tokenize
+    monkeypatch.setattr(
+        qualifier_match, "tokenize", lambda words: tokenized.append(words) or tokenize(words)
+    )
+
+    first = declared_measures_named(text)
+    first.clear()
+    second = declared_measures_named(text)
+
+    assert [name.occurrences for name in second] == [((0, 10),)]
+    assert tokenized == [text]

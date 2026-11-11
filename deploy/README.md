@@ -110,7 +110,7 @@ gcloud run jobs execute "$JOB_DATASETS_MAINTENANCE" --region="$REGION" --project
   --wait --args=backfill-party-kind-coverage
 ```
 
-Each run writes one `datasets_party_kind_backfilled` line counting the versions `refreshed` (on a dry run, those it would rewrite), `unchanged`, `frame_gone` (no tier holds the frame, so the row is left as it is) and `changed_under_run` (the profile changed while it counted), with `failed` and `dry_run`. Each version that fails gets one `datasets_party_kind_backfill_failed` line with its `subject_id`, `content_version` and traceback, and the run exits 1. A second run changes nothing. Rolling back after the run is safe: an older image reads the rewritten profile as it reads any other.
+Each run writes one `datasets_party_kind_backfilled` line counting the versions `refreshed` (on a dry run, those it would rewrite), `unchanged`, `frame_gone` (no tier holds the frame, so the row is left as it is), `changed_under_run` (the profile changed while it counted) and `copies_differ` (the row's `output_profile` column and its body's copy differ, which needs a hand repair), with `failed` and `dry_run`. Each row whose copies differ gets one `datasets_party_kind_backfill_copies_differ` `ERROR` line, and the run exits 1. Each version that fails gets one `datasets_party_kind_backfill_failed` line with its `subject_id`, `content_version` and traceback, and the run exits 1. A second run changes nothing. Rolling back after the run is safe: an older image reads the rewritten profile as it reads any other.
 
 Manual deployments trigger via `workflow_dispatch` in GitHub Actions and always deploy the
 dispatched commit, whether or not it's already live, since dispatch exists to force a redeploy
