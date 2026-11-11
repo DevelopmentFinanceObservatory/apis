@@ -23,8 +23,10 @@ The extraction's entities and measures decide which hits are sources:
   extraction returned it as an entity: "Ghana debt service to the World Bank", "World Bank
   GNI of Denmark", "World Bank core contributions". The scan reads it as a source, and the
   raw-text door also builds the part's reading with the organisation as an entity, which
-  scans the query with the organisation among `parties`; before the part's pass the data
-  decide how it reads each organisation (`region.source_choice.read_organisations`).
+  scans the query with the organisation among `parties`. Before the part's pass the data
+  decide which readings of each organisation are possible, and where both are, the
+  extraction decides: an organisation whose role it states reads as a party, any other
+  hit as the source (`region.source_choice.read_organisations`).
 - A hit that names a table (a provenance or Dataset: CRS, WEO, IDS, DAC2a, imputed
   multilateral sectors) is a source wherever it stands. A table gives and receives nothing.
 
@@ -59,7 +61,7 @@ import unicodedata
 from collections.abc import Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Literal, get_args
+from typing import TYPE_CHECKING, Literal
 
 from code_index.query import CodeIndex
 from entity_resolution.pack import is_organisation_name, longest_name_words, written_as_stored
@@ -70,7 +72,6 @@ from search.engine.source_scope import (
     match_source_words,
     normalise_source_text,
 )
-from search.heading.departure_fact import DirectionWord
 from search.models import _PARSED_MAX_PART_SOURCES, _PARSED_MAX_SOURCE_MENTION_CHARS, SourceMention
 
 if TYPE_CHECKING:
@@ -86,12 +87,6 @@ _COORDINATORS = frozenset({"and", "or", "nor"})
 """Words that end one item of a stretch's list and start the next."""
 
 _ARTICLES = frozenset({"the", "a", "an", "le", "la", "el"})
-
-_DIRECTION_WORDS: frozenset[DirectionWord] = frozenset(get_args(DirectionWord))
-"""The words that, before an organisation, name it a party to a flow when it is one."""
-
-_LIST_FILLERS = _ARTICLES | _COORDINATORS
-"""The words a list of names holds beside the names themselves."""
 
 _FILLER_BEFORE_SOURCE = _ARTICLES | {"from"}
 """Words that may stand between a cue and the source it introduces."""
@@ -435,40 +430,6 @@ def _names_an_organisation(query: str, run: Sequence[_Word]) -> bool:
     elif not (first[:1].isupper() and last[:1].isupper()):
         return False
     return is_organisation_name(query[run[0].start : run[-1].end])
-
-
-def direction_word(
-    query: str, hit: SourceHit, *, entity_spans: Sequence[str]
-) -> DirectionWord | None:
-    """The word naming a party to a flow ("to", "from") that governs `hit`, or None: the word
-    before it, past articles, as "to" in "Ghana debt service to the World Bank". A hit that
-    closes a list (a coordinator before it) takes the word that governs the list, stepping
-    back over the list's items, each a name written capital first or an occurrence of one
-    of the extraction's `entity_spans` (a group such as "low-income countries"), and their
-    articles and coordinators: "to" in "to Norway and the World Bank", "to Norway, Sweden and
-    the IMF" and "to low-income countries and the World Bank". Any other word, a
-    preposition ("by") or a verb, ends the list and governs nothing."""
-    before = _words(query[: hit.start])
-    entities = [
-        span for spans in _entity_occurrences(entity_spans, before).values() for span in spans
-    ]
-
-    def in_list(word: _Word) -> bool:
-        return (
-            word.text[:1].isupper()
-            or word.folded in _LIST_FILLERS
-            or any(s <= word.start and word.end <= e for s, e in entities)
-        )
-
-    at = len(before) - 1
-    while at >= 0 and before[at].folded in _ARTICLES:
-        at -= 1
-    if at >= 0 and before[at].folded in _COORDINATORS:
-        at -= 1
-        while at >= 0 and in_list(before[at]):
-            at -= 1
-    word = before[at].folded if at >= 0 else None
-    return next((direction for direction in _DIRECTION_WORDS if direction == word), None)
 
 
 def _attach(

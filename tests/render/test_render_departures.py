@@ -841,11 +841,10 @@ _CASES: list[tuple[DepartureFact, str | None, str]] = [
             code="organisation_read_as_source",
             binding_ref="source:",
             asked="the IMF",
-            direction="to",
         ),
         None,
-        'You wrote the IMF after "to". The data that best matches this question does not '
-        "list the IMF as a party to a flow, so this reads it as the source of the data.",
+        "You named the IMF as a party to the flow. The data that best matches this question "
+        "does not list the IMF as a party to a flow, so this reads it as the source of the data.",
     ),
     # "World Bank core contributions": no World Bank table publishes the measure.
     (
@@ -865,12 +864,11 @@ _CASES: list[tuple[DepartureFact, str | None, str]] = [
             code="organisation_read_as_party",
             binding_ref=None,
             asked="the World Bank",
-            direction="to",
             party_reason="no_own_data",
         ),
         None,
-        'You wrote the World Bank after "to". None of the data it publishes measures this, '
-        "so this reads the World Bank as a party to the flow.",
+        "You named the World Bank. None of the data it publishes measures this, so this reads "
+        "the World Bank as a party to the flow.",
     ),
     # "CRS World Bank disbursements to Kenya": the CRS lists IBRD and IDA as donors.
     (
@@ -891,25 +889,24 @@ _CASES: list[tuple[DepartureFact, str | None, str]] = [
             code="organisation_read_as_party",
             binding_ref=None,
             asked="the Fund",
-            direction="from",
             party_reason="source_unresolved",
         ),
         None,
-        'You wrote the Fund after "from". Its words name no single source of data, so this '
-        "reads the Fund as a party to the flow.",
+        "You named the Fund. Its words name no single source of data, so this reads the Fund "
+        "as a party to the flow.",
     ),
-    # "Ghana debt service to the World Bank": IDS publishes IBRD and IDA as creditors.
+    # "Ghana debt service to the World Bank": the extraction returns the World Bank as an
+    # entity, and IDS publishes IBRD and IDA as creditors.
     (
         DepartureFact(
             code="organisation_read_as_party",
             binding_ref=None,
             asked="the World Bank",
-            direction="to",
-            party_reason="direction",
+            party_reason="named_as_party",
         ),
         "debt_service",
-        'You wrote the World Bank after "to". This reads the World Bank as a party to the '
-        "flow, not as the source of the data.",
+        "You named the World Bank as a party to the flow. This reads the World Bank as a party, "
+        "not as the source of the data.",
     ),
     # An undirected place whose data sits under one direction alone.
     (
@@ -1123,11 +1120,10 @@ _NO_DATA_CASES: list[tuple[DepartureFact, str | None, str]] = [
             code="organisation_read_as_source",
             binding_ref="source:",
             asked="the IMF",
-            direction="to",
         ),
         None,
-        'You wrote the IMF after "to". The data that best matches this question does not '
-        "list the IMF as a party to a flow, so this reads it as the source of the data.",
+        "You named the IMF as a party to the flow. The data that best matches this question "
+        "does not list the IMF as a party to a flow, so this reads it as the source of the data.",
     ),
     # "World Bank core contributions": no World Bank table publishes the measure.
     (
@@ -1147,12 +1143,11 @@ _NO_DATA_CASES: list[tuple[DepartureFact, str | None, str]] = [
             code="organisation_read_as_party",
             binding_ref=None,
             asked="the World Bank",
-            direction="to",
             party_reason="no_own_data",
         ),
         None,
-        'You wrote the World Bank after "to". None of the data it publishes measures this, '
-        "so this reads the World Bank as a party to the flow.",
+        "You named the World Bank. None of the data it publishes measures this, so this reads "
+        "the World Bank as a party to the flow.",
     ),
     # "CRS World Bank disbursements to Kenya": the CRS lists IBRD and IDA as donors.
     (
@@ -1173,25 +1168,24 @@ _NO_DATA_CASES: list[tuple[DepartureFact, str | None, str]] = [
             code="organisation_read_as_party",
             binding_ref=None,
             asked="the Fund",
-            direction="from",
             party_reason="source_unresolved",
         ),
         None,
-        'You wrote the Fund after "from". Its words name no single source of data, so this '
-        "reads the Fund as a party to the flow.",
+        "You named the Fund. Its words name no single source of data, so this reads the Fund "
+        "as a party to the flow.",
     ),
-    # "Ghana debt service to the World Bank": IDS publishes IBRD and IDA as creditors.
+    # "Ghana debt service to the World Bank": the extraction returns the World Bank as an
+    # entity, and IDS publishes IBRD and IDA as creditors.
     (
         DepartureFact(
             code="organisation_read_as_party",
             binding_ref=None,
             asked="the World Bank",
-            direction="to",
-            party_reason="direction",
+            party_reason="named_as_party",
         ),
         "debt_service",
-        'You wrote the World Bank after "to". This reads the World Bank as a party to the '
-        "flow, not as the source of the data.",
+        "You named the World Bank as a party to the flow. This reads the World Bank as a party, "
+        "not as the source of the data.",
     ),
     (
         DepartureFact(

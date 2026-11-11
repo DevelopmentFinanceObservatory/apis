@@ -608,12 +608,10 @@ def _direction_inferred(fact: DepartureFact, family: FlowFamily | None, _shows_d
 def _organisation_read_as_source(
     fact: DepartureFact, _family: FlowFamily | None, _shows_data: bool
 ) -> str:
-    if fact.direction is None:
-        raise ValueError("organisation_read_as_source needs the word before the organisation")
+    asked = _asked(fact)
     return (
-        f'You wrote {_asked(fact)} after "{fact.direction}". The data that best matches '
-        f"this question does not list {_asked(fact)} as a party to a flow, so this reads it "
-        "as the source of the data."
+        f"You named {asked} as a party to the flow. The data that best matches this question "
+        f"does not list {asked} as a party to a flow, so this reads it as the source of the data."
     )
 
 
@@ -621,27 +619,25 @@ def _organisation_read_as_party(
     fact: DepartureFact, _family: FlowFamily | None, _shows_data: bool
 ) -> str:
     asked = _asked(fact)
-    written = (
-        f"You named {asked}."
-        if fact.direction is None
-        else f'You wrote {asked} after "{fact.direction}".'
-    )
     match fact.party_reason:
-        case "direction":
-            return f"{written} This reads {asked} as a party to the flow, not as the source of the data."
+        case "named_as_party":
+            return (
+                f"You named {asked} as a party to the flow. This reads {asked} as a party, not "
+                "as the source of the data."
+            )
         case "named_source":
             return (
-                f"{written} {fact.shown} lists {asked} as a party to the flow, so this reads "
-                f"{asked} as a party, not as the source of the data."
+                f"You named {asked}. {fact.shown} lists {asked} as a party to the flow, so this "
+                f"reads {asked} as a party, not as the source of the data."
             )
         case "source_unresolved":
             return (
-                f"{written} Its words name no single source of data, so this reads {asked} as "
-                "a party to the flow."
+                f"You named {asked}. Its words name no single source of data, so this reads "
+                f"{asked} as a party to the flow."
             )
         case "no_own_data":
             return (
-                f"{written} None of the data it publishes measures this, so this reads "
+                f"You named {asked}. None of the data it publishes measures this, so this reads "
                 f"{asked} as a party to the flow."
             )
         case None:

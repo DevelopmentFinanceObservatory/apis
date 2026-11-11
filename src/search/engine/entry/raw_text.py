@@ -137,7 +137,6 @@ from search.engine.source_scan import (
     SourceHit,
     SourceScan,
     code_spans,
-    direction_word,
     find_organisations,
     left_out_sources,
     scan_sources,
@@ -155,7 +154,7 @@ from search.engine.source_spans import read_sources, unclaimed_stretches, unclai
 from search.engine.stated_scope import part_scope_intakes, without_scope_phrases
 from search.engine.surface_resolution import corrected_surfaces, is_surface, named_dcids
 from search.engine.unit.bind import names_price_basis, names_unit_request
-from search.heading.departure_fact import DepartureFact, DirectionWord
+from search.heading.departure_fact import DepartureFact
 from search.models import (
     CatalogueAnswer,
     DeclinedAnswer,
@@ -1528,6 +1527,32 @@ def _held_entities(extraction: Extraction) -> dict[str, str]:
     return held
 
 
+def _role_stated(extraction: Extraction, words: str, *, measure: str, query: str) -> bool:
+    """Whether `extraction` states the role of the organisation `query` names by `words` in
+    the part reading `measure`: an entity of the same words, normalised
+    (`normalise_source_text`), that scopes the measure (`extract.scoped_measures`), whose
+    cue is other words than its own (`extract.cue_is_its_span`), and that either keeps a
+    role, which `extract._ground_roles` keeps only with a cue, or carries a cue the query
+    holds (`extract.cue_grounded_in_form`). Either signal is enough: a kept role states it
+    though the model misquotes the cue ("owes" for "owe" in "what does Zambia owe the
+    IMF"), and a held cue states it with no role ("through" in "How much goes through the
+    World Bank?").
+
+    A cue that is the organisation's own name reads its role off the measure, as
+    `_ground_roles` gives an organisation standing straight before a measure word ("World
+    Bank external debt owed to China"), so it states none. An organisation listed with no
+    cue, as the schema's null cue says, states none either."""
+    key = normalise_source_text(words)
+    folded = _grounding_form(query)
+    return any(
+        normalise_source_text(entity.span or entity.text) == key
+        and measure in scoped_measures(entity, extraction.variables)
+        and not cue_is_its_span(entity)
+        and (entity.role is not None or cue_grounded_in_form(entity, folded))
+        for entity in extraction.entities
+    )
+
+
 def _party_readings(
     scan: SourceScan,
     extraction: Extraction,
@@ -1545,11 +1570,11 @@ def _party_readings(
     none of whose measures a contested source qualifies has none.
 
     A part's contest names each organisation it holds by its words, with the dcids the entity
-    pack names it (`entity_resolution.pack.organisations_named`), the word naming a party
-    to a flow before a mention of it (`source_scan.direction_word`), "to" over "from", the
-    position of its mention among the part's sources (`SourceScan.hit_mentions`), and the
-    entity a reading with it as a party names it by: the extracted entity of its words
-    where one holds them, else its own words (`_with_organisations`). Its
+    pack names it (`entity_resolution.pack.organisations_named`), whether the extraction
+    states its role in the part (`_role_stated`), the position of its mention among the
+    part's sources (`SourceScan.hit_mentions`), and the entity a reading with it as a party
+    names it by: the extracted entity of its words where one holds them, else its own words
+    (`_with_organisations`). Its
     readings read a set of the organisations as parties (`_readings_with`): every one of
     them (`PartyReading.reading`), or the set the part's data choose
     (`PartyReading.reading_with`)."""
@@ -1577,7 +1602,6 @@ def _party_readings(
             dictionary=dictionary,
         )
 
-    spans = [entity.span or entity.text for entity in extraction.entities]
     readings: list[PartyReading | None] = []
     for i in range(len(unique)):
         hits = [hit for hit in contested if i in hit.targets]
@@ -1588,13 +1612,7 @@ def _party_readings(
             ContestedOrganisation(
                 words=words,
                 parties=organisations_named(words),
-                direction=_direction(
-                    {
-                        direction_word(query, hit, entity_spans=spans)
-                        for hit in hits
-                        if hit.text == words
-                    }
-                ),
+                role_stated=_role_stated(extraction, words, measure=unique[i], query=query),
                 mention=next(
                     (mentions[hit][i] for hit in hits if hit.text == words and i in mentions[hit]),
                     None,
@@ -1612,12 +1630,6 @@ def _party_readings(
             )
         )
     return readings
-
-
-def _direction(words: AbstractSet[DirectionWord | None]) -> DirectionWord | None:
-    """The word naming a party to a flow among `words`, those before each mention of one
-    organisation: "to" over "from"."""
-    return "to" if "to" in words else "from" if "from" in words else None
 
 
 def _readings_with(

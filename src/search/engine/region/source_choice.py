@@ -52,7 +52,7 @@ from search.engine.source_scope import (
     normalise_source_text,
     source_label,
 )
-from search.heading.departure_fact import DirectionWord, PartyReason
+from search.heading.departure_fact import PartyReason
 from search.models import (
     GraphRef,
     IdentityBindingSet,
@@ -249,16 +249,16 @@ def allows_un_system(scope: SourceScope | None) -> bool:
 class ContestedOrganisation:
     """An organisation a part's query names that it may read as its source or as a party to
     the flow (`source_scan.SourceHit.contested`): its words, the dcids the entity pack names
-    it (`entity_resolution.pack.organisations_named`), the word naming a party to a flow
-    that governs it, "to" where a mention of it follows "to", else "from" where one follows
-    "from", else `None` (`source_scan.direction_word`), the position of its mention among
-    the part's source mentions in the reading with it as the source (`mention`,
-    from `source_scan.SourceScan.hit_mentions`, `None` where the part's mentions were full), and
-    the entity its party reading names it by (`entity`, `raw_text._entity_key`)."""
+    it (`entity_resolution.pack.organisations_named`), whether the extraction states its role
+    in the part, with a cue the query holds (`role_stated`, `raw_text._role_stated`), the
+    position of its mention among the part's source mentions in the reading with it as the
+    source (`mention`, from `source_scan.SourceScan.hit_mentions`, `None` where the part's
+    mentions were full), and the entity its party reading names it by (`entity`,
+    `raw_text._entity_key`)."""
 
     words: str
     parties: frozenset[str]
-    direction: DirectionWord | None
+    role_stated: bool
     mention: int | None
     entity: str
 
@@ -289,11 +289,12 @@ class OrganisationReading:
 @dataclass(frozen=True, slots=True)
 class OrganisationEvidence:
     """What one contested organisation brings to its reading (`choose_readings`): its words,
-    the word governing it, its own tables (`organisation_tables`) and the `(dataset, axis)`
-    pairs that publish it as a party (`PartyRow.published`)."""
+    whether the extraction states its role (`ContestedOrganisation.role_stated`), its
+    own tables (`organisation_tables`) and the `(dataset, axis)` pairs that publish it as a
+    party (`PartyRow.published`)."""
 
     words: str
-    direction: DirectionWord | None
+    role_stated: bool
     allowed: frozenset[str]
     published: frozenset[tuple[str, RoleAxis]]
 
@@ -317,7 +318,7 @@ def choose_reading(
     allowed: frozenset[str],
     named: Mapping[str, frozenset[str]] | None = None,
     published: AbstractSet[tuple[str, RoleAxis]],
-    direction: DirectionWord | None,
+    role_stated: bool,
     refused: bool = False,
 ) -> OrganisationReading:
     """The reading of one contested organisation, from the families the party
@@ -326,7 +327,7 @@ def choose_reading(
     `organisation_tables`), the tables of each other source the part names by its words
     (`named`, `other_named_tables`), whether the source reading's scope refused
     (`refused`), the `(dataset, axis)` pairs that publish the organisation as a party
-    (`PartyRow.published`), and the word governing it.
+    (`PartyRow.published`), and whether the extraction states its role (`role_stated`).
 
     One rule judges both readings: a family governs a recall as the pass reads a flow
     family (`flow_governance.governs`: the first family, or one whose score is at least
@@ -346,16 +347,17 @@ def choose_reading(
     GDP of Kenya" reads the World Bank as the source, since GDP has no flow it can be a
     party to.
 
-    The part reads the organisation as a party when that is possible and either a
-    direction word governs it or the source reading is impossible, else as its source
-    when that is possible, else as a party, whose pass refuses on the organisation's own
-    words. Two possible readings with no direction word read as the source: a publisher
-    named before the indicator, as in "World Bank external debt owed to China".
+    Where one reading is possible the part takes it, whatever the extraction states. Where
+    both are, the extraction decides: an organisation whose role it states, with a cue the
+    query holds, reads as a party ("what does Zambia owe the IMF", the IMF's cue "owe";
+    "How much goes through the World Bank?", the World Bank's cue "through"), any other as
+    the source. Where neither is, the part reads it as a party, whose pass refuses on the
+    organisation's own words.
 
-    A party reading carries why it was chosen (`PartyReason`): the direction word, where the
-    source reading was possible; else another named source listing the organisation as a
-    party; else the source reading's scope refusing; else none of the organisation's own
-    data leading the source reading's recall."""
+    A party reading carries why it was chosen (`PartyReason`): the query stating its role,
+    where the source reading was possible; else another named source listing the
+    organisation as a party; else the source reading's scope refusing; else none of the
+    organisation's own data leading the source reading's recall."""
     party = party_possible(measure, published)
     listed_by = tuple(
         words
@@ -366,15 +368,11 @@ def choose_reading(
         not family.datasets.isdisjoint(allowed) and governs(top=position == 0, score=family.score)
         for position, family in enumerate(scoped)
     )
-    if party and (direction is not None or not source):
-        role: Literal["party", "source"] = "party"
-    else:
-        role = "source" if source else "party"
-    if role == "source":
-        return OrganisationReading(role=role, source_possible=True)
+    if source and not (party and role_stated):
+        return OrganisationReading(role="source", source_possible=True)
     reason: PartyReason
     if source:
-        reason = "direction"
+        reason = "named_as_party"
     elif listed_by:
         reason = "named_source"
     elif refused:
@@ -382,7 +380,7 @@ def choose_reading(
     else:
         reason = "no_own_data"
     return OrganisationReading(
-        role=role, source_possible=source, reason=reason, listed_by=listed_by
+        role="party", source_possible=source, reason=reason, listed_by=listed_by
     )
 
 
@@ -428,10 +426,12 @@ def choose_readings(
 
     An organisation read as the source names a source as any other does, so where its
     tables list another organisation whose party reading is possible (`party_possible`),
-    the other reads as a party (`OrganisationReading.listed_by`). "World Bank debt service
-    from Kenya to the IMF" reads the World Bank, which no word governs, as the source, and
-    the IMF, after "to" and an IDS creditor, as a party. "World Bank and IMF GDP of Kenya"
-    reads both as sources, since GDP has no flow in which the IMF can be a party.
+    the other reads as a party (`OrganisationReading.listed_by`): with the World Bank read as
+    the source of IDS debt service, the IMF, an IDS creditor, reads as a party, so "World
+    Bank debt service from Kenya to the IMF", whose words state no role for the World Bank,
+    reads it as the source and the IMF as a creditor.
+    "World Bank and IMF GDP of Kenya" reads both as sources, since GDP has no flow in which
+    the IMF can be a party.
 
     Only an organisation read as the source that no other such organisation can list in
     this way names a source for the others, so the listing goes one step: where A lists B and
@@ -445,7 +445,7 @@ def choose_readings(
             allowed=organisation.allowed,
             named=named,
             published=organisation.published,
-            direction=organisation.direction,
+            role_stated=organisation.role_stated,
             refused=refused,
         )
         for organisation in organisations
@@ -480,7 +480,7 @@ def choose_readings(
                 allowed=organisation.allowed,
                 named={**(named or {}), **listing},
                 published=organisation.published,
-                direction=organisation.direction,
+                role_stated=organisation.role_stated,
                 refused=refused,
             )
         readings.append(reading)
@@ -562,7 +562,7 @@ async def read_organisations(
         [
             OrganisationEvidence(
                 words=organisation.words,
-                direction=organisation.direction,
+                role_stated=organisation.role_stated,
                 allowed=allowed,
                 published=frozenset(
                     pair
@@ -674,29 +674,29 @@ def _recalled(
 
 def read_as_source(region: RegionResult, contested: ContestedOrganisation) -> RegionResult:
     """`region`, the answer of a part reading `contested` as its source, disclosing that
-    reading where a direction word governs the organisation and the answer's measure has a
-    flow axis (`_answers_a_flow`): an `organisation_read_as_source` warning and its
-    departure. The part reads an organisation a direction word governs as its source only
-    where no party reading of it is possible (`choose_reading`): no flow family governs the
-    recall, or none of its families lists the organisation as a party. The text says that
-    the data that best matches the question does not list it as a party, which holds in
-    both cases. "GDP of Kenya from the IMF" answers from a GDP series with no flow axis
-    and is `region` as it is, as is any part with no direction word."""
-    if contested.direction is None or not _answers_a_flow(region):
+    reading where the extraction states the organisation's role
+    (`ContestedOrganisation.role_stated`) and the answer's measure has a flow axis
+    (`_answers_a_flow`): an `organisation_read_as_source` warning and its departure. The
+    part reads an organisation whose role the extraction states as its source only
+    where the source reading is the only one the data allow (`choose_reading`): no flow
+    family governs the recall, or none of its families lists the organisation as a party.
+    The text says that the data that best matches the question does not list it as a
+    party, which holds in both cases. "GDP of Kenya from the IMF" answers from a GDP series
+    with no flow axis and is `region` as it is, as is any part whose extraction states no
+    role for the organisation."""
+    if not contested.role_stated or not _answers_a_flow(region):
         return region
     names = contested.words
     warning = Warning(
         code=ORGANISATION_READ_AS_SOURCE,
         severity="warn",
         message=(
-            f'{names}, written after "{contested.direction}", was read as the source of the '
-            "data, since the data that best matches this question does not list it as a "
-            "party to a flow."
+            f"{names}, named as a party to the flow, was read as the source of the data, "
+            "since the data that best matches this question does not list it as a party to "
+            "a flow."
         ),
     )
-    return _disclosed(
-        region, warning, organisation_read_as_source(names, direction=contested.direction)
-    )
+    return _disclosed(region, warning, organisation_read_as_source(names))
 
 
 def _answers_a_flow(region: RegionResult) -> bool:
@@ -719,8 +719,8 @@ def read_as_party(
 ) -> RegionResult:
     """`region`, the answer of a part reading `contested` as a party to the flow
     (`reading`), disclosing that where the answer reads it as a party: an
-    `organisation_read_as_party` warning and its departure, which name the direction word
-    where the query wrote one and give the reading's reason (`OrganisationReading.reason`).
+    `organisation_read_as_party` warning and its departure, which give the reading's reason
+    (`OrganisationReading.reason`).
     It discloses where a Spec binds one of the organisation's dcids
     (`ContestedOrganisation.parties`) or the part refuses on its own words, as ambiguous,
     unresolved or with no admitted role. Any other answer turns on something else, says
@@ -730,13 +730,8 @@ def read_as_party(
     names = contested.words
     reason = reading.reason or "no_own_data"
     listed_by = _join_words(reading.listed_by) or None
-    written = (
-        f'{names}, written after "{contested.direction}",'
-        if contested.direction is not None
-        else names
-    )
     because = {
-        "direction": "not as the source of the data",
+        "named_as_party": "as the question names it, not as the source of the data",
         "named_source": f"since {listed_by} lists it as a party",
         "source_unresolved": "since its words name no single source of data",
         "no_own_data": "since none of the data it publishes measures this",
@@ -744,14 +739,12 @@ def read_as_party(
     warning = Warning(
         code=ORGANISATION_READ_AS_PARTY,
         severity="info",
-        message=f"{written} was read as a party to the flow, {because}.",
+        message=f"{names} was read as a party to the flow, {because}.",
     )
     return _disclosed(
         region,
         warning,
-        organisation_read_as_party(
-            names, direction=contested.direction, reason=reason, listed_by=listed_by
-        ),
+        organisation_read_as_party(names, reason=reason, listed_by=listed_by),
     )
 
 

@@ -41,7 +41,6 @@ from code_index.shared import get_index
 from dfo_platform.roles import role_key_axis
 from search.heading.departure_fact import (
     DepartureFact,
-    DirectionWord,
     PartyReason,
     UnservedMembers,
     ordered_facts,
@@ -246,36 +245,25 @@ def direction_discarded(name: str, axis: RoleAxis) -> DepartureFact:
     return DepartureFact(code="direction_discarded", binding_ref=WHERE_REF, asked=name, over=axis)
 
 
-def organisation_read_as_source(words: str, *, direction: DirectionWord) -> DepartureFact:
-    """An organisation the request named after `direction`, in its words `words`, which the
-    answer reads as the source of the data, since the data that best matches the request
-    does not list it as a party to a flow (`source_choice.choose_reading`). Naming another
-    source clears it."""
-    return DepartureFact(
-        code="organisation_read_as_source",
-        binding_ref=SOURCE_REF,
-        asked=words,
-        direction=direction,
-    )
+def organisation_read_as_source(words: str) -> DepartureFact:
+    """An organisation the request named as a party to a flow, in its words `words`, which
+    the answer reads as the source of the data, the only reading the data allow: the data
+    that best matches the request does not list it as a party to a flow
+    (`source_choice.choose_reading`). Naming another source clears it."""
+    return DepartureFact(code="organisation_read_as_source", binding_ref=SOURCE_REF, asked=words)
 
 
 def organisation_read_as_party(
-    words: str,
-    *,
-    direction: DirectionWord | None,
-    reason: PartyReason,
-    listed_by: str | None = None,
+    words: str, *, reason: PartyReason, listed_by: str | None = None
 ) -> DepartureFact:
-    """An organisation the request named, in its words `words`, after `direction` where it
-    wrote one, which the answer reads as a party to the flow for `reason`; `listed_by` names
-    the other sources that list it as a party, for `named_source`. No slot edit clears
-    it."""
+    """An organisation the request named, in its words `words`, which the answer reads as a
+    party to the flow for `reason`; `listed_by` names the other sources that list it as a
+    party, for `named_source`. No slot edit clears it."""
     return DepartureFact(
         code="organisation_read_as_party",
         binding_ref=None,
         asked=words,
         shown=listed_by,
-        direction=direction,
         party_reason=reason,
     )
 

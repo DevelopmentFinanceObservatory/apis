@@ -4617,31 +4617,6 @@
       }
     ]
   },
-  "_UniversalBindOutput@7105c7d81a38:f594c539f41d49adc6f6b74aff3adf54cbb43e30": {
-    "chosen_shape_index": 0,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "activitySource",
-        "kind": "value",
-        "value_dcids": [
-          "GrossNationalIncome"
-        ],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": null,
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 0,
-        "rating": 1.0
-      }
-    ]
-  },
   "_UniversalBindOutput@7105c7d81a38:9a30b5871f9eb23feddc6234946dd4346c22c37b": {
     "chosen_shape_index": 0,
     "bindings": [
@@ -24755,5 +24730,88 @@
         "rating": 1.0
       }
     ]
+  },
+  "ExclusionRead@3c024839b279:55d06873d0cc7bf02b9ac3c165b715d12e77cf67": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:9380f2162b6e7e20093ca4c7fe0e8c5ed9f68919": {
+    "exclusions": []
+  },
+  "_UniversalBindOutput@7105c7d81a38:c78f6784ba6961fd59104fce6875e3dfff36a798": {
+    "chosen_shape_index": 0,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "activitySource",
+        "kind": "value",
+        "value_dcids": [
+          "GrossNationalIncome"
+        ],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": null,
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 0,
+        "rating": 1.0
+      }
+    ]
+  },
+  "Extraction@840d8db0c01a:acdd3f45c2754d3b12a7ee98c96ebe5061cbc2db": {
+    "kind": "resolution",
+    "variables": [
+      "external debt"
+    ],
+    "entities": [
+      {
+        "text": "China",
+        "span": "China",
+        "variables": [
+          0
+        ],
+        "cue": "to",
+        "role": "creditor",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@840d8db0c01a:c8d4bda13686bd36cb20bba5859fe10f9b07f2e8": {
+    "kind": "resolution",
+    "variables": [
+      "debt service"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "variables": [
+          0
+        ],
+        "cue": "from",
+        "role": "debtor",
+        "members": false
+      },
+      {
+        "text": "IMF",
+        "span": "IMF",
+        "variables": [
+          0
+        ],
+        "cue": "to",
+        "role": "creditor",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
   }
 }

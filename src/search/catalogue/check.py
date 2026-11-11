@@ -100,8 +100,8 @@ REFUSING_DEPARTURES: Final[frozenset[DepartureCode]] = frozenset(
 )
 """Departures that say the answer is for a different question than the
 sentence asked: another measure, no operation, no breakdown, a place, variable or
-year without values, a dropped direction, an organisation named after "to" or "from"
-read as the source. An answer carrying one fails the example
+year without values, a dropped direction, an organisation named as a party read as the
+source. An answer carrying one fails the example
 (`departed`). Together with `DATA_DESCRIBING_DEPARTURES` this is every
 `DepartureCode`, so a code added to the vocabulary fails a test until it is
 put on a side."""
