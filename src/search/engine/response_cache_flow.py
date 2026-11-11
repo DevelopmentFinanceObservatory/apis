@@ -584,8 +584,9 @@ class CacheScope:
     async def _settle_extraction(self) -> None:
         """Settle the noted agreements once (`clients.llm.settle`), awaiting how each
         second sample ended; one still running ends by its own deadline,
-        `llm_second_sample_settle_s` after its first was read. A request without the
-        response cache or an extraction store needs no verdict and awaits nothing. Each
+        `llm_second_sample_settle_s` after its first was read. Only two things read the
+        verdict, a layer-1 lease this request holds and an extraction store a second sample
+        writes to, so a request holding neither awaits nothing. Each
         second sample logs its own ending, a defect included (`clients.llm.Agreement`). A
         fault in settling itself is logged at error with its traceback and leaves the
         reading unjudged: the answer is already computed, and only its storage depends on
@@ -593,7 +594,7 @@ class CacheScope:
         if self._settled or not self._agreements:
             return
         self._settled = True
-        if not self.active and not self._stores_readings:
+        if self._layer1_lease is None and not self._stores_readings:
             return
         try:
             self._extraction_agreed = await settle(self._agreements)

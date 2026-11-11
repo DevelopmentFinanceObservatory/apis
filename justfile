@@ -444,14 +444,16 @@ eval-app PORT:
         uvicorn --factory dfo_apis.app:create_app --host 127.0.0.1 --port {{PORT}} \
         --log-config log-config.json
 
-# Reads GEMINI_API_KEY, SEARCH_GRAPH_BASE, SEARCH_GRAPH_TOKEN, GRAPH_RELEASE_URI and
-# ORIGIN_CATALOGUE_URI from the environment. Pass --file <corpus stem> and --ids <ids>.
+# Needs GEMINI_API_KEY, SEARCH_GRAPH_BASE, GRAPH_RELEASE_URI and ORIGIN_CATALOGUE_URI in the
+# environment, and SEARCH_GRAPH_TOKEN where the graph asks for one. RESOLVEKIT_CACHE_DIR
+# defaults to runs/dev_resolvekit. Pass --file <corpus stem> and --ids <ids>.
 #
 # Record the graph, SDMX and LLM fixtures of corpus cases from live services (tests/fixtures/record.py)
 record-fixtures *ARGS:
     #!/usr/bin/env bash
     set -euo pipefail
     : "${GEMINI_API_KEY:?set GEMINI_API_KEY in the environment}"
+    : "${SEARCH_GRAPH_BASE:?set SEARCH_GRAPH_BASE in the environment}"
     : "${GRAPH_RELEASE_URI:?set GRAPH_RELEASE_URI in the environment}"
     : "${ORIGIN_CATALOGUE_URI:?set ORIGIN_CATALOGUE_URI in the environment}"
     if [ -z "${RESOLVEKIT_CACHE_DIR:-}" ]; then

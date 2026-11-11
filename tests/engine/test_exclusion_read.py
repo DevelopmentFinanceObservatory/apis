@@ -24,7 +24,7 @@ from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import LLM, UNCOUNTED_CALLS, Sampled, SecondSamples, SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.entry import raw_text
-from search.engine.errors import LLMInfraError
+from search.engine.errors import LLMInfraError, LLMOutputRefused
 from search.engine.exclusion_read import (
     EXCLUSION_READ_SYSTEM_PROMPT,
     Exclusion,
@@ -676,6 +676,33 @@ def test_a_failed_discarded_parse_retrieves_its_finished_second_samples_failure(
 
     assert usage == {UNCOUNTED_CALLS: EXTRACTION_CALLS}
     assert unretrieved == []
+
+
+_FIRST_TOKENS = {"input_tokens": 7, "output_tokens": 1, "cached_tokens": 0}
+_SECOND_TOKENS = {"input_tokens": 5, "output_tokens": 2, "cached_tokens": 0}
+
+
+def test_a_refused_discarded_parse_counts_the_tokens_its_samples_report():
+    """A speculative parse the door discards after its first sample was refused counts the
+    tokens the refusal reports, and the tokens of its second sample, which had answered
+    and was cancelled before it was judged."""
+
+    async def answered() -> Sampled[str]:
+        return Sampled("second", dict(_SECOND_TOKENS), None)
+
+    async def refused() -> None:
+        raise LLMOutputRefused("refused", usage=dict(_FIRST_TOKENS))
+
+    async def run() -> dict | None:
+        samples = SecondSamples()
+        second = samples.start(answered, stage="extraction")
+        samples.count(second)
+        parse = asyncio.create_task(refused())
+        await asyncio.wait([parse])
+        await asyncio.sleep(0)
+        return await raw_text._discarded_usage(cast(Any, parse), samples)
+
+    assert asyncio.run(run()) == {"input_tokens": 12, "output_tokens": 3, "cached_tokens": 0}
 
 
 def test_a_failed_extraction_on_a_miss_fails_the_query():

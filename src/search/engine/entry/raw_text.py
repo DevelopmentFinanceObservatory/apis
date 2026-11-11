@@ -67,6 +67,7 @@ from search.engine.envelope import (
     make_response,
     now_ms,
 )
+from search.engine.errors import LLMOutputRefused
 from search.engine.events import (
     DoneEvent,
     DoneTelemetry,
@@ -83,7 +84,6 @@ from search.engine.exclusion_read import (
     stored_exclusion_read,
 )
 from search.engine.extract import (
-    EXTRACTION_CALLS,
     DateRequest,
     ExtractedEntity,
     Extraction,
@@ -673,10 +673,12 @@ async def _discarded_usage(
 ) -> dict | None:
     """The usage of a speculative parse the door discards, which is cancelled if still
     running, with the second samples it left in `samples`, its own holder, which is closed.
-    A parse that finished with an answer counts its token counts and its second sample's
-    (`SecondSamples.usage`). One cancelled in flight or failed counts one uncounted call
-    (`UNCOUNTED_CALLS`) for each of the `EXTRACTION_CALLS` requests a parse sends, its
-    second included, since it had sent them and reports no counts."""
+    A parse that finished with an answer counts its first sample's token counts; one that
+    failed counts what its failure reports (`LLMOutputRefused.usage`), else one uncounted
+    call (`UNCOUNTED_CALLS`), as does one cancelled in flight, since its request was sent
+    and no response reports its tokens. Its second sample counts what it cost
+    (`SecondSamples.usage`), answered, cut or cancelled; with no holder of its own the
+    second's cost is in a finished parse's usage, and is one uncounted call otherwise."""
     if not task.done():
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
@@ -685,9 +687,12 @@ async def _discarded_usage(
         await samples.aclose()
         # Read on every path, so each finished second's result or failure is retrieved.
         second = samples.usage()
-    if task.cancelled() or task.exception() is not None:
-        return {UNCOUNTED_CALLS: EXTRACTION_CALLS}
-    return sum_usage(task.result()[1], second)
+    if not task.cancelled() and task.exception() is None:
+        return sum_usage(task.result()[1], second)
+    exc = None if task.cancelled() else task.exception()
+    first = exc.usage if isinstance(exc, LLMOutputRefused) else None
+    unread_second = {UNCOUNTED_CALLS: 1} if samples is None else second
+    return sum_usage(first or {UNCOUNTED_CALLS: 1}, unread_second)
 
 
 async def _read_and_extract(query: str, *, llm: SupportsLLM, deadline: float) -> _DoorRead:

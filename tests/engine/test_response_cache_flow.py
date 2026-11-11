@@ -24,6 +24,7 @@ from search.engine.clients.llm import (
     LLM,
     UNCOUNTED_CALLS,
     Agreement,
+    Ended,
     FixedAgreement,
     Sampled,
     SecondSamples,
@@ -1082,29 +1083,77 @@ def test_an_unheld_callers_cut_logs_its_stage(search_settings, caplog):
     assert _second_sample_logs(caplog) == [("INFO", "exclusion_read", "settle_bound")]
 
 
-def test_a_cut_set_while_the_model_deadline_expires_does_not_raise(search_settings, caplog):
+def test_a_cut_set_while_the_model_deadline_expires_does_not_raise(caplog):
     """A first sample read just as its second's own `llm_timeout_s` deadline fires sets the
-    cut on a timeout already expiring. The deadline is not moved, and since the first was
-    read the second's end reads as cut, logged as reaching the model deadline with no time
-    allowed after the read."""
-    search_settings(llm_timeout_s=0.01, llm_second_sample_settle_s=1.0)
+    cut on a timeout already expiring. The deadline is not moved, and the deadline that
+    fired is the model's, before the first was read, so the second ends as a model failure,
+    logged as one. The test fires the deadline by moving it into the past, and the loop
+    runs ready callbacks in order: the expiry, then this task, then the cancelled one."""
     caplog.set_level(logging.INFO, logger=llm_module.__name__)
 
     async def run() -> tuple[bool, str]:
         second = SecondSamples().start(_never, stage="extraction")
         await asyncio.sleep(0)
-        time.sleep(0.03)
-        # The first yield runs the due timeout, which marks its scope expiring and
-        # cancels the task; this task resumes before the cancelled one does.
-        await asyncio.sleep(0)
+        assert second._scope is not None
+        second._scope.reschedule(asyncio.get_running_loop().time() - 1.0)
         await asyncio.sleep(0)
         expiring = second._scope is not None and second._scope.expired()
         second.read_first(lambda _answer: True, delay_s=1.0)
         return expiring, (await second.ended()).outcome
 
-    assert asyncio.run(run()) == (True, "cut")
-    [cut] = _second_sample_lines(caplog)
-    assert (cut.get("deadline"), cut.get("allowed_s")) == ("llm_timeout_s", 0.0)
+    assert asyncio.run(run()) == (True, "failed")
+    assert _second_sample_logs(caplog) == [("WARNING", "extraction", LLMInfraError)]
+
+
+def test_each_cancelled_second_sample_reports_its_own_usage():
+    """Two second samples cancelled after they called the model each report one
+    uncounted call, in a value of their own, so a change to one request's usage reaches no
+    other."""
+
+    async def run() -> tuple[dict | None, dict | None]:
+        samples = SecondSamples()
+        first, second = (samples.start(_never, stage="extraction") for _ in range(2))
+        await asyncio.sleep(0)
+        await samples.aclose()
+        return first.ending().usage, second.ending().usage
+
+    one, other = asyncio.run(run())
+
+    assert one == other == {UNCOUNTED_CALLS: 1}
+    assert one is not other
+
+
+def test_a_second_sample_started_on_a_closed_holder_costs_nothing():
+    """A second sample started after its holder closed is cancelled before it calls the
+    model, so it reports no usage."""
+
+    async def run() -> dict | None:
+        samples = SecondSamples()
+        await samples.aclose()
+        samples.count(samples.start(_never, stage="extraction"))
+        await asyncio.sleep(0)
+        return samples.usage()
+
+    assert asyncio.run(run()) is None
+
+
+def test_an_answered_second_sample_cancelled_before_its_first_is_read_keeps_its_usage():
+    """A second sample that answered and is cancelled while it waits for its first to be
+    read reports the tokens its answer cost, not an uncounted call."""
+    tokens = {"input_tokens": 5, "output_tokens": 2, "cached_tokens": 0}
+
+    async def answered() -> Sampled[str]:
+        return Sampled("second", dict(tokens), None)
+
+    async def run() -> Ended:
+        samples = SecondSamples()
+        second = samples.start(answered, stage="extraction")
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        await samples.aclose()
+        return second.ending()
+
+    assert asyncio.run(run()) == Ended("cut", tokens)
 
 
 def test_a_second_sample_reaching_its_model_deadline_after_its_first_is_cut(
@@ -1742,13 +1791,15 @@ def test_an_unstreamed_response_publishes_layer2_at_response_and_layer1_at_done(
     assert asyncio.run(run()) == (True, True, True, True)
 
 
-def test_a_request_without_cache_or_extraction_store_settles_nothing_at_done():
-    """With no response cache and no extraction store, `done` does not wait for a second
-    sample still running: nothing would keep its verdict."""
+@pytest.mark.parametrize("cached", [False, True], ids=["no-cache", "no-layer-1-lease"])
+def test_a_request_without_cache_or_extraction_store_settles_nothing_at_done(cached: bool):
+    """With no layer-1 lease, whether there is no response cache or the request holds no
+    lease on it, and no extraction store, `done` does not wait for a second sample still
+    running: nothing would keep its verdict."""
     base = _base_response()
 
     async def run() -> tuple[bool, bool | None]:
-        scope = _make_scope(None)
+        scope = _make_scope(_new_cache() if cached else None)
         scope.hold_samples(LLM(seed=1))
         second = _judged(_never)
         scope.note_extraction(second)

@@ -2,8 +2,8 @@
 
 `extract()` consults the store before it calls the model. The model's `Extraction` JSON,
 before any post-processing, is written to it when two samples agree on its reading: the
-second sample's task judges it against the first as it answers (`clients.llm.Agreement`),
-whatever happens to the request after. A second sample that outlasts the settle bound
+second sample's task judges it against the first once it answers and its first is read
+(`clients.llm.Agreement`), whatever happens to the request after. A second sample that outlasts the settle bound
 (`SEARCH_LLM_SECOND_SAMPLE_SETTLE_S`), or that the request's end cancels, stores nothing. A
 key (`extraction_key`) hashes the query as sent, the extract version (the system
 prompt and the `Extraction` schema), the model id, seed and thinking level, and the
