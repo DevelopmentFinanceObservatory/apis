@@ -441,13 +441,17 @@ def test_the_concept_of_a_dac1_provider_scope_names_the_total_it_scopes(
     )
 
 
-def test_a_value_the_measure_label_names_adds_no_qualifier():
-    """A label naming the bound code says it already, so the shape label does not repeat it:
-    "climate finance gross disbursements" stays bare for the climate objective's total."""
+def test_a_value_the_measure_label_names_leaves_the_shape_label_and_keeps_the_concept():
+    """A label naming the bound code says it already, so the shape label does not repeat it
+    ("climate finance gross disbursements" stays bare for the climate objective's total),
+    and the concept label still names what the series count."""
     slots = [_aid_type_slot("DAC1AidType1015")]
     label = MeasureLabel("bilateral ODA", [], (("dac1AidType", "DAC1AidType1015"),))
 
-    assert _shared_qualifiers(label, slots, None, index=get_index()) == ([], [])
+    assert _shared_qualifiers(label, slots, None, index=get_index()) == (
+        [],
+        ["official development assistance"],
+    )
 
 
 class TestConstraintProperties:

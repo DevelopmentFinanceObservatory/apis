@@ -1037,17 +1037,18 @@ def _shared_qualifiers(
     as the shape label states them and as the concept label does.
 
     Single bound values and constant open-axis values each add their label, unless the
-    measure label covers their axis or names the value itself
-    (`MeasurePartitionLabel.named_values`): "climate finance gross disbursements" names the
-    climate objective's total, so a part bound to that total adds nothing. A set binding adds the label of the group it was drawn
+    measure label covers their axis. A set binding adds the label of the group it was drawn
     from, else its members' labels joined ("official development assistance and private
     sector instruments" for CRS flows 10 and 60). Varying axes are omitted, and duplicate
     label text is removed case-insensitively. The shape label states the first list after
-    the measure label (`_composed_shape_label`). The second names what the series count with
-    no basis or provider scope (`ResolvedSpec.concept_label`): a code a provider option
-    reads as a scope of a published total in `index`, the release's code index, names that
-    total (`provider.provider_total_code`), so DAC1's bilateral ODA names "official
-    development assistance" as the total and its multilateral ODA do.
+    the measure label (`_composed_shape_label`), less any value the measure label names
+    (`MeasurePartitionLabel.named_values`): "climate finance gross disbursements" names the
+    climate objective's total, so the shape label leaves that total out. The second list
+    names what the series count with no basis or provider scope
+    (`ResolvedSpec.concept_label`) and keeps named values: a code a provider option reads
+    as a scope of a published total in `index`, the release's code index, names that total
+    (`provider.provider_total_code`), so DAC1's bilateral ODA names "official development
+    assistance" as the total and its multilateral ODA do.
     """
     covered = set(measure_label.axes)
     named = set(measure_label.named_values)
@@ -1058,16 +1059,10 @@ def _shared_qualifiers(
         if prop is None or prop.ref in covered:
             continue
         binding = slot.binding
-        if (
-            isinstance(binding, BindingValue)
-            and binding.value.ref is not None
-            and (prop.ref, binding.value.ref.ref) in named
-        ):
-            covered.add(prop.ref)
-            continue
         if isinstance(binding, BindingValue) and binding.value.ref is not None:
             covered.add(prop.ref)
-            shown.append(binding.value.ref.label)
+            if (prop.ref, binding.value.ref.ref) not in named:
+                shown.append(binding.value.ref.label)
             concept.append(_concept_value_label(prop.ref, binding.value.ref, index))
         elif isinstance(binding, BindingSet) and (label := _set_label(binding)) is not None:
             covered.add(prop.ref)
@@ -1077,9 +1072,8 @@ def _shared_qualifiers(
         if fact.property in covered or fact.varies or fact.value is None:
             continue
         covered.add(fact.property)
-        if (fact.property, fact.value.ref) in named:
-            continue
-        shown.append(fact.value.label)
+        if (fact.property, fact.value.ref) not in named:
+            shown.append(fact.value.label)
         concept.append(fact.value.label)
     return _distinct_labels(shown), _distinct_labels(concept)
 
