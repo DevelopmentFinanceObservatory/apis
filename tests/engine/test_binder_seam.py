@@ -677,8 +677,14 @@ def test_a_lone_twin_is_judged_on_the_typed_values_as_any_reading_is(
 
     grounded = _grounded((twin_spec, _TWIN_SV, twin, "twin"))
     # The twin answers on the drafts its slots hold, as grounding binds them.
-    grounded.cand_candidates[twin_spec.spec_id] = dataclasses.replace(
-        grounded.cand_candidates[twin_spec.spec_id], bindings=held
+    entry = grounded[twin_spec.spec_id]
+    grounded = dataclasses.replace(
+        grounded,
+        entries={
+            twin_spec.spec_id: dataclasses.replace(
+                entry, candidate=dataclasses.replace(entry.candidate, bindings=held)
+            )
+        },
     )
 
     specs, state = _settle(monkeypatch, state, grounded)

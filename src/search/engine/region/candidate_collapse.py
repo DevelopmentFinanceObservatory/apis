@@ -818,8 +818,8 @@ async def _assemble_candidate_set(
         state,
         [
             (
-                grounded.cand_candidates[spec.spec_id].shape,
-                grounded.cand_candidates[spec.spec_id].bindings,
+                grounded[spec.spec_id].candidate.shape,
+                grounded[spec.spec_id].candidate.bindings,
             )
             for spec in unique_specs
         ],
@@ -1022,7 +1022,7 @@ async def assemble_candidates(
         # set does. A reading whose bindings bind every typed value, as the elected shape
         # and an installed stand-in bind their own drafts, records nothing and reads no
         # labels.
-        lone = grounded.cand_candidates[unique_specs[0].spec_id]
+        lone = grounded[unique_specs[0].spec_id].candidate
         await _record_unheld_values(state, [(lone.shape, lone.bindings)])
         return await _assemble_definite(state, unique_specs, grounded, rate_cache)
     return await _assemble_candidate_set(
