@@ -12,6 +12,7 @@ those systems, while `enrichment_fields` reflects the separately configurable fi
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Mapping
 
 from pydantic import BaseModel, Field
@@ -19,6 +20,7 @@ from pydantic import BaseModel, Field
 from code_index.types import CodeSystemDeclaration, IndexStamp, level_axes, summable_axes
 from dataset_store.snapshot import WORKING_TIER_RETENTION
 from datasets_api.config import DatasetsBuildSettings
+from dfo_analysis_engine.execution_identity import current_execution_identity
 from materialise.facets import DEPLOYMENT_FACET_POLICY, DEPLOYMENT_FACET_POLICY_VERSION
 from materialise.recipe_bodies import RECIPE_CLASSES
 from statvar_members.enumerate import CANDIDATE_CAP
@@ -258,6 +260,15 @@ class Capabilities(BaseModel):
             "parent chain (0 = root codes) before the sum"
         )
     )
+    analysis_execution_identity: dict[str, str] = Field(
+        description=(
+            "the engine that computes analysis frames here: engine_version, "
+            "frame_grammar_version and reduction_policy_version, the same object an analysis "
+            "answer carries as execution_identity. Its pipe-joined canonical string is the "
+            "execution identity hashed into a derived frame's replay_key and a toolkit "
+            "result's content_version"
+        )
+    )
     caps: CapabilityCaps = Field(description="published input limits and response caps")
     code_index: CodeIndexStamp = Field(description="provenance for the packaged code index")
 
@@ -302,6 +313,7 @@ def build_capabilities(
         summability_declarations_live=SUMMABILITY_DECLARATIONS_LIVE,
         summable_axes=sorted(summable_axes(declarations)),
         groupby_level_axes=sorted(level_axes(declarations)),
+        analysis_execution_identity=dataclasses.asdict(current_execution_identity()),
         caps=CapabilityCaps(
             definition_candidate_cap=CANDIDATE_CAP,
             definition_subject_ceiling=settings.member_subject_ceiling,

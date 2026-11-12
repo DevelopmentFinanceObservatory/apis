@@ -87,9 +87,11 @@ def test_a_tree_answers_its_stored_frame_and_a_rerun_answers_the_same_reading_no
         versions = stores.version_count()
         reads = roots.reads
         again = client.post(_PATH, json={"tree": _TREE})
+        capabilities = client.get("/api/datasets/capabilities").json()
 
     assert first.status_code == 200, first.text
     body = first.json()
+    assert body["execution_identity"] == capabilities["analysis_execution_identity"]
     assert body["status"] == "ready"
     member = body["ref"]["members"][0]
     assert member["output_digest"] == body["output_digest"]

@@ -39,6 +39,8 @@ Handles service liveness, capability negotiation, and schema discovery.
 
 Every response carries `x-dfo-commit`, and every response that is not shared-cacheable (`Cache-Control: public`) also carries `x-dfo-trace-id` and `Server-Timing`. Healthz carries all three. `/schema` and `/capabilities` are shared-cacheable and carry `x-dfo-commit` alone. `build` in the healthz and capabilities bodies equals the commit `x-dfo-commit` carries.
 
+`analysis_execution_identity` in the capabilities body is the identity of the engine that computes analysis frames, `{engine_version, frame_grammar_version, reduction_policy_version}` from `dfo_analysis_engine.execution_identity.current_execution_identity`, the same object an analysis answer carries as `execution_identity`. Its pipe-joined `ExecutionIdentity.canonical_string()` is the execution identity hashed into a derived frame's `replay_key` and a toolkit result's `content_version`, so a client predicting either reads it here.
+
 A request refused because an executor, permit or operations backlog is full answers `service_unavailable` (503, retryable) with `Retry-After: 1`, the same value across doors (`dfo_platform.problem.BACKPRESSURE_HEADERS`, which the Graph surface's saturation 503 sends too); a new pin over `DATASETS_PIN_DAILY_MAX` or `DATASETS_PIN_OPEN_DAILY_MAX` answers the same code and `retryable: true`, with `Retry-After` counting the seconds to the next UTC midnight, when the budgets reset.
 
 ### 2. Register Door
