@@ -1,15 +1,31 @@
--- Functions in `pg_temp` that rewrite the stored warnings naming refs in their
--- message into the shape `materialise.finish` and `datasets_api.origin` write:
--- a message that counts, and structured fields that carry the refs for a
--- reader to label (`materialise.codes.CountedRefs`,
--- `materialise.codes.CountedEntityYears`).
--- These definitions write nothing. `python -m dataset_store.warning_formats`
--- executes them alone in a transaction it rolls back, and refuses a statement
--- that is not `CREATE OR REPLACE FUNCTION pg_temp.`; a migration that applies
--- the rewrite starts with these exact bytes.
+-- Rewrites the stored warnings naming refs in their message into the shape
+-- `materialise.finish` and `datasets_api.origin` write: a message that counts,
+-- and structured fields that carry the refs for a reader to label
+-- (`materialise.codes.CountedRefs`, `materialise.codes.CountedEntityYears`), in
+-- the `warnings` column and in the `warnings` of `immutable_body`, which
+-- encodes the same facts for an image that reads bodies
+-- (`manifest.version_body`). Each is rewritten from its own stored value, and a
+-- row is updated only where the rewrite changes one of them, so every other row
+-- keeps its stored bytes. Re-running this migration changes nothing: a
+-- rewritten warning matches none of the old shapes.
 --
--- `pg_temp.warning_counted_refs` rewrites one warning, and
--- `pg_temp.warnings_counted_refs` every warning of a stored array. Each old
+-- The old member sentence of `coverage_below_scope`
+-- (`dataset_store.warning_formats.MEMBER_SENTENCE`) is left as stored: its
+-- split into off-cadence and out-of-window members needs graph reads, so the
+-- deploy's `datasets-maintenance backfill-warnings` step rewrites it.
+-- `datasets-maintenance settle` counts the rows still holding any old shape
+-- (`dataset_store.warning_formats.OLD_FORMATS`) and fails the deploy when one
+-- exists. The image serving while it applies already writes the new shapes,
+-- so no row in an old shape arrives after it.
+--
+-- The functions live in `pg_temp`, so they belong to this migration's session
+-- alone, and are dropped before the transaction commits; the migration runner
+-- applies a file in one transaction on one connection. The UPDATE takes row
+-- locks only, so a running revision's reads never wait on it, and
+-- `lock_timeout` fails it after five seconds behind a row another writer holds.
+--
+-- `pg_temp.warning_counted_refs_0047` rewrites one warning, and
+-- `pg_temp.warnings_counted_refs_0047` every warning of a stored array. Each old
 -- sentence follows the catalogue detail, which is kept as stored:
 --
 --   coverage_below_scope, unserved entities:
@@ -60,20 +76,22 @@
 -- the new shape: each new sentence states a count where the old one lists
 -- dcids.
 
-CREATE OR REPLACE FUNCTION pg_temp.warning_refs(names text[])
+SET LOCAL lock_timeout = '5s';
+
+CREATE OR REPLACE FUNCTION pg_temp.warning_refs_0047(names text[])
 RETURNS jsonb
 LANGUAGE sql STABLE AS $refs$
     SELECT jsonb_agg('dcid:' || name ORDER BY position)
     FROM unnest(names) WITH ORDINALITY AS listed (name, position)
 $refs$;
 
-CREATE OR REPLACE FUNCTION pg_temp.warning_entities(counted integer)
+CREATE OR REPLACE FUNCTION pg_temp.warning_entities_0047(counted integer)
 RETURNS text
 LANGUAGE sql IMMUTABLE AS $entities$
     SELECT CASE WHEN counted = 1 THEN 'entity' ELSE 'entities' END
 $entities$;
 
-CREATE OR REPLACE FUNCTION pg_temp.warning_counted_refs(warning jsonb)
+CREATE OR REPLACE FUNCTION pg_temp.warning_counted_refs_0047(warning jsonb)
 RETURNS jsonb
 LANGUAGE plpgsql STABLE AS $rewrite$
 DECLARE
@@ -98,12 +116,15 @@ BEGIN
                 '%s No observations were served for %s requested %s.%s',
                 parts[1],
                 counted,
-                pg_temp.warning_entities(counted),
+                pg_temp.warning_entities_0047(counted),
                 coalesce(parts[4], '')
             ),
             'unserved_entities',
             jsonb_build_object(
-                'count', counted, 'refs', pg_temp.warning_refs(string_to_array(parts[2], ', '))
+                'count',
+                counted,
+                'refs',
+                pg_temp.warning_refs_0047(string_to_array(parts[2], ', '))
             )
         );
     WHEN 'currency_unmapped_omitted' THEN
@@ -116,10 +137,18 @@ BEGIN
         counted := parts[2]::integer;
         RETURN warning || jsonb_build_object(
             'message',
-            format('%s It left out %s %s.', parts[1], counted, pg_temp.warning_entities(counted)),
+            format(
+                '%s It left out %s %s.',
+                parts[1],
+                counted,
+                pg_temp.warning_entities_0047(counted)
+            ),
             'omitted_entities',
             jsonb_build_object(
-                'count', counted, 'refs', pg_temp.warning_refs(string_to_array(parts[3], ', '))
+                'count',
+                counted,
+                'refs',
+                pg_temp.warning_refs_0047(string_to_array(parts[3], ', '))
             )
         );
     WHEN 'deflator_missing_omitted' THEN
@@ -137,7 +166,7 @@ BEGIN
                 '%s It left out rows of %s %s.',
                 parts[1],
                 counted,
-                pg_temp.warning_entities(counted)
+                pg_temp.warning_entities_0047(counted)
             ),
             'omitted_entity_years',
             jsonb_build_object(
@@ -173,20 +202,26 @@ BEGIN
                 '%s No observations were served for %s %s, where %s withheld %s %s data.',
                 parts[1],
                 counted,
-                pg_temp.warning_entities(counted),
+                pg_temp.warning_entities_0047(counted),
                 cardinality(provenances),
                 CASE WHEN cardinality(provenances) = 1 THEN 'provenance' ELSE 'provenances' END,
                 CASE WHEN cardinality(provenances) = 1 THEN 'holds' ELSE 'hold' END
             ),
             'unserved_entities',
             jsonb_build_object(
-                'count', counted, 'refs', pg_temp.warning_refs(string_to_array(parts[3], ', '))
+                'count',
+                counted,
+                'refs',
+                pg_temp.warning_refs_0047(string_to_array(parts[3], ', '))
             ),
             'withheld_members',
-            jsonb_build_object('count', 1, 'refs', pg_temp.warning_refs(ARRAY[parts[2]])),
+            jsonb_build_object('count', 1, 'refs', pg_temp.warning_refs_0047(ARRAY[parts[2]])),
             'withheld_provenances',
             jsonb_build_object(
-                'count', cardinality(provenances), 'refs', pg_temp.warning_refs(provenances[1:5])
+                'count',
+                cardinality(provenances),
+                'refs',
+                pg_temp.warning_refs_0047(provenances[1:5])
             )
         );
     WHEN 'un_system_unavailable' THEN
@@ -204,11 +239,14 @@ BEGIN
                 '%s No UN data was read for %s %s.',
                 parts[1],
                 counted,
-                pg_temp.warning_entities(counted)
+                pg_temp.warning_entities_0047(counted)
             ),
             'unserved_entities',
             jsonb_build_object(
-                'count', counted, 'refs', pg_temp.warning_refs(string_to_array(parts[2], ', '))
+                'count',
+                counted,
+                'refs',
+                pg_temp.warning_refs_0047(string_to_array(parts[2], ', '))
             )
         );
     WHEN 'deflator_projected' THEN
@@ -232,13 +270,15 @@ BEGIN
 END;
 $rewrite$;
 
-CREATE OR REPLACE FUNCTION pg_temp.warnings_counted_refs(warnings jsonb)
+CREATE OR REPLACE FUNCTION pg_temp.warnings_counted_refs_0047(warnings jsonb)
 RETURNS jsonb
 LANGUAGE sql STABLE AS $rewrite_all$
     SELECT CASE
         WHEN jsonb_typeof(warnings) = 'array' THEN (
             SELECT coalesce(
-                jsonb_agg(pg_temp.warning_counted_refs(warning.value) ORDER BY warning.position),
+                jsonb_agg(
+                    pg_temp.warning_counted_refs_0047(warning.value) ORDER BY warning.position
+                ),
                 '[]'::jsonb
             )
             FROM jsonb_array_elements(warnings) WITH ORDINALITY AS warning (value, position)
@@ -246,3 +286,23 @@ LANGUAGE sql STABLE AS $rewrite_all$
         ELSE warnings
     END
 $rewrite_all$;
+
+UPDATE datasets.version_record
+SET
+    warnings = pg_temp.warnings_counted_refs_0047(warnings),
+    immutable_body = CASE
+        WHEN jsonb_typeof(immutable_body -> 'warnings') = 'array' THEN jsonb_set(
+            immutable_body,
+            '{warnings}',
+            pg_temp.warnings_counted_refs_0047(immutable_body -> 'warnings')
+        )
+        ELSE immutable_body
+    END
+WHERE pg_temp.warnings_counted_refs_0047(warnings) IS DISTINCT FROM warnings
+    OR pg_temp.warnings_counted_refs_0047(immutable_body -> 'warnings')
+        IS DISTINCT FROM immutable_body -> 'warnings';
+
+DROP FUNCTION pg_temp.warnings_counted_refs_0047(jsonb);
+DROP FUNCTION pg_temp.warning_counted_refs_0047(jsonb);
+DROP FUNCTION pg_temp.warning_entities_0047(integer);
+DROP FUNCTION pg_temp.warning_refs_0047(text[]);

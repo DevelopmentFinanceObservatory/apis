@@ -191,13 +191,13 @@ def test_every_name_comes_from_the_environment_variables():
             r"gcloud run (?:jobs|services) \w+ (\S+ \S+ \S+)", step.get("run", "")
         )
     ]
-    # Six job updates, ten job executions, and two service updates.
+    # Six job updates, eleven job executions, and two service updates.
     assert Counter(targets) == {
         f'"${{{{ vars.{name} }}}}"': count
         for name, count in {
             "JOB_DATASETS_MIGRATE": 2,
             "JOB_PRESENTATION_MIGRATE": 2,
-            "JOB_DATASETS_MAINTENANCE": 3,
+            "JOB_DATASETS_MAINTENANCE": 4,
             "JOB_ORIGIN_CATALOGUE": 3,
             "JOB_GRAPH_RELEASE": 3,
             "JOB_SEARCH_CATALOGUE": 3,
@@ -360,10 +360,13 @@ def test_maintenance_job_moves_to_the_new_image_after_both_migrations():
 
 def test_the_maintenance_job_settles_then_backfills_once_both_services_run_the_new_image():
     """The previous image writes rows in the old shape, and versions without a description
-    record, until both services move, so the settle and then the description backfill run after
-    the apis service moves, and they are the deploy's only maintenance executions. The backfill
-    runs after the settle, so its failure never holds the settle back."""
+    record, until both services move, so the warning backfill, the settle and then the
+    description backfill run after the apis service moves, and they are the deploy's only
+    maintenance executions. The warning backfill runs before the settle, which counts the
+    warnings it leaves. The description backfill runs after the settle, so its failure never
+    holds the settle back."""
     names = [step.get("name") for step in _steps()]
+    warnings = "Backfill warning counts"
     settle = "Settle rows the previous image wrote"
     backfill = "Backfill description records"
     executions = [
@@ -372,13 +375,63 @@ def test_the_maintenance_job_settles_then_backfills_once_both_services_run_the_n
         if 'jobs execute "${{ vars.JOB_DATASETS_MAINTENANCE }}"' in step.get("run", "")
     ]
 
-    assert executions == [settle, backfill]
+    assert executions == [warnings, settle, backfill]
+    assert "--args=backfill-warnings" in _named(warnings)["run"]
     assert "--args=settle" in _named(settle)["run"]
     assert "--args=backfill-descriptions" in _named(backfill)["run"]
-    for name in (settle, backfill):
+    for name in (warnings, settle, backfill):
         assert "--wait" in _named(name)["run"]
-    assert names.index("Point Cloud Run at the new image") < names.index(settle)
-    assert names.index(settle) < names.index(backfill)
+    assert names.index("Point Cloud Run at the new image") < names.index(warnings)
+    assert names.index(warnings) < names.index(settle) < names.index(backfill)
+
+
+_AFTER_THE_MOVE = ("Settle rows the previous image wrote", "Backfill description records")
+_STATUS_CHECK = re.compile(r"\b(?:success|failure|always|cancelled)\(\)")
+
+
+def _runs(
+    step: dict, *, deploy: str, move: str, earlier_failure: bool, cancelled: bool = False
+) -> bool:
+    """Whether Actions runs `step`, given `decide`'s output, the outcome of the apis service
+    move (`apis_service`), whether an earlier step failed, and whether the run was cancelled.
+    An `if` naming no status check is read with the `success() &&` Actions adds to it."""
+    expression = step["if"].strip().removeprefix("${{").removesuffix("}}").strip()
+    if not _STATUS_CHECK.search(expression):
+        expression = f"success() && ({expression})"
+    python = re.sub(r"!(?!=)", " not ", expression.replace("&&", " and ").replace("||", " or "))
+    python = python.replace("steps.decide.outputs.deploy", "deploy")
+    python = python.replace("steps.apis_service.outcome", "move")
+    return bool(
+        eval(
+            python,
+            {"__builtins__": {}},
+            {
+                "deploy": deploy,
+                "move": move,
+                "success": lambda: not earlier_failure and not cancelled,
+                "failure": lambda: earlier_failure,
+                "always": lambda: True,
+                "cancelled": lambda: cancelled,
+            },
+        )
+    )
+
+
+@pytest.mark.parametrize("name", _AFTER_THE_MOVE)
+def test_settle_and_the_description_backfill_run_whenever_the_apis_service_moved(name):
+    """A failed warning backfill (or settle) holds back neither step, since settle must run on
+    every deploy that moved the service. Neither runs when the move failed or was skipped, or
+    when the run was cancelled. A condition naming any step but `decide` and the move fails to
+    evaluate."""
+    step = _named(name)
+    assert _named("Point Cloud Run at the new image")["id"] == "apis_service"
+
+    assert _runs(step, deploy="true", move="success", earlier_failure=False)
+    assert _runs(step, deploy="true", move="success", earlier_failure=True)
+    assert not _runs(step, deploy="true", move="failure", earlier_failure=True)
+    assert not _runs(step, deploy="true", move="skipped", earlier_failure=True)
+    assert not _runs(step, deploy="false", move="skipped", earlier_failure=False)
+    assert not _runs(step, deploy="true", move="success", earlier_failure=False, cancelled=True)
 
 
 def test_the_upfront_check_refuses_a_deploy_without_the_maintenance_job():
@@ -402,6 +455,7 @@ def test_the_upfront_check_refuses_a_deploy_without_the_maintenance_job():
     ]
     for name in (
         "Point the datasets maintenance job at the new image",
+        "Backfill warning counts",
         "Settle rows the previous image wrote",
         "Backfill description records",
     ):
@@ -411,9 +465,10 @@ def test_the_upfront_check_refuses_a_deploy_without_the_maintenance_job():
 def test_worker_then_service_move_then_the_maintenance_steps_run():
     names = [step.get("name") for step in _steps()]
 
-    assert names[-4:] == [
+    assert names[-5:] == [
         "Point the datasets worker at the new image",
         "Point Cloud Run at the new image",
+        "Backfill warning counts",
         "Settle rows the previous image wrote",
         "Backfill description records",
     ]
@@ -434,9 +489,12 @@ def test_decide_step_runs_gcloud_describe_and_git_diff_and_gates_every_later_ste
     steps = _steps()
     decide_index = steps.index(decide)
     later = steps[decide_index + 1 :]
-    assert len(later) == 18
+    assert len(later) == 19
     for step in later:
-        assert step["if"] == "steps.decide.outputs.deploy == 'true'", step
+        if step.get("name") in _AFTER_THE_MOVE:
+            assert "steps.decide.outputs.deploy == 'true'" in step["if"], step
+        else:
+            assert step["if"] == "steps.decide.outputs.deploy == 'true'", step
 
 
 def test_decide_step_forces_deploy_on_workflow_dispatch():
