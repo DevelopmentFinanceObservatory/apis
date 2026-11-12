@@ -34,6 +34,15 @@
     },
     {
       "members": [
+        "Amount_EconomicActivity_GrossDomesticProduction_Nominal_PerCapita",
+        "ValueAdded_EconomicProduction_IncludingProductTaxes_GrossOfFixedCapitalConsumption_Nominal_AsAFractionOf_Count_Person"
+      ],
+      "note": "Gross domestic product per person at current prices, in US dollars, as the World Bank series and the IMF World Economic Outlook series report it.",
+      "preferred": "Amount_EconomicActivity_GrossDomesticProduction_Nominal_PerCapita",
+      "currency": "USD"
+    },
+    {
+      "members": [
         "undata/sdg/SH_STA_MORT.SEX--F",
         "undata/unicef/MNCH_MMR.SEX--F"
       ],

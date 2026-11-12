@@ -193,6 +193,8 @@ def draft_evidence(
         population_type=shape.pop_type_dcid,
         measured_property=shape.meas_prop_dcid,
         stat_type=shape.stat_type_dcid,
+        measurement_qualifier=shape.meas_qual_dcid,
+        measurement_denominator=shape.meas_denom_dcid,
         properties=property_evidence(
             [read_constraints(member) for member in arcs.values()],
             summary=shape_constraint_values(shape),

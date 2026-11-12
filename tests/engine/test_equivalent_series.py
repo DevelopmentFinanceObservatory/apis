@@ -28,6 +28,12 @@ _GDP_CURRENT_PRICES = (
     "ValueAdded_EconomicProduction_IncludingProductTaxes_GrossOfFixedCapitalConsumption_Nominal",
 )
 
+_GDP_PER_CAPITA_CURRENT_PRICES = (
+    "Amount_EconomicActivity_GrossDomesticProduction_Nominal_PerCapita",
+    "ValueAdded_EconomicProduction_IncludingProductTaxes_GrossOfFixedCapitalConsumption_Nominal"
+    "_AsAFractionOf_Count_Person",
+)
+
 # Two UN publishers' copies of one indicator, the SDG Global Database's preferred.
 _PUBLISHER_COPIES = {
     "maternal-mortality": ("undata/unicef/MNCH_MMR.SEX--F", "undata/sdg/SH_STA_MORT.SEX--F"),
@@ -46,8 +52,13 @@ _UNKNOWN_DCID = "worldBank/NOT_A_REGISTERED_TWIN"
 
 @pytest.mark.parametrize(
     "pair",
-    [_ELECTRICITY_ACCESS, _GDP_CURRENT_PRICES, *_PUBLISHER_COPIES.values()],
-    ids=["elec", "gdp", *_PUBLISHER_COPIES],
+    [
+        _ELECTRICITY_ACCESS,
+        _GDP_CURRENT_PRICES,
+        _GDP_PER_CAPITA_CURRENT_PRICES,
+        *_PUBLISHER_COPIES.values(),
+    ],
+    ids=["elec", "gdp", "gdp-per-capita", *_PUBLISHER_COPIES],
 )
 def test_same_cluster_pair_matches(pair: tuple[str, str]) -> None:
     a, b = pair
@@ -58,8 +69,13 @@ def test_same_cluster_pair_matches(pair: tuple[str, str]) -> None:
 
 @pytest.mark.parametrize(
     "pair",
-    [_ELECTRICITY_ACCESS, _GDP_CURRENT_PRICES, *_PUBLISHER_COPIES.values()],
-    ids=["elec", "gdp", *_PUBLISHER_COPIES],
+    [
+        _ELECTRICITY_ACCESS,
+        _GDP_CURRENT_PRICES,
+        _GDP_PER_CAPITA_CURRENT_PRICES,
+        *_PUBLISHER_COPIES.values(),
+    ],
+    ids=["elec", "gdp", "gdp-per-capita", *_PUBLISHER_COPIES],
 )
 def test_same_cluster_pair_matches_reversed(pair: tuple[str, str]) -> None:
     a, b = pair
@@ -73,6 +89,19 @@ def test_a_publisher_copy_prefers_the_sdg_series(copy: str, sdg: str) -> None:
     match = shared_cluster([copy], [sdg])
     assert match is not None
     assert match.preferred == sdg
+
+
+@pytest.mark.parametrize(
+    ("wdi", "weo"),
+    [_GDP_CURRENT_PRICES, _GDP_PER_CAPITA_CURRENT_PRICES],
+    ids=["gdp", "gdp-per-capita"],
+)
+def test_a_gdp_twin_prefers_the_world_bank_series_in_us_dollars(wdi: str, weo: str) -> None:
+    """The WEO series also reports national currency, so the twins are one reading in US
+    dollars only."""
+    match = shared_cluster([weo], [wdi])
+    assert match is not None
+    assert (match.preferred, match.currency) == (wdi, "USD")
 
 
 def test_under5_mortality_triplet_every_pairing_matches() -> None:

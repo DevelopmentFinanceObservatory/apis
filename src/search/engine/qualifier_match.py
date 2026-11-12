@@ -28,6 +28,7 @@ from functools import lru_cache, partial
 from itertools import pairwise
 from typing import Literal, Protocol
 
+from code_index.labels import PRICE_BASIS_AXIS
 from code_index.query import CodeIndex, fold_word
 from code_index.shared import get_index, get_measure_index, per_index
 from code_index.tokens import (
@@ -483,6 +484,9 @@ def declared_measures_named(text: str) -> list[NamedMeasure]:
     stand whole in `text`, hyphens read as spaces and a last word's possessive allowed
     (`token_occurrences`). The longest declared name wins its words: an occurrence inside
     a longer occurrence names nothing, so "GDP growth" names "GDP growth" and not "GDP".
+    A declaration one of whose names states a price basis ("GNI, PPP", "GDP, PPP") is named
+    by its other names only in a text that names that basis (`_price_bases_in`): "GNI" alone
+    names the WEO noun, and "GNI per capita PPP" names it and "GNI, PPP" together.
     A declared name in parentheses straight after an occurrence, as an acronym restating it,
     joins that occurrence (`_with_parenthesised_name`): "Potential gross domestic product
     (GDP)" names potential GDP alone. Occurrences that name the same declarations form one
@@ -509,19 +513,32 @@ def _measures_named_in(
     if held is not None and held[0] is measures:
         return held[1]
     reader = lru_cache(maxsize=_NAMED_TEXTS)(
-        partial(_named_in, names=_measure_names(index, measures))
+        partial(_named_in, names=_measure_names(index, measures), index=index, measures=measures)
     )
     readers[id(measures)] = (measures, reader)
     return reader
 
 
 def _named_in(
-    text: str, *, names: Sequence[tuple[MeasurePartitionLabel, str]]
+    text: str,
+    *,
+    names: Sequence[tuple[MeasurePartitionLabel, str, frozenset[str]]],
+    index: CodeIndex,
+    measures: MeasureIndex,
 ) -> tuple[NamedMeasure, ...]:
     """The measures of `names`, a name table (`_measure_names`), that `text` names, as
-    `declared_measures_named` states."""
+    `declared_measures_named` states. A name that requires a price basis names its entry
+    only where `text` names one of those bases."""
     tokens = tokenize(text.replace("-", " "))
-    found = [(entry, span) for entry, name in names for span in token_occurrences(tokens, name)]
+    named_bases = (
+        _price_bases_in(text, index, measures) if any(basis for *_, basis in names) else frozenset()
+    )
+    found = [
+        (entry, span)
+        for entry, name, basis in names
+        if not basis or basis & named_bases
+        for span in token_occurrences(tokens, name)
+    ]
     spans = {span for _entry, span in found}
     found = [(entry, _with_parenthesised_name(text, span, spans)) for entry, span in found]
     by_span: dict[tuple[int, int], dict[MeasurePartitionLabel, None]] = {}
@@ -540,12 +557,14 @@ def _named_in(
 
 def _measure_names(
     index: CodeIndex, measures: MeasureIndex
-) -> tuple[tuple[MeasurePartitionLabel, str], ...]:
+) -> tuple[tuple[MeasurePartitionLabel, str, frozenset[str]], ...]:
     """Each name of each partition label and measure noun of `measures`, with the entry it
-    names, hyphens read as spaces: its label, its `also_called` entries, and each of
-    `index`'s declared acronyms (`CodeIndex.variable_aliases`) whose expansion is one of
-    them."""
-    names: list[tuple[MeasurePartitionLabel, str]] = []
+    names, hyphens read as spaces, and the price bases it requires: its label, its
+    `also_called` entries, and each of `index`'s declared acronyms
+    (`CodeIndex.variable_aliases`) whose expansion is one of them. An entry one of whose
+    names states a price basis (`_price_bases_in`) is keyed on it, and each of its names
+    that states none requires it, so that name stands for the entry only beside its basis."""
+    names: list[tuple[MeasurePartitionLabel, str, frozenset[str]]] = []
     for entry in (*measures.partition_labels, *measures.nouns):
         own = [entry.label, *entry.also_called]
         folded = {name.casefold() for name in own}
@@ -554,8 +573,34 @@ def _measure_names(
             for acronym, expansion in index.variable_aliases.items()
             if expansion.casefold() in folded
         ]
-        names += [(entry, name.replace("-", " ")) for name in own]
+        bases = {name: _price_bases_in(name, index, measures) for name in own}
+        basis = frozenset().union(*bases.values())
+        names += [
+            (
+                entry,
+                name.replace("-", " "),
+                frozenset() if bases[name] else basis,
+            )
+            for name in own
+        ]
     return tuple(names)
+
+
+def _price_bases_in(text: str, index: CodeIndex, measures: MeasureIndex) -> frozenset[str]:
+    """The price bases `text` names: each `measurementQualifier` value a one-row match reads
+    (`match_qualifiers`) or a span naming a code and a measure value reads as its measure
+    (`match_qualifier_readings`, "PPP"), with every value spelling its reading
+    (`MeasureIndex.reading_set`)."""
+    read = (
+        *match_qualifiers(text, index, measures),
+        *(reading.measure for reading in match_qualifier_readings(text, index, measures)),
+    )
+    return frozenset(
+        value
+        for match in read
+        if match.code_system == PRICE_BASIS_AXIS
+        for value in measures.reading_set(match.code_dcid)
+    )
 
 
 @per_index

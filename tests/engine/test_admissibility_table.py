@@ -2893,20 +2893,23 @@ def test_a_named_measure_noun_refuses_a_shape_every_member_of_which_measures_ano
     ("variable", "named"),
     [
         ("GDP growth", [["GDP growth"]]),
-        ("GDP", [["GDP", "GDP", "GDP"]]),
-        ("gross domestic product growth", [["GDP", "GDP", "GDP"]]),
+        ("GDP", [["GDP", "GDP"]]),
+        ("gross domestic product growth", [["GDP", "GDP"]]),
         (
             "external health expenditure as a share of GDP",
-            [["health expenditure"], ["GDP", "GDP", "GDP"]],
+            [["health expenditure"], ["GDP", "GDP"]],
         ),
+        ("GDP per capita PPP", [["GDP", "GDP", "GDP"]]),
+        ("GDP, PPP per capita", [["GDP"]]),
     ],
-    ids=["growth-not-gdp", "gdp", "also-called", "no-base-quote"],
+    ids=["growth-not-gdp", "gdp", "also-called", "no-base-quote", "basis-named", "ppp-noun"],
 )
 def test_the_longest_declared_name_wins_its_words(variable, named):
     """A noun is named only where no longer declared name covers its words: "GDP growth"
     names the growth noun and not "GDP". "gross domestic product growth" names GDP through
     its `also_called` name, since no declared name covers the longer phrase. One name
-    stands for every noun that shares it, so "GDP" is one name of three nouns."""
+    stands for every noun that shares it, so "GDP" is one name of WEO's and WDI's GDP, and
+    of WEO's GDP at purchasing power parity where the variable names that price basis too."""
     spans = _named_measure_nouns(_part(variable), declared_measures_named(variable))
     assert [[noun.label for noun in span.alternatives] for span in spans] == named
 

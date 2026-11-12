@@ -19,7 +19,7 @@ import pytest
 from code_index.shared import get_index
 from scripts.sentence_golden import golden_parts
 from search.engine import measure_verdict
-from search.engine.closest_match import closest_match_fact, reading_inputs
+from search.engine.closest_match import closest_match_fact, reading_inputs, spec_closest_match_fact
 from search.engine.measure_verdict import (
     ReadingEvidence,
     measure_verdicts,
@@ -38,6 +38,9 @@ _PANEL_DIR = Path(__file__).parents[1] / "fixtures" / "sentence_panel"
 _PRODUCT_TAX = "productTaxBasis"
 _INCLUDING_TAXES = GraphRef(ref="IncludingProductTaxes", label="Including product taxes")
 _GDP_PPP_SHAPE = "Gross domestic product (GDP), per capita, purchasing power parity (PPP)"
+# What weo-020 asks of that reading; "GDP" names the noun keyed on its price basis only beside
+# the basis.
+_GDP_PPP_ASKED = "GDP per capita PPP"
 
 
 @pytest.mark.parametrize(
@@ -512,8 +515,8 @@ def test_the_values_members_declare_on_an_open_axis_reach_the_verdict(
 ) -> None:
     """The weo-020 reading of GDP per capita at purchasing power parity binds its product
     tax basis on a slot. Left on no slot, the values its served members declare on the open
-    axis (`ResolvedSpec.open_axis_facts`) are its evidence on the property, so "GDP" holds
-    where every member declares a value related to including the taxes, varied or not, and
+    axis (`ResolvedSpec.open_axis_facts`) are its evidence on the property, so "GDP per capita
+    PPP" holds where every member declares a value related to including the taxes, varied or not, and
     some members holding it reads `some`, whether the rest exclude the taxes or declare no
     basis."""
     monkeypatch.setattr(measure_verdict, "get_index", lambda: _IndexWithChild(get_index()))
@@ -522,12 +525,13 @@ def test_the_values_members_declare_on_an_open_axis_reach_the_verdict(
     evidence, _bound, _series = reading_inputs(reading, measure_noun="")
     values_alone = dataclasses.replace(evidence, noun=None, member_names=())
 
-    assert measure_verdicts(declared_measures_named("GDP"), values_alone) == verdicts
+    assert measure_verdicts(declared_measures_named(_GDP_PPP_ASKED), values_alone) == verdicts
 
 
 def test_rule_four_and_closest_match_read_a_split_reading_alike() -> None:
     """A shape whose two members split on the product tax basis, one including the taxes
-    and one excluding them, and the reading those members serve read "GDP" alike: `some`,
+    and one excluding them, and the reading those members serve read "GDP per capita PPP"
+    alike: `some`,
     which rule 4 admits and closest match departs."""
     reading = _weo_reading_without_tax_slot(_SPLIT_AXIS)
     evidence, _bound, _series = reading_inputs(reading, measure_noun="")
@@ -558,13 +562,70 @@ def test_rule_four_and_closest_match_read_a_split_reading_alike() -> None:
             "weo/excluding": member("ExcludingProductTaxes"),
         },
     )
-    named = declared_measures_named("GDP")
+    named = declared_measures_named(_GDP_PPP_ASKED)
 
     assert rule_four_verdicts(draft, named, {}) == ["some"]
     assert measure_verdicts(named, dataclasses.replace(evidence, noun=None, member_names=())) == [
         "some"
     ]
-    assert closest_match_fact(variable_text="GDP", evidence=evidence) is not None
+    assert closest_match_fact(variable_text=_GDP_PPP_ASKED, evidence=evidence) is not None
+
+
+_GNI_PPP_SHAPE = "Gross National Income Based on Purchasing Power Parity Per Capita"
+
+
+@pytest.mark.parametrize(
+    ("shape_label", "variable_text", "verdicts", "departs"),
+    [
+        pytest.param(_GNI_PPP_SHAPE, "GNI per capita", ["unknown"], True, id="gni"),
+        pytest.param(_GNI_PPP_SHAPE, "GNI, PPP per capita", ["holds"], False, id="gni-ppp-noun"),
+        pytest.param(_GNI_PPP_SHAPE, "PPP GNI per capita", ["holds"], False, id="ppp-gni"),
+        pytest.param(_GNI_PPP_SHAPE, "GNI per capita PPP", ["holds"], False, id="gni-then-ppp"),
+        pytest.param(_GDP_PPP_SHAPE, "GDP per capita", ["unknown"], True, id="gdp"),
+        pytest.param(_GDP_PPP_SHAPE, "GDP per capita PPP", ["holds"], False, id="gdp-then-ppp"),
+    ],
+)
+def test_rule_four_and_closest_match_read_a_reading_at_purchasing_power_parity_alike(
+    shape_label: str, variable_text: str, verdicts: list[str], departs: bool
+) -> None:
+    """weo-020's readings at purchasing power parity, the World Bank's GNI per capita and the
+    WEO's GDP per capita, each hold a noun keyed on that price basis ("GNI, PPP", "GDP, PPP").
+    "GNI" or "GDP" names that noun only where the request also names the basis, so the
+    reading reads `unknown` and departs on the bare name, and holds wherever the request
+    names the basis, before or after the measure. Rule 4 and closest match read it alike."""
+    reading = _panel_reading("weo-020", shape_label)
+    evidence, _bound, _series = reading_inputs(reading, measure_noun=shape_label)
+    shape = reading.resolved.shape
+    constraints = {prop: next(iter(found.values)) for prop, found in evidence.properties.items()}
+    draft = ShapeDraft(
+        shape_id="ppp_reading",
+        label=shape_label,
+        pop_type_dcid=shape.population_type.ref,
+        meas_prop_dcid=shape.measured_property.ref,
+        stat_type_dcid=shape.stat_type.ref,
+        meas_qual_dcid=_ref(shape.measurement_qualifier),
+        meas_denom_dcid=_ref(shape.measurement_denominator),
+        slot_keys=(),
+        sv_arc_facts={
+            "ppp_member": {
+                "populationType": {"nodes": [{"dcid": shape.population_type.ref}]},
+                "measuredProperty": {"nodes": [{"dcid": shape.measured_property.ref}]},
+                "statType": {"nodes": [{"dcid": shape.stat_type.ref}]},
+                "constraintProperties": {"nodes": [{"dcid": prop} for prop in constraints]},
+                **{prop: {"nodes": [{"dcid": value}]} for prop, value in constraints.items()},
+            }
+        },
+    )
+    named = declared_measures_named(variable_text)
+
+    assert rule_four_verdicts(draft, named, {}) == verdicts
+    assert measure_verdicts(named, evidence) == verdicts
+    fact = spec_closest_match_fact(reading, variable_text=variable_text, measure_noun=shape_label)
+    assert (fact is not None) is departs
+
+
+def _ref(ref: GraphRef | None) -> str | None:
+    return ref.ref if ref is not None else None
 
 
 _HEALTH_SHARE_MEMBER = {
@@ -636,6 +697,8 @@ _HEALTH_SHARE_EVIDENCE = ReadingEvidence(
                 population_type="EconomicActivity",
                 measured_property="amount",
                 stat_type="measuredValue",
+                measurement_qualifier=None,
+                measurement_denominator=None,
                 properties=_HEALTH_SHARE_EVIDENCE.properties,
                 noun=None,
                 denominator_pairs=(),

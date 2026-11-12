@@ -1517,8 +1517,15 @@ MEASURE_PARTITION_LABELS: tuple[MeasurePartitionLabel, ...] = (
 # Nouns for IDS and WEO measures, which no measure partition covers. A heading would
 # otherwise read the graph name, which carries the unit inside it: "Debt service on
 # external debt (current US$)". Each entry is keyed on exact five-tuple and constraint
-# values, read on the dev graph, and matched with `label_for_pairs`. A noun never names
-# the price basis (`measurementQualifier`) or the denominator, which belong to the unit.
+# values, read on the dev graph, and matched with `label_for_pairs`. A heading or card matches
+# nouns on its measure's pairs less the price basis (`measurementQualifier`) and the
+# denominator, which its unit states; a dataset description matches them with the price basis
+# (`description.vocabulary.Vocabulary.measure`). A noun keyed on a price basis, on
+# `measurementQualifier` or on a constraint such as `currencyConversionBasis`, has a name that
+# states the basis ("GNI, PPP", "GDP, PPP"), and its names that state none name it only in a
+# request that names the basis too (`search.engine.qualifier_match.declared_measures_named`):
+# "GDP" answered at purchasing power parity departs from the question, and "GDP per capita
+# PPP" holds.
 # No entry keys on `financialFlowType = Disbursement` alone, since CRS disbursements carry
 # that value and take their partition's label (`_verify_measure_nouns`).
 #
@@ -1734,9 +1741,10 @@ MEASURE_NOUNS: tuple[MeasurePartitionLabel, ...] = (
         (_STAT_TYPE, "measuredValue"),
         *_GDP_BASIS,
         ("currencyConversionBasis", "PurchasingPowerParityRate"),
-        # PPPGDP
+        # PPPGDP. A heading names the price basis in its unit ("GDP in PPP international
+        # dollars"), so the label leaves it out and another name states it.
         definition=_GDP_DEFINITION,
-        also_called=_GDP_ALSO_CALLED,
+        also_called=("GDP, PPP", *_GDP_ALSO_CALLED),
     ),
     _noun(
         "output gap",
@@ -1819,6 +1827,25 @@ MEASURE_NOUNS: tuple[MeasurePartitionLabel, ...] = (
         ("activitySource", "GrossDomesticProduction"),
         # NY.GDP.MKTP.KD.ZG: "the percentage change over each previous year"
         definition="The change in gross domestic product from the year before, as a percentage.",
+    ),
+    # The graph holds the World Bank's gross national income only at purchasing power parity
+    # (`Amount_EconomicActivity_GrossNationalIncome_PurchasingPowerParity` and its per capita
+    # twin). A description matches the twins alike, since its measure pairs carry no
+    # denominator, so the definition names the measure and no aggregate.
+    _noun(
+        "GNI, PPP",
+        (_POPULATION, "EconomicActivity"),
+        (_PROPERTY, "amount"),
+        (_STAT_TYPE, "measuredValue"),
+        ("activitySource", "GrossNationalIncome"),
+        ("measurementQualifier", "PurchasingPowerParity"),
+        # NY.GNP.MKTP.PP.CD: "gross national income (GNI) converted to international dollars
+        # using purchasing power parity rates"
+        definition=(
+            "Gross national income converted to international dollars at purchasing power "
+            "parity rates, at which a dollar buys the same goods in every economy."
+        ),
+        also_called=("gross national income",),
     ),
     _noun(
         "GNI growth",

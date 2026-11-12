@@ -117,7 +117,7 @@ def statvar_denominators(shapes: Iterable[ShapeDraft]) -> list[str]:
 @dataclass(frozen=True, slots=True)
 class DenominatorRead:
     """What the graph says of one StatVar denominator: its kind, its name, `None` when it
-    gives none, and `pairs`, its population type, measured property, stat type and
+    gives none, and `pairs`, its five-tuple pairs (`measure_verdict.shape_pairs`) and
     constraint values as `(property, value)`, empty when the graph gives none."""
 
     kind: DenominatorKind
@@ -131,7 +131,11 @@ def _measure_pairs(arcs: dict) -> tuple[tuple[str, str], ...]:
     five_tuple = read_five_tuple(arcs)
     return (
         *shape_pairs(
-            five_tuple.pop_type_dcid, five_tuple.meas_prop_dcid, five_tuple.stat_type_dcid
+            five_tuple.pop_type_dcid,
+            five_tuple.meas_prop_dcid,
+            five_tuple.stat_type_dcid,
+            measurement_qualifier=five_tuple.meas_qual_dcid,
+            measurement_denominator=five_tuple.meas_denom_dcid,
         ),
         *read_constraints(arcs).items(),
     )

@@ -248,6 +248,13 @@
    "sentence": {
     "departures": [
      [
+      "closest_match",
+      null,
+      "gross national income from Norway",
+      "gross national income based on purchasing power parity",
+      "You asked for gross national income from Norway. This shows gross national income based on purchasing power parity, the closest measure the data holds."
+     ],
+     [
       "direction_discarded",
       "where:",
       "Norway",
@@ -255,7 +262,7 @@
       "You named Norway as a provider. This measure has no providers, so this shows the place itself."
      ]
     ],
-    "rendered_sentence": "Norway's gross national income based on purchasing power parity, 2015 to 2022. Scenario fixture. You named Norway as a provider. This measure has no providers, so this shows the place itself."
+    "rendered_sentence": "Norway's gross national income based on purchasing power parity, 2015 to 2022. Scenario fixture. You asked for gross national income from Norway. This shows gross national income based on purchasing power parity, the closest measure the data holds. You named Norway as a provider. This measure has no providers, so this shows the place itself."
    },
    "specs": [
     {
@@ -33548,8 +33555,16 @@
     ]
    ],
    "sentence": {
-    "departures": [],
-    "rendered_sentence": "Gross national income based on purchasing power parity across 2 places, 2015 to 2022. Scenario fixture. Assumed: every country."
+    "departures": [
+     [
+      "closest_match",
+      null,
+      "gross national income",
+      "gross national income based on purchasing power parity",
+      "You asked for gross national income. This shows gross national income based on purchasing power parity, the closest measure the data holds."
+     ]
+    ],
+    "rendered_sentence": "Gross national income based on purchasing power parity across 2 places, 2015 to 2022. Scenario fixture. You asked for gross national income. This shows gross national income based on purchasing power parity, the closest measure the data holds. Assumed: every country."
    },
    "specs": [
     {

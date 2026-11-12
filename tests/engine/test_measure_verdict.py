@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import pytest
 
+from code_index.declarations import MEASURE_NOUNS, MEASURE_PARTITION_LABELS
+from code_index.shared import get_index, get_measure_index
 from search.engine import qualifier_match
 from search.engine.measure_verdict import (
     PropertyEvidence,
@@ -28,7 +30,13 @@ _ACTIVITY = (
 )
 _WDI_GDP = frozenset({*_ACTIVITY, ("activitySource", "GrossDomesticProduction")})
 _GDP_GROWTH = (_WDI_GDP - {("statType", "measuredValue")}) | {("statType", "growthRate")}
-_GNI_AT_PPP = frozenset({*_ACTIVITY, ("activitySource", "GrossNationalIncome")})
+_GNI_AT_PPP = frozenset(
+    {
+        *_ACTIVITY,
+        ("activitySource", "GrossNationalIncome"),
+        ("measurementQualifier", "PurchasingPowerParity"),
+    }
+)
 _HEALTH = frozenset(
     {
         *_ACTIVITY,
@@ -86,7 +94,15 @@ _NET = _DISBURSEMENTS | {("nettingBasis", "Net")}
 _GDP_NAME = "Gross domestic product (GDP)"
 
 
-_FIVE_TUPLE_KEYS = frozenset({"populationType", "measuredProperty", "statType"})
+_FIVE_TUPLE_KEYS = frozenset(
+    {
+        "populationType",
+        "measuredProperty",
+        "statType",
+        "measurementQualifier",
+        "measurementDenominator",
+    }
+)
 
 
 def _reading(
@@ -209,11 +225,31 @@ def _reading(
         pytest.param(
             "GNI per capita",
             _reading(
-                pairs=_GNI_AT_PPP,
-                noun="gross national income based on purchasing power parity per capita",
+                pairs=_GNI_AT_PPP | {("measurementDenominator", "Count_Person")},
+                noun="Gross National Income Based on Purchasing Power Parity Per Capita",
             ),
+            ["unknown"],
+            id="gni-per-capita-answered-at-purchasing-power-parity",
+        ),
+        pytest.param(
+            "World Bank GNI",
+            _reading(
+                pairs=_GNI_AT_PPP, noun="Gross National Income Based on Purchasing Power Parity"
+            ),
+            ["unknown"],
+            id="gni-answered-at-purchasing-power-parity",
+        ),
+        pytest.param(
+            "GNI, PPP",
+            _reading(pairs=_GNI_AT_PPP),
             ["holds"],
-            id="gni-per-capita-answered-with-an-undeclared-encoding-named-gni",
+            id="gni-ppp-answered-at-purchasing-power-parity",
+        ),
+        pytest.param(
+            "GNI per capita PPP",
+            _reading(pairs=_GNI_AT_PPP | {("measurementDenominator", "Count_Person")}),
+            ["holds"],
+            id="gni-with-its-price-basis-named-apart-held-at-purchasing-power-parity",
         ),
         pytest.param(
             "GNI",
@@ -298,8 +334,14 @@ def _reading(
         pytest.param(
             "GDP",
             _reading(pairs=_WEO_GDP_PPP),
+            ["unknown"],
+            id="gdp-answered-at-purchasing-power-parity",
+        ),
+        pytest.param(
+            "GDP per capita PPP",
+            _reading(pairs=_WEO_GDP_PPP),
             ["holds"],
-            id="a-name-three-declarations-share-held-by-one",
+            id="gdp-with-its-price-basis-named-apart-held-at-purchasing-power-parity",
         ),
         pytest.param(
             "GDP",
@@ -379,6 +421,8 @@ def test_a_summary_value_reaches_some_and_never_decides_holds(
         population_type="EconomicActivity",
         measured_property="amount",
         stat_type="measuredValue",
+        measurement_qualifier=None,
+        measurement_denominator=None,
         properties=property_evidence(
             [{"activitySource": "ExpenditureActivity", "expenditureType": member_value}],
             summary=[("expenditureType", summary_value)],
@@ -404,7 +448,27 @@ def test_a_text_is_read_for_its_named_measures_once_per_pair_of_indexes(
 
     first = declared_measures_named(text)
     first.clear()
+    read_first = list(tokenized)
     second = declared_measures_named(text)
 
     assert [name.occurrences for name in second] == [((0, 10),)]
-    assert tokenized == [text]
+    assert read_first
+    assert set(read_first) == {text}
+    assert tokenized == read_first
+
+
+def test_only_the_nouns_keyed_on_a_price_basis_have_a_name_stating_one() -> None:
+    """A declaration one of whose names states a price basis is named by its other names only
+    beside that basis (`qualifier_match._measure_names`), so a name stating one by accident,
+    such as a "real" or "current" in a flow's label, would hide the declaration. Only the two
+    nouns keyed on purchasing power parity have such a name."""
+    index, measures = get_index(), get_measure_index()
+
+    stating = {
+        (entry.label, name)
+        for entry in (*MEASURE_PARTITION_LABELS, *MEASURE_NOUNS)
+        for name in (entry.label, *entry.also_called)
+        if qualifier_match._price_bases_in(name, index, measures)
+    }
+
+    assert stating == {("GNI, PPP", "GNI, PPP"), ("GDP", "GDP, PPP")}

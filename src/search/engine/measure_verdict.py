@@ -123,17 +123,28 @@ def reading_evidence(
     population_type: str | None,
     measured_property: str | None,
     stat_type: str | None,
+    measurement_qualifier: str | None,
+    measurement_denominator: str | None,
     properties: Mapping[str, PropertyEvidence],
     noun: str | None,
     member_names: Sequence[str] = (),
     denominator_pairs: Iterable[tuple[str, str]] | None = None,
     denominator_name: str | None = None,
 ) -> ReadingEvidence:
-    """The evidence of a reading of the five-tuple `population_type`, `measured_property`
-    and `stat_type` whose members declare `properties`. The one builder both judges read,
-    so rule 4 and closest match judge the same evidence alike."""
+    """The evidence of a reading of the five-tuple `population_type`, `measured_property`,
+    `stat_type`, `measurement_qualifier` and `measurement_denominator` whose members declare
+    `properties`. The one builder both judges read, so rule 4 and closest match judge the
+    same evidence alike."""
     return ReadingEvidence(
-        five_tuple=frozenset(shape_pairs(population_type, measured_property, stat_type)),
+        five_tuple=frozenset(
+            shape_pairs(
+                population_type,
+                measured_property,
+                stat_type,
+                measurement_qualifier=measurement_qualifier,
+                measurement_denominator=measurement_denominator,
+            )
+        ),
         properties=dict(properties),
         noun=noun,
         member_names=tuple(member_names),
@@ -168,7 +179,12 @@ def property_evidence(
 
 
 def shape_pairs(
-    population_type: str | None, measured_property: str | None, stat_type: str | None
+    population_type: str | None,
+    measured_property: str | None,
+    stat_type: str | None,
+    *,
+    measurement_qualifier: str | None,
+    measurement_denominator: str | None,
 ) -> tuple[tuple[str, str], ...]:
     """The five-tuple pairs a shape or StatVar states, as a declared measure's
     `axis_values` key them, leaving out a missing value."""
@@ -178,6 +194,8 @@ def shape_pairs(
             ("populationType", population_type),
             ("measuredProperty", measured_property),
             ("statType", stat_type),
+            ("measurementQualifier", measurement_qualifier),
+            ("measurementDenominator", measurement_denominator),
         )
         if value
     )

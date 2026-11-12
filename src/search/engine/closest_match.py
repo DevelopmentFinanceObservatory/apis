@@ -168,6 +168,8 @@ def reading_inputs(
         population_type=_ref(shape.population_type),
         measured_property=_ref(shape.measured_property),
         stat_type=_ref(shape.stat_type),
+        measurement_qualifier=_ref(shape.measurement_qualifier),
+        measurement_denominator=_ref(denominator),
         properties=properties,
         noun=measure_noun,
         member_names=[m.label for m in resolved.sentence_facts.members if m.label],
