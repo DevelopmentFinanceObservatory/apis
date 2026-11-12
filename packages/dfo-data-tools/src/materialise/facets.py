@@ -7,8 +7,9 @@ fetch to name. Members probed together are each probed and fetched at their own 
 member's scope does not depend on its companions. Role-bearing StatVars, one-role ones
 included, use a caller-supplied `CoverageIndex` because `/v2/observation` filters subject
 entities, and an unbound role covers every entity in the index. Uncovered StatVars return no
-candidates. Each axis resolves from the shared candidate set. Bound refs and graph-declared
-defaults must match an available candidate. Deployment fallback ranks a whole candidate after
+candidates. Each axis resolves from the shared candidate set. Bound refs must match an
+available candidate. A graph-declared default serves where a candidate carries it, and
+otherwise the axis falls back to the deployment ranking. Deployment fallback ranks a whole candidate after
 narrowing by bound axes, currency-native preference and the requested year range. Cross-axis
 compatibility is checked after per-axis selection. Axis failures are raised separately and
 aggregated by the pipeline.
@@ -16,6 +17,7 @@ aggregated by the pipeline.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -77,6 +79,8 @@ if TYPE_CHECKING:
 
     # Keep `CoverageIndex` annotation-only. Importing its module adds NumPy to the pure install.
     from series_coverage.index import CoverageIndex
+
+logger = logging.getLogger(__name__)
 
 # Strip `dcid:` here so coverage keys use bare StatVar ids.
 _STAT_VAR_REF_PREFIX = "dcid:"
@@ -2325,8 +2329,10 @@ def select_facet(
     `MaterialisationUsageError`.
 
     An unbound axis first tries the graph's declared default. A matching ref returns
-    `basis="declared_default"`. An unavailable declared ref raises `FacetNotAvailableError`.
-    Without a declared policy, candidates are narrowed by bound axes, then to those overlapping
+    `basis="declared_default"`. A declared ref no candidate carries is logged
+    (`log_declared_miss`) and the axis ranks as it would without one, so the member serves one
+    value under `basis="deployment_fallback"`. Without a matching policy, candidates are
+    narrowed by bound axes, then to those overlapping
     `window` (`narrow_to_window`), and ranked by deployment policy, led by `breadth`, each
     facet's series count under `window` (`MemberProbe.breadth_in`), with `variable_breadth`
     breaking a tie before the unit (`rank_candidates`). An empty pool raises
@@ -2387,13 +2393,7 @@ def select_facet(
                 default_policy_version=policy.policy_version,
                 selection_reason=policy.selection_reason,
             )
-        alternatives, alternatives_truncated = _alternatives(dispatchable, axis, graph)
-        raise FacetNotAvailableError(
-            f"facet axis {axis!r}'s declared default {policy.resolved_ref!r} has no observations",
-            facet_pointer=f"/facets/{axis}",
-            alternatives=alternatives,
-            alternatives_truncated=alternatives_truncated,
-        )
+        log_declared_miss(policy, axis=axis, stat_vars=[stat_var])
 
     viable = _narrow_by_bound_axes(dispatchable, all_bindings)
     if not viable:
@@ -3115,6 +3115,20 @@ def _match_policy(
 ) -> Facet | None:
     """Returns the first candidate matching `policy.resolved_ref`, or `None`."""
     return next((c for c in candidates if facet_axis_value(c, axis) == policy.resolved_ref), None)
+
+
+def log_declared_miss(policy: FacetDefaultPolicy, *, axis: str, stat_vars: Sequence[str]) -> None:
+    """Logs a declared default no candidate of `stat_vars` carries, the one record besides the
+    selection's `deployment_fallback` basis that the declaration did not serve. The pipeline
+    that publishes the declaration checks the StatVar holds observations under it; a request
+    narrower than the StatVar can still find none."""
+    logger.info(
+        "declared default %s=%s (%s) is on no candidate of %s; the deployment ranking chooses",
+        axis,
+        policy.resolved_ref,
+        policy.policy_node,
+        ", ".join(stat_vars),
+    )
 
 
 def _selection(

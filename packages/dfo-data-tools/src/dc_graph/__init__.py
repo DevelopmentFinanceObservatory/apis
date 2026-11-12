@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dc_graph.client import (
     CURRENCY_UNIT_OF_MEASURE_ISO_CODES,
+    DEFAULT_FACET_ARCS,
     NODE_PATH,
     UNRESOLVED_NODE,
     ArcTarget,
@@ -18,6 +19,7 @@ from dc_graph.client import (
     ProvenanceRefresh,
     SubjectPage,
     SubjectsCoverageFlag,
+    declared_facet_policy,
     declared_role_refresh_deadline,
     display_name,
     earliest_date,
@@ -48,6 +50,7 @@ from dc_graph.visible_arcs import (
 
 __all__ = [
     "CURRENCY_UNIT_OF_MEASURE_ISO_CODES",
+    "DEFAULT_FACET_ARCS",
     "IMPORT_ADDED_CONSTRAINT_PROPERTIES",
     "MIXER_BLOCKED_PREDICATES",
     "NODE_PATH",
@@ -67,6 +70,7 @@ __all__ = [
     "ReadErrorFactory",
     "SubjectPage",
     "SubjectsCoverageFlag",
+    "declared_facet_policy",
     "declared_role_refresh_deadline",
     "dfo_visible",
     "display_name",

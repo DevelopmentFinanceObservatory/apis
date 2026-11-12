@@ -151,8 +151,9 @@ class CodeIndexStamp(BaseModel):
 
 class DeploymentFacetPolicy(BaseModel):
     """This deployment's own default-facet policy: what an unbound facet
-    axis falls back to once `default_facet_policies_live` (a graph-declared,
-    per-StatVar policy) is `false`. See `docs/datasets-facet-policy.md`.
+    axis falls back to when the graph declares no default for that StatVar
+    and axis, or declares one no candidate carries (`default_facet_policies_live`).
+    See `docs/datasets-facet-policy.md`.
     """
 
     policy: str = Field(description="the deployment default policy's own id")
@@ -223,9 +224,10 @@ class Capabilities(BaseModel):
     )
     default_facet_policies_live: bool = Field(
         description=(
-            "whether the graph declares its own per-StatVar/per-source default facet "
-            "policy; false does not mean an unbound axis refuses -- see "
-            "default_facet_policy"
+            "whether an unbound axis first takes the default the graph declares on "
+            "the StatVar (its defaultMeasurementMethod arc, for the measurementMethod "
+            "axis) where a candidate carries it, before default_facet_policy ranks the "
+            "candidates"
         )
     )
     default_facet_policy: DeploymentFacetPolicy | None = Field(
@@ -293,7 +295,7 @@ def build_capabilities(
         programmatic_pinning=False,
         enrichment_fields=sorted(ENABLED_ENRICHMENTS),
         decode_code_systems=sorted(code_index_stamp.code_counts),
-        default_facet_policies_live=False,
+        default_facet_policies_live=True,
         default_facet_policy=DeploymentFacetPolicy(
             policy=DEPLOYMENT_FACET_POLICY, version=DEPLOYMENT_FACET_POLICY_VERSION
         ),

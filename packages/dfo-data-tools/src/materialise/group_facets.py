@@ -1,8 +1,9 @@
 """Elect one group of facets for a definition's members (`elect_group`), which the mint
 (`select_group_facets`) and a read of members alone (`group_served`) take.
 
-Index-sourced groups agree on `(provenance_id, unit)` and may vary in `measurementMethod`.
-Other groups require the same `facet_id`. The group is the one serving the most populated
+Index-sourced groups agree on `(provenance_id, unit)` and may vary in `measurementMethod`,
+unless their members declare one default method in the graph, which resolves the axis to one
+method. Other groups require the same `facet_id`. The group is the one serving the most populated
 members, and a populated member it does not serve is named. Members with no candidate
 contribute zero rows. The members the group serves must pass joint checks.
 """
@@ -53,6 +54,7 @@ from materialise.facets import (
     joined_breadth,
     joint_dispatch_facet_ids,
     joint_matches,
+    log_declared_miss,
     merge_facets,
     rank_pool,
     ranked_values,
@@ -242,10 +244,10 @@ def _group_declared_policies(
     graph: GraphReader,
 ) -> dict[str, FacetDefaultPolicy | None]:
     """Each axis the group leaves to selection, mapped to the graph policy every populated
-    member declares, or `None` when they declare none or disagree. Bound axes, and an
-    index-sourced group's unbound `measurementMethod`, are absent."""
+    member declares, or `None` when they declare none or disagree. Bound axes are absent. An
+    index-sourced group reads its `measurementMethod` policy too, so a family whose members
+    declare one method serves that method alone (`_resolve_group_axis_selections`)."""
     bindings = requests[0].facet_bindings
-    index_sourced = _group_is_index_sourced(requests)
     populated_requests = [
         request
         for request, is_populated in zip(requests, _populated_mask(candidates), strict=True)
@@ -253,8 +255,7 @@ def _group_declared_policies(
     ]
     policies: dict[str, FacetDefaultPolicy | None] = {}
     for axis in FACET_AXES:
-        state = bindings.get(axis, FacetBinding(state="unbound")).state
-        if state == "bound" or (index_sourced and axis not in _GROUP_AGREEMENT_AXES):
+        if bindings.get(axis, FacetBinding(state="unbound")).state == "bound":
             continue
         declared = {
             graph.default_facet_policy(stat_var=request.stat_var, axis=axis)
@@ -269,6 +270,7 @@ def _resolve_group_axis_selections(
     shared_pool: Sequence[Facet],
     policies: Mapping[str, FacetDefaultPolicy | None],
     *,
+    stat_vars: Sequence[str],
     bindings: Mapping[str, FacetBinding],
     index_sourced: bool,
     requires_provenance: bool,
@@ -284,14 +286,18 @@ def _resolve_group_axis_selections(
 
     For unbound axes, the policy in `policies` (`_group_declared_policies`) wins when its
     ref occurs in `shared_pool`: a declared default ignores the window, as it does in
-    `select_facet`. Otherwise the selected candidate supplies the value. A missing value remains a `None` selection
+    `select_facet`. Otherwise the selected candidate supplies the value, and a declared ref
+    no shared candidate carries is logged (`facets.log_declared_miss`). A missing value
+    remains a `None` selection
     so rows without that axis stay filtered. Provenance must resolve to a ref, or raises
     `DefaultFacetUndefinedError`, under `requires_provenance`
     (`pipeline.MaterialisationRequest.requires_provenance`).
 
-    Index-sourced groups omit unbound `measurementMethod` from selections so
-    dispatch and row filtering allow members to use different methods. A bound
-    method remains a hard constraint. Only populated members affect policy
+    Index-sourced groups omit an unbound `measurementMethod` without a declared policy from
+    selections so dispatch and row filtering allow members to use different methods. With
+    one, the axis resolves to one method like any other: the declared method where the
+    shared pool holds it, else the top candidate's. A bound method remains a hard
+    constraint. Only populated members affect policy
     agreement. A request binding outside `unit` raises
     `MaterialisationUsageError`.
 
@@ -304,7 +310,13 @@ def _resolve_group_axis_selections(
     selections: dict[str, FacetSelection] = {}
     for axis in FACET_AXES:
         binding = bindings.get(axis, FacetBinding(state="unbound"))
-        if index_sourced and axis not in _GROUP_AGREEMENT_AXES and binding.state != "bound":
+        policy = policies.get(axis)
+        if (
+            index_sourced
+            and axis not in _GROUP_AGREEMENT_AXES
+            and binding.state != "bound"
+            and policy is None
+        ):
             continue
         value = facet_axis_value(top, axis)
         if binding.state == "bound":
@@ -332,7 +344,6 @@ def _resolve_group_axis_selections(
             if preferred is not None:
                 selections[axis] = preferred
                 continue
-        policy = policies.get(axis)
         if policy is not None:
             match = _match_policy(policy, shared_pool, axis)
             if match is not None:
@@ -349,6 +360,7 @@ def _resolve_group_axis_selections(
                 if request is not None:
                     _require_currency_native_unit(selections[axis].ref)
                 continue
+            log_declared_miss(policy, axis=axis, stat_vars=stat_vars)
         if value is None:
             if axis == "provenance" and requires_provenance:
                 raise DefaultFacetUndefinedError(
@@ -544,6 +556,7 @@ def elect_group(
         ranked_pool,
         pool,
         policies,
+        stat_vars=stat_vars,
         bindings=bindings,
         index_sourced=index_sourced,
         requires_provenance=requires_provenance,
@@ -618,10 +631,11 @@ def elect_probes(
     *,
     window: RequestedWindow | None,
     index_sourced: bool = False,
+    policies: Mapping[str, FacetDefaultPolicy | None] | None = None,
 ) -> GroupElection | None:
     """The one group the members of `probes`, keyed by StatVar, serve under `window` when no
-    axis is bound and the graph declares no default (`elect_group`, members in `probes`
-    order), led by the series each facet holds (`group_breadth`), with a tie broken on each
+    axis is bound, under the declared defaults of `policies` (`elect_group`, members in
+    `probes` order), led by the series each facet holds (`group_breadth`), with a tie broken on each
     facet's places across the whole variables (`group_variable_breadth`). A top carrying no
     provenance serves, since such a read need not cite a source. None when no candidate
     carries a `facet_id`."""
@@ -631,6 +645,7 @@ def elect_probes(
         window=window,
         index_sourced=index_sourced,
         requires_provenance=False,
+        policies=policies,
         breadth=group_breadth(list(probes.values()), window=window),
         variable_breadth=group_variable_breadth(list(probes.values())),
     )
@@ -641,12 +656,13 @@ def group_served(
     *,
     window: RequestedWindow | None,
     index_sourced: bool = False,
+    policies: Mapping[str, FacetDefaultPolicy | None] | None = None,
 ) -> dict[str, tuple[Facet, ...]]:
     """The facets each member of `probes`, keyed by StatVar, serves under `window` in the
-    group `elect_probes` elects, in serving order (`GroupElection.served`). A member holding
+    group `elect_probes` elects under the declared defaults of `policies`, in serving order (`GroupElection.served`). A member holding
     no facet of the group serves none, and every member serves none when no candidate
     carries a `facet_id`."""
-    group = elect_probes(probes, window=window, index_sourced=index_sourced)
+    group = elect_probes(probes, window=window, index_sourced=index_sourced, policies=policies)
     if group is None:
         return dict.fromkeys(probes, ())
     return {

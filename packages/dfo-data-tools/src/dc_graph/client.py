@@ -80,6 +80,18 @@ real DCIDs and literal arc values.
 
 _NAME_PROPERTIES: Final[tuple[str, str]] = ("name", "alternateName")
 
+DEFAULT_FACET_ARCS: Final[Mapping[str, str]] = MappingProxyType(
+    {"measurementMethod": "defaultMeasurementMethod"}
+)
+"""The StatVar arc that declares each facet axis's default (`declared_facet_policy`). An axis
+absent here has no graph-declared default."""
+
+_GRAPH_DECLARED_POLICY_VERSION: Final[str] = "1"
+"""`FacetDefaultPolicy.policy_version` of every arc-declared default."""
+
+_GRAPH_DECLARED_SELECTION_REASON: Final[str] = "graph_declared"
+"""`FacetDefaultPolicy.selection_reason` of every arc-declared default."""
+
 CURRENCY_UNIT_OF_MEASURE_ISO_CODES: Final[Mapping[str, str]] = MappingProxyType(
     {"USDollar": "USD", "Euro": "EUR", "CanadianDollar": "CAD", "IndianRupee": "INR"}
 )
@@ -2120,8 +2132,16 @@ class GraphClient:
         ).get(stat_var, {})
 
     def default_facet_policy(self, *, stat_var: str, axis: str) -> FacetDefaultPolicy | None:
-        """Always `None`. No declared-default graph convention exists yet."""
-        return None
+        """The default `stat_var` declares for `axis` on its `DEFAULT_FACET_ARCS` arc, read
+        from its `->*` arcs through `node_arcs` and its cache (`declared_facet_policy`). An axis
+        without an arc reads nothing. `stat_var` may carry the `dcid:` prefix materialise
+        requests use."""
+        arc = DEFAULT_FACET_ARCS.get(axis)
+        if arc is None:
+            return None
+        dcid = stat_var.removeprefix("dcid:")
+        arcs = self.node_arcs(dcid)
+        return declared_facet_policy(dcid, arc=arc, refs=parse_arcs(arcs or {}, [arc])[arc])
 
     def un_observation_reader(self) -> None:
         """Always `None`. UN System Data Commons rows are read through
@@ -2466,6 +2486,33 @@ def _merge_node_arcs_page(merged: dict[str, dict], page_data: dict) -> None:
         for prop, prop_data in page_arcs.items():
             nodes = node_entry["arcs"].setdefault(prop, {"nodes": []})["nodes"]
             nodes.extend(prop_data.get("nodes", []))
+
+
+def declared_facet_policy(
+    stat_var: str, *, arc: str, refs: Sequence[str]
+) -> FacetDefaultPolicy | None:
+    """The default facet policy `stat_var` declares through `refs`, the distinct targets of its
+    `arc` (`DEFAULT_FACET_ARCS`). The policy names `arc` as its `policy_node`, so a trace
+    records which declaration chose the facet. `None` when the StatVar carries no target, and
+    `None` with an error log when it carries several: two defaults decide nothing, and the
+    unbound axis takes the deployment ranking, as it does without a declaration."""
+    if not refs:
+        return None
+    if len(refs) > 1:
+        logger.error(
+            "%s declares %d values on %s, so no default applies: %s",
+            stat_var,
+            len(refs),
+            arc,
+            list(refs),
+        )
+        return None
+    return FacetDefaultPolicy(
+        resolved_ref=refs[0],
+        policy_node=arc,
+        policy_version=_GRAPH_DECLARED_POLICY_VERSION,
+        selection_reason=_GRAPH_DECLARED_SELECTION_REASON,
+    )
 
 
 def parse_arcs(

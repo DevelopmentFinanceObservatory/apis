@@ -13,7 +13,8 @@ elects, read the same way, so a card that reports it cannot disagree with that m
   executor given for them, merged by place. Each variable is cut to its own scope
   (`facets.subject_probe`), so its profile does not depend on its companions.
 
-The default is `group_facets.group_served` over the variable alone with no window, led by the
+The default is `group_facets.group_served` over the variable alone with no window, under the
+defaults the graph declares for it (`ProfileGraphReader.default_facet_policy`), led by the
 probe's breadth across every place or role tuple. `group_served` reads the origin catalogue
 bound to the context, so a read needs one bound.
 
@@ -48,6 +49,7 @@ from dfo_platform.single_flight_cache import SingleFlightCache
 from graph_generation import GenerationProvider
 from graph_release.context import bound_release, current_release
 from materialise.facets import (
+    FACET_AXES,
     BreadthUnread,
     MemberProbe,
     PlaceAdmission,
@@ -55,7 +57,7 @@ from materialise.facets import (
     coverage_probe,
     subject_probe,
 )
-from materialise.graph import Facet
+from materialise.graph import Facet, FacetDefaultPolicy
 from materialise.group_facets import group_served
 from materialise.place_scope import (
     MAX_EVERY_PLACE,
@@ -117,9 +119,11 @@ _FAILURES = (
 
 
 class ProfileGraphReader(PresenceReader, Protocol):
-    """The graph reads a profile takes: the default place scope's (`PresenceReader`) and
-    batched facet reads, each bounded by `max_bytes`. `origin_catalogue.graph.OriginGraphClient`
-    satisfies it."""
+    """The graph reads a profile takes: the default place scope's (`PresenceReader`), batched
+    facet reads, each bounded by `max_bytes`, and the variable's declared defaults.
+    `origin_catalogue.graph.OriginGraphClient` satisfies it."""
+
+    def default_facet_policy(self, *, stat_var: str, axis: str) -> FacetDefaultPolicy | None: ...
 
     def observation_facets_batch_many(
         self,
@@ -204,7 +208,11 @@ def read_facet_profiles(
     `dc_graph.GraphCapExceededError`)."""
     bare = list(dict.fromkeys(sv.removeprefix(_STAT_VAR_REF_PREFIX) for sv in stat_vars))
     outcomes: dict[str, ProfileOutcome] = {
-        sv: _isolated(sv, lambda sv=sv: coverage_probe(stat_var=sv, bound={}, coverage=coverage))
+        sv: _isolated(
+            sv,
+            lambda sv=sv: coverage_probe(stat_var=sv, bound={}, coverage=coverage),
+            graph=graph,
+        )
         for sv in bare
         if sv in coverage.role_names
     }
@@ -238,6 +246,7 @@ def read_facet_profiles(
         outcomes[sv] = _isolated(
             sv,
             lambda sv=sv, scope=scope: subject_probe(by_stat_var.get(sv, {}), scope.places),
+            graph=graph,
             places=scope.places,
             countries_fallback=not scope.every_place,
         )
@@ -326,6 +335,7 @@ def _isolated(
     stat_var: str,
     probe: Callable[[], MemberProbe],
     *,
+    graph: ProfileGraphReader,
     places: tuple[str, ...] = (),
     countries_fallback: bool = False,
 ) -> ProfileOutcome:
@@ -334,7 +344,16 @@ def _isolated(
     `ProfileGap.FAILED`; any other error is a defect, `ProfileGap.DEFECT`, logged as an error
     with the variable."""
     try:
-        return _profile(stat_var, probe(), places=places, countries_fallback=countries_fallback)
+        return _profile(
+            stat_var,
+            probe(),
+            policies={
+                axis: graph.default_facet_policy(stat_var=stat_var, axis=axis)
+                for axis in FACET_AXES
+            },
+            places=places,
+            countries_fallback=countries_fallback,
+        )
     except _TIMEOUTS:
         logger.warning("facet profile of %s timed out", stat_var, exc_info=True)
         return ProfileUnavailable(stat_var=stat_var, gap=ProfileGap.TIMEOUT)
@@ -350,6 +369,7 @@ def _profile(
     stat_var: str,
     probe: MemberProbe,
     *,
+    policies: Mapping[str, FacetDefaultPolicy | None],
     places: tuple[str, ...] = (),
     countries_fallback: bool = False,
 ) -> FacetProfile:
@@ -359,7 +379,7 @@ def _profile(
         stat_var=stat_var,
         candidates=probe.candidates,
         breadth=dict(breadth),
-        default=group_served({stat_var: probe}, window=None)[stat_var],
+        default=group_served({stat_var: probe}, window=None, policies=policies)[stat_var],
         places_by_facet=admission.places_by_facet if isinstance(admission, PlaceAdmission) else {},
         places=places,
         countries_fallback=countries_fallback,

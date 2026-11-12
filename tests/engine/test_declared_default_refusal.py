@@ -395,15 +395,12 @@ def _stat_vars_and_axes() -> list[tuple[str, str]]:
 def test_a_graph_declaring_no_default_returns_no_policy_and_one_declaring_returns_it(
     tmp_path: Path,
 ) -> None:
-    """The production client, its origin delegate, the live wrapper, promptlab's graph cache
-    and its read-only placeholder, the recording proxy and every fake built without policies
-    return no policy; the same wrappers over a graph given a policy, and the fakes given one,
-    return it."""
-    live = LiveGraphClient(base="http://fake")
+    """Promptlab's graph cache and its read-only placeholder, the recording proxy and every
+    fake built without policies return no policy; the same wrappers over a graph given a
+    policy, and the fakes given one, return it. The live clients read the graph's
+    `defaultMeasurementMethod` arc (`tests/origin_catalogue/test_graph.py`,
+    `tests/dc_graph/test_client_default_facet_policy.py`)."""
     silent = [
-        live,
-        live._client,
-        live._client._ours,
         _NoLiveGraph(),
         GraphCache(FakeGraph(), path=tmp_path / "silent.sqlite"),
         _RecordingGraph(FakeGraph(), nodes={}, obs={}, detect={}, resolve={}),
