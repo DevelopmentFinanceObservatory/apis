@@ -1,8 +1,8 @@
 """Build the mutable deployment capabilities document linked from `/schema`.
 
 Published caps come from enforced constants. Mint input kinds and formats report dispatch
-liveness. Revision provenance and graph-declared default facet policies are disabled. Unbound facet
-unbound axes use this deployment's fallback policy when candidates exist.
+liveness. Revision provenance is disabled. An unbound facet axis takes the default its StatVar
+declares in the graph, and otherwise this deployment's fallback policy when candidates exist.
 
 Callers supply `capability_version`, `build`, `code_index_stamp`, and `declarations` to avoid a
 self-referential version hash and keep this module independent of the code-index loader.
@@ -12,6 +12,7 @@ those systems, while `enrichment_fields` reflects the separately configurable fi
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Mapping
 
 from pydantic import BaseModel, Field
@@ -19,6 +20,7 @@ from pydantic import BaseModel, Field
 from code_index.types import CodeSystemDeclaration, IndexStamp, level_axes, summable_axes
 from dataset_store.snapshot import WORKING_TIER_RETENTION
 from datasets_api.config import DatasetsBuildSettings
+from dfo_analysis_engine.execution_identity import current_execution_identity
 from materialise.facets import DEPLOYMENT_FACET_POLICY, DEPLOYMENT_FACET_POLICY_VERSION
 from materialise.recipe_bodies import RECIPE_CLASSES
 from statvar_members.enumerate import CANDIDATE_CAP
@@ -151,8 +153,9 @@ class CodeIndexStamp(BaseModel):
 
 class DeploymentFacetPolicy(BaseModel):
     """This deployment's own default-facet policy: what an unbound facet
-    axis falls back to once `default_facet_policies_live` (a graph-declared,
-    per-StatVar policy) is `false`. See `docs/datasets-facet-policy.md`.
+    axis falls back to when the graph declares no default for that StatVar
+    and axis, or declares one no candidate carries (`default_facet_policies_live`).
+    See `docs/datasets-facet-policy.md`.
     """
 
     policy: str = Field(description="the deployment default policy's own id")
@@ -223,9 +226,10 @@ class Capabilities(BaseModel):
     )
     default_facet_policies_live: bool = Field(
         description=(
-            "whether the graph declares its own per-StatVar/per-source default facet "
-            "policy; false does not mean an unbound axis refuses -- see "
-            "default_facet_policy"
+            "whether an unbound axis first takes the default the graph declares on "
+            "the StatVar (its defaultMeasurementMethod arc, for the measurementMethod "
+            "axis) where a candidate carries it, before default_facet_policy ranks the "
+            "candidates"
         )
     )
     default_facet_policy: DeploymentFacetPolicy | None = Field(
@@ -254,6 +258,15 @@ class Capabilities(BaseModel):
             "disjoint from children (a parent-coded record excludes its children's), sorted. "
             "These are the axes groupby.levels accepts, each rolled up to one depth of its "
             "parent chain (0 = root codes) before the sum"
+        )
+    )
+    analysis_execution_identity: dict[str, str] = Field(
+        description=(
+            "the engine that computes analysis frames here: engine_version, "
+            "frame_grammar_version and reduction_policy_version, the same object an analysis "
+            "answer carries as execution_identity. Its pipe-joined canonical string is the "
+            "execution identity hashed into a derived frame's replay_key and a toolkit "
+            "result's content_version"
         )
     )
     caps: CapabilityCaps = Field(description="published input limits and response caps")
@@ -293,13 +306,14 @@ def build_capabilities(
         programmatic_pinning=False,
         enrichment_fields=sorted(ENABLED_ENRICHMENTS),
         decode_code_systems=sorted(code_index_stamp.code_counts),
-        default_facet_policies_live=False,
+        default_facet_policies_live=True,
         default_facet_policy=DeploymentFacetPolicy(
             policy=DEPLOYMENT_FACET_POLICY, version=DEPLOYMENT_FACET_POLICY_VERSION
         ),
         summability_declarations_live=SUMMABILITY_DECLARATIONS_LIVE,
         summable_axes=sorted(summable_axes(declarations)),
         groupby_level_axes=sorted(level_axes(declarations)),
+        analysis_execution_identity=dataclasses.asdict(current_execution_identity()),
         caps=CapabilityCaps(
             definition_candidate_cap=CANDIDATE_CAP,
             definition_subject_ceiling=settings.member_subject_ceiling,

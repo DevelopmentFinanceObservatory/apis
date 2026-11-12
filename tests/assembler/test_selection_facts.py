@@ -210,6 +210,16 @@ def test_status_counts_are_the_drawn_points_counts(
             id="constant-prices-keep-base-year",
         ),
         pytest.param(
+            {
+                "currency": "NGN",
+                "prices": "constant",
+                "base_year": 2024,
+                "deflation_basis": "donor",
+            },
+            SimpleUnit(currency="NGN", prices="constant", base_year=2024, deflation_basis="donor"),
+            id="constant-prices-keep-deflation-basis",
+        ),
+        pytest.param(
             {"currency": "EUR", "prices": "current"},
             SimpleUnit(currency="EUR", prices="current"),
             id="current-prices",

@@ -1051,3 +1051,22 @@ def test_importing_the_step_sentences_loads_no_reader_or_extra() -> None:
         [sys.executable, "-c", script], capture_output=True, text=True, timeout=30, check=False
     )
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    ("basis", "into"),
+    [
+        pytest.param({}, "US dollars in constant 2023 prices", id="no-basis"),
+        pytest.param(
+            {"deflation_basis": "donor"}, "US dollars in constant 2023 donor prices", id="donor"
+        ),
+    ],
+)
+def test_a_conversion_names_whose_prices_deflated_it(basis: dict[str, str], into: str) -> None:
+    step = Step(
+        id="m1",
+        op="convert",
+        policy="convert_by_rate_and_deflator",
+        unit=SimpleUnit(currency="USD", prices="constant", base_year=2023, **basis),
+    )
+    assert _texts([step]) == [f"Converted the values to {into}."]

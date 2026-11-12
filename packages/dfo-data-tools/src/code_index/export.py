@@ -12,7 +12,6 @@ imports `dc_graph`: a reader supplies the graph reads, and the names the export 
 from __future__ import annotations
 
 import gzip
-import hashlib
 import json
 import re
 import sys
@@ -23,6 +22,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from code_index.declarations import (
     BROAD_READINGS,
+    CODE_ALSO_CALLED,
     CODE_SHORT_NAMES,
     CODE_SYNONYMS,
     CODE_SYSTEMS,
@@ -54,8 +54,9 @@ from code_index.declarations import (
     WholePopulationTotal,
     WholeWindow,
 )
+from code_index.loader import content_hash
 from code_index.members import key_sets_cover
-from code_index.tokens import Token, TokenLookup, singular, tokenize
+from code_index.tokens import Token, TokenLookup, singular, tokenize, word_tokens
 from code_index.types import (
     KIND_CLASSES,
     BroadReading,
@@ -65,6 +66,7 @@ from code_index.types import (
     MeasureAxis,
     MeasureClassDeclaration,
     MeasurePartitionLabel,
+    NotedWord,
     PartlyStatedValue,
     PartyClass,
     PartyKind,
@@ -130,13 +132,22 @@ class ExportRefused(Exception):
 
 @dataclass(frozen=True)
 class PartyPublication:
-    """The datasets that publish one party, by provenance, and the flow axes they publish it
-    on: `origin` as a donor, `destination` as a recipient. `years` gives the first and last
-    year, inclusive, in which each dataset publishes it."""
+    """Each `(dataset, axis)` pair that publishes one party: a dataset's provenance and the
+    flow axis it publishes the party on, `origin` as a donor, `destination` as a recipient.
+    `years` gives the first and last year, inclusive, in which each dataset publishes it."""
 
-    datasets: frozenset[str]
-    axes: frozenset[RoleAxis]
+    pairs: frozenset[tuple[str, RoleAxis]]
     years: Mapping[str, tuple[int, int]] = field(default_factory=dict)
+
+    @property
+    def datasets(self) -> frozenset[str]:
+        """The datasets of `pairs`."""
+        return frozenset(dataset for dataset, _ in self.pairs)
+
+    @property
+    def axes(self) -> frozenset[RoleAxis]:
+        """The axes of `pairs`."""
+        return frozenset(axis for _, axis in self.pairs)
 
 
 def _kind_from_types(
@@ -269,34 +280,6 @@ def _check_whole_population_totals(
             )
 
 
-def _check_classes_on_one_axis(
-    rows: Sequence[Mapping], parties: Mapping[str, PartyPublication]
-) -> None:
-    """Raises `ExportRefused` for a party of any class but `official`, or a total, published on
-    more than one axis.
-
-    A row keeps `axes` and `datasets` as two lists, so a reader cannot tell which dataset holds
-    which axis. `datasets_api.output_options` reads the totals a side holds in a dataset from
-    `axis in party.axes and dataset in party.datasets`, and search reads the classes a side
-    holds the same way. That is exact for a one-axis party and for an `official` party, because
-    every side a two-axis party reaches already holds an `official` row. A private party, a
-    residual or a total on both axes would count on both axes in every dataset. `rows` are the
-    exported `parties` rows, each with its `kind`, `party_class` and any `dataset_kinds`; a
-    row taking another kind in some dataset is no official party there."""
-    ambiguous = sorted(
-        (row["dcid"], row["kind"], row["party_class"], sorted(parties[row["dcid"]].axes))
-        for row in rows
-        if ((row["kind"], row["party_class"]) != ("party", "official") or "dataset_kinds" in row)
-        and len(parties[row["dcid"]].axes) > 1
-    )
-    if ambiguous:
-        raise ExportRefused(
-            f"parties other than official parties are published on more than one axis: "
-            f"{ambiguous!r} (party, kind, class, axes) -- the index format cannot tell which "
-            "dataset holds which axis"
-        )
-
-
 def export_parties(
     reader: ExportReader,
     parties: Mapping[str, PartyPublication],
@@ -330,9 +313,8 @@ def export_parties(
     whose types give it no single kind, a `total_groups` row naming a party that is not a total
     of `parties`, a `total_groups` residual that is not a residual of `parties`, a
     `private_providers` row the graph contradicts (`_check_private_providers`) or whose party the
-    types give a kind other than `party`, a party of a class other than `official` or a total
-    published on more than one axis (`_check_classes_on_one_axis`), and a `whole_totals` row the
-    parties contradict (`_check_whole_population_totals`).
+    types give a kind other than `party`, and a `whole_totals` row the parties contradict
+    (`_check_whole_population_totals`).
     """
     published = frozenset(parties)
     unpublished = sorted(kind_overrides.keys() - published)
@@ -381,8 +363,9 @@ def export_parties(
             "totals": None if total is None else total.group,
             "residuals": [] if total is None else sorted(total.residuals),
             "sums_members": True if total is None else total.sums_members,
-            "datasets": sorted(parties[dcid].datasets),
-            "axes": sorted(parties[dcid].axes),
+            "published": [
+                {"dataset": dataset, "axis": axis} for dataset, axis in sorted(parties[dcid].pairs)
+            ],
         }
         if dcid in dataset_kinds:
             row["dataset_kinds"] = [
@@ -409,7 +392,6 @@ def export_parties(
             f"TOTAL_GROUPS counts {not_residuals!r} as residuals, which no declared or listed dataset "
             "publishes as a residual"
         )
-    _check_classes_on_one_axis(rows, parties)
     _check_whole_population_totals(whole_totals, kinds, dataset_kinds, parties)
     for row in rows:
         if (whole := whole_totals.get(row["dcid"])) is not None:
@@ -566,8 +548,20 @@ def _fetch_arcs_many(
     return reader.node_arcs_many(dcids, properties=list(properties))
 
 
-def _build_code_row(dcid: str, code_system: str, arcs: dict[str, tuple[str, ...]]) -> dict:
-    code = _single_value(dcid, "classificationCode", arcs.get("classificationCode", ()))
+def _build_code_row(config: CodeSystemConfig, dcid: str, arcs: dict[str, tuple[str, ...]]) -> dict:
+    """One code row of `config`'s system. A value of a system declaring classification codes
+    must carry one, and a value of a system declaring none must carry none
+    (`CodeSystemConfig.classification_codes`)."""
+    codes = arcs.get("classificationCode", ())
+    if config.classification_codes:
+        code = _single_value(dcid, "classificationCode", codes)
+    elif codes:
+        raise ExportRefused(
+            f"{dcid} carries classificationCode {codes[0]!r} but {config.code_system} declares "
+            "no classification codes -- set classification_codes on its CodeSystemConfig"
+        )
+    else:
+        code = None
     name = _required_name(dcid, arcs)
     label = strip_system_suffix(name)
     synonyms = sorted(
@@ -578,13 +572,14 @@ def _build_code_row(dcid: str, code_system: str, arcs: dict[str, tuple[str, ...]
     short_name = _first_or_none(arcs.get("shortName", ())) or CODE_SHORT_NAMES.get(dcid)
     return {
         "dcid": dcid,
-        "code_system": code_system,
+        "code_system": config.code_system,
         "code": code,
         "label": label,
         "synonyms": synonyms,
         "short_name": short_name,
         "parent": parent,
         "definition": _first_or_none(arcs.get("description", ())),
+        "also_called": list(CODE_ALSO_CALLED.get(dcid, ())),
     }
 
 
@@ -882,7 +877,7 @@ def export_code_system(
                 f"{dcid} was enumerated via <-typeOf on {config.enum_dcid} but the graph "
                 "holds no node for it"
             )
-        rows.append(_build_code_row(dcid, config.code_system, arcs))
+        rows.append(_build_code_row(config, dcid, arcs))
     rows.sort(key=lambda row: row["dcid"])
     _reject_cross_system_parents(config, set(dcids), rows)
 
@@ -1822,6 +1817,29 @@ def _verify_measure_partition_labels(
         )
 
 
+def _verify_constraint_axis_values_preferred(
+    statvars: Sequence[dict], axes: Sequence[MeasureAxis]
+) -> None:
+    """Require every value an exported StatVar row carries on a constraint measure axis to
+    appear in that axis's `prefer`. A measure family spans values of the axis only through
+    `prefer`: a value outside it can sit in a partition no election orders, and a family
+    holding rows with and without a value on the axis would then span values the election
+    never chose between."""
+    outside = {
+        (axis.axis, value)
+        for axis in axes
+        if axis.kind == "constraint"
+        for row in statvars
+        if (value := _measure_axis_value(row, axis)) is not None and value not in axis.prefer
+    }
+    if outside:
+        raise ExportRefused(
+            f"{len(outside)} constraint measure axis value(s) carried by the exported StatVar "
+            f"rows are absent from the axis's prefer list: {sorted(outside)!r} -- add each to "
+            "its MeasureAxis.prefer"
+        )
+
+
 def _verify_measure_nouns(statvars: Sequence[dict], nouns: Sequence[MeasurePartitionLabel]) -> None:
     """Require that no exported StatVar row matches a measure noun: every row belongs to a
     measure partition, whose label names it, and a noun beside it would put two names on
@@ -1853,36 +1871,93 @@ def _verify_measure_label_named_values(
     axes: Sequence[MeasureAxis],
     labels: Sequence[MeasurePartitionLabel],
 ) -> None:
-    """Require each label's `named_values` pair to be an exported code of its property's
-    code system, carried by at least one StatVar row under the label's partition. A pair
-    that fails names nothing and silences nothing in a heading. Empty axes make validation
-    a no-op, as in `_verify_measure_partition_labels`."""
+    """Require the codes each label names or keys on to be exported codes of their
+    property's code system, and the label each StatVar row reads, matched with the codes it
+    holds (`label_for_pairs`), to name something the row holds.
+
+    Each label's `named_values` pair must be held, at the code or below it, by at least one
+    row reading the label, and a row reading a label with `named_values` must hold one of
+    them: a label naming the imputed multilateral ODA aid type does not name a climate row
+    that holds none. A pair that fails names nothing and silences nothing in a heading.
+    Each named value must also carry a label or synonym whose words all lie inside the label,
+    so a query naming the measure as its heading does ("climate finance") reads the value.
+    Empty axes make validation a no-op, as in `_verify_measure_partition_labels`."""
     if not axes:
         return
     known = {(row["code_system"], row["dcid"]) for row in codes}
-    axes_by_name = {axis.axis: axis for axis in axes}
-    offending: list[tuple[str, tuple[str, str]]] = []
-    for label in labels:
-        rows = [
-            row
-            for row in statvars
-            if all(
-                axis in axes_by_name and _measure_axis_value(row, axes_by_name[axis]) == value
-                for axis, value in label.axis_values
-            )
-        ]
-        offending.extend(
-            (label.label, (prop, code))
-            for prop, code in label.named_values
-            if (prop, code) not in known
-            or not any(row["constraint_properties"].get(prop) == code for row in rows)
+    parent_of = {row["dcid"]: row.get("parent") for row in codes}
+    offending: list[tuple[str, tuple[str, str]]] = [
+        (label.label, pair)
+        for label in labels
+        for pair in (*label.named_values, *label.codes)
+        if pair not in known
+    ]
+    carried: dict[tuple[str, tuple[tuple[str, str], ...]], set[tuple[str, str]]] = {}
+    unnamed: list[tuple[str, str]] = []
+    for row in statvars:
+        held_codes = _held_codes(row["constraint_properties"], parent_of)
+        match = label_for_pairs(
+            [(axis.axis, _measure_axis_value(row, axis)) for axis in axes],
+            labels,
+            held_codes=held_codes,
         )
+        if match is None or not match.named_values:
+            continue
+        held = held_codes.intersection(match.named_values)
+        carried.setdefault((match.label, match.named_values), set()).update(held)
+        if not held:
+            unnamed.append((row["dcid"], match.label))
+    offending.extend(
+        (label.label, pair)
+        for label in labels
+        for pair in label.named_values
+        if pair not in carried.get((label.label, label.named_values), set())
+    )
     if offending:
         raise ExportRefused(
-            f"{len(offending)} measure label named value(s) are no exported code carried by "
-            f"a StatVar row under the label's partition: {offending!r} -- fix the entries' "
-            "named_values in MEASURE_PARTITION_LABELS"
+            f"{len(offending)} measure label named value(s) or code(s) are no exported code "
+            f"carried by a StatVar row reading the label: {offending!r} -- fix the entries' "
+            "named_values or codes in MEASURE_PARTITION_LABELS"
         )
+    if unnamed:
+        raise ExportRefused(
+            f"{len(unnamed)} StatVar row(s) read a measure label naming none of their codes, "
+            f"first {unnamed[:5]!r} -- key a label for them on the codes they hold"
+        )
+    texts = {(row["code_system"], row["dcid"]): (row["label"], *row["synonyms"]) for row in codes}
+    unworded = [
+        (label.label, pair)
+        for label in labels
+        for pair in label.named_values
+        if not any(_words_within(text, label.label) for text in texts[pair])
+    ]
+    if unworded:
+        raise ExportRefused(
+            f"{len(unworded)} measure label named value(s) carry no label or synonym whose "
+            f"words all lie inside the label, so a query using the heading's noun reads none "
+            f"of them: {unworded!r} -- give the code a synonym from the label in CODE_SYNONYMS"
+        )
+
+
+def _words_within(text: str, label: str) -> bool:
+    """Whether `text` has words and each, casefolded, is a word of `label`."""
+    words = {token.text.casefold() for token in word_tokens(text)}
+    return bool(words) and words <= {token.text.casefold() for token in word_tokens(label)}
+
+
+def _held_codes(
+    constraints: Mapping[str, str], parent_of: Mapping[str, str | None]
+) -> frozenset[tuple[str, str]]:
+    """The `(property, code)` pairs a row with `constraints` holds: each value that is an
+    exported code and the codes above it, as `code_index.labels.held_codes` reads them from a
+    loaded index."""
+    held: set[tuple[str, str]] = set()
+    for prop, value in constraints.items():
+        node: str | None = value
+        while node is not None and node in parent_of:
+            held.add((prop, node))
+            node = parent_of[node]
+    return frozenset(held)
 
 
 def _measure_axis_to_dict(axis: MeasureAxis) -> dict:
@@ -1901,6 +1976,12 @@ def _measure_partition_label_to_dict(partition_label: MeasurePartitionLabel) -> 
         "label": partition_label.label,
         "named_values": [list(pair) for pair in partition_label.named_values],
         "definition": partition_label.definition,
+        **(
+            {"codes": [list(pair) for pair in partition_label.codes]}
+            if partition_label.codes
+            else {}
+        ),
+        "also_called": list(partition_label.also_called),
     }
 
 
@@ -1935,6 +2016,10 @@ def _party_word_to_dict(named: PartyWord) -> dict:
     }
 
 
+def _noted_word_to_dict(noted: NotedWord) -> dict:
+    return {"word": noted.word, "note": noted.note}
+
+
 def _dataset_to_dict(dataset: DatasetDeclaration) -> dict:
     return {
         "provenance": dataset.provenance,
@@ -1953,6 +2038,11 @@ def _dataset_to_dict(dataset: DatasetDeclaration) -> dict:
         **(
             {"party_words": [_party_word_to_dict(w) for w in dataset.party_words]}
             if dataset.party_words
+            else {}
+        ),
+        **(
+            {"noted_words": [_noted_word_to_dict(w) for w in dataset.noted_words]}
+            if dataset.noted_words
             else {}
         ),
         **(
@@ -2060,6 +2150,7 @@ def export_graph_blocks(
     _verify_broad_readings([*statvars, *listed_statvars], broad_readings)
     source_codes = export_source_codes(reader, sorted(listed)) if listed else []
     value_parents = export_value_parents(reader, listed_statvars)
+    _verify_constraint_axis_values_preferred(statvars, measure_axes)
     _verify_measure_partition_labels(statvars, measure_axes, measure_partition_labels)
     _verify_measure_nouns(statvars, measure_nouns)
     _verify_measure_label_named_values(statvars, codes, measure_axes, measure_partition_labels)
@@ -2199,12 +2290,6 @@ def stamp_counts(blocks: Mapping[str, list[dict]]) -> dict[str, dict[str, int]]:
         },
         "statvar_shape_counts": _statvar_shape_counts(blocks["statvars"], code_systems),
     }
-
-
-def content_hash(blocks: Mapping[str, list[dict]]) -> str:
-    """SHA-256 of canonical JSON for the document's data blocks, which excludes `stamp`."""
-    encoded = json.dumps(blocks, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
 
 
 def index_bytes(document: Mapping[str, object]) -> bytes:

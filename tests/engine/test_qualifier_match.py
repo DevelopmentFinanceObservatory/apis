@@ -10,7 +10,7 @@ from dataclasses import replace
 
 import pytest
 
-from code_index.declarations import MEASURE_WORD_SYNONYMS_KEPT
+from code_index.declarations import CODE_SYNONYMS, MEASURE_WORD_SYNONYMS_KEPT
 from code_index.query import CodeIndex
 from code_index.shared import get_index, get_measure_index
 from code_index.tokens import tokenize, word_tokens
@@ -33,9 +33,11 @@ from search.engine.qualifier_match import (
     match_qualifier_ties,
     match_qualifiers,
     match_unsupported_qualifier_phrases,
+    measure_values_named,
     qualifier_occurrences,
     read_by_vocabulary,
 )
+from search.engine.region.phase_rank_bind import _combine_matches
 from tests.engine._index_slots import crs_vocabulary, read_text
 
 # ---------------------------------------------------------------------------
@@ -530,6 +532,24 @@ def test_bare_root_letter_code_needs_the_marker_even_when_unambiguous():
     assert marked[0].code_dcid == "SyntheticAxisRootA"
 
 
+def test_a_word_after_the_marker_of_a_system_without_codes_reads_only_its_labels():
+    # `climatePolicyObjective` publishes no codes, and its marker words ("climate") precede
+    # most words of a climate question, so the bare-code scan must pass over its rows.
+    index = _synthetic_index(
+        CodeRow(
+            dcid="SyntheticAxisAdaptation",
+            code_system="syntheticAxis",
+            code=None,
+            label="adaptation only",
+            synonyms=(),
+            parent=None,
+        )
+    )
+    assert match_qualifiers("synthetic axis finance to Kenya", index) == ()
+    matches = match_qualifiers("synthetic axis adaptation only to Kenya", index)
+    assert [(m.code_dcid, m.source) for m in matches] == [("SyntheticAxisAdaptation", "label")]
+
+
 def test_mixed_alnum_code_still_needs_a_marker():
     # A letter-and-digit shape ("D02") is no longer trusted on its own --
     # it needs the same marker-word signal as any other bare code.
@@ -574,6 +594,37 @@ def test_measure_value_plural_reaches_its_singular_registered_label():
     assert len(matches) == 1
     assert matches[0].code_system == "financialObligationType"
     assert matches[0].code_dcid == "Commitment"
+
+
+@pytest.mark.parametrize(
+    ("text", "named"),
+    [
+        pytest.param(
+            "attributed climate finance", {"attributedAmount"}, id="a-declared-word-alone"
+        ),
+        pytest.param("aid attributed to donors", {"attributedAmount"}, id="a-whole-name"),
+        pytest.param(
+            "imputed multilateral climate finance",
+            {"attributedAmount"},
+            id="a-declared-phrase",
+        ),
+        pytest.param(
+            "climate finance commitments excluding attributed amounts",
+            {"Commitment"},
+            id="a-name-after-a-negation-cue",
+        ),
+        pytest.param("private finance mobilised", {"amountMobilised"}, id="a-graph-name"),
+        pytest.param("finance mobilised by guarantees", {"amountMobilised"}, id="a-declared-word"),
+        pytest.param("climate finance commitments", {"Commitment"}, id="no-attribution"),
+        pytest.param("aid in real terms", {"RealValue"}, id="a-name-sharing-no-word"),
+        pytest.param("amount of aid", set(), id="an-unmatchable-value"),
+    ],
+)
+def test_a_text_names_a_measure_value_by_a_word_or_a_whole_name(text: str, named: set[str]):
+    """A measure value is named by a whole name or a declared `named_by` text, outside a
+    negation: "attributed" names `attributedAmount` wherever it stands, and only a whole
+    name names `RealValue`. `amount` takes no query text."""
+    assert measure_values_named(text, get_measure_index()) == named
 
 
 def test_gross_and_nominal_measure_words_are_unambiguous_against_the_real_index():
@@ -1228,3 +1279,133 @@ def test_a_word_that_names_the_measure_marks_no_code_on_its_own(text: str):
     """ "aid" is the word a declared default reads as naming the measure, and a word of both
     `dac2aAidType` and `dac1AidType`, so it marks neither system alone."""
     assert [m for m in match_qualifiers(text, _REAL_INDEX) if m.source == "code"] == []
+
+
+# ---------------------------------------------------------------------------
+# The climate total's query text, on an index built here: the committed fixture
+# index holds no climate code.
+# ---------------------------------------------------------------------------
+
+_CLIMATE_SYSTEM = "climatePolicyObjective"
+_CLIMATE_TOTAL = "ClimateChangePolicyObjective"
+_CLIMATE_ADAPTATION = "AdaptationOnlyClimateChangePolicyObjective"
+_CLIMATE_VOCABULARY = frozenset({_CLIMATE_SYSTEM, "financialFlowType", "nettingBasis"})
+_CLIMATE_DAC1_VOCABULARY = frozenset({"dac1AidType", "financialFlowType", "nettingBasis"})
+_CLIMATE_CRS_VOCABULARY = frozenset({"crsPurpose", "financialFlowType", "nettingBasis"})
+
+
+def _climate_row(dcid: str, label: str, parent: str | None = None) -> CodeRow:
+    """A climate objective row as the export writes it: its graph name, and the synonyms
+    `CODE_SYNONYMS` declares for it."""
+    return CodeRow(
+        dcid=dcid,
+        code_system=_CLIMATE_SYSTEM,
+        code=None,
+        label=label,
+        synonyms=CODE_SYNONYMS.get(dcid, ()),
+        parent=parent,
+    )
+
+
+def _climate_index() -> CodeIndex:
+    """The climate objectives under their dev graph names, beside the CRS purpose code that
+    holds "investment climate" and DAC1's ODA."""
+    rows = (
+        _climate_row(_CLIMATE_TOTAL, "climate change policy objective"),
+        _climate_row(
+            _CLIMATE_ADAPTATION, "adaptation-only climate change policy objective", _CLIMATE_TOTAL
+        ),
+        _climate_row(
+            "MitigationOnlyClimateChangePolicyObjective",
+            "mitigation-only climate change policy objective",
+            _CLIMATE_TOTAL,
+        ),
+        CodeRow(
+            dcid="CRSPurposeCode25010",
+            code_system="crsPurpose",
+            code="25010",
+            label="business policy and administration",
+            synonyms=("investment climate",),
+            parent=None,
+        ),
+        CodeRow(
+            dcid="DAC1AidType1010",
+            code_system="dac1AidType",
+            code="1010",
+            label="official development assistance",
+            synonyms=("ODA",),
+            parent=None,
+        ),
+    )
+    systems = {
+        _CLIMATE_SYSTEM: (True, "climate objective"),
+        "crsPurpose": (False, "sector"),
+        "dac1AidType": (False, "aid type"),
+    }
+    return CodeIndex(
+        stamp=IndexStamp(
+            graph_endpoint="synthetic",
+            exported_at="2026-01-01T00:00:00Z",
+            code_counts={
+                system: sum(row.code_system == system for row in rows) for system in systems
+            },
+            statvar_shape_counts={},
+            content_hash="synthetic",
+        ),
+        declarations=tuple(
+            CodeSystemDeclaration(
+                code_system=system,
+                hierarchical=hierarchical,
+                disjoint_from_children=not hierarchical,
+                summable=not hierarchical,
+                absent_reading="not_declared",
+                plain_name=plain_name,
+            )
+            for system, (hierarchical, plain_name) in systems.items()
+        ),
+        codes=rows,
+        statvars=(),
+    )
+
+
+def _climate_codes(query: str, vocabulary: frozenset[str]) -> list[tuple[str, str]]:
+    """The code and matched text of each of `query`'s matches in `vocabulary`."""
+    reading = read_text(query, _climate_index(), vocabularies=[vocabulary])
+    return [(m.code_dcid, m.matched_text) for m in reading.by_vocabulary[vocabulary].matches]
+
+
+@pytest.mark.parametrize(
+    ("query", "phrase"),
+    [
+        ("climate finance commitments from Germany in 2022", "climate finance"),
+        ("Germany climate commitments", "climate"),
+    ],
+)
+def test_the_climate_measure_noun_reads_the_total_on_a_climate_shape_only(query, phrase):
+    """The climate labels name the total ("climate finance commitments"), so the heading's
+    noun reads it where the shape's vocabulary holds the objective, and nowhere else."""
+    assert _climate_codes(query, _CLIMATE_VOCABULARY) == [(_CLIMATE_TOTAL, phrase)]
+    assert _climate_codes(query, _CLIMATE_DAC1_VOCABULARY) == []
+
+
+@pytest.mark.parametrize(
+    "vocabulary",
+    [
+        pytest.param(_CLIMATE_CRS_VOCABULARY, id="crs"),
+        pytest.param(_CLIMATE_CRS_VOCABULARY | {_CLIMATE_SYSTEM}, id="crs-and-climate"),
+    ],
+)
+def test_investment_climate_stays_the_longer_crs_purpose_span(vocabulary):
+    assert _climate_codes("investment climate aid to Kenya", vocabulary) == [
+        ("CRSPurposeCode25010", "investment climate")
+    ]
+
+
+def test_climate_finance_for_adaptation_binds_the_adaptation_only_part():
+    """The total and the part under it are a refinement, so the narrower binds."""
+    variable = "climate finance for adaptation"
+    reading = read_text(variable, _climate_index(), vocabularies=[_CLIMATE_VOCABULARY])
+    matches = reading.by_vocabulary[_CLIMATE_VOCABULARY].matches
+    assert [m.code_dcid for m in matches] == [_CLIMATE_TOTAL, _CLIMATE_ADAPTATION]
+    combination = _combine_matches(variable, matches, _climate_index())
+    assert combination.values == {_CLIMATE_SYSTEM: (_CLIMATE_ADAPTATION,)}

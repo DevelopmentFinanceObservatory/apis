@@ -9,6 +9,7 @@ import pytest
 from origin_catalogue import BASE, CardFacts, DatasetRef, bound_catalogue
 from search.engine.clients.graph import Facet
 from search.engine.retrieval.download import download_facts
+from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
 from search.engine.retrieval.read_plan import PairPlan, PlanRoles, PlanSeries, plan_pairs
 from search.models import DownloadLicence, TimeWindow
 from tests.engine._fake_coverage import build_coverage_index
@@ -38,7 +39,7 @@ def _two_facet_plan(*, dated: bool) -> PairPlan:
         for facet_id, dates in spans.items()
     )
     series = PlanSeries(stat_var=_SV, role_tuple=(("observationAbout", _PLACE),), candidates=facets)
-    return plan_pairs([series], members=[_SV], years=None)
+    return plan_pairs([series], members=[_SV], years=None, declared=NO_DECLARED_POLICIES)
 
 
 @pytest.mark.parametrize(
@@ -93,7 +94,7 @@ def test_a_series_with_an_unknown_bound_states_no_window(
     series = PlanSeries(
         stat_var=_SV, role_tuple=(("observationAbout", _PLACE),), candidates=tuple(facets)
     )
-    plan = plan_pairs([series], members=[_SV], years=None)
+    plan = plan_pairs([series], members=[_SV], years=None, declared=NO_DECLARED_POLICIES)
 
     download = download_facts(
         plan, _EMPTY_INDEX, requested_window=None, conversion=None, provenance=None
@@ -112,6 +113,7 @@ def test_a_role_answer_reading_a_member_coverage_lacks_states_no_rows() -> None:
             bound={"donor": frozenset({"country/FRA"})},
             role_names={"donor": "financingProvider", "recipient": "financingRecipient"},
         ),
+        declared=NO_DECLARED_POLICIES,
     )
 
     download = download_facts(

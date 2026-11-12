@@ -6,7 +6,9 @@ contiguous block. Lookups find each requested variable's block by binary
 search, filter bound roles with Arrow over those rows alone, then apply year
 windows through uint64 masks. `PairRows` uses the same binary search to read
 only the requested group. `series_coverage.loader.checked_index` guarantees
-`n_obs` matches each row's mask. `role_names` maps package role labels to graph properties.
+`n_obs` equals each row's mask popcount, so it counts years with data. For an annual
+series that is its observation count (`series_coverage.schema`). `role_names` maps package
+role labels to graph properties.
 A variable that declares one role carries `ABSENT_ENTITY` in the column of
 the role it lacks, which no lookup returns as a dcid.
 """
@@ -32,6 +34,7 @@ from materialise.roles import axis_for_role
 from origin_catalogue.context import current_catalogue, current_source_scope
 from series_coverage._bits import bit_length64, lowest_set_bit_index64, popcount64
 from series_coverage.coverage_types import (
+    COVERAGE_ROLE_AXES,
     BoundRoles,
     Estimate,
     FacetCoverage,
@@ -55,7 +58,6 @@ from series_coverage.schema import (
     FacetMetadata,
     RoleNames,
     YearHorizon,
-    is_sub_annual,
 )
 from series_coverage.summary import CoverageSummary
 
@@ -207,8 +209,6 @@ def _window_words(
 
 
 _ROLE_COLUMNS: dict[Role, str] = {"donor": DONOR_COLUMN, "recipient": RECIPIENT_COLUMN}
-# The flow axis each party column holds (`series_coverage.schema`).
-_ROLE_AXES: dict[Role, RoleAxis] = {"donor": "origin", "recipient": "destination"}
 
 type SeriesKey = Literal["variable", "facet_id", "donor", "recipient"]
 """A column of a series' key (`_SERIES_KEY_COLUMNS`)."""
@@ -493,13 +493,10 @@ class KeptFacets:
     `groups` counts their collapse groups, the distinct `(provenance, method, unit)` of
     their metadata, the grain at which materialise collapses facets
     (`materialise.facet_collapse`) and a per-series read elects one group per member.
-    `sub_annual` is whether one of them states an observation period shorter than a
-    year, whose periods inside one year the index cannot order.
     """
 
     facet_ids: frozenset[str]
     groups: int
-    sub_annual: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -544,12 +541,6 @@ class SeriesYears:
 type KeptYears = Callable[[str, str], Collection[int] | None]
 """The years a series keeps, given its recipient and donor dcids (`ABSENT_ENTITY` for a role
 it does not bind), None for every year it serves (`CoverageIndex.series_years`)."""
-
-
-def _sub_annual(metadata: FacetMetadata | None) -> bool:
-    """Whether `metadata` states an observation period shorter than a year
-    (`schema.is_sub_annual`)."""
-    return is_sub_annual(metadata.observation_period if metadata is not None else None)
 
 
 def _at_variable_latest(masks: np.ndarray, variable_codes: np.ndarray) -> np.ndarray:
@@ -737,7 +728,7 @@ class CoverageIndex:
             if metadata.provenance_id in provenances
         }
         axes: dict[str, set[RoleAxis]] = {}
-        for role, axis in _ROLE_AXES.items():
+        for role, axis in COVERAGE_ROLE_AXES.items():
             by_facet = self.grouped(by=(role, "facet_id"))
             for party, facet_id in zip(
                 _key_values(by_facet[role]), _key_values(by_facet[FACET_COLUMN]), strict=True
@@ -1139,7 +1130,7 @@ class CoverageIndex:
     def facet_spans(
         self, *, variables: Sequence[str], bound: BoundRoles = _NO_BINDING
     ) -> dict[tuple[str, str], FacetSpan]:
-        """Each `(variable, facet_id)`'s observation count, first and last years with data
+        """Each `(variable, facet_id)`'s `n_obs`, first and last years with data
         and first series' end under `bound`, over every year: the `n_obs`, `first_year`,
         `last_year` and `first_series_end` `filter_candidates` states for the same rows with
         no window, read from the row columns in one grouped pass that builds no year counts.
@@ -1471,10 +1462,8 @@ class CoverageIndex:
         and headline of one read takes its years from one call.
 
         A variable elects no year, and is absent, when the index holds no selected row of
-        it, when none of its selected series holds a year up to `build_year`, or when one
-        of its selected facets states an observation period shorter than a year
-        (`KeptFacets.sub_annual`), whose latest period the index cannot find within a
-        year. Such a variable serves its own latest period."""
+        it or when none of its selected series holds a year up to `build_year`. Such a
+        variable serves its own latest period."""
         found = self.series_years(
             variables=variables, bound=bound, served=served, excluded=excluded, admits=admits
         )
@@ -1485,8 +1474,6 @@ class CoverageIndex:
         elected: dict[str, int] = {}
         for start, stop in zip(starts, [*starts[1:], len(names)], strict=True):
             variable = names[start]
-            if found.variables[variable].sub_annual:
-                continue
             masks = found.masks[start:stop]
             held = self._to_build_year(np.bitwise_or.reduce(masks, axis=0))
             if not held.any():
@@ -1673,11 +1660,7 @@ class CoverageIndex:
                 (m.provenance_id, m.measurement_method, m.unit) if m is not None else None
                 for m in metadata
             }
-            result[variable] = KeptFacets(
-                facet_ids=frozenset(facet_ids),
-                groups=len(groups),
-                sub_annual=any(_sub_annual(m) for m in metadata),
-            )
+            result[variable] = KeptFacets(facet_ids=frozenset(facet_ids), groups=len(groups))
         return result
 
     def _admitted_row_mask(self, rows: pa.Table, admits: Callable[[str, str], bool]) -> np.ndarray:
@@ -1763,7 +1746,7 @@ class CoverageIndex:
         once. Callers estimating a combined dispatch split it as the fetch does,
         call this once per chunk with `lanes=1`, and sum the results.
 
-        `rows` sums `n_obs` over the rows surviving `bound` and the
+        `rows` sums `n_obs`, the years with data, over the rows surviving `bound` and the
         `[first_year, last_year]` window.
 
         `requests` ignores the window, as the fetch does: the facet probe
@@ -2039,7 +2022,7 @@ class PairRows:
         return slice(low + start, low + stop) if start < stop else None
 
     def _counts(self, rows: slice, *, first_year: int | None, last_year: int | None) -> np.ndarray:
-        """Each of `rows`' `n_obs`, counted inside `[first_year,
+        """Each of `rows`' `n_obs`, the years with data, counted inside `[first_year,
         last_year]` as well as this lookup's own window."""
         views = self._views
         if first_year is None and last_year is None:

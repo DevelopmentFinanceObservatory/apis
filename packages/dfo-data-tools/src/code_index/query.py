@@ -16,6 +16,7 @@ from types import MappingProxyType
 
 from code_index.tokens import Token, TokenLookup, word_tokens
 from code_index.types import (
+    ANY_AXIS,
     POPULATION_CLASS,
     AbsentObservation,
     Bound,
@@ -85,6 +86,12 @@ def row_five_tuple(row: StatVarRow) -> FiveTuple:
         measurement_qualifier=row.measurement_qualifier,
         measurement_denominator=row.measurement_denominator,
     )
+
+
+def code_order(row: CodeRow) -> tuple[str, str]:
+    """The order of one system's code rows: by `CodeRow.code` as a string, and by dcid in a
+    system whose rows carry no code."""
+    return (row.code or "", row.dcid)
 
 
 def _datasets_by_five_tuple(
@@ -538,20 +545,19 @@ class CodeIndex:
         side_classes: dict[tuple[RoleAxis, str], set[PartyClass]] = defaultdict(set)
         population_totals_by_axis: dict[RoleAxis, list[str]] = defaultdict(list)
         for party in self.parties.values():
-            for dataset in party.datasets:
+            for dataset, axis in party.published:
                 kind = party.kind_in(dataset)
                 party_class = party.class_of(kind)
                 if kind != "total" and party_class is not None:
-                    for axis in party.axes:
-                        side_classes[axis, dataset].add(party_class)
+                    side_classes[axis, dataset].add(party_class)
             if any(POPULATION_CLASS in marker.covers for marker in party.whole):
-                population_totals_by_axis[party.axes[0]].append(party.dcid)
+                population_totals_by_axis[party.sole_axis()].append(party.dcid)
         self.side_classes: dict[tuple[RoleAxis, str], frozenset[PartyClass]] = {
             side: frozenset(classes) for side, classes in side_classes.items()
         }
         """The classes of party, totals aside, each dataset publishes on each
-        flow axis, by `(axis, dataset)`. A `PartyRow` keeps its axes and datasets apart, so a
-        party published on both axes counts on each in every dataset that publishes it."""
+        flow axis, by `(axis, dataset)`. A party counts on an axis only in the datasets that
+        publish it there (`PartyRow.published`)."""
         self.population_totals_by_axis: dict[RoleAxis, tuple[str, ...]] = {
             axis: tuple(sorted(dcids)) for axis, dcids in population_totals_by_axis.items()
         }
@@ -578,12 +584,13 @@ class CodeIndex:
             if row.dcid in codes_by_dcid:
                 raise DuplicateDcid(f"code dcid {row.dcid!r} appears more than once")
             codes_by_dcid[row.dcid] = row
-            system_code = (row.code_system, row.code)
-            if system_code in codes_by_system_code:
-                raise DuplicateDcid(
-                    f"code system {row.code_system!r} code {row.code!r} appears more than once"
-                )
-            codes_by_system_code[system_code] = row
+            if row.code is not None:
+                system_code = (row.code_system, row.code)
+                if system_code in codes_by_system_code:
+                    raise DuplicateDcid(
+                        f"code system {row.code_system!r} code {row.code!r} appears more than once"
+                    )
+                codes_by_system_code[system_code] = row
             if row.parent is not None:
                 children_by_parent[row.parent].append(row.dcid)
             for text in (row.label, *row.synonyms):
@@ -649,7 +656,7 @@ class CodeIndex:
             code_system: tuple(
                 sorted(
                     (row for row in self.codes if row.code_system == code_system),
-                    key=lambda row: row.code,
+                    key=code_order,
                 )
             )
             for code_system in sorted({row.code_system for row in self.codes})
@@ -761,7 +768,9 @@ class CodeIndex:
         its types give (`code_index.types.party_kind`). A reader with a dataset in hand reads
         `PartyRow.kind_in` instead."""
         party = self.parties.get(dcid)
-        return party.kind_over() if party is not None else party_kind(types, self.party_types)
+        if party is None:
+            return party_kind(types, self.party_types)
+        return party.kind_over(ANY_AXIS)
 
     def whole_set(self, phrase: str) -> WholeTotalSet | None:
         """The whole total set a `phrase` names, compared under `fold_text`, or `None`."""
@@ -784,7 +793,8 @@ class CodeIndex:
 
     def code_by_code(self, code_system: str, code: str) -> CodeRow | None:
         """Returns the row for `code` in `code_system`. Code strings may recur across systems,
-        so pass both fields to identify the row."""
+        so pass both fields to identify the row. A system whose rows carry no code
+        (`CodeRow.code`) returns `None` for every code."""
         return self._codes_by_system_code.get((code_system, code))
 
     def codes_by_text(self, text: str) -> tuple[CodeRow, ...]:
@@ -956,12 +966,12 @@ class CodeIndex:
         return bool(self._children_by_parent.get(dcid))
 
     def children(self, dcid: str) -> tuple[CodeRow, ...]:
-        """The rows whose `parent` is `dcid`, ordered by `CodeRow.code` as a string. Empty
-        for a leaf, a code of a flat system, and an unknown dcid."""
+        """The rows whose `parent` is `dcid`, in `code_order`. Empty for a leaf, a code of a
+        flat system, and an unknown dcid."""
         return tuple(
             sorted(
                 (self._codes_by_dcid[child] for child in self._children_by_parent.get(dcid, ())),
-                key=lambda row: row.code,
+                key=code_order,
             )
         )
 

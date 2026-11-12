@@ -14,12 +14,20 @@ Three facts set the price basis, and the first that holds wins:
 - the shape's `measurementQualifier`, listed in `PRICES_BY_QUALIFIER`: `Nominal` is current
   prices and `RealValue` constant prices. Other qualifiers (`Adjusted`) are no price basis
   and stay in the measure noun.
+
+A conversion to constant prices also names whose prices deflate the amount
+(`materialise.recipes.deflation_basis`), since two recipes can deflate one currency and
+base year by different parties: "constant 2024 Nigerian naira, donor prices" for aid a
+donor's deflator converts, "constant 2024 Nigerian naira, recipient prices" for debt the
+debtor's converts.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Final
+
+from dfo_frame_grammar import DeflationBasis
 
 from code_index.labels import PRICES_BY_QUALIFIER, PricesKind
 from unit_words.unit_class import UnitClass
@@ -30,12 +38,14 @@ US_DOLLARS: Final = "US dollars"
 
 @dataclass(frozen=True, slots=True)
 class PriceBasis:
-    """Current or constant prices, with the base year of constant prices when known, and
-    whether constant prices are chain-linked."""
+    """Current or constant prices, with the base year of constant prices when known,
+    whether constant prices are chain-linked, and whose prices deflated a conversion to
+    constant prices (`deflated_by`), `None` for a source's own prices."""
 
     prices: PricesKind
     base_year: int | None
     chained: bool = False
+    deflated_by: DeflationBasis | None = None
 
 
 def price_basis(
@@ -66,14 +76,26 @@ def price_basis_phrase(basis: PriceBasis | None, *, currency_noun: str) -> str:
     """The unit token's text: "current US dollars", "constant 2022 US dollars".
 
     Constant prices with no known base year read "constant US dollars", and chain-linked
-    ones "chained 2017 US dollars". No price basis reads the currency noun alone.
+    ones "chained 2017 US dollars". A conversion to constant prices adds whose prices
+    deflated it: "constant 2024 Nigerian naira, donor prices". No price basis reads the
+    currency noun alone.
     """
     if basis is None:
         return currency_noun
     prices = "chained" if basis.chained else basis.prices
     if basis.prices == "constant" and basis.base_year is not None:
-        return f"{prices} {basis.base_year} {currency_noun}"
-    return f"{prices} {currency_noun}"
+        phrase = f"{prices} {basis.base_year} {currency_noun}"
+    else:
+        phrase = f"{prices} {currency_noun}"
+    if basis.prices == "constant" and basis.deflated_by is not None:
+        return f"{phrase}, {deflation_phrase(basis.deflated_by)}"
+    return phrase
+
+
+def deflation_phrase(deflated_by: DeflationBasis) -> str:
+    """Whose prices deflated a conversion to constant prices: "donor prices", "recipient
+    prices", "national prices"."""
+    return f"{deflated_by} prices"
 
 
 def price_basis_option_label(prices: PricesKind) -> str:

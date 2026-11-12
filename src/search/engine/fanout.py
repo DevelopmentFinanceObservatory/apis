@@ -10,7 +10,7 @@ import asyncio
 import dataclasses
 import logging
 import time
-from collections.abc import AsyncGenerator, Collection, Mapping, Sequence
+from collections.abc import AsyncGenerator, Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, get_args
 
@@ -27,13 +27,10 @@ from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.concurrency import bounded_semaphore
 from search.engine.deadline import _await_bounded, _cancel_trailing_tasks
-from search.engine.errors import (
-    RATE_TABLE_REFUSALS,
-    DeclaredDefaultUnsupportedError,
-    EngineInfraError,
-)
+from search.engine.errors import RATE_TABLE_REFUSALS, EngineInfraError
 from search.engine.events import Event
 from search.engine.extract import DateRequest
+from search.engine.interpret import Detected
 from search.engine.leg_phase import LegPhase, enter_phase, track_leg_phase
 from search.engine.options.population_memo import OptionsPopulationMemo
 from search.engine.qualifier_match import CodedQualifier, recall_text
@@ -45,6 +42,12 @@ from search.engine.region.result import (
     source_refusal_result,
     with_dropped_open_roles,
     with_runnable_operations,
+)
+from search.engine.region.source_choice import (
+    ContestedOrganisation,
+    read_as_party,
+    read_as_source,
+    read_organisations,
 )
 from search.engine.region.state import EngineOptions
 from search.engine.role_text import DoorRole, Party, asks_members, role_text_for
@@ -76,6 +79,33 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class LegReading:
+    """What a leg reads the question's names as: its entities, the roles of each
+    (`DoorRole`), those asked for as their members, its compiled source scope, and its
+    series code compiled within that scope (`source_code.compile_part_code`)."""
+
+    entities: list[str]
+    entity_roles: dict[str, list[DoorRole]]
+    member_entities: frozenset[str]
+    source_scope: SourceScope | SourceRefusal | None
+    source_code: PartCode | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PartyReading:
+    """The readings of a leg whose own reading reads its `contested` organisations as its
+    source (`raw_text._ExtractionPrep.per_variable_party_readings`), one per organisation the
+    query names: `reading`, with every one of them as a party to the flow, named as an entity
+    and left out of the leg's sources, and `reading_with`, with those whose words it is given
+    as parties and the rest as sources."""
+
+    contested: tuple[ContestedOrganisation, ...]
+    reading: LegReading
+    reading_with: Callable[[frozenset[str]], LegReading]
+
 
 # The directional role axes ParsedPart's role_text-less generic echo cannot
 # express -- derived from RoleAxis itself (currently "origin"/"destination")
@@ -118,14 +148,16 @@ class _FanOutResult:
 def _date_request_to_time_text(date_request: DateRequest | None) -> str | None:
     """Encode the date request in the parsed door's `time_text` grammar.
 
-    Returns `latest`, a year/range/`since` phrase, or `None` when the request
-    is dateless, open-start, or reversed. The latter windows have no phrase
-    that round-trips through the parser.
+    Returns `latest`, `last N years` for a trailing span, a year/range/`since`
+    phrase, or `None` when the request is dateless, open-start, or reversed. The
+    latter windows have no phrase that round-trips through the parser.
     """
     if date_request is None:
         return None
     if date_request.latest:
         return "latest"
+    if date_request.trailing is not None:
+        return f"last {date_request.trailing.years} years"
     window = date_request.window
     if window is None or window.start_year is None:
         return None
@@ -445,6 +477,7 @@ async def _stream_one_variable(
     open_axes: frozenset[RoleAxis] = frozenset(),
     separate: bool = False,
     query_text: str | None = None,
+    unclaimed: tuple[str, ...] = (),
     qualifiers: tuple[CodedQualifier, ...] | None = None,
     materialise_graph: GraphReader | None = None,
     materialise_sdmx: MaterialiseSdmxClient | None = None,
@@ -455,13 +488,13 @@ async def _stream_one_variable(
     phase: LegPhase,
     door: EntryPath = "parsed",
     scope_intake: ScopeIntake | None = None,
+    party_reading: PartyReading | None = None,
 ) -> None:
     """Run one variable leg, queue its events, then send one terminal marker.
 
     With `degrade_on_error=False`, any error fails the response. With it enabled,
-    non-infrastructure errors become `no_data`; `EngineInfraError`, a declared-default
-    refusal (`DeclaredDefaultUnsupportedError`) and the conversion-table failures in
-    `RATE_TABLE_REFUSALS` always fail the response. The qualifier sidecar is appended to the
+    non-infrastructure errors become `no_data`; `EngineInfraError` and the conversion-table
+    failures in `RATE_TABLE_REFUSALS` always fail the response. The qualifier sidecar is appended to the
     recall/restatement text while `v` stays bare for structured resolution. `source_scope`
     is the leg's compiled source mentions. A scope is what the leg answers under, and its
     source words leave `v` (`_measure_words`). Resolution reads `v`, its recall text, its
@@ -489,48 +522,78 @@ async def _stream_one_variable(
     its terminal marker is queued. `phase` records the step the leg is in
     (`search.engine.leg_phase`). `door` is the door the leg was posted on
     (`resolve_variable`). `scope_intake` is the leg's posted scope entries and total
-    intent (`resolve_variable`).
+    intent (`resolve_variable`). `party_reading` is the leg's reading with contested
+    organisations as parties where its own reads them as its source: before any pass the leg
+    decides how it reads each organisation (`source_choice.read_organisations`) and runs the
+    one reading that assigns them so; the answer discloses each organisation's reading and
+    the restatement states it.
     """
     track_leg_phase(phase)
-    v = _measure_words(v, source_scope, source_code)
     code = _code_text(source_code)
-    # `v` plus every sidecar CodedQualifier's own phrase, verbatim -- see
-    # this function's own qualifiers= comment above for why every
-    # user-visible surface below reads this instead of `v`.
-    variable_text = recall_text(v, qualifiers)
+    own = LegReading(
+        entities=entities,
+        entity_roles=entity_roles or {},
+        member_entities=member_entities,
+        source_scope=source_scope,
+        source_code=source_code,
+    )
+
+    def texts(reading: LegReading) -> tuple[str, str]:
+        """The leg's variable less the words its reading's sources and its code state, and
+        that variable plus every sidecar CodedQualifier's own phrase, verbatim, which every
+        user-visible surface below reads."""
+        words = _measure_words(v, reading.source_scope, reading.source_code)
+        return words, recall_text(words, qualifiers)
+
+    def pass_variable(reading: LegReading) -> str:
+        """The variable the pass of `reading` resolves: its measure words less the words a
+        scope phrase states, or the whole words where the phrases fill them."""
+        words = texts(reading)[0]
+        return without_scope_phrases(words, scope_intake) or words
+
+    def detect_text(reading: LegReading) -> str:
+        """The text the pass of `reading` recalls on: its recall text less the words a
+        scope phrase states, or the whole text where the phrases fill it."""
+        variable_text = texts(reading)[1]
+        return without_scope_phrases(variable_text, scope_intake) or variable_text
 
     async def emit(event: Event) -> None:
         await queue.put(event)
 
-    async def _run() -> RegionResult:
-        if isinstance(source_scope, SourceRefusal):
-            return source_refusal_result(v, source_scope, timing_by_step=base_timing)
-        if source_scope is not None and not source_scope.allowed:
-            return empty_scope_result(v, source_scope, timing_by_step=base_timing)
-        if isinstance(source_code, SourceCodeRefusal):
-            return source_code_refusal_result(v, source_code, timing_by_step=base_timing)
+    async def _run(reading: LegReading, detected: Detected | None = None) -> RegionResult:
+        scope = reading.source_scope
+        part_code = reading.source_code
+        words = texts(reading)[0]
+        if isinstance(scope, SourceRefusal):
+            return source_refusal_result(words, scope, timing_by_step=base_timing)
+        if scope is not None and not scope.allowed:
+            return empty_scope_result(words, scope, timing_by_step=base_timing)
+        if isinstance(part_code, SourceCodeRefusal):
+            return source_code_refusal_result(words, part_code, timing_by_step=base_timing)
         # The words a scope phrase states are the scope entry's alone, so the leg's
         # binders and qualifier matching read the texts without them; its restatement
         # keeps them, so posting it states the same scope. A text the phrases fill whole
         # is read as it is.
         asked_roles = role_query if role_query is not None else query
         return await resolve_variable(
-            without_scope_phrases(v, scope_intake) or v,
-            entities=entities,
+            pass_variable(reading),
+            entities=reading.entities,
             date_request=date_request,
-            detect_query=without_scope_phrases(variable_text, scope_intake) or variable_text,
+            detect_query=detect_text(reading),
+            detected=detected,
             role_query=without_scope_phrases(asked_roles, scope_intake) or asked_roles,
-            entity_roles=entity_roles,
-            member_entities=member_entities,
+            entity_roles=reading.entity_roles,
+            member_entities=reading.member_entities,
             unit_text=unit_text,
             unit_text_best_effort=unit_text_best_effort,
-            source_scope=source_scope,
-            source_code=source_code if isinstance(source_code, SeriesCodeMembers) else None,
+            source_scope=scope,
+            source_code=part_code if isinstance(part_code, SeriesCodeMembers) else None,
             dropped_qualifier_phrases=_bind_phrases(dropped_qualifier_phrases, operations),
             exclusions=exclusions,
             operations=operations,
             open_axes=asked_open_axes(open_axes, operations),
             query_text=query_text and (without_scope_phrases(query_text, scope_intake) or None),
+            unclaimed=unclaimed,
             qualifiers=qualifiers,
             pac=pac,
             graph=graph,
@@ -562,26 +625,64 @@ async def _stream_one_variable(
             ),
         )
 
+    async def _read() -> tuple[RegionResult, LegReading]:
+        """The leg's answer and the reading it stands on: its own, where the data read every
+        contested organisation as its source (`source_choice.read_organisations`), the
+        reading with every one as an entity where they read every one as a party, and else
+        the reading with those they read as parties as entities and the rest as sources.
+        The answer discloses each organisation's reading where its words or data call for
+        it (`source_choice.read_as_source`, `source_choice.read_as_party`)."""
+        if party_reading is None:
+            return await _run(own), own
+        contested = party_reading.contested
+        organisations = await read_organisations(
+            contested,
+            party_text=detect_text(party_reading.reading),
+            party_variable=pass_variable(party_reading.reading),
+            party_scope=party_reading.reading.source_scope,
+            party_code=party_reading.reading.source_code,
+            source_text=detect_text(own),
+            source_variable=pass_variable(own),
+            source_scope=own.source_scope,
+            source_code=own.source_code,
+            graph=graph,
+        )
+        parties = frozenset(
+            organisation.words
+            for organisation, reading in zip(contested, organisations.readings, strict=True)
+            if reading.role == "party"
+        )
+        if not parties:
+            leg = own
+        elif len(parties) == len(contested):
+            leg = party_reading.reading
+        else:
+            leg = party_reading.reading_with(parties)
+        # A uniform reading's pass recalls from the detection that chose it, so its text is
+        # searched once (`interpret.recall`); a mixed one detects its own text.
+        region = await _run(leg, organisations.detected)
+        for organisation, reading in zip(contested, organisations.readings, strict=True):
+            if reading.role == "party":
+                region = read_as_party(region, organisation, reading)
+            else:
+                region = read_as_source(region, organisation)
+        return region, leg
+
     try:
         if sem is not None:
             enter_phase("variable_slot")
             async with sem:
-                region = await _run()
+                region, reading = await _read()
         else:
-            region = await _run()
+            region, reading = await _read()
     except Exception as exc:
-        # Infrastructure, declared-default and conversion-table failures refuse the
-        # request. A placeholder no_data would read as real missing data.
-        if (
-            isinstance(
-                exc, (EngineInfraError, DeclaredDefaultUnsupportedError, *RATE_TABLE_REFUSALS)
-            )
-            or not degrade_on_error
-        ):
+        # Infrastructure and conversion-table failures refuse the request. A placeholder
+        # no_data would read as real missing data.
+        if isinstance(exc, (EngineInfraError, *RATE_TABLE_REFUSALS)) or not degrade_on_error:
             await queue.put(_TaskFailed(index=i, exc=exc))
             return
         region = _placeholder_no_data(
-            variable_text,
+            texts(own)[1],
             i,
             reason="variable_not_resolved",
             entities=entities,
@@ -600,11 +701,12 @@ async def _stream_one_variable(
     else:
         # See RegionResult.restatement -- resolve_variable itself builds no
         # restatement (it has no ParsedPart dependency), so this leg's own
-        # echo is attached here, from the exact inputs just passed to _run().
-        sources = restated_sources(source_scope, answered_provenance(region))
+        # echo is attached here, from the inputs of the reading the answer stands on.
+        variable_text = texts(reading)[1]
+        sources = restated_sources(reading.source_scope, answered_provenance(region))
         restatement = _leg_restatement(
             variable_text,
-            entities=entities,
+            entities=reading.entities,
             date_request=date_request,
             unit_text=unit_text,
             sources=sources,
@@ -612,11 +714,11 @@ async def _stream_one_variable(
             directional=_success_directional(
                 region,
                 role_query=role_query if role_query is not None else query,
-                entities=entities,
-                entity_roles=entity_roles,
+                entities=reading.entities,
+                entity_roles=reading.entity_roles,
             ),
-            entity_roles=entity_roles,
-            member_entities=member_entities,
+            entity_roles=reading.entity_roles,
+            member_entities=reading.member_entities,
             operations=operations,
             open_axes=open_axes,
             separate=separate,
@@ -628,13 +730,13 @@ async def _stream_one_variable(
             restatement=restatement,
             parsed_form=_leg_parsed_form(
                 variable_text,
-                entities=entities,
+                entities=reading.entities,
                 date_request=date_request,
                 unit_text=unit_text,
                 sources=sources,
                 source_code=code,
-                entity_roles=entity_roles,
-                member_entities=member_entities,
+                entity_roles=reading.entity_roles,
+                member_entities=reading.member_entities,
                 operations=operations,
                 open_axes=open_axes,
                 separate=separate,
@@ -687,6 +789,7 @@ class _LegOverrides:
     per_variable_exclusions: list[PartExclusions] | None
     per_variable_scope_intakes: list[ScopeIntake] | None
     door: EntryPath
+    per_variable_party_readings: list[PartyReading | None] | None = None
 
 
 def _leg_entities(overrides: _LegOverrides, i: int) -> list[str]:
@@ -871,6 +974,7 @@ def _launch_variable_tasks(
     stream_observations: bool,
     dropped_qualifier_phrases: list[str] | None,
     query_text: str | None,
+    unclaimed: tuple[str, ...],
     materialise_graph: GraphReader | None,
     materialise_sdmx: MaterialiseSdmxClient | None,
     rate_cache: RateTableCache | None,
@@ -942,6 +1046,7 @@ def _launch_variable_tasks(
                 open_axes=_leg_open_axes(overrides, i),
                 separate=_leg_separate(overrides, i),
                 query_text=query_text,
+                unclaimed=unclaimed,
                 materialise_graph=materialise_graph,
                 materialise_sdmx=materialise_sdmx,
                 rate_cache=rate_cache,
@@ -951,6 +1056,11 @@ def _launch_variable_tasks(
                 phase=phases[i],
                 door=overrides.door,
                 scope_intake=_leg_scope_intake(overrides, i),
+                party_reading=(
+                    overrides.per_variable_party_readings[i]
+                    if overrides.per_variable_party_readings is not None
+                    else None
+                ),
             )
         )
         for i, v in enumerate(unique)
@@ -1037,6 +1147,7 @@ async def _run_variables_streaming(
     per_variable_exclusions: list[PartExclusions] | None = None,
     per_variable_scope_intakes: list[ScopeIntake] | None = None,
     query_text: str | None = None,
+    unclaimed: tuple[str, ...] = (),
     materialise_graph: GraphReader | None = None,
     materialise_sdmx: MaterialiseSdmxClient | None = None,
     rate_cache: RateTableCache | None = None,
@@ -1044,6 +1155,7 @@ async def _run_variables_streaming(
     place_options_pool: PlaceOptionsPool | None = None,
     coverage: CoverageSnapshot,
     door: EntryPath = "parsed",
+    per_variable_party_readings: list[PartyReading | None] | None = None,
 ) -> AsyncGenerator[Event]:
     """Run one task per variable and yield each leg's events as they arrive.
 
@@ -1078,9 +1190,13 @@ async def _run_variables_streaming(
     give each leg its own `entity_surfaces` and `entity_words`.
     `per_variable_scope_intakes` gives each leg its posted scope entries and total intent,
     and `None` gives every leg none.
-    `query_text` is supplied only for a single-variable request.
+    `query_text` is supplied only for a single-variable request, and so are `unclaimed`, the
+    stretches of it no reader of the extraction claims (`source_spans.unclaimed_stretches`).
     `unit_text_best_effort` marks every leg's unit text as the raw-text door's typed phrase.
     `door` is the door every leg was posted on (`resolve_variable`).
+    `per_variable_party_readings` gives each leg whose own reading reads contested
+    organisations as its source its second reading (`_stream_one_variable`); `None` gives
+    every leg none.
     """
     overrides = _LegOverrides(
         unique=unique,
@@ -1112,6 +1228,7 @@ async def _run_variables_streaming(
         per_variable_exclusions=per_variable_exclusions,
         per_variable_scope_intakes=per_variable_scope_intakes,
         door=door,
+        per_variable_party_readings=per_variable_party_readings,
     )
 
     queue: asyncio.Queue = asyncio.Queue()
@@ -1147,6 +1264,7 @@ async def _run_variables_streaming(
         stream_observations=stream_observations,
         dropped_qualifier_phrases=dropped_qualifier_phrases,
         query_text=query_text,
+        unclaimed=unclaimed,
         materialise_graph=materialise_graph,
         materialise_sdmx=materialise_sdmx,
         rate_cache=rate_cache,

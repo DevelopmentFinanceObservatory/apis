@@ -45,7 +45,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Literal, NamedTuple, cast
 
 from code_index.composites import table_identity
-from code_index.labels import PRICE_BASIS_AXIS, is_price_basis
+from code_index.labels import PRICE_BASIS_AXIS, is_price_basis, rows_held_codes
 from code_index.members import (
     DatasetFamily,
     DatasetScope,
@@ -107,6 +107,7 @@ from search.engine.errors import (
     RoleSignatureError,
 )
 from search.engine.reading_coverage import covers
+from search.engine.retrieval.code_reads import carried_values, reads_code
 from search.engine.retrieval.facts import (
     FiveTuple,
     _dcids_for,
@@ -145,6 +146,7 @@ from statvar_members import (
 from statvar_members import FiveTuple as MemberFiveTuple
 from statvar_members import (
     MemberEnumerationTooLarge,
+    MemberFamily,
     MemberQueryUnanchored,
     MemberRoleDisagreement,
     MultiValuedConstraint,
@@ -152,7 +154,7 @@ from statvar_members import (
     SlotBinding,
     elect_role_class,
     group_of_arcs,
-    member_digest,
+    member_family_of,
     shared_enumerator,
 )
 
@@ -282,11 +284,19 @@ class MeasureElection:
 def label_for_partition(
     partition: MeasurePartition, labels: Sequence[MeasurePartitionLabel]
 ) -> PartitionLabelMatch | None:
-    """Match authored labels to `partition.values` by subset containment.
+    """Match authored labels to `partition.values` by subset containment, with the codes its
+    members hold (`code_index.labels.rows_held_codes`) where the index carries every member.
 
     The largest match wins; a tie raises `ValueError`.
     """
-    return label_for_pairs(partition.values, labels)
+    index = get_index()
+    rows = [index.statvar_by_dcid(dcid) for dcid in partition.members]
+    held = (
+        rows_held_codes(index, [row.constraint_properties for row in rows if row is not None])
+        if rows and None not in rows
+        else frozenset()
+    )
+    return label_for_pairs(partition.values, labels, held_codes=held)
 
 
 def _measure_axis_value(row: StatVarRow, axis: MeasureAxis) -> str | None:
@@ -815,6 +825,12 @@ def _measure_family_rows(
     sibling five-tuple the named dataset does not publish adds no partition.
     Ignore bound values on declared measure axes so named values cannot hide siblings.
 
+    A row declares only keys the identity of its five-tuple can hold, so every partition is
+    the family an identity minted from it resolves. A row of `query`'s own five-tuple
+    declares only keys in `query.slots`, the row filter `index_family` applies. A row of a
+    sibling five-tuple may also declare the measure axes in `axes`, since
+    `mint_sibling_identity` adds the sibling's own measure-axis slots.
+
     Keep rows whose role set a member of `shape` could declare
     (`shape.declares_shape_roles`); an empty row declaration means
     `observationAbout`. Shapes without declared roles skip this check.
@@ -843,10 +859,14 @@ def _measure_family_rows(
     datasets = frozenset(family.datasets)
     if query.source in datasets:
         datasets = frozenset({query.source})
+    own_keys = query.slots.keys()
+    sibling_keys = own_keys | axis_names
     matched = tuple(
         row
         for row in index.filter(constraints)
         if not datasets.isdisjoint(row.provenances)
+        and row.constraint_properties.keys()
+        <= (own_keys if row_five_tuple(row) == query.five_tuple else sibling_keys)
         and all(
             getattr(IndexMemberFacts(row=row).read_five_tuple(), field) == getattr(target, field)
             for field in free_fields
@@ -2284,12 +2304,12 @@ def _publishing_datasets(shape: ShapeDraft, index: CodeIndex) -> tuple[str, ...]
 @dataclass(frozen=True)
 class StatedMembers:
     """What a Datasets mint of an identity states of its members: how many it serves (the
-    length of its `trace.resolved_stat_vars`) and the digest of the family they come from
-    (`trace.family_member_digest`), `None` when Search cannot name every member of that
-    family."""
+    length of its `trace.resolved_stat_vars`), and the digest and size of the family they
+    come from (`trace.family_member_digest` and `trace.family_member_count`), `None` when
+    Search cannot name every member of that family."""
 
     served_count: int
-    digest: str | None
+    family: MemberFamily | None
 
 
 type WalkKey = tuple[
@@ -2357,7 +2377,7 @@ class WalkedMembers:
             key=key,
             stated=StatedMembers(
                 served_count=len(group.members),
-                digest=member_digest(family) if family is not None else None,
+                family=member_family_of(family) if family is not None else None,
             ),
             asked=asked if asked != key else None,
         )
@@ -2400,7 +2420,7 @@ def stated_members(identity: BaseIdentity, walked: WalkedMembers | None) -> Stat
         if family is None or (served := _index_served_rows(family)) is None:
             return None
         return StatedMembers(
-            served_count=len(served), digest=member_digest(row.dcid for row in family.rows)
+            served_count=len(served), family=member_family_of(row.dcid for row in family.rows)
         )
     if (
         walked is None
@@ -3901,16 +3921,22 @@ def index_carries_shape(shape: ShapeDraft, index: CodeIndex | None = None) -> bo
 def held_codes(shape: ShapeDraft) -> Callable[[QualifierMatch], bool]:
     """Whether `shape`'s family holds a match's value, read once and kept per code.
 
-    A code's family holds it when some member asserts the code's property at the code or
-    one of its descendants. The members are the rows of its family that its part may answer
-    from for a shape the index carries, its recalled members for any other
-    (`five_tuple_member_facts`), read on the first call. A measure value on a five-tuple
-    axis ("grant equivalent" names `measuredProperty` `grantEquivalent`) is held when the
-    shape's five-tuple carries it, and one on a constraint axis ("net" names
-    `nettingBasis` `Net`) as a code is.
+    The members are the rows of its family that its part may answer from for a shape the
+    index carries, its recalled members for any other (`five_tuple_member_facts`), read on
+    the first call for a code of a constraint axis, and they hold a value as
+    `code_reads.reads_code` reads rows: at the code or one of its descendants on its
+    property, and a measure value on a five-tuple axis where the shape's five-tuple carries
+    it.
     """
     index = get_index()
-    constraints: list[dict[str, str]] | None = None
+    axes = carried_values(
+        (),
+        {
+            axis: getattr(shape, field_name)
+            for axis, field_name in _MEASURE_AXIS_DRAFT_FIELDS.items()
+        },
+    )
+    constraints: dict[str, frozenset[str]] | None = None
     held: dict[tuple[str, str], bool] = {}
 
     def holds(match: QualifierMatch) -> bool:
@@ -3918,15 +3944,15 @@ def held_codes(shape: ShapeDraft) -> Callable[[QualifierMatch], bool]:
         key = (match.code_system, match.code_dcid)
         if key in held:
             return held[key]
-        field_name = _MEASURE_AXIS_DRAFT_FIELDS.get(match.code_system)
-        if field_name is not None:
-            held[key] = getattr(shape, field_name) == match.code_dcid
-            return held[key]
-        if constraints is None:
-            member_facts, _index_sourced = five_tuple_member_facts(shape)
-            constraints = [member.read_constraints() for member in member_facts.values()]
-        values = frozenset(index.descendants(match.code_dcid)) | {match.code_dcid}
-        held[key] = any(member.get(match.code_system) in values for member in constraints)
+        carried = axes
+        if match.code_system not in _MEASURE_AXIS_DRAFT_FIELDS:
+            if constraints is None:
+                member_facts, _index_sourced = five_tuple_member_facts(shape)
+                constraints = carried_values(
+                    member.read_constraints() for member in member_facts.values()
+                )
+            carried = constraints
+        held[key] = reads_code(carried, match.code_system, match.code_dcid, index=index)
         return held[key]
 
     return holds
@@ -3990,8 +4016,10 @@ def elect_five_tuple_family(
 
     1. A family reading fewer of the query's phrases than another (`reads_fewer`) leaves.
        `phrases_read` gives the phrases each family's own codes read
-       (`query_phrases_read`). "Imputed multilateral ODA to basic education" reads the
-       sector only on the sectors table, so DAC2a's imputed multilateral total leaves, and
+       (`query_phrases_read`), and on the region path the words its datasets note beside
+       them (`phase_rank_bind._phrases_reader`). "Imputed multilateral ODA to basic
+       education" reads the sector only on the sectors table, so DAC2a's imputed multilateral
+       total leaves, and
        "net disbursements" reads a netting basis only the CRS rows hold, so the debt
        series leaves. The rule holds for every pair, indexed or not. `stated_words` gives
        the query words a family's datasets state of every row it would read. The family

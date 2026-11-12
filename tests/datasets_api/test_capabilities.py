@@ -16,6 +16,7 @@ from datasets_api.capabilities import (
 )
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.version import DATASETS_CAPABILITY_VERSION
+from dfo_analysis_engine import execution_identity
 from dfo_platform.build import build_commit
 from materialise.facets import DEPLOYMENT_FACET_POLICY, DEPLOYMENT_FACET_POLICY_VERSION
 from statvar_members.enumerate import CANDIDATE_CAP
@@ -44,6 +45,16 @@ class TestPublishedCapsEqualEnforcedValues:
         assert caps.pivot_max_output_cells == _SETTINGS.pivot_max_output_cells
         assert caps.groupby_fold_max_rows == _SETTINGS.groupby_fold_max_rows
         assert caps.operation_retention_days == WORKING_TIER_RETENTION.days
+
+    def test_analysis_execution_identity_reads_the_running_engine(self, monkeypatch):
+        # A perturbed engine version proves the field reads the runner's identity, not a copy.
+        monkeypatch.setattr(execution_identity, "ENGINE_VERSION", "9.9.9-perturbed")
+        published = _capabilities().analysis_execution_identity
+        assert published["engine_version"] == "9.9.9-perturbed"
+        assert (
+            execution_identity.ExecutionIdentity(**published).canonical_string()
+            == execution_identity.current_execution_identity().canonical_string()
+        )
 
     def test_operation_envelope_is_active(self):
         assert _capabilities().operation_envelope_active is True
@@ -116,14 +127,12 @@ class TestMintDoorLivenessMatchesWhatActuallyDispatches:
         )
         assert caps.decode_code_systems == ["crsPurpose", "futureCodeSystem"]
 
-    def test_default_facet_policy_liveness_is_false(self):
+    def test_graph_declared_default_facet_policies_are_live(self):
         document = _capabilities()
-        assert document.default_facet_policies_live is False
+        assert document.default_facet_policies_live is True
 
-    def test_default_facet_policy_names_the_deployment_policy_even_though_no_graph_declared_one_is_live(
-        self,
-    ):
-        # The deployment default resolves unbound axes without a graph-declared policy.
+    def test_default_facet_policy_names_the_deployment_fallback(self):
+        # The deployment default resolves an unbound axis the graph declares no default for.
         policy = _capabilities().default_facet_policy
         assert policy is not None
         assert policy.policy == DEPLOYMENT_FACET_POLICY

@@ -36,6 +36,7 @@ from assembler.limits import LABEL_MAX, joined_label
 from assembler.ports import ResolvedFrame
 from assembler.resolve import ResolvedSeries
 from description.steps import Step
+from dfo_platform.columns import PROVENANCE_COLUMN
 from materialise.unit_cells import composed_unit_sides
 
 __all__ = [
@@ -50,7 +51,6 @@ __all__ = [
     "without_unselected_points",
 ]
 
-_PROVENANCE_COLUMN = "provenance"  # frame-grammar's FACET_IDENTITY_COLUMNS names this axis
 _RESERVED_COLUMNS = frozenset(
     {STAT_VAR_COLUMN, TIME_PERIOD_COLUMN, VALUE_COLUMN, UNIT_COLUMN, STATUS_COLUMN}
 )
@@ -67,7 +67,8 @@ class BoundSeries:
     `source_ref` is the raw graph ref or `None`. Minting resolves it to an
     envelope source id. `unit` is `None`, a unit dcid's label (the dcid when
     unlabelled) cut to 200 characters, the resolved `{currency, prices,
-    base_year}` object, or the catalogue's composed unit `{numerator,
+    base_year, deflation_basis}` object (`base_year` and `deflation_basis` at
+    constant prices only), or the catalogue's composed unit `{numerator,
     denominator}`. No unit conversion occurs here.
     """
 
@@ -101,7 +102,7 @@ def bind_series(
         id=series.id,
         label=_label(resolved_frame=resolved_frame, coordinates=coordinates),
         unit=_unit(resolved_frame=resolved_frame, rows=series.rows),
-        source_ref=coordinates.get(_PROVENANCE_COLUMN),
+        source_ref=coordinates.get(PROVENANCE_COLUMN),
         points=tuple(points),
     )
 

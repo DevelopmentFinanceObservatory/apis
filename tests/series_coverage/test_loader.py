@@ -20,7 +20,7 @@ from tests.series_coverage.support import (
 
 _HORIZON = YearHorizon(epoch_year=BUILD_EPOCH_YEAR, mask_words=1)
 _TWO_ROLE = RoleNames(donor="financingProvider", recipient="financingRecipient")
-_FACETS = {"f1": FacetMetadata(provenance_id="provenance/Test")}
+_FACETS = {"f1": FacetMetadata(provenance_id="provenance/Test", observation_period="P1Y")}
 
 
 def _table(*, n_obs: list[int], years: list[int]) -> pa.Table:
@@ -95,3 +95,13 @@ def test_checked_index_raises_when_a_coverage_facet_id_has_no_metadata_entry() -
     table = _table(n_obs=[1], years=[2007])
     with pytest.raises(CoverageArtifactError, match="f1"):
         checked_test_index(table, {"V1": _TWO_ROLE}, {}, horizon=_HORIZON)
+
+
+@pytest.mark.parametrize("period", ["P1M", None], ids=["monthly", "unstated"])
+def test_checked_index_refuses_a_facet_whose_period_the_year_mask_does_not_count(
+    period: str | None,
+) -> None:
+    table = _table(n_obs=[1], years=[2007])
+    facets = {"f1": FacetMetadata(provenance_id="provenance/Test", observation_period=period)}
+    with pytest.raises(CoverageArtifactError, match="observation period"):
+        checked_test_index(table, {"V1": _TWO_ROLE}, facets, horizon=_HORIZON)

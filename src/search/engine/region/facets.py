@@ -207,6 +207,20 @@ def answer_facet_dcids(plan: ReadPlan | None, unit_request: IdentityUnitRequest 
     return dcids
 
 
+def _declared_bases(
+    plan: ReadPlan | None, facets: Sequence[_AxisFacetCandidate]
+) -> dict[str, FacetBasis]:
+    """`declared_default` for each axis whose declared default (`ReadPlan.declared_defaults`)
+    every one of `facets`, the facets `plan` serves, carries."""
+    if plan is None or not facets:
+        return {}
+    return {
+        axis: "declared_default"
+        for axis, policy in plan.declared_defaults.items()
+        if all(candidate_facet_refs(f).get(axis) == policy.resolved_ref for f in facets)
+    }
+
+
 def answer_facets(
     plan: ReadPlan | None,
     labels: Mapping[str, str],
@@ -228,10 +242,14 @@ def answer_facets(
     `labels`, the grounding batch `answer_facet_dcids` fills, and provenance from the origin
     catalogue first (`_bulk_candidate_facet_map`). A converted currency the batch did not
     label takes its display name (`_currency_label`). A unit served by every series takes
-    the ISO 4217 code `currency_of` (`unit.refs.unit_currency`) names for it."""
+    the ISO 4217 code `currency_of` (`unit.refs.unit_currency`) names for it. An axis whose
+    declared default every series serves (`ReadPlan.declared_defaults`) and that
+    `bound_axes` leaves out takes the basis `declared_default`."""
     converted = _requested_unit_ref(unit_request) if unit_request is not None else None
+    facets = series_facets(plan)
+    bound_axes = {**_declared_bases(plan, facets), **bound_axes}
     maps: list[dict[str, SeriesFacetRef]] = []
-    for facet in series_facets(plan):
+    for facet in facets:
         facet_map = _bulk_candidate_facet_map(facet, labels)
         if unit_request is not None:
             facet_map.pop("unit", None)

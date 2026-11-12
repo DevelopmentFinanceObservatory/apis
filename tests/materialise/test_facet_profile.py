@@ -33,7 +33,7 @@ from materialise.facet_profile import (
     ProfileUnavailable,
     read_facet_profiles,
 )
-from materialise.graph import Facet
+from materialise.graph import Facet, FacetDefaultPolicy
 from materialise.window import RequestedWindow
 from origin_catalogue import BASE, DFO, Catalogue, bound_catalogue
 from series_coverage.schema import FacetMetadata, RoleNames
@@ -199,7 +199,8 @@ def _mint(
         request,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
+        enrichment=EnrichmentLookup(graph),
+        parties={},
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -347,6 +348,60 @@ def test_a_role_bearing_profile_defaults_to_what_a_no_place_mint_elects():
     assert profile.places_by_facet == {}
     # Coverage answers a role-bearing variable, so the profile reads no graph facets.
     assert graph.max_bytes == []
+
+
+@pytest.mark.parametrize(
+    ("declared", "default"),
+    [
+        pytest.param(None, ["fFull"], id="ranked"),
+        pytest.param("ONEClimateFinanceWeighting", ["fWeighting"], id="declared"),
+    ],
+)
+def test_a_role_bearing_profile_defaults_to_the_method_the_graph_declares(declared, default):
+    """`fFull` covers three recipients and `fWeighting` one, under one provenance. The
+    ranking elects the broader facet; a declared method elects its facet, as a mint does."""
+    coverage = build_coverage_index(
+        [
+            *((_FLOWS, "fFull", "country/DONOR", r, [2022]) for r in _RECIPIENTS),
+            (_FLOWS, "fWeighting", "country/DONOR", _RECIPIENTS[0], [2022]),
+        ],
+        role_names={_FLOWS: RoleNames(donor="donor", recipient="recipient")},
+        facet_metadata={
+            facet_id: FacetMetadata(
+                provenance_id="provenance/ONEClimateFinance",
+                measurement_method=method,
+                unit="USDollar",
+                observation_period="P1Y",
+            )
+            for facet_id, method in (
+                ("fFull", "OECDClimateFinanceFullValue"),
+                ("fWeighting", "ONEClimateFinanceWeighting"),
+            )
+        },
+    )
+    policies = (
+        {}
+        if declared is None
+        else {
+            (_FLOWS, "measurementMethod"): FacetDefaultPolicy(
+                resolved_ref=declared,
+                policy_node="defaultMeasurementMethod",
+                policy_version="1",
+                selection_reason="graph_declared",
+            )
+        }
+    )
+
+    profile = read_facet_profiles(
+        [_FLOWS],
+        graph=_ProfileGraph(policies=policies),
+        availability=ScopeAvailability(data=[]),
+        coverage=coverage,
+        max_bytes=_MAX_BYTES,
+        deadline=None,
+    )[_FLOWS]
+
+    assert _default_ids(profile) == default
 
 
 # --- P8: the countries fallback is marked ------------------------------------------------

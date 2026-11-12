@@ -66,6 +66,10 @@ from assembler.pipeline.export_component import (
 )
 from assembler.pipeline.stored_revision import read_stored_revision
 from assembler.ports import FRAME_UNAVAILABLE_OUTCOME, FrameRef, FrameUnavailable, RevisionRecord
+from datasets_api.app import classify_datasets_exception
+from datasets_api.exports import resolve_endpoint
+from dfo_platform import ProblemSpec
+from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
 from dfo_platform.codes import bound_registry_endpoint
 from materialise.formats import ExcelIllegalCharacterError
 from presentation_api.config import PRESENTATION_COMPONENTS_TIMEOUT_SECONDS
@@ -74,6 +78,7 @@ from presentation_api.newest_frames import FRESHNESS_WINDOW, NewestPending
 from presentation_api.reply import serialize_read_reply
 from presentation_api.retention import stated_retention
 from presentation_api.routes import SHARES_ENDPOINT
+from presentation_api.stored_intent import replaying_stored_intent
 from presentation_store import (
     Freshness,
     ServedPage,
@@ -209,12 +214,15 @@ def serve_on_slot_frame[T](
     be drawn: it stores a check `stale` on it, due after the failure's wait, so the reads before it serve that frame without drawing
     the failing one. Any other failure stores the slot `stale` on the card's own frame until the
     next check.
-    `card.frame` must be set and `record` must be the card revision.
+    `card.frame` must be set and `record` must be the card revision. `draw` replays the card
+    revision's stored intent, so a refusal of it leaves as `StoredIntentRefused`
+    (`replaying_stored_intent`), since the share's reader cannot change the intent.
 
     Raises:
         Any refusal of `draw` on the card's own frame.
     """
     assert card.frame is not None
+    draw = _replaying(draw)
     if share.mode == "snapshot":
         frame, freshness, checked_at = card.frame, "current", None
         drawn = draw(frame)
@@ -230,7 +238,8 @@ def serve_on_slot_frame[T](
         except Exception as exc:
             if check.frame == card.frame:
                 raise
-            failing, wait = check.frame, _transient_wait(exc)
+            refusal = _drawing_refusal(exc)
+            failing, wait = check.frame, _transient_wait(exc, refusal)
             # The newer frame does not fit the card's intent, or cannot be read. A permanent
             # failure serves the card's own frame, which its share pinned, until the next check;
             # a transient one serves the last good frame until the failure's wait.
@@ -253,6 +262,7 @@ def serve_on_slot_frame[T](
                 check.frame,
                 "" if wait is None else f" for {wait:g} s",
                 exc_info=True,
+                extra={JSON_FIELDS_ATTR: _refusal_fields(refusal)},
             )
             try:
                 drawn = draw(check.frame)
@@ -484,11 +494,21 @@ def _fetchable(retention: Mapping[str, object] | None, *, now: datetime) -> bool
     return isinstance(held_until, str) and datetime.fromisoformat(held_until) > now
 
 
-def _transient_wait(exc: Exception) -> float | None:
+def _replaying[T](draw: Callable[[FrameRef], T]) -> Callable[[FrameRef], T]:
+    """`draw`, run inside `replaying_stored_intent`."""
+
+    def replayed(frame: FrameRef) -> T:
+        with replaying_stored_intent():
+            return draw(frame)
+
+    return replayed
+
+
+def _transient_wait(exc: Exception, refusal: ProblemSpec | None) -> float | None:
     """The seconds after which a later read may draw where `exc` refused with nothing done, or
     `None` when it may not: a `FrameUnavailable` whose reason is transient
     (`FrameOutcome.transient`) waits its `retry_after_s`, or `_TRANSIENT_WAIT_S` when it names
-    none, and any other failure the components door classifies as retryable waits its
+    none, and any other failure whose `refusal` (`_drawing_refusal`) is retryable waits its
     `Retry-After`, at least `_TRANSIENT_WAIT_S` so a one-second header cannot drive a recheck
     every second. Each wait is held between `_MIN_RETRY_S` and `FRESHNESS_WINDOW`."""
     if isinstance(exc, FrameUnavailable):
@@ -496,14 +516,51 @@ def _transient_wait(exc: Exception) -> float | None:
             return None
         wait = exc.retry_after_s if exc.retry_after_s is not None else _TRANSIENT_WAIT_S
     else:
-        # The draw runs off the request's task, where no registry endpoint is bound.
-        with bound_registry_endpoint(SHARES_ENDPOINT):
-            spec = classify_components_exception(exc)
-        if spec is None or not spec.retryable:
+        if refusal is None or not refusal.retryable:
             return None
-        header = (spec.headers or {}).get("Retry-After", "")
+        header = (refusal.headers or {}).get("Retry-After", "")
         wait = max(float(header) if header.isdigit() else 0.0, _TRANSIENT_WAIT_S)
     return min(max(wait, _MIN_RETRY_S), FRESHNESS_WINDOW.total_seconds())
+
+
+def _drawing_refusal(exc: Exception) -> ProblemSpec | None:
+    """The refusal `exc` a draw raised, as the components door classifies it, or None for a
+    failure no refusal names. A classifier that raises is logged and reads as None, so the
+    slot still serves a stale frame."""
+    try:
+        # The draw runs off the request's task, where no registry endpoint is bound.
+        with bound_registry_endpoint(SHARES_ENDPOINT):
+            return classify_components_exception(exc)
+    except Exception:
+        logger.exception("Cannot classify why a draw failed: %s", type(exc).__name__)
+        return None
+
+
+def _newest_refusal_fields(exc: Exception) -> dict[str, str]:
+    """The log fields naming the refusal `exc` a newer-data check raised, as the Datasets route
+    that raises it classifies it (`datasets_api.exports.resolve_endpoint`): `code`, the
+    analysis refusal's own code for a derived frame's run, such as `unit_not_present` or
+    `cross_frame_unit_mismatch`. Empty for a failure no Datasets route names, and for one
+    the classifier itself fails on, which is logged, so the slot still serves its last
+    frame."""
+    try:
+        endpoint = resolve_endpoint(exc)
+        if endpoint is None:
+            return {}
+        with bound_registry_endpoint(endpoint):
+            return _refusal_fields(classify_datasets_exception(exc))
+    except Exception:
+        logger.exception("Cannot classify why newer data was not read: %s", type(exc).__name__)
+        return {}
+
+
+def _refusal_fields(spec: ProblemSpec | None) -> dict[str, str]:
+    if spec is None:
+        return {}
+    fields = {"code": spec.code}
+    if spec.constraint_id is not None:
+        fields["constraint_id"] = spec.constraint_id
+    return fields
 
 
 def _live_check(
@@ -564,10 +621,16 @@ def _check(
         return SlotCheck(frame=last, freshness="stale", checked_at=now, next_check_at=due)
     try:
         answer = deps.newest.newest(frame, rendering=rendering)
-    except Exception:
+    except Exception as exc:
         # Every refusal and failure of the refresh or the run leaves the slot on its last frame,
         # which the reply states as stale, until the next check.
-        logger.warning("Share %s newer-data check of %s failed", label, frame, exc_info=True)
+        logger.warning(
+            "Share %s newer-data check of %s failed",
+            label,
+            frame,
+            exc_info=True,
+            extra={JSON_FIELDS_ATTR: _newest_refusal_fields(exc)},
+        )
         return SlotCheck(frame=last, freshness="stale", checked_at=now, next_check_at=due)
     if isinstance(answer, NewestPending):
         retry = min(max(answer.retry_after_s, _MIN_RETRY_S), FRESHNESS_WINDOW.total_seconds())

@@ -24,6 +24,7 @@ from code_index.types import (
     MeasureAxis,
     MeasureClassDeclaration,
     MeasurePartitionLabel,
+    NotedWord,
     PartlyStatedValue,
     PartyClass,
     PartyKind,
@@ -59,6 +60,11 @@ class CodeSystemConfig:
     the lowercase words naming a distinction of this axis no code expresses
     (`CodeSystemDeclaration.no_vocabulary_terms`). `house_case` is the kind of question an
     admitted code makes a part (`CodeSystemDeclaration.house_case`).
+
+    `classification_codes` says whether the enum's values carry a `classificationCode` arc,
+    the publisher's code. The export refuses a value that breaks the declaration either way,
+    so a system's rows all carry a code (`CodeRow.code`) or none do. The climate policy
+    objectives are DFO's own values and no publisher codes them.
     """
 
     code_system: str
@@ -72,6 +78,7 @@ class CodeSystemConfig:
     default: DeclaredDefault | None = None
     no_vocabulary_terms: tuple[str, ...] = ()
     house_case: HouseDefaultCase | None = None
+    classification_codes: bool = True
 
 
 CRS = "provenance/OECDCreditorReportingSystem"
@@ -80,6 +87,9 @@ DAC1 = "provenance/OECDDAC1"
 DAC2A = "provenance/OECDDAC2A"
 _DAC2B = "provenance/OECDDAC2B"
 _IDS = "provenance/WorldBankInternationalDebtStatistics"
+_ONE_CLIMATE_FINANCE = "provenance/ONEClimateFinance"
+_OECD_CRDF = "provenance/OECDClimateRelatedDevelopmentFinance"
+_UNFCCC_BTR = "provenance/UNFCCCBiennialTransparencyReports"
 
 # Codes only one dataset carries, which the scope conventions name through these constants.
 CRS_PURPOSE_HEALTH = "CRSPurposeCode120"
@@ -92,6 +102,7 @@ DAC1_BILATERAL_ODA = "DAC1AidType1015"
 DAC1_MULTILATERAL_ODA = "DAC1AidType2000"
 DAC2A_TOTAL_ODA = "DAC2aAidType206"
 DAC2A_IMPUTED_MULTILATERAL_ODA = "DAC2aAidType106"
+CLIMATE_FINANCE = "ClimateChangePolicyObjective"
 
 # The stacked composites of a donor's bilateral flows and its imputed share of multilateral
 # spending (`COMPOSITES`): one over the CRS and ONE's imputed multilateral table, one over
@@ -231,6 +242,32 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
             ),
         ),
     ),
+    # Every climate finance StatVar states its objective: the total
+    # (`ClimateChangePolicyObjective`) or one of the parts under it, adaptation only,
+    # mitigation only, cross-cutting and unspecified, which add up to it. A total holds its
+    # parts, so siblings neither exclude the parent nor sum in a rollup beside it. DFO mints
+    # the objectives, so no publisher codes them.
+    CodeSystemConfig(
+        code_system="climatePolicyObjective",
+        enum_dcid="ClimateChangePolicyObjectiveEnum",
+        expected_hierarchical=True,
+        disjoint_from_children=False,
+        summable=False,
+        absent_reading="not_declared",
+        declared_by_every_statvar_of=(_ONE_CLIMATE_FINANCE, _OECD_CRDF, _UNFCCC_BTR),
+        plain_name="climate objective",
+        # A climate finance question that names no objective asks about the total.
+        default=DeclaredDefault(
+            code=CLIMATE_FINANCE,
+            when_bound_under=(),
+            when_open=True,
+            note=(
+                "No climate objective was named, so the answer covers all climate finance,"
+                " whatever its objective."
+            ),
+        ),
+        classification_codes=False,
+    ),
 )
 
 
@@ -258,7 +295,26 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
 # (`DatasetDeclaration.party_words`): their provider `DACMultilaterals` is the DAC's published
 # total of the multilateral organisations' own outflows, so a DAC2a or DAC2b `amount` row to a
 # country is multilateral where its provider is that total. DAC1, whose aid type 2000 codes the
-# word as donors' contributions, the CRS and the imputed table name no party.
+# word as donors' contributions, the CRS and the imputed table name no party. The three
+# climate finance tables declare `climatePolicyObjective`, so they form families of their own
+# and their ranks order them against each other alone. ONE Data Climate Finance answers a
+# climate question that names no table. The OECD's CRDF figures are a second facet of ONE
+# Data's commitment series, and the UNFCCC reports give each party's own totals by its own
+# method, so each answers only a question that names it. ONE Data Climate Finance and the CRDF
+# count every official provider's climate finance, other official flows as well as ODA, so
+# "aid", "ODA" and "official development assistance" name their rows loosely. A part
+# answering from either reads the word and says the figure is wider than aid alone
+# (`DatasetDeclaration.noted_words`). A UNFCCC report totals what its party counts by its own
+# method, which can reach past official finance, so no one note holds and the words stay
+# unread there.
+_AID_WORDS = ("aid", "oda", "official development assistance")
+
+
+def _aid_notes(note: str) -> tuple[NotedWord, ...]:
+    """`note` on each word a question uses for official aid (`_AID_WORDS`)."""
+    return tuple(NotedWord(word=word, note=note) for word in _AID_WORDS)
+
+
 _MULTILATERAL_PROVIDER = PartyWord(
     word="multilateral",
     measured_property="amount",
@@ -349,6 +405,51 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
             ),
         ),
         party_words=(_MULTILATERAL_PROVIDER,),
+    ),
+    DatasetDeclaration(
+        provenance=_ONE_CLIMATE_FINANCE,
+        label="ONE Data Climate Finance",
+        description=(
+            "Climate finance each provider committed and paid out, by recipient, as ONE Data"
+            " estimates it from the OECD's CRS and climate-related development finance data."
+        ),
+        opt_in=False,
+        absent_observation="unknown",
+        account="provider",
+        rank=50,
+        noted_words=_aid_notes(
+            "ONE Data Climate Finance counts all official climate finance, other official"
+            " flows as well as ODA, so the figure is wider than aid alone."
+        ),
+    ),
+    DatasetDeclaration(
+        provenance=_OECD_CRDF,
+        label="OECD Climate-related Development Finance",
+        description=(
+            "Climate-related development finance commitments the OECD publishes by provider"
+            " and recipient, counting every Rio-marked project at full value."
+        ),
+        opt_in=True,
+        absent_observation="unknown",
+        account="provider",
+        rank=60,
+        noted_words=_aid_notes(
+            "The OECD's climate-related development finance counts all official climate"
+            " finance, other official flows as well as ODA, so the figure is wider than aid"
+            " alone."
+        ),
+    ),
+    DatasetDeclaration(
+        provenance=_UNFCCC_BTR,
+        label="UNFCCC Biennial Transparency Reports",
+        description=(
+            "Bilateral climate finance each party reports to the UNFCCC in its Biennial"
+            " Transparency Report, as totals by party without a breakdown by recipient."
+        ),
+        opt_in=True,
+        absent_observation="unknown",
+        account="provider",
+        rank=70,
     ),
 )
 
@@ -520,10 +621,10 @@ PARTY_KIND_OVERRIDES: Mapping[str, KindOverride] = {
     "IMFResilienceAndSustainabilityTrust": KindOverride(
         "total",
         "InternationalMonetaryFund in DAC2B: equal to the dollar in gross disbursements in the "
-        "one year it reports (Kenya 2024: 180.2m); a party in the CRS, which never publishes "
-        "the IMF",
+        "one year it reports (Kenya 2024: 180.2m); a party in the CRS and the climate finance "
+        "tables, which never publish the IMF",
         datasets=frozenset({_DAC2B}),
-        reviewed=frozenset({CRS, _DAC2B}),
+        reviewed=frozenset({CRS, _DAC2B, _ONE_CLIMATE_FINANCE, _OECD_CRDF}),
     ),
     "InterAmericanDevelopmentBankGroup": KindOverride(
         "total", "InterAmericanDevelopmentBank plus IDBInvest"
@@ -546,11 +647,14 @@ class TotalGroup:
     With `sums_members` true the total equals the sum of the group's members plus
     `residuals`, the residuals it counts beside them, sorted. With `sums_members` false the
     total is the figure the source publishes for the group, which can differ from that sum,
-    and it counts no residuals."""
+    and it counts no residuals. With `declares_providers` true a dataset publishing the total
+    declares each member of the group a provider, so search reads a member named without a
+    direction as the provider on that dataset (`search.engine.region.undirected`)."""
 
     group: str
     residuals: tuple[str, ...] = ()
     sums_members: bool = True
+    declares_providers: bool = False
 
 
 def _unallocated(*regions: str) -> tuple[str, ...]:
@@ -575,7 +679,10 @@ def _unallocated(*regions: str) -> tuple[str, ...]:
 # Africa and South and Central Asia, but they are parties, not residuals, and their amounts stop
 # before 1994, so no row counts them. Totals that hold no group: DAC's lower and upper middle
 # income and small island states totals differ from the sums over the resolver's members, and
-# Northern America has no amounts after 1996.
+# Northern America has no amounts after 1996. DAC countries, total, alone declares providers
+# (`TotalGroup.declares_providers`). The non-DAC providers' total and the G7's declare none, so
+# those providers fall to the coverage rule: the non-DAC group holds major recipients such as
+# Iraq and Timor-Leste, whose question named without a direction is about the aid they receive.
 TOTAL_GROUPS: Mapping[str, TotalGroup] = {
     "DACAfrica": TotalGroup(
         "africa",
@@ -619,7 +726,7 @@ TOTAL_GROUPS: Mapping[str, TotalGroup] = {
         _unallocated("Caribbean", "CaribbeanAndCentralAmerica", "CentralAmerica"),
     ),
     "DACCentralAmerica": TotalGroup("CentralAmerica", _unallocated("CentralAmerica")),
-    "DACCountriesTotal": TotalGroup("groups/OECD.DAC", sums_members=False),
+    "DACCountriesTotal": TotalGroup("groups/OECD.DAC", sums_members=False, declares_providers=True),
     "DACEasternAfrica": TotalGroup(
         "groups/OECD.DAC.Region.EasternAfrica", _unallocated("EasternAfrica")
     ),
@@ -927,16 +1034,24 @@ class MeasureValueText:
     lookup. `amount` keeps a display label but skips text indexing because queries use it as a
     determiner. `same_reading_as` names the canonical value of an alias dcid. Query text naming
     the alias resolves to the canonical value, so authored synonyms belong on the canonical one.
+    `named_by` are further texts that name the value wherever a text holds one as a run of
+    words, beside its whole names, when Search asks which basis values a phrase names
+    (`qualifier_match.measure_values_named`). The qualifier matcher reads no `named_by` text,
+    so one takes no span from a code that reads it.
     """
 
     label: str | None = None
     synonyms: tuple[str, ...] = ()
     matchable: bool = True
     same_reading_as: str | None = None
+    named_by: tuple[str, ...] = ()
 
 
 # Text overrides merge into measure rows.
 # Unmapped dcids keep graph names and aliases, and stay matchable.
+# A text names a value when it holds a whole name of the value (its label, a synonym or a
+# graph name) or one of its `named_by` texts as a run of words
+# (`qualifier_match.measure_values_named`).
 MEASURE_VALUE_TEXT: Mapping[str, MeasureValueText] = {
     "Nominal": MeasureValueText(
         label="nominal",
@@ -960,10 +1075,18 @@ MEASURE_VALUE_TEXT: Mapping[str, MeasureValueText] = {
     "InflationAdjusted": MeasureValueText(label="inflation adjusted", same_reading_as="RealValue"),
     "PurchasingPowerParity": MeasureValueText(label="purchasing power parity", synonyms=("PPP",)),
     "amount": MeasureValueText(matchable=False),
-    # These phrases name the imputed tables' measure as "grant equivalent" names CRS's. The
-    # bare verb would read in any question using "attributed to" ("deaths attributed to air
-    # pollution") and warn that it was not applied.
-    "attributedAmount": MeasureValueText(synonyms=("attributed aid", "attributed to donors")),
+    # "Mobilised" alone names private finance mobilised ("finance mobilised by guarantees").
+    "amountMobilised": MeasureValueText(named_by=("mobilised",)),
+    # These phrases name the imputed tables' measure as "grant equivalent" names CRS's. As a
+    # synonym the bare verb would read in any question using "attributed to" ("deaths
+    # attributed to air pollution") and warn that it was not applied. "Imputed multilateral"
+    # is the name DAC2a's imputed multilateral ODA and the imputed multilateral commitments
+    # give the measure; as a synonym it would take "imputed" from DAC2aAidType106 in "imputed
+    # multilateral aid". Both name the value only for the declared basis preference.
+    "attributedAmount": MeasureValueText(
+        synonyms=("attributed aid", "attributed to donors"),
+        named_by=("attributed", "imputed multilateral"),
+    ),
 }
 
 # Values exported whether or not a CRS StatVar row carries them. The price bases below are
@@ -993,6 +1116,51 @@ CODE_SYNONYMS: Mapping[str, tuple[str, ...]] = {
     "CRSTypeOfFlow37": ("other private flows",),
     "DAC1AidType1820": ("refugee costs in donor countries",),
     "DAC2aAidType106": ("imputed",),
+    # The climate tables' measure labels name the total ("climate finance commitments"), so
+    # the heading's noun is also a query's. "climate finance" and bare "climate" ("Germany
+    # climate commitments") read it. Matching is per vocabulary, so the words read nothing on
+    # a CRS or DAC shape, and "investment climate" stays the longer CRS purpose span.
+    "ClimateChangePolicyObjective": ("climate finance", "climate"),
+    # ONE Data counts a project marked for both objectives once, as cross-cutting, so
+    # "adaptation" reads the adaptation-only part and the heading's short name says so. The
+    # phrases holding "climate" or "finance" name the objective in any code system
+    # (`CODE_SYNONYMS_WITHIN_VOCABULARY`).
+    "AdaptationOnlyClimateChangePolicyObjective": (
+        "adaptation",
+        "climate adaptation",
+        "adaptation finance",
+    ),
+    "MitigationOnlyClimateChangePolicyObjective": (
+        "mitigation",
+        "climate mitigation",
+        "mitigation finance",
+    ),
+    "CrossCuttingClimateChangePolicyObjective": ("cross-cutting",),
+}
+
+# Code synonyms that name their code only on a shape of its own code system. Such a shape
+# reads them as it reads any synonym, so "Germany climate commitments" binds the climate total
+# and "climate finance for adaptation" the adaptation-only part. Read in every code system
+# together they name nothing (`qualifier_match.cross_vocabulary_codes`), so recall adds no
+# family of a recalled five-tuple for them (`clients.graph.with_reading_families`): beside a
+# CRS question the bare words carry other senses, as in "disaster risk mitigation" (CRS
+# purpose 43060) and "social mitigation of HIV and AIDS" (a CRS purpose label). The climate
+# phrases among `CODE_SYNONYMS` ("climate finance", "adaptation finance", "climate
+# mitigation") name the objective there and still bring its family in.
+CODE_SYNONYMS_WITHIN_VOCABULARY: Mapping[str, frozenset[str]] = {
+    "ClimateChangePolicyObjective": frozenset({"climate"}),
+    "AdaptationOnlyClimateChangePolicyObjective": frozenset({"adaptation"}),
+    "MitigationOnlyClimateChangePolicyObjective": frozenset({"mitigation"}),
+}
+
+# Names a question uses for a code that no matcher reads, exported as `CodeRow.also_called`.
+# Only the closest-match test reads them (`search.engine.closest_match`): "aid" answered with
+# DAC1's or DAC2a's bound ODA code names the measure asked. As a code synonym "aid" would bind
+# ODA for any phrase holding the word, and as a declared default's `when_named` it would drive
+# the binding of those aid types. CRS ODA needs no entry: its default's `when_named` is "aid".
+CODE_ALSO_CALLED: Mapping[str, tuple[str, ...]] = {
+    DAC1_TOTAL_ODA: ("aid",),
+    "DAC2aAidType206": ("aid",),
 }
 
 # Code synonyms `_strip_measure_words` keeps whole although a measure value's words sit inside
@@ -1098,6 +1266,12 @@ CODE_SHORT_NAMES: Mapping[str, str] = {
     "CRSTypeOfFlow40": "non-flow indicators",
     "CRSTypeOfFlow50": "other flows",
     "CRSTypeOfFlow60": "private sector instruments",
+    # A climate objective reads after "for" in a heading ("climate finance commitments for
+    # adaptation only"). The total names no part, and the climate label names it.
+    "AdaptationOnlyClimateChangePolicyObjective": "adaptation only",
+    "MitigationOnlyClimateChangePolicyObjective": "mitigation only",
+    "CrossCuttingClimateChangePolicyObjective": "adaptation and mitigation",
+    "UnspecifiedClimateChangePolicyObjective": "an unspecified objective",
     # Finance types read after "as" in a heading ("to Nigeria as grants").
     "CRSTypeOfFinance0": "non-flow items",
     "CRSTypeOfFinance1": "gross national income",
@@ -1181,7 +1355,67 @@ _MOBILISED = (
     "Finance from private sources that official development finance interventions, such as "
     "guarantees, syndicated loans and direct investment, mobilise for a project"
 )
+_CLIMATE = (("climatePolicyObjective", CLIMATE_FINANCE),)
+# The climate labels match every climate table, so their definitions leave out how much of a
+# project each one counts; the dataset descriptions state it.
+_CLIMATE_TARGET = "for activities that target climate change adaptation or mitigation"
+_ATTRIBUTED_CLIMATE = (
+    "A provider's share of the climate finance that development banks and climate funds {verb}, "
+    "in proportion to its core contributions to them"
+)
 MEASURE_PARTITION_LABELS: tuple[MeasurePartitionLabel, ...] = (
+    # The climate finance tables share partitions with the CRS, DAC and imputed tables, so
+    # their labels key on the objective as well (`MeasurePartitionLabel.codes`) and name its
+    # total. A part reads after the label ("climate finance commitments for adaptation only").
+    MeasurePartitionLabel(
+        axis_values=(
+            ("financialObligationType", "Commitment"),
+            ("measuredProperty", "amount"),
+            ("populationType", "FinancialObligation"),
+        ),
+        codes=_CLIMATE,
+        label="climate finance commitments",
+        named_values=_CLIMATE,
+        definition=f"Firm written obligations to give resources to a recipient {_CLIMATE_TARGET}.",
+    ),
+    MeasurePartitionLabel(
+        axis_values=(
+            ("financialFlowType", "Disbursement"),
+            ("measuredProperty", "amount"),
+            ("nettingBasis", "Gross"),
+            ("populationType", "FinancialFlow"),
+        ),
+        codes=_CLIMATE,
+        label="climate finance gross disbursements",
+        named_values=_CLIMATE,
+        definition=(
+            f"The amount released to recipients in a period {_CLIMATE_TARGET}, before any "
+            "repayments are subtracted."
+        ),
+    ),
+    MeasurePartitionLabel(
+        axis_values=(
+            ("financialObligationType", "Commitment"),
+            ("measuredProperty", "attributedAmount"),
+            ("populationType", "FinancialObligation"),
+        ),
+        codes=_CLIMATE,
+        label="attributed climate finance commitments",
+        named_values=_CLIMATE,
+        definition=f"{_ATTRIBUTED_CLIMATE.format(verb='commit')}.",
+    ),
+    MeasurePartitionLabel(
+        axis_values=(
+            ("financialFlowType", "Disbursement"),
+            ("measuredProperty", "attributedAmount"),
+            ("nettingBasis", "Gross"),
+            ("populationType", "FinancialFlow"),
+        ),
+        codes=_CLIMATE,
+        label="attributed climate finance gross disbursements",
+        named_values=_CLIMATE,
+        definition=f"{_ATTRIBUTED_CLIMATE.format(verb='disburse')}, before any repayments.",
+    ),
     MeasurePartitionLabel(
         axis_values=(
             ("financialObligationType", "Commitment"),
@@ -1254,6 +1488,19 @@ MEASURE_PARTITION_LABELS: tuple[MeasurePartitionLabel, ...] = (
             "recipients in proportion to where those agencies disbursed their funds that year."
         ),
     ),
+    # Only ONE Data Climate Finance holds this partition, under the climate label below.
+    MeasurePartitionLabel(
+        axis_values=(
+            ("financialObligationType", "Commitment"),
+            ("measuredProperty", "attributedAmount"),
+            ("populationType", "FinancialObligation"),
+        ),
+        label="imputed multilateral commitments",
+        definition=(
+            "A provider's share of what multilateral agencies commit to recipients, in "
+            "proportion to its core contributions to those agencies."
+        ),
+    ),
     MeasurePartitionLabel(
         axis_values=(
             ("financialFlowType", "Disbursement"),
@@ -1312,8 +1559,15 @@ MEASURE_PARTITION_LABELS: tuple[MeasurePartitionLabel, ...] = (
 # Nouns for IDS and WEO measures, which no measure partition covers. A heading would
 # otherwise read the graph name, which carries the unit inside it: "Debt service on
 # external debt (current US$)". Each entry is keyed on exact five-tuple and constraint
-# values, read on the dev graph, and matched with `label_for_pairs`. A noun never names
-# the price basis (`measurementQualifier`) or the denominator, which belong to the unit.
+# values, read on the dev graph, and matched with `label_for_pairs`. A heading or card matches
+# nouns on its measure's pairs less the price basis (`measurementQualifier`) and the
+# denominator, which its unit states; a dataset description matches them with the price basis
+# (`description.vocabulary.Vocabulary.measure`). A noun keyed on a price basis, on
+# `measurementQualifier` or on a constraint such as `currencyConversionBasis`, has a name that
+# states the basis ("GNI, PPP", "GDP, PPP"), and its names that state none name it only in a
+# request that names the basis too (`search.engine.qualifier_match.declared_measures_named`):
+# "GDP" answered at purchasing power parity departs from the question, and "GDP per capita
+# PPP" holds.
 # No entry keys on `financialFlowType = Disbursement` alone, since CRS disbursements carry
 # that value and take their partition's label (`_verify_measure_nouns`).
 #
@@ -1341,10 +1595,17 @@ _GDP_DEFINITION = (
     "The total income earned through the production of goods and services in an economy "
     "during a period, measured by what is spent, earned or produced."
 )
+# The graph names GDP series "gross domestic product" ("Nominal gross domestic product"), and
+# a heading reads that name where no noun covers the series' pairs, so "GDP" names it.
+_GDP_ALSO_CALLED = ("gross domestic product",)
 
 
-def _noun(label: str, *pairs: tuple[str, str], definition: str) -> MeasurePartitionLabel:
-    return MeasurePartitionLabel(axis_values=pairs, label=label, definition=definition)
+def _noun(
+    label: str, *pairs: tuple[str, str], definition: str, also_called: tuple[str, ...] = ()
+) -> MeasurePartitionLabel:
+    return MeasurePartitionLabel(
+        axis_values=pairs, label=label, definition=definition, also_called=also_called
+    )
 
 
 def _ids(
@@ -1513,6 +1774,7 @@ MEASURE_NOUNS: tuple[MeasurePartitionLabel, ...] = (
         *_GDP_BASIS,
         # NGDPD
         definition=_GDP_DEFINITION,
+        also_called=_GDP_ALSO_CALLED,
     ),
     _noun(
         "GDP",
@@ -1521,8 +1783,10 @@ MEASURE_NOUNS: tuple[MeasurePartitionLabel, ...] = (
         (_STAT_TYPE, "measuredValue"),
         *_GDP_BASIS,
         ("currencyConversionBasis", "PurchasingPowerParityRate"),
-        # PPPGDP
+        # PPPGDP. A heading names the price basis in its unit ("GDP in PPP international
+        # dollars"), so the label leaves it out and another name states it.
         definition=_GDP_DEFINITION,
+        also_called=("GDP, PPP", *_GDP_ALSO_CALLED),
     ),
     _noun(
         "output gap",
@@ -1532,6 +1796,21 @@ MEASURE_NOUNS: tuple[MeasurePartitionLabel, ...] = (
         *_GDP_BASIS,
         # NGAP_NPGDP
         definition="The difference between an economy's actual output and its potential output.",
+    ),
+    _noun(
+        "potential GDP",
+        (_POPULATION, "EconomicProduction"),
+        (_PROPERTY, "valueAdded"),
+        (_STAT_TYPE, "measuredValue"),
+        *_GDP_BASIS,
+        ("cyclicalAdjustment", "CyclicallyAdjusted"),
+        # The base of NGAP_NPGDP, which the graph names "Potential gross domestic product
+        # (GDP)".
+        definition=(
+            "The output an economy can produce with its resources fully employed and "
+            "inflation steady."
+        ),
+        also_called=("potential gross domestic product",),
     ),
     _noun(
         "gross national savings",
@@ -1580,6 +1859,7 @@ MEASURE_NOUNS: tuple[MeasurePartitionLabel, ...] = (
         ("activitySource", "GrossDomesticProduction"),
         # NY.GDP.MKTP.CD
         definition=_GDP_DEFINITION,
+        also_called=_GDP_ALSO_CALLED,
     ),
     _noun(
         "GDP growth",
@@ -1589,6 +1869,34 @@ MEASURE_NOUNS: tuple[MeasurePartitionLabel, ...] = (
         ("activitySource", "GrossDomesticProduction"),
         # NY.GDP.MKTP.KD.ZG: "the percentage change over each previous year"
         definition="The change in gross domestic product from the year before, as a percentage.",
+    ),
+    # The graph holds the World Bank's gross national income only at purchasing power parity
+    # (`Amount_EconomicActivity_GrossNationalIncome_PurchasingPowerParity` and its per capita
+    # twin). A description matches the twins alike, since its measure pairs carry no
+    # denominator, so the definition names the measure and no aggregate.
+    _noun(
+        "GNI, PPP",
+        (_POPULATION, "EconomicActivity"),
+        (_PROPERTY, "amount"),
+        (_STAT_TYPE, "measuredValue"),
+        ("activitySource", "GrossNationalIncome"),
+        ("measurementQualifier", "PurchasingPowerParity"),
+        # NY.GNP.MKTP.PP.CD: "gross national income (GNI) converted to international dollars
+        # using purchasing power parity rates"
+        definition=(
+            "Gross national income converted to international dollars at purchasing power "
+            "parity rates, at which a dollar buys the same goods in every economy."
+        ),
+        also_called=("gross national income",),
+    ),
+    _noun(
+        "GNI growth",
+        (_POPULATION, "EconomicActivity"),
+        (_PROPERTY, "amount"),
+        (_STAT_TYPE, "growthRate"),
+        ("activitySource", "GrossNationalIncome"),
+        # NY.GNP.MKTP.KD.ZG: "annual percentage growth rate of GNI"
+        definition="The change in gross national income from the year before, as a percentage.",
     ),
     _noun(
         "health expenditure",

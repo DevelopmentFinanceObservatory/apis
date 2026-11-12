@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
 import pytest
 from fastapi import APIRouter, Request
@@ -41,7 +42,13 @@ def _admit(request: Request) -> ProblemSpec | None:
     return refused(_CODE, retryable=False, log="exemplar", log_level=logging.WARNING)
 
 
-def _client(**overrides: object) -> TestClient:
+def _keep(spec: ProblemSpec) -> ProblemSpec:
+    return spec
+
+
+def _client(
+    *, finish: Callable[[ProblemSpec], ProblemSpec] = _keep, **overrides: object
+) -> TestClient:
     router = APIRouter()
 
     @router.get("/api/t/a")
@@ -77,6 +84,7 @@ def _client(**overrides: object) -> TestClient:
         classify=overrides.get("classify", classify_refusal),
         exception_types=(_Unsupported,),
         middleware=(_admit,),
+        finish=finish,
         registry_endpoints=overrides.get(
             "registry_endpoints",
             {
@@ -203,3 +211,53 @@ def test_registered_status_reads_the_bound_endpoint_or_unbound_the_one_status_ov
         else:
             with pytest.raises(expected):
                 registered_status(_CODE)
+
+
+def _state_endpoint(spec: ProblemSpec) -> ProblemSpec:
+    """Writes the endpoint bound while `finish` runs into a member the body carries."""
+    return spec._replace(detail=f"bound:{codes.bound_endpoint()}")
+
+
+@pytest.mark.parametrize(
+    ("path", "stated"),
+    [
+        pytest.param("/api/t/a", "bound:t.a", id="classified"),
+        pytest.param("/api/t/a/admitted", "bound:t.a", id="admission"),
+        pytest.param("/api/t/boom", "bound:None", id="platform-default"),
+        pytest.param("/api/t/nowhere", "bound:None", id="routing-404"),
+    ],
+)
+def test_finish_runs_on_every_refusal_the_surface_answers(path: str, stated: str) -> None:
+    """`finish` decides a member for each refusal, the platform's default included, with the
+    route's registry endpoint bound."""
+    response = _client(finish=_state_endpoint).get(path)
+
+    assert response.json()["detail"] == stated
+
+
+def test_finish_runs_on_the_platforms_answer_to_an_unregistered_code() -> None:
+    """A surface code its catalogue lacks renders the platform's `internal_error`, which
+    `finish` decides too."""
+
+    def classify(exc: BaseException) -> ProblemSpec | None:
+        return ProblemSpec(status=500, code="no_such_code", retryable=False)
+
+    response = _client(classify=classify, finish=_state_endpoint).get("/api/t/a")
+
+    body = response.json()
+    assert (body["code"], body["detail"]) == ("internal_error", "bound:t.a")
+
+
+def _finish_raises(spec: ProblemSpec) -> ProblemSpec:
+    raise KeyError(spec.code)
+
+
+def test_a_finish_that_raises_renders_the_refusal_as_classified(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.ERROR):
+        response = _client(finish=_finish_raises).get("/api/t/a")
+
+    assert (response.status_code, response.json()["code"]) == (422, _CODE)
+    assert "retry_mode" not in response.json()
+    assert any("finish() raised" in record.getMessage() for record in caplog.records)

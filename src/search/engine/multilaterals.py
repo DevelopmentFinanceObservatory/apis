@@ -5,7 +5,8 @@ A donor's total that counts its core contributions to the multilaterals (DAC1's 
 already holds what a multilateral then spends from them, so a caller summing the two counts
 the money twice. Search states which parties are multilaterals (`ResolvedEntity.multilateral`)
 and whether a donor population can hold one (`EntityGroup.holds_multilaterals`,
-`RoleAxisFact.holds_multilaterals`).
+`RoleAxisFact.holds_multilaterals`). Each bound party's kind and class come with its marker
+(`party_facts`).
 
 A multilateral is an official party the graph types `Organization`: the organisation records
 the entity resolver exports from the graph (`entity_resolution.pack.organisation_dcids`), less
@@ -17,21 +18,44 @@ EU institutions count, since they spend their member states' contributions
 from __future__ import annotations
 
 from collections.abc import Collection, Iterable, Mapping
+from typing import NamedTuple
 
 from code_index.query import CodeIndex
 from code_index.shared import per_index
-from code_index.types import PartyRow, RoleAxis
+from code_index.types import PartyClass, PartyKind, PartyRow, RoleAxis
 from entity_resolution.pack import organisation_dcids
 
 
+class PartyFacts(NamedTuple):
+    """What one party is where some datasets publish it on one axis: its kind
+    (`PartyRow.kind_over`), its class (`PartyRow.class_of`), and whether it is a multilateral,
+    each `None` where those datasets give it different kinds."""
+
+    kind: PartyKind | None
+    party_class: PartyClass | None
+    multilateral: bool | None
+
+
+def party_facts(row: PartyRow, *, axis: RoleAxis, datasets: Collection[str] = ()) -> PartyFacts:
+    """The facts of `row` where `datasets` publish it on `axis`. A multilateral is an
+    organisation that is an official party there; a total, such as the World Bank Group beside
+    its members in DAC2a, is none."""
+    kind = row.kind_over(axis, datasets)
+    if kind is None:
+        return PartyFacts(None, None, None)
+    party_class = row.class_of(kind)
+    multilateral = (
+        kind == "party" and party_class == "official" and row.dcid in organisation_dcids()
+    )
+    return PartyFacts(kind, party_class, multilateral)
+
+
 def is_multilateral(row: PartyRow | None, *, datasets: Collection[str] = ()) -> bool:
-    """Whether `row` is a multilateral: an organisation that is an official party where
-    `datasets` publish it (`PartyRow.kind_over`, `PartyRow.class_of`). A total, such as the
-    World Bank Group beside its members in DAC2a, is none."""
-    if row is None or row.dcid not in organisation_dcids():
-        return False
-    kind = row.kind_over(datasets)
-    return kind == "party" and row.class_of(kind) == "official"
+    """Whether `row` is a multilateral where `datasets` publish it as a donor, on the origin
+    axis (`party_facts`)."""
+    return (
+        row is not None and party_facts(row, axis="origin", datasets=datasets).multilateral is True
+    )
 
 
 def holds_multilaterals(
@@ -55,7 +79,6 @@ def _multilateral_sides(index: CodeIndex) -> frozenset[tuple[RoleAxis, str]]:
     return frozenset(
         (axis, dataset)
         for row in index.parties.values()
-        for dataset in row.datasets
-        if is_multilateral(row, datasets=(dataset,))
-        for axis in row.axes
+        for dataset, axis in row.published
+        if party_facts(row, axis=axis, datasets=(dataset,)).multilateral is True
     )

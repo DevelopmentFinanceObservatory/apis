@@ -1,4 +1,4 @@
-"""Read, in one small LLM call beside extraction, the stretches of a raw-text query that ask
+"""Read, in a small LLM call beside extraction, the stretches of a raw-text query that ask
 to leave something out, and blank them before the query's words reach any other reader.
 
 The call sees the query alone and answers `ExclusionRead`: each stretch verbatim and the words
@@ -7,9 +7,10 @@ fields as something asked for. Blanking each admitted stretch (`admit_exclusions
 of every field by construction: the parse that counts never sees it. A query with no admitted
 stretch reaches extraction byte-identical, so its answer does not move.
 
-`stored_exclusion_read` and `read_exclusions` put the read behind the extraction store under
-its own key, so a repeated query spends neither call. The door runs the read beside extraction
-and cancels the speculative parse on a hit (`entry.raw_text._read_and_extract`).
+`read_exclusions` takes two samples of the read and `stored_exclusion_read` serves an agreed one
+from the extraction store under its own key, so a repeated query spends no call. The door runs
+the read beside extraction and cancels the speculative parse on a hit
+(`entry.raw_text._read_and_extract`).
 """
 
 from __future__ import annotations
@@ -26,12 +27,20 @@ from pydantic import BaseModel, Field
 
 from code_index.shared import get_index, get_measure_index
 from code_index.tokens import Token, word_tokens
-from search.engine.clients.llm import LLM, SupportsLLM, for_stage, generate_structured_async
+from search.engine.clients.llm import (
+    LLM,
+    AnyAgreement,
+    SupportsLLM,
+    for_stage,
+    generate_structured_async,
+    two_samples,
+)
 from search.engine.extract import _extract_version
 from search.engine.extraction_store import extraction_key
+from search.engine.function_words import NEGATION_CUE
 from search.engine.qualifier_match import label_runs
 from search.engine.response_cache_keys import normalise_query
-from search.engine.stated_scope import _NEGATION_CUE, part_scope_intakes, scope_phrase_spans
+from search.engine.stated_scope import part_scope_intakes, scope_phrase_spans
 from search.scope.state import ScopeIntake
 
 logger = logging.getLogger(__name__)
@@ -121,20 +130,41 @@ def stored_exclusion_read(query: str, *, llm: SupportsLLM) -> ExclusionRead | No
     return ExclusionRead.model_validate_json(stored)
 
 
-async def read_exclusions(query: str, *, llm: SupportsLLM) -> tuple[ExclusionRead, dict | None]:
-    """The stretches of `query` that ask to leave something out, and the call's token usage.
+async def read_exclusions(
+    query: str, *, llm: SupportsLLM
+) -> tuple[ExclusionRead, dict | None, AnyAgreement]:
+    """The stretches of `query` that ask to leave something out, the calls' token usage, and
+    the agreement of two samples of the read on them.
 
-    The call runs with minimal thinking and the read is stored as it came (`admit_exclusions`
-    reads it against the current index). A call that fails or whose output fails validation
-    raises as extraction does, and stores nothing.
+    Two samples run concurrently with minimal thinking, the second under another seed
+    (`clients.llm.two_samples`), and the first is served. They agree when they blank and
+    disclose the same stretches (`admit_exclusions`), and the second, judged once it answers
+    and its first is read, stores an agreed read as it came (`admit_exclusions` reads it
+    against the current index). A disagreeing pair, or a second sample that fails, stores
+    nothing and is not agreed. A first call that fails or whose output fails validation
+    raises as extraction does, and stores nothing. An `LLM` bound to a request's
+    `SecondSamples` serves the first without waiting for the second, as extraction does
+    (`extract._model_extraction`).
     """
     staged = for_stage(llm, "exclusion_read")
-    read, usage = await generate_structured_async(
-        staged, prompt=query, system=EXCLUSION_READ_SYSTEM_PROMPT, schema=ExclusionRead
+
+    def judge(read: ExclusionRead, _served: ExclusionRead, second: ExclusionRead) -> bool:
+        if admit_exclusions(query, second) != admit_exclusions(query, read):
+            logger.info("Exclusion read samples disagree; the read is served unstored")
+            return False
+        if isinstance(staged, LLM) and staged.extraction_store is not None:
+            staged.extraction_store.put(_stored_key(query, staged), read.model_dump_json())
+        return True
+
+    return await two_samples(
+        lambda sampler: generate_structured_async(
+            sampler, prompt=query, system=EXCLUSION_READ_SYSTEM_PROMPT, schema=ExclusionRead
+        ),
+        staged,
+        stage="exclusion_read",
+        read=lambda read: read,
+        judge=judge,
     )
-    if isinstance(staged, LLM) and staged.extraction_store is not None:
-        staged.extraction_store.put(_stored_key(query, staged), read.model_dump_json())
-    return read, usage
 
 
 def _normalised(query: str) -> tuple[str, list[int], list[int]] | None:
@@ -272,7 +302,7 @@ def _pieces(phrase: str, intake: ScopeIntake | None, left_words: frozenset[str])
     """The stretches of `phrase`: one per negation cue, the items under one cue sharing it.
     An item opens a stretch when it starts the phrase, which starts at the read's cue, when
     the words it has before the first word it leaves out (`left_words`) hold a negation cue
-    (`stated_scope._NEGATION_CUE`), its own cue, or when an applied scope phrase stands
+    (`function_words.NEGATION_CUE`), its own cue, or when an applied scope phrase stands
     before it (`_items`), which no stretch covers. Other words before it, as in "and all
     humanitarian aid", are no cue, and the item shares the stretch before.
 
@@ -287,7 +317,7 @@ def _pieces(phrase: str, intake: ScopeIntake | None, left_words: frozenset[str])
         first = next(
             (word for word in item.words if word.text.casefold() in left_words), item.words[0]
         )
-        return bool(_NEGATION_CUE.search(phrase, item.words[0].start, first.start))
+        return bool(NEGATION_CUE.search(phrase, item.words[0].start, first.start))
 
     groups: list[list[_Item]] = []
     for item in _items(phrase, intake):

@@ -86,6 +86,9 @@ ROLE_SCOPE_DEFAULTED = "role_scope_defaulted"
 # A declared default fixed a slot the query names by its plain name ("top 5 aid
 # flows"), so the answer covers one value where the reader may expect them all.
 # Raised by the election of a first answer; a resubmit posts the default and raises none.
+# It also states a default's declared note, a broad reading's note (`BroadReading.note`) and
+# the note of a word the answering dataset notes (`DatasetDeclaration.noted_words`, such as
+# "aid" on the climate finance tables).
 SLOT_DEFAULTED = "slot_defaulted"
 # A slot default the code index declares for the elected shape's population type was not
 # applied, because no member reading the default value has data at the queried places while
@@ -113,6 +116,20 @@ DENOMINATOR_UNVERIFIED = "denominator_unverified"
 # so the place becomes the subject. The warning carries this fact. A query with
 # no direction hint emits none. Promote paths refuse role_incompatible instead.
 DIRECTION_DISCARDED = "direction_discarded"
+# An organisation the query names, contested, whose role the extraction states was read as
+# the source of the data, chosen before the part's pass from its recall
+# (`source_choice.choose_reading`) as the only reading the data allow, and the answer's
+# series has a flow axis: no flow family governs the recall, being its top family or scoring
+# at least SEARCH_UNKNOWN_SCORE_THRESHOLD (`flow_governance.governs`), or none of the
+# recalled families lists the organisation as a party (`source_choice.read_as_source`).
+ORGANISATION_READ_AS_SOURCE = "organisation_read_as_source"
+# An organisation the query names, contested whether or not an entity covers it, was read
+# as a party to the flow, chosen before the part's pass from its recall
+# (`source_choice.choose_reading`), for one reason (`PartyReason`): the extraction states
+# its role, where it could also be the source; another source the query names, which
+# lists it as a party; its words naming no single source; or none of the data it publishes
+# leading the source reading's recall (`source_choice.read_as_party`).
+ORGANISATION_READ_AS_PARTY = "organisation_read_as_party"
 # The role refresh read failed for an index-sourced population. Its code index
 # role declarations remain in use. This warning is emitted during materialisation.
 ROLE_DECLARATION_UNVERIFIED = "role_declaration_unverified"

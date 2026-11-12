@@ -21,13 +21,17 @@ from __future__ import annotations
 
 import re
 import weakref
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
+from functools import lru_cache, partial
 from itertools import pairwise
 from typing import Literal, Protocol
 
-from code_index.query import CodeIndex
+from code_index.declarations import CODE_SYNONYMS_WITHIN_VOCABULARY, MEASURE_VALUE_TEXT
+from code_index.labels import PRICE_BASIS_AXIS
+from code_index.query import CodeIndex, fold_word
+from code_index.shared import get_index, get_measure_index, per_index
 from code_index.tokens import (
     Token,
     TokenLookup,
@@ -36,8 +40,10 @@ from code_index.tokens import (
     tokenize,
     word_tokens,
 )
-from code_index.types import CodeRow, MeasureIndex, MeasureValueRow
-from search.engine.function_words import FUNCTION_WORDS
+from code_index.types import CodeRow, MeasureIndex, MeasurePartitionLabel, MeasureValueRow
+from dfo_platform.lru_memo import LruMemo
+from search.engine.function_words import FUNCTION_WORDS, NEGATION_CUE
+from search.engine.role_text import ROLE_PREPOSITIONS
 
 MatchSource = Literal["code", "label", "synonym"]
 
@@ -362,6 +368,275 @@ def plural_forms(noun: str) -> frozenset[str]:
     return frozenset(forms)
 
 
+# A possessive ending, which a word token holds ("France's").
+_POSSESSIVE_RE = re.compile(r"['\u2019]s$", re.IGNORECASE)
+
+
+def token_occurrences(tokens: Sequence[Token], text: str) -> list[tuple[int, int]]:
+    """The character range of each span of `tokens` that `text` matches as a code label
+    matches a query span (`code_index.tokens.text_matches`): the same words, casefolded,
+    and each separator the span holds where `text` holds it, so "Hong Kong SAR, China"
+    holds the entity "Hong Kong SAR, China". The span's last word may add a possessive
+    ending: "France's" holds the entity "France"."""
+    count = len(word_tokens(text))
+    if not count:
+        return []
+    word_at = [position for position, token in enumerate(tokens) if token.kind == "word"]
+    occurrences: list[tuple[int, int]] = []
+    for first in range(len(word_at) - count + 1):
+        span = tokens[word_at[first] : word_at[first + count - 1] + 1]
+        last = span[-1]
+        bare = Token(
+            text=_POSSESSIVE_RE.sub("", last.text), kind="word", start=last.start, end=last.end
+        )
+        if text_matches(text, span) or text_matches(text, (*span[:-1], bare)):
+            occurrences.append((span[0].start, last.end))
+    return occurrences
+
+
+# The articles that may stand between a role preposition and its place ("to the
+# United States").
+_ARTICLES = frozenset({"the", "a", "an"})
+_APOSTROPHES = frozenset({"'", "\u2019"})
+
+
+def with_role_preposition(
+    spans: Sequence[tuple[int, int]], tokens: Sequence[Token]
+) -> list[tuple[int, int]]:
+    """Each of `spans` widened to the start of the role preposition
+    (`role_text.ROLE_PREPOSITIONS`) before it, read as `tokens`, with any article between
+    them, when only spaces separate those words: "debt service to the United States"
+    reads as "debt service". A span in the possessive keeps its preposition, since the
+    place owns the noun after it and is not the preposition's object. The span takes the
+    article before it and a trailing apostrophe with it (`_past_apostrophe`), so "debt
+    relative to Ghana's GDP" and "debt relative to the United States' GDP" both read as
+    "debt relative to GDP"."""
+    words = [token for token in tokens if token.kind == "word"]
+    widened: list[tuple[int, int]] = []
+    for start, end in spans:
+        before = [token for token in words if token.end <= start]
+        article = None
+        while before and before[-1].text.casefold() in _ARTICLES:
+            article = before.pop()
+        if _possessive_at(end, tokens):
+            if article is not None:
+                start = article.start
+            widened.append((start, _past_apostrophe(end, tokens)))
+            continue
+        if (
+            before
+            and before[-1].text.casefold() in ROLE_PREPOSITIONS
+            and not any(
+                t.kind == "sep" and t.text.strip()
+                for t in tokens
+                if before[-1].end <= t.start < start
+            )
+        ):
+            start = before[-1].start
+        widened.append((start, end))
+    return widened
+
+
+def _past_apostrophe(end: int, tokens: Sequence[Token]) -> int:
+    """`end`, moved past an apostrophe that follows it straight after, so a possessive
+    place takes its marker with it: "United States'" in "the United States' GDP"."""
+    return next(
+        (
+            token.end
+            for token in tokens
+            if token.start == end and token.kind == "sep" and token.text in _APOSTROPHES
+        ),
+        end,
+    )
+
+
+def _possessive_at(end: int, tokens: Sequence[Token]) -> bool:
+    """Whether the span of `tokens` ending at character `end` is in the possessive: its
+    last word ends in "'s" ("Ghana's"), or an apostrophe follows it straight after
+    ("United States'")."""
+    for token in tokens:
+        if token.end == end and token.kind == "word" and _POSSESSIVE_RE.search(token.text):
+            return True
+        if token.start == end and token.kind == "sep" and token.text in _APOSTROPHES:
+            return True
+    return False
+
+
+@dataclass(frozen=True, slots=True)
+class NamedMeasure:
+    """A name of declared measures a text holds (`declared_measures_named`):
+    `alternatives` are the measure nouns and partition labels the name stands for, every
+    declaration that shares it ("GDP" names WEO's nominal GDP, WEO's GDP at purchasing
+    power parity and WDI's GDP); `occurrences` are the character ranges where it stands
+    in the text outside every longer declared name."""
+
+    alternatives: tuple[MeasurePartitionLabel, ...]
+    occurrences: tuple[tuple[int, int], ...]
+
+
+def declared_measures_named(text: str) -> list[NamedMeasure]:
+    """The declared measures `text` names in the bound release, one entry per span, in text
+    order.
+
+    A measure noun's or partition label's names are its label and `also_called` entries,
+    and each declared acronym (`CodeIndex.variable_aliases`) whose expansion is one of
+    them (`_measure_names`): "GNI" names the noun "gross national income". An acronym whose
+    expansion names no declared measure ("PPG") names none. A name occurs where its words
+    stand whole in `text`, hyphens read as spaces and a last word's possessive allowed
+    (`token_occurrences`). The longest declared name wins its words: an occurrence inside
+    a longer occurrence names nothing, so "GDP growth" names "GDP growth" and not "GDP".
+    A declaration one of whose names states a price basis ("GNI, PPP", "GDP, PPP") is named
+    by its other names only in a text that names that basis (`_price_bases_in`): "GNI" alone
+    names the WEO noun, and "GNI per capita PPP" names it and "GNI, PPP" together.
+    A declared name in parentheses straight after an occurrence, as an acronym restating it,
+    joins that occurrence (`_with_parenthesised_name`): "Potential gross domestic product
+    (GDP)" names potential GDP alone. Occurrences that name the same declarations form one
+    entry.
+
+    The answer depends on `text` and the two indexes alone, so it is memoised by text for
+    each pair of indexes (`_measures_named_in`)."""
+    return list(_measures_named_in(get_index(), get_measure_index())(text))
+
+
+# The texts whose named measures each pair of indexes keeps, most recent first, across the
+# requests of one release: its variables, measure nouns and member labels.
+_NAMED_TEXTS = 4096
+
+
+def _measures_named_in(
+    index: CodeIndex, measures: MeasureIndex
+) -> Callable[[str], tuple[NamedMeasure, ...]]:
+    """`declared_measures_named` over `index` and `measures`, memoised by text and built once
+    per pair of indexes (`_measure_name_readers`). Neither index changes once loaded, so a
+    memoised answer is the one a fresh read gives."""
+    readers = _measure_name_readers(index)
+    held = readers.get(id(measures))
+    if held is not None and held[0] is measures:
+        return held[1]
+    reader = lru_cache(maxsize=_NAMED_TEXTS)(
+        partial(_named_in, names=_measure_names(index, measures), index=index, measures=measures)
+    )
+    readers[id(measures)] = (measures, reader)
+    return reader
+
+
+def _named_in(
+    text: str,
+    *,
+    names: Sequence[tuple[MeasurePartitionLabel, str, frozenset[str]]],
+    index: CodeIndex,
+    measures: MeasureIndex,
+) -> tuple[NamedMeasure, ...]:
+    """The measures of `names`, a name table (`_measure_names`), that `text` names, as
+    `declared_measures_named` states. A name that requires a price basis names its entry
+    only where `text` names one of those bases."""
+    tokens = tokenize(text.replace("-", " "))
+    named_bases = (
+        _price_bases_in(text, index, measures) if any(basis for *_, basis in names) else frozenset()
+    )
+    found = [
+        (entry, span)
+        for entry, name, basis in names
+        if not basis or basis & named_bases
+        for span in token_occurrences(tokens, name)
+    ]
+    spans = {span for _entry, span in found}
+    found = [(entry, _with_parenthesised_name(text, span, spans)) for entry, span in found]
+    by_span: dict[tuple[int, int], dict[MeasurePartitionLabel, None]] = {}
+    for entry, span in found:
+        if not any(
+            wider[0] <= span[0] and span[1] <= wider[1] and wider != span for _other, wider in found
+        ):
+            by_span.setdefault(span, {})[entry] = None
+    by_alternatives: dict[tuple[MeasurePartitionLabel, ...], list[tuple[int, int]]] = {}
+    for span, alternatives in sorted(by_span.items()):
+        by_alternatives.setdefault(tuple(alternatives), []).append(span)
+    return tuple(
+        NamedMeasure(alternatives, tuple(spans)) for alternatives, spans in by_alternatives.items()
+    )
+
+
+def _measure_names(
+    index: CodeIndex, measures: MeasureIndex
+) -> tuple[tuple[MeasurePartitionLabel, str, frozenset[str]], ...]:
+    """Each name of each partition label and measure noun of `measures`, with the entry it
+    names, hyphens read as spaces, and the price bases it requires: its label, its
+    `also_called` entries, and each of `index`'s declared acronyms
+    (`CodeIndex.variable_aliases`) whose expansion is one of them. An entry one of whose
+    names states a price basis (`_price_bases_in`) is keyed on it, and each of its names
+    that states none requires it, so that name stands for the entry only beside its basis."""
+    names: list[tuple[MeasurePartitionLabel, str, frozenset[str]]] = []
+    for entry in (*measures.partition_labels, *measures.nouns):
+        own = [entry.label, *entry.also_called]
+        folded = {name.casefold() for name in own}
+        own += [
+            acronym
+            for acronym, expansion in index.variable_aliases.items()
+            if expansion.casefold() in folded
+        ]
+        bases = {name: _price_bases_in(name, index, measures) for name in own}
+        basis = frozenset().union(*bases.values())
+        names += [
+            (
+                entry,
+                name.replace("-", " "),
+                frozenset() if bases[name] else basis,
+            )
+            for name in own
+        ]
+    return tuple(names)
+
+
+def _price_bases_in(text: str, index: CodeIndex, measures: MeasureIndex) -> frozenset[str]:
+    """The price bases `text` names: each `measurementQualifier` value a one-row match reads
+    (`match_qualifiers`) or a span naming a code and a measure value reads as its measure
+    (`match_qualifier_readings`, "PPP"), with every value spelling its reading
+    (`MeasureIndex.reading_set`)."""
+    read = (
+        *match_qualifiers(text, index, measures),
+        *(reading.measure for reading in match_qualifier_readings(text, index, measures)),
+    )
+    return frozenset(
+        value
+        for match in read
+        if match.code_system == PRICE_BASIS_AXIS
+        for value in measures.reading_set(match.code_dcid)
+    )
+
+
+@per_index
+def _measure_name_readers(
+    _index: CodeIndex,
+) -> dict[int, tuple[MeasureIndex, Callable[[str], tuple[NamedMeasure, ...]]]]:
+    """The readers `_measures_named_in` built for `_index`, keyed by the measure index each
+    was built from, which each entry holds so its key stays its own."""
+    return {}
+
+
+# A parenthesised run straight after a name, its inner words in group 1.
+_PARENTHESISED_RE = re.compile(r"\s*\(\s*([^()]*?)\s*\)")
+
+
+def _with_parenthesised_name(
+    text: str, span: tuple[int, int], spans: Collection[tuple[int, int]]
+) -> tuple[int, int]:
+    """`span` widened over the parentheses straight after it in `text` when their words are
+    one of `spans`, a declared name's occurrence: "gross domestic product (GDP)" is one
+    occurrence."""
+    match = _PARENTHESISED_RE.match(text, span[1])
+    if match is None or (match.start(1), match.end(1)) not in spans:
+        return span
+    return (span[0], match.end())
+
+
+def holds_words(text: str, phrase: str) -> bool:
+    """Whether `text` holds `phrase`'s words as a run, read as a code label reads a query
+    span (`token_occurrences`): "imputed multilateral aid" holds "multilateral", and
+    "non-concessional flows" holds no "concessional", since a hyphenated word is one
+    token."""
+    return bool(token_occurrences(tokenize(text), phrase))
+
+
 def names_plain_name(text: str, plain_name: str) -> bool:
     """Whether `text` names a code system by its declared plain name ("flow", "sector"),
     singular or plural (`plural_forms`), as a whole word, case-insensitively. A name of the
@@ -469,14 +744,23 @@ def breakdown_spans(text: str, *, stops: Iterable[str] = ()) -> tuple[BreakdownS
     return tuple(spans)
 
 
-def match_unsupported_qualifier_phrases(text: str, *, terms: Collection[str]) -> tuple[str, ...]:
+def match_unsupported_qualifier_phrases(
+    text: str, *, terms: Collection[str], read: Collection[tuple[int, int]] = ()
+) -> tuple[str, ...]:
     """Return each word of ``text`` that is one of ``terms``, the words a code system declares
     it has no vocabulary for (`CodeSystemDeclaration.no_vocabulary_terms`), in text order.
 
     Each term is compared with whole word tokens, so ``non-concessionality`` and
-    ``non-concessional-like`` do not match the term ``non-concessional``.
+    ``non-concessional-like`` do not match the term ``non-concessional``. A word inside one
+    of the character ranges ``read`` (a span read as a code) is skipped, as "climate" in
+    "investment climate" is part of a code's name.
     """
-    return tuple(token.text for token in word_tokens(text) if _normalize(token.text) in terms)
+    return tuple(
+        token.text
+        for token in word_tokens(text)
+        if _normalize(token.text) in terms
+        and not any(_ranges_overlap((token.start, token.end), span) for span in read)
+    )
 
 
 def _row_system(row: MatchableRow) -> str:
@@ -519,6 +803,57 @@ def _measure_lookup(measure_index: MeasureIndex | None) -> TokenLookup[MeasureVa
         if row.matchable
         for text in (row.label, *row.synonyms)
     )
+
+
+def measure_value_names(measure_index: MeasureIndex, dcid: str) -> list[tuple[str, ...]]:
+    """The folded words (`fold_word`) of each name of `dcid`'s reading, in order: the label
+    and each synonym of every value on its axis that spells the reading
+    (`MeasureIndex.reading_set`)."""
+    reading = measure_index.reading_set(dcid)
+    axes = {row.axis for row in measure_index.values if row.dcid == dcid}
+    return [
+        tuple(fold_word(word.text) for word in word_tokens(text))
+        for row in measure_index.values
+        if row.axis in axes and row.dcid in reading
+        for text in (row.label, *row.synonyms)
+    ]
+
+
+def measure_values_named(text: str, measure_index: MeasureIndex) -> frozenset[str]:
+    """The canonical matchable measure values `text` names: a value `text` holds a whole
+    name of (`measure_value_names`) or a declared `MeasureValueText.named_by` text of as a
+    run of its words. "attributed climate finance" and "imputed multilateral climate
+    finance" name `attributedAmount`, whose `named_by` are "attributed" and "imputed
+    multilateral". "climate finance" names none.
+
+    `text` is one stretch, a part's variable or a stretch no reader claims
+    (`source_spans.unclaimed_stretches`), and a name after a negation cue in it
+    (`function_words.NEGATION_CUE`) names nothing: "climate finance commitments excluding
+    attributed amounts" names `Commitment` alone."""
+    cue = NEGATION_CUE.search(text)
+    read = text if cue is None else text[: cue.start()]
+    words = [fold_word(token.text) for token in word_tokens(read)]
+    named: set[str] = set()
+    for value in measure_index.values:
+        if value.same_reading_as is not None or not value.matchable:
+            continue
+        declared = MEASURE_VALUE_TEXT.get(value.dcid)
+        names = [
+            *measure_value_names(measure_index, value.dcid),
+            *(
+                tuple(fold_word(word.text) for word in word_tokens(named_by))
+                for named_by in (declared.named_by if declared is not None else ())
+            ),
+        ]
+        if any(_holds_run(words, name) for name in names):
+            named.add(value.dcid)
+    return frozenset(named)
+
+
+def _holds_run(words: Sequence[str], run: Sequence[str]) -> bool:
+    """Whether `run` occurs in `words` as consecutive words."""
+    n = len(run)
+    return n > 0 and any(tuple(words[i : i + n]) == tuple(run) for i in range(len(words) - n + 1))
 
 
 # Each index's longest code label or synonym in words, by index object id. A weakref
@@ -687,7 +1022,9 @@ def _lookup_code_in_systems(
     """
     folded = token.casefold()
     matches = [
-        row for row in index.codes if row.code_system in systems and row.code.casefold() == folded
+        row
+        for row in index.codes
+        if row.code_system in systems and row.code is not None and row.code.casefold() == folded
     ]
     if len(matches) == 1:
         return matches[0]
@@ -700,6 +1037,7 @@ class _Lexicon:
     read in several vocabularies builds them once."""
 
     index: CodeIndex
+    measure_index: MeasureIndex | None
     measure_lookup: TokenLookup[MeasureValueRow]
     system_markers: Mapping[str, _SystemMarkers]
     max_width: int
@@ -709,6 +1047,7 @@ class _Lexicon:
 def _lexicon(index: CodeIndex, measure_index: MeasureIndex | None) -> _Lexicon:
     return _Lexicon(
         index=index,
+        measure_index=measure_index,
         measure_lookup=_measure_lookup(measure_index),
         system_markers=_all_system_markers(index),
         max_width=_max_phrase_words(index, measure_index),
@@ -875,7 +1214,11 @@ def _read(
     words that row's label covers stays that of every system together. One overlapping a
     span the vocabulary reads is left out.
     """
-    raw = _recognise_raw(query, lexicon, vocabulary)
+    raw = (
+        _scan_everywhere(query, lexicon)
+        if vocabulary is None
+        else _recognise_raw(query, lexicon, vocabulary)
+    )
     if measure_spans is not None:
         kept = [r for r in raw if not _is_measure_span(r)]
         kept += [
@@ -924,6 +1267,34 @@ def _project(raw: tuple[_RawSpan, ...], *, located: bool) -> VocabularyReading:
     )
 
 
+# The texts each index's scans in every code system are kept for (`_scan_everywhere`): a
+# request reads a few texts per part, and one part reads its variable twice.
+_EVERYWHERE_SCANS = 512
+
+
+@per_index
+def _everywhere_scans(
+    _index: CodeIndex,
+) -> LruMemo[tuple[str, int], tuple[MeasureIndex | None, tuple[_RawSpan, ...]]]:
+    """The scans in every code system of texts read on one index, by text and measure
+    index object, each with that measure index."""
+    return LruMemo(_EVERYWHERE_SCANS)
+
+
+def _scan_everywhere(text: str, lexicon: _Lexicon) -> tuple[_RawSpan, ...]:
+    """`_recognise_raw`'s scan of `text` in every code system with `lexicon`, kept per
+    index, text and measure index (`_everywhere_scans`). Every reader of a text in every
+    system reads this scan."""
+    memo = _everywhere_scans(lexicon.index)
+    key = (text, id(lexicon.measure_index))
+    kept = memo.get(key)
+    if kept is not None and kept[0] is lexicon.measure_index:
+        return kept[1]
+    raw = _recognise_raw(text, lexicon, None)
+    memo.put(key, (lexicon.measure_index, raw))
+    return raw
+
+
 @dataclass(frozen=True, slots=True)
 class TextReading:
     """One text read in every code system together (`everywhere`) and in each vocabulary
@@ -946,13 +1317,15 @@ def read_by_vocabulary(
     Each vocabulary's reading sees only its own code systems (`VocabularyReading`), so a
     shape reads a text in its own systems' labels and never receives two readings of one
     token from two parses. Measure values take the reading in every code system, shared by
-    every vocabulary. Each match and tie row carries its offsets in its own text.
+    every vocabulary. Each match and tie row carries its offsets in its own text. The scan
+    in every code system is kept per text (`_scan_everywhere`), so recall's reading of a
+    variable (`interpret._detect`) and the bind phase's share one scan.
     """
     lexicon = _lexicon(index, measure_index)
     vocabularies = tuple(dict.fromkeys(vocabularies))
     readings: list[TextReading] = []
     for text in texts:
-        everywhere = _recognise_raw(text, lexicon, None)
+        everywhere = _scan_everywhere(text, lexicon)
         measure_spans = tuple(span for span in everywhere if _is_measure_span(span))
         readings.append(
             TextReading(
@@ -964,6 +1337,31 @@ def read_by_vocabulary(
             )
         )
     return tuple(readings)
+
+
+def cross_vocabulary_codes(span: QualifierSpan) -> list[CodeRow]:
+    """The code rows of `span` it names in every code system together: each it reads through
+    its label, a code or a synonym that names it outside its own code system. A row the span
+    reads only through a synonym naming it within that system
+    (`declarations.CODE_SYNONYMS_WITHIN_VOCABULARY`) is left out, so bare "mitigation" names
+    no climate objective beside a CRS question while "climate mitigation" does."""
+    words = tokenize(span.matched_text)
+    forms = (words,) if (less_s := singular(words)) is None else (words, less_s)
+    codes: list[CodeRow] = []
+    for row in span.rows:
+        if not isinstance(row, CodeRow):
+            continue
+        within = CODE_SYNONYMS_WITHIN_VOCABULARY.get(row.dcid, frozenset())
+        names = (row.label, *(s for s in row.synonyms if s not in within))
+        if within and not _names_span(names, forms) and _names_span(within, forms):
+            continue
+        codes.append(row)
+    return codes
+
+
+def _names_span(names: Iterable[str], forms: Sequence[Sequence[Token]]) -> bool:
+    """Whether one of `names` matches one of the token sequences `forms`."""
+    return any(text_matches(name, form) for name in names for form in forms)
 
 
 def match_qualifiers(
@@ -1099,8 +1497,7 @@ def label_runs(
     aid type 250) and "non-DAC countries" are each one run. A party run is no longer than
     the longest party label."""
     runs = [
-        (span.start, span.end)
-        for span in _recognise_raw(query, _lexicon(index, measure_index), None)
+        (span.start, span.end) for span in _scan_everywhere(query, _lexicon(index, measure_index))
     ]
     parties, longest = _party_lookup(index)
     tokens = tokenize(query)
@@ -1198,7 +1595,7 @@ def qualifier_occurrences(
         codes = [
             _row_key(row)
             for row in index.codes
-            if row.code_system in systems and row.code.casefold() == folded
+            if row.code_system in systems and row.code is not None and row.code.casefold() == folded
         ]
         if codes:
             found.append((i, 1, {"text": word, "code_rows": codes}))
@@ -1221,7 +1618,7 @@ def match_qualifier_readings(
     A span naming any other mix of rows stays refused. See `QualifierReadings` for how a
     caller chooses between the two readings.
     """
-    raw = _recognise_raw(query, _lexicon(index, measure_index), None)
+    raw = _scan_everywhere(query, _lexicon(index, measure_index))
     readings: list[QualifierReadings] = []
     for r in raw:
         if len(r.rows) != 2:

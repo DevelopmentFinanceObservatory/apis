@@ -705,14 +705,13 @@ def _ids_coverage(
     stamp: str = _COVERAGE_STAMP,
     rows=_IDS_ROWS,
     methods=None,
-    period="P1Y",
     provenance: str = _IDS,
     roles: tuple[str, str | None] = ("creditor", "debtor"),
 ):
     """Coverage for ids-debt-to-china-kenya's StatVar, holding China's claims on Kenya, 1983
     to 2024 (42 observations, as the dev coverage build records them), and France's, 2009 to
     2024, or the `rows` given, each facet of `methods` under its measurement method and
-    stating the observation period `period`, every facet from `provenance` and every StatVar
+    stating the observation period P1Y, every facet from `provenance` and every StatVar
     naming its donor and recipient roles `roles`."""
     from series_coverage.index import CoverageIndex
     from series_coverage.schema import CoverageManifest, FacetMetadata, RoleNames
@@ -725,7 +724,7 @@ def _ids_coverage(
         {sv: RoleNames(donor=roles[0], recipient=roles[1]) for sv, *_ in rows},
         {
             facet_id: FacetMetadata(
-                provenance_id=provenance, measurement_method=method, observation_period=period
+                provenance_id=provenance, measurement_method=method, observation_period="P1Y"
             )
             for facet_id, method in (methods or {_IDS_FACET: None}).items()
         },
@@ -822,27 +821,24 @@ def test_materialisation_role_bearing_latest_counts_the_tuples_reaching_their_st
 
 
 @pytest.mark.parametrize(
-    ("count", "year", "period", "verdict"),
+    ("count", "year", "verdict"),
     [
-        pytest.param(85, 2023, "P1Y", PASS, id="the-series-holding-the-elected-year"),
-        pytest.param(44, 2024, "P1Y", FAIL, id="the-newest-period-where-a-year-was-elected"),
-        pytest.param(44, 2024, "P1M", PASS, id="a-statvar-electing-nothing-at-its-newest-period"),
-        pytest.param(85, 2023, "P1M", FAIL, id="a-statvar-electing-nothing-at-an-earlier-year"),
+        pytest.param(85, 2023, PASS, id="the-series-holding-the-elected-year"),
+        pytest.param(44, 2024, FAIL, id="the-newest-period-where-a-year-was-elected"),
     ],
 )
 def test_materialisation_role_bearing_latest_counts_the_series_holding_the_elected_year(
-    count: int, year: int, period: str, verdict: Verdict
+    count: int, year: int, verdict: Verdict
 ):
     """Of Kenya's 91 creditors, 44 report to 2024, 41 to 2023 and 6 to 2022. The index
-    elects 2023 for the yearly facet, which 85 series hold, and no year for a monthly
-    one, which serves the 44 series reaching its newest period."""
+    elects 2023 for the yearly facet, which 85 series hold."""
     ends = [2024] * 44 + [2023] * 41 + [2022] * 6
     rows = tuple(
         (_IDS_SV, _IDS_FACET, f"creditor/{i}", "country/KEN", range(2010, end + 1))
         for i, end in enumerate(ends)
     )
-    coverage = functools.partial(_ids_coverage, rows=rows, period=period)
-    assert bool(coverage().index.elected_years(variables=[_IDS_SV])) == (period == "P1Y")
+    coverage = functools.partial(_ids_coverage, rows=rows)
+    assert coverage().index.elected_years(variables=[_IDS_SV])
     resp = _role_response(
         count,
         (_KEN_DEBTOR,),

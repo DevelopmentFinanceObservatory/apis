@@ -55,10 +55,11 @@ from dfo_platform.build import build_commit
 from dfo_platform.config import PublicSiteSettings
 from dfo_platform.problem import Cause
 from graph_release.context import bound_release
-from materialise.trace import UNKNOWN_FAMILY, MemberFamily, StatedFamily, parse_recorded_family
+from materialise.trace import UNKNOWN_FAMILY, StatedFamily, parse_recorded_family
 from origin_catalogue import current_catalogue
 from series_coverage.index import Estimate
 from spec_registry import IdentityQuarantined, LiveSpecRegistry
+from statvar_members import MemberFamily
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue, fake_catalogue_service
 
 from ._app_factories import make_client

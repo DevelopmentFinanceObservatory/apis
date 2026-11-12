@@ -4,9 +4,11 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from dfo_frame_grammar import DeflationBasis
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic_core import PydanticCustomError
 
 from datasets_api.manifest_models import RetentionModel
 
@@ -101,6 +103,33 @@ class ConvertedUnitModel(BaseModel):
     base_year: int | None = Field(
         default=None, description="the base year of constant prices, absent for current prices"
     )
+    deflation_basis: DeflationBasis | None = Field(
+        default=None,
+        description=(
+            "whose prices deflated constant-price values: the donor's, the recipient's, or "
+            "the national prices of the place a series is about. Absent for current prices "
+            "and for a conversion that names none"
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _prices_govern_base_year_and_basis(self) -> Self:
+        """Holds the frame grammar's `validate_unit_request` rules: `base_year` is present
+        exactly when prices are constant, and `deflation_basis` only when they are."""
+        constant = self.prices == "constant"
+        if constant and self.base_year is None:
+            raise PydanticCustomError("base_year_missing", "prices 'constant' requires 'base_year'")
+        if not constant and self.base_year is not None:
+            raise PydanticCustomError(
+                "base_year_without_constant_prices",
+                "'base_year' is only valid when prices are 'constant'",
+            )
+        if not constant and self.deflation_basis is not None:
+            raise PydanticCustomError(
+                "deflation_basis_without_constant_prices",
+                "'deflation_basis' is only valid when prices are 'constant'",
+            )
+        return self
 
 
 class CountedStatVarModel(BaseModel):

@@ -93,6 +93,10 @@ NESTED_SHAPE_STEPS = frozenset(
         "shape_labels",
         "shape_groups",
         "shape_admission",
+        "shape_denominators",
+        "shape_quantity",
+        "shape_rank",
+        "shape_availability",
     }
 )
 
@@ -684,10 +688,15 @@ def _build_part(
             scope_choices=representative.scope_choices,
         )
     if region.status == "candidates":
+        # Each reading states its own conversion offer, so a null one during a catalogue
+        # outage warns once for the part, as a definite answer's does.
+        unavailable = next(
+            (w for spec in region.specs if (w := conversion_unavailable_warning(spec))), None
+        )
         return build_candidates_part(
             list(region.specs),
             variable_text=variable_text,
-            warnings=list(region.warnings),
+            warnings=[*region.warnings, *((unavailable,) if unavailable is not None else ())],
             separate=region.separate,
             timing_ms=timing_ms,
             max_candidates=max_candidates,

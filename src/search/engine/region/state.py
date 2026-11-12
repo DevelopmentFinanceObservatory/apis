@@ -41,11 +41,13 @@ from search.engine.events import EventSink
 from search.engine.extract import DateRequest
 from search.engine.frame import Frame, door_frame
 from search.engine.function_words import FUNCTION_WORDS
-from search.engine.interpret import PinnedResolved, Recall
+from search.engine.interpret import Detected, PinnedResolved, Recall
 from search.engine.interpretation import Interpretation, InterpretationSet
+from search.engine.measure_verdict import Verdict
 from search.engine.place import ConsultedPresence, read_default_presence
 from search.engine.qualifier_match import (
     CodedQualifier,
+    NamedMeasure,
     QualifierMatch,
     QualifierReadings,
     QualifierSpan,
@@ -117,7 +119,7 @@ from search.engine.shape import Pool, ShapeDraft, is_role_bearing, role_names_by
 from search.engine.source_code import SeriesCodeMembers, not_held
 from search.engine.source_scope import SourceScope
 from search.engine.unit.bind import BoundUnitRequest, RequestBasis
-from search.heading.departure_fact import DepartureFact
+from search.heading.departure_fact import DepartureFact, UndirectedReading
 from search.models import (
     BaseIdentity,
     CandidateBasis,
@@ -460,6 +462,10 @@ class ValueRule:
 
     values: frozenset[tuple[str, str]]
     code_systems: frozenset[str] = frozenset()
+    # The values of the set the bind drafted `values` in, for a value the words name among
+    # others ("health and education"). An answer applies it when it applies the set by
+    # membership and a binding or some selected member holds the value. Empty otherwise.
+    drafted_set: frozenset[tuple[str, str]] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -480,9 +486,19 @@ class MeasureRule:
 # naming a value by its graph label ("value"), a value the bind drafted on a slot the
 # elected reading lacks ("stray"), each value of such a set of two or more ("set_value"), a
 # request-named value unbinding drops ("unbinding"), a value a resubmit posts and cannot
-# apply ("posted"), or a phrase the request asked to leave out ("exclusion").
+# apply ("posted"), a phrase the request asked to leave out ("exclusion"), or a value the
+# phrase names that the elected reading binds and a candidate's shape cannot hold
+# ("unheld").
 type RequirementOrigin = Literal[
-    "tie", "bind", "value", "stray", "set_value", "unbinding", "posted", "exclusion"
+    "tie",
+    "bind",
+    "value",
+    "stray",
+    "set_value",
+    "unbinding",
+    "posted",
+    "exclusion",
+    "unheld",
 ]
 
 # How an answer is judged on a requirement: by its codes (`CodeRule`), by the measure value
@@ -807,6 +823,11 @@ class ResolveState:
     # Verbatim query for qualifier matching; set only for a single-variable
     # raw-text request, where query-level phrases have an unambiguous owner.
     query_text: str | None = None
+    # The stretches of `query_text` no reader of the extraction claims, set with it by the
+    # raw-text door's `source_spans.unclaimed_stretches`. The part names the measure values
+    # they name as it names those of its variable (`phase_rank_bind._phase_bind`), so
+    # "attributed" left outside the variable names attributed amounts as well.
+    unclaimed: tuple[str, ...] = ()
     # Typed qualifier sidecar for this variable, populated by raw-text extraction.
     # Its spans address each phrase, not `variable`; `detect_query` includes its recall text.
     qualifiers: tuple[CodedQualifier, ...] | None = None
@@ -866,9 +887,12 @@ class ResolveState:
     # the record of each axis they settle, from which the pass's definite answer states its
     # scope choices (`pipeline._with_scope_choices`).
     scope_selection: ScopeState = field(default_factory=ScopeState)
-    # The scope the definite answer states, decided before its preview launches
-    # (`phase_answer._decide_answer_scope`), which `pipeline._with_scope_choices` reuses for
-    # that answer. None until then.
+    # The scope the definite answer states, decided before its preview launches, which
+    # `pipeline._with_scope_choices` reuses for that answer. A single-table answer sets it in
+    # `phase_answer._gather_definite_coverage` (`phase_answer._decide_answer_scope`) and
+    # decides it again in `phase_answer._finished_scope` when the finished answer has another
+    # `spec_id`; a candidates answer sets it in `candidate_collapse._assemble_definite`. None
+    # until then.
     scope_decision: ScopeDecision | None = None
     # Shared warnings list; mutations here affect every stage holding the list.
     warnings: list[Warning]
@@ -970,6 +994,17 @@ class ResolveState:
     # (`quantity.NamedDenominator`). `None` when the question names none. Materialise
     # holds the elected shape to it (`quantity.check_denominator`).
     named_denominator: NamedDenominator | None = None
+    # Every name of declared measures the variable holds, partition labels and the quoted base
+    # included (`qualifier_match.declared_measures_named`), read once per part by
+    # `phase_rank_bind._phase_prune_and_rank`. `named_measures` and the coverage of code terms
+    # by a measure name (`phase_rank_bind._measure_named_ranges`) read it.
+    declared_names: tuple[NamedMeasure, ...] = ()
+    # The names of measure nouns the variable holds outside its places and quoted base,
+    # which admissibility rule 4 judges each shape on (`phase_rank_bind._named_measure_nouns`).
+    named_measures: tuple[NamedMeasure, ...] = ()
+    # Rule 4's verdict on each of `named_measures` for each admissible shape it judged, by
+    # shape id (`admissibility.rule_four_verdicts`), which the `bind_decision` line logs.
+    measure_verdicts: dict[str, list[Verdict]] = field(default_factory=dict)
     # The admissible shapes the narrowing leaves before the measure-family collapse, less
     # those a source exclusion removes; written once the menu seats one of them or the
     # exclusion leaves none.
@@ -1038,6 +1073,9 @@ class ResolveState:
     # reads in place of the embedding resolve (`interpret.recall`), or `None` when the part
     # names no code.
     source_code: SeriesCodeMembers | None = None
+    # A detection of `detect_query` the door made under the part's scope, which recall takes
+    # in place of its own (`interpret.recall`), or `None`.
+    detected: Detected | None = None
     # Whether the part's scope removed a reading where it applies: candidacy for a part that
     # names a source, and for one that only excludes a reading the menu would have offered
     # without the exclusion and does not offer with it
@@ -1261,11 +1299,11 @@ class ResolveState:
     # one, by capped-shape index of its copy, when both directions hold data: offered beside
     # it as a `direction` candidate (`phase_place_materialise._settle_direction`).
     direction_rivals: dict[int, PlaceAssignment] = field(default_factory=dict)
-    # The axis a place the question names without a direction is read on before the house
-    # policies run (`availability.undirected_axis`), so the policies and the measure basis
-    # read the part as its directed twin. `None` when no place is named without one, or the
-    # eligible shapes hold a series on both axes or on neither.
-    undirected_axis: RoleAxis | None = None
+    # The axis a place the question names without a direction is read on, settled before
+    # the menu seats (`undirected.settle_undirected_axis`), so every shape, the house
+    # policies and the measure basis read the part as its directed twin, with the rule that
+    # settled it. `None` when no place is named without one, or no rule settles it.
+    undirected: UndirectedReading | None = None
     # The elected shape narrowed to another breakdown of a family with no total, by
     # capped-shape index of its copy, with its own bindings: offered beside the elected
     # breakdown as a `breakdown` candidate (`phase_place_materialise._settle_breakdown`).
@@ -1399,6 +1437,11 @@ class ResolveState:
             operations=self.operations,
             open_axes=self.open_axes,
         )
+
+    @property
+    def undirected_axis(self) -> RoleAxis | None:
+        """The axis of `undirected`, `None` while the direction stays open."""
+        return self.undirected.axis if self.undirected is not None else None
 
     @property
     def slot_default_phrases(self) -> frozenset[str]:

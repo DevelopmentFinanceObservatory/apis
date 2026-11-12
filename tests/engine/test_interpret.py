@@ -17,6 +17,7 @@ from search.engine.interpret import (
     _pooled,
     _states_a_word,
     _without_stated_words,
+    detect_measure,
     recall,
 )
 from tests.fixtures import FakeGraph, make_resolver
@@ -150,6 +151,67 @@ class _CountingGraph(FakeGraph):
     def detect_svs(self, query: str):
         self.detect_calls.append(query)
         return super().detect_svs(query)
+
+
+@pytest.mark.parametrize(
+    ("recalled", "variable", "party_words", "searches"),
+    [
+        # The chosen reading's pass recalls the probe's text: it searches the graph no more.
+        ("World Bank core contributions", "World Bank core contributions", frozenset(), []),
+        # Another text, another variable, or a party word recall removes, needs recall's own
+        # search.
+        ("core contributions", "core contributions", frozenset(), ["core contributions"]),
+        (
+            "World Bank core contributions",
+            "core contributions",
+            frozenset(),
+            ["World Bank core contributions"],
+        ),
+        (
+            "World Bank core contributions",
+            "World Bank core contributions",
+            frozenset({"core"}),
+            ["World Bank core contributions", "World Bank contributions"],
+        ),
+    ],
+)
+def test_recall_takes_the_detection_the_probe_made_of_its_own_text(
+    recalled: str, variable: str, party_words: frozenset[str], searches: list[str]
+):
+    graph = _CountingGraph(
+        nodes={},
+        obs={},
+        resolve={},
+        detect={
+            text: {"svs": ["sv/Contributions"], "cosine_scores": [0.8]}
+            for text in (
+                "World Bank core contributions",
+                "core contributions",
+                "World Bank contributions",
+            )
+        },
+    )
+    detected = run(
+        detect_measure(
+            graph, "World Bank core contributions", variable="World Bank core contributions"
+        )
+    )
+    graph.detect_calls.clear()
+
+    result = run(
+        recall(
+            variable,
+            [],
+            graph=graph,
+            resolver=make_resolver(graph),
+            raw_query=recalled,
+            party_words=party_words,
+            detected=detected,
+        )
+    )
+
+    assert sorted(graph.detect_calls) == sorted(searches)
+    assert result.candidate_svs == ["sv/Contributions"]
 
 
 class TestAcronymCanonicalization:
@@ -652,4 +714,4 @@ class TestStatedWordSearch:
         graph = _FailingGraph(fails_on)
 
         with pytest.raises(GraphInfraError):
-            run(_detect(graph, "bilateral ODA to Kenya"))
+            run(_detect(graph, "bilateral ODA to Kenya", variable="bilateral ODA to Kenya"))

@@ -8,7 +8,8 @@ from __future__ import annotations
 import re
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Literal, get_args
+from enum import Enum
+from typing import Final, Literal, get_args
 
 from dfo_platform.roles import FlowAccount, RoleAxis
 
@@ -18,23 +19,28 @@ class CodeRow:
     """One classification code.
 
     `code_system` is the constraint-property key. The graph enum dcid is separate.
-    `label` comes from `name` without its parenthetical system suffix.
+    `code` is the graph `classificationCode` arc, the publisher's code, or `None` in a
+    system whose enum publishes none (`CodeSystemConfig.classification_codes`), such as
+    `climatePolicyObjective`. `label` comes from `name` without its parenthetical system suffix.
     `synonyms` comes from `alternateName` without the label. `parent` is the
     same-system `specializationOf` dcid, or `None` for roots and flat systems.
     `short_name` is the graph `shortName` arc when the code has one, else the
     name the export authors, else `None`. `definition` is the graph `description`
     arc, the sentence that says what the code means, or `None` when the graph
-    holds none.
+    holds none. `also_called` are the authored names a question uses for the code
+    (`declarations.CODE_ALSO_CALLED`): "aid" for ODA. They name the code for judgement
+    and never bind: the closest-match test reads them, and no matcher does.
     """
 
     dcid: str
     code_system: str
-    code: str
+    code: str | None
     label: str
     synonyms: tuple[str, ...]
     parent: str | None
     short_name: str | None = None
     definition: str | None = None
+    also_called: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -317,12 +323,27 @@ class StatedWord:
 
 
 @dataclass(frozen=True, slots=True)
+class NotedWord:
+    """One word a question uses for a table's rows that their figures do not mean exactly
+    (`DatasetDeclaration.noted_words`).
+
+    `word` is one lowercase word or a phrase of them joined by single spaces ("official
+    development assistance"), and `note` the sentence an answer from the table states when
+    the question holds the word. "Aid" on ONE Data Climate Finance reads the table's
+    climate finance, which counts other official flows as well as ODA, and the note says so.
+    """
+
+    word: str
+    note: str
+
+
+@dataclass(frozen=True, slots=True)
 class PartyWord:
     """One word that names a party of a table's rows (`DatasetDeclaration.party_words`).
 
     `word` is one lowercase word, `measured_property` the measured-property dcid of the
     rows it selects, one the table has a row for, `axis` the flow axis the party stands
-    on, and `party` the dcid of a `PartyRow` that lists the dataset and the axis. The word
+    on, and `party` the dcid of a `PartyRow` that lists the dataset on that axis. The word
     selects the rows whose party on `axis` is `party`. `where` maps a flow axis to the
     entity kind the row's party on that axis must have, as `StatedWord.where` does; empty,
     every row with the measured property is selected.
@@ -391,6 +412,14 @@ class DatasetDeclaration:
     search reads it there without a code. A word belongs here only when the table's
     import guarantees it of every such row.
 
+    `noted_words` lists the words a question uses for the table's rows that their figures
+    do not mean exactly (`NotedWord`): "aid" on the climate finance tables, whose figures
+    count other official flows as well as ODA. A part answering from the table reads the
+    word and states the note. Recall reads no noted word, and the family election reads one
+    only on a family that reads a phrase of its own codes, so the word alone draws no
+    question to the table: "climate ODA" answers from it, and "aid to Kenya" keeps its DAC
+    and CRS answers.
+
     `party_words` lists the words that name a party of the table's rows (`PartyWord`).
     "Multilateral" names DAC2a's and DAC2b's provider `DACMultilaterals`, the DAC's
     published total of the multilateral organisations, on `amount` rows to a country. Such
@@ -418,6 +447,7 @@ class DatasetDeclaration:
     invariants: Mapping[str, str] = field(default_factory=dict)
     stated_words: tuple[StatedWord, ...] = ()
     party_words: tuple[PartyWord, ...] = ()
+    noted_words: tuple[NotedWord, ...] = ()
     house_default_for: tuple[HouseDefaultCase, ...] = ()
     ratio_base_axis: RoleAxis | None = None
 
@@ -530,9 +560,10 @@ total whose markers cover it stands for a population (`CodeIndex.population_tota
 class WholeMarker:
     """What a total holds in one dataset: every party of the classes in `covers` on its axis.
 
-    `dataset` is a provenance among `PartyRow.datasets`, and `covers` a non-empty, sorted
-    subset of `PartyClass`. `years` is the first and last year, inclusive, in which the total
-    holds that population in `dataset`, or `None` for every year the dataset publishes it.
+    `dataset` is a provenance that publishes the party (`PartyRow.published`), and `covers` a
+    non-empty, sorted subset of `PartyClass`. `years` is the first and last year, inclusive, in
+    which the total holds that population in `dataset`, or `None` for every year the dataset
+    publishes it.
     "All Recipients, Total" (`DACAllRecipients`) covers every `official` and `residual`
     recipient in DAC2A from the year its composition check starts, and in DAC2B it holds
     nothing of the kind, so it has no marker there.
@@ -568,6 +599,28 @@ def party_kind(
     return kinds.pop() if len(kinds) == 1 else None
 
 
+class AnyDataset(Enum):
+    """The type of `ANY_DATASET`."""
+
+    ANY = "any"
+
+
+ANY_DATASET: Final = AnyDataset.ANY
+"""Every dataset, as `PartyRow.publishes` reads it: a party some dataset publishes on an axis.
+An empty collection of datasets publishes nothing."""
+
+
+class AnyAxis(Enum):
+    """The type of `ANY_AXIS`."""
+
+    ANY = "any"
+
+
+ANY_AXIS: Final = AnyAxis.ANY
+"""Both flow axes, as `PartyRow.kinds_over` reads them for a reader that serves no one role:
+the kinds the party takes in every dataset that publishes it, on either axis."""
+
+
 @dataclass(frozen=True, slots=True)
 class PartyRow:
     """One party a declared dataset publishes, as donor or recipient, and its kind.
@@ -583,9 +636,11 @@ class PartyRow:
     matches (`DACAllRecipients`, or "lower middle-income countries", whose DAC members
     differ from the World Bank list). `label` is the party's
     graph name ("Africa, unallocated by country (DAC)"), `None` when the graph gives it none.
-    `datasets` are the provenances of the declared and listed datasets that publish the
-    party, and `axes` the flow axes they publish it on (`origin` as a donor, `destination` as a
-    recipient), each sorted.
+    `published` holds each `(dataset, axis)` pair that publishes the party, sorted: the
+    provenance of a declared or listed dataset and the flow axis it publishes the party on
+    (`origin` as a donor, `destination` as a recipient). A reader asks it through
+    `publishes`, so a party published as a donor in one dataset and a recipient in another
+    reads as each only where it is. A whole total stands on one axis (`sole_axis`).
 
     `party_class` is `private` for a party the export's `PRIVATE_PROVIDERS` lists and
     `official` for every other party, on every axis, and `residual` for a residual. A total
@@ -599,13 +654,14 @@ class PartyRow:
     marker reads the party as an ordinary `total`. The kind stays `total`, so a reader of
     `kind == "total"` stays correct.
 
-    `kind` is the party's kind in every dataset `dataset_kinds` does not name, and
-    `dataset_kinds` the `(dataset, kind)` pairs, sorted by dataset, where it takes another
-    kind. IMF Concessional Trust Funds (`IMFConcessionalTrustFunds`) is a `party` in the CRS,
-    which publishes it and never the IMF, and a `total` in DAC2A, which publishes it beside
-    the IMF it equals. A reader serving one dataset reads `kind_in`, and one serving several or
-    none reads `kinds_over` or `kind_over`. `party_class` is the class of `kind`; where the
-    party takes another kind it takes that kind's class (`class_of`).
+    `kind` is the party's kind in every dataset `dataset_kinds` does not name, and `dataset_kinds`
+    the `(dataset, kind)` pairs, sorted by dataset, where it takes another kind. IMF Concessional
+    Trust Funds (`IMFConcessionalTrustFunds`) is a `party` in the CRS, which publishes it and omits
+    the IMF, and a `total` in DAC2A, which publishes it beside the IMF it equals. A reader serving
+    one dataset reads `kind_in`, and one serving several or none reads `kinds_over` or `kind_over`
+    on the axis of the role it serves, so a kind a dataset gives the party on one axis applies only
+    to roles on that axis. `party_class` is the class of `kind`; where the party takes another kind it
+    takes that kind's class (`class_of`).
     """
 
     dcid: str
@@ -615,10 +671,28 @@ class PartyRow:
     residuals: tuple[str, ...] = ()
     sums_members: bool = True
     label: str | None = None
-    datasets: tuple[str, ...] = ()
-    axes: tuple[RoleAxis, ...] = ()
+    published: tuple[tuple[str, RoleAxis], ...] = ()
     whole: tuple[WholeMarker, ...] = ()
     dataset_kinds: tuple[tuple[str, PartyKind], ...] = ()
+
+    def publishes(self, axis: RoleAxis, datasets: Collection[str] | AnyDataset) -> bool:
+        """Whether one of `datasets` publishes the party on `axis`, or any dataset does for
+        `ANY_DATASET`. Empty `datasets` publish nothing."""
+        return any(
+            published_axis == axis and (datasets is ANY_DATASET or dataset in datasets)
+            for dataset, published_axis in self.published
+        )
+
+    def sole_axis(self) -> RoleAxis:
+        """The one axis the party is published on, as a whole total is (`whole`). Raises
+        `ValueError` for a party published on no axis or on both, whose side the row cannot
+        name."""
+        axes = {axis for _, axis in self.published}
+        if len(axes) != 1:
+            raise ValueError(
+                f"party {self.dcid!r} is published on {sorted(axes)!r}, not on one axis"
+            )
+        return axes.pop()
 
     def marker(self, dataset: str) -> WholeMarker | None:
         """The marker for `dataset`, or `None` where the party is an ordinary total."""
@@ -628,19 +702,30 @@ class PartyRow:
         """The party's kind in `dataset`: its `dataset_kinds` entry there, else `kind`."""
         return next((kind for named, kind in self.dataset_kinds if named == dataset), self.kind)
 
-    def kinds_over(self, datasets: Collection[str] = ()) -> frozenset[PartyKind]:
-        """The kinds the party takes in those of `datasets` that publish it, or in every
-        dataset that publishes it when none of `datasets` does, as for an empty `datasets`.
-        A row without `dataset_kinds` takes `kind` alone."""
+    def kinds_over(
+        self, axis: RoleAxis | AnyAxis, datasets: Collection[str] = ()
+    ) -> frozenset[PartyKind]:
+        """The kinds the party takes in those of `datasets` that publish it on `axis` (on
+        either axis for `ANY_AXIS`), or in every dataset that publishes it there when none of
+        `datasets` does, as for an empty `datasets`. A party no dataset publishes on `axis`
+        takes no kind there. A row without `dataset_kinds` takes `kind` alone wherever it is
+        published."""
+        publishing = {
+            dataset
+            for dataset, published_axis in self.published
+            if axis is ANY_AXIS or published_axis == axis
+        }
         if not self.dataset_kinds:
-            return frozenset((self.kind,))
-        named = [dataset for dataset in self.datasets if dataset in datasets] or self.datasets
+            return frozenset((self.kind,)) if publishing else frozenset()
+        named = (publishing & set(datasets)) or publishing
         return frozenset(self.kind_in(dataset) for dataset in named)
 
-    def kind_over(self, datasets: Collection[str] = ()) -> PartyKind | None:
-        """The one kind of `kinds_over(datasets)`, or `None` when the party takes different
-        kinds there, so a reader that needs one kind refuses rather than guesses."""
-        kinds = self.kinds_over(datasets)
+    def kind_over(
+        self, axis: RoleAxis | AnyAxis, datasets: Collection[str] = ()
+    ) -> PartyKind | None:
+        """The one kind of `kinds_over(axis, datasets)`, or `None` when the party takes
+        different kinds there or none, so a reader that needs one kind refuses."""
+        kinds = self.kinds_over(axis, datasets)
         return next(iter(kinds)) if len(kinds) == 1 else None
 
     def class_of(self, kind: PartyKind) -> PartyClass | None:
@@ -825,12 +910,31 @@ class MeasurePartitionLabel:
 
     `definition` is the authored sentence that says what the measure counts, taken from the
     publisher's glossary or methodology, or `None` where the export authors none.
+
+    `codes` are `(constraint property, code)` pairs a series must hold, at the code or a code
+    below it, for the label to name it (`label_for_pairs`'s `held_codes`). They split a
+    partition two tables share: ONE Data's attributed climate disbursements and the imputed
+    multilateral ODA rows hold one partition, and only the first hold
+    `climatePolicyObjective` at or below `ClimateChangePolicyObjective`.
+
+    `also_called` are other whole names of the measure a question uses: "gross domestic
+    product" beside the noun "GDP". They name the measure for judgement, the closest-match
+    test and admission, and never bind.
+
+    A noun judges admission: a question naming its label, an `also_called` name or a
+    declared acronym of one (`CodeIndex.variable_aliases`, so "GNI per capita" names gross
+    national income) states
+    the noun's constraint values, and a shape of its population type every member of which
+    carries another value on one of them is refused `variable_not_resolved` before bind
+    (`search.engine.region.admissibility`, rule 4).
     """
 
     axis_values: tuple[tuple[str, str], ...]
     label: str
     named_values: tuple[tuple[str, str], ...] = ()
     definition: str | None = None
+    codes: tuple[tuple[str, str], ...] = ()
+    also_called: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -846,24 +950,32 @@ class PartitionLabelMatch:
 
 
 def label_for_pairs(
-    pairs: Sequence[tuple[str, str | None]], labels: Sequence[MeasurePartitionLabel]
+    pairs: Sequence[tuple[str, str | None]],
+    labels: Sequence[MeasurePartitionLabel],
+    *,
+    held_codes: Collection[tuple[str, str]] = frozenset(),
 ) -> PartitionLabelMatch | None:
-    """Match the most specific authored label whose pairs are contained in `pairs`.
+    """Match the most specific authored label whose pairs are contained in `pairs` and whose
+    `codes` the series holds.
 
-    `None` values in `pairs` are ignored. A tie between equally specific
-    labels raises `ValueError`. No match returns `None`.
+    `held_codes` are the `(property, code)` pairs the series holds, each code with its
+    ancestors (`code_index.labels.held_codes`). They decide a label's `codes` and count
+    toward its specificity, and are never uncovered text. `None` values in `pairs` are
+    ignored. A tie between equally specific labels raises `ValueError`. No match returns
+    `None`.
     """
     known = tuple((axis, value) for axis, value in pairs if value is not None)
     known_set = frozenset(known)
+    held = frozenset(held_codes)
 
     winner: MeasurePartitionLabel | None = None
     winner_size = -1
     tied = False
     for candidate in labels:
         candidate_pairs = frozenset(candidate.axis_values)
-        if not candidate_pairs <= known_set:
+        if not candidate_pairs <= known_set or not held.issuperset(candidate.codes):
             continue
-        size = len(candidate_pairs)
+        size = len(candidate_pairs) + len(candidate.codes)
         if size > winner_size:
             winner, winner_size, tied = candidate, size, False
         elif size == winner_size:

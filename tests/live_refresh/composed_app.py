@@ -1013,7 +1013,7 @@ def compose(
             ceiling=1_000_000,
             member_concurrency=4,
             enumerator=MemberEnumerator(),
-            enrichment=EnrichmentLookup(graph, parties=lambda: code_index.parties),
+            enrichment=EnrichmentLookup(graph),
             code_index=code_index,
             rate_cache=rate_cache,
             coverage=coverage,

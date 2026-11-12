@@ -129,10 +129,12 @@ _EXECUTORS = (
     (phase_place_materialise, "_WALK_POOL"),
 )
 # The doubles' methods the live graph client answers without a request
-# (`dc_graph.GraphClient.default_facet_policy`, `generation_stamp`, `observation_read_groups`,
-# `source_key`, `un_availability`), which take no tick of the virtual clock.
+# (`dc_graph.GraphClient.default_facet_policy`, `default_facet_policies`, `generation_stamp`,
+# `observation_read_groups`, `source_key`, `un_availability`), which take no tick of the
+# virtual clock: the origin client reads a held variable's declarations from the catalogue.
 _FREE_CALLS = frozenset(
     {
+        "default_facet_policies",
         "default_facet_policy",
         "generation_stamp",
         "observation_read_groups",
@@ -1381,9 +1383,11 @@ _SERIAL_STEPS_SAVED: dict[str, int] = {
     "income-role-bearing-elected-subject-alternate-at-both": 7,
     # With no place named, the elected one-role shape stays in the election, and its subject
     # siblings take fewer reads in series than the baseline's subject-only answer, or join
-    # it as candidates grounded side by side.
-    "placeless-reelect-role-bearing-sibling-widens-scope": 7,
-    "placeless-reelect-subject-and-role-bearing-siblings": 7,
+    # it as candidates grounded side by side. The two below give back one step: the
+    # unheld-value judge reads the label of a mentioned value no menu or index labels, since
+    # the IDS candidate holds GrossNationalIncome off the activity slot the PPP reading binds.
+    "placeless-reelect-role-bearing-sibling-widens-scope": 6,
+    "placeless-reelect-subject-and-role-bearing-siblings": 6,
     "placeless-subject-elected-role-bearing-alternate": 1,
 }
 

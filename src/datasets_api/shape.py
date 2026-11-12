@@ -27,7 +27,7 @@ from materialise.facets import ElectedDataset
 from materialise.graph import GraphReader
 from materialise.roles import DegenerateObservationProperties
 from materialise.roles import declared_roles as derive_declared_roles
-from materialise.trace import MemberFamily
+from statvar_members import MemberFamily
 
 _STAT_VAR_PREFIX = "dcid:"
 
@@ -47,7 +47,8 @@ class StatVarShape:
     shape read from the graph. `family` is the whole population the identity the shape was
     resolved for admits, and `None` when member resolution could not state it.
     `stub_candidates` holds the `dcid:` refs the graph walk left out of that family because
-    their complete read carries no definition arc (`MemberGroup.stub_candidates`).
+    a trusted read of each carries no definition arc or finds no node, and no read showed one
+    (`MemberGroup.stub_candidates`).
     `component` is the component of a composite identity the shape was resolved for
     (`code_index.composites.component_identities`), and `None` for a plain identity's shape.
     """

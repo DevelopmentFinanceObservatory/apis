@@ -56,7 +56,7 @@ if TYPE_CHECKING:
     from materialise.pipeline import MaterialisationRequest
     from series_coverage.index import CoverageIndex
 
-DEPENDENCIES_SCHEMA = 1
+DEPENDENCIES_SCHEMA = 2
 """The version of `Dependencies.as_json`'s shape. A stored fingerprint of another schema
 compares as changed (`dependency_changes`). A deploy that changes what the materialiser writes
 for unchanged inputs bumps it, since no member moves for a code change and a head keyed on an

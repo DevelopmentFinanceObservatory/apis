@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from code_index.types import PartyRow
+from code_index.types import PartyRow, RoleAxis
 from search.engine.retrieval.retrieve import Materialised, materialise
 from search.engine.retrieval.role_resolve import graph_confirm_resolve
 from search.engine.retrieval.role_scope import open_role_axis_members
@@ -222,14 +222,15 @@ def test_role_axis_facts_reports_both_roles_when_both_open():
 
 _DAC = "TESTFIXTURE/Dataset/DAC"
 _CRS = "TESTFIXTURE/Dataset/CRS"
+_DONOR_IN_BOTH: tuple[tuple[str, RoleAxis], ...] = ((_CRS, "origin"), (_DAC, "origin"))
 _PARTIES = {
-    "country/FRA": PartyRow(dcid="country/FRA", kind="party"),
-    "country/DEU": PartyRow(dcid="country/DEU", kind="party"),
-    "DACGroup/DAC": PartyRow(dcid="DACGroup/DAC", kind="total"),
+    "country/FRA": PartyRow(dcid="country/FRA", kind="party", published=_DONOR_IN_BOTH),
+    "country/DEU": PartyRow(dcid="country/DEU", kind="party", published=_DONOR_IN_BOTH),
+    "DACGroup/DAC": PartyRow(dcid="DACGroup/DAC", kind="total", published=_DONOR_IN_BOTH),
     "DACGroup/EU": PartyRow(
         dcid="DACGroup/EU",
         kind="party",
-        datasets=(_CRS, _DAC),
+        published=((_CRS, "origin"), (_DAC, "origin")),
         dataset_kinds=((_CRS, "party"), (_DAC, "total")),
     ),
 }

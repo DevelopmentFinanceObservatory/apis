@@ -9,6 +9,7 @@ import pytest
 
 from code_index.types import PartyRow, WholeMarker
 from materialise.errors import MaterialisationUsageError
+from materialise.projection import long_kind_cell
 from materialise.reshape import (
     _MAX_HOMOGENEITY_VALUES_PER_GROUP,
     _MAX_NAMED_DUPLICATE_KEYS,
@@ -1152,11 +1153,26 @@ _WINDOWED_PARTIES = {
         dcid="donor/ALL",
         kind="total",
         party_class="official",
+        published=((_DAC2A, "origin"), (_DAC2B, "origin")),
         whole=(WholeMarker(dataset=_DAC2A, covers=("official",), years=(2020, 2021)),),
     ),
-    "donor/A": PartyRow(dcid="donor/A", kind="party", party_class="private"),
-    "donor/R": PartyRow(dcid="donor/R", kind="residual", party_class="residual"),
-    "donor/MIX": PartyRow(dcid="donor/MIX", kind="total"),
+    "donor/A": PartyRow(
+        dcid="donor/A",
+        kind="party",
+        party_class="private",
+        published=((_DAC2A, "origin"), (_DAC2B, "origin")),
+    ),
+    "donor/R": PartyRow(
+        dcid="donor/R",
+        kind="residual",
+        party_class="residual",
+        published=((_DAC2A, "origin"), (_DAC2B, "origin")),
+    ),
+    "donor/MIX": PartyRow(
+        dcid="donor/MIX",
+        kind="total",
+        published=((_DAC2A, "origin"), (_DAC2B, "origin")),
+    ),
 }
 
 
@@ -1193,7 +1209,7 @@ class TestEnrichColumns:
         ("columns", "rows", "cells"),
         [
             pytest.param(
-                ("donor", "time_period", "provenance"),
+                ("financingProvider", "time_period", "provenance"),
                 (
                     ("donor/ALL", "2019", _DAC2A),
                     ("donor/ALL", "2021", _DAC2A),
@@ -1213,19 +1229,19 @@ class TestEnrichColumns:
                 id="the-row-dataset-and-year-decide",
             ),
             pytest.param(
-                ("donor", "time_period"),
+                ("financingProvider", "time_period"),
                 (("donor/ALL", "2021"), ("donor/A", "2021")),
                 [("total", "official", ""), ("party", "private", "false")],
                 id="no-provenance-column-leaves-a-whole-total-empty",
             ),
             pytest.param(
-                ("donor", "provenance"),
+                ("financingProvider", "provenance"),
                 (("donor/ALL", _DAC2A), ("donor/A", _DAC2A)),
                 [("total", "official", ""), ("party", "private", "false")],
                 id="no-time-period-column-leaves-a-windowed-total-empty",
             ),
             pytest.param(
-                ("donor", "time_period", "provenance"),
+                ("financingProvider", "time_period", "provenance"),
                 (
                     ("donor/ALL", "2020/2022", _DAC2A),
                     ("donor/ALL", "bogus", _DAC2A),
@@ -1245,9 +1261,9 @@ class TestEnrichColumns:
         result, warnings = enrich_columns(
             table,
             requests=(
-                ("donor", "party_kind"),
-                ("donor", "party_class"),
-                ("donor", "party_whole"),
+                ("financingProvider", "party_kind"),
+                ("financingProvider", "party_class"),
+                ("financingProvider", "party_whole"),
             ),
             lookup={},
             parties=_WINDOWED_PARTIES,
@@ -1255,30 +1271,70 @@ class TestEnrichColumns:
 
         assert result.columns == (
             *columns,
-            "donor_party_kind",
-            "donor_party_class",
-            "donor_party_whole",
+            "financingProvider_party_kind",
+            "financingProvider_party_class",
+            "financingProvider_party_whole",
         )
         assert [row[-3:] for row in result.rows] == cells
         assert warnings == ()
 
     def test_a_party_field_writes_only_its_own_column_and_an_unlisted_party_counts_a_miss(self):
         table = Table(
-            columns=("donor", "time_period"), rows=(("donor/A", "2021"), ("donor/X", "2021"))
+            columns=("financingProvider", "time_period"),
+            rows=(("donor/A", "2021"), ("donor/X", "2021")),
         )
 
         result, warnings = enrich_columns(
-            table, requests=(("donor", "party_class"),), lookup={}, parties=_WINDOWED_PARTIES
+            table,
+            requests=(("financingProvider", "party_class"),),
+            lookup={},
+            parties=_WINDOWED_PARTIES,
         )
 
-        assert result.columns == ("donor", "time_period", "donor_party_class")
+        assert result.columns == (
+            "financingProvider",
+            "time_period",
+            "financingProvider_party_class",
+        )
         assert [row[-1] for row in result.rows] == ["private", ""]
         (warning,) = (cast(EnrichmentUnavailableWarning, warning) for warning in warnings)
         assert (warning["code"], warning["column"], warning["count"]) == (
             "enrichment_unavailable",
-            "donor_party_class",
+            "financingProvider_party_class",
             1,
         )
+
+    @pytest.mark.parametrize("per_row", [True, False], ids=["frame", "pivot"])
+    def test_a_party_s_kind_cell_reads_its_column_s_axis_as_the_long_layout_does(self, per_row):
+        """A party that is a total where B publishes it as a recipient and a party where A
+        publishes it as a donor reads `party` as a provider and `total` as a recipient, in a
+        frame or pivot cell and in the long layout's `<role>_kind` alike."""
+        parties = {
+            "MixedParty": PartyRow(
+                dcid="MixedParty",
+                kind="party",
+                party_class="official",
+                published=(("A", "origin"), ("B", "destination")),
+                dataset_kinds=(("B", "total"),),
+            )
+        }
+        roles = ("financingProvider", "financingRecipient")
+        table = Table(columns=roles, rows=(("MixedParty", "MixedParty"),))
+
+        result, warnings = enrich_columns(
+            table,
+            requests=tuple((role, "party_kind") for role in roles),
+            lookup={},
+            parties=parties,
+            per_row=per_row,
+        )
+
+        assert result.rows[0][2:] == ("party", "total")
+        assert warnings == ()
+        assert [
+            long_kind_cell("MixedParty", role=role, parties=parties, period=None, provenance=None)
+            for role in roles
+        ] == ["official", "total"]
 
     def test_two_entity_columns_in_one_call_each_get_their_own_columns(self):
         table = Table(

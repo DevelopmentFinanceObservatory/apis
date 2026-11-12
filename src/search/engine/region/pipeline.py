@@ -26,7 +26,7 @@ from origin_catalogue import (
 )
 from search.engine.binders import Binder, GeminiBinder
 from search.engine.clients.graph import EngineGraphClient
-from search.engine.clients.llm import SupportsLLM, recording_llm_usage
+from search.engine.clients.llm import SupportsLLM, recording_llm_usage, sum_usage
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.deadline import _cancel_trailing_tasks
 from search.engine.degraded_reads import (
@@ -35,15 +35,15 @@ from search.engine.degraded_reads import (
     note_degraded_read,
     recording_degraded_reads,
 )
-from search.engine.envelope import _sum_usage, now_ms
+from search.engine.envelope import now_ms
 from search.engine.errors import (
     RATE_TABLE_REFUSALS,
-    DeclaredDefaultUnsupportedError,
     DefaultScopeIndexSourcedError,
     EngineInfraError,
 )
 from search.engine.events import Event, EventSink
 from search.engine.extract import DateRequest
+from search.engine.interpret import Detected
 from search.engine.leg_phase import enter_phase
 from search.engine.qualifier_match import CodedQualifier
 from search.engine.region.candidate_admission import alternates_unevaluated_warning
@@ -96,7 +96,7 @@ from search.engine.region.result import (
     every_member_phrases,
     with_composite_answer,
 )
-from search.engine.region.scope_decision import decide_spec_scope, scope_facts
+from search.engine.region.scope_decision import decide_guarded, scope_facts
 from search.engine.region.source_choice import (
     allows_un_system,
     answer_provenances,
@@ -150,7 +150,6 @@ _UPSTREAM_FAILURES: Final = (
 
 # Refusals of the whole request that a pass raises on purpose (`_fill_gap`).
 _REQUEST_REFUSALS: Final = (
-    DeclaredDefaultUnsupportedError,
     DefaultScopeIndexSourcedError,
     *RATE_TABLE_REFUSALS,
 )
@@ -175,6 +174,7 @@ async def resolve_variable(
     operations: Sequence[Operation] = (),
     open_axes: frozenset[RoleAxis] = frozenset(),
     query_text: str | None = None,
+    unclaimed: tuple[str, ...] = (),
     qualifiers: tuple[CodedQualifier, ...] | None = None,
     pac: bool,
     graph: EngineGraphClient,
@@ -197,6 +197,7 @@ async def resolve_variable(
     options: EngineOptions | None = None,
     door: EntryPath = "parsed",
     scope_intake: ScopeIntake | None = None,
+    detected: Detected | None = None,
 ) -> RegionResult:
     """Run recall, binding, materialisation, and answer assembly for one variable.
 
@@ -215,7 +216,9 @@ async def resolve_variable(
     request that leave something out and qualify this part, with the requirements judging
     its answers on them (`state.exclusion_requirements`); the result names those every
     answer meets (`RegionResult.met_exclusions`). `query_text` adds the query, each such stretch blanked,
-    as a match source for a single-variable request. `qualifiers` adds a typed source. Its phrase-relative spans stay separate from variable spans. The raw-text door
+    as a match source for a single-variable request, and `unclaimed` the stretches of it no
+    reader of the extraction claims, whose measure values the part names
+    (`ResolveState.unclaimed`). `qualifiers` adds a typed source. Its phrase-relative spans stay separate from variable spans. The raw-text door
     supplies both qualifier inputs.
 
     `admission` checks derived shape roles before election. Direct callers default to
@@ -247,6 +250,8 @@ async def resolve_variable(
     part's frame (`ResolveState.frame`); a direct caller states them as the parsed door's does.
     `scope_intake` is the part's posted scope entries and total intent, which every
     resolution of the part starts its `ResolveState.scope_selection` from; None posts none.
+    `detected` is a detection of the part's recall text the door already made under the
+    part's scope, which recall takes in place of its own (`interpret.recall`).
 
     `graph` and `sdmx` are shared, thread-safe clients. Dev-finance role-keyed observation and
     availability reads use `sdmx`. `llm` is stateless per call. `binder` reads the quantity
@@ -309,6 +314,7 @@ async def resolve_variable(
             entities=entities,
             date_request=date_request,
             detect_query=detect_query,
+            detected=detected,
             role_query=role_query,
             entity_roles=entity_roles or {},
             member_entities=member_entities,
@@ -318,6 +324,7 @@ async def resolve_variable(
             operations=tuple(operations),
             open_axes=open_axes,
             query_text=query_text,
+            unclaimed=unclaimed,
             qualifiers=qualifiers,
             door=door,
             pool=pool,
@@ -511,7 +518,7 @@ async def resolve_variable(
     result, _lost = await attempt(
         party_words_off=True, sink=emit, carried=carried, carried_consulted=no_data
     )
-    usage = functools.reduce(_sum_usage, spent.calls, result.llm_usage)
+    usage = functools.reduce(sum_usage, spent.calls, result.llm_usage)
     return dataclasses.replace(result, llm_usage=usage)
 
 
@@ -595,7 +602,8 @@ def _with_scope_choices(result: RegionResult, state: ResolveState) -> RegionResu
     """`result` stating how its definite answer was counted (`RegionResult.scope_choices`),
     the scope the answer phase or the candidates path decided for it before its preview
     launched (`ResolveState.scope_decision`), else one decided here from the answer
-    (`scope_decision.decide_spec_scope`). A result
+    (`scope_decision.decide_guarded`), so a decision that raises leaves the answer as one
+    table. A result
     that is not definite states none. The scope is built in memory, and the rules read the
     bound release's code index, the request's coverage snapshot and the part's operations,
     groups and served datasets (`scope_facts`). Only a dataset_resubmit's posted
@@ -611,7 +619,7 @@ def _with_scope_choices(result: RegionResult, state: ResolveState) -> RegionResu
     spec = result.spec
     decision = state.scope_decision
     if decision is None or decision.spec_id != spec.spec_id:
-        decision = decide_spec_scope(
+        decision = decide_guarded(
             spec,
             selection=state.scope_selection,
             operations=state.operations,
@@ -769,9 +777,9 @@ async def _fill_gap(
     merged shapes that took no seat on our menu (`_unseated_un_shapes`), since the binder
     rated "none" above only the ones it saw. What the leg's reads could not serve
     (`UnPool.unserved`, `UnPool.lost`) joins the part's records only when the pool reaches
-    a menu, so an answer our pass serves without it carries none of it. A declared-default refusal
-    (`DeclaredDefaultUnsupportedError`), an index-sourced shape meeting a default scope
-    (`DefaultScopeIndexSourcedError`) or a conversion-table refusal (`RATE_TABLE_REFUSALS`)
+    a menu, so an answer our pass serves without it carries none of it. An index-sourced shape
+    meeting a default scope (`DefaultScopeIndexSourcedError`) or a conversion-table refusal
+    (`RATE_TABLE_REFUSALS`)
     in the UN pass propagates, since each refuses the request on every door; a UN answer
     leaving terms unmet refuses `qualifier_not_bound` before any of them (`_run_phases`),
     and that refusal meets ours by the rules above. Any other
@@ -884,7 +892,7 @@ async def _fill_gap(
         chosen,
         warnings=(*chosen.warnings, *carried),
         timing_by_step=timing,
-        llm_usage=_sum_usage(result.llm_usage, second.llm_usage),
+        llm_usage=sum_usage(result.llm_usage, second.llm_usage),
     )
 
 

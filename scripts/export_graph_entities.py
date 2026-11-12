@@ -29,6 +29,7 @@ import httpx
 
 from code_index.query import CodeIndex
 from code_index.shared import get_index
+from code_index.types import ANY_AXIS, ANY_DATASET
 from dc_graph import GraphClient, label_or_self_name
 from dfo_platform.cloud_run_auth import cloud_run_auth
 from graph_release.context import bound_served_release
@@ -139,7 +140,9 @@ def _exported_total_labels(index: CodeIndex) -> tuple[dict[str, str], frozenset[
     labels = {}
     grouped = set()
     for dcid, party in index.parties.items():
-        if party.kind_over() != "total" or not ("origin" in party.axes or party.whole):
+        if party.kind_over(ANY_AXIS) != "total" or not (
+            party.publishes("origin", ANY_DATASET) or party.whole
+        ):
             continue
         if party.label is None:
             raise SystemExit(

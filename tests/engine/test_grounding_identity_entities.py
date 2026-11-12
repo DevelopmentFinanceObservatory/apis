@@ -460,8 +460,8 @@ def test_role_scope_defaulted_warnings_counts_parties_beside_their_totals(totals
     sentence and the default download do; a scope of totals alone counts them all."""
     index = get_index().parties
     members = [
-        *[dcid for dcid, row in index.items() if row.kind_over() == "total"][:totals],
-        *[dcid for dcid, row in index.items() if row.kind_over() == "party"][:parties],
+        *[dcid for dcid, row in index.items() if row.kind_over("destination") == "total"][:totals],
+        *[dcid for dcid, row in index.items() if row.kind_over("destination") == "party"][:parties],
     ]
     discovered = DiscoveredScope(
         axis="destination", role_name="debtor", member_dcids=members, filters={}

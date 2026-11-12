@@ -25,8 +25,7 @@ from datasets_api.codes_materialise import (
 from datasets_api.mint_models import StatVarSetInput
 from materialise import graph as materialise_graph
 from materialise.errors import OverCeilingError
-from materialise.trace import MemberFamily
-from statvar_members import MemberEnumerator, MemberReadDeadline, member_digest
+from statvar_members import MemberEnumerator, MemberFamily, MemberReadDeadline, member_digest
 from statvar_members.enumerate import CANDIDATE_CAP
 from statvar_members.types import UNRESOLVED_NODE
 

@@ -7,11 +7,12 @@ Async calls use `asyncio.run` because the suite has no pytest-asyncio plugin.
 from __future__ import annotations
 
 import asyncio
+import gc
 import time
 import unicodedata
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -20,10 +21,10 @@ from entity_resolution import Admission, EntityResolver
 from search.engine.bind import SlotBindingDraft
 from search.engine.bind_repair import apply_named_exclusions
 from search.engine.clients.graph import EngineGraphClient
-from search.engine.clients.llm import LLM, SupportsLLM
+from search.engine.clients.llm import LLM, UNCOUNTED_CALLS, Sampled, SecondSamples, SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.entry import raw_text
-from search.engine.errors import LLMInfraError
+from search.engine.errors import LLMInfraError, LLMOutputRefused
 from search.engine.exclusion_read import (
     EXCLUSION_READ_SYSTEM_PROMPT,
     Exclusion,
@@ -32,7 +33,7 @@ from search.engine.exclusion_read import (
     QueryReading,
     admit_exclusions,
 )
-from search.engine.extract import ExtractedEntity, Extraction
+from search.engine.extract import EXTRACTION_CALLS, ExtractedEntity, Extraction
 from search.engine.extraction_store import MemoryExtractionStore
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import phase_election
@@ -450,7 +451,8 @@ class _Door:
     """The two calls the door makes, with the speculative parse of `query` under test control.
 
     `read` answers the reader. A parse of `hold` waits for ever. `order` records each call as
-    it starts and `cancelled` each parse cancelled while it ran."""
+    it starts and `cancelled` each parse cancelled while it ran. `parsed` is set once the
+    first extraction's samples have all answered."""
 
     read: ExclusionRead | Exception
     hold: str | None = None
@@ -458,6 +460,7 @@ class _Door:
     read_after_parse: bool = False
     calls: list[tuple[str, str]] = field(default_factory=list)
     cancelled: list[str] = field(default_factory=list)
+    answered: int = 0
     parsing: asyncio.Event = field(default_factory=asyncio.Event)
     parsed: asyncio.Event = field(default_factory=asyncio.Event)
 
@@ -466,6 +469,9 @@ class _Door:
         if schema is ExclusionRead:
             # The parse starts first in the event loop only when the door starts both.
             await (self.parsed if self.read_after_parse else self.parsing).wait()
+            if self.read_after_parse:
+                # The extraction compares its samples a loop turn after the last answers.
+                await asyncio.sleep(0)
             if isinstance(self.read, Exception):
                 raise self.read
             return self.read, {"input_tokens": 5, "output_tokens": 1, "cached_tokens": 0}
@@ -480,7 +486,9 @@ class _Door:
         if self.parse_error is not None:
             raise self.parse_error
         await asyncio.sleep(0)
-        self.parsed.set()
+        self.answered += 1
+        if self.answered == EXTRACTION_CALLS:
+            self.parsed.set()
         return Extraction(kind="resolution", variables=["ODA"]), {
             "input_tokens": 7,
             "output_tokens": 2,
@@ -509,17 +517,18 @@ def test_a_hit_parses_the_blanked_text_and_cancels_a_speculative_parse_still_run
 
     read = _door_read(_HIT_QUERY, door)
 
-    # The speculative parse is cancelled before the parse of the blanked text starts.
-    assert door.calls[-2:] == [("cancelled", _HIT_QUERY), ("Extraction", _BLANKED)]
+    # Both samples of the speculative parse are cancelled before the parse of the blanked
+    # text starts.
+    assert door.calls[-4:] == [("cancelled", _HIT_QUERY)] * 2 + [("Extraction", _BLANKED)] * 2
     assert read.reading.text == _BLANKED
     assert read.extract_result.extraction.variables == ["ODA"]
     assert set(read.timing) == {"extract", "exclusion_read"}
-    # The cancelled parse sent its request and no response reports its tokens.
+    # The cancelled parse sent its two requests and no response reports their tokens.
     assert read.usage == {
-        "input_tokens": 12,
-        "output_tokens": 3,
+        "input_tokens": 24,
+        "output_tokens": 6,
         "cached_tokens": 0,
-        "uncounted_calls": 1,
+        "uncounted_calls": 2,
     }
 
 
@@ -528,7 +537,7 @@ def test_a_hit_counts_the_tokens_of_a_speculative_parse_that_finished():
     read = _door_read(_HIT_QUERY, _Door(read=_read("excluding grants"), read_after_parse=True))
 
     assert read.reading.text == _BLANKED
-    assert read.usage == {"input_tokens": 19, "output_tokens": 5, "cached_tokens": 0}
+    assert read.usage == {"input_tokens": 38, "output_tokens": 10, "cached_tokens": 0}
 
 
 def test_a_read_kept_unblanked_keeps_the_speculative_parse():
@@ -536,7 +545,9 @@ def test_a_read_kept_unblanked_keeps_the_speculative_parse():
 
     read = _door_read(_HIT_QUERY, door)
 
-    assert sorted(door.calls) == [("ExclusionRead", _HIT_QUERY), ("Extraction", _HIT_QUERY)]
+    assert (
+        sorted(door.calls) == [("ExclusionRead", _HIT_QUERY)] * 2 + [("Extraction", _HIT_QUERY)] * 2
+    )
     assert read.reading.left_out == (
         LeftOut("excluding loans", ("loans",), None, "excluding loans"),
     )
@@ -547,7 +558,9 @@ def test_a_miss_keeps_the_speculative_parse_and_starts_no_second_one():
 
     read = _door_read(_HIT_QUERY, door)
 
-    assert sorted(door.calls) == [("ExclusionRead", _HIT_QUERY), ("Extraction", _HIT_QUERY)]
+    assert (
+        sorted(door.calls) == [("ExclusionRead", _HIT_QUERY)] * 2 + [("Extraction", _HIT_QUERY)] * 2
+    )
     assert read.reading.text == _HIT_QUERY
     assert read.extract_result.extraction.variables == ["ODA"]
 
@@ -558,7 +571,7 @@ def test_a_failed_read_fails_the_query_and_cancels_the_speculative_parse():
     with pytest.raises(LLMInfraError):
         _door_read(_HIT_QUERY, door)
 
-    assert door.cancelled == [_HIT_QUERY]
+    assert door.cancelled == [_HIT_QUERY] * 2
 
 
 def test_a_failed_speculative_parse_is_no_failure_of_the_parse_that_counts():
@@ -574,6 +587,122 @@ def test_a_failed_speculative_parse_is_no_failure_of_the_parse_that_counts():
     door.generate_structured = failing_first  # ty: ignore[invalid-assignment]
 
     assert _door_read(_HIT_QUERY, door).reading.text == _BLANKED
+
+
+class _HeldSecondDoor(LLM):
+    """Answers the reader after the speculative parse of `_HIT_QUERY` has served its first
+    sample, whose second sample (seed 2) waits for ever. Every call reports 5 input and 1
+    output token; `cancelled` records each call cancelled while it ran."""
+
+    def __init__(self, cancelled: list[str], first_served: asyncio.Event) -> None:
+        super().__init__(seed=1)
+        self._cancelled = cancelled
+        self._first_served = first_served
+
+    async def generate_structured(self, *, prompt, system, schema):
+        usage = {"input_tokens": 5, "output_tokens": 1, "cached_tokens": 0}
+        if schema is ExclusionRead:
+            await self._first_served.wait()
+            # The speculative parse returns a few loop turns after its first sample.
+            await asyncio.sleep(0.05)
+            return _read("excluding grants"), usage
+        if prompt == _HIT_QUERY and self._seed == 2:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self._cancelled.append(prompt)
+                raise
+        if prompt == _HIT_QUERY:
+            self._first_served.set()
+        return Extraction(kind="resolution", variables=["ODA"]), usage
+
+
+def test_a_discarded_speculative_parse_cancels_its_second_sample_and_counts_it_once():
+    """A request's door whose read blanks a stretch discards a speculative parse that served
+    its first sample. The parse's second sample, still running, is cancelled before the door
+    returns, and counts once, as an uncounted call in the door's usage, never in the
+    request's second samples."""
+
+    async def run() -> tuple[raw_text._DoorRead, list[str], dict | None]:
+        cancelled: list[str] = []
+        held = SecondSamples()
+        door = held.bind(_HeldSecondDoor(cancelled, asyncio.Event()))
+        read = await raw_text._read_and_extract(_HIT_QUERY, llm=door, deadline=_far())
+        cancelled_by_return = list(cancelled)
+        if running := [second.task for second in held._started if not second.task.done()]:
+            await asyncio.wait(running)
+        await held.aclose()
+        return read, cancelled_by_return, held.usage()
+
+    read, cancelled, second_usage = asyncio.run(run())
+
+    assert read.reading.text == _BLANKED
+    assert cancelled == [_HIT_QUERY]
+    # The read's and the blanked parse's first samples, and the discarded parse's two.
+    assert read.usage == {
+        "input_tokens": 15,
+        "output_tokens": 3,
+        "cached_tokens": 0,
+        "uncounted_calls": 1,
+    }
+    # The second samples of the read and of the blanked parse.
+    assert second_usage == {"input_tokens": 10, "output_tokens": 2, "cached_tokens": 0}
+
+
+def test_a_failed_discarded_parse_retrieves_its_finished_second_samples_failure():
+    """A speculative parse the door discards after it failed, whose second sample had
+    already failed, counts its two calls as uncounted and retrieves the second's failure,
+    so asyncio reports no exception left unretrieved."""
+
+    async def failing() -> Sampled[None]:
+        raise LLMInfraError("503")
+
+    async def run() -> tuple[dict | None, list[dict]]:
+        unretrieved: list[dict] = []
+        asyncio.get_running_loop().set_exception_handler(
+            lambda _loop, context: unretrieved.append(context)
+        )
+        samples = SecondSamples()
+        second = samples.start(failing, stage="extraction")
+        samples.count(second)
+        parse = asyncio.create_task(failing())
+        await asyncio.wait([second.task, parse])
+        usage = await raw_text._discarded_usage(cast(Any, parse), samples)
+        del samples, second, parse
+        gc.collect()
+        return usage, unretrieved
+
+    usage, unretrieved = asyncio.run(run())
+
+    assert usage == {UNCOUNTED_CALLS: EXTRACTION_CALLS}
+    assert unretrieved == []
+
+
+_FIRST_TOKENS = {"input_tokens": 7, "output_tokens": 1, "cached_tokens": 0}
+_SECOND_TOKENS = {"input_tokens": 5, "output_tokens": 2, "cached_tokens": 0}
+
+
+def test_a_refused_discarded_parse_counts_the_tokens_its_samples_report():
+    """A speculative parse the door discards after its first sample was refused counts the
+    tokens the refusal reports, and the tokens of its second sample, which had answered
+    and was cancelled before it was judged."""
+
+    async def answered() -> Sampled[str]:
+        return Sampled("second", dict(_SECOND_TOKENS), None)
+
+    async def refused() -> None:
+        raise LLMOutputRefused("refused", usage=dict(_FIRST_TOKENS))
+
+    async def run() -> dict | None:
+        samples = SecondSamples()
+        second = samples.start(answered, stage="extraction")
+        samples.count(second)
+        parse = asyncio.create_task(refused())
+        await asyncio.wait([parse])
+        await asyncio.sleep(0)
+        return await raw_text._discarded_usage(cast(Any, parse), samples)
+
+    assert asyncio.run(run()) == {"input_tokens": 12, "output_tokens": 3, "cached_tokens": 0}
 
 
 def test_a_failed_extraction_on_a_miss_fails_the_query():
@@ -637,7 +766,7 @@ def test_a_repeated_query_makes_no_reader_call_and_no_speculative_parse(monkeypa
 
     first, second = asyncio.run(run())
 
-    assert models.reader_prompts == [_HIT_QUERY]
+    assert models.reader_prompts == [_HIT_QUERY] * 2
     assert parsed in models.parse_prompts
     assert second.reading == first.reading
     assert second.timing["exclusion_read"] == 0
@@ -658,7 +787,8 @@ def test_a_stored_read_with_no_stored_parse_runs_no_speculative_parse(monkeypatc
 
     asyncio.run(run())
 
-    assert models.parse_prompts == [_BLANKED]
+    # The two samples of the blanked text, and no parse of the query.
+    assert models.parse_prompts == [_BLANKED] * 2
 
 
 def test_a_failed_read_stores_nothing(monkeypatch):
@@ -819,8 +949,8 @@ def test_a_query_with_nothing_left_out_sends_extraction_its_own_bytes():
 
     _resolve(query, llm)
 
-    assert llm.prompts["Extraction"] == [query]
-    assert llm.prompts["ExclusionRead"] == [query]
+    assert llm.prompts["Extraction"] == [query] * 2
+    assert llm.prompts["ExclusionRead"] == [query] * 2
 
 
 _NETTING = "nettingBasis"

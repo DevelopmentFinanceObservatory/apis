@@ -101,7 +101,8 @@ def _mint_sum(
             options=MintOptions(groupby=GroupbyOptions(by=["time_period"], op="sum")),
             entity_columns=roles,
             reads=_RenderReads(
-                enrichment=EnrichmentLookup(graph, parties=lambda: {}),
+                enrichment=EnrichmentLookup(graph),
+                parties={},
                 known={},
                 deadline=None,
             ),

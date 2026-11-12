@@ -52,14 +52,13 @@ from materialise import EnrichmentLookup, MaterialisationRequest
 from materialise.content_version import recipe_dependency_fingerprint
 from materialise.rate_tables import RateTableCache
 from materialise.recipe_bodies import RECIPE_BODIES
-from materialise.trace import MemberFamily
 from materialise.window import RequestedWindow
 from origin_catalogue import Catalogue, bound_catalogue, current_catalogue
 from origin_catalogue.origins import BASE, DFO, DataCommons
 from spec_registry import LiveSpecRegistry
 from spec_registry.identity import recompute_identity
 from spec_registry.reader import LiveSpecReader, StoredDefinition
-from statvar_members import MemberEnumerator
+from statvar_members import MemberEnumerator, MemberFamily
 from tests.graph_release.support import release_with
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue, provenance_row
 
@@ -155,7 +154,7 @@ class _Rig:
             ceiling=1_000_000,
             member_concurrency=4,
             enumerator=MemberEnumerator(),
-            enrichment=EnrichmentLookup(self.graph, parties=lambda: {}),
+            enrichment=EnrichmentLookup(self.graph),
             code_index=get_index(),
             rate_cache=RateTableCache(),
             coverage=_coverage_service(),
@@ -234,7 +233,7 @@ def _cut_rig(version_store: FakeVersionRecordDatasetStore) -> _Rig:
         sdmx=SdmxClient(base_url="https://datacommons.one.org/core/api", transport=rig.transport),
         coverage=party_totals._coverage_service(),
         code_index=index,
-        enrichment=EnrichmentLookup(rig.graph, parties=lambda: index.parties),
+        enrichment=EnrichmentLookup(rig.graph),
     )
     recomputed = recompute_identity(party_totals._IDENTITY)
     rig.deps.registry.register_definition(

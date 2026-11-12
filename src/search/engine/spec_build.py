@@ -16,7 +16,7 @@ from code_index.labels import (
     compose_measure_label,
 )
 from code_index.shared import get_index, get_measure_index
-from code_index.types import PartyRow, label_for_pairs
+from code_index.types import PartyRow
 from description.blocks import ranked_values
 from dfo_platform.roles import role_key_axis
 from materialise.enrichment import party_count
@@ -25,6 +25,7 @@ from search.engine import multilaterals
 from search.engine.bind import SlotBindingDraft, slot_label
 from search.engine.config import settings
 from search.engine.departures import members_left_out
+from search.engine.named_group import NamedGroup
 from search.engine.retrieval.bound_values import (
     MeasurePartition,
     StatedMembers,
@@ -32,6 +33,7 @@ from search.engine.retrieval.bound_values import (
     apply_slot_summability,
     bound_source,
     identity_dataset,
+    label_for_partition,
     measure_without_price_basis,
     mint_sibling_identity,
     price_basis_sibling,
@@ -48,6 +50,7 @@ from search.engine.retrieval.read_plan import (
     unserved_entities,
     unserved_members,
 )
+from search.engine.retrieval.whole_reading import unread_whole_group, whole_groups_over_identity
 from search.engine.shape import (
     ShapeDraft,
     SlotKeyDraft,
@@ -88,7 +91,6 @@ from search.models import (
     MeasureAxisValue,
     OpenAxisValueCount,
     OpenConstraintAxisFact,
-    PartyClass,
     ProvenanceRef,
     QuantityForm,
     RequestedWindow,
@@ -265,50 +267,37 @@ def inapplicable_property_dcid(
 
 
 def _resolved_entities(
-    entities: list[Entity], *, multilateral_dcids: Collection[str] = ()
+    entities: list[Entity], *, parties: Mapping[str, PartyRow], datasets: Collection[str]
 ) -> list[ResolvedEntity]:
-    """Project entities with the shared role mapping, marking the origin entities whose
-    dcids are among `multilateral_dcids` (`ResolvedEntity.multilateral`). Confidence is
-    unset."""
-    return [
-        ResolvedEntity(
-            ref=e.ref.ref,
-            label=e.ref.label,
-            entity_type=e.entity_type.ref if e.entity_type else None,
-            role=(role := entity_role_key(e)),
-            multilateral=(
-                True
-                if role_key_axis(role) == "origin" and e.ref.ref in multilateral_dcids
-                else None
-            ),
-            confidence=None,
+    """Project entities with the shared role mapping. An entity on a flow role with a
+    `parties` row states its kind and class where `datasets` publish it, and on the origin
+    role whether it is a multilateral (`multilaterals.party_facts`), each read on the role's
+    axis. Confidence is unset."""
+    resolved = []
+    for e in entities:
+        role = entity_role_key(e)
+        axis = role_key_axis(role)
+        row = parties.get(e.ref.ref) if axis is not None else None
+        facts = (
+            multilaterals.party_facts(row, axis=axis, datasets=datasets)
+            if row is not None and axis is not None
+            else None
         )
-        for e in entities
-    ]
-
-
-@dataclass(frozen=True)
-class NamedGroup:
-    """A group the request named ("EU member states") and the entity dcids it stands for.
-
-    `label` is the group's name as the request gave it. `dcid` is its own graph node, when
-    the graph holds one, and `entity_type` is that node's graph type. `named_alone` are the
-    members the request also named on their own, each as the role key it fills and its
-    dcid. `total` is the party a flow dataset publishes as the group's total
-    (`PlaceSet.total`), which a role can bind in place of the members. `group_id` is the
-    membership registry's id for a group the graph holds no node for (`EntityGroup.group_id`).
-    `whole_of` is the classes of party a side read as its whole population covers
-    (`region.whole_totals.WholeReading`), empty for any other group.
-    """
-
-    label: str
-    dcid: str | None
-    member_dcids: frozenset[str]
-    entity_type: str | None = None
-    named_alone: frozenset[tuple[str, str]] = frozenset()
-    total: str | None = None
-    group_id: str | None = None
-    whole_of: tuple[PartyClass, ...] = ()
+        resolved.append(
+            ResolvedEntity(
+                ref=e.ref.ref,
+                label=e.ref.label,
+                entity_type=e.entity_type.ref if e.entity_type else None,
+                role=role,
+                party_kind=facts.kind if facts is not None else None,
+                party_class=facts.party_class if facts is not None else None,
+                multilateral=(
+                    facts.multilateral if facts is not None and axis == "origin" else None
+                ),
+                confidence=None,
+            )
+        )
+    return resolved
 
 
 def spec_named_groups(spec: Spec) -> tuple[NamedGroup, ...]:
@@ -404,7 +393,7 @@ def role_entity_groups(
     groups = tuple(groups)
     result: dict[str, EntityGroup] = {}
     for role, dcids in _dcids_by_role(entities).items():
-        group = _role_group(groups, dcids)
+        group = _role_group(groups, role, dcids)
         if group is not None:
             total = group.total if {group.total} == dcids else None
             result[role] = EntityGroup(
@@ -484,7 +473,7 @@ def role_group_totals(
     groups = tuple(groups)
     result: list[tuple[str, str]] = []
     for role, dcids in _dcids_by_role(entities).items():
-        group = _role_group(groups, dcids)
+        group = _role_group(groups, role, dcids)
         if group is not None and group.total is not None and {group.total} != dcids:
             result.append((role, group.total))
     return tuple(result)
@@ -497,12 +486,13 @@ def _dcids_by_role(entities: Iterable[Entity]) -> dict[str, set[str]]:
     return dcids_by_role
 
 
-def _role_group(groups: Sequence[NamedGroup], dcids: set[str]) -> NamedGroup | None:
+def _role_group(groups: Sequence[NamedGroup], role: str, dcids: set[str]) -> NamedGroup | None:
     """The group whose members or total a role's dcids equal, the members with or without
-    the residual buckets a summed region binds beside them (`scope.region.is_residual`).
+    the residual buckets a summed group binds beside them on `role`'s axis
+    (`scope.region.is_residual`).
     Of groups with the same members, one with a node wins over one without, then the first
     by dcid, then label."""
-    members = set(without_residuals(dcids, get_index())) or dcids
+    members = set(without_residuals(dcids, get_index(), axis=role_key_axis(role))) or dcids
     matches = [g for g in groups if g.member_dcids in (dcids, members) or {g.total} == dcids]
     if not matches:
         return None
@@ -635,7 +625,8 @@ def build_shape_model(
     suppress_unresolved_population_type_ref: bool = False,
 ) -> Shape:
     """Build a grounded Shape, using the caller's member count. `build_spec` states its
-    `member_digest` (`stated_members`).
+    `member_digest` (`stated_members`) and, beside it, the size of the family it digests
+    as its `member_count`.
 
     ``members`` are the StatVars the answer serves. ``data_commons`` lists the origins
     holding data for one of them, and ``upstream`` names the one source all of them come
@@ -899,7 +890,7 @@ def measure_label_for_partition(partition: MeasurePartition | None) -> MeasureLa
     if partition is None:
         return NO_MEASURE_LABEL
     measure_index = get_measure_index()
-    partition_match = label_for_pairs(partition.values, measure_index.partition_labels)
+    partition_match = label_for_partition(partition, measure_index.partition_labels)
     if partition_match is None:
         return NO_MEASURE_LABEL
     return MeasureLabel(
@@ -990,8 +981,8 @@ def _role_axis_facts(
 ) -> list[RoleAxisFact] | None:
     """Project open role axes, returning None when no facts were supplied.
 
-    Each count is `party_count` of the population, read in `datasets`, the provenances
-    of the served StatVars. A missing member population yields ``member_count=None``
+    Each count is `party_count` of the population on its axis, read in `datasets`, the
+    provenances of the served StatVars. A missing member population yields ``member_count=None``
     and ``members_available=False``. The origin axis states whether its population holds
     a multilateral: one of its members where they are known, else one `datasets` publish
     on the axis (`RoleAxisFact.holds_multilaterals`).
@@ -1002,7 +993,7 @@ def _role_axis_facts(
         RoleAxisFact(
             role=fact.role,
             member_count=(
-                party_count(fact.member_dcids, parties=parties, datasets=datasets)
+                party_count(fact.member_dcids, axis=fact.role, parties=parties, datasets=datasets)
                 if fact.member_dcids is not None
                 else None
             ),
@@ -1026,7 +1017,7 @@ def _axis_holds_multilaterals(
 
 
 def _shared_qualifiers(
-    measure_label_axes: Sequence[str],
+    measure_label: MeasureLabel,
     slots: Sequence[Slot],
     open_axis_facts: Sequence[OpenConstraintAxisFact] | None,
     *,
@@ -1040,13 +1031,17 @@ def _shared_qualifiers(
     from, else its members' labels joined ("official development assistance and private
     sector instruments" for CRS flows 10 and 60). Varying axes are omitted, and duplicate
     label text is removed case-insensitively. The shape label states the first list after
-    the measure label (`_composed_shape_label`). The second names what the series count with
-    no basis or provider scope (`ResolvedSpec.concept_label`): a code a provider option
-    reads as a scope of a published total in `index`, the release's code index, names that
-    total (`provider.provider_total_code`), so DAC1's bilateral ODA names "official
-    development assistance" as the total and its multilateral ODA do.
+    the measure label (`_composed_shape_label`), less any value the measure label names
+    (`MeasurePartitionLabel.named_values`): "climate finance gross disbursements" names the
+    climate objective's total, so the shape label leaves that total out. The second list
+    names what the series count with no basis or provider scope
+    (`ResolvedSpec.concept_label`) and keeps named values: a code a provider option reads
+    as a scope of a published total in `index`, the release's code index, names that total
+    (`provider.provider_total_code`), so DAC1's bilateral ODA names "official development
+    assistance" as the total and its multilateral ODA do.
     """
-    covered = set(measure_label_axes)
+    covered = set(measure_label.axes)
+    named = set(measure_label.named_values)
     shown: list[str] = []
     concept: list[str] = []
     for slot in slots:
@@ -1056,7 +1051,8 @@ def _shared_qualifiers(
         binding = slot.binding
         if isinstance(binding, BindingValue) and binding.value.ref is not None:
             covered.add(prop.ref)
-            shown.append(binding.value.ref.label)
+            if (prop.ref, binding.value.ref.ref) not in named:
+                shown.append(binding.value.ref.label)
             concept.append(_concept_value_label(prop.ref, binding.value.ref, index))
         elif isinstance(binding, BindingSet) and (label := _set_label(binding)) is not None:
             covered.add(prop.ref)
@@ -1066,7 +1062,8 @@ def _shared_qualifiers(
         if fact.property in covered or fact.varies or fact.value is None:
             continue
         covered.add(fact.property)
-        shown.append(fact.value.label)
+        if (fact.property, fact.value.ref) not in named:
+            shown.append(fact.value.label)
         concept.append(fact.value.label)
     return _distinct_labels(shown), _distinct_labels(concept)
 
@@ -1225,9 +1222,11 @@ class AnswerIdentity:
     """What `build_spec` derives from the answer before it reads any option: the identity
     and `spec_id` it mints, the slots and facets it states once the served provenance is
     pinned, the entities the identity hashes, the sources the answer names
-    (`elected_sources`) and the group each role stands for (`ResolvedSpec.entity_groups`,
-    before `with_members_left_out` states what their members leave out), and the datasets
-    that publish the answer's StatVars (`CodeIndex.statvar_provenances`)."""
+    (`elected_sources`), the groups the request named with each whole population read again
+    over the identity (`_restate_whole_groups`), the group each role stands for
+    (`ResolvedSpec.entity_groups`, before `with_members_left_out` states what their members
+    leave out), and the datasets that publish the answer's StatVars
+    (`CodeIndex.statvar_provenances`)."""
 
     spec_id: str
     identity: BaseIdentity
@@ -1235,8 +1234,47 @@ class AnswerIdentity:
     facets: dict[str, ResolvedFacet] | None
     hashed_entities: list[Entity]
     resolved_sources: list[ProvenanceRef]
+    named_groups: tuple[NamedGroup, ...]
     entity_groups: dict[str, EntityGroup]
     served_datasets: frozenset[str]
+
+
+def _restate_whole_groups(
+    named_groups: tuple[NamedGroup, ...], entities: list[Entity], identity: BaseIdentity
+) -> tuple[NamedGroup, ...]:
+    """`named_groups` with each whole population (`NamedGroup.whole_of`) read again over
+    `identity`'s own dataset and window (`whole_reading.whole_groups_over_identity`), the reading
+    a resubmit of the Spec restores: kept where the identity reads the role it stands for
+    as that whole population, and otherwise stated as both doors state it
+    (`whole_reading.unread_whole_group`): dropped where it stands for one whole total, and
+    kept as the plain named set where the role binds a whole total set's members. The roles
+    read are those the
+    request named as one whole population alone (`place_roles._named_wholes`) or was offered
+    one on (`place_roles.whole_total_candidates`), whatever the years the binding judged, so
+    the label depends only on the identity and its roles, as a resubmit's does. A request
+    whose years settle only once its series are read ("the last five years") so states the
+    whole populations of the range it settled on. No other role gains a reading, so
+    "official donors" beside "private donors" stays two named parties."""
+    wholes = tuple(group for group in named_groups if group.whole_of)
+    if not wholes:
+        return named_groups
+    dcids_by_role = _dcids_by_role(entities)
+    roles = {
+        role: group
+        for role, dcids in dcids_by_role.items()
+        if (group := _role_group(wholes, role, dcids)) is not None
+    }
+    read = whole_groups_over_identity(identity, roles)
+    unread = (
+        plain
+        for role in sorted(roles.keys() - read.keys())
+        if (plain := unread_whole_group(roles[role], dcids_by_role[role])) is not None
+    )
+    return (
+        *(group for group in named_groups if not group.whole_of),
+        *unread,
+        *(read[role] for role in sorted(read)),
+    )
 
 
 def answer_identity(
@@ -1257,7 +1295,11 @@ def answer_identity(
 ) -> AnswerIdentity:
     """The identity `build_spec` mints from these of its arguments, and what it states
     beside it (`AnswerIdentity`). The answer phase reads it before the options are counted,
-    so the scope an answer states can be decided before its preview launches."""
+    so the scope an answer states can be decided before its preview launches.
+
+    A role `named_groups` reads as a whole population (`NamedGroup.whole_of`) keeps that
+    reading only where the minted identity reads it over its own window
+    (`_restate_whole_groups`)."""
     if pin_served_provenance and (served := served_provenances(plan)):
         slots = with_served_provenance(slots, served)
         if facets is not None and (provenance_facet := facets.get("provenance")) is not None:
@@ -1276,6 +1318,7 @@ def answer_identity(
         requested_window=requested_window,
         explicit_facets=facet_bindings,
     )
+    named_groups = _restate_whole_groups(tuple(named_groups), hashed_entities, identity_doc)
     index = get_index()
     served_datasets = index.statvar_provenances(sv.ref.ref for sv in stat_vars)
     entity_groups = with_multilateral_holdings(
@@ -1293,6 +1336,7 @@ def answer_identity(
         facets=facets,
         hashed_entities=hashed_entities,
         resolved_sources=elected_sources(resolved_sources or [], identity_doc),
+        named_groups=named_groups,
         entity_groups=entity_groups,
         served_datasets=served_datasets,
     )
@@ -1405,7 +1449,8 @@ def build_spec(
         walked: What the mint states of the members Search's walk settled for the query it
             walked. The Spec states the mint's served count and family digest
             (``stated_members``) for an identity the code index decides and one ``walked``
-            walked, and neither otherwise.
+            walked, and neither otherwise. Where it states the digest, ``shape.member_count``
+            is the size of that family; elsewhere it keeps the count ``shape`` carries.
         Other optional arguments populate response metadata, including render data,
             facets, observations, scope, qualifiers, and open-axis facts. Slot provenance
             properties, scope, qualifiers, open-axis facts, and role-axis facts never feed
@@ -1444,6 +1489,7 @@ def build_spec(
             named_groups=named_groups,
         )
     spec_id, identity_doc = answer.spec_id, answer.identity
+    named_groups = answer.named_groups
     slots, facets, hashed_entities = answer.slots, answer.facets, answer.hashed_entities
     entity_groups = answer.entity_groups
     index = get_index()
@@ -1451,9 +1497,15 @@ def build_spec(
     definition = SpecDefinition(spec_id=spec_id, identity=identity_doc)
     slots = slots_in_identity_order(slots, identity_doc)
     stated = stated_members(identity_doc, walked)
-    digest = stated.digest if stated is not None else None
-    if shape.member_digest != digest:
-        shape = shape.model_copy(update={"member_digest": digest})
+    # A stated family is the one a mint of the definition digests and counts. The admitted
+    # population the shape was built with can hold members asserting slots the identity
+    # leaves out, which that family excludes.
+    if stated is not None and stated.family is not None:
+        shape = shape.model_copy(
+            update={"member_digest": stated.family.digest, "member_count": stated.family.count}
+        )
+    elif shape.member_digest is not None:
+        shape = shape.model_copy(update={"member_digest": None})
 
     alternative_measures, measure_label = _measure_alternatives(
         identity_doc, measure_partition, measure_siblings, measure_served_rows
@@ -1470,7 +1522,7 @@ def build_spec(
 
     # Identity is minted before the display label is composed. See _wire_shape_label.
     qualifiers, concept_qualifiers = (
-        _shared_qualifiers(measure_label.axes, slots, resolved_open_axis_facts, index=index)
+        _shared_qualifiers(measure_label, slots, resolved_open_axis_facts, index=index)
         if measure_partition is not None
         else ([], [])
     )
@@ -1539,18 +1591,7 @@ def build_spec(
                 identity=identity_doc,
                 provenance=provenance.ref if provenance is not None else None,
             ),
-            entities=_resolved_entities(
-                entities,
-                multilateral_dcids={
-                    dcid
-                    for role, dcids in identity_doc.entities.items()
-                    if role_key_axis(role) == "origin"
-                    for dcid in dcids
-                    if multilaterals.is_multilateral(
-                        index.parties.get(dcid), datasets=served_datasets
-                    )
-                },
-            ),
+            entities=_resolved_entities(entities, parties=index.parties, datasets=served_datasets),
             entity_groups=entity_groups or None,
             coverage=coverage,
             headline=headline,

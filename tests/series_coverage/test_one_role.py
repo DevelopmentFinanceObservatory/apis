@@ -45,8 +45,8 @@ ROLE_NAMES = {
     PROVIDER_TOTAL: RoleNames(donor="financingProvider", recipient=None),
 }
 FACET_METADATA = {
-    FACET: FacetMetadata(provenance_id=IDS, unit="CurrencyUSD"),
-    DAC1_FACET: FacetMetadata(provenance_id=DAC1, unit="CurrencyUSD"),
+    FACET: FacetMetadata(provenance_id=IDS, unit="CurrencyUSD", observation_period="P1Y"),
+    DAC1_FACET: FacetMetadata(provenance_id=DAC1, unit="CurrencyUSD", observation_period="P1Y"),
 }
 
 
@@ -207,10 +207,10 @@ def test_pair_rows_report_no_recipient_for_the_donor_only_variable(index: Covera
 
 def test_provenance_shape_lists_the_one_role_axis_alone(index: CoverageIndex) -> None:
     assert index.provenance_shapes[IDS] == ProvenanceShape(
-        observation_periods=frozenset({None}),
+        observation_periods=frozenset({"P1Y"}),
         role_axes=frozenset({frozenset({"destination"}), frozenset({"origin", "destination"})}),
     )
     assert index.provenance_shapes[DAC1] == ProvenanceShape(
-        observation_periods=frozenset({None}),
+        observation_periods=frozenset({"P1Y"}),
         role_axes=frozenset({frozenset({"origin"})}),
     )

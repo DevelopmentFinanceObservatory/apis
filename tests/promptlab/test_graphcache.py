@@ -35,6 +35,7 @@ _EXPECTED_METHODS = (
     "node_arcs",
     "node_type",
     "default_facet_policy",
+    "default_facet_policies",
     "node_arcs_many",
     "node_arc_targets_many",
     "node_names_many",
@@ -756,6 +757,30 @@ def test_detected_sv_round_trips_through_sqlite_unchanged(tmp_path):
 
     assert replayed == written
     assert all(isinstance(c, DetectedSV) for c in replayed.ours)
+
+
+def test_declared_defaults_round_trip_through_sqlite_per_stat_var(tmp_path):
+    """A capture stores each StatVar's declarations, one declaring nothing included, so a
+    replay's batch and single reads answer them without the graph."""
+    declaring, silent = "Count_Person", "Count_Household"
+    path = tmp_path / "graph.sqlite"
+
+    writer = GraphCache(FakeGraph(default_methods={declaring: "CensusPEPSurvey"}), path=path)
+    written = writer.default_facet_policies([declaring, silent])
+    writer.close()
+    reader = GraphCache(FakeGraph(raise_on_call=True), path=path, read_only=True)
+
+    assert set(written) == {declaring}
+    assert reader.default_facet_policies([silent, declaring]) == written
+    assert (
+        reader.default_facet_policy(stat_var=f"dcid:{declaring}", axis="measurementMethod")
+        == written[declaring]["measurementMethod"]
+    )
+    assert reader.default_facet_policy(stat_var=silent, axis="measurementMethod") is None
+    with pytest.raises(CacheMiss):
+        reader.default_facet_policies([declaring, "Count_Unread"])
+    with pytest.raises(CacheMiss):
+        reader.default_facet_policy(stat_var="Count_Unread", axis="measurementMethod")
 
 
 def test_failed_un_resolve_is_captured_per_leg(tmp_path):

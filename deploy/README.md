@@ -80,6 +80,38 @@ Each caller has its own concurrency group (`deploy-dev`, `deploy-production`) wi
 
 Every job moves to the new image before it executes, so a job still on the `gcr.io/cloudrun/hello` placeholder a fresh project starts with never runs as the placeholder. A failed job step stops the run before the service moves to the new image.
 
+### Recipe migration after the services move
+
+`datasets-maintenance normalise-recipes` runs by hand, once per environment, after the first deploy whose image writes a constant-price converted unit with its deflation basis (frame grammar 1.2.0, as `NGN/constant/2024/donor`). A stored recipe that pins such a unit without the basis matches no rebuilt root, so from the service move until the run its derived frame refuses `unit_not_present` on refresh. The task gives each such pin the basis its roots were deflated on and moves the cards drawing the frame to the recipe's new hash. It reads each root's basis from the conversion records the root's version stores per series, the recipe id and the series' declared roles, through `materialise.recipes.deflation_basis`, the rule the conversion applies when it labels a cell, so it reads neither the graph nor the conversion catalogue. A pin takes the basis of the roots feeding its parameter: `left_unit` and `numerator_unit` the roots under `frame_ref`, `right_unit` and `denominator_unit` those under the other side's slot, or under `frame_ref` when that slot is unset, and `unit` every root under the op-spec. It runs by hand because it exits 1 whenever it skips a recipe, and as a deploy step one recipe it can never fix would fail every later deploy. Stored card selects and series coordinates need no run. Select matching and the component export bind a constant-price unit named without its basis, alone or as a side of a composed unit, to the frame's one cell for that currency, prices and base year (`materialise.unit_cells.bind_unit_key`), and refuse when the frame holds that unit under several bases.
+
+Run it as an execution of the maintenance job, dry run first, with the environment's values for the three variables:
+
+```sh
+gcloud run jobs execute "$JOB_DATASETS_MAINTENANCE" --region="$REGION" --project="$PROJECT_ID" \
+  --wait --args=normalise-recipes,--dry-run
+gcloud run jobs execute "$JOB_DATASETS_MAINTENANCE" --region="$REGION" --project="$PROJECT_ID" \
+  --wait --args=normalise-recipes
+```
+
+The dry run writes one `datasets_recipes_normalised` line and changes nothing. The line counts the `recipes` read, the card `revisions` it would move, and each recipe once under one outcome: `normalised`, `unchanged`, or a skip reason, so those counts add up to `recipes`. Each skipped recipe gets one `datasets_recipe_normalise_skipped` line naming its `spec_id`, `content_version`, `reason` and the `replay_key` its sort computes. A recipe whose sort is `unreproducible` or whose new key is `replay_key_held` is left whole under that reason. A `basis_undetermined` recipe has a pin whose roots give no basis or several, or a root whose stored version cannot tell; its line also names the pin's `parameter`, the `roots` it read as `spec_id@content_version`, and the `cause`: `root_unread`, `no_series_record`, `unknown_recipe`, `no_single_deflator_role`, `no_basis` or `several_bases`. Its pins are left as they are, and its frame needs minting again; the run still sorts its root options when they are out of order, under the `replay_key` its line names. A recipe skipped for its sort names its undetermined pin on the same line. A second run changes nothing.
+
+Rolling back is safe before the run. After it, a migrated pin carries `deflation_basis`, which an image on a frame grammar older than 1.2.0 refuses as an unknown unit member, so every migrated recipe refuses on replay under that image. Once the task has run, roll back only to an image whose frame grammar is 1.2.0 or later.
+
+### Party-kind coverage after the services move
+
+`datasets-maintenance backfill-party-kind-coverage` runs by hand, once per environment, after the first deploy whose image counts a party in an output profile's `party_kind` coverage where every layout fills its cells on the role column's axis: a long download, which reads each row for its own dataset, and a pivot, which reads the party once over the datasets the frame serves it from. A profile minted by an earlier image counted a party for no dataset and on any axis, so the options document can misstate a party column's kind coverage for a party that is a total in one dataset and a party in another. The task reads each version's stored frame, counts its `party_kind` coverage again under the served graph release's code index, and rewrites the profile's `party_kind` entries in the version row's `output_profile` column and in its stored body where the count differs, each entry in its place. The write takes the version's link lock, writes only over the profile it counted from, and sets the body's `output_profile` alone, so it keeps any other writer's change to the profile or the body. A new entry takes its place by the profile's own role columns, the order a mint writes them in. It reads no graph, so a party it names as missing carries the label the profile already holds for it, or none.
+
+Run it as an execution of the maintenance job, dry run first, with the environment's values for the three variables:
+
+```sh
+gcloud run jobs execute "$JOB_DATASETS_MAINTENANCE" --region="$REGION" --project="$PROJECT_ID" \
+  --wait --args=backfill-party-kind-coverage,--dry-run
+gcloud run jobs execute "$JOB_DATASETS_MAINTENANCE" --region="$REGION" --project="$PROJECT_ID" \
+  --wait --args=backfill-party-kind-coverage
+```
+
+Each run writes one `datasets_party_kind_backfilled` line counting the versions `refreshed` (on a dry run, those it would rewrite), `unchanged`, `frame_gone` (no tier holds the frame, so the row is left as it is), `changed_under_run` (the profile changed while it counted) and `copies_differ` (the row's `output_profile` column and its body's copy differ, which needs a hand repair), with `failed` and `dry_run`. Each row whose copies differ gets one `datasets_party_kind_backfill_copies_differ` `ERROR` line, and the run exits 1. Each version that fails gets one `datasets_party_kind_backfill_failed` line with its `subject_id`, `content_version` and traceback, and the run exits 1. A second run changes nothing. Rolling back after the run is safe: an older image reads the rewritten profile as it reads any other.
+
 Manual deployments trigger via `workflow_dispatch` in GitHub Actions and always deploy the
 dispatched commit, whether or not it's already live, since dispatch exists to force a redeploy
 (to re-run the migration jobs, for instance, or to roll back). Roll back by dispatching the older

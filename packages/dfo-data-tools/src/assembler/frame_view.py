@@ -22,7 +22,8 @@ from assembler.errors import BindingInvalid
 from assembler.limits import LABEL_MAX, PER_DIMENSION_LISTING_CAP
 from assembler.ports import Continuation, DimensionView, StructuralView
 from assembler.series_id import Coordinates
-from materialise.bundle_columns import MEASUREMENT_METHOD_COLUMN, PROVENANCE_COLUMN
+from dfo_platform.columns import PROVENANCE_COLUMN
+from materialise.bundle_columns import MEASUREMENT_METHOD_COLUMN
 from materialise.continued_series import (
     continuation_leads,
     continued_series_of_entries,

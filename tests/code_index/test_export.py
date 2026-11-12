@@ -11,6 +11,7 @@ import gzip
 import json
 import re
 from dataclasses import dataclass, field
+from itertools import product
 from pathlib import Path
 
 import pytest
@@ -43,6 +44,7 @@ from code_index.export import (
     _partly_stated_value_to_dict,
     _validate_declared_defaults,
     _verify_axis_coverage,
+    _verify_constraint_axis_values_preferred,
     _verify_measure_label_named_values,
     _verify_measure_nouns,
     _verify_measure_partition_labels,
@@ -361,6 +363,114 @@ def test_hierarchical_code_row_carries_stripped_label_and_synonyms():
     child = by_dcid["SysHierChild"]
     assert child["label"] == "child sector"
     assert child["parent"] == "SysHierRoot"
+
+
+@pytest.mark.parametrize(
+    ("classification_codes", "codes", "expected"),
+    [
+        (True, ("10",), "10"),
+        (True, (), ExportRefused),
+        (False, (), None),
+        (False, ("10",), ExportRefused),
+    ],
+)
+def test_a_code_row_carries_a_classification_code_exactly_when_its_system_declares_them(
+    classification_codes: bool, codes: tuple[str, ...], expected: str | type | None
+):
+    graph = _FakeGraph(
+        forward_arcs={
+            "SysFlatA": {
+                "typeOf": ("SysFlatEnum",),
+                "classificationCode": codes,
+                "name": ("flat alpha",),
+            },
+        }
+    )
+    config = dataclasses.replace(_FLAT, classification_codes=classification_codes)
+    if expected is ExportRefused:
+        with pytest.raises(ExportRefused, match="SysFlatA"):
+            export_code_system(graph, config)
+    else:
+        _, rows = export_code_system(graph, config)
+        assert [row["code"] for row in rows] == [expected]
+
+
+_OBJECTIVE_PROVENANCE = "provenance/ObjectiveDataset"
+_OBJECTIVE = CodeSystemConfig(
+    code_system="objective",
+    enum_dcid="ObjectiveEnum",
+    expected_hierarchical=True,
+    disjoint_from_children=False,
+    summable=False,
+    absent_reading="not_declared",
+    declared_by_every_statvar_of=(_OBJECTIVE_PROVENANCE,),
+    plain_name="objective",
+    classification_codes=False,
+)
+
+
+def test_a_system_without_codes_round_trips_beside_coded_systems_on_one_five_tuple():
+    """The objective rows share the disbursement five-tuple with the coded systems' rows and
+    carry no code, as the climate policy objectives do. The index orders them by dcid, finds
+    none by code, and reads the total alone for a binding of it."""
+    graph = _two_system_graph()
+    objective_shape = {
+        **graph.forward_arcs["SV_Disbursement_Gross"],
+        "constraintProperties": ("objective", "financialFlowType", "nettingBasis"),
+    }
+    del objective_shape["sysHier"], objective_shape["sysFlat"]
+    graph.forward_arcs |= {
+        "ObjectiveTotal": {"typeOf": ("ObjectiveEnum",), "name": ("all objectives",)},
+        **{
+            dcid: {
+                "typeOf": ("ObjectiveEnum",),
+                "name": (name,),
+                "specializationOf": ("ObjectiveTotal",),
+            }
+            for dcid, name in (("ObjectiveB", "adaptation only"), ("ObjectiveA", "mitigation"))
+        },
+        **{
+            f"SV_Objective_{value}": {**objective_shape, "objective": (value,)}
+            for value in ("ObjectiveTotal", "ObjectiveA", "ObjectiveB")
+        },
+    }
+    covered = _covered(graph)
+    provenances = {
+        dcid: (_OBJECTIVE_PROVENANCE,) if dcid.startswith("SV_Objective_") else held
+        for dcid, held in covered.provenances.items()
+    }
+    document = export_index(
+        graph,
+        party_reader=graph,
+        coverage=CoverageJoin(provenances=provenances, parties={}),
+        datasets=(
+            *_TEST_DATASETS,
+            dataclasses.replace(_TEST_DATASETS[0], provenance=_OBJECTIVE_PROVENANCE, rank=1),
+        ),
+        partly_stated_values=(),
+        graph_endpoint="https://fake.example",
+        code_systems=(_HIERARCHICAL, _FLAT, _OBJECTIVE),
+        measure_axes=(),
+        total_groups={},
+        whole_totals={},
+        whole_total_sets=(),
+        party_kind_overrides={},
+    )
+    index = parse_index(document)
+
+    assert [row.code for row in index.codes_by_system["objective"]] == [None, None, None]
+    assert [row.dcid for row in index.codes_by_system["objective"]] == [
+        "ObjectiveA",
+        "ObjectiveB",
+        "ObjectiveTotal",
+    ]
+    assert [row.dcid for row in index.children("ObjectiveTotal")] == ["ObjectiveA", "ObjectiveB"]
+    assert index.expansion("ObjectiveTotal") == ("ObjectiveTotal",)
+    assert {row.dcid for row in index.statvars if _OBJECTIVE_PROVENANCE in row.provenances} == {
+        "SV_Objective_ObjectiveTotal",
+        "SV_Objective_ObjectiveA",
+        "SV_Objective_ObjectiveB",
+    }
 
 
 # --- The flat system's false case ---
@@ -1311,7 +1421,7 @@ _MEASURE_PARTITION_LABELS_FOR_TEST = (
             ("nettingBasis", "Gross"),
             ("populationType", "FinancialFlow"),
         ),
-        label="gross disbursements",
+        label="gross alpha disbursements",
         named_values=(("sysFlat", "SysFlatA"),),
         definition="The total amount released before any repayments are subtracted.",
     ),
@@ -1320,6 +1430,7 @@ _MEASURE_NOUNS_FOR_TEST = (
     MeasurePartitionLabel(
         axis_values=(("populationType", "EconomicProduction"), ("measuredProperty", "valueAdded")),
         label="GDP",
+        also_called=("gross domestic product",),
     ),
 )
 
@@ -1350,10 +1461,12 @@ def _measure_label_nodes(*, include_net: bool = True) -> dict[str, dict[str, tup
 
 
 def _two_system_graph_with_measure_labels(*, include_net: bool = True) -> _FakeGraph:
-    """Add labels per node while preserving constraint values' `typeOf` arcs."""
+    """Add labels per node while preserving constraint values' `typeOf` arcs. SysFlatA, the
+    value the gross label names, reads "alpha", a word of that label."""
     graph = _two_system_graph()
     for dcid, arcs in _measure_label_nodes(include_net=include_net).items():
         graph.forward_arcs[dcid] = graph.forward_arcs.get(dcid, {}) | arcs
+    graph.forward_arcs["SysFlatA"]["alternateName"] = ("alpha",)
     return graph
 
 
@@ -1591,6 +1704,7 @@ def test_export_index_wires_measure_axes_into_the_document(tmp_path):
             "label": "commitments",
             "named_values": [],
             "definition": None,
+            "also_called": [],
         },
         {
             "axis_values": [
@@ -1601,6 +1715,7 @@ def test_export_index_wires_measure_axes_into_the_document(tmp_path):
             "label": "disbursements",
             "named_values": [],
             "definition": None,
+            "also_called": [],
         },
         {
             "axis_values": [
@@ -1609,9 +1724,10 @@ def test_export_index_wires_measure_axes_into_the_document(tmp_path):
                 ["nettingBasis", "Gross"],
                 ["populationType", "FinancialFlow"],
             ],
-            "label": "gross disbursements",
+            "label": "gross alpha disbursements",
             "named_values": [["sysFlat", "SysFlatA"]],
             "definition": "The total amount released before any repayments are subtracted.",
+            "also_called": [],
         },
     ]
     assert document["measure_nouns"] == [
@@ -1623,6 +1739,7 @@ def test_export_index_wires_measure_axes_into_the_document(tmp_path):
             "label": "GDP",
             "named_values": [],
             "definition": None,
+            "also_called": ["gross domestic product"],
         }
     ]
     # The loader reads both blocks back into the authored values.
@@ -1800,6 +1917,22 @@ def test_guard_names_every_offending_partition_not_just_the_first():
     assert "Net" in message
 
 
+@pytest.mark.parametrize(
+    ("netting_basis", "refused"),
+    [("Net", False), ("Gross", False), ("Unlisted", True)],
+    ids=["preferred-net", "preferred-gross", "outside-prefer"],
+)
+def test_constraint_axis_values_must_appear_in_the_axis_prefer_list(netting_basis, refused):
+    rows = [_guard_row(financial_flow_type="Disbursement", netting_basis=netting_basis)]
+
+    if not refused:
+        _verify_constraint_axis_values_preferred(rows, _GUARD_AXES)  # raises nothing
+        return
+    with pytest.raises(ExportRefused, match="Unlisted") as exc_info:
+        _verify_constraint_axis_values_preferred(rows, _GUARD_AXES)
+    assert "nettingBasis" in str(exc_info.value)
+
+
 def test_guard_is_a_noop_when_no_measure_axes_are_declared():
     rows = [_guard_row(financial_flow_type="Disbursement", netting_basis="Gross")]
 
@@ -1879,18 +2012,127 @@ def test_a_measure_label_named_value_no_partition_row_carries_aborts_the_export(
         },
     }
     codes = [
-        {"dcid": "SysFlatA", "code_system": "sysFlat"},
-        {"dcid": "SysFlatB", "code_system": "sysFlat"},
+        {
+            "dcid": "SysFlatA",
+            "code_system": "sysFlat",
+            "label": "flat alpha",
+            "synonyms": ["alpha"],
+        },
+        {"dcid": "SysFlatB", "code_system": "sysFlat", "label": "flat beta", "synonyms": []},
     ]
     (label,) = [
         label
         for label in _MEASURE_PARTITION_LABELS_FOR_TEST
-        if label.label == "gross disbursements"
+        if label.label == "gross alpha disbursements"
     ]
     _verify_measure_label_named_values([row], codes, _MEASURE_AXES_FOR_TEST, [label])
     wrong = dataclasses.replace(label, named_values=(named_value,))
     with pytest.raises(ExportRefused, match=named_value[1]):
         _verify_measure_label_named_values([row], codes, _MEASURE_AXES_FOR_TEST, [wrong])
+
+
+def test_a_row_reading_a_label_that_names_none_of_its_codes_aborts_until_a_code_keyed_label_covers_it():
+    """A row whose partition label names a code it does not hold would read that code in its
+    heading. A label keyed on a code the row holds, at the code or below it, names it."""
+    row = {
+        "dcid": "sv_objective_part",
+        "population_type": "FinancialFlow",
+        "measured_property": "amount",
+        "stat_type": "measuredValue",
+        "measurement_qualifier": "Nominal",
+        "constraint_properties": {
+            "financialFlowType": "Disbursement",
+            "nettingBasis": "Gross",
+            "objective": "ObjectivePart",
+        },
+    }
+    named_row = {
+        **row,
+        "dcid": "sv_flat",
+        "constraint_properties": {**row["constraint_properties"], "sysFlat": "SysFlatA"},
+    }
+    del named_row["constraint_properties"]["objective"]
+    codes = [
+        {
+            "dcid": "SysFlatA",
+            "code_system": "sysFlat",
+            "label": "flat alpha",
+            "synonyms": ["alpha"],
+            "parent": None,
+        },
+        {
+            "dcid": "ObjectiveTotal",
+            "code_system": "objective",
+            "label": "objective total",
+            "synonyms": ["objective"],
+            "parent": None,
+        },
+        {
+            "dcid": "ObjectivePart",
+            "code_system": "objective",
+            "label": "objective part",
+            "synonyms": [],
+            "parent": "ObjectiveTotal",
+        },
+    ]
+    (gross,) = [
+        label
+        for label in _MEASURE_PARTITION_LABELS_FOR_TEST
+        if label.label == "gross alpha disbursements"
+    ]
+    naming = dataclasses.replace(gross, named_values=(("sysFlat", "SysFlatA"),))
+    with pytest.raises(ExportRefused, match="sv_objective_part"):
+        _verify_measure_label_named_values(
+            [row, named_row], codes, _MEASURE_AXES_FOR_TEST, [naming]
+        )
+    keyed = dataclasses.replace(
+        gross,
+        label="objective gross disbursements",
+        codes=(("objective", "ObjectiveTotal"),),
+        named_values=(("objective", "ObjectiveTotal"),),
+    )
+    _verify_measure_label_named_values(
+        [row, named_row], codes, _MEASURE_AXES_FOR_TEST, [naming, keyed]
+    )
+
+
+@pytest.mark.parametrize(
+    "synonyms",
+    [
+        pytest.param(["alpha flow"], id="synonym-with-a-word-outside-the-label"),
+        pytest.param([], id="no-synonym"),
+    ],
+)
+def test_a_measure_label_named_value_no_query_text_reads_aborts_the_export(synonyms):
+    """A heading drops a named value as the measure label's noun, so a query using that noun
+    must read the value: one of the value's texts must lie inside the label. The climate
+    total's graph name, "climate change policy objective", lies inside none of the climate
+    labels."""
+    row = {
+        "dcid": "sv_gross",
+        "population_type": "FinancialFlow",
+        "measured_property": "amount",
+        "stat_type": "measuredValue",
+        "measurement_qualifier": "Nominal",
+        "constraint_properties": {
+            "financialFlowType": "Disbursement",
+            "nettingBasis": "Gross",
+            "sysFlat": "SysFlatA",
+        },
+    }
+    code = {"dcid": "SysFlatA", "code_system": "sysFlat", "label": "flat alpha"}
+    labels = [
+        label
+        for label in _MEASURE_PARTITION_LABELS_FOR_TEST
+        if label.label == "gross alpha disbursements"
+    ]
+    _verify_measure_label_named_values(
+        [row], [code | {"synonyms": ["alpha"]}], _MEASURE_AXES_FOR_TEST, labels
+    )
+    with pytest.raises(ExportRefused, match=r"no label or synonym.*SysFlatA"):
+        _verify_measure_label_named_values(
+            [row], [code | {"synonyms": synonyms}], _MEASURE_AXES_FOR_TEST, labels
+        )
 
 
 # --- plain_name and enum_dcid flow from the code-system table into the declaration row ---
@@ -2377,7 +2619,7 @@ def test_a_broad_reading_is_refused_where_a_row_of_its_value_lacks_the_value_it_
 
 def test_the_aid_tables_declare_whose_base_a_ratio_divides_by():
     """DAC1 states ODA as a share of the donor's GNI and DAC2a as a share of the recipient's."""
-    crs, imputed, dac1, dac2a, dac2b = (dataset.provenance for dataset in DATASETS)
+    crs, imputed, dac1, dac2a, dac2b, *climate = (dataset.provenance for dataset in DATASETS)
 
     assert {dataset.provenance: dataset.ratio_base_axis for dataset in DATASETS} == {
         crs: None,
@@ -2385,7 +2627,7 @@ def test_the_aid_tables_declare_whose_base_a_ratio_divides_by():
         dac1: "origin",
         dac2a: "destination",
         dac2b: None,
-    }
+    } | dict.fromkeys(climate)
 
 
 def test_an_export_with_a_row_without_its_datasets_declared_invariant_does_not_load():
@@ -2790,8 +3032,19 @@ def test_a_dataset_no_code_system_lists_refuses_enumeration():
 
 
 def test_the_fixture_configuration_lists_each_system_under_the_datasets_that_always_declare_it():
-    crs, imputed, dac1, dac2a, dac2b = (dataset.provenance for dataset in DATASETS)
-    assert [dataset.opt_in for dataset in DATASETS] == [False, True, False, False, False]
+    crs, imputed, dac1, dac2a, dac2b, one_climate, crdf, btr = (
+        dataset.provenance for dataset in DATASETS
+    )
+    assert [dataset.opt_in for dataset in DATASETS] == [
+        False,
+        True,
+        False,
+        False,
+        False,
+        False,
+        True,
+        True,
+    ]
 
     assert {
         config.code_system: set(config.declared_by_every_statvar_of) for config in CODE_SYSTEMS
@@ -2803,7 +3056,11 @@ def test_the_fixture_configuration_lists_each_system_under_the_datasets_that_alw
         "dac2aAidType": {imputed, dac2a},
         "dac1AidType": {dac1},
         "dac2bAidType": {dac2b},
+        "climatePolicyObjective": {one_climate, crdf, btr},
     }
+    assert [config.code_system for config in CODE_SYSTEMS if not config.classification_codes] == [
+        "climatePolicyObjective"
+    ]
 
 
 # --- A StatVar the index would decide must be an exported row ---
@@ -2997,8 +3254,7 @@ def _export_parties(
     )
     published = frozenset(types_by_party) if parties is None else parties
     publication = PartyPublication(
-        datasets=published_in,
-        axes=axes or frozenset({axis}),
+        pairs=frozenset(product(published_in, axes or {axis})),
         years=dict.fromkeys(published_in, published_years),
     )
     coverage = dataclasses.replace(_covered(graph), parties=dict.fromkeys(published, publication))
@@ -3051,18 +3307,19 @@ def test_export_index_writes_each_partys_kind_label_and_the_group_a_total_holds(
             kind="party",
             party_class="official",
             label="France",
-            datasets=published,
-            axes=recipient,
+            published=tuple(product(published, recipient)),
         ),
         "country/IND": PartyRow(
             dcid="country/IND",
             kind="party",
             party_class="official",
-            datasets=published,
-            axes=recipient,
+            published=tuple(product(published, recipient)),
         ),
         "IDA": PartyRow(
-            dcid="IDA", kind="party", party_class="official", datasets=published, axes=recipient
+            dcid="IDA",
+            kind="party",
+            party_class="official",
+            published=tuple(product(published, recipient)),
         ),
         "DACAfrica": PartyRow(
             dcid="DACAfrica",
@@ -3070,27 +3327,24 @@ def test_export_index_writes_each_partys_kind_label_and_the_group_a_total_holds(
             totals="africa",
             residuals=("DACAfricaUnallocated",),
             label="Africa (DAC)",
-            datasets=published,
-            axes=recipient,
+            published=tuple(product(published, recipient)),
         ),
         "DACAllRecipients": PartyRow(
-            dcid="DACAllRecipients", kind="total", datasets=published, axes=recipient
+            dcid="DACAllRecipients", kind="total", published=tuple(product(published, recipient))
         ),
         "DACCountriesTotal": PartyRow(
             dcid="DACCountriesTotal",
             kind="total",
             totals="groups/OECD.DAC",
             sums_members=False,
-            datasets=published,
-            axes=recipient,
+            published=tuple(product(published, recipient)),
         ),
         "DACAfricaUnallocated": PartyRow(
             dcid="DACAfricaUnallocated",
             kind="residual",
             party_class="residual",
             label="Africa, unallocated by country (DAC)",
-            datasets=published,
-            axes=recipient,
+            published=tuple(product(published, recipient)),
         ),
     }
     assert index.totals_by_group == {
@@ -3183,22 +3437,19 @@ def test_a_kind_override_replaces_the_kind_the_types_give(tmp_path: Path):
             dcid="WorldBankGroup",
             kind="total",
             totals="groups/WB",
-            datasets=published,
-            axes=recipient,
+            published=tuple(product(published, recipient)),
         ),
         "InternationalFinanceCorporation": PartyRow(
             dcid="InternationalFinanceCorporation",
             kind="party",
             party_class="official",
-            datasets=published,
-            axes=recipient,
+            published=tuple(product(published, recipient)),
         ),
         "Mystery": PartyRow(
             dcid="Mystery",
             kind="residual",
             party_class="residual",
-            datasets=published,
-            axes=recipient,
+            published=tuple(product(published, recipient)),
         ),
     }
 
@@ -3230,8 +3481,7 @@ def test_a_kind_override_scoped_to_a_dataset_holds_there_and_nowhere_else(tmp_pa
         dcid="TrustFund",
         kind="party",
         party_class="official",
-        datasets=published,
-        axes=donor,
+        published=tuple(product(published, donor)),
         dataset_kinds=((_TEST_PROVENANCE, "total"),),
     )
     assert [parties["TrustFund"].kind_in(dataset) for dataset in published] == ["party", "total"]
@@ -3307,6 +3557,21 @@ _REVIEWED_DATASET_KIND_OVERRIDES = {
     "IMFConcessionalTrustFunds": ("InternationalMonetaryFund", "provenance/OECDDAC2A"),
     "IMFResilienceAndSustainabilityTrust": ("InternationalMonetaryFund", "provenance/OECDDAC2B"),
 }
+# The datasets each trust fund's override was reviewed against. The recorded fixture index
+# predates the climate finance tables, which publish the Resilience and Sustainability Trust
+# and never the IMF.
+_REVIEWED_AGAINST = {
+    "IMFConcessionalTrustFunds": {
+        "provenance/OECDCreditorReportingSystem",
+        "provenance/OECDDAC2A",
+    },
+    "IMFResilienceAndSustainabilityTrust": {
+        "provenance/OECDCreditorReportingSystem",
+        "provenance/OECDDAC2B",
+        "provenance/ONEClimateFinance",
+        "provenance/OECDClimateRelatedDevelopmentFinance",
+    },
+}
 
 
 def test_party_kind_overrides_holds_only_reviewed_total_rows():
@@ -3330,12 +3595,14 @@ def test_the_fixture_index_reads_each_imf_trust_fund_a_total_only_beside_the_imf
 ):
     index = get_index()
     row = index.parties[trust]
-    assert dataset in index.parties[equals].datasets
-    assert {name: row.kind_in(name) for name in row.datasets} == {
-        name: "total" if name == dataset else "party" for name in row.datasets
+    publishing = {name for name, _ in row.published}
+    assert dataset in {name for name, _ in index.parties[equals].published}
+    assert {name: row.kind_in(name) for name in publishing} == {
+        name: "total" if name == dataset else "party" for name in publishing
     }
     assert row.kind_in("provenance/OECDCreditorReportingSystem") == "party"
-    assert PARTY_KIND_OVERRIDES[trust].reviewed == frozenset(row.datasets)
+    assert PARTY_KIND_OVERRIDES[trust].reviewed == _REVIEWED_AGAINST[trust]
+    assert publishing <= _REVIEWED_AGAINST[trust]
 
 
 @pytest.mark.parametrize(("group", "members"), sorted(_REVIEWED_KIND_OVERRIDES.items()))
@@ -3405,7 +3672,7 @@ _REVIEWED_TOTAL_GROUPS = {
         ),
     ),
     "DACCentralAmerica": TotalGroup("CentralAmerica", ("DACCentralAmericaUnallocated",)),
-    "DACCountriesTotal": TotalGroup("groups/OECD.DAC", sums_members=False),
+    "DACCountriesTotal": TotalGroup("groups/OECD.DAC", sums_members=False, declares_providers=True),
     "DACEasternAfrica": TotalGroup(f"{_DAC_REGION}EasternAfrica", ("DACEasternAfricaUnallocated",)),
     "DACEurope": TotalGroup(
         f"{_DAC_REGION}Europe", ("DACEuropeUnallocated", "DACExYugoslaviaUnallocated")
@@ -3458,7 +3725,7 @@ def test_the_fixture_index_carries_each_reviewed_total_group(party: str, total: 
     )
     assert index.totals_by_group[total.group] == row
     assert {index.parties[residual].kind for residual in total.residuals} <= {"residual"}
-    assert all(index.parties[residual].datasets for residual in total.residuals)
+    assert all(index.parties[residual].published for residual in total.residuals)
 
 
 @pytest.mark.parametrize(
@@ -3474,10 +3741,9 @@ def test_the_fixture_index_declares_the_ids_parties(party: str, kind: str, axis:
     """IDS is a listed dataset, outside `DATASETS`, and its debtors and creditors still need
     a kind for a sum across them."""
     row = get_index().parties[party]
-    assert (row.kind, row.datasets, row.axes) == (
+    assert (row.kind, row.published) == (
         kind,
-        ("provenance/WorldBankInternationalDebtStatistics",),
-        (axis,),
+        (("provenance/WorldBankInternationalDebtStatistics", axis),),
     )
 
 
@@ -3566,41 +3832,48 @@ def test_export_index_refuses_a_private_provider_table_the_graph_contradicts(
 
 
 @pytest.mark.parametrize(
-    ("types_by_party", "dac_codes", "private_providers", "refused"),
+    ("types_by_party", "dac_codes", "private_providers", "kind", "party_class"),
     [
+        pytest.param({"Canada": ("Country",)}, {}, {}, "party", "official", id="official-party"),
         pytest.param(
             {"GatesFoundation": ("Organization",)},
             {"GatesFoundation": ("1601",)},
             {1601: "GatesFoundation"},
-            "'party', 'private'",
+            "party",
+            "private",
             id="private-party",
         ),
         pytest.param(
             {"DACAfricaUnallocated": ("DACRecipientUnallocatedByCountry",)},
             {},
             {},
-            "'residual', 'residual'",
+            "residual",
+            "residual",
             id="residual",
         ),
-        pytest.param({"DACAllRecipients": ("DACGroup",)}, {}, {}, "'total', None", id="total"),
+        pytest.param({"DACAllRecipients": ("DACGroup",)}, {}, {}, "total", None, id="total"),
     ],
 )
-def test_export_index_refuses_a_party_other_than_official_on_both_axes(
-    types_by_party, dac_codes, private_providers, refused
+def test_export_index_lists_a_party_of_any_class_on_both_axes(
+    types_by_party, dac_codes, private_providers, kind, party_class
 ):
-    with pytest.raises(ExportRefused, match=rf"more than one axis.*{refused}.*destination.*origin"):
-        _export_parties(
-            types_by_party,
-            dac_codes=dac_codes,
-            private_providers=private_providers,
-            axes=frozenset({"origin", "destination"}),
+    """Each row lists the `(dataset, axis)` pairs that publish it, which readers ask
+    (`PartyRow.publishes`), so a party of any class may stand on both axes."""
+    document = _export_parties(
+        types_by_party,
+        dac_codes=dac_codes,
+        private_providers=private_providers,
+        axes=frozenset({"origin", "destination"}),
+    )
+    assert [(row["kind"], row["party_class"], row["published"]) for row in document["parties"]] == [
+        (
+            kind,
+            party_class,
+            [
+                {"dataset": _TEST_PROVENANCE, "axis": "destination"},
+                {"dataset": _TEST_PROVENANCE, "axis": "origin"},
+            ],
         )
-
-
-def test_export_index_accepts_an_official_party_on_both_axes():
-    document = _export_parties({"Canada": ("Country",)}, axes=frozenset({"origin", "destination"}))
-    assert [(row["kind"], row["party_class"], row["axes"]) for row in document["parties"]] == [
-        ("party", "official", ["destination", "origin"])
     ]
 
 
@@ -3678,7 +3951,7 @@ def test_the_fixture_index_makes_exactly_the_listed_providers_private():
     classes = {(row.kind, row.party_class) for row in index.parties.values()}
     private = {dcid for dcid, row in index.parties.items() if row.party_class == "private"}
     assert private - {"DACPrivateDonors"} == set(_REVIEWED_PRIVATE_PROVIDERS.values())
-    assert all(index.parties[dcid].axes == ("origin",) for dcid in private)
+    assert all(index.parties[dcid].sole_axis() == "origin" for dcid in private)
     # Every other party is official, and every residual reads residual.
     assert classes == {
         ("party", "official"),
@@ -3965,10 +4238,10 @@ def test_the_fixture_index_carries_each_reviewed_whole_total():
     index = get_index()
     for dcid, (axis, datasets) in _REVIEWED_WHOLE_TOTALS.items():
         row = index.parties[dcid]
-        assert (row.kind, row.party_class, row.axes) == (
+        assert (row.kind, row.party_class, row.sole_axis()) == (
             "total",
             _REVIEWED_WHOLE_CLASSES[dcid],
-            (axis,),
+            axis,
         )
         assert row.whole == tuple(
             WholeMarker(dataset, covers, years)

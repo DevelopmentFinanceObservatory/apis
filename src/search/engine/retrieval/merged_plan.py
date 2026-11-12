@@ -69,6 +69,7 @@ from search.observations import observation_settings
 
 if TYPE_CHECKING:
     from materialise.facets import MemberProbe
+    from search.engine.retrieval.facet_policy import DeclaredPolicies
     from series_coverage.index import BoundRoles, CoverageIndex
 
 
@@ -104,6 +105,12 @@ def merged_read_plan(
 
 def _members(plans: Sequence[ReadPlan]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(sv for plan in plans for sv in plan.members))
+
+
+def _declared(plans: Sequence[ReadPlan]) -> DeclaredPolicies:
+    """The defaults each member of `plans` declares (`PairPlan.declared`), so the merged
+    plan agrees on them over the union's populated members (`PairPlan.declared_defaults`)."""
+    return {sv: axes for plan in plans for sv, axes in plan.declared.items()}
 
 
 def _merged_role_pairs(
@@ -150,6 +157,7 @@ def _merged_role_pairs(
         roles=PlanRoles(bound=bound, role_names=role_names),
         probes=probes,
         index_sourced=all(plan.index_sourced for plan in plans),
+        declared=_declared(plans),
         elect=plans[0].elect,
     )
     return merged.narrowed(lambda sv, candidate: candidate.facet_id in kept.get(sv, ()))
@@ -195,6 +203,7 @@ def _merged_standard(plans: Sequence[PairPlan]) -> PairPlan | None:
                 places=places,
                 probes=series_probes(list(series.values()), places=() if first.scope else places),
                 index_sourced=all(plan.index_sourced for plan in plans),
+                declared=_declared(plans),
             )
     except _BreadthNeeded:
         return None
@@ -231,8 +240,13 @@ def _merged_bulk(plans: Sequence[BulkPlan]) -> BulkPlan | None:
                 )
             )
     index_sourced = all(plan.index_sourced for plan in plans)
+    declared = _declared(plans)
     election = role_election(
-        candidates, members=members, read_years=first.read_years, index_sourced=index_sourced
+        candidates,
+        members=members,
+        read_years=first.read_years,
+        index_sourced=index_sourced,
+        declared=declared,
     )
     return BulkPlan(
         members=members,
@@ -242,6 +256,7 @@ def _merged_bulk(plans: Sequence[BulkPlan]) -> BulkPlan | None:
         candidates=candidates,
         roles=first.roles,
         index_sourced=index_sourced,
+        declared=declared,
         left_out=frozenset().union(*(plan.left_out for plan in plans)),
         elect=first.elect,
     )

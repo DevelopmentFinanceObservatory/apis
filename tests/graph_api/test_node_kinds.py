@@ -8,7 +8,7 @@ import pytest
 
 from code_index import CodeIndex, IndexStamp
 from code_index.shared import get_index
-from code_index.types import PartyRow, WholeMarker
+from code_index.types import PartyRow, RoleAxis, WholeMarker
 from entity_resolution.membership import (
     COUNTRY_CLASS,
     Authority,
@@ -93,23 +93,28 @@ def test_a_node_takes_the_first_kind_the_rule_gives(dcid, types, kind):
     assert classify(dcid=dcid, types=types, code_index=get_index(), membership=_POLICY) == kind
 
 
+_DONOR: tuple[tuple[str, RoleAxis], ...] = (("provenance/P", "origin"),)
+
+
 @pytest.mark.parametrize(
     ("row", "kind"),
     [
-        (PartyRow(dcid="dc/o/Foundation", kind="party", party_class="private"), "organisation"),
-        (PartyRow(dcid="dc/o/Foundation", kind="total"), "aggregate"),
+        (
+            PartyRow(dcid="dc/o/Foundation", kind="party", party_class="private", published=_DONOR),
+            "organisation",
+        ),
+        (PartyRow(dcid="dc/o/Foundation", kind="total", published=_DONOR), "aggregate"),
         (
             PartyRow(
                 dcid="dc/o/Foundation",
                 kind="total",
-                datasets=("provenance/P",),
-                axes=("origin",),
+                published=(("provenance/P", "origin"),),
                 party_class="official",
                 whole=(WholeMarker(dataset="provenance/P", covers=("official",)),),
             ),
             "aggregate",
         ),
-        (PartyRow(dcid="dc/o/Foundation", kind="residual"), "aggregate"),
+        (PartyRow(dcid="dc/o/Foundation", kind="residual", published=_DONOR), "aggregate"),
     ],
     ids=["private", "total", "whole-total", "residual"],
 )

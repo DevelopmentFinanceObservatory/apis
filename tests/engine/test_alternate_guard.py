@@ -689,8 +689,8 @@ class _CountingGraph(FakeGraph):
 
 
 def test_read_denominators_reads_statvar_denominators_in_one_batch():
-    """Schema terms are not read; each StatVar denominator is read once, for its kind and
-    its graph name."""
+    """Schema terms are not read; each StatVar denominator is read once, for its kind, its
+    graph name and its five-tuple pairs and constraint values."""
     graph = _CountingGraph()
     reads = read_denominators(
         [_ADULTS, "Count_Person", _GNI, "PerCapita", "area", "Area_Land", _ADULTS, "Unloaded"],
@@ -698,9 +698,17 @@ def test_read_denominators_reads_statvar_denominators_in_one_batch():
     )
     assert graph.batches == [[_ADULTS, _GNI, "Area_Land", "Unloaded"]]
     assert reads == {
-        _ADULTS: DenominatorRead(kind="person", name=None),
-        _GNI: DenominatorRead(kind="other", name="Gross national income"),
-        "Area_Land": DenominatorRead(kind="area", name=None),
+        _ADULTS: DenominatorRead(
+            kind="person",
+            name=None,
+            pairs=(("populationType", "Person"), ("measuredProperty", "count")),
+        ),
+        _GNI: DenominatorRead(
+            kind="other",
+            name="Gross national income",
+            pairs=(("populationType", "EconomicActivity"), ("measuredProperty", "amount")),
+        ),
+        "Area_Land": DenominatorRead(kind="area", name=None, pairs=(("measuredProperty", "area"),)),
         "Unloaded": DenominatorRead(kind="unknown", name=None),
     }
 

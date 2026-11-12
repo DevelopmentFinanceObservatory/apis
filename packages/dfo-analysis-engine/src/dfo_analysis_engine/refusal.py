@@ -228,6 +228,29 @@ _PIN_ONE_UNIT = (
 )
 
 
+def _deflated_apart(left: UnitCell, right: UnitCell) -> bool:
+    """Whether two converted units share a currency, price basis and base year and state
+    different deflation bases.
+
+    The basis says whose prices deflate an amount, and it is the whole of the comparison.
+    The deflator table a recipe reads plays no part. A DAC deflator and a WEO deflator of
+    the same donor are that donor's prices from two source tables, as a current-price unit
+    leaves its exchange-rate table out of its identity. A converted cell carries no
+    recipe, so the unit key holds none either. Two bases read from one table, such as a
+    debtor's `recipient` and the same country's `national`, refuse here, and the refusal
+    asks for current prices, under which a share of the two amounts is the same.
+    dfo-ai's analysis-mcp (`tool_errors._deflated_apart`) applies the same rule."""
+    return (
+        isinstance(left, UnitRequest)
+        and isinstance(right, UnitRequest)
+        and left.deflation_basis is not None
+        and right.deflation_basis is not None
+        and left.deflation_basis != right.deflation_basis
+        and (left.currency, left.prices, left.base_year)
+        == (right.currency, right.prices, right.base_year)
+    )
+
+
 def _quoted_unit(unit: UnitCell) -> str:
     """`unit` as a message quotes it: the `repr` of its `unit_name`."""
     return repr(unit_name(unit))
@@ -572,10 +595,20 @@ class Refusal:
         message asks for both sides again in one unit. A composed unit is
         written by `quotient_of`, so no `get_data` binding and no pin changes
         it; when either side holds one, the message asks for sides divided
-        from inputs in matching units.
+        from inputs in matching units. When the two sides are converted to one
+        currency, price basis and base year but on different deflation bases,
+        no unit binding makes them agree, since each dataset's
+        conversion fixes its own basis, so the message asks for both sides in
+        current prices.
         """
         units = (left_unit, right_unit)
-        if any(isinstance(unit, ComposedUnit) for unit in units):
+        if _deflated_apart(left_unit, right_unit):
+            retry = (
+                "The two sides are on different deflation bases, so their "
+                "constant-price amounts measure different things. Call get_data for both "
+                "sides in current prices, then retry with the new frame_refs."
+            )
+        elif any(isinstance(unit, ComposedUnit) for unit in units):
             retry = (
                 "A unit of the form 'X per Y' is the unit quotient_of gives one frame "
                 "divided by another, and no unit pin or get_data binding changes it. Retry "

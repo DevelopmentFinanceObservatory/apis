@@ -19,7 +19,6 @@ from search.models import (
     SlotKey,
     Spec,
     TimeWindow,
-    Warning,
 )
 from search.render.plan import render_sentence
 from tests.engine._assemble_fixtures import (
@@ -159,19 +158,15 @@ def test_build_no_data_part_no_member_has_data_at_place_donor_only_falls_back():
     assert _heading(part) == "No data for United States' ODA Grants for health in ETH."
 
 
-_WEAK = Warning(code="retrieval_score_weak", severity="info", message="weak")
-
-
 @pytest.mark.parametrize(
-    ("variable_text", "warnings", "departs"),
+    ("variable_text", "departs"),
     [
-        pytest.param("cost of living", [_WEAK], True, id="weak-and-unnamed"),
-        pytest.param("cost of living", [], False, id="strong-score"),
-        pytest.param("net ODA received", [_WEAK], False, id="names-the-measure"),
+        pytest.param("cost of living", True, id="names-another-measure"),
+        pytest.param("net ODA received", False, id="names-the-measure"),
     ],
 )
 def test_build_no_data_part_composes_only_alternate_has_data_gate(
-    variable_text: str, warnings: list[Warning], departs: bool
+    variable_text: str, departs: bool
 ):
     """The alternate's sentence follows the verdict. It departs as `closest_match` only
     when the closest-match rule fires on its reading; no note token is written."""
@@ -181,7 +176,7 @@ def test_build_no_data_part_composes_only_alternate_has_data_gate(
     part = build_no_data_part(
         "no_matching_slice",
         variable_text=variable_text,
-        warnings=warnings,
+        warnings=[],
         alternate_match=spec,
         gate="only_alternate_has_data",
         elected_stat_vars=[GraphRef(ref="Count_Person_Alternate", label="Alternate count")],

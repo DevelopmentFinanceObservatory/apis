@@ -154,6 +154,7 @@ from pydantic import (
 
 from assembler.catalogue import BakedReleaseRegistry
 from assembler.errors import (
+    AssemblerRefusal,
     BindingInvalid,
     ConstraintViolation,
     FrameUnavailable,
@@ -268,6 +269,7 @@ from presentation_api.share_slots import (
     serving_frame,
     slot_card,
 )
+from presentation_api.stored_intent import StoredIntentRefused
 from presentation_api.vocabulary import LiveVocabularySource
 from presentation_store import (
     MAX_SHARE_PAYLOAD_BYTES,
@@ -1140,7 +1142,8 @@ async def read_share_slot_card(
 
 def classify_shares_exception(exc: BaseException) -> ProblemSpec | None:
     """The share refusals, then the components door's for the card, store and frame failures
-    the share routes share with it."""
+    the share routes share with it, a slot read's refusal of the card's stored intent
+    (`StoredIntentRefused`) included."""
     if isinstance(exc, WriteTokenRequired):
         return refused(
             "write_token_required",
@@ -1499,12 +1502,20 @@ def build_shares_door(
             SpecRegistryUnavailable,
             SpecRegistryStoreError,
             RequestValidationError,
+            StoredIntentRefused,
         ),
         endpoint_exemplars={
             SHARES_ENDPOINT: (
                 *LOOKUP_EXEMPLARS,
                 *STORE_EXEMPLARS,
                 *DRAW_EXEMPLARS,
+                # A slot's read raises a refusal of the card's stored intent as
+                # `StoredIntentRefused`.
+                *(
+                    StoredIntentRefused(exemplar)
+                    for exemplar in DRAW_EXEMPLARS
+                    if isinstance(exemplar, AssemblerRefusal)
+                ),
                 *FRAME_UNAVAILABLE_EXEMPLARS,
                 *COMPONENT_DATA_EXCEPTION_EXEMPLARS,
                 WriteTokenRequired("Ab3dEf7h"),

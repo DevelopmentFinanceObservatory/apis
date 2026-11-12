@@ -101,7 +101,8 @@ class Timing(StrictModel):
     ran plus a phase_<name> entry for each phase it ran, holding the time
     no step booked, excluding the shared steps already reported on the
     envelope. A part's shape_arcs, shape_probe, shape_probe_coverage,
-    shape_labels, shape_groups and shape_admission steps are nested inside
+    shape_labels, shape_groups, shape_admission, shape_denominators,
+    shape_quantity, shape_rank and shape_availability steps are nested inside
     its shape step, so its total leaves them out.
     """
 

@@ -1,4 +1,4 @@
-"""House policies: fact extraction, the part's context, the six policies and the tie-break."""
+"""House policies: fact extraction, the part's context, the seven policies and the tie-break."""
 
 from __future__ import annotations
 
@@ -613,8 +613,8 @@ _ALL_ODA_SHAPES = (*_ODA_SHAPES, *(replace(s, index=s.index + 2) for s in _DONOR
 def test_a_place_without_a_direction_read_on_an_axis_is_its_directed_twin(
     place: str, axis: RoleAxis, year: int, expected: int
 ):
-    """A place named without a direction whose data settles its axis
-    (`availability.undirected_axis`) is the question its directed twin asks, with the same
+    """A place named without a direction whose axis a rule settles
+    (`undirected.settle_undirected_axis`) is the question its directed twin asks, with the same
     kind, basis and wanted dataset, and the same elected shape. "ODA in Ethiopia in 2020" is
     DAC2a's net receipts, and "ODA in Germany in 2023" DAC1's grant equivalents."""
     index = get_index()
@@ -821,6 +821,27 @@ _SDG_SERIES = _facts(
             _ctx(),
             [0, 2],
             id="sdg-series-beside-output",
+        ),
+        pytest.param(
+            "declared_basis",
+            (
+                _facts(0, measured_property="attributedAmount", datasets=(_WANTED["sector"],)),
+                _facts(1, datasets=(_WANTED["donor"],)),
+            ),
+            _ctx(),
+            [0, 1],
+            id="attributed-amounts-beside-another-dataset-s-amounts",
+        ),
+        pytest.param(
+            "declared_basis",
+            (
+                _facts(0, measured_property="attributedAmount"),
+                _facts(1, measured_property="grantEquivalent"),
+                _facts(2),
+            ),
+            _ctx(),
+            [1, 2],
+            id="grant-equivalent-beside-amounts-left-to-amount-vs-ge",
         ),
     ],
 )

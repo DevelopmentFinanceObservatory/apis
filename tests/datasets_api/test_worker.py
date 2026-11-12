@@ -38,8 +38,9 @@ from datasets_api.version_store import enriched_rendering_key
 from datasets_api.versions import HeadFence, HeadFenceLost, SubjectHead
 from materialise.errors import VariableBreadthUnreadError
 from materialise.facets import read_variable_breadths
-from materialise.trace import UNKNOWN_FAMILY, MemberFamily, RecordedFamily, StatedFamily
+from materialise.trace import UNKNOWN_FAMILY, RecordedFamily, StatedFamily
 from series_coverage.index import Estimate
+from statvar_members import MemberFamily
 
 from ._graph_doubles import FakeMintGraphReader
 from ._operation_store import FakeOperationDatasetStore

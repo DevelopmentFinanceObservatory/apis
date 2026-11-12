@@ -7,15 +7,17 @@ fetch to name. Members probed together are each probed and fetched at their own 
 member's scope does not depend on its companions. Role-bearing StatVars, one-role ones
 included, use a caller-supplied `CoverageIndex` because `/v2/observation` filters subject
 entities, and an unbound role covers every entity in the index. Uncovered StatVars return no
-candidates. Each axis resolves from the shared candidate set. Bound refs and graph-declared
-defaults must match an available candidate. Deployment fallback ranks a whole candidate after
-narrowing by bound axes, currency-native preference and the requested year range. Cross-axis
+candidates. Each axis resolves from the shared candidate set. Bound refs must match an
+available candidate. A graph-declared default serves where a candidate carries it, and
+otherwise the axis falls back to the deployment ranking. Deployment fallback ranks a whole
+candidate after narrowing by bound axes, currency-native preference and the requested year range. Cross-axis
 compatibility is checked after per-axis selection. Axis failures are raised separately and
 aggregated by the pipeline.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -24,13 +26,14 @@ from enum import Enum
 from functools import partial, reduce
 from itertools import chain, groupby
 from threading import Lock
-from typing import TYPE_CHECKING, Literal, Protocol, cast, final
+from typing import TYPE_CHECKING, Final, Literal, Protocol, cast, final
 
 from dfo_spec_kit.units import Money, UnpricedMoney, parse_unit
 
 from dc_graph import earliest_date as _earliest
 from dc_graph import latest_date as _latest
 from dc_sdmx import ContainedIn, EntityFilter
+from dfo_platform.lru_memo import LruMemo
 from dfo_platform.named import cut
 from dfo_platform.problem import Alternative
 from materialise.continued_series import ContinuedSeries
@@ -77,6 +80,8 @@ if TYPE_CHECKING:
 
     # Keep `CoverageIndex` annotation-only. Importing its module adds NumPy to the pure install.
     from series_coverage.index import CoverageIndex
+
+logger = logging.getLogger(__name__)
 
 # Strip `dcid:` here so coverage keys use bare StatVar ids.
 _STAT_VAR_REF_PREFIX = "dcid:"
@@ -1691,15 +1696,16 @@ def _declared_refs(
     except_axis: str,
 ) -> dict[str, str | None]:
     """The declared defaults that resolve on the axes other than `except_axis`: each policy
-    some candidate carries, matched in the pool `select_facet` matches it in (every candidate
-    for an unbound axis, the bound-narrowed pool for a unit request)."""
+    some candidate carries, matched in the pool `select_facet` matches it in (the candidates
+    carrying every bound ref for an unbound axis, those then narrowed to a currency-native unit
+    for a unit request)."""
     refs: dict[str, str | None] = {}
     for axis, policy in policies.items():
         if axis == except_axis or policy is None:
             continue
         state = all_bindings.get(axis, FacetBinding(state="unbound")).state
         pool = (
-            dispatchable
+            _narrow_by_bound_axes_only(dispatchable, all_bindings)
             if state == "unbound"
             else _narrow_by_bound_axes(dispatchable, all_bindings)
         )
@@ -2324,9 +2330,12 @@ def select_facet(
     resolves the native unit and applies only to `unit`. Other axes raise
     `MaterialisationUsageError`.
 
-    An unbound axis first tries the graph's declared default. A matching ref returns
-    `basis="declared_default"`. An unavailable declared ref raises `FacetNotAvailableError`.
-    Without a declared policy, candidates are narrowed by bound axes, then to those overlapping
+    An unbound axis first tries the graph's declared default among the candidates carrying
+    every bound ref, so a bound axis governs. A matching ref returns
+    `basis="declared_default"`. A declared ref no such candidate carries is logged
+    (`log_declared_miss`) and the axis ranks as it would without one, so the member serves one
+    value under `basis="deployment_fallback"`. Without a matching policy, candidates are
+    narrowed by bound axes, then to those overlapping
     `window` (`narrow_to_window`), and ranked by deployment policy, led by `breadth`, each
     facet's series count under `window` (`MemberProbe.breadth_in`), with `variable_breadth`
     breaking a tie before the unit (`rank_candidates`). An empty pool raises
@@ -2376,7 +2385,7 @@ def select_facet(
 
     policy = policies.get(axis)
     if policy is not None:
-        match = _match_policy(policy, dispatchable, axis)
+        match = _match_policy(policy, _narrow_by_bound_axes_only(dispatchable, all_bindings), axis)
         if match is not None:
             return _selection(
                 axis,
@@ -2387,13 +2396,7 @@ def select_facet(
                 default_policy_version=policy.policy_version,
                 selection_reason=policy.selection_reason,
             )
-        alternatives, alternatives_truncated = _alternatives(dispatchable, axis, graph)
-        raise FacetNotAvailableError(
-            f"facet axis {axis!r}'s declared default {policy.resolved_ref!r} has no observations",
-            facet_pointer=f"/facets/{axis}",
-            alternatives=alternatives,
-            alternatives_truncated=alternatives_truncated,
-        )
+        log_declared_miss(policy, axis=axis, stat_vars=[stat_var])
 
     viable = _narrow_by_bound_axes(dispatchable, all_bindings)
     if not viable:
@@ -3115,6 +3118,40 @@ def _match_policy(
 ) -> Facet | None:
     """Returns the first candidate matching `policy.resolved_ref`, or `None`."""
     return next((c for c in candidates if facet_axis_value(c, axis) == policy.resolved_ref), None)
+
+
+_DECLARED_MISSES_LOGGED: Final[LruMemo[tuple[str, str, str], bool]] = LruMemo(16_384)
+"""The `(stat_var, axis, ref)` misses `log_declared_miss` has logged, the most recent kept, so a
+miss logs once per StatVar however often its plans re-elect."""
+
+_DECLARED_MISS_NAMED: Final[int] = 3
+"""How many StatVars a miss's log line names; it counts the rest."""
+
+
+def log_declared_miss(policy: FacetDefaultPolicy, *, axis: str, stat_vars: Sequence[str]) -> None:
+    """Logs a declared default no candidate of `stat_vars` carries, the one record besides the
+    selection's `deployment_fallback` basis that the declaration did not serve. Each StatVar is
+    logged once per process (`_DECLARED_MISSES_LOGGED`), and the line names the first
+    `_DECLARED_MISS_NAMED` of the StatVars not logged before and counts them all. The pipeline
+    that publishes the declaration checks the StatVar holds observations under it, but a
+    request narrower than the StatVar can still find none."""
+    unlogged = []
+    for stat_var in stat_vars:
+        key = (stat_var, axis, policy.resolved_ref)
+        if _DECLARED_MISSES_LOGGED.get(key) is None:
+            _DECLARED_MISSES_LOGGED.put(key, True)
+            unlogged.append(stat_var)
+    if not unlogged:
+        return
+    logger.info(
+        "declared default %s=%s (%s) is on no candidate of %d StatVars (%s); the deployment "
+        "ranking chooses",
+        axis,
+        policy.resolved_ref,
+        policy.policy_node,
+        len(unlogged),
+        ", ".join(unlogged[:_DECLARED_MISS_NAMED]),
+    )
 
 
 def _selection(

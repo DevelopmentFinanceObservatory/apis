@@ -23,6 +23,8 @@ from search.engine.retrieval.bound_values import (
 from search.engine.retrieval.member_facts import ArcsMemberFacts
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.engine.spec_build import (
+    NO_MEASURE_LABEL,
+    MeasureLabel,
     NamedGroup,
     RoleAxisFactInput,
     _shared_qualifiers,
@@ -50,7 +52,7 @@ from search.models import (
     Spec,
     StatVar,
 )
-from statvar_members import member_digest
+from statvar_members import member_family_of
 from tests.code_index.aid_identity import (
     CRS_MEMBER_COUNT,
     CRS_MEMBERS_WITHOUT_MODALITY,
@@ -235,8 +237,8 @@ class TestBuildSpecStatVars:
 
     def test_an_open_role_counts_the_parties_beside_the_totals_of_the_code_index(self):
         parties = get_index().parties
-        totals = [dcid for dcid, row in parties.items() if row.kind_over() == "total"][:2]
-        members = [dcid for dcid, row in parties.items() if row.kind_over() == "party"][:3]
+        totals = [dcid for dcid, row in parties.items() if row.kind_over("origin") == "total"][:2]
+        members = [dcid for dcid, row in parties.items() if row.kind_over("origin") == "party"][:3]
         population = frozenset((*totals, *members))
 
         spec = self._build(
@@ -255,37 +257,38 @@ class TestBuildSpecStatVars:
             )
         ]
 
-    def test_a_walk_of_the_identitys_own_query_states_the_served_count_and_digest(self):
+    def test_a_walk_of_the_identitys_own_query_states_the_served_count_and_family(self):
+        """The shape is built with an admitted population of 250. A walk of the identity's
+        own query states the mint's served count, and the digest and size of its family of
+        three; a walk of another query states neither, and the shape keeps its count."""
         unwalked = self._build(_stat_vars(3))
         identity = unwalked.definition.identity
         assert not index_decides_membership(identity)
-        stated = StatedMembers(served_count=2, digest=member_digest(["sv0", "sv1", "sv2"]))
+        family = ["sv0", "sv1", "sv2"]
+        stated = StatedMembers(served_count=2, family=member_family_of(family))
         own = WalkedMembers(key=walk_key(identity_query(identity)), stated=stated)
         other_key = (*own.key[:2], frozenset({"origin"}), own.key[3])
         open_key = (*own.key[:3], frozenset({"origin"}))
 
-        walked = self._build(_stat_vars(3), walked=own)
-        other = self._build(_stat_vars(3), walked=replace(own, key=other_key))
-        opened = self._build(_stat_vars(3), walked=replace(own, key=open_key))
+        def statement(spec: Spec) -> tuple[int | None, str | None, int]:
+            resolved = spec.resolved
+            return (
+                resolved.stat_vars.served_count,
+                resolved.shape.member_digest,
+                resolved.shape.member_count,
+            )
 
-        assert (
-            unwalked.resolved.stat_vars.served_count,
-            unwalked.resolved.shape.member_digest,
-        ) == (
+        assert statement(self._build(_stat_vars(3), walked=own)) == (2, stated.family.digest, 3)
+        assert statement(unwalked) == (None, None, 250)
+        assert statement(self._build(_stat_vars(3), walked=replace(own, key=other_key))) == (
             None,
             None,
+            250,
         )
-        assert (walked.resolved.stat_vars.served_count, walked.resolved.shape.member_digest) == (
-            2,
-            stated.digest,
-        )
-        assert (other.resolved.stat_vars.served_count, other.resolved.shape.member_digest) == (
+        assert statement(self._build(_stat_vars(3), walked=replace(own, key=open_key))) == (
             None,
             None,
-        )
-        assert (opened.resolved.stat_vars.served_count, opened.resolved.shape.member_digest) == (
-            None,
-            None,
+            250,
         )
 
 
@@ -340,7 +343,7 @@ class TestStatedMembers:
 
         assert stated_members(identity, None) == StatedMembers(
             served_count=len(antichain_minimal_rows(get_index(), family.rows)),
-            digest=member_digest(row.dcid for row in family.rows),
+            family=member_family_of(row.dcid for row in family.rows),
         )
 
     def test_an_identity_the_index_resolves_no_family_for_states_none(self):
@@ -354,7 +357,7 @@ class TestStatedMembers:
         document = education_aid_identity()
         document["shape"]["population_type"] = "EconomicActivity"
         _, identity = mint_identity(document)
-        stated = StatedMembers(served_count=1, digest=member_digest(["Amount_EconomicActivity"]))
+        stated = StatedMembers(served_count=1, family=member_family_of(["Amount_EconomicActivity"]))
         walked = WalkedMembers(key=walk_key(identity_query(identity)), stated=stated)
         _, other_identity = mint_identity(education_aid_identity())
         elsewhere = replace(walked, key=walk_key(identity_query(other_identity)))
@@ -433,8 +436,21 @@ def test_the_concept_of_a_dac1_provider_scope_names_the_total_it_scopes(
     since the provider options state the scope; the shape label keeps each code's own."""
     slots = [_aid_type_slot(code)]
 
-    assert _shared_qualifiers([], slots, None, index=get_index()) == (
+    assert _shared_qualifiers(NO_MEASURE_LABEL, slots, None, index=get_index()) == (
         [shape_qualifier],
+        ["official development assistance"],
+    )
+
+
+def test_a_value_the_measure_label_names_leaves_the_shape_label_and_keeps_the_concept():
+    """A label naming the bound code says it already, so the shape label does not repeat it
+    ("climate finance gross disbursements" stays bare for the climate objective's total),
+    and the concept label still names what the series count."""
+    slots = [_aid_type_slot("DAC1AidType1015")]
+    label = MeasureLabel("bilateral ODA", [], (("dac1AidType", "DAC1AidType1015"),))
+
+    assert _shared_qualifiers(label, slots, None, index=get_index()) == (
+        [],
         ["official development assistance"],
     )
 

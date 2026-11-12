@@ -12,6 +12,7 @@ from search.engine.quantity_read import QuantityOutput
 from search.engine.region.codes import ENTITY_LABEL_UNRESOLVED
 from search.engine.region.grounding import _build_entity, _ground_answer
 from search.engine.region.pipeline import resolve_variable
+from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
 from search.engine.retrieval.read_plan import plan_standard
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.engine.spec_build import build_shape_model
@@ -143,6 +144,7 @@ def test_query_entity_text_never_relabels_stat_vars_or_sources() -> None:
             },
             members=["Count_Person_Swaziland"],
             years=None,
+            declared=NO_DECLARED_POLICIES,
         ),
         query_entity_text_by_dcid={
             "country/SWZ": "Eswatini",

@@ -36,7 +36,7 @@ from dfo_platform.named import cut
 from dfo_platform.problem import Cause
 from materialise.errors import MaterialisationError, UpstreamResponseError
 from materialise.graph import GraphReader, SubjectPage
-from materialise.recipe_bodies import RECIPE_BODIES, ConversionRecipe
+from materialise.recipe_bodies import RECIPE_BODIES, ConversionRecipe, DeflationBasis
 from materialise.roles import declared_roles, roles_by_axis
 
 logger = logging.getLogger(__name__)
@@ -327,6 +327,24 @@ def resolve_deflator_role(recipe: ConversionRecipe, *, declared_roles: tuple[str
             cause="role_undeclared",
         )
     return matches[0]
+
+
+def deflation_basis(
+    recipe: ConversionRecipe, *, role_sets: Iterable[tuple[str, ...]]
+) -> DeflationBasis | None:
+    """Whose prices deflate a constant-price conversion under `recipe` of StatVars declaring
+    `role_sets`, one tuple of declared roles per StatVar: the basis of the role
+    `resolve_deflator_role` settles for each (`ConversionRecipe.deflator_entity_roles`), as the
+    conversion deflates each row. `None` when a StatVar declares no single deflator role or
+    two StatVars deflate on roles of different bases."""
+    bases: set[DeflationBasis] = set()
+    for roles in role_sets:
+        try:
+            role = resolve_deflator_role(recipe, declared_roles=roles)
+            bases.add(recipe.deflator_entity_roles[role])
+        except RecipeNotDeclaredError:
+            return None
+    return bases.pop() if len(bases) == 1 else None
 
 
 class RoleAxisNotDeclaredError(RecipeNotDeclaredError):

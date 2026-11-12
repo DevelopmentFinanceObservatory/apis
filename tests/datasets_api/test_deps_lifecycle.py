@@ -423,7 +423,7 @@ def test_an_omitted_code_index_is_read_per_request_and_a_given_one_serves_every_
     pool: _RecordingPool,
 ) -> None:
     """The index `get_index()` returns can change between requests, as a graph release swap
-    replaces it, so the deps read it on each access, party kinds included."""
+    replaces it, so the deps read it on each access."""
     given, replacement = load_index(FIXTURE_PATH), load_index(FIXTURE_PATH)
     injected = {**_every_store_injected(), "task_client": FakeTaskClient()}
     live = _open_and_close(_overrides(**injected))
@@ -431,9 +431,7 @@ def test_an_omitted_code_index_is_read_per_request_and_a_given_one_serves_every_
 
     with serving_index(replacement):
         assert live.code_index is replacement
-        assert live.enrichment.parties is replacement.parties
         assert fixed.code_index is given
-        assert fixed.enrichment.parties is given.parties
     assert live.code_index is get_index()
 
 

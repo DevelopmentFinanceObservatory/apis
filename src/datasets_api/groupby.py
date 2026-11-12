@@ -26,6 +26,7 @@ from code_index.types import (
     StatVarRow,
     summable_axes,
 )
+from dfo_platform.columns import PROVENANCE_COLUMN
 from materialise.reshape import RollupNotSummableError, TableLike
 from materialise.roles import KNOWN_ROLE_NAMES
 
@@ -39,7 +40,7 @@ table ref matches `index.statvars`."""
 # to avoid importing the grammar package. `value` stays valid in `by` as the
 # summed column, which appears on every frame.
 _ALWAYS_PRESENT_COLUMNS: frozenset[str] = frozenset(
-    ("time_period", "value", "unit", "measurementMethod", "provenance", "status")
+    ("time_period", "value", "unit", "measurementMethod", PROVENANCE_COLUMN, "status")
 )
 
 

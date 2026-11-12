@@ -7,23 +7,25 @@ Total" (`DACAllRecipients`) every `official` and `residual` recipient in DAC2a f
 also names unions of whole totals read as one population (`code_index.types.WholeTotalSet`):
 "all donors including private" is the official donors' total and the private donors'.
 
-A side reads as its whole population (`whole_reading`) where it binds exactly one whole total
-whose marker covers the `official` class, or exactly the members of one whole total set, in every
-dataset the answer is read from, within the marker's years. A total of a narrower population,
+A side reads as its whole population (`retrieval.whole_reading.whole_reading`) where it binds
+exactly one whole total whose marker covers the `official` class, or exactly the members of one
+whole total set, in every dataset the answer is read from, within the marker's years. A total of a narrower population,
 "Private Donors, Total" alone, is a party the request names and no whole population. Search
 binds such a reading on a side the part totals (`place_roles.whole_total_candidates`), reads
 a side a text names as a whole population so where it holds (`place_roles.bind_place_roles`),
 and reads that side as unnamed on a dataset that publishes no total of a population covering
 it (`covers_unpublished`). A Spec carries the reading on `resolved.entity_groups`
-(`EntityGroup.whole_of`), on a first answer and on a resubmit alike. An answer that lists a
-side member by member where its dataset publishes such a total states the total beside the
-members in a `whole_total_available` warning (`whole_total_warnings`).
+(`EntityGroup.whole_of`), read from its own identity (`whole_reading.whole_groups_over_identity`)
+on the roles the request named or was offered a whole population on, and on a resubmit
+also on the roles it posts no group on, so a span counted back from now, whose years settle
+only once its series are read, labels each side over the years it settled on. An answer that
+lists a side member by member where its dataset publishes such a total states the total
+beside the members in a `whole_total_available` warning (`whole_total_warnings`).
 """
 
 from __future__ import annotations
 
 from collections.abc import Collection, Mapping, Sequence
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
 from code_index.declarations import CONTAINING_TOTALS
@@ -32,8 +34,6 @@ from code_index.types import (
     POPULATION_CLASS,
     PartyClass,
     PartyRow,
-    WholeMarker,
-    WholeTotalSet,
 )
 from dfo_platform.roles import role_key_axis
 from entity_resolution.shared import shared_membership_policy
@@ -41,7 +41,13 @@ from search.engine.extract import DateRequest
 from search.engine.region.codes import WHOLE_TOTAL_AVAILABLE
 from search.engine.region.coverage_series import series_held
 from search.engine.retrieval.bound_values import identity_dataset, served_members
-from search.engine.spec_build import NamedGroup
+from search.engine.retrieval.whole_reading import (
+    WholeReading,
+    YearsAsked,
+    identity_years,
+    whole_reading,
+    whole_total_set_of,
+)
 from search.heading.departure_fact import DepartureFact
 from search.models import (
     BaseIdentity,
@@ -58,148 +64,54 @@ from search.render.departures import (
     whole_population_text,
     whole_residual_text,
 )
+from search.scope_window import first_read_year
 
 if TYPE_CHECKING:
     from series_coverage.index import CoverageIndex
+    from series_coverage.schema import YearHorizon
 
 
-@dataclass(frozen=True, slots=True)
-class WholeReading:
-    """One side of a flow read as its whole population.
-
-    `members` are the parties the side binds: one whole total, or the members of one whole
-    total set. `total` is the one whole total, `None` for a set. `label` names the population:
-    the total's graph label, or the set's phrase. `whole_of` is the classes of party the
-    population covers, sorted: the total's marker's, or the union of the set members'. A
-    containing total (`containing_reading`) covers no class: `whole_of` is empty and
-    `group_id` names the membership registry's group the total holds.
-    """
-
-    axis: RoleAxis
-    members: tuple[str, ...]
-    total: str | None
-    label: str
-    whole_of: tuple[PartyClass, ...]
-    group_id: str | None = None
-
-    def named_group(self) -> NamedGroup:
-        """The group a Spec carries for the side (`spec_build.role_entity_groups`): a single
-        total names itself as the role's total and holds no members of its own, so a role
-        binding it is no named set of members; a set's members are the role's entities."""
-        return NamedGroup(
-            label=self.label,
-            dcid=None,
-            member_dcids=frozenset() if self.total is not None else frozenset(self.members),
-            total=self.total,
-            group_id=self.group_id,
-            whole_of=self.whole_of,
-        )
-
-
-def requested_years(date_request: DateRequest | None) -> tuple[int, int] | None:
-    """The first and last year a part asks for, `None` unless its window states both."""
-    window = None if date_request is None else date_request.window
+def requested_years(date_request: DateRequest | None, *, horizon: YearHorizon) -> YearsAsked | None:
+    """The years a part asks for, `None` unless its window states both ends. A span counted
+    back from now asks for the years its newest year may lie in
+    (`extract.DateRequest.judged`), short of a stale newest year, which departs, and its
+    range starts no earlier than the first year a read over `horizon` lists
+    (`scope_window.first_read_year`)."""
+    judged = None if date_request is None else date_request.judged
+    window = None if judged is None else judged.window
     if window is None or window.start_year is None or window.end_year is None:
         return None
-    return window.start_year, window.end_year
-
-
-def identity_years(window: IdentityWindow) -> tuple[int, int] | None:
-    """The first and last year an identity's window asks for, `None` unless it is a range
-    stating both."""
-    if window.kind != "range" or window.start_year is None or window.end_year is None:
-        return None
-    return window.start_year, window.end_year
-
-
-def _within(marker: WholeMarker, years: tuple[int, int] | None) -> bool:
-    """Whether `marker` holds in every year of `years`. A marker with no window holds in
-    every year. A windowed marker holds only for a request stating both ends inside it: an
-    open end, `latest` or no period at all can reach a year the composition check behind the
-    window never read."""
-    if marker.years is None:
-        return True
-    if years is None:
-        return False
-    first, last = marker.years
-    return first <= years[0] and years[1] <= last
-
-
-def _markers(party: PartyRow, datasets: Sequence[str]) -> list[WholeMarker] | None:
-    """`party`'s marker in each of `datasets`, `None` when one of them marks it not."""
-    markers = [marker for dataset in datasets if (marker := party.marker(dataset)) is not None]
-    return markers if len(markers) == len(datasets) else None
-
-
-def _whole_set_of(members: frozenset[str]) -> WholeTotalSet | None:
-    """The whole total set whose members are exactly `members`, or `None`."""
-    return next((s for s in get_index().whole_total_sets if frozenset(s.members) == members), None)
-
-
-def whole_reading(
-    dcids: Collection[str], *, datasets: Sequence[str], years: tuple[int, int] | None
-) -> WholeReading | None:
-    """The whole population `dcids` stand for on their flow axis when read from every one of
-    `datasets` over `years` (`requested_years`), or `None`.
-
-    One dcid reads whole when every dataset marks it within `years` and the markers agree on
-    what it covers, which includes the `official` class. Several read whole when they are
-    exactly the members of one whole total set and each member reads so in every dataset, its
-    classes then the union of theirs. No dataset reads nothing whole."""
-    index = get_index()
-    members = frozenset(dcids)
-    if not datasets or not members:
-        return None
-    if len(members) == 1:
-        (dcid,) = members
-        whole_set = None
-        parties = [index.parties.get(dcid)]
-    else:
-        whole_set = _whole_set_of(members)
-        if whole_set is None:
-            return None
-        parties = [index.parties.get(dcid) for dcid in whole_set.members]
-    covered: set[PartyClass] = set()
-    for party in parties:
-        if party is None or (markers := _markers(party, datasets)) is None:
-            return None
-        if len({marker.covers for marker in markers}) != 1:
-            return None
-        if not all(_within(marker, years) for marker in markers):
-            return None
-        covered.update(markers[0].covers)
-    if POPULATION_CLASS not in covered:
-        return None
-    first = parties[0]
-    assert first is not None
-    if whole_set is not None:
-        return WholeReading(
-            axis=whole_set.axis,
-            members=whole_set.members,
-            total=None,
-            label=whole_set.phrase,
-            whole_of=tuple(sorted(covered)),
-        )
-    return WholeReading(
-        axis=first.axes[0],
-        members=(first.dcid,),
-        total=first.dcid,
-        label=first.label or first.dcid,
-        whole_of=tuple(sorted(covered)),
+    assert date_request is not None
+    trailing = date_request.trailing
+    return YearsAsked(
+        first=window.start_year,
+        last=window.end_year,
+        trailing=trailing,
+        first_read=None if trailing is None else first_read_year(horizon),
     )
 
 
 def containing_reading(dcid: str, *, datasets: Sequence[str]) -> WholeReading | None:
     """The side `dcid` holds when every one of `datasets` serves it as the containing total of
-    its flow axis (`code_index.declarations.CONTAINING_TOTALS`), or `None`. The reading names
+    one flow axis (`code_index.declarations.CONTAINING_TOTALS`) and the code index publishes
+    it on that axis in each of them (`PartyRow.publishes`), or `None`. The reading names
     the registry group the total holds (`PartyRow.totals`) where the membership policy lists
     that group, and covers no class."""
     row = get_index().parties.get(dcid)
-    if row is None or not datasets or len(row.axes) != 1:
+    if row is None or not datasets:
         return None
-    axis = row.axes[0]
+    axes = {
+        axis
+        for (dataset, axis), held in CONTAINING_TOTALS.items()
+        if dataset in datasets and held.total == dcid
+    }
+    if len(axes) != 1:
+        return None
+    (axis,) = axes
     if any(
-        (held := CONTAINING_TOTALS.get((dataset, axis))) is None or held.total != dcid
+        (held := CONTAINING_TOTALS.get((dataset, axis))) is None
+        or held.total != dcid
+        or not row.publishes(axis, (dataset,))
         for dataset in datasets
     ):
         return None
@@ -270,8 +182,8 @@ def with_containing_total(identity: BaseIdentity, *, coverage: CoverageIndex) ->
 
 def covers_unpublished(dcids: Collection[str], *, datasets: Sequence[str]) -> bool:
     """Whether the whole population `dcids` names reads, on a shape answered from
-    `datasets`, as its side left unnamed: none of `datasets` publishes any of its parties
-    (`PartyRow.datasets`), with a whole marker or without one, those datasets hold some
+    `datasets`, as its side left unnamed: none of `datasets` publishes any of its parties on
+    its side (`PartyRow.publishes`), with a whole marker or without one, those datasets hold some
     party on its side, and every one, totals aside, is of a class its markers elsewhere say
     it covers. The CRS publishes no total of its recipients and holds `official` and
     `residual` ones, so "all recipients" (`DACAllRecipients`, `official` and `residual`)
@@ -284,10 +196,11 @@ def covers_unpublished(dcids: Collection[str], *, datasets: Sequence[str]) -> bo
     if not datasets or not rows or any(row is None for row in rows):
         return False
     parties = cast(list[PartyRow], rows)
-    if any(dataset in row.datasets for row in parties for dataset in datasets):
+    axis = parties[0].sole_axis()
+    if any(row.publishes(axis, datasets) for row in parties):
         return False
     covers = {cls for row in parties for marker in row.whole for cls in marker.covers}
-    classes = side_classes(parties[0].axes[0], datasets=datasets)
+    classes = side_classes(axis, datasets=datasets)
     return bool(classes) and set(classes) <= covers
 
 
@@ -322,7 +235,7 @@ def whole_total_unpublished_facts(
     parties = get_index().parties
     facts: list[DepartureFact] = []
     for text, dcids in whole_named.items():
-        axis = parties[dcids[0]].axes[0]
+        axis = parties[dcids[0]].sole_axis()
         if axis in bound or not covers_unpublished(dcids, datasets=(dataset,)):
             continue
         facts.append(
@@ -362,7 +275,7 @@ def named_whole_label(dcids: Collection[str]) -> str | None:
     index = get_index()
     members = frozenset(dcids)
     if len(members) > 1:
-        whole_set = _whole_set_of(members)
+        whole_set = whole_total_set_of(members)
         return None if whole_set is None else whole_set.phrase
     party = index.parties.get(next(iter(members))) if members else None
     return None if party is None else party.label or party.dcid

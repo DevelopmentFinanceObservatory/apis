@@ -15,6 +15,7 @@ the other tests script the model.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import json
 import logging
@@ -31,7 +32,6 @@ from code_index.query import CodeIndex, row_five_tuple
 from code_index.shared import get_index
 from code_index.types import DatasetDeclaration
 from datasets_api.adapter import resolve_definition_members
-from dc_graph.client import FacetDefaultPolicy
 from entity_resolution import EntityResolutionError
 from materialise.errors import UpstreamVersionChangedError
 from materialise.rate_tables import RateTableInvalidError
@@ -39,11 +39,11 @@ from origin_catalogue import DFO, Catalogue, ProvenanceRow, SourceRef
 from search.engine import degraded_reads as degraded_reads_module
 from search.engine import exclusion_read
 from search.engine.bind import ShapeRating, SlotBindingDraft, _UniversalBindOutput
-from search.engine.binders import Binder, GeminiBinder
+from search.engine.binders import Binder, GeminiBinder, JevBinder, jev_assemble
+from search.engine.clients.llm import AnyAgreement, FixedAgreement
 from search.engine.degraded_reads import DegradedReads, note_unsettled_scope
 from search.engine.entry import raw_text
 from search.engine.errors import (
-    DeclaredDefaultUnsupportedError,
     DefaultScopeIndexSourcedError,
     GraphInfraError,
 )
@@ -53,6 +53,7 @@ from search.engine.quantity_read import QuantityOutput
 from search.engine.region import phase_rank_bind as rank_bind_module
 from search.engine.region import pipeline as pipeline_module
 from search.engine.region.decisions import PartyReadingWithdrawn
+from search.engine.region.observations.dispatch import PreviewReader
 from search.engine.region.phase_rank_bind import _phase_prune_and_rank
 from search.engine.region.state import ResolveState
 from search.engine.retrieval.bound_values import identity_dataset, identity_query
@@ -66,6 +67,7 @@ from search.models import (
     ParsedInput,
     ParsedPart,
     RawTextInput,
+    ResolveOptions,
     ResolveRequest,
     ResolveResponse,
     SourceMention,
@@ -88,7 +90,7 @@ from tests.code_index.aid_identity import (
 )
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
 from tests.datasets_api._member_bounds import mint_bounds
-from tests.engine._binders import RatingBinder, ReplyBinder, nominee_ratings
+from tests.engine._binders import FakeAsk, RatingBinder, ReplyBinder, nominee_ratings
 from tests.engine._fake_coverage import patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import make_request, offline_events, offline_resolve
@@ -238,10 +240,10 @@ def _read_recorded_exclusions(monkeypatch: pytest.MonkeyPatch) -> None:
     """Read what each question leaves out from the recorded reads, through this module's
     doubles; any other double reads nothing left out."""
 
-    async def read(query: str, *, llm: object) -> tuple[ExclusionRead, dict | None]:
+    async def read(query: str, *, llm: object) -> tuple[ExclusionRead, dict | None, AnyAgreement]:
         if isinstance(llm, _RecordedLLM | _ScriptedLLM):
             return await exclusion_read.read_exclusions(query, llm=llm)
-        return ExclusionRead(exclusions=[]), None
+        return ExclusionRead(exclusions=[]), None, FixedAgreement(True)
 
     monkeypatch.setattr(raw_text, "read_exclusions", read)
 
@@ -386,8 +388,8 @@ def test_a_question_naming_no_dataset_answers_the_crs(
 
     (spec,) = _specs(response)
     assert llm.calls == {
-        "ExclusionRead": 1,
-        "Extraction": 1,
+        "ExclusionRead": 2,
+        "Extraction": 2,
         "_UniversalBindOutput": 1,
         "QuantityOutput": 1,
     }
@@ -825,14 +827,6 @@ class _FailingGraph(FakeGraph):
         return super().detect_svs(text, *args, **kwargs)
 
 
-# A default unit the graph declares on the DAC2a member alone.
-_DAC2A_DEFAULT_UNIT = {
-    (f"dcid:{_DAC2A_MEMBER}", "unit"): FacetDefaultPolicy(
-        resolved_ref="USD", policy_node="p", policy_version="1", selection_reason="r"
-    )
-}
-
-
 def _refusing_party_reading(refusal: Exception) -> Callable[..., list]:
     """`with_party_reading` raising `refusal` on a part read with a party."""
     elect = rank_bind_module.with_party_reading
@@ -850,10 +844,6 @@ def _refusing_party_reading(refusal: Exception) -> Callable[..., list]:
     [
         pytest.param("party-type", ["party reading"], id="party-type-read"),
         pytest.param("search-without-the-word", ["party reading"], id="search-without-the-word"),
-        pytest.param("party-table-declares-a-default", [], id="party-table-declares-a-default"),
-        pytest.param(
-            DeclaredDefaultUnsupportedError("default"), [], id="declared-default-unsupported"
-        ),
         pytest.param(DefaultScopeIndexSourcedError("scope"), [], id="default-scope-index-sourced"),
         pytest.param(RateTableInvalidError("table"), [], id="rate-table-invalid"),
         pytest.param(UpstreamVersionChangedError("moved"), [], id="upstream-version-changed"),
@@ -869,7 +859,7 @@ def test_a_party_reading_that_fails_or_refuses_leaves_the_base_reply(
 ):
     """The party's type read and the search of the text without the word are made only when
     the part is read with the party, and a refusal can come from the shape only that reading
-    elects, as DAC2a declaring a default unit the CRS does not. Any of them withdraws the
+    elects. Any of them withdraws the
     party reading: the reply equals the one read without party words, a failed read is
     noted as degraded, and a refusal is not. Any other exception is a defect, logged with
     its traceback."""
@@ -891,9 +881,6 @@ def test_a_party_reading_that_fails_or_refuses_leaves_the_base_reply(
             detect=recalled._detect,
             resolve={"Kenya": _KEN},
             obs={},
-            facet_policies=_DAC2A_DEFAULT_UNIT
-            if fails == "party-table-declares-a-default"
-            else None,
             fails=fails if isinstance(fails, str) else "",
         )
         query = "multilateral ODA to Kenya"
@@ -908,8 +895,6 @@ def test_a_party_reading_that_fails_or_refuses_leaves_the_base_reply(
         assert error.exc_info is not None and error.exc_info[1] is fails
     else:
         assert errors == []
-    if fails == "party-table-declares-a-default":
-        assert [part["status"] for part in reply["parts"]] == ["no_data"]
     with monkeypatch.context() as patched:
         patched.setattr(pipeline_module, "stated_party_words", lambda state: ())
         assert reply == resolve()
@@ -1258,6 +1243,8 @@ class _ScriptedLLM:
 
     async def generate_structured(self, *, prompt, system, schema):
         self.calls[schema.__name__] += 1
+        # A live call waits on I/O, so concurrent calls interleave as they do in production.
+        await asyncio.sleep(0)
         if schema is ExclusionRead:
             return await FakeLLM().generate_structured(prompt=prompt, system=system, schema=schema)
         if schema is Extraction:
@@ -1352,86 +1339,6 @@ def test_a_withdrawn_party_reading_reports_the_usage_of_its_un_pass(
     usage = response.diagnostics.llm_usage
     assert usage is not None
     assert usage["input_tokens"] == sum(llm.calls.values())
-
-
-class _PoolRatingBinder(RatingBinder):
-    """`RatingBinder` rating each word from `stated_by_pool` under the pool the request
-    reads, 1.0 where the pool's ratings hold no word."""
-
-    def __init__(self, binder: Binder, stated_by_pool: Mapping[str, Mapping[str, float]]):
-        super().__init__(binder)
-        self.stated_by_pool = stated_by_pool
-
-    async def rate_words_stated(self, request, *, llm):
-        self.requests.append(request)
-        stated = self.stated_by_pool.get(request.pool, {})
-        return {word: stated.get(word, 1.0) for word in request.words}, None
-
-
-@pytest.mark.parametrize(
-    ("pool", "states_the_word"),
-    [
-        pytest.param("un_system", False, id="unread-on-the-un-series"),
-        pytest.param("un_system", True, id="stated-by-the-un-series"),
-        pytest.param("ours", False, id="unread-on-our-series"),
-        pytest.param("ours", True, id="stated-by-our-series"),
-    ],
-)
-def test_a_declared_default_refuses_the_request_only_on_a_series_the_part_answers_on(
-    monkeypatch: pytest.MonkeyPatch, pool, states_the_word
-):
-    """The series `pool` elects for "multilateral aid" declares a default unit: the UN
-    total-ODA series, or the CRS series our pass elects. A UN pass reads the part without
-    the party word, so the party reading's UN pass rates the word as the reading without
-    party words does. Where the defaulted series leaves the word unread, as the binder
-    rates it, its pass answers nothing on it and refuses `qualifier_not_bound` before the
-    default can refuse the request (`pipeline._run_phases`), and the reading without party
-    words refuses on the word. With the UN series defaulted, our pass refuses on the word
-    too, and of the two refusals ours stands (`pipeline._fill_gap`). Where the defaulted
-    series states the word, its pass answers on it and the declared default refuses the
-    whole request."""
-    _party_coverage(monkeypatch, from_the_party=False)
-    unread = {"multilateral": 0.0}
-    stated_by_pool = {"ours": unread, "un_system": unread, pool: {} if states_the_word else unread}
-
-    def resolve(*, declares_default: bool) -> ResolveResponse:
-        recalled = _party_graph("multilateral aid", "aid")
-        un_members = (_UN_ODA,) if pool == "un_system" else ()
-        un = _graph("multilateral aid", "aid", members=(), un_members=un_members)
-        defaulted = _UN_ODA if pool == "un_system" else _CRS_MEMBER
-        default_unit = FacetDefaultPolicy(
-            resolved_ref="USD", policy_node="p", policy_version="1", selection_reason="r"
-        )
-        graph = FakeGraph(
-            nodes={**recalled._nodes, **un._nodes},
-            detect=recalled._detect,
-            un_detect=un._un_detect,
-            resolve={"Kenya": _KEN},
-            obs=un._obs,
-            facet_policies={(f"dcid:{defaulted}", "unit"): default_unit}
-            if declares_default
-            else None,
-        )
-        return _resolve_scripted(
-            "multilateral aid to Kenya",
-            _ScriptedLLM("multilateral aid"),
-            graph=graph,
-            binder=_PoolRatingBinder(GeminiBinder(), stated_by_pool),
-        )
-
-    if states_the_word:
-        with pytest.raises(DeclaredDefaultUnsupportedError):
-            resolve(declares_default=True)
-        return
-    (part,) = resolve(declares_default=True).parts
-    assert isinstance(part, NoDataPart)
-    assert part.no_data.reason == "qualifier_not_bound"
-    assert [term.text for term in part.no_data.unbound_qualifiers] == ["multilateral"]
-    # The refusal flags the series the part refuses on where no series declares a default.
-    (undefaulted,) = resolve(declares_default=False).parts
-    assert isinstance(undefaulted, NoDataPart)
-    assert undefaulted.no_data.reason == "qualifier_not_bound"
-    assert _held_spec(part).spec_id == _held_spec(undefaulted).spec_id
 
 
 def _stream(query: str, variable: str) -> list[dict]:
@@ -1570,8 +1477,10 @@ def test_a_cue_before_a_list_puts_every_place_of_it_on_its_end(monkeypatch: pyte
     """The model gives each listed place the "to" before the list as its cue, so the part
     answers both on the recipient end. The question leaves nothing out."""
 
-    async def nothing_left_out(query: str, *, llm: object) -> tuple[ExclusionRead, None]:
-        return ExclusionRead(exclusions=[]), None
+    async def nothing_left_out(
+        query: str, *, llm: object
+    ) -> tuple[ExclusionRead, None, AnyAgreement]:
+        return ExclusionRead(exclusions=[]), None, FixedAgreement(True)
 
     monkeypatch.setattr(raw_text, "read_exclusions", nothing_left_out)
     llm = _ScriptedLLM(
@@ -2003,7 +1912,7 @@ def test_raw_text_source_words_that_leave_a_part_no_source_refuse_that_part_alon
     assert [
         [ref.ref for ref in unbound.named] for unbound in second.no_data.unbound_qualifiers
     ] == [[CRS_PROVENANCE]]
-    assert llm.calls["Extraction"] == 1
+    assert llm.calls["Extraction"] == 4
     assert len(llm.bind_prompts) == 1
 
 
@@ -2060,6 +1969,46 @@ def test_an_exclusion_refusal_stands_though_the_un_system_has_a_candidate(
         [CRS_PROVENANCE],
         [_SECOND],
     ]
+
+
+@pytest.mark.parametrize(
+    ("provenance", "variable", "answers"),
+    [(IMPUTED_PROVENANCE, "grants", False), (CRS_PROVENANCE, "aid", True)],
+    ids=["refused", "answered"],
+)
+def test_a_part_that_refuses_for_an_unmet_requirement_reads_no_preview(
+    monkeypatch: pytest.MonkeyPatch,
+    source_catalogue: None,
+    provenance: str,
+    variable: str,
+    answers: bool,
+):
+    """The answer phase judges the part's requirements before it launches the preview
+    (`phase_answer._gate_carve_out`), so a part that refuses `qualifier_not_bound` never
+    requests the preview read, and a part that answers requests it."""
+    _name_dataset(monkeypatch, provenance)
+    reads: list[str] = []
+    real = PreviewReader.observations
+
+    def record(self: PreviewReader) -> Any:
+        reads.append("observations")
+        return real(self)
+
+    monkeypatch.setattr(PreviewReader, "observations", record)
+    request = make_request(f"{variable} to Kenya").model_copy(
+        update={"response_options": ResolveOptions(include_observations=True)}
+    )
+
+    response = offline_resolve(
+        request,
+        graph=_graph(variable),
+        llm=_ScriptedLLM(variable),
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+    )
+
+    (part,) = response.parts
+    assert isinstance(part, NoDataPart) is not answers
+    assert reads == (["observations"] if answers else [])
 
 
 # Each row: a raw-text question whose identity binds a table it did not name in a typed
@@ -2864,3 +2813,116 @@ def test_the_aid_type_default_binds_a_slot_the_reply_leaves_out(
         "declared_default",
     )
     assert "slot_defaulted" in [warning.code for warning in part.warnings]
+
+
+_ROOT_FLOWS_DRAFT = SlotBindingDraft(
+    axis="how", property_dcid="dac1AidType", kind="value", value_dcids=["DAC1AidType5"]
+)
+
+
+def _dac1_aid_type_siblings(*aid_types: str) -> list[str]:
+    """DAC1's net disbursement members on the nominal aid five-tuple of each of `aid_types`,
+    which differ in their aid type alone."""
+    index = get_index()
+    members = {
+        row.constraint_properties["dac1AidType"]: row.dcid
+        for row in index.statvars
+        if row.provenances == (_DAC1,)
+        and row.measurement_denominator is None
+        and row.constraint_properties.get("nettingBasis") == "Net"
+        and set(row.constraint_properties) == {"dac1AidType", "financialFlowType", "nettingBasis"}
+    }
+    return [members[aid_type] for aid_type in aid_types]
+
+
+class _JevReadingNoQuantity(JevBinder):
+    """The Jev binder over `FakeAsk`, whose quantity read finds no form, so a question
+    for a plain amount reads as one."""
+
+    def __init__(self) -> None:
+        super().__init__(ask=FakeAsk())
+
+    async def read_quantity(self, request: Any, *, llm: Any):
+        return NO_QUANTITY
+
+
+def _reply_binds_the_root(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Jev's answers, assembled, draft ``DAC1AidType5`` on the shape they elect, before the
+    engine's rules apply (`jev_assemble.assemble`)."""
+    assemble = jev_assemble.assemble
+
+    def drafting_the_root(*args: Any, **kwargs: Any):
+        output, conf = assemble(*args, **kwargs)
+        return output.model_copy(update={"bindings": [_ROOT_FLOWS_DRAFT]}), conf
+
+    monkeypatch.setattr(jev_assemble, "assemble", drafting_the_root)
+
+
+@pytest.mark.parametrize("binder", ["gemini", "jev"])
+@pytest.mark.parametrize("variable", ["aid", "total resource flows"])
+def test_the_aid_type_default_binds_where_the_reply_bound_its_unnamed_root(
+    monkeypatch: pytest.MonkeyPatch, binder: str, variable: str
+):
+    """#238, "aid from France": a reply binding ``DAC1AidType5``, official and private flows,
+    the root above DAC1's declared default, names nothing of the question, so the default
+    binds total ODA ``DAC1AidType1010`` in its place (`bind_repair.apply_declared_defaults`)
+    under either binder, and its `slot_defaulted` warning names the value it replaced
+    (`bind_repair.defaulted_slot_notes`). "Total resource flows", the DAC's own term for
+    official and private flows, matches no label or synonym of the code, so the same
+    override applies and the warning shows it. The question leaves nothing out."""
+
+    async def nothing_left_out(
+        query: str, *, llm: object
+    ) -> tuple[ExclusionRead, None, AnyAgreement]:
+        return ExclusionRead(exclusions=[]), None, FixedAgreement(True)
+
+    monkeypatch.setattr(raw_text, "read_exclusions", nothing_left_out)
+    members = _dac1_aid_type_siblings("DAC1AidType1010", "DAC1AidType5", "DAC1AidType1015")
+    patch_coverage(
+        monkeypatch,
+        [(member, "dac1", _FRA, ABSENT_ENTITY, [2021]) for member in members],
+        role_names=dict.fromkeys(members, RoleNames(donor="financingProvider", recipient=None)),
+        facet_metadata={"dac1": FacetMetadata(provenance_id=_DAC1, unit="USD")},
+    )
+    graph = FakeGraph(
+        nodes={
+            _FRA: {"label": "France", "type": "Country"},
+            _DAC1: {"label": "OECD DAC1"},
+            **{m: {"label": m, "type": "StatisticalVariable", "arcs": _arcs(m)} for m in members},
+        },
+        detect={variable: {"svs": members, "cosine_scores": [0.9, 0.89, 0.88]}},
+        resolve={"France": _FRA},
+        obs={},
+    )
+    france = ExtractedEntity(text="France", span="France", role="source", cue="from")
+    llm = _ScriptedLLM(variable, entities=(france,), drafted=(_ROOT_FLOWS_DRAFT,))
+    if binder == "jev":
+        _reply_binds_the_root(monkeypatch)
+
+    response = offline_resolve(
+        ResolveRequest(input=RawTextInput(query=f"{variable} from France")),
+        graph=graph,
+        llm=llm,
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+        binder=_JevReadingNoQuantity() if binder == "jev" else None,
+    )
+
+    (part,) = response.parts
+    assert isinstance(part, DefinitePart), part
+    (aid_type,) = [
+        slot
+        for slot in part.spec.resolved.trace.slot_filters
+        if slot.key.property is not None and slot.key.property.ref == "dac1AidType"
+    ]
+    assert (aid_type.binding_kind, [ref.ref for ref in aid_type.refs], aid_type.provenance) == (
+        "value",
+        ["DAC1AidType1010"],
+        "declared_default",
+    )
+    replaced = get_index().code_by_dcid("DAC1AidType5")
+    assert replaced is not None
+    assert [
+        replaced.label in warning.message
+        for warning in part.warnings
+        if warning.code == "slot_defaulted"
+    ] == [True]

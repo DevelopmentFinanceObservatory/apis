@@ -5,6 +5,8 @@ from __future__ import annotations
 import dataclasses
 from contextvars import copy_context
 
+import pytest
+
 from assembler.catalogue import CatalogueRelease
 from presentation_api import version
 from presentation_api.routes import COMPONENT_PATH
@@ -307,3 +309,43 @@ def test_component_schema_nested_description_reword_moves_the_token(
     perturbed = version.compute_presentation_capability_version(release=perturbed_release)
 
     assert perturbed != baseline
+
+
+@pytest.mark.parametrize(
+    ("code", "mode"),
+    [
+        pytest.param("allowance_exhausted", "do_not_retry", id="stated-mode"),
+        pytest.param("resource_exhausted", "do_not_retry", id="limit-mode"),
+    ],
+)
+def test_a_change_to_the_occurrence_retry_mode_rule_moves_the_token(
+    release: CatalogueRelease, monkeypatch: pytest.MonkeyPatch, code: str, mode: str
+):
+    """The `retry_mode` a refusal states is hashed (`retry_mode_table`), so changing the rule
+    moves the token though the release's headline `retry_modes` stay as they were."""
+    import presentation_api.refusals as refusals
+
+    baseline = version.compute_presentation_capability_version(release=release)
+    monkeypatch.setattr(refusals, "_STATED_MODES", {**refusals._STATED_MODES, code: mode})
+
+    assert version.compute_presentation_capability_version(release=release) != baseline
+
+
+def test_a_rule_change_seen_only_on_retryable_occurrences_moves_the_token(
+    release: CatalogueRelease, monkeypatch: pytest.MonkeyPatch
+):
+    """The hashed table covers retryable occurrences as well, where `frame_unavailable`'s
+    refresh mode holds."""
+    import presentation_api.refusals as refusals
+
+    baseline = version.compute_presentation_capability_version(release=release)
+    rule = refusals.retry_mode
+    monkeypatch.setattr(
+        refusals,
+        "retry_mode",
+        lambda spec, *, stored_intent: (
+            "do_not_retry" if spec.retryable else rule(spec, stored_intent=stored_intent)
+        ),
+    )
+
+    assert version.compute_presentation_capability_version(release=release) != baseline

@@ -4,19 +4,19 @@ chained derivations. The JSON Schema holds identifier patterns.
 This module duplicates them in Python. Keep both aligned with the envelope schema.
 
 The fixed caps are 256 input versions (68 characters each), 16 role keys, 22 row keys, 1,024
-characters per cell or key, 3 unit entries, 200 characters per StatVar ref in a unit, and
+characters per cell or key, 4 unit entries, 200 characters per StatVar ref in a unit, and
 1,000,000 rows. Role names use open vocabulary.
 The grammar NFC-normalises and deduplicates names and reserves fixed columns. CRS shapes use two
 role keys. Dcids and time periods stay under 100 characters. Row width is six fixed columns plus
 the role-key limit.
 
 Cells are scalars, except under `unit`, which also takes one of two mappings. A converted unit
-is one level of scalars with keys `currency`, `prices`, or `base_year`. A composed unit is
-`{"numerator": part, "denominator": part}`, where a part is a unit ref string, a converted unit, or
-`{"stat_var": "dcid:..."}`. A mapping holding `numerator` or `denominator` is read as a composed
-unit, the rule `dfo_frame_grammar.unit_cell_from_json` applies. This module bounds each mapping's
-size and depth and `Frame.build` judges its members. A StatVar ref in a unit matches `^dcid:.` and
-is at most 200 characters, the bound the components catalogue puts on `counted_stat_var`.
+is one level of scalars with keys `currency`, `prices`, `base_year`, or `deflation_basis`.
+A composed unit is `{"numerator": part, "denominator": part}`, where a part is a unit ref
+string, a converted unit, or `{"stat_var": "dcid:..."}`. A mapping holding `numerator` or
+`denominator` is read as a composed unit, the rule `dfo_frame_grammar.unit_cell_from_json`
+applies. This module bounds each mapping's size and depth and `Frame.build` judges its
+members. A StatVar ref in a unit matches `^dcid:.` and is at most 200 characters, the bound the components catalogue puts on `counted_stat_var`.
 `Frame.build` stores a unit string in NFC, which can be longer than the string sent, so the 200
 and 1,024 character bounds on a unit's strings hold for the NFC form too. A converted unit's
 `base_year`, alone or as a side, is within 1900 to 2100, the range the components catalogue
@@ -102,7 +102,7 @@ MAX_INPUT_CONTENT_VERSIONS = 256
 MAX_ROLE_KEYS = 16
 MAX_ROW_WIDTH = 6 + MAX_ROLE_KEYS
 MAX_CELL_CHARS = 1024
-MAX_UNIT_ENTRIES = 3
+MAX_UNIT_ENTRIES = 4
 MAX_COMPOSED_UNIT_ENTRIES = 2
 MAX_UNIT_STAT_VAR_CHARS = 200
 CATALOGUE_UNIT_BASE_YEARS = range(1900, 2101)

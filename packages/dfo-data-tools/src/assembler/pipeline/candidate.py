@@ -8,6 +8,13 @@ after resolution. Both read the selected series and name the kinds that show a
 span: a table, a stat card, and an entity-mode bar chart with a select that
 resolves several series, which a frame with nothing to compare leaves out.
 
+A write that creates a line chart, or revises one's select, refuses `MAX_LINE_CHART_SERIES` when
+its select lists more distinct values than `CatalogueRelease.line_chart_max_series`, the
+`maxItems` of its schema's select array, or resolves to more series than that. A revision's
+select changes when it differs from the stored one in canonical form
+(`canonical_select`), so a scalar restated as a one-value list is a change. A revision that keeps
+the stored select, and a render, draw a line chart stored over that cap as written.
+
 A candidate built with a `DescribedRevision` carries the card revision's description when its
 frame's version holds a description record (`assembler.mint.with_card_description`).
 
@@ -32,7 +39,7 @@ import datetime
 import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import cast
+from typing import Protocol, cast
 
 import jsonschema
 from dfo_frame_grammar import UNIT_COLUMN
@@ -48,11 +55,13 @@ from assembler.bind import (
 )
 from assembler.catalogue import CatalogueRelease
 from assembler.errors import (
+    AssemblerRefusal,
     BindingInvalid,
     ConstraintViolation,
     ReleaseMismatch,
     ResourceExhausted,
     SchemaInvalid,
+    escape_pointer_segment,
     pointer_from_path,
 )
 from assembler.frame_view import dimension_columns, facet_dimension_names, hashable_cell
@@ -73,7 +82,14 @@ from assembler.mint import (
 )
 from assembler.mint.provenance import LeftOut, _with_left_out_warning
 from assembler.ports import FrameRef, FrameStore, NamedSeries, ResolvedFrame, RevisionRecord
-from assembler.resolve import ResolvedSeries, resolve_selectors
+from assembler.resolve import (
+    COMPONENT_SERIES_LIMIT,
+    ResolvedSeries,
+    SeriesLimit,
+    check_resolved_series,
+    resolve_selectors,
+    series_limit_exhausted,
+)
 from assembler.rolling import (
     ROLLING_ANCHOR_UNHELD,
     ResolvedRolling,
@@ -132,7 +148,7 @@ def _build_candidate(
     if is_create:
         member = _resolve_type(intent=patch, release=release)
         _validate_intent(
-            schema=release.intent_schemas_tolerant[member],
+            schema=release.write_schemas_tolerant[member],
             intent=patch,
             release=release,
             member=member,
@@ -142,19 +158,26 @@ def _build_candidate(
         assert current is not None  # guaranteed by write_component before this is called
         member = cast(str, current.stored_intent["type"])
         _validate_intent(
-            schema=release.intent_schemas_tolerant[member],
+            schema=release.write_schemas_tolerant[member],
             intent=patch,
             release=release,
             member=member,
         )
         merged = merge_intent(current=current.stored_intent, patch=patch)
     _validate_intent(
-        schema=release.intent_schemas[member], intent=merged, release=release, member=member
+        schema=release.write_schemas[member], intent=merged, release=release, member=member
     )
     if "select" in merged:
         # The stored intent and the component it draws do not depend on the order a caller
         # listed a dimension's values in.
         merged["select"] = canonical_select(select=cast("Mapping[str, object]", merged["select"]))
+    held_to_line_chart_cap = member == "line_chart" and (
+        current is None or merged["select"] != _stored_select(current=current)
+    )
+    if held_to_line_chart_cap:
+        _refuse_line_chart_list_past_cap(
+            select=cast("Mapping[str, object]", merged["select"]), limit=_line_chart_limit(release)
+        )
 
     if member == "note_narration":
         # The write-side grammar names only {type, text} for this member --
@@ -194,11 +217,12 @@ def _build_candidate(
         )
 
     select = cast("Mapping[str, object]", merged["select"])
-    check_select_nonempty(select=select)
+    check_select_nonempty(select=select, view=resolved_frame.structural_view)
     if member in ("line_chart", "bar_chart"):
         # Tables use the cross-product of every arrayed dimension.
         check_single_arrayed_dimension(select=select)
     selectors = normalize_select(select=select)
+    series_limit = _line_chart_limit(release) if held_to_line_chart_cap else COMPONENT_SERIES_LIMIT
     if member == "line_chart" and resolved_frame.structural_view.span is not None:
         # The refusal reads the selected series, before the window, which a span frame's
         # line chart never reaches.
@@ -206,6 +230,8 @@ def _build_candidate(
             resolved_frame=resolved_frame,
             drawn="line_chart",
             select=select,
+            # A span frame's line chart never draws, so no line-chart cap is named, and an
+            # estimate past 24 names the bar chart's limit the span refusal points to.
             series=resolve_selectors(
                 resolved_frame=resolved_frame, selectors=selectors, window=None
             ),
@@ -242,15 +268,63 @@ def _build_candidate(
     if window is not None:
         window = complete_window(window=window, resolved_frame=resolved_frame)
     series = resolve_selectors(resolved_frame=resolved_frame, selectors=selectors, window=window)
-    if member == "bar_chart" and not has_arrayed_dimension(select=select) and len(series) == 1:
-        # Several series draw one bar each by default (`assembler.mint.builders`); one
-        # series would draw its periods.
-        _refuse_span_frame(
+
+    def draw(
+        *,
+        as_member: str,
+        intent: Mapping[str, object],
+        stored_intent: Mapping[str, object],
+        described: DescribedRevision | None,
+    ) -> _Candidate:
+        return _draw(
+            member=as_member,
+            drawn=intent,
+            stored_intent=stored_intent,
             resolved_frame=resolved_frame,
-            drawn="period-mode bar_chart",
-            select=select,
             series=series,
+            window=window,
+            rolling=rolling,
+            rendered_names=rendered_names,
+            release=release,
+            clock=clock,
+            described=described,
         )
+
+    if held_to_line_chart_cap:
+        _check_line_chart_series(
+            series=series,
+            selectors=selectors,
+            limit=series_limit,
+            others=lambda: _other_types_drawing(drawn=drawn, series=series, draw=draw),
+        )
+    return draw(as_member=member, intent=drawn, stored_intent=merged, described=described)
+
+
+def _draw(
+    *,
+    member: str,
+    drawn: Mapping[str, object],
+    stored_intent: Mapping[str, object],
+    resolved_frame: ResolvedFrame,
+    series: tuple[ResolvedSeries, ...],
+    window: Mapping[str, object] | None,
+    rolling: ResolvedRolling | None,
+    rendered_names: tuple[NamedSeries, ...],
+    release: CatalogueRelease,
+    clock: Callable[[], datetime.datetime],
+    described: DescribedRevision | None,
+) -> _Candidate:
+    """Draws `member` from `series`, resolved on `resolved_frame` over `window` (completed,
+    or `None` for the frame's default), and checks it: a bar chart's period mode, a stat
+    card's one series, the window's points, a table's rows, the series a rolling intent or
+    a render leaves out, then minting, the release's constraints and the envelope size
+    (`_finish_candidate`). `drawn` is the intent with its relative periods resolved and
+    `stored_intent` the one the candidate stores. A write draws its own member, and a line
+    chart's refusal draws others to find which would draw its select
+    (`_other_types_drawing`)."""
+    select = cast("Mapping[str, object]", drawn["select"])
+    if member == "bar_chart":
+        _check_period_bar_chart(select=select, resolved_frame=resolved_frame, series=series)
 
     if member == "stat_card" and len(series) != 1:
         raise BindingInvalid(
@@ -261,61 +335,19 @@ def _build_candidate(
             detail=f"a stat_card names exactly one series; this selection resolves to {len(series)}",
         )
 
-    effective_window = window or default_window(resolved_frame=resolved_frame)
-    grain = resolved_frame.structural_view.period_grain
-    observed_periods = (
-        frame_periods(resolved_frame=resolved_frame) if grain == "day" else frozenset()
-    )
-    try:
-        period_count = count_periods(
-            start=str(effective_window["start"]),
-            end=str(effective_window["end"]),
-            grain=grain,
-            observed=observed_periods,
-            span=resolved_frame.structural_view.span,
-        )
-    except ValueError as exc:
-        # A schema-valid window at the wrong grain, or one that leaves out a span
-        # frame's span, can pass lexical resolution and then fail `count_periods`.
-        # Convert that `ValueError` to a binding refusal. Matching day-grain
-        # windows clamp invalid dates.
-        raise BindingInvalid(
-            pointer="/window",
-            dimension="",
-            legal_values=(),
-            truncated=False,
-            detail=f"window start/end cannot bind this frame's {grain!r} periods: {exc}",
-        ) from exc
-    if period_count > MAX_POINTS_PER_SERIES:
-        raise ResourceExhausted(
-            pointer="/window",
-            limit_name="MAX_POINTS_PER_SERIES",
-            detail=(
-                f"window spans {period_count} periods at this frame's grain, over the "
-                f"maximum of {MAX_POINTS_PER_SERIES} points per series"
-            ),
-        )
+    effective_window, period_count = _window_periods(resolved_frame=resolved_frame, window=window)
+    _check_points(period_count=period_count)
     # A table over a frame keeping a selection in each period lists only the points the
     # selection kept (`without_unselected_points`), counted before a single row is built.
     # Any other table lists one row per (resolved coordinate, period in the window).
     selected = member == "table" and selects_per_period(resolved_frame=resolved_frame)
     if member == "table":
-        row_count = (
-            count_selected_points(
-                resolved_frame=resolved_frame, series=series, window=effective_window
-            )
-            if selected
-            else len(series) * period_count
+        _check_table_rows(
+            resolved_frame=resolved_frame,
+            series=series,
+            window=effective_window,
+            period_count=period_count,
         )
-        if row_count > MAX_TABLE_ROWS:
-            raise ResourceExhausted(
-                pointer="/select",
-                limit_name="MAX_TABLE_ROWS",
-                detail=(
-                    f"selection resolves to {row_count} rows over {len(series)} coordinates "
-                    f"and {period_count} periods, over the maximum of {MAX_TABLE_ROWS}"
-                ),
-            )
     bound = bind_all(resolved_frame=resolved_frame, series=series, window=effective_window)
     if selected:
         # `resolve_selectors` refuses a window no selected series holds a row in, and a
@@ -348,7 +380,7 @@ def _build_candidate(
     return _finish_candidate(
         member=member,
         merged_intent=drawn,
-        stored_intent=merged,
+        stored_intent=stored_intent,
         resolved_frame=resolved_frame,
         series=series,
         bound_series=bound,
@@ -481,6 +513,182 @@ def _varying_dimensions(
         for name, values in values_by_name.items()
         if name not in select and name not in facets and len(values) > 1
     )
+
+
+def _stored_select(*, current: RevisionRecord) -> dict[str, object] | None:
+    """`current`'s stored select in canonical form (`canonical_select`), or `None` when it
+    holds none."""
+    stored = current.stored_intent.get("select")
+    if stored is None:
+        return None
+    return canonical_select(select=cast("Mapping[str, object]", stored))
+
+
+def _check_period_bar_chart(
+    *, select: Mapping[str, object], resolved_frame: ResolvedFrame, series: Sequence[ResolvedSeries]
+) -> None:
+    """Refuses a bar chart of one series on a span frame, which would draw its periods.
+    Several series draw one bar each by default (`assembler.mint.builders`)."""
+    if not has_arrayed_dimension(select=select) and len(series) == 1:
+        _refuse_span_frame(
+            resolved_frame=resolved_frame,
+            drawn="period-mode bar_chart",
+            select=select,
+            series=series,
+        )
+
+
+def _window_periods(
+    *, resolved_frame: ResolvedFrame, window: Mapping[str, object] | None
+) -> tuple[Mapping[str, object], int]:
+    """The window a component draws (the frame's default when `window` is `None`) and the
+    periods it spans at the frame's grain. A schema-valid window at the wrong grain, or one
+    that leaves out a span frame's span, can pass lexical resolution and then fail
+    `count_periods`, which refuses `binding_invalid`. Matching day-grain windows clamp
+    invalid dates."""
+    effective_window = window or default_window(resolved_frame=resolved_frame)
+    grain = resolved_frame.structural_view.period_grain
+    observed_periods = (
+        frame_periods(resolved_frame=resolved_frame) if grain == "day" else frozenset()
+    )
+    try:
+        period_count = count_periods(
+            start=str(effective_window["start"]),
+            end=str(effective_window["end"]),
+            grain=grain,
+            observed=observed_periods,
+            span=resolved_frame.structural_view.span,
+        )
+    except ValueError as exc:
+        raise BindingInvalid(
+            pointer="/window",
+            dimension="",
+            legal_values=(),
+            truncated=False,
+            detail=f"window start/end cannot bind this frame's {grain!r} periods: {exc}",
+        ) from exc
+    return effective_window, period_count
+
+
+def _check_points(*, period_count: int) -> None:
+    """Refuses a window spanning more than `MAX_POINTS_PER_SERIES` periods."""
+    if period_count > MAX_POINTS_PER_SERIES:
+        raise ResourceExhausted(
+            pointer="/window",
+            limit_name="MAX_POINTS_PER_SERIES",
+            detail=(
+                f"window spans {period_count} periods at this frame's grain, over the "
+                f"maximum of {MAX_POINTS_PER_SERIES} points per series"
+            ),
+        )
+
+
+def _check_table_rows(
+    *,
+    resolved_frame: ResolvedFrame,
+    series: Sequence[ResolvedSeries],
+    window: Mapping[str, object],
+    period_count: int,
+) -> None:
+    """Refuses a table of `series` over `period_count` periods past `MAX_TABLE_ROWS`. A
+    table over a frame keeping a selection in each period counts the points the selection
+    kept. Any other counts series times periods, and its detail says how many series or
+    periods fit."""
+    if selects_per_period(resolved_frame=resolved_frame):
+        row_count = count_selected_points(
+            resolved_frame=resolved_frame, series=series, window=window
+        )
+        if row_count <= MAX_TABLE_ROWS:
+            return
+        detail = (
+            f"selection keeps {row_count} rows over {len(series)} series and {period_count} "
+            f"periods, over the maximum of {MAX_TABLE_ROWS}; bind fewer series or narrow "
+            "the window"
+        )
+    else:
+        row_count = len(series) * period_count
+        if row_count <= MAX_TABLE_ROWS:
+            return
+        detail = (
+            f"selection resolves to {len(series)} series x {period_count} periods = "
+            f"{row_count} rows, over the maximum of {MAX_TABLE_ROWS}; bind the select to at "
+            f"most {max(1, MAX_TABLE_ROWS // period_count)} series over these periods, or "
+            f"narrow the window to at most {max(1, MAX_TABLE_ROWS // len(series))} periods"
+        )
+    raise ResourceExhausted(pointer="/select", limit_name="MAX_TABLE_ROWS", detail=detail)
+
+
+def _check_line_chart_series(
+    *,
+    series: Sequence[ResolvedSeries],
+    selectors: Sequence[Mapping[str, object]],
+    limit: SeriesLimit,
+    others: Callable[[], list[str]],
+) -> None:
+    """Refuses a line chart that resolves to more series than `limit.cap`
+    (`check_resolved_series`).
+
+    A listed array past the cap refuses before this (`_refuse_line_chart_list_past_cap`).
+    This counts the resolved series, so it also holds for a select that leaves a dimension
+    unbound. A write is held to the cap when it creates a line chart or changes its select.
+    A revision that keeps the stored select, a title edit say, and a render of a stored
+    revision skip the check, so a line chart stored over the cap renders and takes edits that
+    leave its series alone.
+
+    The detail offers the types `others` returns, those whose own write passes on the same
+    select (`_other_types_drawing`)."""
+
+    def offer() -> str:
+        drawing = others()
+        if not drawing:
+            return ""
+        drawn = "which draws" if len(drawing) == 1 else "either of which draws"
+        return (
+            f", or draw the same select as {' or as '.join(drawing)}, {drawn} all "
+            f"{len(series)} series"
+        )
+
+    check_resolved_series(series=series, selectors=selectors, limit=limit, offer=offer)
+
+
+class _Draw(Protocol):
+    def __call__(
+        self,
+        *,
+        as_member: str,
+        intent: Mapping[str, object],
+        stored_intent: Mapping[str, object],
+        described: DescribedRevision | None,
+    ) -> _Candidate: ...
+
+
+# The types a line chart's refusal offers for its select, in the order it names them.
+_OTHER_TYPES = ("bar_chart", "table")
+
+
+def _other_types_drawing(
+    *,
+    drawn: Mapping[str, object],
+    series: Sequence[ResolvedSeries],
+    draw: _Draw,
+) -> list[str]:
+    """`a bar_chart` and `a table`, each where that type's write passes on the same resolved
+    `series` and window and keeps every one: `draw`, the write's own draw (`_draw`), for an
+    intent of that type with `drawn`'s `frame_ref`, `select` and `window`. The series estimate
+    that resolved `series` is the one that type's write passes (`resolve_selectors`)."""
+    drawing = []
+    for member in _OTHER_TYPES:
+        intent = {
+            "type": member,
+            **{key: drawn[key] for key in ("frame_ref", "select", "window") if key in drawn},
+        }
+        try:
+            candidate = draw(as_member=member, intent=intent, stored_intent=intent, described=None)
+        except AssemblerRefusal:
+            continue
+        if len(candidate.series) == len(series):
+            drawing.append(f"a {member}")
+    return drawing
 
 
 def _comparable_values(
@@ -654,8 +862,10 @@ def _validate_intent(
 ) -> None:
     """Validates an intent and raises `SchemaInvalid` for the first violation.
 
-    Missing required fields carry the member's minimal intent. Other errors
-    carry its legal field names."""
+    `schema` is the member's write schema (`CatalogueRelease.write_schemas`), so a line
+    chart's intent is validated without its select array's `maxItems`, the series cap a
+    write checks only where it applies (`_refuse_line_chart_list_past_cap`). Missing required
+    fields carry the member's minimal intent. Other errors carry its legal field names."""
     validator = jsonschema.Draft202012Validator(schema)
     errors = sorted(validator.iter_errors(intent), key=jsonschema.exceptions.relevance)
     if not errors:
@@ -679,6 +889,33 @@ def _validate_intent(
         detail=error.message,
         legal_fields=legal_top_level,
     )
+
+
+def _line_chart_limit(release: CatalogueRelease) -> SeriesLimit:
+    """The line chart's series cap, the `maxItems` of the catalogue's `line_chart` select
+    array."""
+    return SeriesLimit(name="MAX_LINE_CHART_SERIES", cap=release.line_chart_max_series)
+
+
+def _refuse_line_chart_list_past_cap(*, select: Mapping[str, object], limit: SeriesLimit) -> None:
+    """Refuses the first of a line chart's select lists naming more distinct values than
+    `limit.cap` at that list's pointer, with the advice a select resolving past the cap gets
+    (`series_limit_exhausted`, as `check_resolved_series` raises it): the list's dimension,
+    one series per value, stays the series and is to be bound to at most the cap. `select`
+    has passed schema validation and is in canonical form (`canonical_select`), so each list
+    holds strings without repeats. A write checks it where it creates a line chart or
+    changes its select, as it holds the resolved series to the cap
+    (`_check_line_chart_series`)."""
+    for dimension, values in select.items():
+        if not isinstance(values, list) or len(values) <= limit.cap:
+            continue
+        raise series_limit_exhausted(
+            limit=limit,
+            found=f"select lists {len(values)} values on {dimension!r}, one series each",
+            counts={dimension: len(values)},
+            kept=dimension,
+            pointer=f"/select/{escape_pointer_segment(dimension)}",
+        )
 
 
 def _translate_pointer(*, component_pointer: str) -> str:

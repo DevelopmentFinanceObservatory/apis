@@ -11,6 +11,7 @@ from search.engine.region.bound_unit_gate import (
     bound_unit_gate_reason,
     plan_unit_evidence,
 )
+from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
 from search.engine.retrieval.read_plan import PairPlan, PlanSeries
 
 _KEN = {"observationAbout": ["country/KEN"]}
@@ -33,7 +34,13 @@ def _series(stat_var: str, *, served: bool) -> PlanSeries:
 def _plan(*, scope: bool = False) -> PairPlan:
     """A and B each serve a series at Kenya; C's series holds no facet of its group."""
     series = (_series("A", served=True), _series("B", served=True), _series("C", served=False))
-    return PairPlan(members=("A", "B", "C"), years=None, series=series, scope=scope)
+    return PairPlan(
+        members=("A", "B", "C"),
+        years=None,
+        series=series,
+        scope=scope,
+        declared=NO_DECLARED_POLICIES,
+    )
 
 
 def test_unit_evidence_serves_when_one_served_statvar_is_confirmed():
@@ -64,7 +71,12 @@ def test_an_answer_without_a_plan_confirms_nothing():
         pytest.param(None, _KEN, ["A"], "facet_not_available", id="no-plan"),
         # A plan the elected units narrowed to nothing holds no series in the requested unit.
         pytest.param(
-            PairPlan(members=("C",), years=None, series=(_series("C", served=False),)),
+            PairPlan(
+                members=("C",),
+                years=None,
+                series=(_series("C", served=False),),
+                declared=NO_DECLARED_POLICIES,
+            ),
             _KEN,
             ["C"],
             "facet_not_available",

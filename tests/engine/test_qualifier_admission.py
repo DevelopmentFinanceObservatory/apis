@@ -38,10 +38,12 @@ from search.engine.qualifier_match import (
     QualifierReadings,
     QualifierTie,
     bindable_codes,
+    declared_measures_named,
     governing_connectives,
     match_qualifier_ties,
     match_qualifiers,
 )
+from search.engine.quantity import DenominatorRead
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import RegionResult
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
@@ -419,6 +421,7 @@ def test_a_part_naming_the_crs_refuses_only_terms_its_own_reading_cannot_hold(va
         candidates,
         own_variable_spans(variable, *candidates),
         state=_part_state(variable, candidates),
+        named=declared_measures_named(variable),
     )
 
     assert [record.text for record in undeclared] == refused
@@ -473,6 +476,7 @@ def test_a_part_naming_a_table_that_states_a_word_does_not_refuse_it(
         candidates,
         own_variable_spans(variable, *candidates),
         state=_part_state(variable, candidates, recipient),
+        named=declared_measures_named(variable),
     )
 
     assert [record.text for record in undeclared] == refused
@@ -632,6 +636,43 @@ def test_admit_qualifier_ties_passes_through_when_two_or_more_rows_survive():
         "crsPurpose",
     }
     assert admitted_ties[0].matched_text == "budget support"
+
+
+def test_admit_qualifier_ties_promotes_the_row_every_other_row_nests_under():
+    """ "Grants" ties the grants finance type and the standard grant under it. Nested rows
+    are one reading, so the grants code promotes and the model is shown no tie."""
+    ties = _crs_ties("grants")
+    assert {row.code_dcid for tie in ties for row in tie.rows} == {
+        "CRSTypeOfFinance100",
+        "CRSTypeOfFinance110",
+    }
+    promoted, admitted_ties, _unheld = _admit_qualifier_ties(
+        [_CRS_SHAPE], {shape_vocabulary(_CRS_SHAPE): ties}, holds=held_codes
+    )
+    assert admitted_ties == ()
+    assert [match.code_dcid for match in promoted] == ["CRSTypeOfFinance100"]
+
+
+@pytest.mark.parametrize(
+    "query_text",
+    [
+        pytest.param("budget support", id="same-case"),
+        pytest.param("Budget Support", id="other-case"),
+    ],
+)
+def test_admit_qualifier_ties_keeps_a_tie_the_variable_and_the_query_text_both_carry_once(
+    query_text: str,
+):
+    """ "Germany budget support to low income countries" reads the "budget support" tie from
+    the variable and from the query text, in whatever case each spells it. It is one
+    question, so the bind model is asked it once."""
+    ties = _crs_ties("budget support")
+    _promoted, admitted_ties, _unheld = _admit_qualifier_ties(
+        [_CRS_SHAPE],
+        {shape_vocabulary(_CRS_SHAPE): (*ties, *_crs_ties(query_text))},
+        holds=held_codes,
+    )
+    assert admitted_ties == ties
 
 
 def test_admit_qualifier_ties_drops_when_no_shape_declares_either_property():
@@ -2073,12 +2114,12 @@ def test_e2e_qualifier_not_bound_refuses_while_a_bound_control_still_answers(cap
 
 
 # ---------------------------------------------------------------------------
-# A query-text-only tie reaches the unbound-qualifier guard
+# A query-text-only tie of nested codes binds the broadest
 # ---------------------------------------------------------------------------
 
 
-class _TieElectingLLM:
-    """Elect the shape and bind the query-text-only "grants" tie to row 110."""
+class _StandardGrantLLM:
+    """Elect the shape and bind the finance type to the standard grant, row 110."""
 
     async def generate_structured(self, *, prompt, system, schema):
         if schema is QuantityOutput:
@@ -2101,35 +2142,34 @@ class _TieElectingLLM:
         )
 
 
-def test_e2e_query_text_only_tie_elects_cleanly_and_answers(caplog, monkeypatch):
-    """A resolved query-text-only tie passes the guard."""
+@pytest.mark.parametrize(
+    "llm",
+    [
+        pytest.param(_StandardGrantLLM(), id="reply-binds-the-nested-row"),
+        pytest.param(_PermissiveNoBindingLLM(), id="reply-binds-neither"),
+    ],
+)
+def test_e2e_query_text_only_nested_tie_binds_the_broadest_row(caplog, monkeypatch, llm):
+    """ "Grants" in the query text alone names the grants finance type and the standard
+    grant under it. Nested rows are one reading, so the grants code binds as an ordinary
+    match whatever the reply bound, and the part answers."""
     result = _run_e2e(
         caplog,
         monkeypatch,
         variable="ODA to Kenya",
         query_text="ODA grants to Kenya",
-        llm=_TieElectingLLM(),
+        llm=llm,
     )
     assert result.status == "definite"
-    spec = result.specs[0]
-    grants = next(q for q in spec.resolved.trace.query_qualifiers if q.text == "grants")
-    assert grants.disposition == "bound"
-    assert {ref.ref for ref in grants.named} == {"CRSTypeOfFinance100", "CRSTypeOfFinance110"}
-
-
-def test_e2e_query_text_only_tie_left_unresolved_refuses(caplog, monkeypatch):
-    """An unresolved query-text-only tie triggers `qualifier_not_bound`."""
-    result = _run_e2e(
-        caplog,
-        monkeypatch,
-        variable="ODA to Kenya",
-        query_text="ODA grants to Kenya",
-        llm=_PermissiveNoBindingLLM(),
-    )
-    assert result.status == "no_data"
-    assert result.no_data_reason == "qualifier_not_bound"
-    assert [q.text for q in result.unbound_qualifiers] == ["grants"]
-    assert result.unbound_qualifiers[0].disposition == "unbound"
+    (spec,) = result.specs
+    assert [
+        slot.binding.value.ref.ref
+        for slot in spec.resolved.slots
+        if slot.key.property is not None
+        and slot.key.property.ref == "crsTypeOfFinance"
+        and slot.binding.kind == "value"
+        and slot.binding.value.ref is not None
+    ] == ["CRSTypeOfFinance100"]
 
 
 _CRS_GROSS_SV = (
@@ -2503,3 +2543,86 @@ def test_e2e_a_menu_choice_binds_and_the_confirmation_sentence_names_it(
         if f.key.property is not None and f.key.property.ref == "crsPurpose"
     )
     assert purpose_filter.provenance == "binder"
+
+
+_GNI_SHAPE = ShapeDraft(
+    shape_id="economicunit_primaryincome_measuredvalue_nominal",
+    label="Gross national income",
+    pop_type_dcid="EconomicUnit",
+    meas_prop_dcid="primaryIncome",
+    stat_type_dcid="measuredValue",
+    meas_qual_dcid="Nominal",
+    meas_denom_dcid=None,
+    slot_keys=(
+        SlotKeyDraft(
+            axis="how",
+            property_dcid="fixedCapitalConsumptionBasis",
+            label="fixed capital consumption basis",
+        ),
+    ),
+)
+_ODA_PER_GNI_SHAPE = ShapeDraft(
+    shape_id="financialflow_amount_measuredvalue_gni",
+    label="ODA disbursements as a share of gross national income",
+    pop_type_dcid="FinancialFlow",
+    meas_prop_dcid="amount",
+    stat_type_dcid="measuredValue",
+    meas_qual_dcid="Nominal",
+    meas_denom_dcid="Amount_EconomicActivity_GrossNationalIncome_Nominal",
+    slot_keys=(SlotKeyDraft(axis="how", property_dcid="nettingBasis", label="netting basis"),),
+    sv_arc_facts={
+        "sv_oda_gni": {
+            "constraintProperties": {"nodes": [{"dcid": "financialFlowType"}]},
+            "financialFlowType": {"nodes": [{"dcid": "Disbursement"}]},
+        }
+    },
+)
+
+
+_GNI_READ = DenominatorRead(
+    kind="other",
+    name="Gross national income",
+    pairs=(("populationType", "EconomicActivity"), ("measuredProperty", "amount")),
+)
+
+
+@pytest.mark.parametrize(
+    ("variable", "shape", "denominators", "refused"),
+    [
+        ("GNI", _GNI_SHAPE, {}, []),
+        ("gross national income", _GNI_SHAPE, {}, []),
+        ("ODA as a share of GNI", _GNI_SHAPE, {}, ["ODA as a share of GNI"]),
+        ("GNI", _ODA_PER_GNI_SHAPE, {}, ["GNI"]),
+        (
+            "GNI",
+            _ODA_PER_GNI_SHAPE,
+            {"Amount_EconomicActivity_GrossNationalIncome_Nominal": _GNI_READ},
+            [],
+        ),
+    ],
+    ids=["acronym", "expansion", "other-words", "named-only-in-the-label", "the-shape-s-base"],
+)
+def test_a_term_naming_the_elected_measure_is_no_unread_qualifier(
+    variable, shape, denominators, refused
+):
+    """ "GNI" names `CRSTypeOfFinance1` and `CRSTypeOfFlow40`, which no gross national income
+    row holds, yet it names the declared measure the shape holds or divides by
+    (`measure_verdict.measure_verdicts`). A term holding other words stays a qualifier the
+    part refuses on, and so does "GNI" on a disbursement shape whose label alone names
+    gross national income: its pairs hold a declared measure, so its label names none. Once
+    the denominator read names the StatVar it divides by gross national income, "GNI" is
+    its base and read."""
+    spans = read_text(variable, _REAL_INDEX, get_measure_index()).everywhere.spans
+    state = _part_state(variable, [shape])
+    state.denominator_reads = denominators
+
+    undeclared = _undeclared_qualifiers(
+        variable,
+        spans,
+        [shape],
+        own_variable_spans(variable, shape),
+        state=state,
+        named=declared_measures_named(variable),
+    )
+
+    assert [record.text for record in undeclared] == refused

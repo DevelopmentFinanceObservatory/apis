@@ -116,7 +116,7 @@ def _live_deps_factory(
     so both elect one facet.
 
     The factory holds no code index, so a run reads the one its bindings give
-    (`build_worker_app`), and the enrichment reads party kinds from `get_index()` per lookup.
+    (`build_worker_app`), party kinds included.
     It holds the process's `RebuildFlights`, so every run shares one.
     """
     _settings = settings if settings is not None else DatasetsBuildSettings.from_env()
@@ -132,7 +132,7 @@ def _live_deps_factory(
         ceiling=_MATERIALISE_RAW_FETCH_GUARD_ROWS,
         member_concurrency=_settings.mint_member_max_concurrency,
         enumerator=shared_enumerator(),
-        enrichment=EnrichmentLookup(graph, parties=lambda: get_index().parties),
+        enrichment=EnrichmentLookup(graph),
         rate_cache=RateTableCache(),
         coverage=coverage,
         version_writer=LiveVersionRecordWriter(store=store),
@@ -471,8 +471,8 @@ def build_worker_app(
         except OperationSuperseded:
             # Another attempt owns the work. A 2xx stops this delivery.
             return JSONResponse({"status": "superseded"}, status_code=200)
-        except OperationTransientFailure as exc:
-            return JSONResponse({"detail": str(exc)}, status_code=503)
+        except OperationTransientFailure:
+            return JSONResponse({"detail": "transient worker failure"}, status_code=503)
         except Exception:
             logger.exception("Datasets worker: operation %r crashed unexpectedly", operation_id)
             return JSONResponse({"detail": "unexpected worker failure"}, status_code=500)

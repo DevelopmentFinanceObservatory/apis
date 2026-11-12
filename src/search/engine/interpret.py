@@ -24,8 +24,9 @@ from dataclasses import dataclass, replace
 from pydantic import BaseModel, ConfigDict, Field
 
 from code_index.query import CodeIndex
-from code_index.shared import get_index
+from code_index.shared import get_index, get_measure_index
 from code_index.tokens import word_tokens
+from code_index.types import CodeRow
 from entity_resolution import EntityResolver, Resolution, Resolved
 from origin_catalogue import current_catalogue
 from search.engine.clients.graph import (
@@ -36,8 +37,10 @@ from search.engine.clients.graph import (
     settled_un,
     stand_candidates,
     stand_in,
+    with_reading_families,
 )
 from search.engine.config import settings
+from search.engine.qualifier_match import cross_vocabulary_codes, read_by_vocabulary
 from search.engine.retrieval.topics import is_topic_candidate
 from search.engine.surface_resolution import resolve_names
 
@@ -246,23 +249,95 @@ def _pooled(first: Detection, second: Detection, joins: Callable[[str], bool]) -
 
 
 async def _detect(
-    graph: EngineGraphClient, text: str, party_words: AbstractSet[str] = frozenset()
+    graph: EngineGraphClient,
+    text: str,
+    party_words: AbstractSet[str] = frozenset(),
+    *,
+    variable: str,
 ) -> Detection:
-    """The graph's detection of `text` (`EngineGraphClient.detect_svs`). When `text` holds a
-    word some declared dataset states, or one of `party_words` (`_without_stated_words`),
-    the graph is searched concurrently on the text without it, and the series of the
-    datasets that state or name a party for a removed word join the pool (`_states_a_word`,
-    `_pooled`). A failure of either search raises."""
+    """The graph's detection of `text` (`EngineGraphClient.detect_svs`), with a row of each
+    family that reads a code `variable` names where no recalled family of its five-tuple
+    reads it (`_with_reading_families`). When `text` holds a word some declared dataset
+    states, or one of `party_words` (`_without_stated_words`), the graph is searched
+    concurrently on the text without it, and the series of the datasets that state or name
+    a party for a removed word join the pool (`_states_a_word`, `_pooled`). A failure of
+    either search raises. `variable` is read off the event loop while the graph searches
+    (`_code_phrases`)."""
     index = get_index()
     unstated = _without_stated_words(text, index, party_words)
+    phrases = asyncio.to_thread(_code_phrases, variable, index)
     if unstated is None:
-        return await asyncio.to_thread(graph.detect_svs, text)
-    rest, removed = unstated
-    first, second = await asyncio.gather(
-        asyncio.to_thread(graph.detect_svs, text),
-        asyncio.to_thread(graph.detect_svs, rest),
+        detection, read = await asyncio.gather(asyncio.to_thread(graph.detect_svs, text), phrases)
+    else:
+        rest, removed = unstated
+        first, second, read = await asyncio.gather(
+            asyncio.to_thread(graph.detect_svs, text),
+            asyncio.to_thread(graph.detect_svs, rest),
+            phrases,
+        )
+        detection = _pooled(
+            first, second, lambda dcid: _states_a_word(dcid, removed, index, party_words)
+        )
+    return _with_reading_families(detection, read, index)
+
+
+def _code_phrases(variable: str, index: CodeIndex) -> list[list[CodeRow]]:
+    """The code rows each span of `variable` read in every code system names there
+    (`cross_vocabulary_codes`), for each span naming one or more codes, with the reader the
+    bind phase reads it with (`read_by_vocabulary`, as `phase_rank_bind._read_sources` calls
+    it), so recall adds a family for exactly the phrases the later checks find in the
+    variable. The reader keeps the scan, so the bind phase reads the variable without
+    scanning it again."""
+    (reading,) = read_by_vocabulary((variable,), index, get_measure_index(), vocabularies=())
+    return [codes for span in reading.everywhere.spans if (codes := cross_vocabulary_codes(span))]
+
+
+def _with_reading_families(
+    detection: Detection, phrases: Sequence[Sequence[CodeRow]], index: CodeIndex
+) -> Detection:
+    """`detection` with a row of each family of a five-tuple among its hits that reads one
+    of `phrases`, the code rows of each code phrase of the variable (`_code_phrases`), that
+    no recalled family there reads (`with_reading_families`), in its hits and in its
+    candidates as they stand (`stand_candidates`)."""
+    if not phrases:
+        return detection
+    catalogue = current_catalogue()
+    hits = detection.candidates if detection.hits is None else detection.hits
+    widened = with_reading_families(hits, phrases=phrases, catalogue=catalogue, index=index)
+    if len(widened) == len(hits):
+        return detection
+    return replace(
+        detection, candidates=stand_candidates(widened, catalogue=catalogue), hits=widened
     )
-    return _pooled(first, second, lambda dcid: _states_a_word(dcid, removed, index, party_words))
+
+
+@dataclass(frozen=True, slots=True)
+class Detected:
+    """The graph's detection of `text` for the part variable `variable`, as `recall` makes
+    it with no party word removed, made under the catalogue bound when it ran
+    (`detect_measure`). `recall` takes it in place of its own detection of the same text and
+    variable (`recall`'s `detected`)."""
+
+    text: str
+    variable: str
+    detection: Detection
+
+    @property
+    def candidates(self) -> list[DetectedSV]:
+        """The candidates `recall` keeps of the detection: those above the recall floor."""
+        return _above_recall_floor(self.detection.candidates)
+
+
+async def detect_measure(graph: EngineGraphClient, text: str, *, variable: str) -> Detected:
+    """The graph's detection of `text` for the part variable `variable` under the bound
+    catalogue, as `recall` makes it with no entity resolved and no party word removed. A
+    failed search raises."""
+    canonical = _canonicalize_acronyms(text)
+    return Detected(
+        text=canonical,
+        variable=variable,
+        detection=await _detect(graph, canonical, variable=variable),
+    )
 
 
 def _member_detection(members: Sequence[str]) -> Detection:
@@ -290,6 +365,7 @@ async def recall(
     entity_surfaces: Mapping[str, str] | None = None,
     members: Sequence[str] | None = None,
     party_words: AbstractSet[str] = frozenset(),
+    detected: Detected | None = None,
 ) -> Recall:
     """Recall candidate StatVars and resolve entity names concurrently.
 
@@ -308,10 +384,18 @@ async def recall(
     the series of the tables that state the word (`_detect`), and so is one holding a word
     of `party_words`, the words that name a party on an axis the request leaves unnamed
     (`region.place_roles.stated_party_words`), for the series of the tables that declare it.
+    A family of a recalled five-tuple that reads a code of `variable` no recalled family
+    there reads joins the pool (`_with_reading_families`).
 
     `members` are the StatVars a part's series code names (`search.engine.source_code`).
     They are the candidates, each at score 1.0 and admitted by the request's catalogue as a
     resolve's hits are, and neither resolver is asked, so the part has no UN candidate.
+
+    `detected` is a detection already made under the catalogue recall reads through
+    (`detect_measure`). Recall takes it in place of searching the graph when it detected the
+    text and variable recall would and recall removes no party word, so a part whose reading
+    was chosen from that detection (`region.source_choice.read_organisations`) searches the
+    graph once.
     """
     detect_query = raw_query or variable
     _pre = pre_resolved or {}
@@ -319,12 +403,20 @@ async def recall(
     misses = [name for name in entities if name not in _pre]
     surfaces = entity_surfaces or {}
 
+    canonical = _canonicalize_acronyms(detect_query)
     if members is not None:
         detection = _member_detection(members)
         miss_resolutions = await resolve_names(misses, resolver=resolver, surfaces=surfaces)
+    elif (
+        detected is not None
+        and (detected.text, detected.variable) == (canonical, variable)
+        and not party_words
+    ):
+        detection = detected.detection
+        miss_resolutions = await resolve_names(misses, resolver=resolver, surfaces=surfaces)
     else:
         detection, miss_resolutions = await asyncio.gather(
-            _detect(graph, _canonicalize_acronyms(detect_query), party_words),
+            _detect(graph, canonical, party_words, variable=variable),
             resolve_names(misses, resolver=resolver, surfaces=surfaces),
         )
     candidates = _above_recall_floor(detection.candidates)

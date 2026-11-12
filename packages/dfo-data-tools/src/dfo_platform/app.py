@@ -81,6 +81,11 @@ def _classify_nothing(_exc: BaseException) -> ProblemSpec | None:
     return None
 
 
+def _finish_nothing(spec: ProblemSpec) -> ProblemSpec:
+    """Default finish: the spec as classified."""
+    return spec
+
+
 @dataclass(frozen=True)
 class Surface:
     """One router and its exception, admission, and lifespan rules for the composed app.
@@ -109,6 +114,13 @@ class Surface:
     endpoint bound (`codes.bound_registry_endpoint`), so `registered_status`
     reads the route's own status for a code.
 
+    `finish` runs on every refusal a request this surface serves answers with, whichever
+    produced it: an admission check, `classify`, the platform default when `classify` returns
+    `None` (a timeout, an uncaught exception, a routing 404 or 405), or the platform's own
+    refusal of a code the surface did not register. It runs with the route's registry endpoint
+    bound and returns the spec to render, so a member every body states is decided once. A
+    `finish` that raises is logged, and the refusal renders as it was classified.
+
     `request_scope` returns a context manager entered around each request the
     surface serves, after its admission checks and before dependencies run. It
     binds per-request context variables, such as the origin catalogue, which
@@ -136,6 +148,7 @@ class Surface:
     capability_version: str
     codes: CodeCatalogue
     classify: Callable[[BaseException], ProblemSpec | None] = _classify_nothing
+    finish: Callable[[ProblemSpec], ProblemSpec] = _finish_nothing
     exception_types: tuple[type[Exception], ...] = ()
     exception_exemplars: tuple[BaseException, ...] = ()
     lifespan: Callable[[FastAPI], AbstractAsyncContextManager[None]] | None = None
@@ -845,6 +858,7 @@ async def _admission_dispatch(
             with codes.bound_registry_endpoint(endpoint):
                 spec = check(request)
             if spec is not None:
+                spec = _finished(surface, spec, endpoint)
                 _log_refusal(surface, spec, None)
                 response = _envelope_for(request, ctx).render(spec)
                 trace_id = getattr(request.state, "trace_id", None)
@@ -871,8 +885,9 @@ def _classify_and_envelope(
     surface = _matching_surface(request.url.path, ctx.surfaces)
     envelope = _envelope_for(request, ctx)
     if surface is not None:
+        endpoint = _registry_endpoint(surface, request.scope)
         try:
-            with codes.bound_registry_endpoint(_registry_endpoint(surface, request.scope)):
+            with codes.bound_registry_endpoint(endpoint):
                 spec = surface.classify(exc)
         except Exception:
             logger.exception(
@@ -895,10 +910,27 @@ def _classify_and_envelope(
                     surface.name,
                     type(exc).__name__,
                 )
-            return spec, envelope, surface.name
+            return _finished(surface, spec, endpoint), envelope, surface.name
     spec = refusal.classify_default(exc)
     _log_refusal(None, spec, exc)
+    if surface is not None:
+        return _finished(surface, spec, endpoint), envelope, None
     return spec, envelope, None
+
+
+def _finished(surface: Surface, spec: ProblemSpec, endpoint: str | None) -> ProblemSpec:
+    """`spec` after `surface.finish`, run with `endpoint` bound. A `finish` that raises is
+    logged, and `spec` renders as it was classified."""
+    try:
+        with codes.bound_registry_endpoint(endpoint):
+            return surface.finish(spec)
+    except Exception:
+        logger.exception(
+            "surface %r's finish() raised on code %r; rendering the refusal as classified",
+            surface.name,
+            spec.code,
+        )
+        return spec
 
 
 def _request_body_model(request: Request) -> object | None:
@@ -965,7 +997,13 @@ async def _dispatch(request: Request, exc: Exception, *, ctx: _AppContext) -> JS
                 type(exc).__name__,
                 exc_info=exc,
             )
-            response = ctx.envelope.render(refusal.render_unhandled_refusal())
+            unhandled = refusal.render_unhandled_refusal()
+            surface = _matching_surface(request.url.path, ctx.surfaces)
+            if surface is not None:
+                unhandled = _finished(
+                    surface, unhandled, _registry_endpoint(surface, request.scope)
+                )
+            response = ctx.envelope.render(unhandled)
             response.headers[TRACE_ID_HEADER] = header_trace_id
             return response
     finally:

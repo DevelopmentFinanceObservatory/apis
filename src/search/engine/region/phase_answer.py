@@ -105,7 +105,11 @@ from search.engine.region.phase_shared import (
     withdraw_typed_unit,
 )
 from search.engine.region.place_roles import request_named_groups
-from search.engine.region.related_read import start_elected_related_read, with_related
+from search.engine.region.related_read import (
+    cancel_related_reads,
+    start_answer_related_read,
+    with_related,
+)
 from search.engine.region.relaunch import _relaunch_place_options, _relaunch_slot_options
 from search.engine.region.requirements import answer_terms, refusal_terms, settle_answer
 from search.engine.region.result import FacetAxisFilter, RegionResult, answered_roles
@@ -118,11 +122,12 @@ from search.engine.region.scope import (
 from search.engine.region.scope_decision import (
     ScopeDecision,
     answer_scope_facts,
+    decide_guarded,
     decide_scope,
-    decide_spec_scope,
     guarded_scope_decision,
 )
 from search.engine.region.state import MeasureFamily, ResolveState, raised_facts
+from search.engine.region.trailing import SettledTrailing, passed_over_departure, settle_trailing
 from search.engine.region.un_system import member_labels
 from search.engine.region.whole_totals import whole_total_warnings
 from search.engine.retrieval.bound_values import (
@@ -170,6 +175,7 @@ from search.models import (
     SlotOptions,
     Spec,
     SpecObservations,
+    TimeWindow,
     Warning,
 )
 
@@ -264,14 +270,24 @@ def _over_conversion_period(
     mat_result: Materialised,
     filtered: FilteredAnswer,
     admission: FacetAdmission,
+    *,
+    settled: SettledTrailing | None,
 ) -> tuple[Materialised, FilteredAnswer]:
     """The answer a unit request shows when its conversion tables cover only part of the
     years `filtered` serves (`convertibility.unit_request_period`): the request reads the
     period's window from here on, the plan is read over it and filtered again, and the
-    answer departs `year_unavailable` naming the table. Otherwise both as they are. Either
-    way an answer whose deflators leave out some entities' rows departs `year_unavailable`
-    naming them (`convertibility.deflator_omission_departure`)."""
+    answer departs `year_unavailable` naming the table and the years asked, which for a
+    trailing request `settled` are the years its words cover. Otherwise both as they are,
+    and a stale trailing answer departs as `settled` holds. The conversion's departure
+    replaces the stale one, so the answer states its years once; a span a member passed
+    over in election shortened says so, over the years shown, where the period starts at
+    the year that member set (`trailing.passed_over_departure`). Either way an answer
+    whose deflators leave out some entities' rows departs `year_unavailable` naming them
+    (`convertibility.deflator_omission_departure`)."""
+    stale = settled.departure if settled is not None else None
     if state.unit_request is None or state.unit_elected_selections is None:
+        if stale is not None:
+            state.depart(*stale)
         return mat_result, filtered
     catalogue = current_conversion_catalogue()
     period = unit_request_period(
@@ -282,7 +298,24 @@ def _over_conversion_period(
         catalogue=catalogue,
     )
     if period is not None:
-        mat_result, filtered = _narrowed_to_period(state, mat_result, admission, period)
+        requested = (
+            settled.asked
+            if settled is not None
+            else state.date_request.window
+            if state.date_request is not None
+            else None
+        )
+        mat_result, filtered, shown = _narrowed_to_period(
+            state, mat_result, admission, period, requested=requested
+        )
+        if (
+            settled is not None
+            and (passed := passed_over_departure(settled, shown=shown, first_year=period.years[0]))
+            is not None
+        ):
+            state.depart(*passed)
+    elif stale is not None:
+        state.depart(*stale)
     omission = deflator_omission_departure(
         filtered.plan,
         state.unit_request,
@@ -294,15 +327,56 @@ def _over_conversion_period(
     return mat_result, filtered
 
 
+def _over_trailing_years(
+    state: ResolveState, mat_result: Materialised, filtered: FilteredAnswer
+) -> tuple[Materialised, FilteredAnswer, SettledTrailing | None]:
+    """The answer a trailing request shows once admission has fixed its series: the newest
+    years they hold (`trailing.settle_trailing`), which the request reads from here on, and
+    the settlement, whose stale departure `_over_conversion_period` raises. Otherwise both
+    as they are and None."""
+    settled = settle_trailing(
+        mat_result,
+        filtered,
+        date_request=state.date_request,
+        coverage_index=state.coverage.index,
+    )
+    if settled is not None:
+        state.date_request = settled.date_request
+        state.mat_result = mat_result = settled.mat
+        filtered = settled.filtered
+    return mat_result, filtered, settled
+
+
+def _over_answer_years(
+    state: ResolveState,
+    mat_result: Materialised,
+    filtered: FilteredAnswer,
+    admission: FacetAdmission,
+) -> tuple[Materialised, FilteredAnswer]:
+    """The answer over its final years: a trailing span's settled years
+    (`_over_trailing_years`), narrowed to a conversion's period (`_over_conversion_period`).
+    The related-measures read the answer joins reads those years: one started before them
+    stands where they did not change, else one starts here and runs beside the rest of the
+    answer (`related_read.start_answer_related_read`)."""
+    mat_result, filtered, settled = _over_trailing_years(state, mat_result, filtered)
+    mat_result, filtered = _over_conversion_period(
+        state, mat_result, filtered, admission, settled=settled
+    )
+    start_answer_related_read(state, mat_result)
+    return mat_result, filtered
+
+
 def _narrowed_to_period(
     state: ResolveState,
     mat_result: Materialised,
     admission: FacetAdmission,
     period: ConversionPeriod,
-) -> tuple[Materialised, FilteredAnswer]:
+    *,
+    requested: TimeWindow | None,
+) -> tuple[Materialised, FilteredAnswer, str]:
     """The answer read over `period`'s window, departing `year_unavailable` naming the
-    table that leaves the other years out (`_over_conversion_period`)."""
-    requested = state.date_request.window if state.date_request is not None else None
+    table that leaves the other years out and `requested`, the years asked
+    (`_over_conversion_period`), with the years it shows."""
     state.date_request = DateRequest(window=period.window, latest=False)
     mat_result = over_conversion_period(mat_result, period)
     state.mat_result = mat_result
@@ -312,8 +386,10 @@ def _narrowed_to_period(
         date_request=state.date_request,
         coverage_index=state.coverage.index,
     )
-    state.depart(*conversion_period_departure(period, requested=requested, plan=filtered.plan))
-    return mat_result, filtered
+    warning, fact = conversion_period_departure(period, requested=requested, plan=filtered.plan)
+    state.depart(warning, fact)
+    assert fact.shown is not None
+    return mat_result, filtered, fact.shown
 
 
 def _answer_unit_filter(
@@ -348,11 +424,20 @@ def _install_filtered_answer(
 def _gate_carve_out(state: ResolveState, mat_result: Materialised) -> bool:
     """Whether a carve-out answers before the bound-unit gate is read: no member with data at
     the place, no place and no data, or a requirement the answer leaves unmet
-    (`requirements.refusal_terms`, `_assemble_carve_outs`)."""
+    (`requirements.refusal_terms`, `_assemble_carve_outs`). The requirements are judged under
+    the unit request the answer's identity binds (`_answer_facet_bindings`), as the Spec's
+    carve-out judges them, so a part this refuses never reaches an answer."""
     return (
         mat_result.available_at_place is False
         or (state.destination_dcid is None and not mat_result.has_data)
-        or bool(refusal_terms(state, state.shape_draft, state.bindings))
+        or bool(
+            refusal_terms(
+                state,
+                state.shape_draft,
+                state.bindings,
+                served=bound_prices(_answer_facet_bindings(state, mat_result)),
+            )
+        )
     )
 
 
@@ -405,10 +490,18 @@ async def _ground_elected_answer(state: ResolveState) -> RegionResult | None:
     # The phase spine narrows this result to ``Materialised``. The attribute loses that
     # narrowing here.
     mat_result = cast(Materialised, state.mat_result)
-    start_elected_related_read(state, mat_result)
+    # A request whose years only a conversion's period can narrow reads its related
+    # measures beside the unit decision. A trailing request reads them once it has settled
+    # its years (`_over_answer_years`).
+    if state.date_request is None or state.date_request.trailing is None:
+        start_answer_related_read(state, mat_result)
 
     early = await _decide_bound_unit_convertibility(state, mat_result)
     if early is not None:
+        # A refusal states no related measures, so the read started for them stops.
+        if state.related_read is not None:
+            cancel_related_reads((state.related_read,))
+            state.related_read = None
         return early
 
     t0 = now_ms()
@@ -428,7 +521,7 @@ async def _ground_elected_answer(state: ResolveState) -> RegionResult | None:
         date_request=state.date_request,
         coverage_index=state.coverage.index,
     )
-    mat_result, _filtered = _over_conversion_period(state, mat_result, _filtered, _admission)
+    mat_result, _filtered = _over_answer_years(state, mat_result, _filtered, _admission)
     _install_filtered_answer(state, mat_result, _filtered)
 
     # A member holds data at the place but no point in the years read: the answer is
@@ -553,8 +646,10 @@ async def _ground_elected_answer(state: ResolveState) -> RegionResult | None:
     )
     state.unresolved_slots = unresolved_slots
 
-    # Shape counts use admitted members. Elected StatVar refs are representatives. A missing
-    # population occurs only for hand-built ``Materialised`` results and uses the fallback.
+    # Shape counts use admitted members until `build_spec` restates them as the family's
+    # where it states the mint's family digest. Elected StatVar refs are representatives. A
+    # missing population occurs only for hand-built ``Materialised`` results and uses the
+    # fallback.
     shape_model = build_shape_model(
         state.shape_draft,
         slot_key_models,
@@ -881,8 +976,10 @@ async def _gather_definite_coverage(
     slot/facet probes launch. Record option probe timing and return the coverage bundle
     otherwise.
     """
-    # Skip option probes when a known carve-out guarantees no definite result.
-    skip_coverage_probe = _gate_carve_out(state, mat_result) or not state.stat_vars
+    # A known carve-out guarantees no definite result, so the part reads no preview and
+    # runs no option probe.
+    refuses = _gate_carve_out(state, mat_result)
+    skip_coverage_probe = refuses or not state.stat_vars
 
     # The bound unit is decided from the answer's read plan before any fetch, so a request
     # without a preview reads none: the plan must serve a StatVar the unit decision serves, under its elected unit
@@ -915,7 +1012,7 @@ async def _gather_definite_coverage(
             )
         )
     obs_fetch_task: asyncio.Task[tuple[SpecObservations, Warning | None] | None] | None = None
-    if state.include_observations and not state.stream_observations:
+    if state.include_observations and not state.stream_observations and not refuses:
         obs_fetch_task = asyncio.create_task(_preview_unless_composite(decision_task, setup, state))
     facet_options: list[FacetOptions] = []
     obs_result: tuple[SpecObservations, Warning | None] | None = None
@@ -924,7 +1021,7 @@ async def _gather_definite_coverage(
         # Streaming defers points, but status and ``resolved.facets`` belong on the
         # immediate response. Fetch eagerly for every streamed preview but a composite's.
         # A later task sends points.
-        if state.stream_observations:
+        if state.stream_observations and not refuses:
             eager_obs_availability = await _preview_unless_composite(decision_task, setup, state)
         answer_scope = await decision_task
         state.scope_decision = answer_scope.decision
@@ -990,6 +1087,7 @@ async def _probe_counted_slot_options(
         entities=state.place.roles.resolved_entities,
         open_axes=state.place.roles.open_axes,
         date_request=state.date_request,
+        graph=state.graph,
         materialise_graph=state.materialise_graph,
         # Option probes use filtered entities. Observation fetches use the resolved scope.
         place_dcids=setup.flat_probe_entities,
@@ -1207,8 +1305,8 @@ async def _assemble_carve_outs(
 async def _finished_scope(state: ResolveState, spec: Spec) -> ScopeDecision:
     """The scope `spec` states, as decided before its preview launched
     (`ResolveState.scope_decision`). A decision made for another `spec_id` is decided again
-    from `spec` (`scope_decision.decide_spec_scope`) and kept for
-    `pipeline._with_scope_choices`."""
+    from `spec`, guarded as every decision is (`scope_decision.decide_guarded`), and kept
+    for `pipeline._with_scope_choices`."""
     decision = cast(ScopeDecision, state.scope_decision)
     if decision.spec_id == spec.spec_id:
         return decision
@@ -1218,7 +1316,7 @@ async def _finished_scope(state: ResolveState, spec: Spec) -> ScopeDecision:
         spec.spec_id,
     )
     state.scope_decision = await asyncio.to_thread(
-        decide_spec_scope,
+        decide_guarded,
         spec,
         selection=state.scope_selection,
         operations=state.operations,
@@ -1269,6 +1367,7 @@ async def _finalize_definite_result(
         default_facet_probe=setup.facet_probe,
         facets_pinned=setup.facets_pinned,
         variable_labels=member_labels((spec,)),
+        date_request=state.date_request,
     )
     slot_options_task = (
         relaunch_slot_options(spec.spec_id, setup.slot_options_raw)

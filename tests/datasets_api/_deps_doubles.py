@@ -54,7 +54,7 @@ def fake_deps(**overrides: object) -> Deps:
         "coverage": get_coverage_service(),
         "rate_cache": RateTableCache(),
         "code_index_source": index_source,
-        "enrichment": EnrichmentLookup(graph, parties=lambda: index_source().parties),
+        "enrichment": EnrichmentLookup(graph),
         "materialiser_build": "test-build",
         "now": utc_now,
         "variable_breadth": None,

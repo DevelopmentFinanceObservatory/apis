@@ -10,7 +10,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from code_index.types import ComponentRole
+from code_index.types import ComponentRole, PartyRow
 from dc_sdmx import EntityFilter, SdmxClient
 from materialise.ceiling import DEFAULT_SYNC_CEILING_ROWS
 from materialise.codes import MaterialisationWarning
@@ -56,9 +56,10 @@ from materialise.rate_tables import RateTableCache
 from materialise.reshape import TableLike
 from materialise.series_conversion import SeriesConversion, SeriesKey
 from materialise.statistics import SeriesStatisticsFile
-from materialise.trace import UNKNOWN_FAMILY, ManifestTrace, MemberFamily, StatedFamily
+from materialise.trace import UNKNOWN_FAMILY, ManifestTrace, StatedFamily
 from materialise.window import Coverage, LatestYear, ReadSeries, RequestedWindow
 from origin_catalogue import note_un_unserved
+from statvar_members import MemberFamily
 
 if TYPE_CHECKING:
     # Keep the optional coverage index lazy because it imports NumPy, absent from pure installs.
@@ -100,8 +101,9 @@ class MaterialisationRequest:
     # The whole population the definition's identity admits, shared by every request of the
     # definition and stated in the trace. `None` when the resolver could not state it.
     family: MemberFamily | None = None
-    # The `dcid:` refs member resolution left out of that family as stubs, nodes whose complete
-    # read carries no definition arc, shared by every request of the definition and stated in
+    # The `dcid:` refs member resolution left out of that family as stubs, nodes a trusted read
+    # of which carries no definition arc or finds no node and no read showed one
+    # (`MemberGroup.stub_candidates`), shared by every request of the definition and stated in
     # the trace.
     stub_candidates: tuple[str, ...] = ()
     # A caller's facet filter over each probed candidate's provenance, method and unit. The
@@ -287,6 +289,7 @@ def materialise_group(
     materialiser_build: str,
     capability_version: str,
     enrichment: EnrichmentLookup,
+    parties: Mapping[str, PartyRow],
     member_concurrency: int = DEFAULT_MEMBER_CONCURRENCY,
     rate_cache: RateTableCache | None = None,
     precomputed_probe: CollectionFacetProbe | None = None,
@@ -381,6 +384,7 @@ def materialise_group(
             materialiser_build=materialiser_build,
             capability_version=capability_version,
             enrichment=enrichment,
+            parties=parties,
             dependencies=build_dependencies(
                 requests,
                 source_refs=dispatched_provenances(outcome.selections),
@@ -415,6 +419,7 @@ def materialise_group(
         materialiser_build=materialiser_build,
         capability_version=capability_version,
         enrichment=enrichment,
+        parties=parties,
         absent_reads_zero=reads_absent_as_zero(outcome.selections, absent_reads_zero),
         dependencies=build_dependencies(
             requests,
@@ -437,6 +442,7 @@ def materialise_spec(
     materialiser_build: str,
     capability_version: str,
     enrichment: EnrichmentLookup,
+    parties: Mapping[str, PartyRow],
     rate_cache: RateTableCache | None = None,
     coverage: CoverageIndex | None = None,
     deadline: float | None = None,
@@ -457,6 +463,7 @@ def materialise_spec(
         materialiser_build=materialiser_build,
         capability_version=capability_version,
         enrichment=enrichment,
+        parties=parties,
         rate_cache=rate_cache,
         coverage=coverage,
         deadline=deadline,

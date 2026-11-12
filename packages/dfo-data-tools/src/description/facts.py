@@ -15,12 +15,13 @@ left the code index is marked `partial`.
 from __future__ import annotations
 
 import datetime
+from collections.abc import Sequence
 from typing import Literal, Self
 
 from pydantic import AwareDatetime, Field, StrictBool, field_validator, model_validator
 from pydantic.experimental.missing_sentinel import MISSING
 
-from description.steps import Step, StepId, Unit
+from description.steps import ComposedUnit, SimpleUnit, Step, StepId, Unit
 from description.stored import (
     ContentVersion,
     Count,
@@ -36,14 +37,16 @@ from description.stored import (
 )
 from dfo_platform.roles import FlowFamily
 
-SchemaVersion = Literal[1, 2]
-"""A record's schema version. Version 2 adds `DimensionFacts.within_set`."""
+SchemaVersion = Literal[1, 2, 3]
+"""A record's schema version. Version 2 adds `DimensionFacts.within_set`, and version 3
+`SimpleUnit.deflation_basis`."""
 
-SCHEMA_VERSION: SchemaVersion = 2
+SCHEMA_VERSION: SchemaVersion = 3
 """The latest `schema_version` of the records this module defines. A record is stamped the
 lowest version that describes it (`lowest_schema_version`), so an image of an earlier version
-reads every record that holds nothing that version lacks. A version 1 record reads here as
-version 2 with `within_set` unset (`datasets_api.description_store.upgraded_record`)."""
+reads every record that holds nothing that version lacks. An earlier version's record reads
+here as version 3 with the members it lacks unset
+(`datasets_api.description_store.upgraded_record`)."""
 
 Basis = Literal["mint", "publish", "backfill"]
 """What wrote a record or filled a late field: a mint, a publish, or the backfill of a version
@@ -150,14 +153,29 @@ class VariableFacts(Stored):
     family: FlowFamily | None = None
 
 
-def lowest_schema_version(variables: VariableFacts | None) -> SchemaVersion:
-    """The lowest schema version that describes a record holding `variables`: 2 when a
-    dimension is narrowed to a set (`DimensionFacts.within_set`), else 1."""
+def lowest_schema_version(
+    *, variables: VariableFacts | None, series: SeriesFacts, steps: Sequence[Step]
+) -> SchemaVersion:
+    """The lowest schema version that describes a record holding `variables`, `series` and
+    `steps`: 3 when a unit names whose prices deflated it (`SimpleUnit.deflation_basis`), 2
+    when a dimension is narrowed to a set (`DimensionFacts.within_set`), else 1."""
+    units = [
+        *(count.unit for count in series.by_source_unit or ()),
+        *(unit for step in steps for unit in (step.unit, step.converted_from)),
+    ]
+    if any(_names_deflation_basis(unit) for unit in units):
+        return 3
     if variables is not None and any(
         dimension.within_set is not MISSING for dimension in variables.dimensions or ()
     ):
         return 2
     return 1
+
+
+def _names_deflation_basis(unit: object) -> bool:
+    if isinstance(unit, ComposedUnit):
+        return _names_deflation_basis(unit.numerator) or _names_deflation_basis(unit.denominator)
+    return isinstance(unit, SimpleUnit) and unit.deflation_basis is not MISSING
 
 
 class ComposedVariable(Stored):
@@ -432,8 +450,11 @@ class DescriptionRecord(Stored):
         late = [late.field for late in self.late_fields]
         if len(late) != len(set(late)):
             raise ValueError("a late field is filled once")
-        if self.schema_version < lowest_schema_version(self.variables):
-            raise ValueError("a record narrowing a dimension to a set is of schema version 2")
+        lowest = lowest_schema_version(
+            variables=self.variables, series=self.series, steps=self.known_steps
+        )
+        if self.schema_version < lowest:
+            raise ValueError(f"this record is of schema version {lowest} or later")
         return self
 
 

@@ -55,7 +55,11 @@ class _ProfileGraph(FakeGraphReader):
 
 
 class _NoGraph:
-    """A graph and availability reader a coverage-read profile must never call."""
+    """A graph and availability reader a coverage-read profile reads only declared defaults
+    from, which the origin client answers from the catalogue's tables; here none."""
+
+    def default_facet_policy(self, *, stat_var: str, axis: str) -> None:
+        return None
 
     def __getattr__(self, name: str):
         raise AssertionError(f"a role-bearing profile read the graph: {name}")
@@ -137,12 +141,21 @@ def _crs_coverage() -> tuple[CoverageIndex, dict[str, PartyRow]]:
         },
     )
     parties = {
-        d: PartyRow(dcid=d, kind="party", party_class="private" if i >= 24 else "official")
+        d: PartyRow(
+            dcid=d,
+            kind="party",
+            party_class="private" if i >= 24 else "official",
+            published=((_CRS, "origin"),),
+        )
         for i, d in enumerate(donors)
     }
     parties.update(
         {
-            r: PartyRow(dcid=r, kind="residual" if i >= 166 else "party")
+            r: PartyRow(
+                dcid=r,
+                kind="residual" if i >= 166 else "party",
+                published=((_CRS, "destination"),),
+            )
             for i, r in enumerate(recipients)
         }
     )

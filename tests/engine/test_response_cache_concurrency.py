@@ -25,6 +25,7 @@ from tests.engine._harness import (
     EMPTY_SDMX,
     frozen_monotonic_clock,
     make_request,
+    observe_answer,
     offline_resolve,
 )
 from tests.engine.test_response_cache_e2e import _QUERY_A, _QUERY_B, _AliasedLLM, _CountingLLM
@@ -89,7 +90,7 @@ async def _test_leader_raising_lets_exactly_one_follower_become_the_new_leader(
             raised_once = True
             await scope.release()  # this leader's pipeline run raised
             return None
-        await scope.store(base)
+        await observe_answer(scope, base)
         return base
 
     n = 5
@@ -119,7 +120,7 @@ async def _test_follower_deadline_shorter_than_leaders_run_proceeds_unleased_on_
     assert follower._layer1_lease is None  # gave up; never bid for the key either
     assert elapsed < 1.0  # bounded by the follower's own ~0.05s deadline
 
-    await leader.store(base)  # the leader is unaffected by the follower giving up
+    await observe_answer(leader, base)  # the leader is unaffected by the follower giving up
 
 
 def _no_data_region(variable: str) -> RegionResult:
@@ -382,7 +383,7 @@ async def _test_layer2_leader_raising_lets_exactly_one_follower_become_the_new_l
             raised_once = True
             await scope.release()  # this leader's pipeline run raised
             return None
-        await scope.store(base)
+        await observe_answer(scope, base)
         return base
 
     n = 5

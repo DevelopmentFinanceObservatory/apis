@@ -127,7 +127,9 @@ DepartureCode = Literal[
     "whole_total_read",
     "whole_total_unpublished",
     "direction_discarded",
+    "organisation_read_as_source",
     "direction_inferred",
+    "organisation_read_as_party",
     "scope_limited",
 ]
 """Every way an answer can differ from what its request asked (see
@@ -329,8 +331,10 @@ value is known (`search.observations.fixed_selection`)."""
 FacetBasis = Literal["bound", "declared_default", "fallback"]
 """Why a facet axis (or, on a unit-request's own member, a currency/prices/
 base_year value) carries the value it does: 'bound' when the request itself
-constrained it, 'declared_default' when an unbound axis was completed from a
-declared deployment policy, 'fallback' when neither applies and the engine's
+constrained it, 'declared_default' when an unbound axis took the default the
+StatVar declares in the graph (its `defaultMeasurementMethod` arc on
+`measurementMethod`) or an open unit-request member took the deployment's
+declared unit default, 'fallback' when neither applies and the engine's
 own selection (facets holding a point in the requested years first, then
 DFO's facets for a variable both DFO and base Data Commons hold, then the
 most places or role tuples covered there, then the most requested years the

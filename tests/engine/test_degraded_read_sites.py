@@ -206,7 +206,7 @@ _SCOPED_SITES: dict[str, tuple[Callable[[pytest.MonkeyPatch, Exception], None], 
     "walk": (_relaxation_walk, "nearest-real relaxation walk"),
     "presence": (_relaxations_presence, "nearest-real presence"),
     "suggestion": (_relaxed_suggestion, "nearest-real suggestion"),
-    "stray-labels": (lambda _mp, error: _stray_value_labels(error), "stray value labels"),
+    "stray-labels": (lambda _mp, error: _stray_value_labels(error), "drafted value labels"),
 }
 
 
@@ -609,13 +609,14 @@ _PLACES: list[tuple[str, EntityRoleKey]] = [("country/KEN", "observationAbout")]
 
 def _related_task(clock: _RelatedClock) -> None:
     async def joined() -> Spec:
-        state = SimpleNamespace(deadline=None, date_request=None, graph=None, related_reads=[])
+        state = SimpleNamespace(deadline=None, graph=None, related_reads=[])
         read = related_read.start_related_read(
             cast(ResolveState, state),
             stat_vars=["X"],
             measure_partition=None,
             places=_PLACES,
             arcs=None,
+            date_request=None,
         )
         assert read is not None
         await asyncio.wait([read.task])

@@ -17,7 +17,8 @@ import threading
 import time
 from collections.abc import Coroutine, Mapping
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -29,6 +30,7 @@ from search.engine.clients.graph import SubjectsPage
 from search.engine.concurrency import scoped_concurrency
 from search.engine.core import resolve_async
 from search.engine.errors import EngineInputError, GraphInfraError
+from search.engine.extract import DateRequest
 from search.engine.region import RegionResult, related_read, resolve_spec_resubmit
 from search.engine.related import (
     NO_RELATED,
@@ -930,3 +932,61 @@ class _PinnedDate:
         from datetime import date
 
         return date(*args, **kwargs)
+
+
+class _HeldTask:
+    """A related read's task that records whether it was cancelled."""
+
+    def __init__(self) -> None:
+        self.cancelled = False
+
+    def cancel(self) -> None:
+        self.cancelled = True
+
+
+@pytest.mark.parametrize(
+    ("asked", "answered", "partition", "restarted"),
+    [
+        ((2015, 2020), _INFLATION, None, False),
+        ((2018, 2020), _INFLATION, None, True),
+        ((2015, 2020), "Count_Person", None, True),
+        ((2015, 2020), _INFLATION, "a-partition", True),
+    ],
+    ids=["same-years", "narrowed-years", "another-stat-var", "in-a-measure-family"],
+)
+def test_a_definite_answer_joins_its_related_read_only_for_its_own_stat_var_and_years(
+    monkeypatch, asked: tuple[int, int], answered: str, partition: str | None, restarted: bool
+):
+    """A definite answer joins the related read the pass started only where it reads the
+    answer's one StatVar, outside a measure family, over the answer's years. A request
+    narrowed after the read started, as a conversion's period narrows it, an answer serving
+    another StatVar, or one inside a measure family cancels that read and starts its own."""
+    held = related_read.RelatedRead(
+        stat_var=_INFLATION,
+        window=TimeWindow(start_year=2015, end_year=2020),
+        task=cast(Any, _HeldTask()),
+    )
+    fresh = related_read.RelatedRead(stat_var=answered, window=None, task=cast(Any, None))
+    state = SimpleNamespace(
+        related_read=held,
+        measure_family=None,
+        date_request=DateRequest(
+            window=TimeWindow(start_year=asked[0], end_year=asked[1]), latest=False
+        ),
+        place=SimpleNamespace(roles=SimpleNamespace(roles=())),
+        shape_draft=SimpleNamespace(sv_arc_facts=None),
+    )
+    monkeypatch.setattr(
+        related_read, "_elected_measure_family", lambda _state, _mat: (partition, ())
+    )
+    monkeypatch.setattr(related_read, "start_related_read", lambda _state, **_kwargs: fresh)
+
+    related_read.start_answer_related_read(
+        cast(Any, state), cast(Any, SimpleNamespace(sv_dcids=[answered]))
+    )
+
+    assert (state.related_read is fresh, cast(_HeldTask, held.task).cancelled) == (
+        restarted,
+        restarted,
+    )
+    assert state.measure_family == (partition, ())

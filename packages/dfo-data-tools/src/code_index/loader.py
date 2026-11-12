@@ -3,13 +3,16 @@ blocks into a separate `MeasureIndex` (`parse_measure_axes`)."""
 
 from __future__ import annotations
 
+import hashlib
 import itertools
+import json
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from typing import cast, get_args
 
 from code_index.declarations import COMPOSITES
 from code_index.query import CodeIndex, DuplicateDcid, fold_text, partly_stated_five_tuples
+from code_index.tokens import tokenize
 from code_index.types import (
     PARTY_CLASSES,
     PARTY_KINDS,
@@ -28,6 +31,7 @@ from code_index.types import (
     MeasureIndex,
     MeasurePartitionLabel,
     MeasureValueRow,
+    NotedWord,
     PartlyStatedValue,
     PartyKind,
     PartyRow,
@@ -49,10 +53,42 @@ from dfo_platform.roles import AXIS_LABELS, FlowAccount
 _ABSENT_OBSERVATION_VALUES: frozenset[AbsentObservation] = frozenset({"zero", "unknown"})
 _FLOW_ACCOUNTS: frozenset[FlowAccount] = frozenset(get_args(FlowAccount.__value__))
 _HOUSE_DEFAULT_CASES: frozenset[HouseDefaultCase] = frozenset(get_args(HouseDefaultCase))
+_LEGACY_PARTY_KEYS = frozenset({"datasets", "axes"})
 
 
 class IndexFormatError(ValueError):
     """A `CodeIndex` export has a missing required key or a value of the wrong type."""
+
+
+class ContentHashMismatch(IndexFormatError):
+    """A code index document whose data blocks hash to something other than the
+    `content_hash` its stamp states, because the body was edited or cut short after export."""
+
+    def __init__(self, *, stated: object, computed: str, source: object) -> None:
+        super().__init__(
+            f"code index {source!r} states content_hash {stated!r} but its blocks hash to "
+            f"{computed!r}"
+        )
+        self.stated = stated
+        self.computed = computed
+
+
+def content_hash(blocks: Mapping[str, object]) -> str:
+    """SHA-256 of canonical JSON for a code index document's data blocks, every key but
+    `stamp`. The export writes it to the stamp and `check_content_hash` recomputes it."""
+    encoded = json.dumps(blocks, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def check_content_hash(document: Mapping[str, object], *, source: object = "<document>") -> None:
+    """Raises `ContentHashMismatch` unless `document`'s data blocks hash (`content_hash`) to
+    the `content_hash` its stamp states. A document with no stamp, or a stamp with no
+    `content_hash`, states none to match and refuses alike."""
+    stamp = document.get("stamp")
+    stated = stamp.get("content_hash") if isinstance(stamp, Mapping) else None
+    computed = content_hash({key: value for key, value in document.items() if key != "stamp"})
+    if stated != computed:
+        raise ContentHashMismatch(stated=stated, computed=computed, source=source)
 
 
 def parse_index(
@@ -97,7 +133,8 @@ def parse_index(
     contradict (`_check_whole_totals`). A party without
     a `whole` key is no whole total. The index serves each of `composites` whose component
     tables it declares, and refuses one `_check_composites` refuses. A code row without a
-    `definition` carries none, as does a measure value or measure label in `parse_measure_axes`."""
+    `definition` carries none, as does a measure value or measure label in `parse_measure_axes`.
+    A code row or measure label without `also_called` has none."""
     try:
         stamp = _parse_stamp(payload["stamp"])
         declarations = [_parse_declaration(row) for row in payload["declarations"]]
@@ -341,14 +378,22 @@ def _parse_party_types(rows: Sequence[Mapping]) -> dict[str, PartyKind | None]:
 
 
 def _parse_party(row: Mapping) -> PartyRow:
-    """One `parties` row, refusing a kind outside `PartyKind`, an axis outside the flow axes,
-    a `totals` or `residuals` on a party that is not a total, and a false `sums_members` on a
+    """One `parties` row, refusing a row without `published` or with the `datasets` and `axes`
+    keys of release format 1, a kind outside `PartyKind`, an axis outside the flow axes, a
+    `totals` or `residuals` on a party that is not a total, and a false `sums_members` on a
     party that holds no group or that counts residuals. `whole` markers are parsed by
     `_parse_whole_marker` and checked by `_check_whole_markers`, the dataset kinds by
-    `_check_dataset_kinds`, and the class by `_check_party_class`. `residuals`,
-    `sums_members`, `label`, `datasets`, `axes`, `whole` and `dataset_kinds` are optional, and
-    a row without `sums_members` reads it as true. `party_class` is required on a `party` and a
-    residual and may be absent on a total."""
+    `_check_dataset_kinds`, and the class by `_check_party_class`. `published` is required and
+    may be empty. `residuals`, `sums_members`, `label`, `whole` and `dataset_kinds` are
+    optional, and a row without `sums_members` reads it as true. `party_class` is required on a
+    `party` and a residual and may be absent on a total."""
+    if legacy := sorted(_LEGACY_PARTY_KEYS & row.keys()):
+        raise IndexFormatError(
+            f"party {row.get('dcid')!r} carries {legacy!r}, which release format 1 wrote; "
+            "a party row lists its `published` dataset and axis pairs"
+        )
+    if "published" not in row:
+        raise IndexFormatError(f"party {row.get('dcid')!r} carries no `published` list")
     party = PartyRow(
         dcid=row["dcid"],
         kind=row["kind"],
@@ -357,8 +402,7 @@ def _parse_party(row: Mapping) -> PartyRow:
         residuals=tuple(row.get("residuals", ())),
         sums_members=row.get("sums_members", True),
         label=row.get("label"),
-        datasets=tuple(row.get("datasets", ())),
-        axes=tuple(row.get("axes", ())),
+        published=tuple(sorted((entry["dataset"], entry["axis"]) for entry in row["published"])),
         whole=tuple(
             sorted(
                 (_parse_whole_marker(marker) for marker in row.get("whole", ())),
@@ -373,7 +417,7 @@ def _parse_party(row: Mapping) -> PartyRow:
         raise IndexFormatError(
             f"party {party.dcid!r} carries kind {party.kind!r}, outside {sorted(PARTY_KINDS)!r}"
         )
-    if unknown := sorted(set(party.axes) - AXIS_LABELS):
+    if unknown := sorted({axis for _, axis in party.published} - AXIS_LABELS):
         raise IndexFormatError(
             f"party {party.dcid!r} names axes {unknown!r}, outside {sorted(AXIS_LABELS)!r}"
         )
@@ -399,6 +443,7 @@ def _check_dataset_kinds(party: PartyRow) -> None:
     twice, entries naming every dataset that publishes the party, whose kind is then one kind
     and belongs in `kind`, or any entry on a total that holds a group or counts residuals, whose
     group holds in every dataset."""
+    publishing = {dataset for dataset, _ in party.published}
     named: set[str] = set()
     for dataset, kind in party.dataset_kinds:
         if kind not in PARTY_KINDS or kind == party.kind:
@@ -406,14 +451,14 @@ def _check_dataset_kinds(party: PartyRow) -> None:
                 f"party {party.dcid!r} takes kind {kind!r} in {dataset!r}; a dataset kind is one "
                 f"of {sorted(PARTY_KINDS)!r} other than the row's kind {party.kind!r}"
             )
-        if dataset not in party.datasets:
+        if dataset not in publishing:
             raise IndexFormatError(
                 f"party {party.dcid!r} takes a kind in {dataset!r}, which does not publish it"
             )
         if dataset in named:
             raise IndexFormatError(f"party {party.dcid!r} takes two kinds in {dataset!r}")
         named.add(dataset)
-    if named and named >= set(party.datasets):
+    if named and named >= publishing:
         raise IndexFormatError(
             f"party {party.dcid!r} takes a dataset kind in every dataset that publishes it; "
             "one kind in every dataset is its kind"
@@ -450,14 +495,16 @@ def _check_whole_markers(party: PartyRow) -> None:
             f"party {party.dcid!r} of kind {party.kind!r} carries a whole marker; only a total "
             "holds a population"
         )
-    if len(party.axes) != 1:
+    try:
+        axis = party.sole_axis()
+    except ValueError as error:
         raise IndexFormatError(
-            f"party {party.dcid!r} carries a whole marker but is published on "
-            f"{list(party.axes)!r}; a whole total stands on exactly one published axis"
-        )
+            f"party {party.dcid!r} carries a whole marker; a whole total stands on exactly one "
+            f"published axis: {error}"
+        ) from error
     marked: set[str] = set()
     for marker in party.whole:
-        if marker.dataset not in party.datasets:
+        if not party.publishes(axis, (marker.dataset,)):
             raise IndexFormatError(
                 f"party {party.dcid!r} is marked whole in {marker.dataset!r}, which does not "
                 "publish it"
@@ -671,6 +718,35 @@ def _parse_party_words(provenance: str, rows: Sequence[Mapping]) -> tuple[PartyW
     return tuple(named)
 
 
+def _parse_noted_words(provenance: str, rows: Sequence[Mapping]) -> tuple[NotedWord, ...]:
+    """A datasets row's `noted_words`, refusing an entry that is not lowercase words joined
+    by single spaces ("aid", "official development assistance"), a note that is not a
+    non-empty string, and an entry noted twice. Absent reads as empty."""
+    noted: list[NotedWord] = []
+    for row in rows:
+        word, note = row["word"], row["note"]
+        if invalid_when_named_entry([word]) is not None or not _is_word_phrase(word):
+            raise IndexFormatError(
+                f"datasets row for {provenance!r} notes {word!r}, which is not lowercase "
+                "words joined by single spaces"
+            )
+        if not isinstance(note, str) or not note.strip():
+            raise IndexFormatError(f"datasets row for {provenance!r} notes {word!r} with no note")
+        if any(word == other.word for other in noted):
+            raise IndexFormatError(f"datasets row for {provenance!r} notes {word!r} twice")
+        noted.append(NotedWord(word=word, note=note))
+    return tuple(noted)
+
+
+def _is_word_phrase(text: str) -> bool:
+    """Whether `text` is one or more words (`code_index.tokens.tokenize`) joined by
+    single spaces, with no separator."""
+    tokens = tokenize(text)
+    return all(token.kind == "word" for token in tokens) and (
+        " ".join(token.text for token in tokens) == text
+    )
+
+
 def _check_declared_word(provenance: str, word: str, prop: str) -> None:
     """Refuses a declared word that is not a single lowercase word, and a measured
     property that is not a non-empty string."""
@@ -707,8 +783,9 @@ def _parse_datasets(rows: Sequence[Mapping]) -> list[DatasetDeclaration]:
     `absent_observation` value outside `{"zero", "unknown"}`, an `account`
     outside `dfo_platform.roles.FlowAccount`, an `opt_in` that is not a boolean,
     a `rank` that is not an integer, an empty `label`, an empty `description`,
-    a `stated_words` row `_parse_stated_words` refuses or a `party_words` row
-    `_parse_party_words` refuses (both keys are optional), a `house_default_for`
+    a `stated_words` row `_parse_stated_words` refuses, a `party_words` row
+    `_parse_party_words` refuses or a `noted_words` row `_parse_noted_words` refuses (the
+    three keys are optional), a `house_default_for`
     (optional) that is not a list of `HouseDefaultCase` values, a `ratio_base_axis`
     (optional, absent reads as `None`) outside `AXIS_LABELS`, or a
     `provenance` or `rank` repeated across rows. Each raises
@@ -729,6 +806,7 @@ def _parse_datasets(rows: Sequence[Mapping]) -> list[DatasetDeclaration]:
                 invariants=dict(row["invariants"]),
                 stated_words=_parse_stated_words(row["provenance"], row.get("stated_words", ())),
                 party_words=_parse_party_words(row["provenance"], row.get("party_words", ())),
+                noted_words=_parse_noted_words(row["provenance"], row.get("noted_words", ())),
                 house_default_for=tuple(row.get("house_default_for", ())),
                 ratio_base_axis=row.get("ratio_base_axis"),
             )
@@ -849,16 +927,12 @@ def _check_datasets(datasets: Sequence[DatasetDeclaration], statvars: Sequence[S
 def _check_party_words(datasets: Sequence[DatasetDeclaration], parties: Sequence[PartyRow]) -> None:
     """Raises `IndexFormatError` when a dataset names a party for a word
     (`DatasetDeclaration.party_words`) that the `parties` block does not list for that
-    dataset on that axis (`PartyRow.datasets`, `PartyRow.axes`)."""
+    dataset on that axis (`PartyRow.published`)."""
     by_dcid = {party.dcid: party for party in parties}
     for dataset in datasets:
         for named in dataset.party_words:
             party = by_dcid.get(named.party)
-            if (
-                party is None
-                or dataset.provenance not in party.datasets
-                or named.axis not in party.axes
-            ):
+            if party is None or (dataset.provenance, named.axis) not in party.published:
                 raise IndexFormatError(
                     f"dataset {dataset.provenance!r} names {named.party!r} for {named.word!r} "
                     f"on {named.axis!r}, which the parties block does not list for that "
@@ -876,7 +950,7 @@ def _check_whole_totals(parties: Sequence[PartyRow], sets: Sequence[WholeTotalSe
     held: dict[tuple[str, str], list[tuple[PartyRow, WholeMarker]]] = {}
     for party in parties:
         for marker in party.whole:
-            held.setdefault((marker.dataset, party.axes[0]), []).append((party, marker))
+            held.setdefault((marker.dataset, party.sole_axis()), []).append((party, marker))
     for (dataset, axis), rows in held.items():
         for index, (first, first_marker) in enumerate(rows):
             for second, second_marker in rows[index + 1 :]:
@@ -892,7 +966,7 @@ def _check_whole_totals(parties: Sequence[PartyRow], sets: Sequence[WholeTotalSe
         phrases.add(phrase)
         members = [by_dcid.get(dcid) for dcid in whole_set.members]
         for dcid, member in zip(whole_set.members, members, strict=True):
-            if member is None or not member.whole or member.axes != (whole_set.axis,):
+            if member is None or not member.whole or member.sole_axis() != whole_set.axis:
                 raise IndexFormatError(
                     f"whole total set {whole_set.phrase!r} names {dcid!r}, which is no whole "
                     f"total on {whole_set.axis!r}"
@@ -913,6 +987,7 @@ def _parse_code(payload: Mapping) -> CodeRow:
         short_name=payload["short_name"],
         parent=payload["parent"],
         definition=payload.get("definition"),
+        also_called=tuple(payload.get("also_called", ())),
     )
 
 
@@ -1081,6 +1156,8 @@ def _parse_measure_partition_label(payload: Mapping) -> MeasurePartitionLabel:
         label=payload["label"],
         named_values=tuple((prop, value) for prop, value in payload.get("named_values", ())),
         definition=payload.get("definition"),
+        codes=tuple((prop, code) for prop, code in payload.get("codes", ())),
+        also_called=tuple(payload.get("also_called", ())),
     )
 
 

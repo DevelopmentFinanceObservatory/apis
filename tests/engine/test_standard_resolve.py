@@ -7,10 +7,13 @@ from dataclasses import dataclass, replace
 import pytest
 
 from search.engine.bind import SlotBindingDraft
+from search.engine.bind_repair import FiredDefault
 from search.engine.conjoin import assemble_region
 from search.engine.errors import GraphInfraError
-from search.engine.extract import DateRequest
+from search.engine.extract import DateRequest, dates_to_request
 from search.engine.quantity_read import QuantityOutput
+from search.engine.region.facets import FilteredAnswer
+from search.engine.region.trailing import settle_trailing
 from search.engine.retrieval.retrieve import (
     BoundValuesUnrealisable,
     FamilyTotalAbsent,
@@ -22,6 +25,7 @@ from search.engine.retrieval.retrieve import (
 from search.engine.retrieval.standard import Candidates, Keep, Narrow, breakdown_decision
 from search.engine.shape import ShapeDraft
 from search.engine.stated_words_read import StatedWordsOutput
+from search.engine.time_bind import parse_time_text
 from search.models import CoverageBare, TimeWindow
 from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
@@ -473,7 +477,7 @@ def _resolve_unemployment(
 
         def _defaults(bindings, *_args, **_kwargs):
             kept = [b for b in bindings if b.property_dcid != default.property_dcid]
-            return [*kept, default], [default]
+            return [*kept, default], [FiredDefault(entry=default)]
 
         monkeypatch.setattr(phase_election, "apply_declared_defaults", _defaults)
 
@@ -3300,3 +3304,92 @@ def _resolve_gdp(
             coverage=empty_coverage_snapshot(),
         )
     )
+
+
+def _yearly_facet(first: int, last: int) -> dict:
+    years = range(first, last + 1)
+    return {
+        "earliestDate": str(first),
+        "latestDate": str(last),
+        "obsCount": len(years),
+        "provenanceId": _SOURCE,
+        "dates": [str(y) for y in years],
+        "values": [1.0] * len(years),
+    }
+
+
+def _sources_in(
+    date_request: DateRequest, bindings: list[SlotBindingDraft], source_b: range
+) -> Materialised:
+    """SourceA's expenditure at the recipient over 2000 to 2024 and SourceB's in `source_b`."""
+    graph = FakeGraph(
+        nodes={},
+        obs={
+            f"{_SET_SV_A}|{_RECIPIENT}": [_yearly_facet(2000, 2024)],
+            f"{_SET_SV_B}|{_RECIPIENT}": [_yearly_facet(source_b[0], source_b[-1])],
+        },
+        detect={},
+        resolve={},
+    )
+    result = materialise(
+        _two_member_set_shape(),
+        bindings,
+        {"observationAbout": [_RECIPIENT]},
+        graph=graph,
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+        coverage=empty_coverage_snapshot(),
+        date_request=date_request,
+    )
+    assert isinstance(result, Materialised)
+    return result
+
+
+_SET_BINDING = SlotBindingDraft(
+    axis="how", property_dcid="financingSource", kind="set", value_dcids=["SourceA", "SourceB"]
+)
+
+
+@pytest.mark.parametrize(
+    ("bindings", "source_b", "admits_b", "members"),
+    [
+        ([_SET_BINDING], range(2016, 2017), True, [_SET_SV_A]),
+        ([], range(2016, 2017), True, [_SET_SV_A]),
+        ([_SET_BINDING], range(2016, 2025), False, [_SET_SV_A, _SET_SV_B]),
+    ],
+    ids=["set", "serve_every", "set_admission_empties_b"],
+)
+def test_a_trailing_answer_lists_the_members_its_settled_range_holds(
+    bindings: list[SlotBindingDraft], source_b: range, admits_b: bool, members: list[str]
+):
+    """ "The last five years" in 2026 confirms SourceA, held 2000 to 2024, and SourceB over
+    2015 to 2026. The answer settles on 2020 to 2024 and lists the members, facets and
+    confirmed count a read of 2020 to 2024 alone gives. SourceB held only in 2016 drops out.
+    SourceB held through 2024 stays when unit admission leaves it out of the answered plan,
+    since that read confirms it before admission."""
+    dates, _warning = parse_time_text("the last five years", current_year=2026)
+    request = dates_to_request(dates)
+    assert request is not None
+    trailing = _sources_in(request, bindings, source_b)
+    assert trailing.read_plan is not None
+    # As `facets.filter_answer` narrows a plan to a unit elected for SourceA alone.
+    answered = (
+        trailing.read_plan
+        if admits_b
+        else trailing.read_plan.narrowed(lambda sv, _facet: sv == _SET_SV_A).leaving_out(
+            {_SET_SV_B}
+        )
+    )
+    filtered = FilteredAnswer(trailing.coverage, trailing.headline, answered)
+
+    settled = settle_trailing(
+        trailing, filtered, date_request=request, coverage_index=empty_coverage_snapshot().index
+    )
+
+    assert settled is not None
+    window = settled.date_request.window
+    assert window == TimeWindow(start_year=2020, end_year=2024)
+    plain = _sources_in(DateRequest(window=window, latest=False), bindings, source_b)
+    assert settled.mat.sv_dcids == plain.sv_dcids == members
+    assert settled.mat.facets_by_sv is not None and plain.facets_by_sv is not None
+    assert settled.mat.facets_by_sv.keys() == plain.facets_by_sv.keys()
+    assert settled.mat.population == plain.population

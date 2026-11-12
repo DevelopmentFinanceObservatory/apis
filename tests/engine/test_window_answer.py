@@ -7,22 +7,36 @@ pin today to 2026, so an open end reads to 2026."""
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
+import search.engine.region.related_read as related_read_module
+import search.engine.region.trailing as trailing_module
+import search.scope_window
 from search.engine.binders import Binder
 from search.engine.clients.graph import Facet
 from search.engine.conjoin import _build_part
-from search.engine.extract import DateRequest
+from search.engine.departures import DepartureFact
+from search.engine.extract import DateRequest, dates_to_request
 from search.engine.quantity_read import QuantityOutput
-from search.engine.region import resolve_variable
+from search.engine.region import phase_answer, resolve_variable
+from search.engine.region.facets import FacetAdmission, FilteredAnswer
+from search.engine.region.grounding import requested_window_from_date_request
 from search.engine.region.result import RegionResult
-from search.engine.retrieval.read_plan import plan_standard
-from search.engine.retrieval.retrieve import MemberPopulation
+from search.engine.region.trailing import settle_trailing
+from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
+from search.engine.retrieval.read_plan import PairPlan, PlanSeries, plan_standard
+from search.engine.retrieval.retrieve import Materialised, MemberPopulation
 from search.engine.retrieval.role_resolve import _zero_observation_carrier
-from search.engine.retrieval.standard import _no_data_in_years
-from search.models import Part, TimeWindow
+from search.engine.retrieval.standard import _newest_year_ahead, _no_data_in_years
+from search.engine.time_bind import parse_time_text
+from search.engine.unit.conversion import ConversionPeriod
+from search.models import CoverageBare, Part, TimeWindow
 from search.render.plan import render_sentence
+from search.scope_window import ScopeWindowSettings
 from series_coverage.schema import FacetMetadata, RoleNames
 from tests.engine import test_place_scope_default as place_scope_default
 from tests.engine import test_role_bearing_pipeline_e2e as role_bearing
@@ -220,6 +234,7 @@ def test_a_window_answer_showing_an_alternate_with_data_states_no_year_departure
 _FLOW = role_bearing._SV_DCID
 _ALAND = "country/AAA"
 _CREDITOR = "country/CRA"
+_OTHER_CREDITOR = "country/CRB"
 _FLOW_FACETS = {"f1": ("dc/base/Ids", None), "f3": ("dc/base/Ids", "Estimated")}
 
 
@@ -231,13 +246,18 @@ def _role_answer(
     *,
     bulk: bool,
     discovered: bool,
+    other_creditor: range = range(0),
 ) -> RegionResult:
     """Resolve a creditor's flows to Aland, named or discovered, per pair or bulk, over
-    coverage rows holding each facet in `held` for its years."""
+    coverage rows holding each facet in `held` for its years, and a second creditor's
+    flows under `f1` in `other_creditor`."""
     search_settings(obs_preview_max_pairs=1 if bulk else 120)
+    rows = [(_FLOW, fid, _CREDITOR, _ALAND, list(years)) for fid, years in held.items()]
+    if other_creditor:
+        rows.append((_FLOW, "f1", _OTHER_CREDITOR, _ALAND, list(other_creditor)))
     index = patch_coverage(
         monkeypatch,
-        [(_FLOW, fid, _CREDITOR, _ALAND, list(years)) for fid, years in held.items()],
+        rows,
         role_names={_FLOW: RoleNames(donor="creditor", recipient="debtor")},
         facet_metadata={
             fid: FacetMetadata(provenance_id=p, measurement_method=m)
@@ -255,6 +275,7 @@ def _role_answer(
         provenance_labels={"dc/base/Ids": "IDS"},
         date_request=date_request,
         coverage=FakeCoverageService(index).snapshot(),
+        variable_text="test flow",
     )
 
 
@@ -447,7 +468,9 @@ def test_held_data_under_a_latest_or_dateless_read_makes_no_window_answer(
     )
     standard_carrier = _no_data_in_years(
         (_PERSON, held, None),
-        dateless_plan=plan_standard({}, members=[_PERSON], years=None),
+        dateless_plan=plan_standard(
+            {}, members=[_PERSON], years=None, declared=NO_DECLARED_POLICIES
+        ),
         date_request=date_request,
         default_scope_probe=False,
         member_facts={},
@@ -485,3 +508,579 @@ def test_a_scope_defaulted_answer_names_the_span_its_places_run():
     )
 
     _assert_window_answer(result, "2022 to 2024", (2010, 2019))
+
+
+def _trailing(text: str) -> DateRequest:
+    """The request a span counted back from 2026 reads as (`time_bind`, `dates_to_request`)."""
+    dates, _warning = parse_time_text(text, current_year=2026)
+    request = dates_to_request(dates)
+    assert request is not None and request.trailing is not None
+    return request
+
+
+def _trailing_answer(monkeypatch, search_settings, route: str, years: range, text: str):
+    """Resolve `text` over a series holding `years`, on the standard route or a named
+    creditor's flows per pair or in bulk."""
+    if route == "standard":
+        return _standard_answer([_facet("fA", years)], _trailing(text))
+    return _role_answer(
+        monkeypatch,
+        search_settings,
+        {"f1": years},
+        _trailing(text),
+        bulk=route == "named_bulk",
+        discovered=False,
+    )
+
+
+def _read_years(result: RegionResult) -> tuple[int | None, int | None]:
+    """The range the answer's Spec states and the years its StatVar serves."""
+    window = result.specs[0].definition.identity.requested_window
+    assert window.kind == "range"
+    served = result.specs[0].resolved.members[0].data_date_range
+    assert served is not None and served.start is not None and served.end is not None
+    assert (int(served.start[:4]), int(served.end[:4])) == (window.start_year, window.end_year)
+    return window.start_year, window.end_year
+
+
+@pytest.mark.parametrize("route", ["standard", "named", "named_bulk"])
+@pytest.mark.parametrize(
+    ("text", "years"),
+    [
+        ("the last five years", (2020, 2024)),
+        ("the past year", (2024, 2024)),
+        ("the last 12 months", (2024, 2024)),
+    ],
+)
+def test_a_trailing_span_reads_the_newest_years_the_data_holds(
+    monkeypatch, search_settings, route: str, text: str, years: tuple[int, int]
+):
+    """A series ending in 2024 answers "the last five years" with 2020 to 2024, and "the
+    past year" and "the last 12 months" with 2024: the Spec states the years read as a plain
+    range its sentence names, and the part departs nothing."""
+    result = _trailing_answer(monkeypatch, search_settings, route, range(2000, 2025), text)
+    assert result.status == "definite"
+    assert _read_years(result) == years
+    first, last = years
+    named = f" in {last}." if first == last else f", {first} to {last}."
+    assert named in render_sentence(result.specs[0])
+    assert _part(result).departures == []
+
+
+@pytest.mark.parametrize("route", ["standard", "named", "named_bulk"])
+def test_a_stale_series_answers_a_trailing_span_with_a_departure_naming_its_newest_year(
+    monkeypatch, search_settings, route: str
+):
+    """A series ending in 2022, four years before 2026, answers "the last five years" with
+    its newest five years and departs `year_unavailable`, naming 2022."""
+    result = _trailing_answer(
+        monkeypatch, search_settings, route, range(2000, 2023), "the last five years"
+    )
+    assert result.status == "definite"
+    assert _read_years(result) == (2018, 2022)
+    departures = _part(result).departures
+    assert [(d.code, d.binding_ref, d.asked) for d in departures] == [
+        ("year_unavailable", "when:", "2022 to 2026")
+    ]
+    assert "ends in 2022" in departures[0].text
+
+
+@pytest.mark.parametrize("route", ["standard", "named", "named_bulk"])
+@pytest.mark.parametrize("last", [2010, 2016, 2018])
+def test_a_series_that_ended_long_ago_holds_no_trailing_span(
+    monkeypatch, search_settings, route: str, last: int
+):
+    """A series whose newest year lies before 2019 holds no point in "the last five years" or
+    the three years before them, so the answer is the window answer, naming the years the
+    words cover. One ending in 2016 or 2018 lies inside the wider years the request reads to
+    confirm its members, and answers as one ending in 2010 does."""
+    result = _trailing_answer(
+        monkeypatch, search_settings, route, range(2000, last + 1), "the last five years"
+    )
+    _assert_window_answer(result, "2022 to 2026", (2000, last))
+
+
+@pytest.mark.parametrize("route", ["named", "named_bulk"])
+def test_the_year_cap_counts_the_years_a_trailing_span_asks_for(
+    monkeypatch, search_settings, route: str
+):
+    """Under a five-year cap, "the last five years" reads eight years before the answer
+    settles and answers its five newest."""
+    monkeypatch.setattr(
+        search.scope_window, "_SETTINGS", ScopeWindowSettings(scope_max_window_years=5)
+    )
+    result = _trailing_answer(
+        monkeypatch, search_settings, route, range(2000, 2025), "the last five years"
+    )
+    assert result.status == "definite"
+    assert _read_years(result) == (2020, 2024)
+
+
+@pytest.mark.parametrize("bulk", [False, True], ids=["per_pair", "bulk"])
+def test_a_stale_trailing_answer_on_discovered_creditors_serves_what_its_range_serves(
+    monkeypatch, search_settings, bulk: bool
+):
+    """Creditor A's flows to Aland run 2000 to 2022 and creditor B's hold 2018 alone.
+    "The last five years" in 2026 confirms creditors over 2015 to 2026, every span ending in
+    2019 to 2026, so the answer settles on 2018 to 2022 serving both. The plain range its
+    Spec states resolves to the same Spec, with the same creditors, series and rows."""
+    trailing = _role_answer(
+        monkeypatch,
+        search_settings,
+        {"f1": range(2000, 2023)},
+        _trailing("the last five years"),
+        bulk=bulk,
+        discovered=True,
+        other_creditor=range(2018, 2019),
+    )
+    window = trailing.specs[0].definition.identity.requested_window
+    plain = _role_answer(
+        monkeypatch,
+        search_settings,
+        {"f1": range(2000, 2023)},
+        DateRequest(
+            window=TimeWindow(start_year=window.start_year, end_year=window.end_year),
+            latest=False,
+        ),
+        bulk=bulk,
+        discovered=True,
+        other_creditor=range(2018, 2019),
+    )
+
+    assert trailing.specs[0] == plain.specs[0]
+    assert (window.start_year, window.end_year) == (2018, 2022)
+    assert trailing.specs[0].resolved.download is not None
+    assert trailing.specs[0].resolved.download.series == 2
+    assert [(d.code, d.asked, d.shown) for d in _part(trailing).departures] == [
+        ("year_unavailable", "2022 to 2026", "2018 to 2022")
+    ]
+
+
+@pytest.mark.parametrize("bulk", [False, True], ids=["named", "named_bulk"])
+def test_a_trailing_span_reaching_below_the_role_read_floor_starts_at_it(
+    monkeypatch, search_settings, bulk: bool
+):
+    """A creditor's flows to Aland run 1961 to 1995. "The last 40 years" in 2026 settles on
+    1995, whose 40 years reach back to 1956, below the 1960 a role read starts from, so the
+    answer reads 1960 to 1995: the range a resubmit of its Spec reads, which resolves to the
+    same Spec."""
+    trailing = _role_answer(
+        monkeypatch,
+        search_settings,
+        {"f1": range(1961, 1996)},
+        _trailing("the last 40 years"),
+        bulk=bulk,
+        discovered=False,
+    )
+    assert trailing.status == "definite", (trailing.status, trailing.no_data_reason)
+    window = trailing.specs[0].definition.identity.requested_window
+    assert (window.start_year, window.end_year) == (1960, 1995)
+    plain = _role_answer(
+        monkeypatch,
+        search_settings,
+        {"f1": range(1961, 1996)},
+        DateRequest(window=TimeWindow(start_year=1960, end_year=1995), latest=False),
+        bulk=bulk,
+        discovered=False,
+    )
+    assert trailing.specs[0] == plain.specs[0]
+
+
+def test_a_trailing_answer_reads_its_related_measures_over_its_settled_years(monkeypatch):
+    """The answer's related measures are read once, over the five years it settles on, and
+    never over the wider years it read before settling."""
+    windows: list[object] = []
+    read = related_read_module.read_related
+
+    def recording(**kwargs):
+        windows.append(kwargs["window"])
+        return read(**kwargs)
+
+    monkeypatch.setattr(related_read_module, "read_related", recording)
+    result = _standard_answer([_facet("fA", range(2000, 2025))], _trailing("the last five years"))
+
+    assert result.status == "definite"
+    assert windows == [TimeWindow(start_year=2020, end_year=2024)]
+
+
+_FLOW_B = "TEST/Flow_B"
+
+
+def _yearly(years: range) -> Facet:
+    return Facet(
+        obs_count=len(years),
+        earliest_date=str(years[0]),
+        latest_date=str(years[-1]),
+        facet_id="f1",
+        provenance_id="dc/base/Ids",
+        unit="CurrencyEUR",
+        dates=tuple(str(y) for y in years),
+    )
+
+
+def test_a_trailing_role_answer_keeps_a_member_its_unit_admission_empties():
+    """Two flows from a creditor to Aland, each held 2000 to 2024. Unit admission leaves the
+    second flow out of the answered plan. Settling "the last five years" on 2020 to 2024
+    keeps both flows and counts both, as a role read of 2020 to 2024 confirms both before
+    admission and lists them."""
+    roles = (("creditor", _CREDITOR), ("debtor", _ALAND))
+    plan = PairPlan(
+        members=(_FLOW, _FLOW_B),
+        years=TimeWindow(start_year=2000, end_year=2026),
+        declared=NO_DECLARED_POLICIES,
+        series=tuple(
+            PlanSeries(
+                stat_var=sv,
+                role_tuple=roles,
+                candidates=(_yearly(range(2000, 2025)),),
+                group=(_yearly(range(2000, 2025)),),
+            )
+            for sv in (_FLOW, _FLOW_B)
+        ),
+    )
+    mat = Materialised(
+        sv_dcids=[_FLOW, _FLOW_B],
+        has_data=True,
+        coverage=CoverageBare(has_data=True),
+        read_plan=plan,
+        population=MemberPopulation(
+            admitted=2, admitted_dcids=(_FLOW, _FLOW_B), confirmed=2, exact=True
+        ),
+    )
+    # As `facets.filter_answer` narrows a plan to a unit elected for the first flow alone.
+    admitted = plan.narrowed(lambda sv, _facet: sv == _FLOW).leaving_out({_FLOW_B})
+    filtered = FilteredAnswer(mat.coverage, None, admitted)
+    request = _trailing("the last five years")
+
+    settled = settle_trailing(
+        mat, filtered, date_request=request, coverage_index=empty_coverage_snapshot().index
+    )
+
+    assert settled is not None
+    assert settled.date_request.window == TimeWindow(start_year=2020, end_year=2024)
+    assert settled.mat.sv_dcids == [_FLOW, _FLOW_B]
+    assert settled.mat.population is not None and settled.mat.population.confirmed == 2
+
+
+@pytest.mark.parametrize(
+    ("now", "plan_first", "passed_over", "window", "limited_by", "data_years"),
+    [
+        pytest.param(2025, 2000, 2018, (2019, 2022), "passed_over", None, id="shortened"),
+        pytest.param(
+            2026, 2000, 2018, (2019, 2022), "passed_over", (2000, 2022), id="shortened-and-stale"
+        ),
+        pytest.param(2026, 2000, 2016, (2018, 2022), None, (2000, 2022), id="full-span"),
+        pytest.param(
+            2026, 2019, 2018, (2019, 2022), None, (2000, 2022), id="floored-by-the-plan-too"
+        ),
+    ],
+)
+def test_a_trailing_span_a_passed_over_member_shortens_says_so(
+    monkeypatch,
+    now: int,
+    plan_first: int,
+    passed_over: int,
+    window: tuple[int, int],
+    limited_by: str | None,
+    data_years: tuple[int, int] | None,
+):
+    """Flows held 2000 to 2022 answer "the last five years" with 2018 to 2022, past a member
+    passed over in election that holds 2016 at the latest; in 2026 that newest year is
+    stale, and the year fact names the data's years. One that holds 2018 floors the range at
+    2019, so it shows four years, and the year fact says an earlier start would read another
+    series. It names no data years, which 2018 holds, unless the newest year is stale. A
+    plan whose years start in 2019 floors the range there with or without the member, so
+    the range is not the member's doing and only the stale fact departs."""
+    monkeypatch.setattr(trailing_module, "current_year", lambda: now)
+    flows = _two_flows(range(2000, 2023))
+    assert flows.read_plan is not None
+    plan = dataclasses.replace(
+        flows.read_plan, years=TimeWindow(start_year=plan_first, end_year=2026)
+    )
+    mat = dataclasses.replace(flows, read_plan=plan, passed_over_newest_year=passed_over)
+    assert mat.read_plan is not None
+
+    settled = settle_trailing(
+        mat,
+        FilteredAnswer(mat.coverage, None, mat.read_plan),
+        date_request=_trailing("the last five years"),
+        coverage_index=empty_coverage_snapshot().index,
+    )
+
+    assert settled is not None and settled.departure is not None
+    assert settled.date_request.window == TimeWindow(start_year=window[0], end_year=window[1])
+    _warning, fact = settled.departure
+    assert (fact.code, fact.binding_ref, fact.requested_years) == (
+        "year_unavailable",
+        "when:",
+        (2022, 2026),
+    )
+    assert (fact.shown, fact.limited_by, fact.data_years) == (
+        f"{window[0]} to {window[1]}",
+        limited_by,
+        data_years,
+    )
+
+
+@pytest.mark.parametrize(
+    ("facet", "newest"),
+    [
+        pytest.param(
+            Facet(
+                obs_count=3,
+                earliest_date="2000",
+                latest_date="2030",
+                dates=("2000", "2015", "2030"),
+            ),
+            2015,
+            id="complete-dates",
+        ),
+        pytest.param(
+            Facet(obs_count=9, earliest_date="2000", latest_date="2016", dates_complete=False),
+            2016,
+            id="incomplete-ending-before",
+        ),
+        pytest.param(
+            Facet(obs_count=9, earliest_date="2000", latest_date="2030", dates_complete=False),
+            2018,
+            id="incomplete-reaching-past",
+        ),
+        pytest.param(
+            Facet(obs_count=9, earliest_date="2025", latest_date="2030", dates_complete=False),
+            None,
+            id="incomplete-starting-after",
+        ),
+    ],
+)
+def test_the_newest_year_a_passed_over_member_holds_before_the_judged_years(
+    facet: Facet, newest: int | None
+):
+    """The floor a member passed over in election sets for a span whose judged years start
+    in 2019 (`standard._newest_year_ahead`): its newest year before 2019 where its dates
+    are complete or its last year lies before 2019, else 2018, the latest such a year can
+    be, unless its first year lies after them."""
+    data = {"AHEAD": ("AHEAD", [facet], None), "WINNER": ("WINNER", [], None)}
+
+    assert _newest_year_ahead(["AHEAD", "WINNER"], "WINNER", data, before=2019) == newest
+
+
+def _two_flows(years: range) -> Materialised:
+    """Two flows from a creditor to Aland, each held in `years`, read over 2000 to 2026."""
+    roles = (("creditor", _CREDITOR), ("debtor", _ALAND))
+    plan = PairPlan(
+        members=(_FLOW, _FLOW_B),
+        years=TimeWindow(start_year=2000, end_year=2026),
+        declared=NO_DECLARED_POLICIES,
+        series=tuple(
+            PlanSeries(
+                stat_var=sv, role_tuple=roles, candidates=(_yearly(years),), group=(_yearly(years),)
+            )
+            for sv in (_FLOW, _FLOW_B)
+        ),
+    )
+    return Materialised(
+        sv_dcids=[_FLOW, _FLOW_B],
+        has_data=True,
+        coverage=CoverageBare(has_data=True),
+        read_plan=plan,
+        population=MemberPopulation(
+            admitted=2, admitted_dcids=(_FLOW, _FLOW_B), confirmed=2, exact=True
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("held", "passed_over", "deflators", "facts"),
+    [
+        (range(2000, 2025), None, 2023, [("2020 to 2023", "deflators")]),
+        (range(2000, 2022), None, 2020, [("2017 to 2020", "deflators")]),
+        (range(2000, 2022), None, None, [("2017 to 2021", None)]),
+        (
+            range(2000, 2025),
+            2020,
+            (2021, 2023),
+            [("2021 to 2023", "deflators"), ("2021 to 2023", "passed_over")],
+        ),
+        (range(2000, 2025), 2020, (2022, 2024), [("2022 to 2024", "deflators")]),
+    ],
+    ids=[
+        "converted",
+        "stale_and_converted",
+        "stale",
+        "shortened_and_converted",
+        "shortened_and_converted_from_a_later_year",
+    ],
+)
+def test_a_trailing_answer_states_the_years_its_words_cover_once(
+    monkeypatch,
+    held: range,
+    passed_over: int | None,
+    deflators: int | tuple[int, int] | None,
+    facts: list[tuple[str, str | None]],
+):
+    """ "The last five years" in constant dollars, in 2026, settles on the newest five years
+    the flows hold. Deflators ending before them narrow the answer again, and its one year
+    fact names 2022 to 2026, the years the words cover, as asked: for flows to 2024 and
+    deflators to 2023, and for stale flows to 2021 and deflators to 2020, whose fact the
+    conversion's replaces. Stale flows the deflators cover keep the stale fact alone. A span
+    a member passed over in election shortened to 2021 to 2024 keeps saying so beside the
+    conversion's fact, over the years the narrowed answer shows, while the deflators still
+    start in 2021; deflators from 2022 set the first year, and only their fact stands."""
+    monkeypatch.setattr(trailing_module, "current_year", lambda: 2026)
+    mat = dataclasses.replace(_two_flows(held), passed_over_newest_year=passed_over)
+    assert mat.read_plan is not None
+    request = _trailing("the last five years")
+    settled = settle_trailing(
+        mat,
+        FilteredAnswer(mat.coverage, None, mat.read_plan),
+        date_request=request,
+        coverage_index=empty_coverage_snapshot().index,
+    )
+    assert settled is not None
+    first, last = settled.date_request.window.start_year, settled.date_request.window.end_year
+    assert first is not None and last is not None
+    years = (first, deflators) if isinstance(deflators, int) else deflators
+    period = (
+        None
+        if years is None
+        else ConversionPeriod(served=(first, last), years=years, limited_by="deflators")
+    )
+    monkeypatch.setattr(phase_answer, "current_conversion_catalogue", lambda: None)
+    monkeypatch.setattr(phase_answer, "survivor_declared_roles", lambda _mat: None)
+    monkeypatch.setattr(phase_answer, "unit_request_period", lambda *_a, **_k: period)
+    monkeypatch.setattr(phase_answer, "deflator_omission_departure", lambda *_a, **_k: None)
+    departed: list[DepartureFact] = []
+    state = SimpleNamespace(
+        unit_request=object(),
+        unit_elected_selections={},
+        date_request=settled.date_request,
+        mat_result=settled.mat,
+        coverage=SimpleNamespace(index=empty_coverage_snapshot().index),
+        depart=lambda _warning, fact: departed.append(fact),
+    )
+
+    phase_answer._over_conversion_period(
+        state, settled.mat, settled.filtered, FacetAdmission(), settled=settled
+    )
+
+    assert [(f.code, f.requested_years, f.shown, f.limited_by) for f in departed] == [
+        ("year_unavailable", (2022, 2026), shown, limited_by) for shown, limited_by in facts
+    ]
+
+
+def test_a_narrowed_answer_starts_one_related_read_over_its_final_years(monkeypatch):
+    """ "The last five years" in constant dollars, in 2026, settles on 2020 to 2024, and
+    deflators ending in 2023 narrow it to 2020 to 2023. The answer starts its one
+    related-measures read once, over 2020 to 2023."""
+    monkeypatch.setattr(trailing_module, "current_year", lambda: 2026)
+    mat = _two_flows(range(2000, 2025))
+    assert mat.read_plan is not None
+    period = ConversionPeriod(served=(2020, 2024), years=(2020, 2023), limited_by="deflators")
+    monkeypatch.setattr(phase_answer, "current_conversion_catalogue", lambda: None)
+    monkeypatch.setattr(phase_answer, "survivor_declared_roles", lambda _mat: None)
+    monkeypatch.setattr(phase_answer, "unit_request_period", lambda *_a, **_k: period)
+    monkeypatch.setattr(phase_answer, "deflator_omission_departure", lambda *_a, **_k: None)
+    windows: list[TimeWindow | None] = []
+
+    def start(_state: SimpleNamespace, *, date_request: DateRequest, **_kwargs: object) -> None:
+        windows.append(date_request.window)
+
+    monkeypatch.setattr(related_read_module, "_elected_measure_family", lambda *_a: (None, ()))
+    monkeypatch.setattr(related_read_module, "start_related_read", start)
+    state = SimpleNamespace(
+        unit_request=object(),
+        unit_elected_selections={},
+        date_request=_trailing("the last five years"),
+        mat_result=mat,
+        coverage=SimpleNamespace(index=empty_coverage_snapshot().index),
+        depart=lambda _warning, _fact: None,
+        related_read=None,
+        measure_family=None,
+        place=SimpleNamespace(roles=SimpleNamespace(roles=())),
+        shape_draft=SimpleNamespace(sv_arc_facts=None),
+    )
+
+    phase_answer._over_answer_years(
+        state, mat, FilteredAnswer(mat.coverage, None, mat.read_plan), FacetAdmission()
+    )
+
+    assert windows == [TimeWindow(start_year=2020, end_year=2023)]
+
+
+@pytest.mark.parametrize(
+    ("request_text", "order"),
+    [("2015 to 2020", ["related", "unit"]), ("the last five years", ["unit"])],
+    ids=["fixed-years", "trailing"],
+)
+def test_an_answer_with_fixed_years_starts_its_related_read_before_the_unit_decision(
+    monkeypatch, request_text: str, order: list[str]
+):
+    """An answer whose years no trailing span settles starts its related-measures read
+    before the bound-unit decision reads the graph, so the two run side by side. A trailing
+    answer starts it only once its years have settled (`_over_answer_years`)."""
+    calls: list[str] = []
+    stop = cast(RegionResult, object())
+
+    async def decide(_state: object, _mat: object) -> RegionResult:
+        calls.append("unit")
+        return stop
+
+    monkeypatch.setattr(phase_answer, "_decide_bound_unit_convertibility", decide)
+    monkeypatch.setattr(
+        phase_answer, "start_answer_related_read", lambda *_a: calls.append("related")
+    )
+    request = (
+        _trailing(request_text)
+        if request_text.startswith("the last")
+        else DateRequest(window=TimeWindow(start_year=2015, end_year=2020), latest=False)
+    )
+    state = SimpleNamespace(
+        mat_result=_two_flows(range(2000, 2025)), date_request=request, related_read=None
+    )
+
+    assert asyncio.run(phase_answer._ground_elected_answer(cast(Any, state))) is stop
+    assert calls == order
+
+
+class _HeldTask:
+    """A related read's task that records whether it was cancelled."""
+
+    def __init__(self) -> None:
+        self.cancelled = False
+
+    def cancel(self) -> None:
+        self.cancelled = True
+
+
+def test_a_refused_unit_decision_stops_the_related_read_the_pass_already_started(monkeypatch):
+    """An answer whose related read the pass already started over its years, for its one
+    flow, reads no second one before the bound-unit decision. The decision refuses, so the
+    answer states no related measures and that read is cancelled."""
+    request = DateRequest(window=TimeWindow(start_year=2015, end_year=2020), latest=False)
+    held = related_read_module.RelatedRead(
+        stat_var=_FLOW,
+        window=requested_window_from_date_request(request),
+        task=cast(Any, _HeldTask()),
+    )
+    started: list[object] = []
+    stop = cast(RegionResult, object())
+
+    async def decide(_state: object, _mat: object) -> RegionResult:
+        return stop
+
+    monkeypatch.setattr(phase_answer, "_decide_bound_unit_convertibility", decide)
+    monkeypatch.setattr(related_read_module, "_elected_measure_family", lambda *_a: (None, ()))
+    monkeypatch.setattr(
+        related_read_module, "start_related_read", lambda *_a, **_k: started.append(_k)
+    )
+    state = SimpleNamespace(
+        mat_result=dataclasses.replace(_two_flows(range(2000, 2025)), sv_dcids=[_FLOW]),
+        date_request=request,
+        related_read=held,
+        measure_family=None,
+        place=SimpleNamespace(roles=SimpleNamespace(roles=())),
+        shape_draft=SimpleNamespace(sv_arc_facts=None),
+    )
+
+    assert asyncio.run(phase_answer._ground_elected_answer(cast(Any, state))) is stop
+    assert (started, cast(_HeldTask, held.task).cancelled, state.related_read) == ([], True, None)

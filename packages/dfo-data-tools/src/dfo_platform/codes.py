@@ -11,6 +11,7 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import cache
+from typing import Literal
 
 from dfo_spec_kit.registry import REGISTRY, Classification, CodeEntry, Lifecycle
 from pydantic import BaseModel
@@ -120,6 +121,23 @@ class CodeMappingEntry(BaseModel):
     channel: str
     doors: tuple[str, ...] | None
     http_status: int | None
+
+
+# What a caller does with a refusal, stated on a problem body as `retry_mode`.
+RetryMode = Literal["correct_and_retry", "refresh_then_retry", "retry_after_delay", "do_not_retry"]
+
+# The limit a `resource_exhausted` refusal crossed, stated on its problem body as `limit_name`:
+# the names `dfo_spec_kit.registry.LIMIT_NAMES` registers, spelled out so a type checker holds
+# every raise site to them. `tests/assembler/test_limit_names.py` holds the two equal.
+RegisteredLimitName = Literal[
+    "MAX_ENVELOPE_BYTES",
+    "MAX_INTENT_BYTES",
+    "MAX_LINE_CHART_SERIES",
+    "MAX_POINTS_PER_SERIES",
+    "MAX_SELECTORS",
+    "MAX_SERIES_PER_COMPONENT",
+    "MAX_TABLE_ROWS",
+]
 
 
 class CodeRegistryEntry(BaseModel):

@@ -713,19 +713,38 @@ def test_an_unknown_component_or_revision_refuses_not_found(client: TestClient, 
 
 
 @pytest.mark.parametrize(
-    "request_json",
+    ("request_json", "status", "code"),
     [
-        pytest.param({}, id="no-frame"),
-        pytest.param({"frame": _body(_TARGET), "caller": "x"}, id="unknown-field"),
-        pytest.param({"frame": {"spec_id": "bad id", "content_version": "cv_1"}}, id="bad-id"),
+        pytest.param({}, 400, "request_invalid", id="no-frame"),
+        pytest.param(
+            {"frame": _body(_TARGET), "caller": "x"}, 400, "request_invalid", id="unknown-field"
+        ),
+        pytest.param(
+            {"frame": {"spec_id": "bad id", "content_version": "cv_1"}},
+            400,
+            "request_invalid",
+            id="bad-id",
+        ),
+        # The same body without its top-level `schema_version` renders.
+        pytest.param(
+            {"frame": _body(_TARGET), "schema_version": 1},
+            422,
+            "unsupported_schema_version",
+            id="schema-version",
+        ),
     ],
 )
-def test_a_malformed_render_body_refuses_request_invalid(client: TestClient, request_json):
+def test_a_malformed_render_body_states_a_mode_its_caller_corrects(
+    client: TestClient, request_json, status, code
+):
     component_id = _create(client)
 
     response = client.post(_render_url(component_id), json=request_json, headers=_AUTH)
 
-    assert (response.status_code, response.json()["code"]) == (400, "request_invalid")
+    body = response.json()
+    assert (response.status_code, body["code"]) == (status, code)
+    # The render request's own body is at fault, so its caller corrects it.
+    assert body["retry_mode"] == "correct_and_retry"
 
 
 def test_a_target_the_stored_intent_does_not_bind_refuses_binding_invalid_at_422(
@@ -742,6 +761,8 @@ def test_a_target_the_stored_intent_does_not_bind_refuses_binding_invalid_at_422
     for response in (render, data):
         assert (response.status_code, response.json()["code"]) == (422, "binding_invalid")
         assert response.json()["pointer"] == "/select/recipient"
+        # The replay refused the stored intent, which the caller cannot change.
+        assert response.json()["retry_mode"] == "do_not_retry"
     assert (_TARGET, component_id) not in frame_store.pins
 
 
@@ -833,7 +854,9 @@ def test_a_target_frame_that_does_not_load_refuses_frame_unavailable_at_409(
             id="release-mismatch",
         ),
         pytest.param(
-            ResourceExhausted(pointer="/select", limit_name="MAX_SERIES", detail="too many"),
+            ResourceExhausted(
+                pointer="/select", limit_name="MAX_SERIES_PER_COMPONENT", detail="too many"
+            ),
             409,
             "resource_exhausted",
             False,
@@ -865,6 +888,8 @@ def test_a_refusal_carries_its_render_status_and_retries_only_unchanged(
             code,
             retryable,
         )
+        # A replaying caller cannot correct the stored intent: only an unchanged retry holds.
+        assert (body["retry_mode"] == "do_not_retry") is not retryable
 
 
 # -- the data export --------------------------------------------------------

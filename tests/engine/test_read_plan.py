@@ -10,7 +10,7 @@ from dataclasses import dataclass, field, replace
 import pytest
 
 import search.engine.retrieval.read_plan as read_plan
-from materialise.facets import bound_variable_breadth, coverage_probe
+from materialise.facets import ElectedDataset, bound_variable_breadth, coverage_probe
 from materialise.group_facets import group_served
 from materialise.series_conversion import series_key
 from search.engine.app import _note_breadth_fallback
@@ -18,9 +18,9 @@ from search.engine.clients.graph import Facet
 from search.engine.config import settings
 from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.errors import GraphInfraError
-from search.engine.extract import DateRequest
+from search.engine.extract import DateRequest, TrailingSpan
 from search.engine.region.convertibility import _served_keys
-from search.engine.region.facets import FacetAdmission, filter_answer
+from search.engine.region.facets import FacetAdmission, answer_facets, filter_answer
 from search.engine.region.observations.bulk_role_series import (
     _bulk_role_series,
     _plan_role_bulk_fetch,
@@ -29,6 +29,7 @@ from search.engine.region.observations.fetch import _dispatched_series, _dispatc
 from search.engine.region.option_coverage import RoleServedFilter
 from search.engine.retrieval.coverage import CoverageForm, answer_coverage, answer_headline
 from search.engine.retrieval.download import download_facts
+from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES, read_declared_policies
 from search.engine.retrieval.member_facts import ArcsMemberFacts
 from search.engine.retrieval.read_plan import (
     BulkPlan,
@@ -69,9 +70,10 @@ _CONSTRAINTS = {_TOTAL: {}, _HEALTH: {"sector": "Health"}}
 @dataclass(frozen=True)
 class _Constraints:
     """Member facts that read only what the plan and the role-class election need: resolved
-    constraints, one declared role and no elected dataset."""
+    constraints, one declared role and an elected dataset, none by default."""
 
     constraints: dict[str, str] = field(default_factory=dict)
+    dataset: ElectedDataset | None = None
 
     def constraints_known(self) -> bool:
         return True
@@ -85,8 +87,8 @@ class _Constraints:
     def read_declared_roles(self) -> tuple[str, ...]:
         return ("debtor",)
 
-    def read_dataset(self) -> None:
-        return None
+    def read_dataset(self) -> ElectedDataset | None:
+        return self.dataset
 
 
 _FAMILY_FACTS = {sv: _Constraints(c) for sv, c in _CONSTRAINTS.items()}
@@ -108,6 +110,7 @@ def _plan(sv_dcids, entity_lists) -> ReadPlan:
         member_probes=lambda members: {},
         roles=PlanRoles(bound={}, role_names={"recipient": "debtor"}),
         elect=lambda plan: {},
+        declared=NO_DECLARED_POLICIES,
     )
 
 
@@ -170,6 +173,7 @@ def test_an_open_role_reads_in_bulk_when_its_series_pass_the_cap() -> None:
             member_probes=lambda members: {},
             roles=PlanRoles(bound={}, role_names={"recipient": "debtor", "donor": "creditor"}),
             elect=lambda plan: {},
+            declared=NO_DECLARED_POLICIES,
         )
 
     cap = observation_settings().obs_preview_max_pairs
@@ -202,6 +206,7 @@ def test_named_destinations_plan_on_the_members_the_preview_reads() -> None:
         bound_roles={"recipient": frozenset(recipients)},
         years=read_plan.role_years(None, index.horizon),
         coverage_index=index,
+        declared=NO_DECLARED_POLICIES,
     )
 
     assert isinstance(plan, PairPlan) and plan.members == (_TOTAL,)
@@ -240,6 +245,7 @@ def test_a_named_destination_plan_reads_a_member_whose_constraints_are_unknown_b
         bound_roles={"recipient": frozenset(_DEBTORS)},
         years=read_plan.role_years(None, index.horizon),
         coverage_index=index,
+        declared=NO_DECLARED_POLICIES,
     )
 
     assert elected == [_TOTAL, unread]
@@ -279,6 +285,7 @@ def _discover(max_pairs: int, search_settings) -> Materialised:
         facet_filters={},
         date_request=DateRequest(window=None, latest=True),
         coverage_snapshot=FakeCoverageService(index).snapshot(),
+        declared=NO_DECLARED_POLICIES,
     )
     assert isinstance(result, Materialised)
     return result
@@ -349,6 +356,7 @@ def _bulk_named_answer(search_settings, metadata: dict[str, FacetMetadata]):
         bound_roles={"recipient": frozenset({_AAA, _BBB, _CCC})},
         years=read_plan.role_years(_WINDOW, index.horizon),
         coverage_index=index,
+        declared=NO_DECLARED_POLICIES,
     )
     return index, plan
 
@@ -435,6 +443,7 @@ def test_named_family_coverage_dates_the_total_the_preview_reads() -> None:
         bound_roles={"recipient": frozenset(_DEBTORS)},
         years=read_plan.role_years(_LATEST, index.horizon),
         coverage_index=index,
+        declared=NO_DECLARED_POLICIES,
     )
 
     assert plan.members == (_TOTAL,)
@@ -447,6 +456,52 @@ def test_named_family_coverage_dates_the_total_the_preview_reads() -> None:
     )
     assert headline is not None
     assert (headline.year, headline.series) == (2022, 3)
+
+
+@pytest.mark.parametrize(
+    ("newest", "year"),
+    [(2022, 2022), (2019, None)],
+    ids=["inside-the-asked-years", "only-before-them"],
+)
+def test_a_trailing_request_keeping_its_years_heads_its_answer_inside_them(
+    newest: int, year: int | None
+) -> None:
+    """ "The last five years" read in 2025 names 2021 to 2025 and reads every span it may
+    settle on, back to 2014. An answer that keeps that request is headed by the latest year
+    its rows reach inside 2021 to 2025, naming those years; rows that end in 2019 head
+    nothing."""
+    index = build_coverage_index(
+        [(_TOTAL, "f1", ABSENT_ENTITY, r, list(range(2015, newest + 1))) for r in _DEBTORS],
+        role_names=_FAMILY_ROLES,
+    )
+    trailing = DateRequest(
+        window=TimeWindow(start_year=2021, end_year=2025),
+        latest=False,
+        trailing=TrailingSpan(years=5, stale_years=3),
+    )
+    plan = _role_plan(
+        [_TOTAL],
+        member_facts=_FAMILY_FACTS,
+        names={"destination": "debtor"},
+        subject_dcids=_DEBTORS,
+        origin_dcids=[],
+        bound_roles={"recipient": frozenset(_DEBTORS)},
+        years=read_plan.role_years(trailing, index.horizon),
+        coverage_index=index,
+        declared=NO_DECLARED_POLICIES,
+    )
+
+    headline = answer_headline(plan, index, date_request=trailing)
+
+    if year is None:
+        assert headline is None
+    else:
+        assert headline is not None
+        assert (headline.year, headline.series, headline.named_window) == (
+            year,
+            3,
+            TimeWindow(start_year=2021, end_year=2025),
+        )
 
 
 _ELECTION_DEBTORS = [f"country/E{i:02d}" for i in range(11)]
@@ -470,6 +525,7 @@ def _election_plan(index, sv_dcids: list[str], date_request: DateRequest) -> Rea
         bound_roles={"recipient": frozenset(_ELECTION_DEBTORS)},
         years=read_plan.role_years(date_request, index.horizon),
         coverage_index=index,
+        declared=NO_DECLARED_POLICIES,
     )
 
 
@@ -636,27 +692,21 @@ def test_a_two_member_latest_headline_counts_the_member_serving_its_year(
 
 
 @pytest.mark.parametrize("bulk", [False, True], ids=["per_pair", "bulk"])
-@pytest.mark.parametrize(
-    ("period", "build_year"),
-    [pytest.param("P1M", None, id="sub_annual"), pytest.param("P1Y", 2022, id="projected")],
-)
 def test_a_member_the_index_cannot_elect_for_serves_its_newest_year(
-    search_settings, bulk: bool, period: str, build_year: int | None
+    search_settings, bulk: bool
 ) -> None:
-    """Five debtors hold 2025, nine 2024 and eleven 2023, counts that elect 2024. A facet
-    stating months, or an index built in 2022, before every year held, elects no year. The
-    preview reads `LATEST` and the answer serves, heads and counts the five series at
-    2025, on both routes. A per-pair read fetches the latest row of all eleven to find
-    that period, and a bulk read the five pairs coverage dates in it."""
+    """Five debtors hold 2025, nine 2024 and eleven 2023, counts that elect 2024. An index
+    built in 2022, before every year held, elects no year. The
+    preview reads `LATEST` and the answer serves, heads and counts the five series at 2025,
+    on both routes. A per-pair read fetches the latest row of all eleven to find that
+    period, and a bulk read the five pairs coverage dates in it."""
     if bulk:
         search_settings(obs_preview_max_pairs=1)
     index = build_coverage_index(
         _election_rows(_TOTAL, {2025: 5, 2024: 9, 2023: 11}),
         role_names={_TOTAL: RoleNames(donor=None, recipient="debtor")},
-        facet_metadata={
-            "f1": FacetMetadata(provenance_id="dc/base/Ids", observation_period=period)
-        },
-        build_year=build_year,
+        facet_metadata={"f1": FacetMetadata(provenance_id="dc/base/Ids", observation_period="P1Y")},
+        build_year=2022,
     )
     plan = _election_plan(index, [_TOTAL], _LATEST)
     assert isinstance(plan, BulkPlan if bulk else PairPlan)
@@ -724,6 +774,7 @@ def test_a_second_bulk_read_names_each_member_only_the_year_it_elected(search_se
         bound_roles={"recipient": frozenset(debtors)},
         years=read_plan.role_years(_LATEST, index.horizon),
         coverage_index=index,
+        declared=NO_DECLARED_POLICIES,
     )
     assert isinstance(plan, BulkPlan) and plan.elected_years is not None
     sdmx = CountingSdmxClient(observations=plan_observations(plan))
@@ -844,6 +895,7 @@ def test_a_dateless_role_plan_runs_no_election(monkeypatch, search_settings, bul
         bound_roles={"recipient": frozenset(_ELECTION_DEBTORS)},
         years=read_plan.role_years(None, index.horizon),
         coverage_index=index,
+        declared=NO_DECLARED_POLICIES,
     )
     assert isinstance(plan, BulkPlan if bulk else PairPlan)
 
@@ -918,6 +970,7 @@ def test_discovered_family_elects_over_the_total_the_preview_reads(search_settin
         facet_filters={},
         date_request=_LATEST,
         coverage_snapshot=snapshot,
+        declared=NO_DECLARED_POLICIES,
     )
 
     assert isinstance(result, Materialised)
@@ -961,6 +1014,7 @@ def test_a_bulk_election_ranks_the_span_and_count_a_mint_ranks(search_settings) 
         bound_roles=bound,
         years=years,
         coverage_index=index,
+        declared=NO_DECLARED_POLICIES,
     )
     probe = coverage_probe(stat_var=_FLOW, bound=bound, coverage=index)
     window = plan_window(years.years)
@@ -1018,6 +1072,7 @@ def test_a_plan_of_several_members_serves_the_group_a_mint_elects(
         bound_roles=bound,
         years=years,
         coverage_index=index,
+        declared=NO_DECLARED_POLICIES,
     )
     minted = group_served(
         {sv: coverage_probe(stat_var=sv, bound=bound, coverage=index) for sv in members},
@@ -1060,7 +1115,9 @@ def test_a_member_whose_candidates_carry_no_facet_id_is_not_populated() -> None:
         )
         for sv, facet_id in ((_FLOW, "f1"), (_FLOW_B, None))
     )
-    plan = PairPlan(members=(_FLOW, _FLOW_B), years=None, series=series)
+    plan = PairPlan(
+        members=(_FLOW, _FLOW_B), years=None, series=series, declared=NO_DECLARED_POLICIES
+    )
 
     assert read_plan.populated_members(plan) == {_FLOW}
 
@@ -1114,6 +1171,7 @@ def test_a_bulk_plan_serves_every_member_holding_the_group_s_source_and_unit(
         bound_roles={"recipient": frozenset({_AAA, _BBB})},
         years=read_plan.role_years(_WINDOW, index.horizon),
         coverage_index=index,
+        declared=NO_DECLARED_POLICIES,
     )
     assert isinstance(plan, BulkPlan)
     plan = replace(plan, index_sourced=index_sourced).narrowed(lambda _sv, _candidate: True)
@@ -1125,15 +1183,97 @@ def test_a_bulk_plan_serves_every_member_holding_the_group_s_source_and_unit(
     assert read_plan.unserved_members(plan) == unserved
 
 
+_ONE_CLIMATE = "provenance/ONEClimateFinance"
+_ONE_WEIGHTING = "ONEClimateFinanceWeighting"
+_FULL_VALUE = "OECDClimateFinanceFullValue"
+
+# `_FLOW` holds each pair under both methods, and `fFull` reaches back further, so the
+# ranking alone elects it.
+_TWO_METHOD_ROWS = [
+    (_FLOW, facet_id, ABSENT_ENTITY, recipient, list(range(first, 2021)))
+    for facet_id, first in (("fFull", 2010), ("fWeighting", 2015))
+    for recipient in (_AAA, _BBB)
+]
+
+
+@pytest.mark.parametrize("bulk", [True, False], ids=["bulk", "pair"])
+@pytest.mark.parametrize(
+    "facts",
+    [
+        _Constraints(),
+        _Constraints(
+            dataset=ElectedDataset(provenance=_ONE_CLIMATE, member_provenances=(_ONE_CLIMATE,))
+        ),
+    ],
+    ids=["recalled", "indexed"],
+)
+@pytest.mark.parametrize(
+    ("declared", "served", "basis"),
+    [
+        pytest.param(_ONE_WEIGHTING, "fWeighting", "declared_default", id="declared"),
+        pytest.param("NoSuchMethod", "fFull", "fallback", id="declared-missing"),
+    ],
+)
+def test_a_plan_serves_the_method_its_member_declares_in_the_graph(
+    search_settings, bulk: bool, facts: _Constraints, declared: str, served: str, basis: str
+) -> None:
+    """`_FLOW` declares `declared` its default method in the graph. The per-pair and the bulk
+    plan, recalled or index-resolved, serve the declared method alone and the answer's facets
+    say so; a declared method no pair holds serves the ranking's one method, as a mint
+    does."""
+    search_settings(obs_preview_max_pairs=1 if bulk else 1_000)
+    index = build_coverage_index(
+        _TWO_METHOD_ROWS,
+        role_names={_FLOW: RoleNames(donor=None, recipient="debtor")},
+        facet_metadata={
+            facet_id: FacetMetadata(
+                provenance_id=_ONE_CLIMATE,
+                measurement_method=method,
+                unit="USDollar",
+                observation_period="P1Y",
+            )
+            for facet_id, method in (("fFull", _FULL_VALUE), ("fWeighting", _ONE_WEIGHTING))
+        },
+    )
+    graph = FakeGraph(default_methods={_FLOW: declared})
+    plan = _role_plan(
+        [_FLOW],
+        member_facts={_FLOW: facts},
+        names={"destination": "debtor"},
+        subject_dcids=[_AAA, _BBB],
+        origin_dcids=[],
+        bound_roles={"recipient": frozenset({_AAA, _BBB})},
+        years=read_plan.role_years(_WINDOW, index.horizon),
+        coverage_index=index,
+        declared=read_declared_policies(graph, [_FLOW], deadline=None),
+    )
+
+    assert isinstance(plan, BulkPlan) is bulk
+    assert {f.facet_id for f in read_plan.series_facets(plan)} == {served}
+    method = answer_facets(
+        plan,
+        {},
+        bound_axes={},
+        request_basis=None,
+        unit_request=None,
+        currency_of=lambda _ref: None,
+    )["measurementMethod"]
+    assert (method.basis, method.ref) == (
+        basis,
+        _ONE_WEIGHTING if served == "fWeighting" else _FULL_VALUE,
+    )
+
+
 def test_a_latest_bulk_plan_reads_the_member_s_year_under_every_facet_it_selects(
     search_settings,
 ) -> None:
     """`_FLOW` holds `fM1` at `_AAA` and `_CCC` to 2019, so `fM1` leads, and `fM2`, one
-    source and unit under another method, at `_BBB` to 2021. An index-resolved family's
-    group selects both, so under `latest` the member's year is the newest either reaches,
+    source, unit and method, at `_BBB` to 2021. The member's election selects both, so
+    under `latest` the member's year is the newest either reaches,
     2021, its dates are that year, and the facets its series state are those holding a pair
-    there: `fM2` alone. Both state a monthly period, so coverage elects the member no year
-    (`CoverageIndex.elected_years`) and it serves its own latest period."""
+    there: `fM2` alone. The index is built in 2014, before every year held, so coverage
+    elects the member no year (`CoverageIndex.elected_years`) and it serves its own latest
+    period."""
     search_settings(obs_preview_max_pairs=1)
     rows = [
         *((_FLOW, "fM1", ABSENT_ENTITY, place, list(range(2015, 2020))) for place in (_AAA, _CCC)),
@@ -1147,10 +1287,11 @@ def test_a_latest_bulk_plan_reads_the_member_s_year_under_every_facet_it_selects
                 provenance_id="dc/base/Shared",
                 measurement_method=method,
                 unit="CurrencyUSD",
-                observation_period="P1M",
+                observation_period="P1Y",
             )
-            for facet_id, method in (("fM1", "Commitment"), ("fM2", "Disbursement"))
+            for facet_id, method in (("fM1", "Commitment"), ("fM2", "Commitment"))
         },
+        build_year=2014,
     )
     plan = _role_plan(
         [_FLOW],
@@ -1161,6 +1302,7 @@ def test_a_latest_bulk_plan_reads_the_member_s_year_under_every_facet_it_selects
         bound_roles={"recipient": frozenset({_AAA, _BBB, _CCC})},
         years=read_plan.role_years(DateRequest(window=None, latest=True), index.horizon),
         coverage_index=index,
+        declared=NO_DECLARED_POLICIES,
     )
     assert isinstance(plan, BulkPlan)
     plan = replace(plan, index_sourced=True).narrowed(lambda _sv, _candidate: True)
@@ -1188,7 +1330,9 @@ def test_a_plan_names_the_entities_it_was_asked_for_and_serves_no_point_at(
         ("sv", "country/GHA"): [other],
     }
 
-    plan = plan_standard(series, members=["sv"], years=None, places=places)
+    plan = plan_standard(
+        series, members=["sv"], years=None, places=places, declared=NO_DECLARED_POLICIES
+    )
 
     assert unserved_entities(plan) == {
         ("observationAbout", "country/GHA"),
@@ -1198,11 +1342,25 @@ def test_a_plan_names_the_entities_it_was_asked_for_and_serves_no_point_at(
     assert unserved_entities(plan.every_date()) == unserved_entities(plan)
     assert (
         unserved_entities(
-            plan_standard(series, members=["sv"], years=None, scope=True, places=places)
+            plan_standard(
+                series,
+                members=["sv"],
+                years=None,
+                scope=True,
+                places=places,
+                declared=NO_DECLARED_POLICIES,
+            )
         )
         == set()
     )
-    assert unserved_entities(plan_standard({}, members=["sv"], years=None, places=places)) == set()
+    assert (
+        unserved_entities(
+            plan_standard(
+                {}, members=["sv"], years=None, places=places, declared=NO_DECLARED_POLICIES
+            )
+        )
+        == set()
+    )
     assert unserved_entities(None) == set()
 
     _index, bulk = _bulk_named_answer(
@@ -1235,6 +1393,7 @@ def test_a_bulk_plan_states_each_entity_unserved_on_its_own_role(search_settings
         bound_roles={"recipient": frozenset({_AAA, _BBB, _NOR}), "donor": frozenset({_NOR})},
         years=read_plan.role_years(_WINDOW, index.horizon),
         coverage_index=index,
+        declared=NO_DECLARED_POLICIES,
     )
 
     assert isinstance(plan, BulkPlan)
@@ -1270,7 +1429,9 @@ def _facet(
 
 def _dateless(facets: list[Facet]) -> PairPlan:
     """The plan a one-place answer holding `facets` builds with no window."""
-    return plan_standard({("sv", "country/KEN"): facets}, members=["sv"], years=None)
+    return plan_standard(
+        {("sv", "country/KEN"): facets}, members=["sv"], years=None, declared=NO_DECLARED_POLICIES
+    )
 
 
 def test_a_window_gap_spans_the_group_an_every_date_read_serves() -> None:
@@ -1320,8 +1481,12 @@ def test_a_window_gap_is_the_span_the_dateless_plan_of_the_same_series_serves(sc
         ],
     ):
         series = {("sv", "country/KEN"): kenya, ("sv", "country/GHA"): ghana}
-        windowed = plan_standard(series, members=["sv"], years=years, scope=scope)
-        dateless = plan_standard(series, members=["sv"], years=None, scope=scope)
+        windowed = plan_standard(
+            series, members=["sv"], years=years, scope=scope, declared=NO_DECLARED_POLICIES
+        )
+        dateless = plan_standard(
+            series, members=["sv"], years=None, scope=scope, declared=NO_DECLARED_POLICIES
+        )
         gap = read_plan.plan_window_gap(
             windowed, DateRequest(window=TimeWindow(start_year=2028, end_year=2030), latest=False)
         )
@@ -1457,6 +1622,7 @@ def test_each_series_serves_its_joint_dispatch_group() -> None:
         },
         members=["sv"],
         years="latest",
+        declared=NO_DECLARED_POLICIES,
     )
 
     assert {s.key: s.group_ids for s in plan.held} == {
@@ -1477,6 +1643,7 @@ def test_a_series_whose_group_misses_the_window_is_not_served() -> None:
         },
         members=["sv"],
         years=TimeWindow(start_year=2020, end_year=2022),
+        declared=NO_DECLARED_POLICIES,
     )
 
     assert [s.key for s in plan.series] == [("sv", "country/KEN"), ("sv", "country/NOR")]
@@ -1490,7 +1657,9 @@ def test_a_scope_read_serves_one_facet_at_every_place() -> None:
     series = {("sv", p): [_facet("f-wide", range(2015, 2021))] for p in places}
     series[("sv", "country/A")].append(_facet("f-deep", range(1950, 2021), provenance="dc/base/Q"))
 
-    plan = plan_standard(series, members=["sv"], years="latest", scope=True)
+    plan = plan_standard(
+        series, members=["sv"], years="latest", scope=True, declared=NO_DECLARED_POLICIES
+    )
 
     assert plan.scope_facet_id == "f-wide"
     assert {s.group_ids for s in plan.served} == {frozenset({"f-wide"})}
@@ -1513,12 +1682,16 @@ def test_narrowing_a_pair_plan_equals_planning_the_admitted_candidates(scope: bo
     def usd(_sv: str, candidate) -> bool:
         return candidate.unit == "USD"
 
-    plan = plan_standard(_UNIT_SERIES, members=["sv"], years="latest", scope=scope)
+    plan = plan_standard(
+        _UNIT_SERIES, members=["sv"], years="latest", scope=scope, declared=NO_DECLARED_POLICIES
+    )
     admitted = {key: [f for f in facets if usd(key[0], f)] for key, facets in _UNIT_SERIES.items()}
 
     narrowed = plan.narrowed(usd)
 
-    assert narrowed == plan_standard(admitted, members=["sv"], years="latest", scope=scope)
+    assert narrowed == plan_standard(
+        admitted, members=["sv"], years="latest", scope=scope, declared=NO_DECLARED_POLICIES
+    )
     assert [(s.key, s.group_ids) for s in narrowed.served] == [
         (("sv", "country/KEN"), frozenset({"f-usd"}))
     ]
@@ -1546,6 +1719,7 @@ def test_narrowing_a_bulk_plan_equals_planning_the_admitted_candidates(search_se
         bound_roles={"recipient": frozenset({_AAA, _BBB, _CCC})},
         years=read_plan.role_years(_WINDOW, eur_index.horizon),
         coverage_index=eur_index,
+        declared=NO_DECLARED_POLICIES,
     )
 
     narrowed = plan.narrowed(lambda _sv, c: c.unit == "EUR")
@@ -1582,6 +1756,7 @@ def test_named_and_discovered_pairs_elect_over_the_same_in_window_counts(search_
         bound_roles={"recipient": frozenset({"country/KEN"})},
         years=read_plan.role_years(window, index.horizon),
         coverage_index=index,
+        declared=NO_DECLARED_POLICIES,
     )
     discovered = discover_role_scope(
         surviving_svs=["V"],
@@ -1595,6 +1770,7 @@ def test_named_and_discovered_pairs_elect_over_the_same_in_window_counts(search_
         facet_filters={},
         date_request=window,
         coverage_snapshot=FakeCoverageService(index).snapshot(),
+        declared=NO_DECLARED_POLICIES,
     )
 
     assert isinstance(discovered, Materialised)
@@ -1629,6 +1805,7 @@ def test_a_scope_facet_with_a_short_read_spanning_the_window_stays_elected() -> 
         members=["sv"],
         years=_SCOPE_WINDOW,
         scope=True,
+        declared=NO_DECLARED_POLICIES,
     )
     coverage = answer_coverage(plan, CoverageForm())
 
@@ -1654,6 +1831,7 @@ def test_a_scope_place_whose_short_read_ends_before_the_window_is_not_served() -
         members=["sv"],
         years=_SCOPE_WINDOW,
         scope=True,
+        declared=NO_DECLARED_POLICIES,
     )
     coverage = answer_coverage(plan, CoverageForm(facet_label="places", counts_places=True))
 
@@ -1688,6 +1866,7 @@ def test_a_filtered_latest_bulk_plan_serves_the_latest_year_its_pairs_keep(searc
         bound_roles={"recipient": places},
         years=read_plan.role_years(DateRequest(window=None, latest=True), index.horizon),
         coverage_index=index,
+        declared=NO_DECLARED_POLICIES,
     )
     assert isinstance(plan, BulkPlan)
     assert plan.member_years(flow_a) == (2018, 2018)
@@ -1737,6 +1916,7 @@ def test_a_bulk_plan_narrowed_per_statvar_serves_one_set_of_members(
         bound_roles={"recipient": frozenset(debtors)},
         years=read_plan.role_years(latest, index.horizon),
         coverage_index=index,
+        declared=NO_DECLARED_POLICIES,
     )
     assert isinstance(plan, BulkPlan)
     form = CoverageForm(variables=True)
@@ -1796,7 +1976,12 @@ def test_a_plan_lists_its_served_facets_by_points_served_whatever_its_series_ord
         [
             f.provenance_id
             for f in read_plan.facets_served(
-                PairPlan(members=tuple(by_series), years=None, series=tuple(order))
+                PairPlan(
+                    members=tuple(by_series),
+                    years=None,
+                    series=tuple(order),
+                    declared=NO_DECLARED_POLICIES,
+                )
             )
         ]
         for order in orders
@@ -1816,7 +2001,10 @@ def test_a_series_elects_the_facet_holding_the_most_points_in_the_years_read() -
 
     def group(years) -> frozenset[str]:
         (series,) = plan_standard(
-            {("V", "country/KEN"): candidates}, members=["V"], years=years
+            {("V", "country/KEN"): candidates},
+            members=["V"],
+            years=years,
+            declared=NO_DECLARED_POLICIES,
         ).series
         return series.group_ids
 
@@ -1829,7 +2017,12 @@ def test_a_plan_holding_only_unservable_series_still_answers() -> None:
     """A series holding points in the years but no facet id the preview can dispatch is
     unservable: the plan serves nothing yet keeps its answer, whose preview says why."""
     undispatchable = replace(_facet("f", range(2010, 2021)), facet_id=None)
-    plan = plan_standard({("V", "country/KEN"): [undispatchable]}, members=["V"], years=None)
+    plan = plan_standard(
+        {("V", "country/KEN"): [undispatchable]},
+        members=["V"],
+        years=None,
+        declared=NO_DECLARED_POLICIES,
+    )
 
     assert plan.served == ()
     assert len(plan.unservable) == 1
@@ -1897,6 +2090,7 @@ def test_a_plan_at_one_place_breaks_a_tie_on_the_variable_s_whole_breadth(
             members=["sv"],
             years=None,
             places=places,
+            declared=NO_DECLARED_POLICIES,
         )
 
     assert {f.facet_id for s in plan.series for f in s.group} == group
@@ -1942,6 +2136,7 @@ def test_search_falls_back_on_an_unread_breadth_and_notes_a_degraded_read(
             members=["sv"],
             years=None,
             places=["country/FRA"],
+            declared=NO_DECLARED_POLICIES,
         )
 
     assert {f.facet_id for s in plan.series for f in s.group} == group
@@ -1984,6 +2179,7 @@ def test_a_one_role_continuation_counts_the_observations_of_every_row_of_a_membe
         selected=lead_selected(candidates, "rec"),
         continuing=("est",),
         candidates=candidates,
+        declared=NO_DECLARED_POLICIES,
     )
 
     def counts(facet_id: str, start: int, end: int) -> dict:

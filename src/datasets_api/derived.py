@@ -71,6 +71,7 @@ from datasets_api.render import (
 from datasets_api.retention import version_retention
 from datasets_api.store_errors import DatasetsStoreUnavailable, read_stored_frame
 from datasets_api.versions import VersionRecordWriter
+from dfo_platform.columns import PROVENANCE_COLUMN
 from dfo_platform.config import PublicSiteSettings
 from materialise import EnrichmentLookup
 from materialise.bundle import (
@@ -99,7 +100,6 @@ _ZIP_FIXED_DATE_TIME = (1980, 1, 1, 0, 0, 0)
 _PLAIN = Rendering()
 _WRITERS = {"csv": write_csv, "xlsx": write_excel, "parquet": write_parquet}
 _TAG_LENGTH = 6
-_PROVENANCE_COLUMN = "provenance"
 
 logger = logging.getLogger(__name__)
 
@@ -417,9 +417,9 @@ def _frame_file(
 
 def _provenance_refs(table: Table) -> list[str]:
     """The distinct refs of `table`'s `provenance` column, in first-seen order."""
-    if _PROVENANCE_COLUMN not in table.columns:
+    if PROVENANCE_COLUMN not in table.columns:
         return []
-    refs = column_cells(table, _PROVENANCE_COLUMN)
+    refs = column_cells(table, PROVENANCE_COLUMN)
     return [ref for ref in dict.fromkeys(refs) if isinstance(ref, str)]
 
 

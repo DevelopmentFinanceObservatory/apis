@@ -46,7 +46,7 @@ _IMPUTED = "provenance/ONEImputedMultilateralSectors"
 _DAC1 = "provenance/OECDDAC1"
 _STACKED = DECLARED_COMPOSITES[CRS_INCLUSIVE]
 _SPLICED = next(c for c in COMPOSITES if c.kind == "spliced")
-_ENRICHMENT = EnrichmentLookup(FakeGraphReader(), parties=lambda: {})
+_ENRICHMENT = EnrichmentLookup(FakeGraphReader())
 
 # CRS and imputed members of one sector. The imputed dcid sorts before the CRS one, so the
 # composed frame leads with the zero-filling component's rows.
@@ -163,7 +163,9 @@ def _component(
         ),
         unserved_members=tuple(unserved),
         series_statistics=statistics.finish(),
-        output_profile=compute_output_profile(frame, role_columns=_ROLES, enrichment=_ENRICHMENT),
+        output_profile=compute_output_profile(
+            frame, role_columns=_ROLES, enrichment=_ENRICHMENT, parties={}
+        ),
         conversion_record=None,
         member_conversion_records=dict.fromkeys(members),
         dependencies=Dependencies(
@@ -196,6 +198,7 @@ def _compose(
         window=RequestedWindow(kind="range", start_year=years[0], end_year=years[1]),
         role_columns=_ROLES,
         enrichment=_ENRICHMENT,
+        parties={},
     )
 
 
@@ -807,7 +810,7 @@ def test_the_frame_is_composed_once_and_every_later_pass_reads_the_same_rows():
     ]
     assert result.frame_sha256 == stream_frame_sha256(iter(passes[0]))
     assert result.output_profile == compute_output_profile_from_chunks(
-        result.frame_chunks, role_columns=_ROLES, enrichment=_ENRICHMENT
+        result.frame_chunks, role_columns=_ROLES, enrichment=_ENRICHMENT, parties={}
     )
     statistics = SeriesStatisticsSink(continuing=())
     for frame in passes[0]:

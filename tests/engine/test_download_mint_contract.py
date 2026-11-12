@@ -28,6 +28,7 @@ from materialise.recipe_bodies import RECIPE_BODIES
 from search.engine.clients.graph import Facet
 from search.engine.extract import DateRequest
 from search.engine.retrieval.download import download_facts
+from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
 from search.engine.retrieval.read_plan import PlanSeries, plan_pairs, plan_years, role_years
 from search.engine.retrieval.role_resolve import _role_plan
 from search.engine.unit.conversion import CountedConversion
@@ -116,6 +117,7 @@ def test_a_standard_answer_states_the_rows_its_mint_wrote(name: str) -> None:
         ],
         members=[series["stat_var"]],
         years=plan_years(_date_request(case["requested_window"])),
+        declared=NO_DECLARED_POLICIES,
     )
 
     download = download_facts(
@@ -156,6 +158,7 @@ def test_a_role_answer_states_the_rows_its_mint_wrote(name: str) -> None:
         bound_roles={role: frozenset(dcids) for role, dcids in bulk["bound"].items()},
         years=role_years(_date_request(case["requested_window"]), index.horizon),
         coverage_index=index,
+        declared=NO_DECLARED_POLICIES,
     ).omitting(
         frozenset(
             (sv, "financingProvider", donor) for sv in members for donor in bulk["omitted_donors"]

@@ -324,7 +324,9 @@ class _Asked:
                     group = None
                 walked = WalkedMembers.of(query, group) if group is not None else None
             stated = stated_members(identity, walked)
-        return None if stated is None else (stated.served_count, stated.digest)
+        if stated is None:
+            return None
+        return stated.served_count, stated.family.digest if stated.family else None
 
     def door(self):
         """What the members door serves for the minted identity."""
@@ -590,7 +592,15 @@ def test_search_admits_from_a_shared_family_what_the_mint_serves_for_its_identit
             differences.append(f"rule, {dataset}: {cell}")
         elif door in (TIED, NOT_REPRODUCIBLE) or (survivors, elected) != (door[0], door[3]):
             differences.append(f"members door, {dataset}: {cell}")
-        elif stated is None or (stated.served_count, stated.digest) != (len(door[0]), door[2]):
+        elif (
+            stated is None
+            or stated.family is None
+            or (
+                stated.served_count,
+                stated.family.digest,
+            )
+            != (len(door[0]), door[2])
+        ):
             differences.append(f"stated, {dataset}: {cell}")
 
     assert served_cells
@@ -683,8 +693,8 @@ def test_a_member_elected_under_one_open_key_states_the_mints_count_for_both_axe
         minted_identity(cell, named=True, open_roles=answer.open_axes)
     )
     stated = stated_members(identity, resolution.walked)
-    assert stated is not None
-    assert (stated.served_count, stated.digest) == (len(door[0]), door[2])
+    assert stated is not None and stated.family is not None
+    assert (stated.served_count, stated.family.digest) == (len(door[0]), door[2])
 
 
 # ---------------------------------------------------------------------------

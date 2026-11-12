@@ -1,7 +1,7 @@
 """The kinds of entity each flow role takes, and the check that refuses an entity of another kind.
 
 A flow role takes the kinds of the parties the code index lists on its axis (`CodeIndex.parties`,
-`PartyRow.axes`), so no table names them and a party kind the index adds on an axis is taken
+`PartyRow.published`), so no table names them and a party kind the index adds on an axis is taken
 there. A `party` row brings the kinds the index's party types give a party
 (`CodeIndex.party_types`: `Country` a country, `Organization` an organisation), a `total` or
 `residual` row brings `aggregate`, and a total that holds a group (`PartyRow.totals`) brings the
@@ -29,6 +29,7 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Protocol
 
 from code_index.shared import per_index
+from code_index.types import ANY_DATASET
 from dfo_platform.roles import FlowFamily, RoleAxis, role_key_axis, role_wording
 
 if TYPE_CHECKING:
@@ -138,13 +139,14 @@ def role_kinds(code_index: CodeIndex) -> Mapping[RoleAxis, frozenset[Kind]]:
     )
     kinds: dict[RoleAxis, set[Kind]] = {"origin": set(), "destination": set()}
     for party in code_index.parties.values():
-        held = party.kinds_over()
-        for axis in party.axes:
-            if "party" in held:
+        group = None if party.totals is None else policy.kind_of(party.totals)
+        for dataset, axis in party.published:
+            held = party.kind_in(dataset)
+            if held == "party":
                 kinds[axis] |= party_kinds
-            if held & {"total", "residual"}:
+            else:
                 kinds[axis].add("aggregate")
-            if party.totals is not None and (group := policy.kind_of(party.totals)) is not None:
+            if group is not None:
                 kinds[axis].add(group)
     return {axis: frozenset(found) for axis, found in kinds.items()}
 
@@ -224,4 +226,4 @@ def entity_kind_of(dcid: str, types: Sequence[str], *, code_index: CodeIndex) ->
 def _listed_on(code_index: CodeIndex, dcid: str, axis: RoleAxis) -> bool:
     """Whether the index lists `dcid` as a party on `axis`."""
     party = code_index.parties.get(dcid)
-    return party is not None and axis in party.axes
+    return party is not None and party.publishes(axis, ANY_DATASET)

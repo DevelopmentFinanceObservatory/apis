@@ -51,15 +51,16 @@ from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Final, Literal, Self
 
-from code_index.composites import provenance_datasets
 from materialise.convert import TermKey, row_terms
 from materialise.facets import nominal_currency
-from materialise.recipe_bodies import ConversionRecipe
+from materialise.recipe_bodies import ConversionRecipe, DeflationBasis
 from materialise.recipes import (
     RecipeNotDeclaredError,
+    deflation_basis,
     graph_role_for_spec_role,
     resolve_deflator_role,
 )
+from search.engine.departures import served_datasets
 from search.engine.region.codes import UNIT_CONVERSION_UNAVAILABLE
 from search.engine.retrieval.member_facts import MemberFacts
 from search.engine.retrieval.read_plan import (
@@ -429,14 +430,16 @@ def unit_conversion(
             (`read_plan.served_units`) and their served entities the deflator entities
             (`read_plan.served_role_entities`).
         catalogue: the loaded conversion catalogue; None offers nothing.
+
+    The offer also states whose prices its constant-price conversion deflates by, from the
+    recipe and the roles the members declare (`_deflated_by`).
     """
     if catalogue is None or not members or not _states_currency(spec):
         return None
     five_tuples = [member.read_five_tuple() for member in members]
     if any(five.meas_qual_dcid != _NOMINAL for five in five_tuples):
         return None
-    recipes = {catalogue.recipe(provenance) for provenance in _provenances(spec)}
-    recipe = next(iter(recipes)) if len(recipes) == 1 else None
+    recipe = _served_recipe(spec, catalogue)
     natives = _natives(spec, plans)
     if (
         recipe is None
@@ -471,6 +474,7 @@ def unit_conversion(
         currencies=currencies,
         default_base_year=catalogue.default_base_year,
         role_currencies=_role_currencies(spec, catalogue, currencies=offered),
+        deflation_basis=_deflated_by(recipe, members),
     )
 
 
@@ -569,19 +573,41 @@ def _served_years(spec: Spec, tables: RecipeTables) -> frozenset[int]:
     return frozenset(range(window.start_year, window.end_year + 1))
 
 
+def _served_recipe(spec: Spec, catalogue: ConversionCatalogue) -> ConversionRecipe | None:
+    """The one recipe the provenances `spec` is served from (`departures.served_datasets`)
+    name in `catalogue`, None when they name none or several."""
+    return catalogue.served_recipe(served_datasets(spec))
+
+
+def _deflator_roles(
+    recipe: ConversionRecipe, members: Sequence[MemberFacts]
+) -> frozenset[str] | None:
+    """The recipe's deflator role each member declares (`resolve_deflator_role`), None when
+    a member declares no single one, so a constant-price conversion refuses it
+    (`role_undeclared`)."""
+    try:
+        return frozenset(
+            resolve_deflator_role(recipe, declared_roles=member.read_declared_roles())
+            for member in members
+        )
+    except RecipeNotDeclaredError:
+        return None
+
+
+def _deflated_by(recipe: ConversionRecipe, members: Sequence[MemberFacts]) -> DeflationBasis | None:
+    """Whose prices `recipe` deflates `members` by at constant prices, from the roles each
+    declares (`materialise.recipes.deflation_basis`)."""
+    return deflation_basis(recipe, role_sets=(member.read_declared_roles() for member in members))
+
+
 def _deflator_entities(
     recipe: ConversionRecipe, members: Sequence[MemberFacts], plans: Sequence[ReadPlan]
 ) -> frozenset[str] | None:
     """The entities the answer's plans serve on the recipe's deflator role, placed through
-    each member's declared roles (`resolve_deflator_role`), bound or open alike. None when
-    a member declares no single deflator role, so a constant-price conversion refuses it
-    (`role_undeclared`)."""
-    try:
-        roles = {
-            resolve_deflator_role(recipe, declared_roles=member.read_declared_roles())
-            for member in members
-        }
-    except RecipeNotDeclaredError:
+    each member's declared roles (`_deflator_roles`), bound or open alike. None when a
+    member declares no single deflator role."""
+    roles = _deflator_roles(recipe, members)
+    if roles is None:
         return None
     return frozenset[str]().union(
         *(served_role_entities(plan, role) for plan in plans for role in roles)
@@ -630,16 +656,6 @@ def _currency(
 
 def _window(run: YearRun | None) -> TimeWindow | None:
     return TimeWindow(start_year=run[0], end_year=run[1]) if run is not None else None
-
-
-def _provenances(spec: Spec) -> list[str]:
-    """The served provenances: the datasets of the provenance facet's one ref, a composite's
-    component tables (`code_index.composites.provenance_datasets`), else every resolved
-    source."""
-    provenance = spec.resolved.facets.get("provenance")
-    if provenance is not None and provenance.ref is not None:
-        return list(provenance_datasets(provenance.ref))
-    return [source.ref for source in spec.resolved.trace.resolved_sources]
 
 
 def _role_currencies(

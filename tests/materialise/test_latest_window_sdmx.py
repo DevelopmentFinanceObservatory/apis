@@ -127,7 +127,8 @@ def test_single_member_latest_window_sends_time_period_latest():
         ),
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
+        enrichment=EnrichmentLookup(graph),
+        parties={},
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -151,7 +152,8 @@ def test_single_member_non_latest_window_omits_time_period():
         _request(stat_var=_STAT_VAR_A, recipient="country/TGO", window=RequestedWindow(kind="all")),
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
+        enrichment=EnrichmentLookup(graph),
+        parties={},
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -181,7 +183,8 @@ def test_single_member_latest_window_blank_value_at_latest_period_serves_no_row(
         ),
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
+        enrichment=EnrichmentLookup(graph),
+        parties={},
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -237,7 +240,8 @@ def test_group_member_time_period_matches_each_members_own_window_kind():
         ],
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
+        enrichment=EnrichmentLookup(graph),
+        parties={},
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -330,7 +334,6 @@ def _served_latest(
     *,
     indexed: dict[str, tuple[str, ...]],
     live: dict[str, tuple[str, ...]],
-    observation_period: str = "P1Y",
     build_year: int | None = None,
     undispatched: tuple[str, ...] = (),
 ) -> tuple[
@@ -363,7 +366,7 @@ def _served_latest(
                 provenance_id="OECD_DAC2A",
                 measurement_method="GrantEquivalent",
                 unit="USD",
-                observation_period=observation_period,
+                observation_period="P1Y",
             ),
             "facet2": FacetMetadata(
                 provenance_id="OTHER_SOURCE", measurement_method="GrantEquivalent", unit="USD"
@@ -395,7 +398,8 @@ def _served_latest(
             requests,
             sdmx=sdmx,
             graph=graph,
-            enrichment=EnrichmentLookup(graph, parties=lambda: {}),
+            enrichment=EnrichmentLookup(graph),
+            parties={},
             materialiser_build="build-123",
             capability_version="cap-v1",
             coverage=coverage,
@@ -503,40 +507,14 @@ def test_latest_serves_the_elected_year_from_the_members_holding_it(path: str):
 
 
 @_PATHS
-@pytest.mark.parametrize(
-    ("observation_period", "build_year", "live", "period"),
-    [
-        pytest.param(
-            "P1M",
-            None,
-            {
-                recipient: tuple(f"{year}-06" for year in periods)
-                for recipient, periods in _TWO_REACH_2018.items()
-            },
-            "2018-06",
-            id="sub-annual",
-        ),
-        pytest.param("P1Y", 2014, _TWO_REACH_2018, "2018", id="every-year-after-the-build"),
-    ],
-)
-def test_latest_keeps_the_newest_period_for_a_member_that_elects_no_year(
-    path: str,
-    observation_period: str,
-    build_year: int | None,
-    live: dict[str, tuple[str, ...]],
-    period: str,
-):
-    """Two of five series reach 2018, counts that elect 2017. A facet stating months, or an
-    index built before every year it holds, elects no year, so one `LATEST` read serves the
-    two series at the newest period."""
+def test_latest_keeps_the_newest_period_for_a_member_that_elects_no_year(path: str):
+    """Two of five series reach 2018, counts that elect 2017. An index built before every
+    year it holds elects no year, so one `LATEST` read serves the two series at the newest
+    period."""
     served, reads, year = _served_latest(
-        path,
-        indexed=_TWO_REACH_2018,
-        live=live,
-        observation_period=observation_period,
-        build_year=build_year,
+        path, indexed=_TWO_REACH_2018, live=_TWO_REACH_2018, build_year=2014
     )
 
     assert reads == [(_variables(path), "LATEST")]
-    assert served == [(recipient, period) for recipient in _RECIPIENTS[:2]]
+    assert served == [(recipient, "2018") for recipient in _RECIPIENTS[:2]]
     assert year in (None, (None, 2018, False))

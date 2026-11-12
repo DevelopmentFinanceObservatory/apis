@@ -309,13 +309,16 @@
 
 - id: dq-crs-027
   query: climate finance from Germany to Bangladesh
-  why: The pipeline drops Rio markers, so no series measures climate finance; returning all German aid to Bangladesh under that label is wrong.
+  why: ONE Data Climate Finance answers climate finance, at its total objective when the question names none; all German aid to Bangladesh under that label would be wrong.
   reuse: panel/crs-031
-  tags: {theme: climate_energy, entity: two_roles, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, probe: [crs_quirk, missing_data]}
+  tags: {theme: climate_energy, entity: two_roles, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, probe: [crs_quirk]}
   expect:
-    no_data:
+    definite:
+      measure:
+        family: [climate.disbursement_gross, climate.commitment]
+        bound: {climatePolicyObjective: ClimateChangePolicyObjective}
       entities: [{dcid: country/DEU, role: origin}, {dcid: country/BGD, role: destination}]
-      reason: [qualifier_not_bound, variable_not_resolved]
+      operations: []
 
 - id: dq-crs-028
   query: other official flows from Germany to Brazil
@@ -831,3 +834,49 @@
         family: crs.disbursement_gross
         bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode720}
       entities: [{dcid: country/SOM, role: destination}]
+
+- id: dq-crs-070
+  query: Global Fund disbursements to Kenya since 2015
+  why: The Global Fund named before the measure is the provider, so the CRS answers its gross disbursements to Kenya, as "aid from the Global Fund" reads it.
+  tags: {theme: health, entity: organisation, direction: both, unit: default, time: range, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: [crs.disbursement_gross, dac2a.oda_gross_received]}
+      entities: [{dcid: GlobalFund, role: origin}, {dcid: country/KEN, role: destination}]
+      window: {kind: range, start: 2015}
+
+- id: dq-crs-071
+  query: Global Fund disbursements to Malawi since 2015
+  why: The Global Fund named before the measure is the provider, so the CRS answers its gross disbursements to Malawi, as "aid from the Global Fund" reads it.
+  tags: {theme: health, entity: organisation, direction: both, unit: default, time: range, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: [crs.disbursement_gross, dac2a.oda_gross_received]}
+      entities: [{dcid: GlobalFund, role: origin}, {dcid: country/MWI, role: destination}]
+      window: {kind: range, start: 2015}
+
+- id: dq-crs-072
+  query: Low income countries budget support from Germany 2020 to 2024
+  why: Germany is the donor, so the low income countries take the free side. Gemini binds purpose 510 until the graph names it general budget support, and fails here till then.
+  tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: range, operation: none, breakdown: modality, door: raw_text, phrasing: casual, probe: [income_group]}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure:
+        family: crs.disbursement_any
+        bound: {crsCooperationModality: CRSCooperationModalityA}
+      entities: [{dcid: country/DEU, role: origin}, {label: low income, role: destination, expands: true}]
+      window: {kind: range, start: 2020, end: 2024}
+
+- id: dq-crs-073
+  query: Germany budget support to low income countries 2020 to 2024
+  why: The directed twin of dq-crs-072. Gemini binds purpose 510 until the graph names it general budget support, and fails here till then.
+  tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: range, operation: none, breakdown: modality, door: raw_text, phrasing: casual, probe: [income_group]}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure:
+        family: crs.disbursement_any
+        bound: {crsCooperationModality: CRSCooperationModalityA}
+      entities: [{dcid: country/DEU, role: origin}, {label: low income, role: destination, expands: true}]
+      window: {kind: range, start: 2020, end: 2024}

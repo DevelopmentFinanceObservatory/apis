@@ -36,7 +36,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from functools import cache
 from typing import Literal, NamedTuple, cast
 
-from dfo_frame_grammar import Frame
+from dfo_frame_grammar import DeflationBasis, Frame
 from pydantic.experimental.missing_sentinel import MISSING
 
 from code_index.flow_family import flow_family
@@ -191,20 +191,23 @@ def mint_record(
         code_index=code_index,
         roles=figures.entities_by_role,
     )
-    steps = mint_steps(trace=trace, definition=facts.definition)
+    series = series_facts(
+        figures,
+        rows=_coverage_rows(facts.coverage),
+        periods=_coverage_years(facts.coverage) if figures.grain == "year" else None,
+    )
+    steps = mint_steps(
+        trace=trace, definition=facts.definition, deflation_basis=shared_deflation_basis(series)
+    )
     return DescriptionRecord(
         id=version.subject_id,
         content_version=version.content_version,
-        schema_version=lowest_schema_version(variables),
+        schema_version=lowest_schema_version(variables=variables, series=series, steps=steps),
         basis="mint",
         index_stamp=_index_stamp(code_index) if variables.dimensions is not None else None,
         variables=variables,
         computed=None,
-        series=series_facts(
-            figures,
-            rows=_coverage_rows(facts.coverage),
-            periods=_coverage_years(facts.coverage) if figures.grain == "year" else None,
-        ),
+        series=series,
         steps=steps,
         caveats=_mint_caveats(facts, steps),
         evidence=Evidence(
@@ -284,6 +287,7 @@ def _collapsed(
         if base.variables is None
         else _collapsed_variables(base.variables, columns=columns, summed=summed)
     )
+    steps = base.known_steps
     if summed:
         summed_refs = _summed_refs(facts.trace)
         steps = collapse_steps(base.known_steps, trace=facts.trace)
@@ -299,7 +303,9 @@ def _collapsed(
     record = base.model_copy(
         update={
             "content_version": content_version,
-            "schema_version": lowest_schema_version(variables),
+            "schema_version": lowest_schema_version(
+                variables=variables, series=series, steps=steps
+            ),
             "variables": variables,
             "series": series,
             **update,
@@ -518,7 +524,7 @@ def _computed_record(
     return DescriptionRecord(
         id=version.subject_id,
         content_version=version.content_version,
-        schema_version=lowest_schema_version(None),
+        schema_version=lowest_schema_version(variables=None, series=series, steps=steps or ()),
         basis=basis,
         index_stamp=None,
         variables=None,
@@ -654,18 +660,24 @@ def _backfilled_dataset_record(
         code_index=code_index,
         roles=None if statistics is None else statistics.entities_by_role,
     )
+    series = _stored_series_facts(facts, statistics)
     steps, caveats, unstated = stored_warning_facts(
-        facts, steps=mint_steps(trace=trace, definition=facts.definition)
+        facts,
+        steps=mint_steps(
+            trace=trace,
+            definition=facts.definition,
+            deflation_basis=shared_deflation_basis(series),
+        ),
     )
     record = DescriptionRecord(
         id=version.subject_id,
         content_version=version.content_version,
-        schema_version=lowest_schema_version(variables),
+        schema_version=lowest_schema_version(variables=variables, series=series, steps=steps or ()),
         basis="backfill",
         index_stamp=_index_stamp(code_index) if variables.dimensions is not None else None,
         variables=variables,
         computed=None,
-        series=_stored_series_facts(facts, statistics),
+        series=series,
         steps=steps,
         caveats=caveats,
         evidence=Evidence(
@@ -1245,8 +1257,8 @@ def frame_figures(frame: Frame, *, lineage: FrameLineage) -> SeriesFigures:
 
 def unit_from_cell(cell: str | Mapping[str, object] | None) -> Unit:
     """A frame `unit` cell's JSON form as a stored unit: a ref, a converted unit
-    `{currency, prices, base_year}`, or a composed unit whose sides may count a variable. A ref
-    passes through `bounded_text`."""
+    `{currency, prices, base_year, deflation_basis}`, or a composed unit whose sides may count
+    a variable. A ref passes through `bounded_text`."""
     if cell is None:
         return None
     if isinstance(cell, str):
@@ -1271,13 +1283,19 @@ def _unit_side(side: object) -> SimpleUnit | VariableSide:
 # Steps and caveats at mint
 
 
-def mint_steps(*, trace: Mapping[str, object], definition: Mapping[str, object]) -> list[Step]:
+def mint_steps(
+    *,
+    trace: Mapping[str, object],
+    definition: Mapping[str, object],
+    deflation_basis: DeflationBasis | None = None,
+) -> list[Step]:
     """The DFO's choices at the mint of a version with `trace` and `definition`, in order:
     each source chosen by the default policy over disagreeing candidates, naming the others in
     rank order where the trace records them (`trace.choices`), then each series the same
     source's estimates continue, with the continuing method and the periods it supplies
     (`trace.continuations`), then each conversion with what it left out (`left_out`), into
-    the unit `definition` requests."""
+    the unit `definition` requests, deflated by `deflation_basis`'s prices when that unit's
+    prices are constant (`shared_deflation_basis`)."""
     others_by_axis = {
         cast(str, choice["axis"]): [
             StepRef(ref=_bare(ref))
@@ -1315,7 +1333,7 @@ def mint_steps(*, trace: Mapping[str, object], definition: Mapping[str, object])
                 params={"method": continuation["method"], "periods": continuation["periods"]},
             )
         )
-    target = _conversion_target(definition)
+    target = _conversion_target(definition, deflation_basis=deflation_basis)
     for entry in cast("Sequence[Mapping[str, object]]", trace.get("conversion") or ()):
         members = cast("Sequence[Mapping[str, object]]", entry.get("members", ()))
         native = {cast(str, member["native_unit"]) for member in members}
@@ -1388,21 +1406,47 @@ def _entities_caveat(entities: Sequence[str], *, series: Sequence[str] = ()) -> 
     )
 
 
-def _conversion_target(definition: Mapping[str, object]) -> SimpleUnit | None:
-    """The unit the definition asks values converted into, where it names an ISO 4217
-    currency. A currency keyed by role names no one unit."""
+def shared_deflation_basis(series: SeriesFacts) -> DeflationBasis | None:
+    """Whose prices deflated every constant-price converted unit `series` counts, or `None`
+    when those units name different bases, or none."""
+    bases = {
+        count.unit.deflation_basis
+        for count in series.by_source_unit or ()
+        if isinstance(count.unit, SimpleUnit)
+        and count.unit.currency is not MISSING
+        and count.unit.prices == "constant"
+    }
+    if len(bases) != 1:
+        return None
+    (basis,) = bases
+    return None if basis is MISSING else basis
+
+
+def stored_unit_request(definition: Mapping[str, object]) -> Mapping[str, object] | None:
+    """The unit request a stored definition's identity binds on its `unit` facet, `None`
+    when it binds none."""
     identity = cast("Mapping[str, object]", definition.get("identity", {}))
     facets = cast("Mapping[str, Mapping[str, object]]", identity.get("facets", {}))
     request = facets.get("unit", {}).get("request")
-    if not isinstance(request, Mapping):
+    return cast("Mapping[str, object]", request) if isinstance(request, Mapping) else None
+
+
+def _conversion_target(
+    definition: Mapping[str, object], *, deflation_basis: DeflationBasis | None
+) -> SimpleUnit | None:
+    """The unit the definition asks values converted into (`stored_unit_request`), where it
+    names an ISO 4217 currency, deflated by `deflation_basis`'s prices when they are
+    constant. A currency keyed by role names no one unit."""
+    request = stored_unit_request(definition)
+    if request is None:
         return None
-    request = cast("Mapping[str, object]", request)
     currency = request.get("currency")
     if not (isinstance(currency, str) and len(currency) == 3 and currency.isupper()):
         return None
-    return SimpleUnit.model_validate(
-        {key: request[key] for key in ("currency", "prices", "base_year") if key in request}
-    )
+    unit = {key: request[key] for key in ("currency", "prices", "base_year") if key in request}
+    if deflation_basis is not None and unit.get("prices") == "constant":
+        unit["deflation_basis"] = deflation_basis
+    return SimpleUnit.model_validate(unit)
 
 
 def _next_step_id(steps: Sequence[Step]) -> str:

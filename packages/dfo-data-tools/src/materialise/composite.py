@@ -55,7 +55,8 @@ from dfo_frame_grammar.arrow import build_frame_from_arrow
 
 from code_index.composites import composite_digest
 from code_index.members import SourceNotInFamily, identity_family_query, index_family
-from code_index.types import ComponentRecipe, ComponentRole, CompositeDeclaration
+from code_index.types import ComponentRecipe, ComponentRole, CompositeDeclaration, PartyRow
+from dfo_platform.columns import PROVENANCE_COLUMN
 from materialise import pipeline
 from materialise.codes import MaterialisationWarning
 from materialise.content_version import mint_version_from_digest, stream_frame_sha256
@@ -84,7 +85,6 @@ if TYPE_CHECKING:
     from series_coverage.index import CoverageIndex
 
 _PROVENANCE_AXIS = "provenance"
-PROVENANCE_COLUMN = "provenance"
 _UNIT_AXIS = "unit"
 _METHOD_AXIS = "measurementMethod"
 _UNIT_COLUMN = "unit"
@@ -227,6 +227,7 @@ def compose_components(
     window: RequestedWindow,
     role_columns: Sequence[str],
     enrichment: EnrichmentLookup,
+    parties: Mapping[str, PartyRow],
 ) -> MaterialisationResult:
     """One result composed from `components`, each materialised under its own role, as the
     module docstring states. `window` is the composite's requested window and `role_columns`
@@ -256,7 +257,7 @@ def compose_components(
         for request in component.requests
     }
     statistics = SeriesStatisticsSink(continuing=_continuations(components, composite=composite))
-    profile = OutputProfileFold(role_columns=role_columns, enrichment=enrichment)
+    profile = OutputProfileFold(role_columns=role_columns, parties=parties)
     sink = ParquetFrameSink()
     columns: list[tuple[str, ...]] = []
 
@@ -275,7 +276,7 @@ def compose_components(
         )
     )
     frame_chunks = sink.finish(columns=columns[0])
-    output_profile = profile.finish(frame_chunks)
+    output_profile = profile.finish(frame_chunks, enrichment=enrichment)
     served_bounds = (min(fold.all_years), max(fold.all_years)) if fold.all_years else None
     applied = compute_applied_window(window, served_bounds)
     coverage = Coverage(

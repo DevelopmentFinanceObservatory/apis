@@ -21,14 +21,15 @@ import pytest
 
 from code_index.shared import get_index, get_measure_index
 from entity_resolution import Admission, EntityResolver
+from origin_catalogue.families import FamilyKey
 from search.engine.bind import DraftBindingEvidence, SlotBindingDraft, _UniversalBindOutput
 from search.engine.binders import Binder
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.extract import DateRequest
 from search.engine.interpretation import Interpretation, InterpretationSet
-from search.engine.qualifier_match import QualifierMatch, QualifierReadings
-from search.engine.quantity import quantity_requirement
+from search.engine.qualifier_match import QualifierMatch, QualifierReadings, declared_measures_named
+from search.engine.quantity import DenominatorRead, NamedDenominator, quantity_requirement
 from search.engine.quantity_read import QuantityOutput
 from search.engine.reading_coverage import ObservedYears
 from search.engine.region import alternate_guard, resolve_variable
@@ -50,11 +51,13 @@ from search.engine.region.alternate_guard import (
 from search.engine.region.candidates import alternate_representative
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
 from search.engine.region.equivalent_series import CLUSTER_BY_MEMBER, EquivalentCluster
+from search.engine.region.phase_rank_bind import _named_measure_nouns
 from search.engine.region.qualifier_readings import shape_carries_measure_match
 from search.engine.region.state import ResolveState
 from search.engine.region.status_rule import CLOSED_AXES, OpenAxes
 from search.engine.retrieval.bound_values import (
     DefaultReading,
+    _HeldMembers,
     collapse_measure_families,
     index_member_rows,
     price_basis_order,
@@ -2656,7 +2659,7 @@ def _judged(
     matches: Mapping[frozenset[str], tuple[QualifierMatch, ...]] | None = None,
 ) -> Interpretation:
     (judged,) = judge_measure_and_roles(state, [shape])
-    (judged,) = judge_pinned_parts(state, [judged], matches or {})
+    (judged,) = judge_pinned_parts(state, [judged], matches or {}, ())
     return judged
 
 
@@ -2810,6 +2813,231 @@ def test_a_reading_refused_on_a_pinned_code_names_the_codes_it_cannot_bind():
         "unbound",
     )
     assert [ref.ref for ref in record.named] == ["HealthcareExpenditure"]
+
+
+_ADM_HEALTH_AND_EDUCATION_SHARE = _with_slot(
+    _gdp(None, _ADM_GDP_NOMINAL, label="spending as a share of GDP"),
+    "expenditureType",
+    {
+        **_ADM_EDUCATION_SHARE.sv_arc_facts,
+        **_ADM_HEALTH_SHARE.sv_arc_facts,
+    },
+)
+_ADM_HELD_FAMILY = FamilyKey(
+    "EconomicActivity", "amount", "measuredValue", None, _ADM_GDP_NOMINAL, False, False
+)
+_ADM_SILENT_SHARE = _with_slot(
+    _gdp(None, _ADM_GDP_NOMINAL, label="government spending as a share of GDP"),
+    "expensor",
+    {"sv_gov": _arcs({"expensor": "Government"})},
+)
+
+
+@pytest.mark.parametrize(
+    ("shape", "reason"),
+    [
+        (_ADM_EDUCATION_SHARE, "variable_not_resolved"),
+        (_ADM_HEALTH_SHARE, None),
+        (_ADM_HEALTH_AND_EDUCATION_SHARE, None),
+        (_ADM_SILENT_SHARE, None),
+        (dataclasses.replace(_ADM_EDUCATION_SHARE, held_family=_ADM_HELD_FAMILY), None),
+        (
+            _with_slot(
+                _shape("FinancialFlow", "amount", None, _ADM_GDP_NOMINAL, label="education aid"),
+                "expenditureType",
+                _ADM_EDUCATION_SHARE.sv_arc_facts,
+            ),
+            None,
+        ),
+    ],
+    ids=[
+        "education-share",
+        "health-share",
+        "health-beside-education",
+        "silent",
+        "held-family-member-silent",
+        "other-population",
+    ],
+)
+def test_a_named_measure_noun_refuses_a_shape_every_member_of_which_measures_another(
+    shape, reason, monkeypatch
+):
+    """#47: "external health expenditure as a share of GDP" names the noun "health
+    expenditure" (`expenditureType = HealthcareExpenditure`), and "GDP" only as the base the
+    quantity read quoted. The share of GDP spent on education carries another expenditure
+    type on every member, so it measures something else; a shape with one health member,
+    one silent on the expenditure type, or one of another population type stands. So does
+    one whose held family has a member silent on it (`shape_population_arcs`)."""
+    monkeypatch.setattr(
+        "search.engine.retrieval.bound_values._held_members",
+        lambda key: _HeldMembers(
+            arcs={"sv_education_total": _arcs({"expensor": "Government"})},
+            roles={"sv_education_total": None},
+        ),
+    )
+    state = _part(
+        "external health expenditure as a share of GDP", places={"Malawi": ("country/MWI", ())}
+    )
+    state.named_denominator = NamedDenominator(ref=None, base_words="GDP")
+    spans = _named_measure_nouns(state, declared_measures_named(state.variable))
+    assert [[noun.label for noun in span.alternatives] for span in spans] == [
+        ["health expenditure"]
+    ]
+
+    (judged,) = judge_pinned_parts(state, [Interpretation(shape=shape)], {}, spans)
+
+    assert (judged.reason, judged.pinned_failure) == (reason, None)
+
+
+@pytest.mark.parametrize(
+    ("variable", "named"),
+    [
+        ("GDP growth", [["GDP growth"]]),
+        ("GDP", [["GDP", "GDP"]]),
+        ("gross domestic product growth", [["GDP", "GDP"]]),
+        (
+            "external health expenditure as a share of GDP",
+            [["health expenditure"], ["GDP", "GDP"]],
+        ),
+        ("GDP per capita PPP", [["GDP", "GDP", "GDP"]]),
+        ("GDP, PPP per capita", [["GDP"]]),
+    ],
+    ids=["growth-not-gdp", "gdp", "also-called", "no-base-quote", "basis-named", "ppp-noun"],
+)
+def test_the_longest_declared_name_wins_its_words(variable, named):
+    """A noun is named only where no longer declared name covers its words: "GDP growth"
+    names the growth noun and not "GDP". "gross domestic product growth" names GDP through
+    its `also_called` name, since no declared name covers the longer phrase. One name
+    stands for every noun that shares it, so "GDP" is one name of WEO's and WDI's GDP, and
+    of WEO's GDP at purchasing power parity where the variable names that price basis too."""
+    spans = _named_measure_nouns(_part(variable), declared_measures_named(variable))
+    assert [[noun.label for noun in span.alternatives] for span in spans] == named
+
+
+_ADM_WEO_GDP = _shape("EconomicProduction", "valueAdded", None, None, label="GDP, current prices")
+
+
+@pytest.mark.parametrize(
+    ("variable", "shape", "reason"),
+    [
+        pytest.param(
+            "GDP",
+            _with_slot(
+                _ADM_WEO_GDP,
+                "currencyConversionBasis",
+                {
+                    "sv_gdp_usd": _arcs(
+                        {
+                            "productTaxBasis": "IncludingProductTaxes",
+                            "fixedCapitalConsumptionBasis": "GrossOfFixedCapitalConsumption",
+                            "currencyConversionBasis": "MarketExchangeRate",
+                        }
+                    )
+                },
+            ),
+            None,
+            id="gdp-at-market-rates-holds-one-gdp-and-contradicts-another",
+        ),
+        pytest.param(
+            "GDP growth",
+            _with_slot(
+                _gdp(None, label="GNI growth"),
+                "activitySource",
+                _activity("sv_gni_growth", "GrossNationalIncome"),
+            ),
+            "variable_not_resolved",
+            id="a-name-one-noun-holds-refuses-a-shape-that-contradicts-it",
+        ),
+    ],
+)
+def test_a_name_refuses_only_a_shape_that_contradicts_every_noun_sharing_it(
+    variable, shape, reason
+):
+    """ "GDP" names WEO's nominal GDP, WEO's GDP at purchasing power parity and WDI's GDP at
+    once. A WEO GDP series at market exchange rates carries another conversion basis than
+    the PPP noun on every member, yet holds the nominal noun, so it stands: a shape is
+    refused on a name only when it contradicts every noun that shares the name."""
+    state = _part(variable)
+
+    (judged,) = judge_pinned_parts(
+        state,
+        [Interpretation(shape=shape)],
+        {},
+        _named_measure_nouns(state, declared_measures_named(state.variable)),
+    )
+
+    assert (judged.reason, judged.pinned_failure) == (reason, None)
+
+
+_ADM_GDP_READ = DenominatorRead(
+    kind="other",
+    name="Nominal gross domestic product",
+    pairs=(
+        ("populationType", "EconomicActivity"),
+        ("measuredProperty", "amount"),
+        ("statType", "measuredValue"),
+        ("activitySource", "GrossDomesticProduction"),
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("variable", "members", "reason"),
+    [
+        (
+            "external health expenditure as a share of GDP",
+            {
+                "worldBank/SH_XPD_CHEX_GD_ZS": _arcs(
+                    {
+                        "activitySource": "ExpenditureActivity",
+                        "expenditureType": "HealthcareExpenditure",
+                    }
+                )
+            },
+            None,
+        ),
+        (
+            "agriculture value added as a share of GDP",
+            {
+                "worldBank/NV_AGR_TOTL_ZS": _arcs(
+                    {"activitySource": "GrossValueAdded", "economicSector": "Agriculture"}
+                )
+            },
+            None,
+        ),
+        (
+            "external health expenditure as a share of GDP",
+            {
+                "worldBank/SE_XPD_TOTL_GD_ZS": _arcs(
+                    {
+                        "activitySource": "ExpenditureActivity",
+                        "expenditureType": "EducationExpenditure",
+                    }
+                )
+            },
+            "variable_not_resolved",
+        ),
+    ],
+    ids=["health-share", "agriculture-share", "education-share"],
+)
+def test_a_noun_the_denominator_carries_names_the_base(variable, members, reason):
+    """When the quantity read quotes no base, "GDP" in "as a share of GDP" is a noun the
+    phrase names, and the share's members carry another activity source than GDP's. The
+    shape's denominator, nominal GDP, carries the GDP noun's value, so the noun names the
+    base and refuses nothing: "Current health expenditure (% of GDP)" and "Agriculture
+    value added (% of GDP)" stand, and the education share still refuses on "health
+    expenditure"."""
+    state = _part(variable)
+    state.denominator_reads = {_ADM_GDP_NOMINAL: _ADM_GDP_READ}
+    spans = _named_measure_nouns(state, declared_measures_named(state.variable))
+    assert "GDP" in {noun.label for span in spans for noun in span.alternatives}
+    shape = _with_slot(
+        _gdp(None, _ADM_GDP_NOMINAL, label="share of GDP"), "activitySource", members
+    )
+
+    (judged,) = judge_pinned_parts(state, [Interpretation(shape=shape)], {}, spans)
+
+    assert (judged.reason, judged.pinned_failure) == (reason, None)
 
 
 @pytest.mark.parametrize(

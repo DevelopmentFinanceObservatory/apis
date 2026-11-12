@@ -12,6 +12,7 @@ from search.engine.region.promote_bindings import _covered_by_posted_binding
 from search.engine.region.state import EngineOptions
 from search.engine.retrieval.bound_values import (
     elect_default_partition,
+    identity_query,
     measure_family_partitions,
 )
 from search.engine.shape import ShapeDraft, identity_shape_for
@@ -195,9 +196,8 @@ def _round_trip(*, name: str, identity, expect_label: str, monkeypatch) -> None:
 
 
 def _partition_members_for(shape, identity) -> tuple[str, ...]:
-    """Returns the partition members after expanding hierarchical bindings."""
-    index = get_index()
-    axes = get_measure_index().axes
+    """Returns the members of the partition holding `identity`'s measure values, read with
+    `identity`'s own query (hierarchical bindings expanded)."""
     synth_shape = ShapeDraft(
         shape_id="",
         label="",
@@ -208,22 +208,12 @@ def _partition_members_for(shape, identity) -> tuple[str, ...]:
         meas_denom_dcid=None,
         slot_keys=(),
     )
-    bound_values = {
-        "crsTypeOfFinance": list(index.descendants(_FINANCE_ROLLUP)),
-        "crsTypeOfFlow": list(index.descendants(_FLOW)),
-    }
+    partitions = measure_family_partitions(
+        synth_shape, get_index(), get_measure_index().axes, identity_query(identity)
+    )
     fft = _bound_slot_value(identity, "financialFlowType")
     netting = _bound_slot_value(identity, "nettingBasis")
     obligation = _bound_slot_value(identity, "financialObligationType")
-    if fft:
-        bound_values["financialFlowType"] = [fft]
-    if netting:
-        bound_values["nettingBasis"] = [netting]
-    if obligation:
-        bound_values["financialObligationType"] = [obligation]
-    partitions = measure_family_partitions(
-        synth_shape, index, axes, query_for(synth_shape, bound_values)
-    )
     values = {
         "populationType": shape.population_type,
         "measuredProperty": shape.measured_property,

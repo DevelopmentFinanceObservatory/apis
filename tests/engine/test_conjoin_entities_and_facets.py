@@ -353,11 +353,11 @@ def test_a_merged_answer_states_the_places_no_part_serves(
             _stating_unserved(
                 _spec(_PERSON_SHAPE, value, sv_dcid=f"sv_{value}", entities=places()), *unserved
             ),
-            value,
+            words,
             earliest_index=index,
         )
-        for index, (value, unserved) in enumerate(
-            zip(("ValA", "ValB"), unserved_by_part, strict=True)
+        for index, (value, words, unserved) in enumerate(
+            zip(("ValA", "ValB"), ("val a", "val b"), unserved_by_part, strict=True)
         )
     ]
 
@@ -1361,7 +1361,6 @@ def test_a_merged_relaunch_streams_options_over_every_members_places():
     kenya = facet_probe(["sv_x"], {"observationAbout": [_KEN]}, years=None)
     ethiopia = facet_probe(["sv_x"], {"observationAbout": ["country/ETH"]}, years=None)
     state = SimpleNamespace(
-        date_request=None,
         graph=graph,
         sdmx=None,
         materialise_graph=None,
@@ -1385,6 +1384,7 @@ def test_a_merged_relaunch_streams_options_over_every_members_places():
                 facets_pinned=False,
                 variable_labels=NO_LABELS,
                 open_axes=frozenset(),
+                date_request=None,
             )
 
     events, _warnings = asyncio.run(_events())

@@ -39,10 +39,10 @@ from graph_release.context import URI_ENV_VAR as RELEASE_ENV
 from graph_release.format import (
     MANIFESTS_DIR,
     PARTS_DIR,
-    POINTER_PATH,
     Manifest,
     manifest_uri,
     part_uri,
+    pointer_path,
     pointer_uri,
     read_pointer,
 )
@@ -118,8 +118,9 @@ def stage_release(source_uri: str, dest: Path) -> str:
         download_uri_to_path(part_uri(source_uri, ref), dest / PARTS_DIR / ref.file_name)
     (dest / MANIFESTS_DIR).mkdir(parents=True, exist_ok=True)
     (dest / MANIFESTS_DIR / f"{pointer.release_id}.json").write_bytes(manifest)
-    (dest / POINTER_PATH).parent.mkdir(parents=True, exist_ok=True)
-    (dest / POINTER_PATH).write_bytes(pointer.to_json())
+    pointer_file = dest / pointer_path()
+    pointer_file.parent.mkdir(parents=True, exist_ok=True)
+    pointer_file.write_bytes(pointer.to_json())
     return pointer.release_id
 
 

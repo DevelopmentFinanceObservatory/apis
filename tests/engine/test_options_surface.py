@@ -17,12 +17,13 @@ from materialise.graph import GraphReadError, SubjectPage
 from origin_catalogue import UnReadFailure, note_un_blocked_places
 from origin_catalogue.context import un_unavailability_record
 from search.engine.config import settings
-from search.engine.errors import EngineInputError, GraphCapExceededError
+from search.engine.errors import EngineInputError, GraphCapExceededError, GraphInfraError
 from search.engine.options import surface
 from search.engine.options.resolve import resolve_options_target
 from search.engine.options.surface import build_options_response
 from search.engine.region import OPTION_COVERAGE_PROBE_FAILED
 from search.engine.region.codes import UN_SYSTEM_UNAVAILABLE
+from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
 from search.models import (
     BaseIdentity,
     CoverageBreadth,
@@ -1401,18 +1402,31 @@ class TestFacetBoundMembershipFetchFailsClosed:
 
 
 class TestCoverageProbeFailsOpen:
-    def test_observation_about_probe_failure_fails_open_with_a_warning(self):
+    @pytest.mark.parametrize("failing", ["facets", "declarations"])
+    def test_observation_about_probe_failure_fails_open_with_a_warning(self, monkeypatch, failing):
+        """The facet read or the read of the members' declared defaults fails, and the
+        options come back without coverage, which would otherwise count each place's rows
+        under a method its mint does not serve."""
         req = _place_request(entities={"observationAbout": ["country/GTM"]}, include_coverage=True)
         graph = _place_graph()
+        if failing == "facets":
+            materialise_graph = _FailingFacetsGraphReader(
+                arcs=_LIFE_EXPECTANCY_ARCS, subjects=_subjects_from_arcs(_LIFE_EXPECTANCY_ARCS)
+            )
+        else:
+            materialise_graph = _materialise_graph_for(graph, arcs=_LIFE_EXPECTANCY_ARCS)
+
+            def failing_declaration_read(stat_vars, *, deadline=None):
+                raise GraphInfraError("simulated transport error")
+
+            monkeypatch.setattr(graph, "default_facet_policies", failing_declaration_read)
         client = TestClient(
             search_app(
                 graph=graph,
                 resolver=make_resolver(graph),
                 llm=FakeLLM(),
                 sdmx=FakeSdmxClient(observations={}),
-                materialise_graph=_FailingFacetsGraphReader(
-                    arcs=_LIFE_EXPECTANCY_ARCS, subjects=_subjects_from_arcs(_LIFE_EXPECTANCY_ARCS)
-                ),
+                materialise_graph=materialise_graph,
             )
         )
         resp = client.post("/api/search/options", json=req.model_dump(by_alias=True, mode="json"))
@@ -1633,6 +1647,7 @@ def test_place_options_read_the_variables_whole_breadth_once_by_the_request_dead
             facet_bindings={},
             elected_units=None,
             date_request=None,
+            declared=NO_DECLARED_POLICIES,
             deadline=123.0,
         )
 

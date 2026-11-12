@@ -7,7 +7,7 @@ from functools import partial
 import pytest
 
 from code_index import CodeIndex, IndexStamp
-from code_index.types import PartyRow
+from code_index.types import PartyRow, RoleAxis
 from materialise.graph import GraphReadError
 from materialise.series_conversion import SeriesConversion
 from origin_catalogue import BASE
@@ -38,6 +38,8 @@ _LABELS = {
     "USDollar": "US dollar",
     "gender-value/Female": "Female",
 }
+_BOTH_SIDES: tuple[tuple[str, RoleAxis], ...] = (("p1", "origin"), ("p1", "destination"))
+"""A publication on both flow axes, so a fixture party reads its kind on either."""
 _INDEX = CodeIndex(
     stamp=IndexStamp(
         graph_endpoint="test",
@@ -50,11 +52,11 @@ _INDEX = CodeIndex(
     codes=(),
     statvars=(),
     parties=(
-        PartyRow(dcid="DACGroup/Africa", kind="total"),
-        PartyRow(dcid="country/USA", kind="party"),
-        PartyRow(dcid="country/GHA", kind="party"),
-        PartyRow(dcid="country/KEN", kind="party"),
-        PartyRow(dcid="country/NOR", kind="party"),
+        PartyRow(dcid="DACGroup/Africa", kind="total", published=_BOTH_SIDES),
+        PartyRow(dcid="country/USA", kind="party", published=_BOTH_SIDES),
+        PartyRow(dcid="country/GHA", kind="party", published=_BOTH_SIDES),
+        PartyRow(dcid="country/KEN", kind="party", published=_BOTH_SIDES),
+        PartyRow(dcid="country/NOR", kind="party", published=_BOTH_SIDES),
     ),
 )
 

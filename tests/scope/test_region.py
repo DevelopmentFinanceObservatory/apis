@@ -4,10 +4,13 @@ trips to the base spec_id."""
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from code_index.scope_conventions import OPTION_LABELS, REGION_READINGS, RegionReading
 from code_index.shared import get_index
+from code_index.types import PartyRow
 from entity_resolution.shared import shared_membership_policy
 from search.engine.spec_id import identity_spec_id
 from search.models import BaseIdentity, EntityGroup, Operation, PartScope
@@ -19,6 +22,7 @@ from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.scope._axes import explicit, switch
 
 _CRS = "provenance/OECDCreditorReportingSystem"
+_DONOR_TABLE = "provenance/DonorTable"
 _ALL = "region:members_and_residuals"
 _MEMBERS = "region:members_only"
 _AFRICA_MEMBERS = ["country/GHA", "country/KEN", "country/TZA"]
@@ -88,9 +92,53 @@ def _region(scope: PartScope):
 def test_residuals_are_kept_out_of_member_lists_by_party_kind():
     index = get_index()
 
-    assert all(is_residual(dcid, index) for dcid in _AFRICA_RESIDUALS)
-    assert not any(is_residual(dcid, index) for dcid in (*_AFRICA_MEMBERS, "DACAfrica"))
-    assert without_residuals(_SUMMED.entities["destination"], index) == _AFRICA_MEMBERS
+    assert all(is_residual(dcid, index, axis="destination") for dcid in _AFRICA_RESIDUALS)
+    assert not any(
+        is_residual(dcid, index, axis="destination") for dcid in (*_AFRICA_MEMBERS, "DACAfrica")
+    )
+    assert (
+        without_residuals(_SUMMED.entities["destination"], index, axis="destination")
+        == _AFRICA_MEMBERS
+    )
+
+
+@pytest.mark.parametrize(
+    ("published", "dataset_kinds", "axis", "residual"),
+    [
+        pytest.param(
+            ((_CRS, "destination"), (_DONOR_TABLE, "origin")),
+            ((_DONOR_TABLE, "party"),),
+            "destination",
+            True,
+            id="recipient-residual-read-as-a-recipient",
+        ),
+        pytest.param(
+            ((_CRS, "destination"), (_DONOR_TABLE, "origin")),
+            ((_DONOR_TABLE, "party"),),
+            "origin",
+            False,
+            id="recipient-residual-read-as-a-donor",
+        ),
+        pytest.param(
+            ((_DONOR_TABLE, "origin"),), (), "origin", True, id="donor-residual-read-as-a-donor"
+        ),
+        pytest.param(((_DONOR_TABLE, "origin"),), (), None, False, id="role-on-no-flow-axis"),
+    ],
+)
+def test_a_residual_is_read_on_the_axis_of_the_role_that_binds_it(
+    published, dataset_kinds, axis, residual
+):
+    """A party is a residual on an axis where every dataset that publishes it there lists it
+    as one: a recipient-side residual such as "Africa, unallocated by country" on a recipient
+    role, and a donor-side one such as IDS's unidentified creditors on a creditor role. A
+    role on no flow axis holds none."""
+    party = PartyRow(
+        dcid="Unallocated", kind="residual", published=published, dataset_kinds=dataset_kinds
+    )
+
+    assert (
+        is_residual(party.dcid, SimpleNamespace(parties={party.dcid: party}), axis=axis) is residual
+    )
 
 
 @pytest.mark.parametrize("group", [_AFRICA, None], ids=["by-group", "by-residuals-held"])
@@ -180,7 +228,7 @@ def test_a_resolver_group_finds_its_total_by_registry_id():
 
     add = _region(scope).options[0].binding.model_dump()["add"]
     assert "DACAsiaUnallocated" in add
-    assert all(is_residual(dcid, get_index()) for dcid in add)
+    assert all(is_residual(dcid, get_index(), axis="destination") for dcid in add)
 
 
 # A graph region the OECD counts with other members reads both ways.

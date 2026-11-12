@@ -41,13 +41,16 @@ from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.errors import LLMOutputRefused
 from search.engine.frame import Frame, door_frame
 from search.engine.interpret import Recall
-from search.engine.qualifier_match import QualifierMatch
+from search.engine.qualifier_match import QualifierMatch, declared_measures_named
+from search.engine.quantity import NamedDenominator
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import phase_rank_bind
+from search.engine.region.admissibility import rule_four_verdicts
 from search.engine.region.phase_rank_bind import _elected_index, _HousePolicyStep, _phase_bind
 from search.engine.region.state import ResolveState
 from search.engine.role_text import DoorRole
 from search.engine.shape import Pool, ShapeDraft, SlotKeyDraft
+from search.heading.departure_fact import UndirectedReading
 from tests.engine._binders import FakeAsk
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._quantity import NO_QUANTITY
@@ -634,12 +637,15 @@ def test_a_move_to_a_shape_without_a_named_value_refuses_the_part():
 def test_each_bind_call_logs_one_bind_decision_line(caplog: pytest.LogCaptureFixture):
     """Our pass and the UN pass are a bind call each, and each logs its own line: the
     binder, the menu, the pick before and after the house policies, the pool, the rating
-    flag, the policies that fired, the reply's ratings and the facts of each pool shape."""
+    flag, the policies that fired, the reply's ratings, the facts of each pool shape, and
+    the axis a place named without a direction is read on with the rule that settled it."""
     reply = _reply(0, _value("crsChannel", "ChannelA", "sole_option"), rated=(0, 1))
     caplog.set_level(logging.INFO, logger="search.engine.region.phase_rank_bind")
 
     for pool in ("ours", "un_system"):
         state = _state([_CRS, _DAC2A], llm=_StubLLM(reply), pool=pool, frame=_TO_UGANDA)
+        if pool == "ours":
+            state.undirected = UndirectedReading("destination", "complement")
         asyncio.run(_phase_bind(state))
 
     decisions = _decisions(caplog)
@@ -656,6 +662,9 @@ def test_each_bind_call_logs_one_bind_decision_line(caplog: pytest.LogCaptureFix
             "fired": ["default_dataset"],
             "ratings": [{"index": 0, "rating": 1.0}, {"index": 1, "rating": 1.0}],
             "scores": {},
+            "verdicts": [],
+            "undirected_axis": "destination" if pool == "ours" else None,
+            "undirected_rule": "complement" if pool == "ours" else None,
             "refused": False,
         }
         for pool in ("ours", "un_system")
@@ -684,9 +693,50 @@ def test_a_schema_refusal_logs_a_refused_bind_decision(caplog: pytest.LogCapture
         "fired": [],
         "ratings": None,
         "scores": {},
+        "verdicts": [],
         "facts": [],
+        "undirected_axis": None,
+        "undirected_rule": None,
         "refused": True,
     }
+
+
+def test_the_bind_decision_line_logs_the_verdicts_rule_4_read(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+):
+    """Beside the binder's scores, the line holds for each menu shape the verdict rule 4
+    read on each of the names it judged (`ResolveState.named_measures`), as the phase kept
+    them (`ResolveState.measure_verdicts`), with no second judgement, so "GDP", the base
+    the quantity read quoted, gets none: a shape whose label names "health expenditure"
+    holds it, and one that names no declared measure leaves it unknown."""
+    caplog.set_level(logging.INFO, logger="search.engine.region.phase_rank_bind")
+    state = _state(
+        [_shape("health expenditure"), _shape("aid flows")],
+        llm=_StubLLM(_reply(0, rated=(0, 1))),
+    )
+    state.variable = "health expenditure as a share of GDP"
+    state.named_denominator = NamedDenominator(ref=None, base_words="GDP")
+    state.named_measures = phase_rank_bind._named_measure_nouns(
+        state, declared_measures_named(state.variable)
+    )
+    # Rule 4's verdicts, as the prune-and-rank phase keeps them.
+    state.measure_verdicts = {
+        shape.shape_id: rule_four_verdicts(shape, state.named_measures, state.denominator_reads)
+        for shape in state.capped_shapes
+    }
+
+    def _judged_again(*_args: object) -> list[str]:
+        raise AssertionError("the line re-judged rule 4")
+
+    monkeypatch.setattr(phase_rank_bind, "rule_four_verdicts", _judged_again)
+
+    asyncio.run(_phase_bind(state))
+
+    [decision] = _decisions(caplog)
+    assert decision["verdicts"] == [
+        {"health expenditure": "holds"},
+        {"health expenditure": "unknown"},
+    ]
 
 
 # -- The rated pool ------------------------------------------------------------------------
@@ -1078,3 +1128,170 @@ def test_a_move_to_a_basis_sibling_holds_it_to_the_drafts_the_policies_judged(_p
     assert [shape.shape_id for shape in state.capped_shapes] == ["pick", "source", "sibling"]
     assert state.bind_result.chosen_shape_index == state.basis_seat == 2
     assert state.basis_siblings == []
+
+
+# Bind menus recorded for climate finance questions: one dataset's amounts and attributed
+# amounts of one flow, which differ on the basis axis alone, beside another reading.
+_CF_DATASET = ("provenance/ONEClimateFinance",)
+_CF_FLOW = _shape("cf_flow", datasets=_CF_DATASET)
+_CF_ATTRIBUTED_FLOW = _shape(
+    "cf_attributed_flow", datasets=_CF_DATASET, measured_property="attributedAmount"
+)
+_CF_GRANT_EQUIVALENT = _shape(
+    "cf_grant_equivalent", datasets=(_HOUSE["donor"],), measured_property="grantEquivalent"
+)
+_CF_COMMITMENTS = _shape(
+    "cf_commitments", datasets=_CF_DATASET, population_type="FinancialObligation"
+)
+_CF_ATTRIBUTED_COMMITMENTS = _shape(
+    "cf_attributed_commitments",
+    datasets=_CF_DATASET,
+    population_type="FinancialObligation",
+    measured_property="attributedAmount",
+)
+# "germany adaptation disbursements 2022": Jev rated the two flows alike and read
+# "adaptation disbursements" as naming attributed amounts at 0.47, which narrowed its pool
+# to the attributed flow.
+_CF_DISBURSEMENTS_MENU = [_CF_FLOW, _CF_ATTRIBUTED_FLOW, _CF_GRANT_EQUIVALENT]
+_CF_DISBURSEMENTS_JEV = {
+    "m|0": 0.885,
+    "m|1": 0.895,
+    "m|2": 0.66,
+    "mv|attributedAmount": 0.47,
+    "mv|grantEquivalent": 0.38,
+}
+# "climate finance commitments from Japan in 2021": Jev elected the attributed
+# commitments, 0.61 to 0.35.
+_CF_COMMITMENTS_MENU = [_CF_COMMITMENTS, _CF_FLOW, _CF_ATTRIBUTED_COMMITMENTS]
+_CF_COMMITMENTS_JEV = {"m|0": 0.635, "m|1": 0.21, "m|2": 0.495}
+
+
+def _cf_jev(nouls: Mapping[str, float], elect: Mapping[int, float]) -> JevBinder:
+    stored: dict[str, dict] = {k: {"type": "noul", "noul": v} for k, v in nouls.items()}
+    stored["elect"] = {
+        "type": "choice",
+        "probabilities": {f"Shape {i}": p for i, p in elect.items()},
+    }
+    return JevBinder(ask=FakeAsk(stored))
+
+
+def _cf_bind(
+    shapes: list[ShapeDraft],
+    variable: str,
+    binder: GeminiBinder | JevBinder,
+    reply: _UniversalBindOutput | None,
+    unclaimed: tuple[str, ...] = (),
+) -> int:
+    """The menu index the part answers with for `variable` through `_phase_bind`, the
+    Gemini binder answering `reply`, with `unclaimed` the query's stretches no reader of
+    the extraction claims."""
+    state = _state(shapes, llm=_StubLLM(reply))
+    state.variable = variable
+    state.unclaimed = unclaimed
+    state.binder = binder
+    assert asyncio.run(_phase_bind(state)) is None
+    return _elected_index(state)
+
+
+@pytest.mark.parametrize(
+    ("shapes", "variable", "binder", "reply", "elected", "unclaimed"),
+    [
+        pytest.param(
+            _CF_DISBURSEMENTS_MENU,
+            "adaptation disbursements",
+            _cf_jev(_CF_DISBURSEMENTS_JEV, {0: 0.55, 1: 0.445, 2: 0.0}),
+            None,
+            0,
+            (),
+            id="jev-disbursements-read-as-attributed",
+        ),
+        pytest.param(
+            _CF_COMMITMENTS_MENU,
+            "climate finance commitments",
+            _cf_jev(_CF_COMMITMENTS_JEV, {0: 0.35, 1: 0.01, 2: 0.61}),
+            None,
+            0,
+            (),
+            id="jev-commitments-electing-attributed",
+        ),
+        pytest.param(
+            _CF_COMMITMENTS_MENU,
+            "climate finance commitments",
+            GeminiBinder(),
+            _reply(2, rated=(2,)),
+            0,
+            (),
+            id="gemini-commitments-rating-attributed-alone",
+        ),
+        pytest.param(
+            _CF_COMMITMENTS_MENU,
+            "attributed climate finance commitments",
+            _cf_jev(_CF_COMMITMENTS_JEV | {"mv|attributedAmount": 0.1}, {0: 0.9, 2: 0.1}),
+            None,
+            2,
+            (),
+            id="jev-attributed-commitments-electing-amounts",
+        ),
+        pytest.param(
+            _CF_DISBURSEMENTS_MENU,
+            "attributed aid",
+            _cf_jev(_CF_DISBURSEMENTS_JEV | {"mv|attributedAmount": 0.1}, {0: 0.9, 1: 0.1}),
+            None,
+            1,
+            (),
+            id="jev-attributed-aid-electing-amounts",
+        ),
+        pytest.param(
+            _CF_DISBURSEMENTS_MENU,
+            "attributed aid",
+            GeminiBinder(),
+            _reply(0, rated=(0,)),
+            1,
+            (),
+            id="gemini-attributed-aid-rating-amounts-alone",
+        ),
+        pytest.param(
+            _CF_COMMITMENTS_MENU,
+            "climate finance commitments",
+            _cf_jev(_CF_COMMITMENTS_JEV, {0: 0.35, 1: 0.01, 2: 0.61}),
+            None,
+            2,
+            ("attributed",),
+            id="jev-attributed-left-outside-the-variable",
+        ),
+        pytest.param(
+            _CF_COMMITMENTS_MENU,
+            "imputed multilateral climate finance commitments",
+            _cf_jev(_CF_COMMITMENTS_JEV | {"mv|attributedAmount": 0.9}, {0: 0.05, 2: 0.95}),
+            None,
+            2,
+            (),
+            id="jev-imputed-multilateral-electing-attributed",
+        ),
+        pytest.param(
+            _CF_COMMITMENTS_MENU,
+            "climate finance commitments excluding attributed amounts",
+            _cf_jev(_CF_COMMITMENTS_JEV, {0: 0.95, 2: 0.05}),
+            None,
+            0,
+            (),
+            id="jev-attributed-amounts-excluded",
+        ),
+    ],
+)
+def test_an_unnamed_basis_value_follows_the_declared_preference(
+    shapes: list[ShapeDraft],
+    variable: str,
+    binder: GeminiBinder | JevBinder,
+    reply: _UniversalBindOutput | None,
+    elected: int,
+    unclaimed: tuple[str, ...],
+):
+    """Amounts and attributed amounts of one dataset's flow differ on the basis axis alone,
+    and ``prefer`` lists the amount. A phrase that names no attribution answers with the
+    amounts, whatever the binder scored, read or rated; one naming attributed amounts, by
+    "attributed", "attributed aid" or "imputed multilateral", answers with them, whatever the
+    binder elected, and one that excludes them answers with the amounts. A word extraction
+    left outside the variable names them as one inside it does: "Germany attributed climate
+    finance commitments 2022" leaves "attributed" unclaimed."""
+    assert _cf_bind(shapes, variable, binder, reply, unclaimed) == elected

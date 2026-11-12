@@ -30,6 +30,7 @@ from search.engine.options.options_response_cache import (
 )
 from search.engine.options.population import OptionsPopulation
 from search.engine.options.resolve import ResolvedOptionsTarget
+from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
 from search.models import (
     BaseIdentity,
     IdentityWindowAll,
@@ -423,6 +424,7 @@ class TestDegradedResultsAreNeverCached:
                 facet_bindings={},
                 elected_units=None,
                 date_request=None,
+                declared=NO_DECLARED_POLICIES,
                 deadline=deadline,
             )
             return ComputedOptions(options=OptionsSet(items=items, truncated=False), warnings=())

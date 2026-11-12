@@ -322,6 +322,18 @@ def test_asserted_checks(examples: dict[str, Case], case_id: str, checks: set[st
     assert asserted_checks(examples[case_id]) == checks
 
 
+def test_a_repeated_case_asserts_agreement(raw_examples, families):
+    """A case that sets `repeat` asserts `agreement` beside its expectation's checks, and a
+    repeat below two runs compares nothing, so it is refused."""
+    raw = raw_examples["dq-crs-031"]
+    once = validate_case(raw, families=families)
+    repeated = validate_case(raw | {"repeat": 5}, families=families)
+
+    assert asserted_checks(repeated) - asserted_checks(once) == {"agreement"}
+    with pytest.raises(ValidationError, match="repeat"):
+        validate_case(raw | {"repeat": 1}, families=families)
+
+
 @pytest.mark.parametrize(
     ("case_id", "reasons"),
     [
@@ -382,6 +394,7 @@ def test_the_hash_ignores_fields_outside_the_request_and_expectation(raw_example
         lambda raw: raw.update(include_observations=True),
         lambda raw: raw["expect"]["no_data"].update(category="unresolved"),
         lambda raw: raw["expect"]["definite"]["measure"]["bound"].update(crsPurpose="X"),
+        lambda raw: raw.update(repeat=5),
     ],
 )
 def test_the_hash_moves_with_the_request_and_expectation(raw_examples, families, edit):

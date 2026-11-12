@@ -248,10 +248,10 @@ async def read_stated_words(
     thinking. A call that fails or whose output fails validation raises `LLMInfraError`,
     which the caller reads as no rating. The prompt holds only the variable phrase, the
     shape's graph-sourced reading and the phrase's own words."""
-    output, usage = await generate_structured_async(
+    sampled = await generate_structured_async(
         for_stage(llm, "stated_words"),
         prompt=build_stated_words_prompt(variable, shape, words, bindings=bindings, served=served),
         system=STATED_WORDS_SYSTEM_PROMPT,
         schema=StatedWordsOutput,
     )
-    return word_ratings(output, words), usage
+    return word_ratings(sampled.answer, words), sampled.usage

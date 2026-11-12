@@ -1,5 +1,7 @@
 """The extraction store answers a repeated query without a model call, and reads afresh after
-an edit to the extract prompt or schema or in a new calendar year.
+an edit to the extract prompt or schema or in a new calendar year. It stores only a reading
+two samples of the model, drawn under different seeds, agree on, and so does the exclusion
+read stored beside it.
 
 Async calls use `asyncio.run` because the suite has no pytest-asyncio plugin.
 """
@@ -7,20 +9,30 @@ Async calls use `asyncio.run` because the suite has no pytest-asyncio plugin.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import subprocess
 import sys
 from datetime import date
 from types import SimpleNamespace
 
 import pytest
-from pydantic import create_model
+from pydantic import BaseModel, create_model
 
 import search.engine.clients.llm as llm_module
 import search.engine.extract as extract_module
-from search.engine.clients.llm import LLM
+from search.engine.clients.llm import LLM, Agreement, Sampled, SecondSamples, for_stage
 from search.engine.errors import LLMInfraError, LLMOutputRefused
+from search.engine.exclusion_read import (
+    EXCLUSION_READ_VERSION,
+    Exclusion,
+    ExclusionRead,
+    read_exclusions,
+    stored_exclusion_read,
+)
 from search.engine.extract import (
     EXTRACT_VERSION,
+    ExtractedEntity,
     Extraction,
     _extract_version,
     _extraction_system,
@@ -34,6 +46,7 @@ from search.engine.extraction_store import (
 
 _QUERY = "GDP of Kenya"
 _ANSWER = Extraction(kind="resolution", variables=["GDP"])
+_OTHER_ANSWER = Extraction(kind="resolution", variables=["GDP per capita"])
 _NO_USAGE = {"input_tokens": 0, "output_tokens": 0, "cached_tokens": 0}
 
 
@@ -44,18 +57,26 @@ class _UsageMeta:
 
 
 class _CountingModels:
-    """Answers every request with `_ANSWER` and records the prompts it was sent."""
+    """Answers a request with the answer `answers` holds for its seed, `_ANSWER` by default,
+    and records the prompt and seed of each request it was sent."""
 
-    def __init__(self) -> None:
+    def __init__(self, answers: dict[int, BaseModel] | None = None) -> None:
+        self._answers = answers or {}
         self.prompts: list[str] = []
+        self.seeds: list[int] = []
 
     async def generate_content(self, *, model, contents, config):
+        await asyncio.sleep(0)
         self.prompts.append(contents)
-        return SimpleNamespace(text=_ANSWER.model_dump_json(), usage_metadata=_UsageMeta())
+        self.seeds.append(config.seed)
+        answer = self._answers.get(config.seed, _ANSWER)
+        return SimpleNamespace(text=answer.model_dump_json(), usage_metadata=_UsageMeta())
 
 
-def _llm(monkeypatch, store) -> tuple[LLM, _CountingModels]:
-    models = _CountingModels()
+def _llm(
+    monkeypatch, store, answers: dict[int, BaseModel] | None = None
+) -> tuple[LLM, _CountingModels]:
+    models = _CountingModels(answers)
     monkeypatch.setattr(
         llm_module, "_get_client", lambda: SimpleNamespace(aio=SimpleNamespace(models=models))
     )
@@ -66,9 +87,15 @@ def _extract(query: str, llm: LLM):
     return asyncio.run(extract(query, llm=llm))
 
 
+def _agreed(agreement: Agreement) -> bool:
+    """Whether an agreement an unheld read settled before it returned agreed."""
+    return asyncio.run(agreement.ended()).outcome == "agreed"
+
+
 def test_a_repeated_query_calls_the_model_once_and_another_spelling_reads_afresh(monkeypatch):
     """`extract()` post-processes a reading against the query text it was made from, so a
-    reading is stored under that exact text."""
+    reading is stored under that exact text. A miss samples the model twice, under its own
+    seed and the next one, and a stored reading counts as agreed."""
     llm, models = _llm(monkeypatch, MemoryExtractionStore(max_bytes=1024 * 1024))
 
     first, first_usage = _extract(_QUERY, llm)
@@ -76,10 +103,49 @@ def test_a_repeated_query_calls_the_model_once_and_another_spelling_reads_afresh
     # A no-break space, a doubled space, and padding: the same query once NFKC-normalised.
     _extract(" GDP\u00a0of  Kenya ", llm)
 
-    assert models.prompts == [_QUERY, " GDP\u00a0of  Kenya "]
-    assert first_usage is not None and first_usage["input_tokens"] == 11
+    assert models.prompts == [_QUERY] * 2 + [" GDP\u00a0of  Kenya "] * 2
+    assert sorted(models.seeds[:2]) == [1, 2]
+    assert first_usage is not None and first_usage["input_tokens"] == 22
     assert second_usage == _NO_USAGE
     assert second == first
+    assert _agreed(first.agreed) and _agreed(second.agreed)
+
+
+# A second sample naming one distinct entity past the cap, which post-processing refuses.
+_OVER_THE_ENTITY_CAP = Extraction(
+    kind="resolution",
+    variables=["GDP"],
+    entities=[
+        ExtractedEntity(text=f"Place {i}", variables=[0])
+        for i in range(llm_module.config.settings().max_entities + 1)
+    ],
+)
+
+
+@pytest.mark.parametrize(
+    "second_answer",
+    [_OTHER_ANSWER, _OVER_THE_ENTITY_CAP],
+    ids=["reads_apart", "second_over_the_entity_cap"],
+)
+def test_samples_that_disagree_serve_the_first_store_nothing_and_read_again(
+    monkeypatch, second_answer
+):
+    """Two samples whose post-processed readings differ leave the store empty, so the next
+    call of the same query samples the model again. A second sample whose reading
+    post-processing refuses, here for naming more entities than the deployment resolves,
+    disagrees the same way and never fails the request."""
+    llm, models = _llm(
+        monkeypatch, MemoryExtractionStore(max_bytes=1024 * 1024), answers={2: second_answer}
+    )
+
+    first, first_usage = _extract(_QUERY, llm)
+    second, _ = _extract(_QUERY, llm)
+
+    assert first.extraction.variables == ["GDP"]
+    assert not _agreed(first.agreed)
+    assert first_usage is not None and first_usage["input_tokens"] == 22
+    assert second == first
+    assert models.prompts == [_QUERY] * 4
 
 
 @pytest.mark.parametrize(
@@ -101,7 +167,7 @@ def test_a_new_extract_version_calls_the_model_again(monkeypatch, version):
     monkeypatch.setattr(extract_module, "EXTRACT_VERSION", version)
     _extract(_QUERY, llm)
 
-    assert models.prompts == [_QUERY, _QUERY]
+    assert models.prompts == [_QUERY] * 4
 
 
 def test_a_new_calendar_year_calls_the_model_again_with_that_year(monkeypatch):
@@ -119,29 +185,226 @@ def test_a_new_calendar_year_calls_the_model_again_with_that_year(monkeypatch):
         monkeypatch.setattr(extract_module, "date", SimpleNamespace(today=lambda day=day: day))
         _extract(_QUERY, llm)
 
-    assert models.prompts == [_QUERY, _QUERY]
-    assert systems == [_extraction_system(2026), _extraction_system(2027)]
+    assert models.prompts == [_QUERY] * 4
+    assert systems == [_extraction_system(2026)] * 2 + [_extraction_system(2027)] * 2
 
 
-@pytest.mark.parametrize("failure", [LLMOutputRefused("refused"), LLMInfraError("failed")])
-def test_a_refused_or_failed_call_is_not_stored(monkeypatch, failure):
+_REFUSED_USAGE = {"input_tokens": 5, "output_tokens": 1, "cached_tokens": 0}
+
+
+@pytest.mark.parametrize(
+    ("failure", "second_usage"),
+    [
+        pytest.param(
+            LLMOutputRefused("refused", usage=_REFUSED_USAGE), _REFUSED_USAGE, id="refused"
+        ),
+        pytest.param(LLMInfraError("failed"), {"uncounted_calls": 1}, id="failed"),
+    ],
+)
+@pytest.mark.parametrize("failing_seed", [1, 2], ids=["first-sample", "second-sample"])
+def test_a_refused_or_failed_sample_is_not_stored(
+    monkeypatch, caplog, failure, second_usage, failing_seed
+):
+    """A failed first sample fails the extraction as a lone sample did and cancels the second
+    in flight; a failed second sample serves the first one, not agreed, logs a warning, and
+    counts its reported tokens or one uncounted call. Neither stores, so the next call asks
+    again, and the call after a stored pair is a hit."""
     llm, _models = _llm(monkeypatch, MemoryExtractionStore(max_bytes=1024 * 1024))
-    outcomes: list[BaseException | Extraction] = [failure, _ANSWER]
+    outcomes: dict[int, list[BaseException | Extraction]] = (
+        {1: [failure, _ANSWER], 2: [_ANSWER]}
+        if failing_seed == 1
+        else {1: [_ANSWER, _ANSWER], 2: [failure, _ANSWER]}
+    )
 
     async def answer(llm, *, prompt, system, schema):
-        outcome = outcomes.pop(0)
+        await asyncio.sleep(0)
+        outcome = outcomes[llm._seed].pop(0)
         if isinstance(outcome, BaseException):
             raise outcome
-        return outcome, None
+        return Sampled(outcome, None, None)
 
     monkeypatch.setattr(extract_module, "generate_structured_async", answer)
-    with pytest.raises(type(failure)):
-        _extract(_QUERY, llm)
-    _extract(_QUERY, llm)
+    if failing_seed == 1:
+        with pytest.raises(type(failure)):
+            _extract(_QUERY, llm)
+    else:
+        served, usage = _extract(_QUERY, llm)
+        assert served.extraction.variables == ["GDP"]
+        assert not _agreed(served.agreed)
+        assert usage == second_usage
+        assert [r.levelname for r in caplog.records if r.exc_info] == ["WARNING"]
+    again, _ = _extract(_QUERY, llm)
     _extract(_QUERY, llm)
 
-    # The failure stored nothing, so the second call asked again; the third was a hit.
-    assert outcomes == []
+    assert _agreed(again.agreed)
+    assert outcomes == {1: [], 2: []}
+
+
+class _GatedModels(_CountingModels):
+    """`_CountingModels` whose answer under seed 2 waits for `gate`, counting the calls in
+    flight."""
+
+    def __init__(self, answers: dict[int, BaseModel] | None = None) -> None:
+        super().__init__(answers)
+        self.gate = asyncio.Event()
+        self.in_flight = 0
+
+    async def generate_content(self, *, model, contents, config):
+        self.in_flight += 1
+        try:
+            if config.seed == 2:
+                await self.gate.wait()
+            return await super().generate_content(model=model, contents=contents, config=config)
+        finally:
+            self.in_flight -= 1
+
+
+async def _held_read(stage: str, llm: LLM) -> tuple[Agreement, dict | None]:
+    if stage == "exclusion_read":
+        _read, usage, agreement = await read_exclusions(_READ_QUERY, llm=llm)
+        return agreement, usage
+    served, usage = await extract(_QUERY, llm=llm)
+    return served.agreed, usage
+
+
+def _stored(stage: str, llm: LLM) -> bool:
+    if stage == "exclusion_read":
+        return stored_exclusion_read(_READ_QUERY, llm=llm) is not None
+    key = extraction_key(
+        _QUERY,
+        version=EXTRACT_VERSION,
+        year=extract_module.date.today().year,
+        identity=for_stage(llm, "extract").sampling_identity(),
+    )
+    assert llm.extraction_store is not None
+    return llm.extraction_store.get(key) is not None
+
+
+@pytest.mark.parametrize("agrees", [True, False], ids=["agree", "disagree"])
+@pytest.mark.parametrize("stage", ["extraction", "exclusion_read"])
+def test_a_held_read_serves_its_first_sample_while_the_second_runs(monkeypatch, stage, agrees):
+    """A read whose LLM a request's `SecondSamples` holds returns its first sample, with
+    that sample's usage alone, while the second is still in flight; the holder counts the
+    second's. Settling the agreement waits for the second, and only an agreed pair is
+    stored."""
+    first, other = (
+        (_READ, ExclusionRead(exclusions=[]))
+        if stage == "exclusion_read"
+        else (
+            _ANSWER,
+            _OTHER_ANSWER,
+        )
+    )
+    models = _GatedModels({1: first, 2: first if agrees else other})
+    monkeypatch.setattr(
+        llm_module, "_get_client", lambda: SimpleNamespace(aio=SimpleNamespace(models=models))
+    )
+    llm = LLM(extraction_store=MemoryExtractionStore(max_bytes=1024 * 1024))
+
+    async def run():
+        samples = SecondSamples()
+        try:
+            # Bounded, so a read that waited for the gated second fails here and never hangs.
+            agreement, usage = await asyncio.wait_for(_held_read(stage, samples.bind(llm)), 5)
+            served_with = (models.in_flight, _stored(stage, llm))
+            models.gate.set()
+            return (
+                served_with,
+                usage,
+                (await agreement.ended()).outcome == "agreed",
+                samples.usage(),
+            )
+        finally:
+            await samples.aclose()
+
+    (in_flight, stored_when_served), usage, verdict, second_usage = asyncio.run(run())
+
+    assert (in_flight, stored_when_served) == (1, False)
+    assert usage is not None and usage["input_tokens"] == 11
+    assert second_usage is not None and second_usage["input_tokens"] == 11
+    assert verdict is agrees
+    assert _stored(stage, llm) is agrees
+
+
+_READ_QUERY = "ODA to Kenya excluding grants"
+_READ = ExclusionRead(exclusions=[Exclusion(phrase="excluding grants", left_out=["grants"])])
+
+
+@pytest.mark.parametrize(
+    ("second", "agreed"),
+    [
+        pytest.param(_READ, True, id="same-read"),
+        pytest.param(
+            ExclusionRead(exclusions=[Exclusion(phrase="Excluding grants", left_out=["grants"])]),
+            True,
+            id="same-blanks",
+        ),
+        pytest.param(ExclusionRead(exclusions=[]), False, id="reads-apart"),
+    ],
+)
+def test_an_exclusion_read_is_stored_only_when_its_samples_agree(monkeypatch, second, agreed):
+    """The read samples twice, under the client's seed and the next one. Samples that blank
+    and disclose the same stretches agree, however the model wrote them, and the first is
+    stored; samples that read apart serve the first and store nothing, so the next request
+    reads again."""
+    llm, models = _llm(
+        monkeypatch, MemoryExtractionStore(max_bytes=1024 * 1024), answers={1: _READ, 2: second}
+    )
+
+    read, usage, read_agreed = asyncio.run(read_exclusions(_READ_QUERY, llm=llm))
+
+    assert read == _READ
+    assert _agreed(read_agreed) is agreed
+    assert sorted(models.seeds) == [1, 2]
+    assert usage is not None and usage["input_tokens"] == 22
+    assert stored_exclusion_read(_READ_QUERY, llm=llm) == (_READ if agreed else None)
+
+
+def _single_sample_key(query: str, *, version: str, year: int, identity: dict) -> str:
+    """The key a store recorded before agreement held, whose document has no `samples`."""
+    document = {"query": query, "version": version, "year": year, "identity": identity}
+    canonical = json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return "extract_" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def test_an_extraction_stored_before_agreement_is_a_miss_and_reads_the_model(monkeypatch):
+    """A reading keyed by the document without the sampling policy was never agreed, so
+    replaying it as agreed would skip the check. It misses and two samples read afresh."""
+    store = MemoryExtractionStore(max_bytes=1024 * 1024)
+    llm, models = _llm(monkeypatch, store)
+    store.put(
+        _single_sample_key(
+            _QUERY,
+            version=EXTRACT_VERSION,
+            year=extract_module.date.today().year,
+            identity=llm.sampling_identity(),
+        ),
+        _OTHER_ANSWER.model_dump_json(),
+    )
+
+    result, _ = _extract(_QUERY, llm)
+
+    assert models.prompts == [_QUERY] * 2
+    assert result.extraction.variables == ["GDP"]
+    assert _agreed(result.agreed)
+
+
+def test_an_exclusion_read_stored_before_agreement_is_not_found(monkeypatch):
+    store = MemoryExtractionStore(max_bytes=1024 * 1024)
+    llm, _models = _llm(monkeypatch, store)
+    staged = for_stage(llm, "exclusion_read")
+    assert isinstance(staged, LLM)
+    store.put(
+        _single_sample_key(
+            "GDP excluding grants",
+            version=EXCLUSION_READ_VERSION,
+            year=extract_module.date.today().year,
+            identity=staged.sampling_identity(),
+        ),
+        ExclusionRead(exclusions=[]).model_dump_json(),
+    )
+
+    assert stored_exclusion_read("GDP excluding grants", llm=llm) is None
 
 
 def test_a_file_store_written_by_one_process_is_read_by_a_second(monkeypatch, tmp_path):

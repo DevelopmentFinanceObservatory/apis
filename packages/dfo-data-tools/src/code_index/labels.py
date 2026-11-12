@@ -3,7 +3,7 @@ family, and a node's display label."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from types import MappingProxyType
 from typing import Literal, cast
 
@@ -207,7 +207,8 @@ def family_label(
     The measure partition is read from the identity's shape and its value-bound measure-axis
     slots, and labelled with `compose_measure_label`. The other slots follow in slot order.
     `value` and `exact` bindings contribute their one ref, and a `set` binding joins its
-    refs' labels with `/`. Measure-axis slots, slots pinned by the dataset the identity
+    refs' labels with `/`. Measure-axis slots, slots whose refs the partition label names
+    (`MeasurePartitionLabel.named_values`), slots pinned by the dataset the identity
     elects (`code_index.members.elected_pins`), unbound slots and refs the index holds no
     row for contribute nothing. A composite identity elects as its own shape and slots do,
     with no provenance pin (`code_index.composites.without_composite`), and is named by its
@@ -231,7 +232,10 @@ def family_label(
         )
         for axis in measure_index.axes
     ]
-    match = label_for_pairs(pairs, measure_index.partition_labels)
+    codes = held_codes(
+        index, {prop: refs for prop, refs in bound.items() if prop not in measure_axes and refs}
+    )
+    match = label_for_pairs(pairs, measure_index.partition_labels, held_codes=codes)
     parts = [compose_measure_label(match, measure_index.values)] if match is not None else []
     ref = composite_ref(identity)
     composite = index.composite(ref) if ref is not None else None
@@ -239,8 +243,9 @@ def family_label(
         parts = [*(parts if composite.kind == "stacked" else []), composite.label]
 
     pinned = elected_pins(index, identity_family_query(index, without_composite(identity)))
+    named = frozenset(match.named_values) if match is not None else frozenset()
     for prop, refs in bound.items():
-        if prop in measure_axes or prop in pinned:
+        if prop in measure_axes or prop in pinned or {(prop, ref) for ref in refs} <= named:
             continue
         slot_labels = tuple(
             row.label for ref in refs if (row := index.code_by_dcid(ref)) is not None
@@ -281,7 +286,11 @@ def index_family_label(
         )
         for axis in measure_index.axes
     ]
-    match = label_for_pairs(pairs, measure_index.partition_labels)
+    match = label_for_pairs(
+        pairs,
+        measure_index.partition_labels,
+        held_codes=rows_held_codes(index, [row.constraint_properties for row in family.rows]),
+    )
     measure = (
         f"{population_type_label} {_lead_lower(compose_measure_label(match, measure_index.values))}"
         if match is not None
@@ -302,6 +311,44 @@ def index_family_label(
         parts.append(dataset.label)
     label = ", ".join(parts)
     return label[:1].upper() + label[1:]
+
+
+def held_codes(
+    index: CodeIndex, values: Mapping[str, Collection[str]]
+) -> frozenset[tuple[str, str]]:
+    """The `(property, code)` pairs a series holds when `values` gives each property the
+    values its rows or binding carry: per property, the codes of `index` that every one of
+    its values is, or sits below (`CodeRow.parent`). A set of adaptation-only and
+    mitigation-only objectives holds `ClimateChangePolicyObjective` alone. A partition
+    label's `codes` match these (`label_for_pairs`)."""
+    held: set[tuple[str, str]] = set()
+    for prop, refs in values.items():
+        chains = [frozenset(_code_chain(index, ref)) for ref in refs]
+        if chains:
+            held.update((prop, code) for code in frozenset.intersection(*chains))
+    return frozenset(held)
+
+
+def rows_held_codes(
+    index: CodeIndex, rows: Sequence[Mapping[str, str]]
+) -> frozenset[tuple[str, str]]:
+    """`held_codes` over the constraint maps `rows`, for the properties every row declares.
+    Empty for no rows."""
+    if not rows:
+        return frozenset()
+    shared = set(rows[0]).intersection(*rows[1:])
+    return held_codes(index, {prop: [row[prop] for row in rows] for prop in shared})
+
+
+def _code_chain(index: CodeIndex, dcid: str) -> list[str]:
+    """`dcid` and the codes above it, nearest first, or nothing when `index` holds no code
+    `dcid`. The index refuses a parent cycle when it loads."""
+    chain: list[str] = []
+    row = index.code_by_dcid(dcid)
+    while row is not None:
+        chain.append(row.dcid)
+        row = index.code_by_dcid(row.parent) if row.parent is not None else None
+    return chain
 
 
 def _lead_lower(text: str) -> str:

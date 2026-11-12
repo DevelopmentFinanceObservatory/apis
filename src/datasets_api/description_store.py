@@ -294,7 +294,10 @@ def fill_late_fields(
 
 def _at_lowest_version(record: DescriptionRecord) -> DescriptionRecord:
     """`record` stamped the lowest schema version that describes it, as the store writes it."""
-    return record.model_copy(update={"schema_version": lowest_schema_version(record.variables)})
+    lowest = lowest_schema_version(
+        variables=record.variables, series=record.series, steps=record.known_steps
+    )
+    return record.model_copy(update={"schema_version": lowest})
 
 
 def _fill_member(record: dict[str, object], path: str, value: JsonValue) -> bool:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from search.engine.clients.graph import Facet
 from search.engine.retrieval.coverage import CoverageForm, answer_coverage
+from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
 from search.engine.retrieval.read_plan import plan_standard, served_provenances
 from search.models import (
     BreadthDim,
@@ -54,7 +55,7 @@ def test_a_filtered_place_count_counts_the_places_the_narrowed_plan_serves():
         ("sv", "country/B"): [_entity_facet(measurement_method="Wanted"), unwanted],
         ("sv", "country/C"): [unwanted],
     }
-    plan = plan_standard(series, members=["sv"], years=None)
+    plan = plan_standard(series, members=["sv"], years=None, declared=NO_DECLARED_POLICIES)
     form = CoverageForm(facet_label="countries", counts_places=True)
 
     assert dimensions_of(answer_coverage(plan, form))[0] == BreadthDim(label="countries", count=3)
@@ -76,7 +77,9 @@ def test_a_filtered_source_count_recounts_the_served_group():
         ("sv-b", "country/A"): [wanted, unwanted],
         ("sv-c", "country/A"): [unwanted],
     }
-    plan = plan_standard(series, members=["sv-a", "sv-b", "sv-c"], years=None)
+    plan = plan_standard(
+        series, members=["sv-a", "sv-b", "sv-c"], years=None, declared=NO_DECLARED_POLICIES
+    )
     narrowed = plan.narrowed(_wanted)
     form = CoverageForm(variables=True)
 
@@ -99,6 +102,7 @@ def test_a_filtered_window_count_sets_has_data_from_the_recount():
         {("sv", "country/A"): [_entity_facet(measurement_method="Wanted")]},
         members=["sv"],
         years=TimeWindow(start_year=2024, end_year=2024),
+        declared=NO_DECLARED_POLICIES,
     )
 
     narrowed = answer_coverage(plan.narrowed(_wanted), CoverageForm())

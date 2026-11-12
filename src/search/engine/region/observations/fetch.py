@@ -14,7 +14,10 @@ elected no year serves a period newer than the coverage index states, as a mint'
 read serves it. A read whose dispatched facets fall outside its planned
 group is a plan mismatch: it is logged and its series count as failed. A unit request
 converts the same reads. Reads run in a bounded thread pool under a process-wide semaphore
-and stop at `observation_settings().obs_preview_max_pairs` series. Scope-defaulted queries
+and stop at `observation_settings().obs_preview_max_pairs` series. A role-bearing preview
+with more reads than the pool has workers streams their SDMX rows from one bulk request per
+time period (`bulk_pair_reads.BulkPairSdmx`), each read taking the rows its own request
+would return. Scope-defaulted queries
 read the scope plan's one facet (`PairPlan.scope_facet_id`), and role-bearing queries over
 the pair cap read the bulk plan's elected candidate over its year list (`read_plan.BulkPlan`).
 A native unit request narrows the plan before either read, and a converting one converts
@@ -68,6 +71,7 @@ from materialise.recipes import (
 )
 from materialise.series_conversion import SeriesConversion
 from materialise.window import latest_periods
+from origin_catalogue.graph import is_un_dcid
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.config import settings
@@ -85,6 +89,7 @@ from search.engine.region.observations.bulk_conversion import (
     BulkConversion,
     any_combination_converts,
 )
+from search.engine.region.observations.bulk_pair_reads import BulkPairSdmx, PlannedRead
 from search.engine.region.observations.bulk_role_series import _bulk_role_series
 from search.engine.region.observations.bulk_scope import BulkScope, _bulk_scope_series
 from search.engine.region.result import FacetAxisFilter
@@ -227,7 +232,8 @@ def _preview_permit(deadline: float | None) -> Iterator[None]:
 # Reads run in a pool of at most `obs_preview_concurrency` workers (about 0.2 s per
 # `materialise_preview` call) under the process-wide semaphore. Permit waits end after
 # `graph_timeout_s` or at the deadline (`_preview_permit`). Bulk reads and label lookups
-# are outside this gate.
+# are outside this gate, except the bulk SDMX request of a role-bearing per-series preview
+# (`_bulk_pair_sdmx`), which the first read needing it makes under its own permit.
 
 
 _READ_GRAPH = "graph"
@@ -705,6 +711,57 @@ def _finish_preview_one(prepared: PreparedPreview, *, time_period: str | None) -
         return finish_materialise_preview(prepared, time_period=time_period)
 
 
+def _declared_roles(
+    dispatch: _Dispatch, member_facts: Mapping[str, MemberFacts] | None
+) -> tuple[str, ...]:
+    """The roles `dispatch`'s member declares: its member facts', else those its series
+    bind."""
+    mf = (member_facts or {}).get(dispatch.stat_var)
+    if mf is not None:
+        return mf.read_declared_roles()
+    return tuple(role for role, _dcid in dispatch.series[0].role_tuple)
+
+
+def _bulk_pair_sdmx(
+    dispatches: Sequence[_Dispatch],
+    *,
+    inner: MaterialiseSdmxClient,
+    member_facts: Mapping[str, MemberFacts] | None,
+    deadline: float | None,
+) -> MaterialiseSdmxClient:
+    """The SDMX client `dispatches` read through. It serves every SDMX read of theirs from one
+    bulk request per time period (`bulk_pair_reads.BulkPairSdmx`). A UN variable reads the
+    graph and makes no SDMX read."""
+    bulk = BulkPairSdmx(
+        inner,
+        [
+            PlannedRead(
+                variable=dispatch.stat_var,
+                bound=_bound_filter(dispatch.bound),
+                facet_ids=dispatch.group_ids,
+                declared_roles=frozenset(_declared_roles(dispatch, member_facts)),
+                latest=dispatch.years == "latest",
+                elected_year=dispatch.elected_year,
+            )
+            for dispatch in dispatches
+            if not is_un_dcid(dispatch.stat_var)
+        ],
+        deadline=deadline,
+    )
+    # Materialise types its client as the concrete `SdmxClient`. `BulkPairSdmx` serves the
+    # one method a preview read streams by and hands every other call to `inner`.
+    return cast(MaterialiseSdmxClient, bulk)
+
+
+def _bound_filter(bound: _RoleTuple) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """The entity filter a read at `bound` sends (`_preview_one`): each role's dcids in
+    order."""
+    by_role: dict[str, list[str]] = {}
+    for role, dcid in bound:
+        by_role.setdefault(role, []).append(dcid)
+    return tuple((role, tuple(dcids)) for role, dcids in by_role.items())
+
+
 def _preview_one(
     dispatch: _Dispatch,
     *,
@@ -737,15 +794,8 @@ def _preview_one(
     (`convertibility.unit_coverage`).
     """
     sv = dispatch.stat_var
-    role_bindings: dict[str, list[str]] = {}
-    for role, dcid in dispatch.bound:
-        role_bindings.setdefault(role, []).append(dcid)
-    mf = (member_facts or {}).get(sv)
-    declared_roles = (
-        mf.read_declared_roles()
-        if mf is not None
-        else tuple(role for role, _dcid in dispatch.series[0].role_tuple)
-    )
+    role_bindings = {role: list(dcids) for role, dcids in _bound_filter(dispatch.bound)}
+    declared_roles = _declared_roles(dispatch, member_facts)
     group_ids = dispatch.group_ids
     by_series = {"|".join(s.key): s.candidates for s in dispatch.series}
     request = MaterialisationRequest(
@@ -1082,12 +1132,21 @@ def _run_pair_fetch_pool(
     `obs_preview_max_pairs` before grouping them into reads (`_dispatches`). A role-bearing
     plan counted its series from coverage at planning, and a `latest` read dispatches every
     held series, which can be more. Overflow returns `OBSERVATIONS_PREVIEW_TOO_LARGE`
-    without partial results. Shutdown cancels queued work and waits for active reads, whose
-    permit wait is bounded by `graph_timeout_s`, so no fetch outlives this call.
+    without partial results. A role-bearing preview with more reads than
+    `obs_preview_concurrency` reads their SDMX rows through `_bulk_pair_sdmx`. Shutdown
+    cancels queued work and waits for active reads, whose permit wait is bounded by
+    `graph_timeout_s`, so no fetch outlives this call.
     """
     if len(series) > observation_settings().obs_preview_max_pairs:
         return _series_too_large(len(series), sv_dcids, obs_entities)
     dispatches = _dispatches(series, obs_entities, years=years, elected=elected)
+    if (
+        "observationAbout" not in obs_entities
+        and len(dispatches) > settings().obs_preview_concurrency
+    ):
+        materialise_sdmx = _bulk_pair_sdmx(
+            dispatches, inner=materialise_sdmx, member_facts=member_facts, deadline=deadline
+        )
     with ThreadPoolExecutor(
         max_workers=max(1, min(settings().obs_preview_concurrency, len(dispatches))),
         thread_name_prefix="obs-preview",

@@ -20,13 +20,15 @@ cannot correct it, so there `retryable` is true only when the same request may s
 code and answers false for every other mode. `presentation_api.refusals` names the code of each
 `FrameUnavailable` reason.
 
-Missing-field `schema_invalid`, `binding_invalid`, and `constraint_violation` use
-`correct_and_retry`, which `retryable_for` answers false. The request must change before it can
-succeed, and a client retries a retryable refusal unchanged. Illegal fields use `do_not_retry`. Conflicts and some frame refusals need a
-refresh. Transient release, service, and timeout failures retry after a delay. `not_found`,
-`write_refused`, `resource_exhausted`, `refresh_not_permitted`, `render_target_mismatch`, and
-`internal_error` use `do_not_retry`. `CODE_RETRY_MODE` mirrors the
-release manifest.
+`schema_invalid`, `binding_invalid`, and `constraint_violation` use `correct_and_retry`, which
+`retryable_for` answers false. The request must change before it can succeed, and a client
+retries a retryable refusal unchanged. Conflicts and some frame refusals need a refresh.
+Transient release, service, and timeout failures retry after a delay. `not_found`,
+`write_refused`, `refresh_not_permitted`, `render_target_mismatch`, and `internal_error` use
+`do_not_retry`. `resource_exhausted` uses `correct_and_retry`, since every limit a drawing crosses
+grows with the request's own select, window or intent, so a changed request fits.
+`CODE_RETRY_MODE` mirrors the release manifest. Each problem body states the mode for its own
+occurrence as `retry_mode` (`presentation_api.refusals.retry_mode`).
 
 The shares door (`presentation_api.doors.shares`) serves `SHARE_CODE_CATALOGUE` beside these:
 `write_token_required`, `write_token_invalid` and `share_import_not_permitted` at 403,
@@ -38,13 +40,13 @@ none of these, so they stay out of `CODE_RETRY_MODE`. `PRESENTATION_SERVED_CODES
 serves.
 
 Problem details expose fixed extension fields and no generic extra-data slot. Legal-value lists
-use `alternatives`, structured facet failures use `issues`, and details such as `minimal_intent`,
-constraint fixes, and limit names appear in `detail`.
+use `alternatives`, structured facet failures use `issues`, details such as `minimal_intent` and
+constraint fixes appear in `detail`, and the limit a `resource_exhausted` crossed in `limit_name`.
 """
 
 from __future__ import annotations
 
-from dfo_platform.codes import PLATFORM_CODE_CATALOGUE, CodeCatalogue, merge_catalogues
+from dfo_platform.codes import PLATFORM_CODE_CATALOGUE, CodeCatalogue, RetryMode, merge_catalogues
 
 __all__ = [
     "CODE_CATALOG",
@@ -53,6 +55,7 @@ __all__ = [
     "PRESENTATION_SERVED_CODES",
     "PRESENTATION_SERVED_PLATFORM_CODES",
     "SHARE_CODE_CATALOGUE",
+    "UNCHANGED_RETRY_MODES",
     "WRITE_SERVED_PLATFORM_CODES",
     "replay_retryable",
     "retryable_for",
@@ -137,7 +140,7 @@ CODE_CATALOG: dict[str, tuple[str, str]] = merge_catalogues(
 )
 
 # Headline retry mode per served code, mirrored in the baked release manifest.
-CODE_RETRY_MODE: dict[str, str] = {
+CODE_RETRY_MODE: dict[str, RetryMode] = {
     "schema_invalid": "correct_and_retry",
     "binding_invalid": "correct_and_retry",
     "constraint_violation": "correct_and_retry",
@@ -145,7 +148,7 @@ CODE_RETRY_MODE: dict[str, str] = {
     "write_refused": "do_not_retry",
     "not_found": "do_not_retry",
     "request_invalid": "correct_and_retry",
-    "resource_exhausted": "do_not_retry",
+    "resource_exhausted": "correct_and_retry",
     "frame_unavailable": "refresh_then_retry",
     "release_mismatch": "retry_after_delay",
     "refresh_not_permitted": "do_not_retry",
@@ -202,7 +205,7 @@ if not frozenset(PLATFORM_CODE_CATALOGUE) >= _served_platform_codes:
 
 
 # The modes under which a request repeated unchanged may succeed.
-_UNCHANGED_RETRY_MODES = frozenset({"retry_after_delay", "refresh_then_retry"})
+UNCHANGED_RETRY_MODES: frozenset[RetryMode] = frozenset({"retry_after_delay", "refresh_then_retry"})
 
 
 def retryable_for(code: str) -> bool:
@@ -212,14 +215,14 @@ def retryable_for(code: str) -> bool:
     unchanged. Classifiers handle `schema_invalid`, `frame_unavailable`, and `request_invalid`
     per occurrence.
     """
-    return CODE_RETRY_MODE[code] in _UNCHANGED_RETRY_MODES
+    return CODE_RETRY_MODE[code] in UNCHANGED_RETRY_MODES
 
 
 def replay_retryable(code: str, *, retryable: bool) -> bool:
     """Return `retryable` as a caller that cannot change its request reads it: the
-    occurrence's own value when `code`'s mode is in `_UNCHANGED_RETRY_MODES`, else false.
+    occurrence's own value when `code`'s mode is in `UNCHANGED_RETRY_MODES`, else false.
     """
-    return retryable and CODE_RETRY_MODE.get(code) in _UNCHANGED_RETRY_MODES
+    return retryable and CODE_RETRY_MODE.get(code) in UNCHANGED_RETRY_MODES
 
 
 def _catalogue_covers(catalogue: CodeCatalogue) -> None:

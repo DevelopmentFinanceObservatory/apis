@@ -1035,7 +1035,8 @@ def _spec_version(
         graph=graph,
         materialiser_build="test-build",
         capability_version="cap-v1",
-        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
+        enrichment=EnrichmentLookup(graph),
+        parties={},
         coverage=coverage,
     )
     return result.content_version

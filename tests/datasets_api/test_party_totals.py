@@ -9,7 +9,7 @@ import pytest
 from dfo_frame_grammar import Frame, frame_sha256
 from pydantic import TypeAdapter
 
-from code_index.types import PartyRow, WholeMarker
+from code_index.types import PartyRow, RoleAxis, WholeMarker
 from datasets_api.manifest_models import Trace, TraceModel
 from datasets_api.party_totals import (
     TRACE_KEY,
@@ -34,23 +34,32 @@ _AFRICA_REGIONAL = "AfricaRegional"
 _KENYA = "country/KEN"
 _GHANA = "country/GHA"
 
+_BOTH_SIDES: tuple[tuple[str, RoleAxis], ...] = (
+    ("provenance/P", "origin"),
+    ("provenance/P", "destination"),
+)
+"""A publication on both flow axes, so a fixture party reads its kind on either."""
+
 # `_GERMANY` and `_GHANA` have no row, so the index declares no kind for them.
 _PARTIES = {
     party.dcid: party
     for party in (
-        PartyRow(dcid=_DAC_TOTAL, kind="total"),
-        PartyRow(dcid=_G7, kind="total"),
+        PartyRow(dcid=_DAC_TOTAL, kind="total", published=_BOTH_SIDES),
+        PartyRow(dcid=_G7, kind="total", published=_BOTH_SIDES),
         PartyRow(
             dcid=_OFFICIAL,
             kind="total",
             party_class="official",
+            published=_BOTH_SIDES,
             whole=(WholeMarker(dataset="provenance/P", covers=("official",)),),
         ),
-        PartyRow(dcid=_GATES, kind="party", party_class="private"),
-        PartyRow(dcid=_FRANCE, kind="party"),
-        PartyRow(dcid=_DEVELOPING, kind="total"),
-        PartyRow(dcid=_AFRICA_REGIONAL, kind="residual", party_class="residual"),
-        PartyRow(dcid=_KENYA, kind="party"),
+        PartyRow(dcid=_GATES, kind="party", party_class="private", published=_BOTH_SIDES),
+        PartyRow(dcid=_FRANCE, kind="party", published=_BOTH_SIDES),
+        PartyRow(dcid=_DEVELOPING, kind="total", published=_BOTH_SIDES),
+        PartyRow(
+            dcid=_AFRICA_REGIONAL, kind="residual", party_class="residual", published=_BOTH_SIDES
+        ),
+        PartyRow(dcid=_KENYA, kind="party", published=_BOTH_SIDES),
     )
 }
 
@@ -277,13 +286,12 @@ def test_a_party_that_is_a_total_in_one_dataset_leaves_that_datasets_rows_alone(
     party in the CRS, so the cut drops their DAC2A row and keeps their CRS row."""
     parties = {
         **_PARTIES,
-        _IMF: PartyRow(dcid=_IMF, kind="party", party_class="official"),
+        _IMF: PartyRow(dcid=_IMF, kind="party", party_class="official", published=_BOTH_SIDES),
         _TRUST_FUNDS: PartyRow(
             dcid=_TRUST_FUNDS,
             kind="party",
             party_class="official",
-            datasets=(_CRS, _DAC2A),
-            axes=("origin",),
+            published=((_CRS, "origin"), (_DAC2A, "origin")),
             dataset_kinds=((_DAC2A, "total"),),
         ),
     }

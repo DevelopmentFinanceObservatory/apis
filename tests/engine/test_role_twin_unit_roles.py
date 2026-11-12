@@ -233,7 +233,17 @@ def test_candidate_path_unit_decision_hands_sdmx_the_survivors_roles(
 
     with pytest.raises(_StopAfterRequest):
         _prepare_candidate_context(
-            state, [_Candidate(twin_shape, [], total_result, _destination_place(twin_shape), None)]
+            state,
+            [
+                _Candidate(
+                    twin_shape,
+                    [],
+                    total_result,
+                    _destination_place(twin_shape),
+                    None,
+                    state.date_request,
+                )
+            ],
         )
 
     assert [r.declared_roles for r in captured] == [_TOTAL_ROLES]
@@ -261,7 +271,7 @@ def test_candidate_unit_decision_binds_the_candidates_own_probe_places(
 
     with pytest.raises(_StopAfterRequest):
         _prepare_candidate_context(
-            state, [_Candidate(twin_shape, [], total_result, own_places, None)]
+            state, [_Candidate(twin_shape, [], total_result, own_places, None, state.date_request)]
         )
 
     assert seen == [{"financingRecipient": [_DESTINATION, "country/UGA"]}]
@@ -338,7 +348,12 @@ def _role_currency_decision(
     state = _resolve_state(twin_shape, request)
     state.materialise_graph = graph
     prep = _prepare_candidate_context(
-        state, [_Candidate(twin_shape, [], total, _destination_place(twin_shape), None)]
+        state,
+        [
+            _Candidate(
+                twin_shape, [], total, _destination_place(twin_shape), None, state.date_request
+            )
+        ],
     )
     return prep.unit_refusals[0], graph
 

@@ -36,8 +36,8 @@ from dfo_frame_grammar import TIME_PERIOD_COLUMN, Frame
 
 from code_index.types import PartyRow
 from datasets_api.manifest_models import PartyTotalsLeftOutModel
+from dfo_platform.columns import PROVENANCE_COLUMN
 from dfo_platform.roles import role_key_axis
-from materialise.bundle_columns import PROVENANCE_COLUMN
 from materialise.content_version import stream_frame_sha256
 from materialise.enrichment import is_party_role, party_kind_of
 
@@ -193,11 +193,13 @@ def cut_party_totals(
     roles: Sequence[str],
     parties: Mapping[str, PartyRow],
 ) -> PartyTotalsCut:
-    """The cut of the frame `frame_chunks` passes over, on its open party `roles`, with kinds
-    from the code index's `parties` for each row's dataset. Reads the frame once per role, each
-    pass after the cuts of the roles before it."""
+    """The cut of the frame `frame_chunks` passes over, on its open party `roles`, with kinds from
+    the code index's `parties` on each role's axis for each row's dataset. Reads the frame once per
+    role, each pass after the cuts of the roles before it."""
     left_out: dict[str, dict[_Provenance, tuple[str, ...]]] = {}
     for role in roles:
+        if (axis := role_key_axis(role)) is None:
+            continue  # A role on no flow axis holds no party kinds, so no totals to cut.
         totals: defaultdict[str | None, set[str]] = defaultdict(set)
         others = False
         for chunk in frame_chunks():
@@ -208,7 +210,8 @@ def cut_party_totals(
                 datasets = () if dataset is None else (dataset,)
                 if (
                     isinstance(ref, str)
-                    and party_kind_of(ref, parties=parties, datasets=datasets) == _TOTAL_KIND
+                    and party_kind_of(ref, axis=axis, parties=parties, datasets=datasets)
+                    == _TOTAL_KIND
                 ):
                     totals[dataset].add(ref)
                 else:

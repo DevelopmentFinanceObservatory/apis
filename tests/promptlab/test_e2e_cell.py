@@ -23,6 +23,7 @@ from promptlab.store import (
     CellStore,
     ExtractRecord,
 )
+from search.engine.extract import EXTRACTION_CALLS
 from search.eval.cases import Case, validate_case
 from search.eval.checks import score_results
 from tests.engine._fake_sdmx import FakeSdmxClient
@@ -149,9 +150,9 @@ def test_run_e2e_cell_runs_end_to_end_offline(tmp_path):
     records = {(r["case_id"], r["seed"]): r for r in out.call_records()}
     assert len(records) == len(_CASE_IDS) * 2
     for record in records.values():
-        # Each case has one extract call and at least one bind call.
+        # Each case has its extraction samples and at least one bind call.
         stages = [c["stage"] for c in record["llm_calls"]]
-        assert stages.count("extract") == 1
+        assert stages.count("extract") == EXTRACTION_CALLS
         assert stages.count("bind") >= 1
         assert record["checks"], "expected at least one check result to be recorded"
 
@@ -171,10 +172,11 @@ def test_run_e2e_cell_runs_end_to_end_offline(tmp_path):
 
 def test_run_e2e_cell_resume_after_kill_matches_a_fresh_run(tmp_path):
     # One case, two seeds: with concurrency=1 the second seed's resolve
-    # cannot start until the first's completes and appends, so "kill on the
-    # 4th generate_structured call" deterministically means "seed 1's own
-    # extract, bind and quantity read calls all succeeded and were persisted;
-    # seed 2 never got as far as appending anything."
+    # cannot start until the first's completes and appends, so killing on the
+    # first call past one seed's calls deterministically means "seed 1's own
+    # extraction samples, bind and quantity read calls all succeeded and were
+    # persisted; seed 2 never got as far as appending anything."
+    calls_per_seed = EXTRACTION_CALLS + 2
     case_id = _CASE_IDS[0]
     rung = _production_rung(seeds=(1, 2))
     killed_capture = _make_capture(tmp_path / "capture", case_ids=(case_id,))
@@ -182,7 +184,7 @@ def test_run_e2e_cell_resume_after_kill_matches_a_fresh_run(tmp_path):
     out = _make_cell_store(cell_root, rung)
     graph = _graph_cache(tmp_path)
 
-    failing_llm = _FailingLLM(FakeLLM(), fail_after=3)
+    failing_llm = _FailingLLM(FakeLLM(), fail_after=calls_per_seed)
     try:
         asyncio.run(
             run_e2e_cell(
@@ -220,7 +222,7 @@ def test_run_e2e_cell_resume_after_kill_matches_a_fresh_run(tmp_path):
             cases=_CASES,
         )
     )
-    assert resuming_llm.calls == 3, "seed 1 must not be re-run; only seed 2's 3 calls are new"
+    assert resuming_llm.calls == calls_per_seed, "seed 1 must not be re-run; only seed 2's calls"
     assert reopened.is_complete()
     assert reopened.done_keys() == {(case_id, 0, 1), (case_id, 0, 2)}
     resumed_scores = reopened.read_scores()

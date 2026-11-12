@@ -25,15 +25,17 @@ from search.engine.clients.llm import (
     for_stage,
     generate_structured_async,
     recording_llm_usage,
+    reseeded,
 )
 from search.engine.errors import LLMInfraError, LLMOutputRefused
 from search.engine.extract import Extraction
 from tests.fixtures import FakeLLM
 from tests.fixtures.keys import fixture_key
 
-# How many bytes one `_DummySchema(value=1)` answer serialises to, so the
-# byte-budget tests below can state an exact ceiling.
-_ANSWER_BYTES = len('{"value":1}')
+# How many bytes the memo holds for one `_DummySchema(value=1)` answer, its text and the
+# live latency beside it (`_memo_value`), so the byte-budget tests below can state an exact
+# ceiling.
+_ANSWER_BYTES = len(llm_module._memo_value('{"value":1}', live_s=0.0))
 
 
 class _DummySchema(BaseModel):
@@ -96,8 +98,10 @@ def _memo(**kwargs) -> LLMMemo:
     )
 
 
-def _call(llm, *, prompt="p", system="s", schema=_DummySchema):
-    return generate_structured_async(llm, prompt=prompt, system=system, schema=schema)
+async def _call(llm, *, prompt="p", system="s", schema=_DummySchema):
+    """The answer and usage of one call (`generate_structured_async`)."""
+    sampled = await generate_structured_async(llm, prompt=prompt, system=system, schema=schema)
+    return sampled.answer, sampled.usage
 
 
 def _response() -> _FakeResponse:
@@ -464,7 +468,9 @@ def test_entries_over_the_byte_budget_evict_least_recently_used(monkeypatch):
 
     # The budget in bytes, not the answer count: the memo's own store is what
     # this test sizes, so a rule that counted entries would fail here.
-    assert len(_DummySchema(value=1).model_dump_json().encode()) == _ANSWER_BYTES
+    assert len(llm_module._memo_value(_DummySchema(value=1).model_dump_json(), live_s=0.0)) == (
+        _ANSWER_BYTES
+    )
 
     llm, client = _llm(monkeypatch, _response(), memo=memo)
 
@@ -1025,6 +1031,28 @@ def test_for_stage_clone_keys_apart_from_its_parent(monkeypatch):
 
     assert len(client.models.calls) == 2
     # Parent and clone are separate memo entries, so neither evicted the other.
+    assert memo.stats().entries == 2
+
+
+@pytest.mark.parametrize(("seed", "next_seed"), [(1, 2), (None, 1)], ids=["seeded", "unseeded"])
+def test_a_reseeded_clone_shares_the_memo_and_is_never_coalesced_with_its_parent(
+    monkeypatch, search_settings, seed, next_seed
+):
+    """Concurrent identical calls from a client and its reseeded clone both reach the model,
+    each under its own seed, and each answer is then a memo hit for its own seed."""
+    search_settings(llm_seed=None)
+    memo = _memo()
+    llm, client = _llm(monkeypatch, _response(), memo=memo, seed=seed)
+    clone = reseeded(llm)
+
+    async def both():
+        return await asyncio.gather(_call(llm), _call(clone))
+
+    asyncio.run(both())
+    asyncio.run(both())
+
+    assert len(client.models.calls) == 2
+    assert {call[2].seed for call in client.models.calls} == {seed, next_seed}
     assert memo.stats().entries == 2
 
 

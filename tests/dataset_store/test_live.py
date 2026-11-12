@@ -76,7 +76,7 @@ from datasets_api.versions import (
     VersionRecord,
 )
 from dfo_platform.caller import Caller
-from materialise.trace import UNKNOWN_FAMILY, MemberFamily, RecordedFamily, StatedFamily
+from materialise.trace import UNKNOWN_FAMILY, RecordedFamily, StatedFamily
 from series_coverage.index import Estimate
 from spec_registry import (
     IdentityQuarantined,
@@ -85,6 +85,7 @@ from spec_registry import (
     SpecRegistryStoreError,
     recompute_identity,
 )
+from statvar_members import MemberFamily
 from tests.dataset_store.live_database import (  # noqa: F401  (`live_database` is a fixture)
     SERVER_DSN,
     cluster_lock,

@@ -16,7 +16,9 @@ publish the elected basis (`binders.house_policy`).
 where no binder runs, offers what the parsed door offered: every declared basis, available
 where the identity's dataset publishes it at a covered series and unavailable otherwise,
 with the basis the identity holds first in the preference, so a part's derived default is
-the basis it resolved and a switch is the only thing that moves it.
+the basis it resolved and a switch is the only thing that moves it. Its labels
+are written without a deflation basis. The finished answer's conversion states it, and
+`with_deflation_basis` restates the labels from it where the scope attaches to the answer.
 """
 
 from __future__ import annotations
@@ -44,6 +46,7 @@ from code_index.scope_conventions import (
     WindowClass,
 )
 from code_index.shared import per_index
+from materialise.recipe_bodies import DeflationBasis
 from search.models import (
     BaseIdentity,
     Entry,
@@ -64,6 +67,7 @@ from search.scope.edits import HEADLINE_PROVENANCE, ScopeTableError, apply_bindi
 from search.scope.state import AxisRecord
 from search.scope.tables import AxisTable, ScopeFacts, allowed_values
 from search.scope.vocabulary import measure_basis_option_id
+from unit_words.price_basis import deflation_phrase
 
 BASIS_RULE = "measure_basis_convention"
 """The declared rule the measure-basis axis applies."""
@@ -97,6 +101,9 @@ CONVENTION_DATASETS: frozenset[str] = frozenset(row.dataset for row in MEASURE_B
 axis."""
 
 _MEASURES: Mapping[MeasureBasis, BasisMeasure] = {row.basis: row for row in BASIS_MEASURES}
+_ROWS_BY_OPTION: Mapping[str, BasisMeasure] = {
+    measure_basis_option_id(row.basis): row for row in BASIS_MEASURES
+}
 _RECIPIENT_DIRECTIONS = ("destination", "both")
 
 
@@ -126,9 +133,11 @@ def part_shape(
     admitted qualifier matches name codes of `admitted_systems`: a sector or restriction
     part when one of them is a sector system (`sector_systems`, the code systems the code
     index declares sector questions of) or a restriction (`BASIS_RESTRICTIONS`), else None
-    when a place is named without a direction, which settles only after election and gives
-    the part its shape then (`identity_part_shape`), else a recipient part when a place is a
-    recipient, else a donor part when it names places, and None when it names none."""
+    when a place keeps no direction (`Frame.directions` gives a place named without one the
+    axis a rule settles before the menu seats), else a recipient part when a place is a
+    recipient, else a donor part when it names places, and None when it names none. A part
+    whose place keeps no direction takes its shape after election, from
+    `identity_part_shape`."""
     restricting = frozenset(sector_systems) | frozenset(BASIS_RESTRICTIONS)
     if restricting.intersection(admitted_systems):
         return "sector_or_restriction"
@@ -476,6 +485,33 @@ def offers_basis_of(scope: PartScope, identity: BaseIdentity) -> bool:
     )
 
 
+def with_deflation_basis(scope: PartScope, deflated_by: DeflationBasis | None) -> PartScope:
+    """`scope` with each declared basis option of its measure-basis choice labelled on its
+    base identity (`basis_label`), naming whose prices deflate the part at constant prices:
+    `deflated_by`, the answer's `UnitConversion.deflation_basis`, which its byline reads too.
+    The headline option keeps its label. Every label is restated from `scope.base`, with or
+    without a basis, so no label stated over another identity survives."""
+    identity = scope.base.identity
+    choices = [
+        choice
+        if choice.axis != "measure_basis"
+        else choice.model_copy(
+            update={
+                "options": [
+                    option
+                    if (row := _ROWS_BY_OPTION.get(option.option_id)) is None
+                    else option.model_copy(
+                        update={"label": basis_label(row, identity, deflated_by=deflated_by)}
+                    )
+                    for option in choice.options
+                ]
+            }
+        )
+        for choice in scope.choices
+    ]
+    return scope.model_copy(update={"choices": choices})
+
+
 def oda_flows(basis: BasisMeasure, held: Collection[str]) -> tuple[str, ...]:
     """The CRS types of flow an ODA flow binding reads as on `basis`, of those `held`, the
     codes a shape's flow slot offers."""
@@ -504,7 +540,8 @@ def basis_rule(
     `option_not_covered` when the dataset publishes such a member with no series there, and
     `basis_not_published` otherwise. The headline is available when both bases it splices
     are (`_headline_availability`). A composite base is read through the identity its option was
-    set on (`table_document`)."""
+    set on (`table_document`). The labels are written without a deflation basis, which `with_deflation_basis`
+    adds from the answer."""
     dataset = basis_dataset(base, facts.index)
     held_id = held_option(base)
     if dataset is None or held_id is None:
@@ -587,11 +624,14 @@ def _headline_availability(
     return OptionAvailability(status="available")
 
 
-def basis_label(row: BasisMeasure, identity: BaseIdentity) -> str:
+def basis_label(
+    row: BasisMeasure, identity: BaseIdentity, *, deflated_by: DeflationBasis | None = None
+) -> str:
     """The reader's name of `row`'s basis on `identity` (`OPTION_LABELS`): its words and the
     identity's prices and currency, "gross disbursements, current USD". A unit request
     (`identity.facets["unit"]`) states both, so a part converted to constant prices reads
-    "net disbursements, constant 2024 USD" and one converted to a role's currency "net
+    "net disbursements, constant 2024 USD, donor prices", naming whose prices deflate it
+    (`deflated_by`, `deflation_phrase`), and one converted to a role's currency "net
     disbursements, current donor currency". Without one, the prices are the shape's price
     basis (`PRICES_BY_QUALIFIER`) in the conventions' currency (`CONVENTION_CURRENCY`), and
     the words stand alone when the shape states no price basis."""
@@ -604,7 +644,12 @@ def basis_label(row: BasisMeasure, identity: BaseIdentity) -> str:
             if isinstance(request.currency, IdentityCurrencyRole)
             else request.currency
         )
-        return OPTION_LABELS.measure_basis.format(words=row.words, prices=prices, currency=currency)
+        label = OPTION_LABELS.measure_basis.format(
+            words=row.words, prices=prices, currency=currency
+        )
+        if request.prices == "constant" and deflated_by is not None:
+            return f"{label}, {deflation_phrase(deflated_by)}"
+        return label
     shape = identity.shape
     qualifier = shape.measurement_qualifier if isinstance(shape, IdentityShapeSchema) else None
     qualified = PRICES_BY_QUALIFIER.get(qualifier) if qualifier is not None else None

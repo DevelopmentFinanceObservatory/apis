@@ -48,6 +48,11 @@ def test_price_basis(requested, unit_class, qualifier, expected) -> None:
         (PriceBasis("current", None), "current US dollars"),
         (PriceBasis("constant", 2022), "constant 2022 US dollars"),
         (PriceBasis("constant", None), "constant US dollars"),
+        (
+            PriceBasis("constant", 2024, deflated_by="donor"),
+            "constant 2024 US dollars, donor prices",
+        ),
+        (PriceBasis("current", None, deflated_by="donor"), "current US dollars"),
         (None, "US dollars"),
     ],
 )

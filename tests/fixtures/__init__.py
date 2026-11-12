@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import itertools
 import json
 import os
@@ -17,7 +18,14 @@ from pydantic import BaseModel
 
 import entity_resolution.shared as shared_module
 from code_index.shared import get_index
-from dc_graph import ArcTarget, FacetDefaultPolicy
+from dc_graph import (
+    DEFAULT_FACET_ARCS,
+    ArcTarget,
+    FacetDefaultPolicy,
+    declared_facet_policies,
+    declared_facet_policy,
+    parse_arcs,
+)
 from dc_graph.client import UNRESOLVED_NODE, _dedup_wire_arcs
 from entity_resolution import EntityResolver, GraphLookup, acquire_shared
 from entity_resolution.membership import (
@@ -330,6 +338,9 @@ class FakeLLM:
         system: str,
         schema: type[_T],
     ) -> tuple[_T, dict | None]:
+        # A live call waits on I/O, so a replayed one yields once and concurrent calls
+        # interleave as they do in production.
+        await asyncio.sleep(0)
         schema_name = schema.__name__
         key = fixture_key(schema, _recorded_system(system), prompt)
         harvest_path = os.environ.get(HARVEST_MISS_PATH_ENV)
@@ -372,10 +383,14 @@ class _RaiseOnAny:
         raise GraphInfraError(f"FakeGraph(raise=True): simulated transport error for {dcid!r}")
 
     def default_facet_policy(self, *, stat_var: str, axis: str) -> FacetDefaultPolicy | None:
-        # No transport read to fail: the live client answers from no wire call
-        # (`dc_graph.GraphClient.default_facet_policy`), so paths that read no graph still
-        # run resolve's declared-default check.
+        # A mint's read of a declaration this double holds none of.
         return None
+
+    def default_facet_policies(
+        self, stat_vars: Sequence[str], *, deadline: float | None = None
+    ) -> dict[str, dict[str, FacetDefaultPolicy]]:
+        # The declarations of StatVars this double holds none of, as `default_facet_policy`.
+        return {}
 
     def node_arcs_many(
         self,
@@ -533,7 +548,9 @@ class FakeGraph:
     `node_arcs_many` reads a place `obs` holds observations at as a node typed `Place` unless
     `nodes` holds it, as a live place holding observations is a graph node. Each instance has
     a generation token of its own (`generation_stamp`), and `scope_availability` answers the
-    default place scope's availability read from `obs`.
+    default place scope's availability read from `obs`. `default_methods` maps a StatVar to
+    the method its `defaultMeasurementMethod` arc declares, which its arc reads answer and
+    `default_facet_policy` reads, as the live client does.
 
     Recall replays each resolve separately. `detect` holds our resolves and `un_detect` the UN
     System Data Commons' by query, in `detect_leg_from_json`'s form; a `None` UN entry is a
@@ -554,7 +571,7 @@ class FakeGraph:
         enum_members: dict | None = None,
         currency_units: dict | None = None,
         resolve_any: dict | None = None,
-        facet_policies: Mapping[tuple[str, str], FacetDefaultPolicy] | None = None,
+        default_methods: Mapping[str, str] | None = None,
         raise_on_call: bool = False,
     ):
         self._generation = FakeGeneration(token=f"fake-graph-{next(_FAKE_GENERATIONS)}")
@@ -567,8 +584,11 @@ class FakeGraph:
         )
         self._obs: dict = obs if obs is not None else _load_json("graph_obs.json")
         self._observed_places = frozenset(key.partition("|")[2] for key in self._obs) - {""}
-        # Declared default facets keyed by (`dcid:`-prefixed StatVar ref, facet axis).
-        self._facet_policies = dict(facet_policies or {})
+        method_arc = DEFAULT_FACET_ARCS["measurementMethod"]
+        for stat_var, method in (default_methods or {}).items():
+            node = dict(self._nodes.get(stat_var) or {})
+            node["arcs"] = {**node.get("arcs", {}), method_arc: {"nodes": [{"dcid": method}]}}
+            self._nodes[stat_var] = node
         if detect is None:
             self._detect, recorded_un = _load_detect_fixture()
             self._un_detect = recorded_un if un_detect is None else un_detect
@@ -606,6 +626,9 @@ class FakeGraph:
     def node_arcs(self, dcid: str) -> dict | None:
         if self._impl is not None:
             return self._impl.node_arcs(dcid)
+        return self._held_arcs(dcid)
+
+    def _held_arcs(self, dcid: str) -> dict | None:
         node = self._nodes.get(dcid)
         if node is None:
             return None
@@ -629,7 +652,19 @@ class FakeGraph:
     def default_facet_policy(self, *, stat_var: str, axis: str) -> FacetDefaultPolicy | None:
         if self._impl is not None:
             return self._impl.default_facet_policy(stat_var=stat_var, axis=axis)
-        return self._facet_policies.get((stat_var, axis))
+        arc = DEFAULT_FACET_ARCS.get(axis)
+        if arc is None:
+            return None
+        dcid = stat_var.removeprefix("dcid:")
+        refs = parse_arcs(self._held_arcs(dcid) or {}, [arc])[arc]
+        return declared_facet_policy(dcid, arc=arc, refs=refs)
+
+    def default_facet_policies(
+        self, stat_vars: Sequence[str], *, deadline: float | None = None
+    ) -> dict[str, dict[str, FacetDefaultPolicy]]:
+        if self._impl is not None:
+            return self._impl.default_facet_policies(stat_vars, deadline=deadline)
+        return declared_facet_policies({sv: self._held_arcs(sv) for sv in stat_vars})
 
     def resolve_by_arc(
         self,

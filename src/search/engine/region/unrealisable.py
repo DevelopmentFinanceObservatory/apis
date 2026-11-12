@@ -14,7 +14,7 @@ request-named one a recorded term supports is recorded as a code requirement
 refuses `qualifier_not_bound` with that answer as its flagged match, and a candidate set
 departs it `measure_not_applied` unless every answer applies it
 (`region.requirements.judge`). One no recorded term supports, which only the bind model
-read (`phase_rank_bind.model_only_values`), is a code requirement that does not refuse
+read (`value_labels.model_only_values`), is a code requirement that does not refuse
 (`region.state.Requirement.refuses`), so an answer read without it stands and departs
 `measure_not_applied` under its name. A resubmit binds only values its request posted, so
 every value counts as request-named: each one unbound is recorded under its name
@@ -35,7 +35,6 @@ from search.engine.clients.graph import EngineGraphClient
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
 from search.engine.region.materialise_step import Departed
 from search.engine.region.phase_election import _settle_sole_options
-from search.engine.region.phase_rank_bind import model_only_values
 from search.engine.region.promote_state import _PromoteState
 from search.engine.region.state import (
     Requirement,
@@ -45,6 +44,7 @@ from search.engine.region.state import (
     unjudged_requirement,
     with_requirement,
 )
+from search.engine.region.value_labels import model_only_values
 from search.engine.retrieval.bound_values import without_values
 from search.engine.retrieval.retrieve import BoundValuesUnrealisable
 from search.engine.shape import ShapeDraft, SlotKeyDraft
@@ -61,7 +61,7 @@ def unbind_unrealisable(state: ResolveState, unrealisable: BoundValuesUnrealisab
     those two classes go silently, each slot shown unbound: the request's words named
     neither. What the engine derived from every unbound property goes with it
     (`ResolveState.forget_bound`). A request-named value no recorded term supports
-    (`phase_rank_bind.model_only_values`) becomes a code requirement that does not refuse
+    (`value_labels.model_only_values`) becomes a code requirement that does not refuse
     (`_model_value_requirements`). An answer leaving it unapplied stands and departs
     `measure_not_applied` under its name, else its slot's. Each term the request named for
     the other values becomes a code requirement on the codes it names (`_asked_terms`),

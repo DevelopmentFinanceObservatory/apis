@@ -35,11 +35,11 @@ from datasets_api.config import DatasetsBuildSettings
 from datasets_api.groupby import refuse_provenance_disagreement, refuse_stat_var_collision
 from datasets_api.version_store import LiveHeadStore
 from materialise.reshape import RollupNotSummableError, Table
-from materialise.trace import MemberFamily, RecordedFamily, StatedFamily, recorded_family_json
+from materialise.trace import RecordedFamily, StatedFamily, recorded_family_json
 from series_coverage.schema import FacetMetadata, RoleNames
 from spec_registry import recompute_identity
 from spec_registry.reader import StoredDefinition
-from statvar_members import MemberEnumerator
+from statvar_members import MemberEnumerator, MemberFamily
 from tests.code_index.aid_identity import (
     CRS_MEMBER_COUNT,
     CRS_PROVENANCE,

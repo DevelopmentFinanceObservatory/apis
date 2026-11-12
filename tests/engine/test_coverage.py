@@ -16,6 +16,7 @@ from search.engine.retrieval.coverage import (
     headline_from_coverage_index,
 )
 from search.engine.retrieval.facet_election import merge_role_candidates
+from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
 from search.engine.retrieval.read_plan import (
     BulkPlan,
     PairPlan,
@@ -81,7 +82,12 @@ def _served_each(facets: list[Facet], **form) -> object:
         )
         for i, facet in enumerate(facets)
     )
-    plan = PairPlan(members=tuple(s.stat_var for s in series), years=None, series=series)
+    plan = PairPlan(
+        members=tuple(s.stat_var for s in series),
+        years=None,
+        series=series,
+        declared=NO_DECLARED_POLICIES,
+    )
     return answer_coverage(plan, CoverageForm(**form))
 
 
@@ -94,7 +100,13 @@ def _coverage(
 ):
     """Coverage of the per-series plan a resolver builds over `series`."""
     stat_vars = list(dict.fromkeys(sv for sv, _entity in series))
-    plan = plan_standard(series, members=stat_vars, years=plan_years(date_request), scope=scope)
+    plan = plan_standard(
+        series,
+        members=stat_vars,
+        years=plan_years(date_request),
+        scope=scope,
+        declared=NO_DECLARED_POLICIES,
+    )
     return answer_coverage(plan, CoverageForm(**form))
 
 
@@ -528,7 +540,9 @@ def test_a_filter_that_removes_nothing_leaves_the_count_unchanged(
     fa = _usd_facet("fA", "prov/A", range(2010, 2020))
     fb = _usd_facet("fB", "prov/B", range(2012, 2020))
     series = {("sv", "country/KEN"): [fa, fb]}
-    plan = plan_standard(series, members=["sv"], years=plan_years(date_request))
+    plan = plan_standard(
+        series, members=["sv"], years=plan_years(date_request), declared=NO_DECLARED_POLICIES
+    )
     unfiltered = answer_coverage(plan, CoverageForm())
 
     narrowed = answer_coverage(plan.narrowed(lambda _sv, f: f.unit == "USD"), CoverageForm())
@@ -741,7 +755,7 @@ def test_windowed_duplicate_facet_id_with_undated_block_stays_breadth() -> None:
 def _bulk_plan(years, candidates: list[RoleFacetCandidate]) -> BulkPlan:
     merged = merge_role_candidates(_one_index(candidates), ["sv"])
     facet_id, selected, _unserved, _continuing = role_election(
-        merged, members=["sv"], read_years=None
+        merged, members=["sv"], read_years=None, declared=NO_DECLARED_POLICIES
     )
     return BulkPlan(
         members=("sv",),
@@ -749,6 +763,7 @@ def _bulk_plan(years, candidates: list[RoleFacetCandidate]) -> BulkPlan:
         facet_id=facet_id,
         selected=selected,
         candidates=merged,
+        declared=NO_DECLARED_POLICIES,
     )
 
 

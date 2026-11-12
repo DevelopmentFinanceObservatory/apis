@@ -154,7 +154,8 @@ def _reshape_with(
         options=options,
         entity_columns=_ENTITY_COLUMNS,
         reads=_RenderReads(
-            enrichment=EnrichmentLookup(FakeMintGraphReader(), parties=lambda: {}),
+            enrichment=EnrichmentLookup(FakeMintGraphReader()),
+            parties={},
             known={},
             deadline=None,
         ),

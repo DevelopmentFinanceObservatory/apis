@@ -7,13 +7,15 @@ graph property names per variable. A variable that declares one role stores
 its entity in the column of that role's flow axis (`recipient` for a
 destination-axis role, `donor` for an origin-axis one) and `ABSENT_ENTITY` in
 the other, and its `RoleNames` holds `None` for the role it lacks. Each row's
-`n_obs` equals its mask popcount, checked by `series_coverage.loader.checked_index`
-and used for exact windowed counts.
+`n_obs` equals its mask popcount, checked by `series_coverage.loader.checked_index`, so
+it counts the years with data. For an annual series that is its observation count.
+`graph_release.platform.build_platform_parts` makes every row annual. It refuses a facet
+whose `observationPeriod` is not `P1Y` (`graph_release.format.MASK_PERIODS`) and a
+role-bearing series with two observations in one year.
 """
 
 from __future__ import annotations
 
-import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Final
@@ -21,16 +23,6 @@ from typing import Final
 import pyarrow as pa
 
 from artifact_publication.jobs import Ingestion
-
-# A whole number of years (`P1Y`, `P5Y`); any other stated period is shorter than a year.
-_YEARLY_PERIOD = re.compile(r"P\d+Y")
-
-
-def is_sub_annual(period: str | None) -> bool:
-    """Whether `period`, a facet's stated observation period, is shorter than a year. A
-    facet stating none is not: the index dates its rows by year."""
-    return period is not None and _YEARLY_PERIOD.fullmatch(period) is None
-
 
 MASK_WORD_BITS: Final[int] = 64
 
@@ -99,8 +91,7 @@ class YearHorizon:
                 pa.field(FACET_COLUMN, pa.string(), nullable=False),
                 pa.field(DONOR_COLUMN, pa.string(), nullable=False),
                 pa.field(RECIPIENT_COLUMN, pa.string(), nullable=False),
-                # Annual data has at most one observation per year. A future
-                # Sub-annual series could exceed 16 bits. Uint32 costs the same.
+                # Annual data has at most one observation per year. Uint32 costs the same.
                 pa.field(N_OBS_COLUMN, pa.uint32(), nullable=False),
                 pa.field(FIRST_YEAR_COLUMN, pa.uint16(), nullable=False),
                 pa.field(LAST_YEAR_COLUMN, pa.uint16(), nullable=False),

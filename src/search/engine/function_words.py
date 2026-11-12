@@ -5,10 +5,12 @@ dropped qualifier, and the qualifier coverage rule (`phase_rank_bind._coverage_r
 reads `FUNCTION_WORDS`, `AMOUNT_WORDS`, `DATA_WORDS` and `FLOW_VERBS` as words no
 reader needs to cover, `RATIO_WORDS` on a shape that divides by a denominator,
 `COUNT_WORDS` on a shape that measures a count, and `PERSON_WORDS` on one that counts
-persons.
+persons. `NEGATION_CUE` finds the words that negate or exclude what follows them.
 """
 
 from __future__ import annotations
+
+import re
 
 # Words that only join a measure's words ("rate of extreme poverty"). The flow cues
 # "to", "from" and "by" stay out, so restoring a variable's order carries no cue into
@@ -86,3 +88,13 @@ COUNT_WORDS = frozenset({"number", "numbers"})
 # Only a count of persons states them. On a count of households, "people in urban
 # households" leaves them to the binder.
 PERSON_WORDS = frozenset({"population", "populations", "people", "persons"})
+
+# The words that negate or exclude what follows: an exclusion read starts each stretch it
+# leaves out at one (`exclusion_read._pieces`), a scope phrase's origin starts at the one
+# before it (`stated_scope._cue_start`), and a measure value's name after one in its stretch
+# names nothing (`qualifier_match.measure_values_named`).
+NEGATION_CUE = re.compile(
+    r"\b(?:non|not|no|never|excluding|exclude|excludes|except|without|other\s+than|"
+    r"rather\s+than|excl)\b",
+    re.IGNORECASE,
+)

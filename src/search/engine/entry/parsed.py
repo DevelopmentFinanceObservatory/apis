@@ -650,7 +650,7 @@ async def handle(
     yield InterpretationEvent(
         variables=variable_texts,
         entities=entities_flat,
-        dates=all_dates,
+        dates=[date.restated() for date in all_dates],
         expected_results=len(variable_texts),
     )
 

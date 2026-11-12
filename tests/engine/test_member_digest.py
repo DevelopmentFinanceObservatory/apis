@@ -22,7 +22,7 @@ from search.engine.retrieval.bound_values import (
     walk_key,
 )
 from search.engine.spec_id import mint_identity
-from statvar_members import FiveTuple, Member, MemberGroup
+from statvar_members import FiveTuple, Member, MemberFamily, MemberGroup
 from tests.code_index.aid_identity import education_aid_identity
 
 _FIVE_TUPLE = FiveTuple(population_type="Person", measured_property="count")
@@ -52,7 +52,10 @@ def test_a_complete_walk_states_its_served_members_and_hashes_its_sorted_family(
 
     assert walked.key == walk_key(_QUERY)
     assert walked.stated == StatedMembers(
-        served_count=1, digest=_expected_digest(["Count_Person", "Count_Person_Female"])
+        served_count=1,
+        family=MemberFamily(
+            digest=_expected_digest(["Count_Person", "Count_Person_Female"]), count=2
+        ),
     )
 
 
@@ -60,7 +63,7 @@ def test_the_digest_is_independent_of_confirmation_order():
     forward = WalkedMembers.of(_QUERY, _group(("Count_Person", "Count_Person_Female")))
     backward = WalkedMembers.of(_QUERY, _group(("Count_Person_Female", "Count_Person")))
 
-    assert forward.stated.digest == backward.stated.digest
+    assert forward.stated.family == backward.stated.family
 
 
 @pytest.mark.parametrize("truncated", [True, False])
@@ -73,7 +76,10 @@ def test_a_walk_that_left_candidates_unread_states_no_digest(truncated: bool):
 
     assert group.stated_family == (None if truncated else frozenset({"Count_Person"}))
     assert walked.stated == StatedMembers(
-        served_count=1, digest=None if truncated else _expected_digest(["Count_Person"])
+        served_count=1,
+        family=None
+        if truncated
+        else MemberFamily(digest=_expected_digest(["Count_Person"]), count=1),
     )
 
 
@@ -90,7 +96,8 @@ def test_a_walk_asked_an_open_role_its_members_do_not_serve_states_the_answers_m
     served = replace(dropped, elected_open_role_keys=frozenset({"origin"}))
 
     assert stated_members(identity, WalkedMembers.of(asked, dropped)) == StatedMembers(
-        served_count=1, digest=_expected_digest(["Amount_EconomicActivity"])
+        served_count=1,
+        family=MemberFamily(digest=_expected_digest(["Amount_EconomicActivity"]), count=1),
     )
     assert WalkedMembers.of(asked, served).key == walk_key(asked)
     assert stated_members(identity, WalkedMembers.of(asked, served)) is None

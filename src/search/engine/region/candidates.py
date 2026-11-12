@@ -28,6 +28,7 @@ from search.engine.place import ConsultedPresence
 from search.engine.region.arcs import standard_bindings_from_arcs
 from search.engine.region.codes import OBSERVATIONS_NOTHING_TO_PROBE
 from search.engine.region.decisions import PlaceSetNotAdmittedError, PlaceSetTooLargeError
+from search.engine.region.materialise_step import Departed
 from search.engine.region.named_source import with_named_source
 from search.engine.region.place_context import (
     PlaceContext,
@@ -108,15 +109,22 @@ class _Candidate:
     status rule offers it beside the elected shape (`status_rule`), `None` for the elected
     shape itself and for a reading that rides on a refusal, and the records of the words its
     own read leaves unread, its coverage records (`phase_election.judge_answer_coverage`), `None`
-    for the elected shape, which reads the elected answer's (`requirements.judge`)."""
+    for the elected shape, which reads the elected answer's (`requirements.judge`).
+
+    `date_request` is the request its Spec states and its option coverage and related
+    measures read: the part's, until candidate grounding settles a trailing span on the
+    newest years its plan serves (`candidate_grounding._settled_trailing`), which also sets
+    `stale_departure` when that newest year is stale (`trailing.stale_departure`)."""
 
     shape: ShapeDraft
     bindings: list[SlotBindingDraft]
     mat: Materialised
     place: PlaceContext
     walked: WalkedMembers | None
+    date_request: DateRequest | None
     basis: CandidateBasis | None = None
     uncovered: tuple[ResolvedQualifier, ...] | None = None
+    stale_departure: Departed | None = None
 
 
 def _prewarm_places(
@@ -584,6 +592,7 @@ def _materialise_alt_shapes(
                         result,
                         place.settled(result),
                         alternate.walked,
+                        date_request,
                     )
                 )
     return _AlternatesRead(results, None, presence, tuple(unevaluated), consulted)

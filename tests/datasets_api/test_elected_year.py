@@ -185,7 +185,7 @@ class _Rig:
             ceiling=1_000_000,
             member_concurrency=1,
             enumerator=MemberEnumerator(),
-            enrichment=EnrichmentLookup(graph, parties=lambda: {}),
+            enrichment=EnrichmentLookup(graph),
             code_index=get_index(),
             rate_cache=RateTableCache(),
             coverage=FakeCoverageService(_index(indexed)),
@@ -792,17 +792,6 @@ def test_a_named_year_after_the_build_year_states_no_year_coverage(
     )
 
     assert _counted(index, year=year).get("elected_year") == (year if stated else None)
-
-
-def test_a_facet_finer_than_a_year_states_no_year_coverage():
-    index = build_coverage_index(
-        [(_AID, "usd", donor, _MWI, [2025]) for donor in _MALAWI],
-        role_names={_AID: RoleNames(donor=_PROVIDER, recipient=_RECIPIENT)},
-        facet_metadata={"usd": FacetMetadata(observation_period="P3M")},
-        build_year=2026,
-    )
-
-    assert _counted(index, year=2025) == {}
 
 
 def test_a_latest_variable_that_elected_no_year_states_no_year_coverage():

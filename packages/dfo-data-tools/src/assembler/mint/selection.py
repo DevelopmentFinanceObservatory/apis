@@ -34,7 +34,7 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import cast
 
-from dfo_frame_grammar import STAT_VAR_COLUMN, TIME_PERIOD_COLUMN, UNIT_COLUMN
+from dfo_frame_grammar import STAT_VAR_COLUMN, TIME_PERIOD_COLUMN, UNIT_COLUMN, DeflationBasis
 from dfo_frame_grammar.grammar import STAT_VAR_REF_PREFIX
 from pydantic.experimental.missing_sentinel import MISSING
 
@@ -46,13 +46,13 @@ from assembler.ports import ResolvedFrame
 from assembler.resolve import ResolvedSeries
 from description.facts import Coordinate, DrawnSeries, SelectionFacts, Span, StatusCounts
 from description.steps import ComposedUnit, SimpleUnit, Unit, VariableSide
+from dfo_platform.columns import PROVENANCE_COLUMN
 from materialise.method_status import method_status_classes, reported_provenances
 from materialise.statistics import count_statuses
 from materialise.unit_cells import composed_unit_sides
 
 __all__ = ["selection_facts"]
 
-_PROVENANCE_COLUMN = "provenance"
 _METHOD_COLUMN = "measurementMethod"
 
 
@@ -89,7 +89,7 @@ def selection_facts(
         for column in dimension_columns(
             columns=cast("Sequence[str]", resolved_frame.frame["columns"])
         )
-        if column not in (UNIT_COLUMN, _PROVENANCE_COLUMN)
+        if column not in (UNIT_COLUMN, PROVENANCE_COLUMN)
     ]
     return SelectionFacts(
         window=Span(start=str(window["start"]), end=str(window["end"])),
@@ -139,7 +139,7 @@ def _status(*, rows: Sequence[Mapping[str, object]], periods: Sequence[str]) -> 
     values_by_facet: Counter[tuple[str | None, str | None]] = Counter(
         (
             cast("str | None", rows_by_period[period].get(_METHOD_COLUMN)),
-            cast("str | None", rows_by_period[period].get(_PROVENANCE_COLUMN)),
+            cast("str | None", rows_by_period[period].get(PROVENANCE_COLUMN)),
         )
         for period in periods
     )
@@ -182,17 +182,21 @@ def _unit_side(*, part: object, labels: Mapping[str, str]) -> SimpleUnit | Varia
 
 
 def _simple_unit(*, part: object, labels: Mapping[str, str]) -> SimpleUnit:
-    """Maps a unit ref or a converted unit `{currency, prices, base_year?}` to a `SimpleUnit`.
-    A ref keeps the frame's label where it has one. A converted unit names its ISO 4217
-    `currency`, and keeps `prices` and any `base_year`."""
+    """Maps a unit ref or a converted unit `{currency, prices, base_year?, deflation_basis?}`
+    to a `SimpleUnit`. A ref keeps the frame's label where it has one. A converted unit names
+    its ISO 4217 `currency`, and keeps `prices` and any `base_year` and `deflation_basis`."""
     if isinstance(part, str):
         return SimpleUnit(ref=part, label=_label(ref=part, labels=labels))
     unit = cast("Mapping[str, object]", part)
     base_year = unit.get("base_year")
+    deflation_basis = unit.get("deflation_basis")
     return SimpleUnit(
         currency=cast("str", unit["currency"]),
         prices=cast("str", unit["prices"]),
         base_year=MISSING if base_year is None else cast("int", base_year),
+        deflation_basis=MISSING
+        if deflation_basis is None
+        else cast("DeflationBasis", deflation_basis),
     )
 
 

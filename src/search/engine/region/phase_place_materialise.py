@@ -128,6 +128,7 @@ from search.engine.region.place_roles import (
     undirected_place_name,
     whole_total_candidates,
 )
+from search.engine.region.refs import provenance_labels
 from search.engine.region.requirements import record_reading, settle_answer, stray_values
 from search.engine.region.result import FacetAxisFilter, RegionResult
 from search.engine.region.state import (
@@ -154,6 +155,7 @@ from search.engine.retrieval.bound_values import (
     elected_role_class_shape,
     entity_role_keys,
     narrowed_to,
+    shape_part_datasets,
     shape_population_arcs,
     shape_query,
     sole_shared_value,
@@ -179,6 +181,7 @@ from search.engine.shape import (
 from search.engine.unit.base_year import declared_base_year
 from search.engine.unit.bind import UnitDefaultPolicy, bind_unit_text
 from search.engine.unit.refs import satisfies as _unit_satisfies
+from search.heading.departure_fact import UndirectedReading
 from search.models import (
     CandidateBasis,
     FacetBasis,
@@ -302,7 +305,7 @@ async def _phase_place_bindings(state: ResolveState) -> RegionResult | None:
     if bound == "role_not_resolved":
         bound = _settle_direction(state)
     elif isinstance(bound, PlaceAssignment):
-        _state_read_direction(state, bound)
+        await _state_read_direction(state, bound)
     if bound == "role_incompatible":
         return await _role_incompatible_no_data(state)
     if bound == "role_not_resolved":
@@ -435,17 +438,38 @@ def _election_refusal(
     return state.no_data("variable_not_resolved", llm_usage=state.var_usage)
 
 
-def _state_read_direction(state: ResolveState, bound: PlaceAssignment) -> None:
-    """State the direction a place named without one is read on where the data settled it
+async def _state_read_direction(state: ResolveState, bound: PlaceAssignment) -> None:
+    """State the direction a place named without one is read on where a rule settled it
     before election (`ResolveState.undirected_axis`) and the elected shape binds the place
     on that axis as named, as DAC1 binds "ODA in Germany" to the donor. The answer states
-    it as `_settle_direction` states a direction it settles (`departures.direction_inferred`)."""
-    axis = state.undirected_axis
+    it, with the rule that settled it, as `_settle_direction` states a direction it settles
+    (`departures.direction_inferred`)."""
     name = undirected_place_name(state)
-    if axis is None or name is None:
+    if state.undirected is None or name is None:
         return
-    if any(state.words_of(place_set.name) == name for place_set in bound.sets.get(axis, ())):
-        state.inferred_facts.append(direction_inferred(name, axis))
+    reading = state.undirected
+    if any(
+        state.words_of(place_set.name) == name for place_set in bound.sets.get(reading.axis, ())
+    ):
+        listed_by = await _listing_source(state, reading)
+        state.inferred_facts.append(
+            direction_inferred(name, reading.axis, read_by=reading.rule, listed_by=listed_by)
+        )
+
+
+async def _listing_source(state: ResolveState, reading: UndirectedReading) -> str | None:
+    """The name of the dataset a declaration reading cites, of those declaring every place
+    of the set a provider (`UndirectedReading.listed_by`): the first by dcid the elected
+    shape answers from (`shape_part_datasets`), else the first. `None` for another rule.
+    The name read (`refs.provenance_labels`) runs off the event loop."""
+    if not reading.listed_by:
+        return None
+    own = set(shape_part_datasets(state.shape_draft, get_index())).intersection(reading.listed_by)
+    dataset = min(own) if own else reading.listed_by[0]
+    labels = await asyncio.to_thread(
+        provenance_labels, [dataset], state.graph, deadline=state.deadline
+    )
+    return labels.get(dataset, dataset)
 
 
 def _settle_direction(
@@ -461,7 +485,7 @@ def _settle_direction(
     empty (`False`) the places refuse ``no_direction_holds``, a ``role_not_resolved`` that
     offers no reading, since each is known empty. A read the coverage index cannot answer
     (`None`) is unknown. Otherwise they refuse ``role_not_resolved``, as a question
-    whose direction no data settles. The served assignment binds the first whole total a
+    whose direction no rule settles. The served assignment binds the first whole total a
     side it leaves unnamed offers where the bindings hold its series
     (`place_roles.holds_whole_total`); each rival decides its own when it is walked
     (`_walked_alternates`)."""
@@ -479,7 +503,7 @@ def _settle_direction(
         return "role_not_resolved"
     (axis, served), *others = held
     if not others:
-        state.inferred_facts.append(direction_inferred(name, axis))
+        state.inferred_facts.append(direction_inferred(name, axis, read_by="coverage"))
     for _axis, assignment in others:
         state.direction_rivals[len(state.capped_shapes)] = assignment
         state.capped_shapes.append(shape)

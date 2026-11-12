@@ -44,10 +44,10 @@ from graph_release.views import (
     CODE_INDEX_PART,
     DECLARATIONS_PART,
     ViewRefused,
-    code_indexes,
     coverage_index,
     declared_role_axes,
     read_document,
+    staged_code_indexes,
 )
 from origin_catalogue.arc_reads import DFO_VARIABLE_TYPE
 from series_coverage.schema import VARIABLE_COLUMN
@@ -477,7 +477,7 @@ def _views(
         index = written.get(CODE_INDEX_PART)
         if index is None:
             raise ViewRefused(f"no {CODE_INDEX_PART} part is staged")
-        code_indexes(read_document(index.read_bytes()))
+        staged_code_indexes(read_document(index.read_bytes()))
     except ViewRefused as refusal:
         findings.append(GateFinding(GateCode.CODE_INDEX_UNLOADABLE, str(refusal)))
     try:

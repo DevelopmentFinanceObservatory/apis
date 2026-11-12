@@ -131,7 +131,7 @@ _RESOLVED_REFS = ("dcid:SV_health", "dcid:SV_malaria")
 
 
 def _enrichment() -> EnrichmentLookup:
-    return EnrichmentLookup(FakeMintGraphReader(), parties=lambda: {})
+    return EnrichmentLookup(FakeMintGraphReader())
 
 
 def _options() -> MintOptions:
@@ -146,7 +146,7 @@ def test_a_zero_row_member_from_a_declared_zero_source_sums_and_publishes():
         _TABLE,
         options=_options(),
         entity_columns=_ENTITY_COLUMNS,
-        reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
+        reads=_RenderReads(enrichment=_enrichment(), parties={}, known={}, deadline=None),
         code_index=_index(declares_crs_zero=True),
         resolved_stat_var_refs=_RESOLVED_REFS,
         provenance_refs=(_CRS_PROVENANCE,),
@@ -172,7 +172,7 @@ def test_the_same_zero_row_member_under_an_undeclared_provenance_still_refuses()
             _TABLE,
             options=_options(),
             entity_columns=_ENTITY_COLUMNS,
-            reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
+            reads=_RenderReads(enrichment=_enrichment(), parties={}, known={}, deadline=None),
             code_index=_index(declares_crs_zero=False),
             resolved_stat_var_refs=_RESOLVED_REFS,
             provenance_refs=(_CRS_PROVENANCE,),
@@ -203,7 +203,7 @@ def test_two_distinct_provenance_refs_refuse_before_any_declaration_lookup():
             complete_table,
             options=_options(),
             entity_columns=_ENTITY_COLUMNS,
-            reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
+            reads=_RenderReads(enrichment=_enrichment(), parties={}, known={}, deadline=None),
             code_index=_index(declares_crs_zero=True),
             resolved_stat_var_refs=(),
             provenance_refs=(_CRS_PROVENANCE, _OTHER_PROVENANCE),
@@ -226,7 +226,7 @@ def test_declaration_follows_the_injected_index_even_when_the_singleton_disagree
             _TABLE,
             options=_options(),
             entity_columns=_ENTITY_COLUMNS,
-            reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
+            reads=_RenderReads(enrichment=_enrichment(), parties={}, known={}, deadline=None),
             code_index=_index(declares_crs_zero=True),
             resolved_stat_var_refs=_RESOLVED_REFS,
             provenance_refs=(_CRS_PROVENANCE,),
@@ -242,7 +242,7 @@ def test_declaration_follows_the_injected_index_even_when_the_singleton_disagree
                 _TABLE,
                 options=_options(),
                 entity_columns=_ENTITY_COLUMNS,
-                reads=_RenderReads(enrichment=_enrichment(), known={}, deadline=None),
+                reads=_RenderReads(enrichment=_enrichment(), parties={}, known={}, deadline=None),
                 code_index=_index(declares_crs_zero=False),
                 resolved_stat_var_refs=_RESOLVED_REFS,
                 provenance_refs=(_CRS_PROVENANCE,),

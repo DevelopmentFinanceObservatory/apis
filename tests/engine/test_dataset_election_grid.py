@@ -83,7 +83,7 @@ from search.engine.conjoin import _unbound_terms
 from search.engine.departures import WarningKey, warning_key
 from search.engine.interpret import Recall
 from search.engine.options.population import options_population
-from search.engine.qualifier_match import QualifierMatch, _normalize
+from search.engine.qualifier_match import QualifierMatch, _normalize, declared_measures_named
 from search.engine.quantity import quantity_requirement
 from search.engine.region import option_coverage as option_coverage_module
 from search.engine.region import phase_election as phase_election_module
@@ -120,7 +120,7 @@ from search.engine.region.place_roles import (
     bound_after_election,
     lacks_query_axis,
 )
-from search.engine.region.related_read import start_elected_related_read
+from search.engine.region.related_read import start_answer_related_read
 from search.engine.region.requirements import judge
 from search.engine.region.result import RegionResult
 from search.engine.region.sentence_events import _build_shape_event
@@ -158,6 +158,7 @@ from search.engine.retrieval.bound_values import (
     source_binding,
     stated_members,
 )
+from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
 from search.engine.retrieval.member_facts import IndexMemberFacts, MemberFacts
 from search.engine.retrieval.read_plan import PairPlan
 from search.engine.retrieval.retrieve import (
@@ -980,7 +981,11 @@ def test_a_named_part_refuses_a_code_its_table_does_not_carry(index, named, refu
     assert [row.code_system for span in spans for row in span.rows] == ["channel"]
 
     undeclared = _undeclared_qualifiers(
-        "K1 aid", spans, [shape], {vocabulary: reading.by_vocabulary[vocabulary].spans}
+        "K1 aid",
+        spans,
+        [shape],
+        {vocabulary: reading.by_vocabulary[vocabulary].spans},
+        named=declared_measures_named("K1 aid"),
     )
 
     assert [record.text for record in undeclared] == (["K1"] if refused else [])
@@ -1873,7 +1878,7 @@ def test_the_answer_reads_the_measure_partition_of_the_dataset_the_role_keys_ele
     index, monkeypatch
 ):
     """The answer's measure partition, which the Spec and the related-measures read take
-    (`start_elected_related_read`), is read under the role keys the identity binds its
+    (`start_answer_related_read`), is read under the role keys the identity binds its
     places under. A donor-only question serves `_DONORS`' net row. Read by rank alone, the
     family would be `_BROAD`'s, whose gross partitions hold no served member's values, and
     the answer would have no partition."""
@@ -1895,7 +1900,7 @@ def test_the_answer_reads_the_measure_partition_of_the_dataset_the_role_keys_ele
         lambda: MeasureIndex(axes=(_NETTING,), values=(), partition_labels=()),
     )
 
-    start_elected_related_read(
+    start_answer_related_read(
         state, cast(Materialised, SimpleNamespace(member_facts=served, sv_dcids=list(served)))
     )
 
@@ -2038,6 +2043,7 @@ def _option_points(
         include_option_coverage=True,
         facets_pinned=False,
         open_axes=frozenset(),
+        graph=FakeGraph(),
     )
     assert warning is None
     return {
@@ -2284,7 +2290,7 @@ def test_each_pick_counts_the_facets_of_its_own_election_where_picks_share_a_row
         shape,
         [],
         menus={"flow": ["F1"], "sector": ["A"]},
-        plan=PairPlan(members=(), years=None),
+        plan=PairPlan(members=(), years=None, declared=NO_DECLARED_POLICIES),
         member_facts={},
         served_filter=cast(RoleServedFilter, _DatasetRowsFilter()),
         facets_pinned=False,
@@ -2334,7 +2340,7 @@ def test_a_subject_place_menu_is_counted_from_the_plan_only_when_one_dataset_can
         _derived_shape(_PLACE_AMOUNT, index_rows=rows),
         [],
         menus={"sector": ["A", "B", "D"]},
-        plan=PairPlan(members=(), years=None),
+        plan=PairPlan(members=(), years=None, declared=NO_DECLARED_POLICIES),
         member_facts={row.dcid: IndexMemberFacts(row=row, dataset=_BROAD) for row in _PLACE_ROWS},
         served_filter=None,
         facets_pinned=False,
@@ -4112,8 +4118,8 @@ def test_no_door_serves_a_part_from_a_table_it_excludes_or_does_not_own(monkeypa
                 resubmitted = canonicalise_identity(outcome.identity)
                 assert identity_dataset(resubmitted) == outcome.elected, case
                 stated = stated_members(outcome.identity, None)
-                assert stated is not None, case
-                assert stated.digest == member_digest(outcome.members), case
+                assert stated is not None and stated.family is not None, case
+                assert stated.family.digest == member_digest(outcome.members), case
                 answered += 1
     assert answered > 800
     assert refused > 400

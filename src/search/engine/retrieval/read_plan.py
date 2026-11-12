@@ -7,14 +7,18 @@ and every consumer reads that plan rather than derive its own:
   tuple)` with its candidate facets and the group the preview dispatches for it. The
   members share one group across every place and role tuple the answer names, elected
   over every member's probe as a mint of the answer's Spec elects it (`PairPlan.probes`,
-  `materialise.group_facets.elect_probes`): the group serving the most members. A series
-  the group does not cover serves nothing, so a member the group leaves out serves nothing
-  and its series are `PairPlan.uncovered`. A scope-defaulted read serves the one facet
+  `materialise.group_facets.elect_probes`): the group serving the most members. A plan of
+  one member elects it alone, its method included, as a mint of one StatVar does
+  (`materialise.generation._select_member_facets`), index-resolved or not. Each series
+  names its group's ranked lead (`series_facets`). A series the group does not cover serves
+  nothing, so a member the group leaves out serves nothing and its series are
+  `PairPlan.uncovered`. A scope-defaulted read serves the one facet
   elected across every place (`facet_election.rank_scope_candidates`).
 - A `BulkPlan` reads a role-bearing population whose bound pairs or series pass
   `obs_preview_max_pairs` (`search.observations.preview_mode`) in one read of one facet,
   elected over the merged role index as a group of its members
-  (`facet_election.select_role_candidate`). Its pairs can run to 1.6M and are not listed.
+  (`facet_election.select_role_candidate`). One member elects its method too, as its mint
+  does (`role_election`). Its pairs can run to 1.6M and are not listed.
 
 Both carry the antichain-minimal members the preview reads and the years it reads
 (`plan_years`). The years apply before anything is counted, ranked or built: a per-pair
@@ -44,6 +48,7 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from code_index.shared import get_index
 from materialise.facets import (
+    FACET_AXES,
     MemberProbe,
     overlaps_window,
     read_variable_breadths,
@@ -53,6 +58,7 @@ from materialise.group_facets import elect_probes, is_populated
 from materialise.window import RequestedWindow, latest_period, latest_periods
 from search.engine import extract as _extract
 from search.engine.clients.graph import Facet
+from search.engine.extract import read_window
 from search.engine.reading_coverage import CoverageYears, ReadingCoverage, observed_years
 from search.engine.retrieval.elected_dataset import elected_datasets, publishes
 from search.engine.retrieval.facet_election import (
@@ -69,12 +75,14 @@ from search.models import TimeWindow, in_window
 from search.observations import PreviewMode, preview_mode
 from search.scope_window import read_range as _read_range
 from search.scope_window import role_read_years
-from series_coverage.schema import is_sub_annual
+from series_coverage.coverage_types import COVERAGE_ROLE_AXES
 from statvar_members import AbsentReading, antichain_minimal_ids
 
 if TYPE_CHECKING:
+    from materialise.graph import FacetDefaultPolicy
     from search.engine.clients.sdmx import RoleFacetCandidate, RoleTuple
     from search.engine.extract import DateRequest
+    from search.engine.retrieval.facet_policy import DeclaredPolicies
     from search.engine.retrieval.member_facts import MemberFacts
     from series_coverage.index import BoundRoles
     from series_coverage.index import Role as CoverageRole
@@ -96,6 +104,12 @@ a conversion into each entity's own currency leaves out because no single curren
 entity (`region.convertibility.UnitCoverage.omitted`)."""
 
 type Omissions = frozenset[Omission]
+
+type DeclaredDefaults = Mapping[str, FacetDefaultPolicy]
+"""The default each facet axis of a plan's members declares in the graph, by axis. It is the
+policy every populated member declares on the axis (`plan_declared_defaults`), and every
+election of the plan serves it where the members hold it, as a mint of its Spec does
+(`materialise.group_facets.elect_group`)."""
 
 type Election = Callable[[ReadPlan], Mapping[str, int]]
 """The year each member of a role-bearing plan elects for a `latest` read, counted over the
@@ -140,14 +154,31 @@ def plan_years(
     last_year: int | None = None,
 ) -> PlanYears:
     """The years a preview for `date_request` reads, on every route: a range from
-    `read_range`, whose bounds a role read passes from its coverage horizon. Raise
-    `NoYearsToRead` when the range holds no year."""
+    `read_range` over the years it asks for, whose bounds a role read passes from its
+    coverage horizon. Raise `NoYearsToRead` when the range holds no year."""
     if date_request is None:
         return None
     if date_request.latest:
         return "latest"
     assert date_request.window is not None  # DateRequest's own either/or invariant
-    years = read_range(date_request.window, first_year=first_year, last_year=last_year)
+    return _range_years(date_request.window, first_year=first_year, last_year=last_year)
+
+
+def confirming_years(date_request: DateRequest | None) -> PlanYears:
+    """The years a read confirming an answer's members reads for `date_request`: `plan_years`
+    over `extract.read_window`, which for a trailing span holds every span its answer can
+    settle on. Raise `NoYearsToRead` when the range holds no year."""
+    window = read_window(date_request)
+    if window is None:
+        return plan_years(date_request)
+    return _range_years(window)
+
+
+def _range_years(
+    window: TimeWindow, *, first_year: int | None = None, last_year: int | None = None
+) -> TimeWindow:
+    """`read_range` over `window`, raising `NoYearsToRead` when it holds no year."""
+    years = read_range(window, first_year=first_year, last_year=last_year)
     if years is None:
         raise NoYearsToRead
     return years
@@ -181,11 +212,18 @@ def role_years(date_request: DateRequest | None, horizon: YearHorizon) -> RoleYe
     """The years a role read confirms on, plans and lists for `date_request`, on every
     role route: for a range, `search.scope_window.role_read_years`, the rule the Datasets
     mint admits a window by. Raise `NoYearsToRead` when the range holds no year, and
-    `search.scope_window.WindowTooLong` when it holds more than `scope_max_window_years`."""
-    if date_request is None or date_request.latest:
+    `search.scope_window.WindowTooLong` when it holds more than `scope_max_window_years`,
+    which for a trailing span counts the years it asks for. A trailing span reads every
+    span its answer can settle on (`extract.read_window`)."""
+    window = read_window(date_request)
+    if date_request is None or window is None:
         return RoleYears(years=plan_years(date_request), listed=None)
-    assert date_request.window is not None  # DateRequest's own either/or invariant
-    years = role_read_years(date_request.window, horizon=horizon, clock_year=current_year())
+    years = role_read_years(
+        window,
+        horizon=horizon,
+        clock_year=current_year(),
+        asked_years=None if date_request.trailing is None else date_request.trailing.years,
+    )
     if years is None:
         raise NoYearsToRead
     assert years.start_year is not None and years.end_year is not None  # both bounds set
@@ -361,11 +399,12 @@ def asked_years(date_request: DateRequest | None) -> TimeWindow | None:
     """The years a range request asks for, read as the standard route reads them
     (`read_range` with no coverage floor or cap): an open start stays open, and an open end
     stops at the current year unless the request starts after it. Every window answer names
-    these; a role read's horizon-clamped years (`role_years`) serve its read alone. None
-    for a latest or dateless request, or a range holding no year."""
-    if date_request is None or date_request.window is None:
+    these; a role read's horizon-clamped years (`role_years`) serve its read alone. A
+    trailing span asks for the calendar years its words cover.
+    None for a latest or dateless request, or a range holding no year."""
+    if date_request is None or (window := date_request.window) is None:
         return None
-    return read_range(date_request.window)
+    return read_range(window)
 
 
 def window_gap(plan: ReadPlan | None, years: TimeWindow) -> WindowGap:
@@ -407,14 +446,18 @@ def year_of(date: str | None) -> int | None:
 
 
 def _scope_group(
-    series: Sequence[PlanSeries], *, members: Sequence[str], years: PlanYears
+    series: Sequence[PlanSeries],
+    *,
+    members: Sequence[str],
+    years: PlanYears,
+    declared_defaults: DeclaredDefaults,
 ) -> tuple[tuple[str, ...], frozenset[str]]:
     """The facet ids a scope-defaulted read serves at every place, and the selection a mint
     of the answer's Spec serves (`facet_election.scope_served`). The read serves the one
-    facet elected across every place, led by the places it holds a point at under `years`
-    (`facet_election.rank_scope_candidates`), then the facets continuing the selection past
-    each series' last year, which the mint dispatches too. Empty when no place holds a
-    facet."""
+    facet elected across every place under `declared_defaults`, led by the places it holds
+    a point at under `years` (`facet_election.rank_scope_candidates`), then the facets
+    continuing the selection past each series' last year, which the mint dispatches too.
+    Empty when no place holds a facet."""
     facets_by_entity: dict[str, list[Facet]] = {}
     for s in series:
         facets_by_entity.setdefault(s.role_tuple[0][1], []).extend(s.candidates)
@@ -422,7 +465,9 @@ def _scope_group(
     if not merged:
         return (), frozenset()
     window = plan_window(years)
-    lead = rank_scope_candidates(merged, stat_vars=members, window=window)[0]
+    lead = rank_scope_candidates(
+        merged, stat_vars=members, window=window, policies=declared_defaults
+    )[0]
     selection, continuing = scope_served(lead, merged, window=window)
     return (lead.facet_id, *continuing), frozenset(selection)
 
@@ -451,7 +496,11 @@ def series_probes(
 
 
 def _member_groups(
-    probes: Mapping[str, MemberProbe], *, years: PlanYears, index_sourced: bool
+    probes: Mapping[str, MemberProbe],
+    *,
+    years: PlanYears,
+    index_sourced: bool,
+    declared_defaults: DeclaredDefaults,
 ) -> tuple[dict[str, tuple[Facet, ...]], dict[str, frozenset[str]], tuple[str, ...]]:
     """The facets of the one group every member's preview dispatches at every series, in
     serving order, and each member's selection (`PairPlan.selections`): one election over
@@ -462,8 +511,15 @@ def _member_groups(
     mint of the answer's Spec dispatches too. A member the group does not serve holds no
     facet and no selection, and the populated ones among them are returned last, in member
     order (`GroupElection.unserved`). `index_sourced` lets an index-resolved family's members agree on
-    provenance and unit alone, as its mint does (`MaterialisationRequest.index_sourced`)."""
-    group = elect_probes(probes, window=plan_window(years), index_sourced=index_sourced)
+    provenance and unit alone, as its mint does (`MaterialisationRequest.index_sourced`), and
+    the group serves each of `declared_defaults` it holds. Each member's facets lead with the
+    election's ranked top among those it serves (`GroupElection.served`)."""
+    group = elect_probes(
+        probes,
+        window=plan_window(years),
+        index_sourced=index_sourced,
+        policies=declared_defaults,
+    )
     if group is None:
         return dict.fromkeys(probes, ()), {}, ()
     groups: dict[str, tuple[Facet, ...]] = {}
@@ -484,20 +540,29 @@ def _elect_groups(
     scope: bool,
     probes: Mapping[str, MemberProbe],
     index_sourced: bool,
+    declared_defaults: DeclaredDefaults,
 ) -> tuple[tuple[PlanSeries, ...], str | None, dict[str, frozenset[str]], tuple[str, ...]]:
     """Each series with the group its preview dispatches, a scope read's one facet, each
     member's selection (`PairPlan.selections`), and the members the group leaves out
     (`PairPlan.unserved`), none on a scope read. A series holds its member's group where it
-    has those facets, and no group elsewhere."""
+    has those facets, and no group elsewhere. One member elects as a mint of one StatVar
+    does, with no `index_sourced` exemption for its method."""
     if scope:
-        group, selection = _scope_group(series, members=members, years=years)
+        group, selection = _scope_group(
+            series, members=members, years=years, declared_defaults=declared_defaults
+        )
         return (
             tuple(replace(s, group=_group_of(s.candidates, group)) for s in series),
             group[0] if group else None,
             dict.fromkeys(members, selection),
             (),
         )
-    groups, selections, unserved = _member_groups(probes, years=years, index_sourced=index_sourced)
+    groups, selections, unserved = _member_groups(
+        probes,
+        years=years,
+        index_sourced=index_sourced and len(members) > 1,
+        declared_defaults=declared_defaults,
+    )
     ids = {
         sv: tuple(f.facet_id for f in group if f.facet_id is not None)
         for sv, group in groups.items()
@@ -554,10 +619,11 @@ class PairPlan:
     member order (`GroupElection.unserved`), and `left_out` the members a unit decision
     leaves out (`leaving_out`), whose candidates the filter then removed: both serve nothing,
     and the answer names them (`unserved_members`). `index_sourced` marks an index-resolved
-    family, whose group agrees on provenance and unit alone (`in_elected_datasets`).
-    `roles` is set for a role-bearing read. `probes` holds each member's election input
-    (`plan_pairs`): its candidates merged across every place and role tuple the answer
-    names, and each facet's series count. A unit decision reads the same probes. `places`
+    family, whose group of several members agrees on provenance and unit alone
+    (`in_elected_datasets`), and `declared` the defaults each member declares in the graph,
+    under which every election of the plan runs (`declared_defaults`). `roles` is set for a role-bearing read. `probes` holds each
+    member's election input (`plan_pairs`): its candidates merged across every place and
+    role tuple the answer names, and each facet's series count. A unit decision reads the same probes. `places`
     are the places a standard read was asked for, with or without a series
     (`unserved_entities`); a role-bearing read was asked for the entities `roles` binds.
     `omitted` are the rows a conversion leaves out (`omitting`), whose series the plan no
@@ -576,8 +642,15 @@ class PairPlan:
     places: tuple[str, ...] = ()
     omitted: Omissions = frozenset()
     index_sourced: bool = False
+    declared: DeclaredPolicies = field(kw_only=True)
     probes: Mapping[str, MemberProbe] = field(default_factory=dict, compare=False)
     elect: Election | None = field(default=None, compare=False, repr=False)
+
+    @property
+    def declared_defaults(self) -> DeclaredDefaults:
+        """The defaults every populated member declares (`plan_declared_defaults`), which
+        the plan's groups serve where they hold them."""
+        return plan_declared_defaults(self.declared, populated_members(self))
 
     @property
     def held(self) -> tuple[PlanSeries, ...]:
@@ -700,6 +773,7 @@ class PairPlan:
             }
             or None,
             index_sourced=self.index_sourced,
+            declared=self.declared,
             elect=self.elect,
         )
         return replace(narrowed, omitted=self.omitted, left_out=self.left_out)
@@ -722,6 +796,7 @@ class PairPlan:
             places=self.places,
             probes=self.probes or None,
             index_sourced=self.index_sourced,
+            declared=self.declared,
             elect=self.elect,
         )
         return replace(dated, omitted=self.omitted, left_out=self.left_out)
@@ -741,8 +816,9 @@ class BulkPlan:
     range too long to list, which no bulk read can serve). `facet_id` leads the election
     over them (`facet_election.select_role_candidate`), and `selected` holds each served
     member's facet ids the group's selection serves, `facet_id` first where the member holds
-    it (`facet_election.role_group_selection`): under `index_sourced` a member holding the
-    group's provenance and unit under another method's facet serves that facet. `continuing`
+    it (`facet_election.role_group_selection`): under `index_sourced` a member of several
+    holding the group's provenance and unit under another method's facet serves that facet,
+    and one member serves its elected method alone (`role_election`). `continuing`
     holds the facets continuing the lead past its last year
     (`facet_election.role_continuation`), which the read dispatches beside the selection, as
     a mint of the answer's Spec does (`role_election`). `unserved` holds the populated
@@ -753,7 +829,9 @@ class BulkPlan:
     (`member_year`), as a mint reduces each StatVar to its own period. `elect` is the
     election the plan was built with, which every plan derived from it runs over its own
     rows (`elected_years`). `index_sourced` marks an index-resolved family, whose members
-    agree on provenance and unit alone (`in_elected_datasets`). `left_out` holds the members
+    agree on provenance and unit alone (`in_elected_datasets`), and `declared` the defaults
+    each member declares in the graph, under which the election runs, as
+    `PairPlan.declared` does. `left_out` holds the members
     a unit decision leaves out (`leaving_out`), as `PairPlan.left_out` does.
     """
 
@@ -769,8 +847,15 @@ class BulkPlan:
     omitted: Omissions = frozenset()
     omitted_served: frozenset[str] = frozenset()
     index_sourced: bool = False
+    declared: DeclaredPolicies = field(kw_only=True)
     left_out: frozenset[str] = frozenset()
     elect: Election | None = field(default=None, compare=False, repr=False)
+
+    @property
+    def declared_defaults(self) -> DeclaredDefaults:
+        """The defaults every populated member declares (`plan_declared_defaults`), which
+        the election serves where the members hold them."""
+        return plan_declared_defaults(self.declared, populated_members(self))
 
     def leaving_out(self, members: Collection[str]) -> BulkPlan:
         """This plan naming `members` as left out by the answer's unit decision
@@ -974,7 +1059,11 @@ class BulkPlan:
     @property
     def observation_count(self) -> int:
         """The observations the read serves across every pair in its member's years
-        (`member_pairs`, or `counted_pairs` when its pairs read several facets)."""
+        (`member_pairs`, or `counted_pairs` when its pairs read several facets).
+
+        The coverage index counts years with data, one per observation because the graph
+        release refuses a facet whose period is not `P1Y` and a role-bearing series with
+        two observations in a year (`graph_release.platform.build_platform_parts`)."""
         if self.merges:
             return sum(sum(counts.values()) for counts in self.counted_pairs.values())
         return sum(
@@ -1027,6 +1116,7 @@ class BulkPlan:
             members=self.members,
             read_years=self.read_years,
             index_sourced=self.index_sourced,
+            declared=self.declared,
         )
         return replace(self, **election._asdict(), candidates=candidates)
 
@@ -1041,6 +1131,7 @@ class BulkPlan:
             members=self.members,
             read_years=listed,
             index_sourced=self.index_sourced,
+            declared=self.declared,
         )
         return replace(self, **election._asdict(), years=years, read_years=listed)
 
@@ -1105,14 +1196,28 @@ def role_election(
     members: Sequence[str],
     read_years: Sequence[str] | None,
     index_sourced: bool = False,
+    declared: DeclaredPolicies,
 ) -> RoleElection:
-    """The election a bulk read of `members` serves from `candidates` inside `read_years`:
-    the lead of the members' one group (`facet_election.select_role_candidate`), each
-    member's facet ids its selection serves and the members it leaves out
-    (`facet_election.role_group_selection`), and the facets continuing the lead there
-    (`facet_election.role_continuation`), or None and nothing with no candidate."""
+    """The election a bulk read of `members` serves from `candidates` inside `read_years`
+    under the defaults every member `candidates` populates declares (`declared`,
+    `plan_declared_defaults`): the lead of the members' one group
+    (`facet_election.select_role_candidate`), each member's facet ids its selection serves
+    and the members it leaves out (`facet_election.role_group_selection`), and the facets
+    continuing the lead there (`facet_election.role_continuation`), or None and nothing
+    with no candidate. `index_sourced` lets several members agree on provenance and unit
+    alone. One member elects its method too, as a mint of one StatVar does
+    (`materialise.generation._select_member_facets`), so every election and re-election of
+    a one-member read serves the facets that mint serves."""
+    declared_defaults = plan_declared_defaults(
+        declared, _bulk_populated(candidates, members=members)
+    )
+    index_sourced = index_sourced and len(members) > 1
     best = select_role_candidate(
-        candidates, stat_vars=members, time_period=read_years, index_sourced=index_sourced
+        candidates,
+        stat_vars=members,
+        time_period=read_years,
+        index_sourced=index_sourced,
+        policies=declared_defaults,
     )
     if best is None:
         return RoleElection(None, {}, (), ())
@@ -1122,6 +1227,7 @@ def role_election(
         time_period=read_years,
         lead=best.facet_id,
         index_sourced=index_sourced,
+        policies=declared_defaults,
     )
     return RoleElection(
         best.facet_id,
@@ -1150,24 +1256,12 @@ def _collapsed_counts(
 ) -> dict[RoleTuple, int]:
     """`_tuple_counts` across facets a mint collapses (`materialise.facet_collapse`), which
     keeps one row per date of facets sharing a unit, method and provenance; facets of
-    different methods add. Coverage holds counts by year and no dates, so annual facets of
-    one identity count a tuple's year once, at the larger of their counts there, which is
-    exact, since each dates a year once. A sub-annual facet
-    (`series_coverage.schema.is_sub_annual`) adds its own count (`_tuple_counts`): its
-    dates within a year may or may not repeat another facet's, so the sum is an upper
-    bound, the safe side of the row gate (`role_bulk_rank_max_rows`). Inside a window the
-    index counts a row's years alone (`CoverageIndex.pairs`), for one facet as for
-    several, so a sub-annual count there is the index's year count."""
+    different methods add. Coverage holds counts by year and no dates, so facets of one
+    identity count a tuple's year once, at the larger of their counts there, which is
+    exact, since every facet the index holds is annual and dates a year once."""
     tuples: dict[RoleTuple, int] = {}
-    annual: list[RoleFacetCandidate] = []
-    for c in candidates:
-        if is_sub_annual(c.observation_period):
-            for role_tuple, n_obs in _tuple_counts([c], first, last).items():
-                tuples[role_tuple] = tuples.get(role_tuple, 0) + n_obs
-        else:
-            annual.append(c)
     by_year: dict[tuple[RoleTuple, tuple[str | None, ...], int], int] = {}
-    for c in annual:
+    for c in candidates:
         identity = (c.unit, c.measurement_method, c.provenance_id)
         for role_tuple, counts in c.pairs.year_counts(first_year=first, last_year=last):
             for year, n_obs in counts:
@@ -1370,9 +1464,11 @@ def served_dates(plan: ReadPlan) -> dict[str, ServedDates]:
 
 def series_facets(plan: ReadPlan | None) -> list[Facet | RoleBulkCandidate]:
     """One facet per series `plan` serves, carrying the provenance, method and unit its
-    preview dispatches: the elected facet that leads a served series' group, whose facets
-    share all three save the estimated method continuing it past its last year, or in bulk
-    each facet the group's selection serves (`BulkPlan.served_facets`), the lead first."""
+    preview dispatches: the election's ranked lead among a served series' group
+    (`GroupElection.served`), whose facets share all three save the estimated method
+    continuing it past its last year and, in an index-resolved family of several members,
+    the method each series holds, or in bulk each facet the group's selection serves
+    (`BulkPlan.served_facets`), the lead first."""
     if plan is None:
         return []
     if isinstance(plan, BulkPlan):
@@ -1473,19 +1569,64 @@ def serves_nothing(plan: ReadPlan) -> bool:
     return not plan.served and not plan.unservable
 
 
+def held_stat_vars(plan: ReadPlan) -> frozenset[str]:
+    """The StatVars `plan` holds a point of in its years: those of its held series
+    (`PairPlan.held`), or in bulk the members its read serves while it serves any pair."""
+    if isinstance(plan, PairPlan):
+        return frozenset(s.stat_var for s in plan.held)
+    if plan.population == 0:
+        return frozenset()
+    return frozenset(plan.served_members)
+
+
+def newest_served_year(plan: ReadPlan) -> int | None:
+    """The newest year any series `plan` serves holds a point in, inside its years
+    (`served_dates`), or None when it serves no dated point."""
+    lasts = (year_of(last) for _first, last in served_dates(plan).values())
+    return max((year for year in lasts if year is not None), default=None)
+
+
+def misses_judged_years(plan: ReadPlan, date_request: DateRequest | None) -> bool:
+    """Whether `plan` holds no data in the years `date_request` judges by
+    (`extract.DateRequest.judged`), so the answer is one for the window: it serves nothing
+    (`serves_nothing`), or for a span counted back from now every point it serves lies
+    before the judged years, though inside the wider years it read to confirm its members."""
+    if serves_nothing(plan):
+        return True
+    if date_request is None or date_request.trailing is None:
+        return False
+    judged = date_request.judged.window
+    assert judged is not None and judged.start_year is not None
+    newest = newest_served_year(plan)
+    return newest is None or newest < judged.start_year
+
+
 def populated_members(plan: ReadPlan) -> frozenset[str]:
     """The members of `plan` a mint counts as populated (`materialise.group_facets.is_populated`):
     a per-series plan's members whose probe or series holds a candidate carrying a facet id,
     a bulk plan's those a candidate holds pairs for."""
     if isinstance(plan, BulkPlan):
-        return frozenset(
-            sv
-            for sv in plan.members
-            if is_populated(c for c in plan.candidates.values() if sv in c.by_sv)
-        )
+        return _bulk_populated(plan.candidates, members=plan.members)
+    return _pair_populated(plan.series, plan.probes)
+
+
+def _bulk_populated(
+    candidates: Mapping[str, RoleBulkCandidate], *, members: Sequence[str]
+) -> frozenset[str]:
+    """The `members` a candidate of a bulk read holds pairs for (`populated_members`)."""
     return frozenset(
-        sv for sv, probe in plan.probes.items() if is_populated(probe.candidates)
-    ) | frozenset(s.stat_var for s in plan.series if is_populated(s.candidates))
+        sv for sv in members if is_populated(c for c in candidates.values() if sv in c.by_sv)
+    )
+
+
+def _pair_populated(
+    series: Iterable[PlanSeries], probes: Mapping[str, MemberProbe]
+) -> frozenset[str]:
+    """The members whose probe or series holds a candidate carrying a facet id
+    (`populated_members`)."""
+    return frozenset(
+        sv for sv, probe in probes.items() if is_populated(probe.candidates)
+    ) | frozenset(s.stat_var for s in series if is_populated(s.candidates))
 
 
 def unserved_members(plan: ReadPlan | None) -> tuple[str, ...]:
@@ -1506,9 +1647,6 @@ def unserved_members(plan: ReadPlan | None) -> tuple[str, ...]:
 type RoleEntity = tuple[str, str]
 """An entity on one role: its role key as an identity keys it (`spec_id.entity_role_key`:
 `observationAbout`, `origin` or `destination`) and its dcid."""
-
-_AXIS_FOR_COVERAGE_ROLE: Mapping[str, str] = {"recipient": "destination", "donor": "origin"}
-"""Each coverage role's flow axis, the role key an identity binds its entities under."""
 
 
 def unserved_entities(plan: ReadPlan | None) -> frozenset[RoleEntity]:
@@ -1536,12 +1674,11 @@ def unserved_entities(plan: ReadPlan | None) -> frozenset[RoleEntity]:
             return frozenset()
         role_names = plan.roles.role_names if plan.roles is not None else {}
         key_by_role_name = {
-            name: _AXIS_FOR_COVERAGE_ROLE.get(coverage_role, coverage_role)
-            for coverage_role, name in role_names.items()
+            name: COVERAGE_ROLE_AXES[coverage_role] for coverage_role, name in role_names.items()
         }
         asked = {("observationAbout", dcid) for dcid in plan.places}
         asked.update(
-            (_AXIS_FOR_COVERAGE_ROLE.get(coverage_role, coverage_role), dcid)
+            (COVERAGE_ROLE_AXES[coverage_role], dcid)
             for coverage_role, dcids in bound.items()
             for dcid in dcids
         )
@@ -1563,22 +1700,42 @@ def unserved_entities(plan: ReadPlan | None) -> frozenset[RoleEntity]:
                 for _sv, c, (first, last) in plan.member_pairs()
             )
         )
-        key = _AXIS_FOR_COVERAGE_ROLE.get(coverage_role, coverage_role)
+        key = COVERAGE_ROLE_AXES[coverage_role]
         unserved.update((key, dcid) for dcid in asked_dcids - served_dcids)
     return frozenset(unserved)
+
+
+def plan_declared_defaults(
+    declared: DeclaredPolicies, members: Iterable[str]
+) -> dict[str, FacetDefaultPolicy]:
+    """The default every one of `members` declares on each facet axis (`declared`), by axis.
+    An axis some member declares nothing on, or on which members declare different defaults,
+    is absent and the deployment ranking chooses it. A plan passes its populated members
+    (`populated_members`), as a mint's group agrees over its populated members
+    (`materialise.group_facets._group_declared_policies`)."""
+    members = list(members)
+    defaults: dict[str, FacetDefaultPolicy] = {}
+    for axis in FACET_AXES:
+        policies = {declared.get(sv, {}).get(axis) for sv in members}
+        if len(policies) == 1 and (policy := policies.pop()) is not None:
+            defaults[axis] = policy
+    return defaults
 
 
 def in_elected_datasets(plan: ReadPlan, member_facts: Mapping[str, MemberFacts]) -> ReadPlan:
     """`plan` with each member of an index-resolved family keeping only the candidates its
     elected dataset publishes (`elected_dataset.publishes`), and every group and bulk facet
-    elected again from them (`narrowed`). A mint filters a member's candidates by the same
-    test before it ranks (`materialise.facets.dataset_candidates`), so an answer and a mint
-    of its Spec elect within one dataset, and a member holding data under another dataset
-    alone serves nothing. Every resolver passes its plan through here. A plan every member of
-    which has an elected dataset reads an index-resolved family, so its group agrees on
-    provenance and unit alone (`PairPlan.index_sourced`, `BulkPlan.index_sourced`), as the
-    mint's does (`MaterialisationRequest.index_sourced`). A plan none of whose members has an
-    elected dataset is returned as it is."""
+    elected again from them (`narrowed`), under the defaults its populated members then
+    declare (`declared_defaults`). A mint filters a member's candidates by the same test
+    before it ranks (`materialise.facets.dataset_candidates`) and agrees on declared defaults
+    over the members still populated (`materialise.group_facets._group_declared_policies`),
+    so an answer and a mint of its Spec elect within one dataset and under one method, and a
+    member holding data under another dataset alone serves nothing. Every resolver passes
+    its plan through here. A plan every member of which has an elected dataset reads an
+    index-resolved family, so its group agrees on provenance and unit alone
+    (`PairPlan.index_sourced`, `BulkPlan.index_sourced`), as the mint's does
+    (`MaterialisationRequest.index_sourced`). A plan none of whose members has an elected
+    dataset is returned as it is."""
     datasets = elected_datasets(member_facts)
     if not datasets:
         return plan
@@ -1610,6 +1767,7 @@ def plan_pairs(
     places: Sequence[str] = (),
     deadline: float | None = None,
     index_sourced: bool = False,
+    declared: DeclaredPolicies,
     elect: Election | None = None,
 ) -> PairPlan:
     """A per-series plan over `series`, each member's group elected under `years` from its
@@ -1619,7 +1777,9 @@ def plan_pairs(
     plan passes the coverage probe a mint reads (`materialise.facets.coverage_probe`), since
     its series are only the role tuples holding a point in the years, and `elect`, the
     election of the year its `latest` read serves each member in. `index_sourced` marks an
-    index-resolved family (`PairPlan.index_sourced`)."""
+    index-resolved family (`PairPlan.index_sourced`), and `declared` the defaults each
+    member declares, those every populated member declares serving where a group holds them
+    (`PairPlan.declared_defaults`)."""
     series = list(series)
     if probes is None:
         probes = series_probes(
@@ -1627,6 +1787,7 @@ def plan_pairs(
             places=() if scope else places,
             deadline=deadline,
         )
+    declared_defaults = plan_declared_defaults(declared, _pair_populated(series, probes))
     elected, facet_id, selections, unserved = _elect_groups(
         series,
         members=members,
@@ -1634,6 +1795,7 @@ def plan_pairs(
         scope=scope,
         probes=probes,
         index_sourced=index_sourced,
+        declared_defaults=declared_defaults,
     )
     return PairPlan(
         members=tuple(members),
@@ -1647,6 +1809,7 @@ def plan_pairs(
         probes=probes,
         places=tuple(places),
         index_sourced=index_sourced,
+        declared=declared,
         elect=elect,
     )
 
@@ -1662,9 +1825,11 @@ def plan_role_read(
     pair_series: Callable[[Sequence[str]], Iterable[PlanSeries]],
     member_probes: Callable[[Sequence[str]], Mapping[str, MemberProbe]],
     roles: PlanRoles,
+    declared: DeclaredPolicies,
     elect: Election,
 ) -> ReadPlan:
-    """Plan a role-bearing preview's read over `sv_dcids`.
+    """Plan a role-bearing preview's read over `sv_dcids`, every election under the defaults
+    its members declare (`declared`).
 
     `sv_dcids` are the members the role-class election keeps
     (`role_resolve._elect_role_class`, the mint's `statvar_members.elect_role_class`), and
@@ -1695,6 +1860,7 @@ def plan_role_read(
             years=years,
             roles=roles,
             probes=member_probes(members),
+            declared=declared,
             elect=elect,
         )
     merged = candidates(members)
@@ -1703,9 +1869,10 @@ def plan_role_read(
         members=members,
         years=years,
         read_years=listed,
-        **role_election(merged, members=members, read_years=listed)._asdict(),
+        **role_election(merged, members=members, read_years=listed, declared=declared)._asdict(),
         candidates=merged,
         roles=roles,
+        declared=declared,
         elect=elect,
     )
 
@@ -1718,11 +1885,13 @@ def plan_standard(
     scope: bool = False,
     places: Sequence[str] = (),
     deadline: float | None = None,
+    declared: DeclaredPolicies,
 ) -> PairPlan:
     """A standard preview's plan: each `(stat_var, place)` series of `members` read at
-    `observationAbout`, or with `scope` one facet elected across every place. `places` are
-    the places the read was asked for, including any holding no facet. A plan at one place
-    reads each variable's whole breadth by `deadline` when a tie needs it (`plan_pairs`)."""
+    `observationAbout`, or with `scope` one facet elected across every place, under the
+    defaults the members declare (`declared`). `places` are the places the read was asked
+    for, including any holding no facet. A plan at one place reads each variable's whole
+    breadth by `deadline` when a tie needs it (`plan_pairs`)."""
     kept = set(members)
     return plan_pairs(
         (
@@ -1737,4 +1906,5 @@ def plan_standard(
         scope=scope,
         places=places,
         deadline=deadline,
+        declared=declared,
     )

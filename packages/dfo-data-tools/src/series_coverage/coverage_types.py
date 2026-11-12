@@ -8,9 +8,13 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Final, Literal
+
+from dfo_platform.roles import RoleAxis
 
 Role = Literal["donor", "recipient"]
+COVERAGE_ROLE_AXES: Final[Mapping[Role, RoleAxis]] = {"donor": "origin", "recipient": "destination"}
+"""The flow axis each coverage role's party column holds (`series_coverage.schema`)."""
 # Missing role keys leave that axis open. An empty frozenset matches no rows.
 BoundRoles = Mapping[Role, frozenset[str]]
 
@@ -38,7 +42,7 @@ class FacetCoverage:
 
 @dataclass(frozen=True, slots=True)
 class FacetSpan:
-    """One `facet_id`'s observation count and first and last years with data, summed across
+    """One `facet_id`'s `n_obs` and first and last years with data, summed across
     surviving donor/recipient rows: `FacetCoverage`'s `n_obs`, `first_year`, `last_year` and
     `first_series_end` without its year counts."""
 
@@ -122,10 +126,10 @@ class ServedExtent:
 
 @dataclass(frozen=True, slots=True)
 class Estimate:
-    """Estimated fetch cost before network I/O. `rows` counts observations
-    and `requests` counts SDMX GETs for covered data. `CoverageIndex.estimate`
-    leaves `uncovered_requests` at zero. Admission code counts requests whose
-    StatVars have no coverage row.
+    """Estimated fetch cost before network I/O. `rows` counts observations, which equal
+    the years with data (`series_coverage.schema`), and `requests` counts SDMX GETs for
+    covered data. `CoverageIndex.estimate` leaves `uncovered_requests` at zero. Admission
+    code counts requests whose StatVars have no coverage row.
     """
 
     rows: int

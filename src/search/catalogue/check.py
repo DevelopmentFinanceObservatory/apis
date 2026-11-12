@@ -34,12 +34,11 @@ from search.models import (
     ResolveResponse,
     SpecObservations,
 )
-from series_coverage.coverage_types import Role
+from series_coverage.coverage_types import COVERAGE_ROLE_AXES, Role
 
 ROLE_KEYS: Final[Mapping[Role | None, EntityRoleKey]] = {
     None: "observationAbout",
-    "donor": "origin",
-    "recipient": "destination",
+    **COVERAGE_ROLE_AXES,
 }
 """The entity role an example's place fills on the wire, by its coverage
 role. An example with no role names the place its data is about."""
@@ -75,6 +74,7 @@ DATA_DESCRIBING_DEPARTURES: Final[frozenset[DepartureCode]] = frozenset(
         "whole_total_read",
         "whole_total_unpublished",
         "direction_inferred",
+        "organisation_read_as_party",
         "scope_limited",
     }
 )
@@ -82,8 +82,8 @@ DATA_DESCRIBING_DEPARTURES: Final[frozenset[DepartureCode]] = frozenset(
 was asked: the values are modelled, a named group was read as its members, a
 flow side was read as the total its source publishes for its whole population, or as
 every party its source holds there where it publishes no such total, a place named
-without a direction was read in the one direction holding data there, a check covered
-only some values. An example may carry them."""
+without a direction was read in the one direction holding data there, an organisation was
+read as a party to the flow, a check covered only some values. An example may carry them."""
 
 REFUSING_DEPARTURES: Final[frozenset[DepartureCode]] = frozenset(
     {
@@ -95,11 +95,13 @@ REFUSING_DEPARTURES: Final[frozenset[DepartureCode]] = frozenset(
         "member_unavailable",
         "year_unavailable",
         "direction_discarded",
+        "organisation_read_as_source",
     }
 )
 """Departures that say the answer is for a different question than the
 sentence asked: another measure, no operation, no breakdown, a place, variable or
-year without values, a dropped direction. An answer carrying one fails the example
+year without values, a dropped direction, an organisation named as a party read as the
+source. An answer carrying one fails the example
 (`departed`). Together with `DATA_DESCRIBING_DEPARTURES` this is every
 `DepartureCode`, so a code added to the vocabulary fails a test until it is
 put on a side."""

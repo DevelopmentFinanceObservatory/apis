@@ -291,7 +291,8 @@ def test_a_frame_cut_of_party_totals_is_named_by_the_cut_and_its_groupby_in_any_
 
 def test_a_frame_layout_file_decodes_as_data_mcp_reads_it() -> None:
     converted = json.dumps(
-        {"base_year": 2021, "currency": "EUR", "prices": "constant"}, separators=(",", ":")
+        {"base_year": 2021, "currency": "EUR", "deflation_basis": "donor", "prices": "constant"},
+        separators=(",", ":"),
     )
     table = pa.table(
         {
@@ -312,7 +313,7 @@ def test_a_frame_layout_file_decodes_as_data_mcp_reads_it() -> None:
     assert frame.table.column("financingRecipient_party_kind").to_pylist() == ["party", "untyped"]
     units = [row[frame.columns.index("unit")] for row in frame.rows]
     assert units[0] == "USDollar"
-    assert isinstance(units[1], UnitRequest)
+    assert units[1] == UnitRequest("EUR", "constant", 2021, deflation_basis="donor")
 
 
 def test_a_stored_root_read_with_options_the_runner_does_not_read_refuses() -> None:

@@ -37,6 +37,7 @@ from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient, RoleFacetIndex
 from search.engine.core import ResolveRecord, resolve_async, resolve_events
+from search.engine.envelope import _terminal_events, now_ms
 from search.engine.errors import GraphInfraError
 from search.engine.events import Event
 from search.engine.extract import DateRequest
@@ -50,8 +51,10 @@ from search.engine.region.place_options import PlaceOptionsPool
 from search.engine.region.result import FacetAxisFilter
 from search.engine.region.state import EngineOptions
 from search.engine.response_cache import ResponseCache
+from search.engine.response_cache_flow import CacheScope
 from search.engine.response_cache_memo import PartMemo
 from search.engine.retrieval.facet_election import merge_role_candidates
+from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
 from search.engine.retrieval.member_facts import MemberFacts
 from search.engine.retrieval.read_plan import (
     BulkPlan,
@@ -96,6 +99,13 @@ from tests.materialise._scope_availability import NO_SCOPE_READ
 from tests.materialise.conftest import FakeGraphReader
 
 _TEST_PREPOSITION_RE = re.compile(r"\b(from|to)\b", re.IGNORECASE)
+
+
+async def observe_answer(scope: CacheScope, response: ResolveResponse) -> None:
+    """Drive `scope` through an answer's `response` and `done` events, as a request
+    without trailing events streams them (`CacheScope.observe`)."""
+    for event in _terminal_events(response, start_ms=now_ms(), degraded_leg=False):
+        await scope.observe(event)
 
 
 def door_roles_for_test_query(query: str, names: Sequence[str]) -> dict[str, list[DoorRole]]:
@@ -217,7 +227,7 @@ def pair_plan(
                 series.append(
                     PlanSeries(stat_var=sv, role_tuple=role_tuple, candidates=tuple(candidates))
                 )
-    return plan_pairs(series, members=sv_dcids, years=years)
+    return plan_pairs(series, members=sv_dcids, years=years, declared=NO_DECLARED_POLICIES)
 
 
 @dataclass
@@ -261,6 +271,7 @@ def harness_plan(
             members=members,
             years=window,
             scope=True,
+            declared=NO_DECLARED_POLICIES,
         )
     role_bearing = "observationAbout" not in obs_entities
     pairs = math.prod(len(dcids) for dcids in obs_entities.values()) * len(members)
@@ -307,8 +318,11 @@ def bulk_plan(
         members=tuple(members),
         years=window,
         read_years=listed,
-        **role_election(merged, members=members, read_years=listed)._asdict(),
+        **role_election(
+            merged, members=members, read_years=listed, declared=NO_DECLARED_POLICIES
+        )._asdict(),
         candidates=merged,
+        declared=NO_DECLARED_POLICIES,
     )
 
 

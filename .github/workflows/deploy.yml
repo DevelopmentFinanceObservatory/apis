@@ -276,11 +276,11 @@ jobs:
 
       # The datasets maintenance job runs `datasets-maintenance` tasks (the
       # reconciliation sweep, aging terminal operations) on its own Scheduler,
-      # so the deploy points it at the new image here and executes it only for
-      # the settle step after the services move. It moves after both
-      # migrations, so its next run finds the schema this image expects. The
-      # job and its variable come from `infra`, and the upfront variable
-      # check refuses the deploy when the variable is missing.
+      # so the deploy points it at the new image here and executes it for the
+      # settle and backfill-descriptions steps after the services move. It
+      # moves after both migrations, so its next run finds the schema this
+      # image expects. The job and its variable come from `infra`, and the
+      # upfront variable check refuses the deploy when the variable is missing.
       - name: Point the datasets maintenance job at the new image
         if: steps.decide.outputs.deploy == 'true'
         run: |

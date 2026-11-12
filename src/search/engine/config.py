@@ -270,6 +270,19 @@ class SearchSettings(BaseSettings):
     # pipeline deadline handling can proceed.
     llm_timeout_s: float = 30
 
+    # Seconds the second of two samples (`clients.llm.two_samples`) may run after its first
+    # is read, added to what the live call took when the LLM memo served the first. Past it
+    # the second is cut (`clients.llm.Agreement.read_first`): its read is not judged and
+    # nothing is stored. An SSE answer never waits for it; `done`, and so the buffered JSON
+    # response, waits at most this bound after the extraction's first sample, or about one
+    # model call more for a repeat of a wording whose second was cut: once where the repeat's
+    # second answers in time, and on every repeat where it takes longer than that call plus
+    # this bound, since it is cut each time.
+    # Both samples go out at the same moment. Over 120 such pairs of extraction and
+    # exclusion-read calls against gemini-3.5-flash-lite, the second answered at most 0.66 s
+    # after the first, 0.36 s at the 95th percentile, so 1 s waits out a healthy second.
+    llm_second_sample_settle_s: float = 1.0
+
     # clients/llm.py limits each event loop to this many HTTP/1.1 connections.
     # Requests over the cap wait for a free connection up to llm_timeout_s.
     llm_max_concurrency: int = 32
@@ -840,6 +853,11 @@ class SearchSettings(BaseSettings):
             )
         if self.llm_timeout_s <= 0:
             raise ValueError(f"SEARCH_LLM_TIMEOUT_S must be > 0; got {self.llm_timeout_s!r}")
+        if self.llm_second_sample_settle_s <= 0:
+            raise ValueError(
+                "SEARCH_LLM_SECOND_SAMPLE_SETTLE_S must be > 0; got "
+                f"{self.llm_second_sample_settle_s!r}"
+            )
         if self.llm_max_concurrency < 1:
             raise ValueError(
                 f"SEARCH_LLM_MAX_CONCURRENCY must be >= 1; got {self.llm_max_concurrency!r}"

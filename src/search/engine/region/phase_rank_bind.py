@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import re
@@ -14,16 +15,17 @@ from datetime import date
 from typing import Literal, NamedTuple
 
 from code_index.labels import without_property_suffix
-from code_index.members import ProvenanceScope, is_opt_in
-from code_index.query import CodeIndex, fold_word
+from code_index.members import ProvenanceScope, eligible_among, is_opt_in
+from code_index.query import CodeIndex, IndexFamily, fold_word
 from code_index.shared import get_index, get_measure_index
-from code_index.tokens import Token, text_matches, tokenize, word_tokens
+from code_index.tokens import Token, tokenize, word_tokens
 from code_index.types import (
     CodeRow,
     DatasetDeclaration,
     MeasureAxis,
     MeasureIndex,
     MeasureValueRow,
+    NotedWord,
     StatedWord,
 )
 from origin_catalogue import current_catalogue
@@ -35,6 +37,7 @@ from search.engine.bind import (
     rank_elected,
     sole_option_properties,
     split_stray_bindings,
+    stated_reading,
 )
 from search.engine.bind_repair import (
     _label_has_negated_occurrence,
@@ -54,13 +57,14 @@ from search.engine.binders.house_policy import (
     apply_house_policies,
     chooses_on,
     context_of,
+    differ_on_basis,
     shape_facts,
 )
-from search.engine.clients.graph import family_ref
+from search.engine.clients.graph import family_reads, family_ref
+from search.engine.clients.llm import sum_usage
 from search.engine.config import settings
-from search.engine.degraded_reads import fail_open_reads
 from search.engine.departures import qualifier_property
-from search.engine.envelope import _emit_step, _sum_usage, now_ms
+from search.engine.envelope import _emit_step, now_ms
 from search.engine.errors import GraphInfraError, LLMOutputRefused
 from search.engine.events import FrameEvent
 from search.engine.frame import Frame, SlotDefault, with_recall
@@ -74,12 +78,14 @@ from search.engine.function_words import (
     RATIO_WORDS,
 )
 from search.engine.interpretation import Interpretation, InterpretationSet
+from search.engine.measure_verdict import measure_verdicts
 from search.engine.qualifier_match import (
     BREAKDOWN_FILLER_NOUNS,
     CONNECTIVES,
     UNION_CONNECTIVES,
     CodedQualifier,
     GoverningConnective,
+    NamedMeasure,
     QualifierMatch,
     QualifierSpan,
     QualifierTie,
@@ -91,13 +97,19 @@ from search.engine.qualifier_match import (
     _row_system,
     bindable_codes,
     breakdown_spans,
+    declared_measures_named,
     governing_connectives,
+    holds_words,
     joins,
     match_unsupported_qualifier_phrases,
+    measure_value_names,
+    measure_values_named,
     names_plain_name,
     plural_forms,
     read_by_vocabulary,
     slot_noun_named,
+    token_occurrences,
+    with_role_preposition,
 )
 from search.engine.quantity import (
     PER_HEAD_RATE_BASE_RE,
@@ -112,9 +124,12 @@ from search.engine.quantity import (
 )
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region.admissibility import (
+    draft_evidence,
     judge_measure_and_roles,
     judge_pinned_parts,
+    own_member_verdicts,
     pinned_code_records,
+    rule_four_verdicts,
 )
 from search.engine.region.alternate_guard import (
     leaves_price_basis_unread,
@@ -126,11 +141,12 @@ from search.engine.region.availability import (
     menu_read_places,
     read_menu_availability,
     series_at_places,
-    undirected_axis,
 )
 from search.engine.region.codes import AVAILABILITY_PROBE_FAILED, DEGENERATE_BINDING_DETECTED
 from search.engine.region.decisions import PartyReadingWithdrawn
+from search.engine.region.flow_governance import governs
 from search.engine.region.grounding import _shape_with_taxonomy
+from search.engine.region.phase_timing import timed_step
 from search.engine.region.place_roles import (
     bind_place_roles,
     held_party_words,
@@ -165,6 +181,8 @@ from search.engine.region.state import (
     unapplied_departure,
     with_requirement,
 )
+from search.engine.region.undirected import settle_undirected_axis
+from search.engine.region.value_labels import draft_value_labels, model_only_values, value_names
 from search.engine.retrieval.bound_values import (
     DefaultReading,
     applies_one_of,
@@ -174,6 +192,7 @@ from search.engine.retrieval.bound_values import (
     collapse_measure_families,
     declared_datasets,
     elect_five_tuple_family,
+    five_tuple_families,
     five_tuple_member_facts,
     held_family_exact,
     index_carries_shape,
@@ -277,15 +296,16 @@ def _country_breadth(shape: ShapeDraft) -> int:
 
 def _role_bearing_outranks(eligible_shapes: Sequence[ShapeDraft]) -> bool:
     """Whether a role-bearing shape among `eligible_shapes` outranks the subject-only ones:
-    the top-ranked shape (`_rank_key`) is role-bearing, or a role-bearing shape meets the
-    score floor on its own measured score. A role-bearing shape the index carries passes
+    the top-ranked shape (`_rank_key`) is role-bearing, or a role-bearing shape's own
+    measured score clears ``SEARCH_UNKNOWN_SCORE_THRESHOLD``. A role-bearing shape the index carries passes
     the floor whatever its score, so its presence alone says nothing of the query: two
-    flows recalled at 0.61 for "GDP of Ethiopia" do not outrank GDP shapes above them."""
+    flows recalled at 0.61 for "GDP of Ethiopia" do not outrank GDP shapes above them. The
+    rule is `flow_governance.governs`, which the raw-text door's organisation reading shares."""
     if not eligible_shapes:
         return False
-    floor = settings().unknown_score_threshold
-    return is_role_bearing(min(eligible_shapes, key=_rank_key)) or any(
-        is_role_bearing(s) and s.measured_score is not None and s.measured_score >= floor
+    top = min(eligible_shapes, key=_rank_key)
+    return any(
+        is_role_bearing(s) and governs(top=s is top, score=s.measured_score)
         for s in eligible_shapes
     )
 
@@ -385,22 +405,62 @@ def _entity_spans(state: ResolveState, tokens: Sequence[Token]) -> list[tuple[in
             *state.entity_texts,
             *(role.span for roles in state.entity_roles.values() for role in roles),
         )
-        for occurrence in _token_occurrences(tokens, text)
+        for occurrence in token_occurrences(tokens, text)
     ]
 
 
 def _quantity_phrase(state: ResolveState) -> str:
     """The variable phrase the quantity read reads: the variable less the words the part's
-    entities own (`_entity_spans`), so a place named inside the phrase is never read as a
-    base."""
+    entities own (`_entity_spans`), each with the role preposition straight before it
+    (`role_text.ROLE_PREPOSITIONS`), so a place named inside the phrase is never read as a
+    base. The preposition goes with its place: "debt service to China" reads as "debt
+    service", since "debt service to" reads as a ratio to a missing base, as "debt to GDP"
+    is one."""
     variable = state.variable
+    tokens = tokenize(variable)
     words: list[str] = []
     at = 0
-    for start, end in sorted(_entity_spans(state, tokenize(variable))):
+    for start, end in sorted(with_role_preposition(_entity_spans(state, tokens), tokens)):
         words.append(variable[at:start] if start > at else "")
         at = max(at, end)
     words.append(variable[at:])
     return " ".join("".join(words).split())
+
+
+def _named_measure_nouns(
+    state: ResolveState, named: Sequence[NamedMeasure]
+) -> tuple[NamedMeasure, ...]:
+    """The names of measure nouns of the code index (`MeasureIndex.nouns`) among `named`,
+    the names of declared measures the variable phrase holds
+    (`qualifier_match.declared_measures_named`), each with the nouns that
+    share it: a label, another whole name (`MeasurePartitionLabel.also_called`) or a
+    declared acronym of one (`CodeIndex.variable_aliases`, "GNI"), outside every longer
+    occurrence of a declared name, so the longest declared name wins its words, and
+    outside the spans the part's entities own (`_entity_spans`) and the base the quantity
+    read quoted (`ResolveState.named_denominator`). "GDP" in "health expenditure as a
+    share of GDP" names no noun and "health expenditure" does; "GDP growth" names the noun
+    "GDP growth" and not "GDP", and "GDP" names its three nouns at once. Admissibility
+    judges each shape against them (`admissibility.judge_pinned_parts`)."""
+    owned = _entity_spans(state, tokenize(state.variable))
+    if state.named_denominator is not None:
+        owned += token_occurrences(
+            tokenize(state.variable.replace("-", " ")),
+            state.named_denominator.base_words.replace("-", " "),
+        )
+    nouns = frozenset(get_measure_index().nouns)
+    spans: list[NamedMeasure] = []
+    for name in named:
+        alternatives = tuple(
+            alternative for alternative in name.alternatives if alternative in nouns
+        )
+        occurrences = tuple(
+            occurrence
+            for occurrence in name.occurrences
+            if not any(_ranges_overlap(occurrence, span) for span in owned)
+        )
+        if alternatives and occurrences:
+            spans.append(NamedMeasure(alternatives, occurrences))
+    return tuple(spans)
 
 
 def _names_base(state: ResolveState, words: str | None, shapes: Sequence[ShapeDraft]) -> bool:
@@ -438,7 +498,7 @@ def _names_base(state: ResolveState, words: str | None, shapes: Sequence[ShapeDr
                 and not any(_ranges_overlap((token.start, token.end), span) for span in owned)
             )
         )
-        for start, end in _token_occurrences(tokens, words.replace("-", " "))
+        for start, end in token_occurrences(tokens, words.replace("-", " "))
     )
 
 
@@ -461,7 +521,7 @@ def _value_label_spans(
             label = labels.get(value)
             if label is not None:
                 own = without_property_suffix(label, labels.get(prop))
-                spans += _token_occurrences(tokens, own.replace("-", " "))
+                spans += token_occurrences(tokens, own.replace("-", " "))
     return spans
 
 
@@ -800,6 +860,7 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
     """
     state.scope = with_idle_exclusions(state.scope, state.shapes_found)
     state.warnings.extend(idle_exclusion_warnings(state.scope))
+    _log_pool_origins(state.shapes_found)
     only_excludes = state.scope is not None and not state.scope.named
     candidates = _dataset_candidates(state.shapes_found, None if only_excludes else state.scope)
     state.scope_removed_readings = len(candidates) < len(state.shapes_found)
@@ -856,8 +917,11 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
     admissible = [i.shape for i in judged if i.admissible]
     # The kinds of the denominators the shapes divide by class each one's form, and the
     # quantity read lists them by name to read the form and base the phrase states.
-    await _read_denominators(state, admissible)
-    if admissible and (malformed := await _read_stated_quantity(state, admissible)) is not None:
+    with timed_step(state, "shape_denominators"):
+        await _read_denominators(state, admissible)
+    with timed_step(state, "shape_quantity"):
+        malformed = await _read_stated_quantity(state, admissible) if admissible else None
+    if malformed is not None:
         return malformed
     # The question's codes read in each vocabulary the pinned parts are judged in. A reading
     # refused on a pinned part keeps its vocabulary's matches, which settle it when it
@@ -868,7 +932,30 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
         vocabularies=(shape_vocabulary(i.shape) for i in judged if i.admissible),
     )
     state.pinned_part_matches = pinned_part_read.matches
-    judged = judge_pinned_parts(state, judged, state.pinned_part_matches)
+    state.declared_names = tuple(declared_measures_named(state.variable))
+    state.named_measures = _named_measure_nouns(state, state.declared_names)
+    admissible = [i.shape for i in judged if i.admissible]
+    own = own_member_verdicts(admissible, state.named_measures, state.denominator_reads)
+    await read_held_families(
+        [
+            shape
+            for shape in admissible
+            if shape.held_family is not None and "contradicts" in own.get(shape.shape_id, ())
+        ]
+    )
+    state.measure_verdicts = {
+        shape.shape_id: rule_four_verdicts(
+            shape, state.named_measures, state.denominator_reads, own.get(shape.shape_id)
+        )
+        for shape in admissible
+    }
+    judged = judge_pinned_parts(
+        state,
+        judged,
+        state.pinned_part_matches,
+        state.named_measures,
+        verdicts=state.measure_verdicts,
+    )
     state.interpretations = InterpretationSet(interpretations=tuple(judged))
     # Spans naming a code and a price basis ("PPP") are read per shape, so the collapse, the
     # guard and bind admission each keep the reading their shape carries.
@@ -890,18 +977,19 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
         # floor; a refused reading takes the branch above.
         await _record_shape_step(state)
         return state.no_data("variable_not_resolved", llm_usage=state.var_usage)
-    # A place named without a direction is read on the one axis on which an eligible
-    # reading holds a series there, and stays open when both or neither do
-    # (`availability.undirected_axis`), so the rules below and the house policies read a
-    # part whose data settles the axis as its directed twin.
-    state.undirected_axis = undirected_axis(state, eligible_shapes)
+    # A place named without a direction is read on the axis one rule settles over the
+    # eligible readings, and stays open when none does (`settle_undirected_axis`), so the
+    # rules below, the house policies and the measure basis read the part as its directed
+    # twin.
+    state.undirected = settle_undirected_axis(state, eligible_shapes)
     # A reading that could place that place only beside a place named with a direction
     # leaves, so the binder cannot elect one that merges the two (`on_undirected_axis`).
     eligible_shapes = on_undirected_axis(state, eligible_shapes)
     # From here to the seated menu the phase reads the readings it may offer apart from
     # the part (`_read_offer`), and writes them to it only once the menu seats one, so a
     # part that offers none holds nothing they read.
-    offer, ranked_shapes = _read_offer(state, eligible_shapes, sources, reading_owned_phrases)
+    with timed_step(state, "shape_rank"):
+        offer, ranked_shapes = _read_offer(state, eligible_shapes, sources, reading_owned_phrases)
     refused_on_pinned = _refused_on_pinned(judged, excluding)
     top_k = settings().bind_top_k
     # The menu seats the hits in rank order under ``bind_top_k``, a topic root with every
@@ -964,7 +1052,8 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
     # elected shape's own read settles its data.
     places = menu_read_places(state.place_sets, state.recall_only_place_dcids)
     if places and len(capped_shapes) > 1:
-        capped_shapes = await _read_availability(state, capped_shapes, places)
+        with timed_step(state, "shape_availability"):
+            capped_shapes = await _read_availability(state, capped_shapes, places)
     state.capped_shapes = capped_shapes
     state.basis_siblings = [_shape_with_taxonomy(s) for s in siblings]
     state.interpretations = replace(
@@ -974,6 +1063,36 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
     )
     await _record_shape_step(state)
     return None
+
+
+def _log_pool_origins(shapes: Sequence[ShapeDraft]) -> None:
+    """Log where each shape of the pool came from: `recalled` when a confirmed member is a
+    direct recall, `closure` when every member is a row recall added for a query phrase no
+    recalled family of its five-tuple reads (`clients.graph.with_reading_families`),
+    `injected` when every member is another row recall added for its five-tuple
+    (`clients.graph.with_rival_families`), and `derived` otherwise."""
+    origins: dict[str, list[str]] = {"recalled": [], "closure": [], "injected": [], "derived": []}
+    for shape in shapes:
+        origin = (
+            "closure"
+            if shape.closure
+            else "injected"
+            if shape.rival
+            else "recalled"
+            if shape.recalled
+            else "derived"
+        )
+        origins[origin].append(shape.shape_id)
+    logger.info(
+        "shape pool: %d recalled, %d closure, %d injected, %d derived; closure %s; injected %s",
+        len(origins["recalled"]),
+        len(origins["closure"]),
+        len(origins["injected"]),
+        len(origins["derived"]),
+        origins["closure"],
+        origins["injected"],
+        extra={"pool_origins": origins},
+    )
 
 
 def _seat_menu_and_siblings(
@@ -1436,6 +1555,8 @@ def _undeclared_qualifiers(
     own_spans: Mapping[frozenset[str], tuple[QualifierSpan, ...]],
     chosen: Sequence[tuple[int, int]] = (),
     state: ResolveState | None = None,
+    *,
+    named: Sequence[NamedMeasure],
 ) -> tuple[ResolvedQualifier, ...]:
     """The variable's code terms, `spans` read in every code system, that no shape in
     `shapes` can hold, each as an unbound record with evidence ``"unavailable"``.
@@ -1447,7 +1568,8 @@ def _undeclared_qualifiers(
     aid, whose rows carry no type of finance, or a sector only another publisher of the
     five-tuple reports. A shape the index does not carry holds any code of a code system it
     declares a slot for. A span holding a measure value is the measure's to read and is
-    left alone.
+    left alone, and so is a span inside one of `named`, the names of declared measures the
+    variable holds, that the shape holds (`_measure_named_ranges`).
 
     `own_spans` holds `variable` read in each shape's own vocabulary
     (`qualifier_match.read_by_vocabulary`). A shape also holds a term when spans of its own
@@ -1489,6 +1611,9 @@ def _undeclared_qualifiers(
             *read_on(shape, codes),
             *chosen,
             *_word_ranges(variable, _dataset_stated_words(shape, index, state)),
+            *_measure_named_ranges(
+                named, spans, shape, state.denominator_reads if state is not None else {}
+            ),
         ]
         for shape, codes in readings
     ]
@@ -1508,12 +1633,53 @@ def _undeclared_qualifiers(
     return tuple(undeclared)
 
 
+def _measure_named_ranges(
+    named: Sequence[NamedMeasure],
+    spans: Sequence[QualifierSpan],
+    shape: ShapeDraft,
+    denominators: Mapping[str, DenominatorRead],
+) -> list[tuple[int, int]]:
+    """The range of each of `spans` inside a name of declared measures the variable holds
+    (`named`, `ResolveState.declared_names`, read once per part) that `shape`
+    holds on some member or divides by (`measure_verdict.measure_verdicts` on
+    `admissibility.draft_evidence`, the StatVar it divides by as `denominators` read it).
+    The evidence reads no member arcs, so no name reads ``holds`` from values and one some
+    member holds reads ``some``.
+    Such a span is the measure the part elected or its base, no code qualifying it: "GNI"
+    names `CRSTypeOfFinance1` and `CRSTypeOfFlow40`, which no gross national income row
+    holds, and it names the declared measure gross national income, which the "Gross
+    national income" shape holds.
+
+    `named` holds every declared name of the variable, partition labels and the quoted
+    base included, where rule 4's `ResolveState.named_measures` holds measure nouns
+    outside the base: a code term inside the base the shape divides by is read as that
+    base, so "GDP" in "health expenditure as a share of GDP" is covered on a share of GDP,
+    and a term inside a partition label the shape holds is read as that label."""
+    if not named:
+        return []
+    verdicts = measure_verdicts(named, draft_evidence(shape, {}, denominators))
+    held = [
+        occurrence
+        for name, verdict in zip(named, verdicts, strict=True)
+        if verdict in ("holds", "some", "base")
+        for occurrence in name.occurrences
+    ]
+    return [
+        (span.start, span.end)
+        for span in spans
+        if any(start <= span.start and span.end <= end for start, end in held)
+    ]
+
+
 def _unbindable_qualifiers(
     variable: str,
     spans: Sequence[QualifierSpan],
     shape: ShapeDraft,
     own_spans: Mapping[frozenset[str], tuple[QualifierSpan, ...]],
     chosen: Sequence[tuple[int, int]] = (),
+    *,
+    named: Sequence[NamedMeasure],
+    denominators: Mapping[str, DenominatorRead],
 ) -> tuple[ResolvedQualifier, ...]:
     """The variable's code terms, `spans` read in every code system, that name only codes
     no shape can bind (`qualifier_match.bindable_codes`), one of them of a system `shape`
@@ -1525,11 +1691,18 @@ def _unbindable_qualifiers(
     "population ODA" refuses on it. A term every word of which the shape reads
     otherwise yields to that reading, and so does one inside a phrase the bind model's
     menu choice reads (`chosen`, `_menu_choices`): "population policies" read as purpose
-    13010 records no unavailable "population".
+    13010 records no unavailable "population". So does a term inside one of `named`, the
+    names of declared measures the variable holds, that the shape holds
+    (`_measure_named_ranges`).
     """
-    bindable = bindable_codes(get_index())
+    index = get_index()
+    bindable = bindable_codes(index)
     vocabulary = shape_vocabulary(shape)
-    read = [(own.start, own.end) for own in for_shape(own_spans, shape)] + list(chosen)
+    read = [
+        *((own.start, own.end) for own in for_shape(own_spans, shape)),
+        *chosen,
+        *_measure_named_ranges(named, spans, shape, denominators),
+    ]
     unbindable: list[ResolvedQualifier] = []
     for span in spans:
         code_rows = [row for row in span.rows if isinstance(row, CodeRow)]
@@ -1545,43 +1718,164 @@ def _unbindable_qualifiers(
     return tuple(unbindable)
 
 
+def _rival_held_qualifiers(state: ResolveState) -> tuple[ResolvedQualifier, ...]:
+    """The variable's code terms, read in every code system, that the elected shape leaves
+    partly unread and that another index family of its five-tuple and role class records
+    while its own family records none of their codes, each as an unbound record with
+    evidence ``"unavailable"`` naming the datasets that serve those families
+    (`ResolvedQualifier.held_by`).
+
+    The climate finance tables share the CRS's five-tuples, so "adaptation" on a CRS
+    disbursements answer names a policy objective ONE Data Climate Finance records and the
+    CRS does not. Election keeps the family reading more of the query
+    (`elect_five_tuple_family`), but a named source, a tie on the phrases read or a rival
+    recall left out can still elect the family that drops the word, and the answer would
+    report the CRS total. A family records a code as recall's closure and the election read
+    it (`clients.graph.family_reads`, `retrieval.code_reads`), on the index alone, so the
+    check holds whatever recall pooled. Families of one five-tuple are rivals when both bear
+    roles or neither does, as election pairs them.
+
+    A word counts as read where a span of the shape's own reading covers it, a menu choice
+    reads it (`_chosen_ranges`), the series or its datasets state it, as
+    `_unread_qualifier_runs` reads them, or those datasets note it (`dataset_noted_words`).
+    "bilateral" in "bilateral ODA", DAC1 aid type 1015, is read on a CRS shape, and "ODA" in
+    "climate ODA" on ONE Data Climate Finance, which notes that its figures count other
+    official flows too. A shape the index does not carry has no family to compare, and a
+    term no rival records keeps the handling of the checks beside this one.
+    """
+    index = get_index()
+    shape = state.shape_draft
+    own = shape_family(shape, index)
+    if own is None:
+        return ()
+    role_bearing = is_role_bearing(shape)
+    rivals = [
+        family
+        for family in five_tuple_families(shape_five_tuple(shape), index)
+        if family is not own and _bears_roles(family) == role_bearing
+    ]
+    if not rivals:
+        return ()
+    variable = state.variable
+    stated = (
+        _series_words(shape)
+        | _dataset_stated_words(shape, index, state)
+        | _noted_words_read(shape, index, state)
+    )
+    if _ratio_words(shape):
+        stated |= FUNCTION_WORDS
+    read = [
+        *(
+            (own_span.start, own_span.end)
+            for own_span in for_shape(state.variable_spans_by_vocabulary, shape)
+        ),
+        *_chosen_ranges(state),
+        *_word_ranges(variable, stated),
+    ]
+    records: list[ResolvedQualifier] = []
+    for span in state.variable_spans_in_every_system:
+        code_rows = [row for row in span.rows if isinstance(row, CodeRow)]
+        if not code_rows or len(code_rows) < len(span.rows):
+            continue
+        if not _unread_words(variable, span, read):
+            continue
+        if family_reads(own, code_rows, index=index):
+            continue
+        holders = [family for family in rivals if family_reads(family, code_rows, index=index)]
+        if holders:
+            records.append(
+                _unavailable_record(span, code_rows, held_by=_serving_datasets(holders, index))
+            )
+    return tuple(records)
+
+
+def _bears_roles(family: IndexFamily) -> bool:
+    """Whether a row of `family` declares a role other than the subject, as
+    `shape.is_role_bearing` reads a shape."""
+    return any(
+        role != "observationAbout" for row in family.rows for role in row.observation_properties
+    )
+
+
+def _serving_datasets(families: Sequence[IndexFamily], index: CodeIndex) -> list[GraphRef]:
+    """The declared datasets an unscoped question answers `families` from
+    (`code_index.members.eligible_among`), lowest rank first within each family, each once,
+    by provenance and label. For the climate finance family that is ONE Data Climate Finance,
+    whose other publishers are opt-in."""
+    served: dict[str, GraphRef] = {}
+    for family in families:
+        declared = sorted(
+            (index.datasets[dataset] for dataset in family.datasets if dataset in index.datasets),
+            key=lambda dataset: dataset.rank,
+        )
+        for provenance in eligible_among(
+            index, [dataset.provenance for dataset in declared], scope=None
+        ):
+            served.setdefault(
+                provenance, GraphRef(ref=provenance, label=index.datasets[provenance].label)
+            )
+    return list(served.values())
+
+
 def _unavailable_qualifiers(state: ResolveState) -> list[ResolvedQualifier]:
     """The variable's code terms the elected shape cannot apply that the part refuses on,
     each as an unbound record with evidence ``"unavailable"``, in query order, with the
     elected shape as its near match.
 
-    On a part naming a source (`_names_source`) they are the terms none of its tables'
-    rows holds (`_undeclared_qualifiers`) and the terms naming
-    only codes no shape can bind (`_unbindable_qualifiers`), in every coverage mode:
-    "multilateral ODA" names DAC1 aid type 2000, which a CRS part cannot apply, so the CRS
-    ODA answer is the near match. On a part naming no source they are the unbindable
-    terms under ``SearchSettings.qualifier_coverage="refuse"`` only. In log mode
-    `_withheld_qualifiers` holds them.
+    They are the terms another family of the shape's five-tuple records and the shape
+    leaves unread (`_rival_held_qualifiers`), such as "adaptation" on a CRS answer, which ONE
+    Data Climate Finance records. They are also the terms naming only codes no shape can bind
+    (`_unbindable_qualifiers`): "multilateral ODA" names DAC1 aid type 2000, which a CRS part
+    cannot apply, so the CRS ODA answer is the near match. On a part naming a source
+    (`_names_source`) both join in every coverage mode, with the terms none of its tables'
+    rows holds (`_undeclared_qualifiers`). On a part naming no source they join under
+    ``SearchSettings.qualifier_coverage="refuse"`` only, and in log mode
+    `_withheld_qualifiers` holds them. A term two checks record keeps the first record,
+    in that order, so a rival-held term names the datasets that record it.
     """
-    variable = state.variable
-    spans = state.variable_spans_in_every_system
-    chosen = _chosen_ranges(state)
-    records = list(
-        _unbindable_qualifiers(
-            variable, spans, state.shape_draft, state.variable_spans_by_vocabulary, chosen
-        )
-    )
     if not _names_source(state):
-        return records if settings().qualifier_coverage == "refuse" else []
+        if settings().qualifier_coverage != "refuse":
+            return []
+        return sorted(_inapplicable_terms(state), key=lambda record: record.start or 0)
+    records = _inapplicable_terms(state)
     recorded = {(record.start, record.end) for record in records}
     records += [
         record
         for record in _undeclared_qualifiers(
-            variable,
-            spans,
+            state.variable,
+            state.variable_spans_in_every_system,
             [state.shape_draft],
             state.variable_spans_by_vocabulary,
-            chosen,
+            _chosen_ranges(state),
             state=state,
+            named=state.declared_names,
         )
         if (record.start, record.end) not in recorded
     ]
     return sorted(records, key=lambda record: record.start or 0)
+
+
+def _inapplicable_terms(state: ResolveState) -> list[ResolvedQualifier]:
+    """The terms another family of the elected shape's five-tuple records and the shape
+    leaves unread (`_rival_held_qualifiers`), then the terms naming only codes no shape can
+    bind (`_unbindable_qualifiers`) that no rival-held record covers, which a part refuses
+    on or, in log mode on a part naming no source, departs as not applied."""
+    records = list(_rival_held_qualifiers(state))
+    recorded = {(record.start, record.end) for record in records}
+    records += [
+        record
+        for record in _unbindable_qualifiers(
+            state.variable,
+            state.variable_spans_in_every_system,
+            state.shape_draft,
+            state.variable_spans_by_vocabulary,
+            _chosen_ranges(state),
+            named=state.declared_names,
+            denominators=state.denominator_reads,
+        )
+        if (record.start, record.end) not in recorded
+    ]
+    return records
 
 
 def _unelected_qualifiers(state: ResolveState) -> tuple[ResolvedQualifier, ...]:
@@ -1601,6 +1895,7 @@ def _unelected_qualifiers(state: ResolveState) -> tuple[ResolvedQualifier, ...]:
         state.capped_shapes,
         state.variable_spans_by_vocabulary,
         state=state,
+        named=state.declared_names,
     )
 
 
@@ -1612,24 +1907,20 @@ def _names_source(state: ResolveState) -> bool:
 
 def _withheld_qualifiers(state: ResolveState) -> tuple[ResolvedQualifier, ...]:
     """The unavailable records `_unavailable_qualifiers` leaves out of the part's records:
-    in log mode, on a part naming no source, the terms naming only codes no shape can bind
-    (`_unbindable_qualifiers`). The part answers without them and departs each as not
-    applied: "ODA goods donations from France to Kenya" answers ODA and says "goods
-    donations" was not applied. Empty otherwise."""
+    in log mode, on a part naming no source, the terms a rival family records and the terms
+    naming only codes no shape can bind (`_inapplicable_terms`). The part answers without
+    them and departs each as not applied: "ODA goods donations from France to Kenya"
+    answers ODA and says "goods donations" was not applied. Empty otherwise."""
     if _names_source(state) or settings().qualifier_coverage == "refuse":
         return ()
-    return _unbindable_qualifiers(
-        state.variable,
-        state.variable_spans_in_every_system,
-        state.shape_draft,
-        state.variable_spans_by_vocabulary,
-        _chosen_ranges(state),
-    )
+    return tuple(_inapplicable_terms(state))
 
 
-def _unavailable_record(span: QualifierSpan, code_rows: Sequence[CodeRow]) -> ResolvedQualifier:
+def _unavailable_record(
+    span: QualifierSpan, code_rows: Sequence[CodeRow], *, held_by: Sequence[GraphRef] = ()
+) -> ResolvedQualifier:
     """The unbound record of the term `span`, naming `code_rows`, that the part cannot
-    apply."""
+    apply, with the datasets `held_by` that record it (`_rival_held_qualifiers`)."""
     return ResolvedQualifier(
         text=span.matched_text,
         named=[GraphRef(ref=row.dcid, label=row.label) for row in code_rows],
@@ -1638,6 +1929,7 @@ def _unavailable_record(span: QualifierSpan, code_rows: Sequence[CodeRow]) -> Re
         start=span.start,
         end=span.end,
         evidence="unavailable",
+        held_by=list(held_by),
     )
 
 
@@ -1709,7 +2001,9 @@ def _default_reading(
 
     A price basis is named by a free-axis match, or by a two-reading span ("PPP") whose
     measure reading one of `eligible_shapes` carries alone (`reading_for_shape`).
-    `price_basis_order` ignores values of other axes.
+    `price_basis_order` ignores values of other axes. A trailing span's years are those its
+    newest year may lie in (`extract.DateRequest.judged`), as every judgement of where data is
+    held reads them.
     """
     named = [match.code_dcid for match in free_matches]
     named += [
@@ -1718,7 +2012,7 @@ def _default_reading(
         if any(reading_for_shape(readings, s) is readings.measure for s in eligible_shapes)
     ]
     request = state.date_request
-    window = None if request is None else ("latest" if request.latest else request.window)
+    window = None if request is None else ("latest" if request.latest else request.judged.window)
     return DefaultReading(order=price_basis_order(get_measure_index(), named), window=window)
 
 
@@ -1833,16 +2127,30 @@ def _phrases_reader(
     state: ResolveState, query: _QueryQualifiers
 ) -> Callable[[ShapeDraft], frozenset[str]]:
     """The query phrases each shape's family reads (`query_phrases_read`), in the shape's
-    own vocabulary's matches and ties in `query`, each shape read once."""
+    own vocabulary's matches and ties in `query`, each shape read once.
+
+    A family reading a phrase of its own codes also reads each word its datasets note that
+    the part states (`dataset_noted_words`), so a noted word only qualifies a reading.
+    "Climate ODA from Germany to Kenya" reads {"climate", "oda"} on ONE Data
+    Climate Finance and {"oda"} on the CRS, so the family election keeps the climate
+    table; "ODA to Kenya" reads nothing of the climate table's own codes, so its noted
+    "ODA" reads nothing there either."""
+    index = get_index()
     read: dict[int, frozenset[str]] = {}
 
     def phrases_read(shape: ShapeDraft) -> frozenset[str]:
         if id(shape) not in read:
-            read[id(shape)] = query_phrases_read(
+            own = query_phrases_read(
                 state.held_codes_of(shape),
                 for_shape(query.matches, shape),
                 for_shape(query.ties, shape),
             )
+            noted = (
+                frozenset(noted.word for noted in dataset_noted_words(shape, index, state))
+                if own
+                else frozenset()
+            )
+            read[id(shape)] = own | noted
         return read[id(shape)]
 
     return phrases_read
@@ -1972,9 +2280,15 @@ def _admit_qualifier_ties(
     hold only the flow type.
 
     Drop a tie of no declared system, promote a single surviving row to an ordinary match,
-    and pass ties with two or more rows to the model for election, vetted after shape
-    choice. A tie of a declared system whose codes the family holds none of, though rows
-    of another family do, is `unheld`. A shape's own reading skips codes no shape can bind
+    and likewise a row every other surviving row sits under (`_broadest_row`): nested rows
+    are one reading, which the ancestor answers without narrowing the phrase, as admission
+    keeps the broadest code of a union ("ODA grants" binds the grants finance type, not the
+    standard grant under it). Pass other ties with two or more rows to the model for
+    election, vetted after shape choice. Each tie is one question, which code a phrase
+    names, so an identical tie the variable and the query text both carry is kept once:
+    asked twice, the model may answer each copy with another row. A tie of a declared
+    system whose codes the family holds none of, though rows of another family do, is
+    `unheld`. A shape's own reading skips codes no shape can bind
     (`qualifier_match.bindable_codes`), so they form no tie.
     """
     promoted: list[list[QualifierMatch]] = []
@@ -1995,11 +2309,32 @@ def _admit_qualifier_ties(
                         QualifierTie(matched_text=tie.matched_text, rows=in_vocabulary)
                     )
                 continue
-            if len(narrowed) == 1:
-                promoted[-1].append(narrowed[0])
+            if (broadest := _broadest_row(narrowed)) is not None:
+                promoted[-1].append(broadest)
                 continue
             admitted[-1].append(QualifierTie(matched_text=tie.matched_text, rows=narrowed))
-    return _ShapeTies(merge_lists(promoted), merge_lists(admitted), merge_lists(unheld))
+    return _ShapeTies(merge_lists(promoted), _each_once(admitted), _each_once(unheld))
+
+
+def _broadest_row(rows: Sequence[QualifierMatch]) -> QualifierMatch | None:
+    """The row of `rows` whose code every other row's code sits at or under
+    (`CodeIndex.descendants`), a lone row included, else `None`."""
+    index = get_index()
+    for row in rows:
+        under = set(index.descendants(row.code_dcid))
+        if all(other.code_dcid in under for other in rows):
+            return row
+    return None
+
+
+def _each_once(lists: list[list[QualifierTie]]) -> tuple[QualifierTie, ...]:
+    """The ties of `lists` in first-seen order, each tie once: ties of one phrase, compared
+    casefolded (`QualifierTie.phrase`), over the same codes are one tie."""
+    once: dict[tuple[str, tuple[tuple[str, str], ...]], QualifierTie] = {}
+    for tie in (tie for ties in lists for tie in ties):
+        key = (tie.phrase, tuple((row.code_system, row.code_dcid) for row in tie.rows))
+        once.setdefault(key, tie)
+    return tuple(once.values())
 
 
 def _shape_qualifiers(
@@ -2259,7 +2594,8 @@ def _names_carried_per_head_rate(
 
 def _names_answering_dataset(phrase: str, state: ResolveState, index: CodeIndex) -> bool:
     """Whether every word of `phrase` occurs in the declared label of the dataset the part
-    answers from, or in the words that dataset states (`_dataset_stated_words`): the settled
+    answers from, or in the words that dataset states or notes (`_dataset_stated_words`,
+    `dataset_noted_words`): the settled
     dataset (`ResolveState.settled_dataset`), else each dataset the elected shape answers
     from (`ShapeDraft.datasets`), since election may serve any of them.
 
@@ -2272,7 +2608,8 @@ def _names_answering_dataset(phrase: str, state: ResolveState, index: CodeIndex)
     label_words = _answering_dataset_label_words(state, index)
     if not words or label_words is None:
         return False
-    return words <= label_words | _dataset_stated_words(state.shape_draft, index, state)
+    stated = _dataset_stated_words(state.shape_draft, index, state)
+    return words <= label_words | stated | _noted_words_read(state.shape_draft, index, state)
 
 
 def _casefolded_words(text: str) -> frozenset[str]:
@@ -2354,6 +2691,42 @@ def _dataset_stated_words(
     return stated | {named.word for named in held_party_words(state, shape)}
 
 
+def dataset_noted_words(
+    shape: ShapeDraft, index: CodeIndex, state: ResolveState
+) -> tuple[NotedWord, ...]:
+    """The noted words of the part that every dataset `shape` answers from declares
+    (`DatasetDeclaration.noted_words`, `bound_values.declared_datasets`), each dataset's
+    declaration in turn. The part states a word as it states a dataset's stated word
+    (`place_roles.part_states`), such as "aid" in "adaptation aid from Germany" on ONE Data
+    Climate Finance.
+
+    The coverage rule reads each such word (`_conversational_words`) and the answer states
+    each one's note (`phase_election._repair_bindings`). The family election reads one
+    only on a family that reads a phrase of its own codes (`_phrases_reader`), and recall
+    reads none, so "aid to Kenya" draws no climate finance table into its pool."""
+    datasets = declared_datasets(shape, index)
+    if not datasets:
+        return ()
+    common = frozenset.intersection(
+        *(frozenset(noted.word for noted in dataset.noted_words) for dataset in datasets)
+    )
+    return tuple(
+        noted
+        for dataset in datasets
+        for noted in dataset.noted_words
+        if noted.word in common and part_states(state, noted.word)
+    )
+
+
+def _noted_words_read(shape: ShapeDraft, index: CodeIndex, state: ResolveState) -> frozenset[str]:
+    """The casefolded words of each entry the datasets `shape` answers from note that the
+    part states (`dataset_noted_words`), such as "aid", and "official", "development" and
+    "assistance" where the part states "official development assistance"."""
+    return frozenset(
+        part for noted in dataset_noted_words(shape, index, state) for part in noted.word.split(" ")
+    )
+
+
 def with_party_reading(
     state: ResolveState,
     shapes: Sequence[ShapeDraft],
@@ -2418,32 +2791,6 @@ _YEAR_RE = re.compile(r"\d{4}")
 _CAMEL_WORD_RE = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+")
 
 
-# A possessive ending, which a word token holds ("France's").
-_POSSESSIVE_RE = re.compile(r"['\u2019]s$", re.IGNORECASE)
-
-
-def _token_occurrences(tokens: Sequence[Token], text: str) -> list[tuple[int, int]]:
-    """The character range of each span of `tokens` that `text` matches as a code label
-    matches a query span (`code_index.tokens.text_matches`): the same words, casefolded,
-    and each separator the span holds where `text` holds it, so "Hong Kong SAR, China"
-    holds the entity "Hong Kong SAR, China". The span's last word may add a possessive
-    ending: "France's" holds the entity "France"."""
-    count = len(word_tokens(text))
-    if not count:
-        return []
-    word_at = [position for position, token in enumerate(tokens) if token.kind == "word"]
-    occurrences: list[tuple[int, int]] = []
-    for first in range(len(word_at) - count + 1):
-        span = tokens[word_at[first] : word_at[first + count - 1] + 1]
-        last = span[-1]
-        bare = Token(
-            text=_POSSESSIVE_RE.sub("", last.text), kind="word", start=last.start, end=last.end
-        )
-        if text_matches(text, span) or text_matches(text, (*span[:-1], bare)):
-            occurrences.append((span[0].start, last.end))
-    return occurrences
-
-
 def _ratio_words(shape: ShapeDraft) -> frozenset[str]:
     """The words a shape that divides by a denominator states by its division: the ratio
     words (`RATIO_WORDS`) and the words of the denominator's noun
@@ -2487,8 +2834,9 @@ def _conversational_words(
     (`_series_words`: "financial", "flow", "amount", and on a shape with a denominator a
     ratio word or a word of the denominator's noun), a word every label of the datasets
     the part answers from holds, a word those datasets state of the rows the part reads
-    (`_dataset_stated_words`: "bilateral" on the CRS, and on DAC2a to a country), the
-    declared plain name of a slot the shape declares,
+    (`_dataset_stated_words`: "bilateral" on the CRS, and on DAC2a to a country), a word
+    they note (`dataset_noted_words`: "aid" on ONE Data Climate Finance), the declared
+    plain name of a slot the shape declares,
     singular or plural, a word that slot's declared default reads
     (`DeclaredDefault.when_named`: "aid" reads ODA on the CRS flow type), or a year. A
     hyphenated word is read when each of its parts is (`_holds_word`), so
@@ -2502,6 +2850,7 @@ def _conversational_words(
     known = set(FUNCTION_WORDS | AMOUNT_WORDS | DATA_WORDS | FLOW_VERBS | _series_words(shape))
     known |= _answering_dataset_label_words(state, index, shape) or frozenset()
     known |= _dataset_stated_words(shape, index, state)
+    known |= _noted_words_read(shape, index, state)
     declarations = [
         index.declarations[prop] for prop in shape_vocabulary(shape) if prop in index.declarations
     ]
@@ -2743,7 +3092,7 @@ def _candidate_menus(state: ResolveState, shape: ShapeDraft) -> tuple[CandidateM
     code_spans = [span for span in spans if any(isinstance(row, CodeRow) for row in span.rows)]
     read = [(span.start, span.end) for span in spans]
     read += [
-        occurrence for text in state.entity_texts for occurrence in _token_occurrences(tokens, text)
+        occurrence for text in state.entity_texts for occurrence in token_occurrences(tokens, text)
     ]
     others = [other for other in state.shapes_found if other.shape_id != shape.shape_id]
 
@@ -3234,13 +3583,7 @@ def _uncarried_measure_words(
     for value in measure_index.values:
         if value.same_reading_as is not None:
             continue
-        reading = measure_index.reading_set(value.dcid)
-        names = [
-            {fold_word(word.text) for word in word_tokens(text)}
-            for row in measure_index.values
-            if row.axis == value.axis and row.dcid in reading
-            for text in (row.label, *row.synonyms)
-        ]
+        names = [set(name) for name in measure_value_names(measure_index, value.dcid)]
         match = QualifierMatch(
             code_system=value.axis,
             code_dcid=value.dcid,
@@ -3282,8 +3625,8 @@ def _run_measure_values(
 
 def _occurrences(tokens: Sequence[Token], texts: Iterable[str | None]) -> list[tuple[int, int]]:
     """The character range of each occurrence among `tokens` of each text of `texts`
-    (`_token_occurrences`), skipping an empty or absent one."""
-    return [occurrence for text in texts if text for occurrence in _token_occurrences(tokens, text)]
+    (`qualifier_match.token_occurrences`), skipping an empty or absent one."""
+    return [occurrence for text in texts if text for occurrence in token_occurrences(tokens, text)]
 
 
 def _resolved_name_words(state: ResolveState, index: CodeIndex) -> tuple[str, ...]:
@@ -3589,69 +3932,12 @@ def _initialisms(name: str) -> frozenset[str]:
     )
 
 
-def model_only_values(
-    state: ResolveState, prop: str, values: Sequence[str], labels: Mapping[str, str]
-) -> tuple[str, ...]:
-    """The `values` bound on `prop` that no recorded term of the request supports, so only
-    the bind model read them from the words. A term supports every value on `prop` when it
-    is an admitted qualifier match on `prop` or a query record a binding on it covers, and
-    supports one value when one of its names (`_value_names`) is a run of the variable,
-    a dropped qualifier phrase or the single-variable query, so "women" names Female by
-    its synonym. Each source is read separately. A value with no name is the model's. An
-    answer that cannot apply a supported value refuses `qualifier_not_bound` on it, and one
-    that cannot apply a model-only value discloses it (`unrealisable.unbind_unrealisable`,
-    `_stray_requirements`)."""
-    if any(match.code_system == prop for match in state.admitted_qualifiers) or any(
-        record.slot == prop and record.disposition == "bound" for record in state.query_qualifiers
-    ):
-        return ()
-    texts = [state.variable, *state.dropped_qualifier_phrases]
-    if query_text := state.query_text:
-        texts.append(query_text)
-    sources = [tokenize(text) for text in dict.fromkeys(texts)]
-    return tuple(
-        value
-        for value in values
-        if not any(
-            _token_occurrences(tokens, name)
-            for tokens in sources
-            for name in _value_names(prop, value, labels.get(value))
-        )
-    )
-
-
 def names_value(phrase: str, *, prop: str, value: str, label: str | None) -> bool:
-    """Whether `phrase` names `value` on `prop`: one of the value's names (`_value_names`)
-    holds the phrase's words (`holds_words`). "bilateral" names DAC1 "bilateral ODA", and
-    "concessional" names no "official non-concessional flow"."""
-    return any(holds_words(name, phrase) for name in _value_names(prop, value, label))
-
-
-def holds_words(text: str, phrase: str) -> bool:
-    """Whether `text` holds `phrase`'s words as a run, read as a code label reads a query
-    span (`_token_occurrences`): "imputed multilateral aid" holds "multilateral", and
-    "non-concessional flows" holds no "concessional", since a hyphenated word is one
-    token."""
-    return bool(_token_occurrences(tokenize(text), phrase))
-
-
-def _value_names(prop: str, value: str, label: str | None) -> tuple[str, ...]:
-    """Every name the qualifier matcher reads for `value` on `prop`, and its graph `label`:
-    the code index's label and synonyms of the code, and the label and synonyms of each
-    matchable measure value on `prop` that spells its reading, aliases included."""
-    code = get_index().code_by_dcid(value)
-    measure_index = get_measure_index()
-    reading = measure_index.reading_set(value)
-    return (
-        *(() if label is None else (label,)),
-        *(() if code is None else (code.label, *code.synonyms)),
-        *(
-            text
-            for row in measure_index.values
-            if row.axis == prop and row.matchable and row.dcid in reading
-            for text in (row.label, *row.synonyms)
-        ),
-    )
+    """Whether `phrase` names `value` on `prop`: one of the value's names
+    (`value_labels.value_names`) holds the phrase's words (`holds_words`). "bilateral"
+    names DAC1 "bilateral ODA", and "concessional" names no "official non-concessional
+    flow"."""
+    return any(holds_words(name, phrase) for name in value_names(prop, value, label))
 
 
 def value_requirements(
@@ -3715,7 +4001,7 @@ def value_requirements(
     read += [
         occurrence
         for qualifier in recorded
-        for occurrence in _token_occurrences(tokens, qualifier.text)
+        for occurrence in token_occurrences(tokens, qualifier.text)
     ]
     read += _entity_spans(state, tokens)
     code_spans: list[tuple[tuple[int, int], frozenset[str]]] = []
@@ -3730,7 +4016,7 @@ def value_requirements(
     for label, values in asked.items():
         occurrences = [
             occurrence
-            for occurrence in _token_occurrences(tokens, label)
+            for occurrence in token_occurrences(tokens, label)
             if not any(_ranges_overlap(occurrence, other) for other in read)
         ]
         if occurrences and not _label_has_negated_occurrence(label, variable):
@@ -3821,32 +4107,37 @@ def judge_value_requirements(
     shape: ShapeDraft,
     bindings: Sequence[SlotBindingDraft],
     state: ResolveState | None = None,
+    *,
+    read_words: bool = True,
 ) -> tuple[Requirement, ...]:
     """The requirements of `requirements` judged by the values their words name
     (`ValueRule`, `value_requirements`) that an answer of `shape` read under `bindings`
-    leaves unmet.
+    leaves unmet. With `read_words` false only the value rules judge, and no requirement is
+    met by its words, so a caller can judge before it has read the words, since a requirement
+    this leaves met is met with them too.
 
-    The answer is the members of `shape` its bindings select (`_selected_members`). It
-    applies a value its bindings bind, or one every selected member holds, as every member
-    of a female population shape holds gender Female, where a code's descendant applies it
-    as a binding of the code reads (`applies_value`). The values the bind drafted on a
-    property the elected reading lacks (origin ``stray``) are a set, applied by membership
-    as a set bound on a slot reads: a binding holds one of them, or every selected member
-    does (`applies_one_of`). One value of such a set (origin ``set_value``) is applied when
-    a binding or some selected member holds it. Both are judged by values alone: a word of
-    a member's name states neither. Any other requirement is also met by a run every word
-    of which its series states (`_series_words`), as a Student population states "student", or each
-    selected member's name holds, as "Infant Mortality Rate", the name of
-    `Count_Death_0Years_AsFractionOf_Count_BirthEvent_LiveBirth`, holds "infant" though
-    the member binds age 0 and not the age group Infant. A run overlapping a code term of
-    a system `shape` holds (`shape_vocabulary`) is its code readers'. Any other run is
-    unmet: "female" when the answering literacy rate has no gender slot. A word the
-    answer's datasets state of the rows the part reads (`_dataset_stated_words`) is stated
-    too: "bilateral", the creditor type of a debt series on the menu, is met by a CRS
-    answer. A broad reading that fired on the part (`SlotDefaultDisclosure.reading`) applies
-    its narrow value wherever the bindings hold its broader one: "publicly guaranteed" is
-    applied by public and publicly guaranteed debt, which the part's note says it read. A
-    resubmit gives no `state` and reads none.
+    The answer is the members of `shape` its bindings select (`_selected_members`). It applies a
+    value its bindings bind, or one every selected member holds, as every member of a female
+    population shape holds gender Female, where a code's descendant applies it as a binding of the
+    code reads (`applies_value`). The values the bind drafted on a property the elected reading
+    lacks (origin ``stray``) are a set, applied by membership as a set bound on a slot reads: a
+    binding holds one of them, or every selected member does (`applies_one_of`). One value of such a
+    set (origin ``set_value``) is applied when a binding or some selected member holds it, and so is
+    a value drafted in a set on a slot the elected reading holds (`ValueRule.drafted_set`) where the
+    answer applies that set by membership, or where a broad reading applies it as below. Members
+    carrying health alone apply health of "health and education" and not education. These are judged
+    by values alone: a word of a member's name states none of them. Any other requirement is also
+    met by a run every word of which its series states (`_series_words`), as a Student population
+    states "student", or each selected member's name holds, as "Infant Mortality Rate", the name of
+    `Count_Death_0Years_AsFractionOf_Count_BirthEvent_LiveBirth`, holds "infant" though the member
+    binds age 0 and not the age group Infant. A run overlapping a code term of a system `shape`
+    holds (`shape_vocabulary`) is its code readers'. Any other run is unmet: "female" when the
+    answering literacy rate has no gender slot. A word the answer's datasets state of the rows the
+    part reads (`_dataset_stated_words`) is stated too: "bilateral", the creditor type of a debt
+    series on the menu, is met by a CRS answer. A broad reading that fired on the part
+    (`SlotDefaultDisclosure.reading`) applies its narrow value wherever the bindings hold its
+    broader one: "publicly guaranteed" is applied by public and publicly guaranteed debt, which the
+    part's note says it read. A resubmit gives no `state` and reads none.
     """
     if not requirements:
         return ()
@@ -3859,8 +4150,6 @@ def judge_value_requirements(
     }
     selected = _selected_members(shape, bindings)
     constraints = [read_constraints(arcs) for arcs in selected.values()]
-    names = [_casefolded_words(read_name(arcs, dcid) or "") for dcid, arcs in selected.items()]
-    stated = _series_words(shape) | _dataset_stated_words(shape, get_index(), state)
     read_broadly = {
         (reading.property_dcid, reading.value_dcid)
         for disclosure in (state.slot_defaults.values() if state is not None else ())
@@ -3894,7 +4183,18 @@ def judge_value_requirements(
             bound_prop == prop and applies_value(value, held) for bound_prop, held in bound
         ) or any(applies_value(value, member.get(prop)) for member in constraints)
 
+    @functools.cache
+    def stated_words() -> tuple[frozenset[str], list[frozenset[str]]]:
+        # The words the series and its datasets state, and each selected member's name.
+        return (
+            _series_words(shape) | _dataset_stated_words(shape, get_index(), state),
+            [_casefolded_words(read_name(arcs, dcid) or "") for dcid, arcs in selected.items()],
+        )
+
     def states(words: frozenset[str]) -> bool:
+        if not read_words:
+            return False
+        stated, names = stated_words()
         return all(_holds_word(stated, word) for word in words) or (
             bool(names) and all(words <= name for name in names)
         )
@@ -3904,6 +4204,15 @@ def judge_value_requirements(
             return applied_as_a_set(rule.values)
         if requirement.origin == "set_value":
             return any(held_by_some(prop, value) for prop, value in rule.values)
+        if rule.drafted_set:
+            return (
+                any(value in read_broadly for value in rule.values)
+                or (
+                    applied_as_a_set(rule.drafted_set)
+                    and any(held_by_some(prop, value) for prop, value in rule.values)
+                )
+                or states(_casefolded_words(requirement.term.text))
+            )
         return any(applied(prop, value) for prop, value in rule.values) or states(
             _casefolded_words(requirement.term.text)
         )
@@ -4068,11 +4377,12 @@ def _resolve_query_qualifiers(state: ResolveState) -> list[ResolvedQualifier]:
     Ten sources contribute records:
 
     1. The variable's code terms the elected shape cannot apply (`_unavailable_qualifiers`),
-       each ``unbound`` with evidence ``"unavailable"``. They are terms naming only codes no
-       shape can bind whose words the shape's own reading leaves unread and, on a part
-       naming a source, terms none of its rows holds. A part naming a source records them
-       in every coverage mode. A part naming none records the unbindable terms in refuse
-       mode only. A span of the shape's own reading at the same offsets, an
+       each ``unbound`` with evidence ``"unavailable"``. They are terms a rival family of
+       the shape's five-tuple records, terms naming only codes no shape can bind whose
+       words the shape's own reading leaves unread and, on a part naming a source, terms
+       none of its rows holds. A part naming a source records them in every coverage mode.
+       A part naming none records the rival-held and unbindable terms in refuse mode only.
+       A span of the shape's own reading at the same offsets, an
        unplaced phrase overlapping one, and a tie or sidecar span of the same text record
        nothing more.
     2. Variable spans, as the elected shape's own vocabulary reads them
@@ -4098,7 +4408,9 @@ def _resolve_query_qualifiers(state: ResolveState) -> list[ResolvedQualifier]:
        Surviving phrases get ``no_vocabulary`` with no named codes.
     5. Match the words each code system the shape declares has no vocabulary for
        (``CodeSystemDeclaration.no_vocabulary_terms``) in variable text and optional query
-       text. Record ``no_vocabulary`` and refuse the qualifier.
+       text. Record ``no_vocabulary`` and refuse the qualifier. A word inside a phrase
+       an earlier record reads as codes is skipped, as "climate" is in "investment
+       climate", a CRS purpose name.
     6. Typed-sidecar spans use the same admission and disposition rules, then deduplicate
        against text spans and ties. Their offsets belong to each sidecar phrase and stay out
        of the overlap check on ``variable``.
@@ -4268,10 +4580,18 @@ def _query_records(state: ResolveState) -> list[ResolvedQualifier]:
         for term in index.declarations[prop].no_vocabulary_terms
     )
     if no_vocabulary_terms:
+        code_phrases = {record.text for record in resolved if record.named}
         for text in (state.variable, state.query_text):
             if text is None:
                 continue
-            for phrase in match_unsupported_qualifier_phrases(text, terms=no_vocabulary_terms):
+            read = [
+                occurrence
+                for code_phrase in code_phrases
+                for occurrence in _all_normalized_text_ranges(code_phrase, text)
+            ]
+            for phrase in match_unsupported_qualifier_phrases(
+                text, terms=no_vocabulary_terms, read=read
+            ):
                 normalized_phrase = _normalize(phrase)
                 if normalized_phrase in already_recorded:
                     continue
@@ -4553,7 +4873,16 @@ class _HousePolicyStep:
     menu alone: a sibling the policies elect stands as its source, and the step records the
     move (`basis_move`) for the engine to answer on the sibling
     (`_answer_on_basis_sibling`); the choice drops no sibling and states the facts and the
-    policies that set aside menu shapes."""
+    policies that set aside menu shapes.
+
+    A menu shape the binder left out of its pool joins it when it differs from the pick on
+    a basis measure axis alone (`_basis_variants`), so the declared preference on that
+    axis (`house_policy` `declared_basis`) decides between the two whatever the binder
+    scored them. `named_values` are the measure values the part's words name
+    (`qualifier_match.measure_values_named`), which that policy reads. They are the values
+    its variable names and those the query's stretches no reader of the extraction claims
+    name (`ResolveState.unclaimed`), so a measure word extraction leaves outside the
+    variable counts as well."""
 
     shapes: Sequence[ShapeDraft]
     frame: Frame
@@ -4564,6 +4893,7 @@ class _HousePolicyStep:
     undirected_axis: RoleAxis | None = None
     siblings: Sequence[ShapeDraft] = ()
     read_sibling: Callable[[ShapeDraft], tuple[_ShapeRead, bool | None]] | None = None
+    named_values: frozenset[str] = frozenset()
     calls: int = 0
     basis_move: _BasisMove | None = None
     sibling_reads: dict[int, tuple[_ShapeRead, bool | None]] = field(
@@ -4585,13 +4915,15 @@ class _HousePolicyStep:
         self.basis_move = None
         pick = pool.measuring[0]
         joined: dict[int, int] = {}
+        variants: tuple[int, ...] = ()
         if holds is not None and drafts is not None:
             joined = self._joining(pool.measuring, holds)
+            variants = self._basis_variants(pool.measuring)
             holds = {
                 **holds,
                 **{
                     k: holds_mentioned_values(self.shapes[pick], self.shape(k), drafts)
-                    for k in joined
+                    for k in (*joined, *variants)
                 },
             }
 
@@ -4600,7 +4932,7 @@ class _HousePolicyStep:
                 return None
             return {**values, **{k: values[i] for k, i in joined.items() if i in values}}
 
-        measuring = (*pool.measuring, *joined)
+        measuring = (*pool.measuring, *variants, *joined)
         choice = apply_house_policies(
             self._facts_of(measuring),
             PolicyPool(measuring=measuring, election=beside(pool.election)),
@@ -4654,6 +4986,23 @@ class _HousePolicyStep:
             joined[k] = source
         return joined
 
+    def _basis_variants(self, pool: Sequence[int]) -> tuple[int, ...]:
+        """The menu shapes outside `pool` that differ from its first index, the pick, on a
+        basis measure axis alone (`house_policy.differ_on_basis`), state its denominator
+        and admit the qualifiers it admits."""
+        pick = pool[0]
+        facts = self._facts_of(range(self.menu))
+        admitted = {(m.code_system, m.code_dcid) for m in self.qualifiers_of(pick)}
+        denominator = stated_reading(self.shapes[pick]).denominator
+        return tuple(
+            k
+            for k in range(self.menu)
+            if k not in pool
+            and differ_on_basis(facts[pick], facts[k]) is not None
+            and stated_reading(self.shapes[k]).denominator == denominator
+            and {(m.code_system, m.code_dcid) for m in self.qualifiers_of(k)} == admitted
+        )
+
     def _family(self, index: int) -> str | None:
         if index not in self._families:
             self._families[index] = _family_ref(self.shapes[index])
@@ -4698,6 +5047,7 @@ class _HousePolicyStep:
                 ),
                 basis_entries=self.basis_entries,
                 undirected_axis=self.undirected_axis,
+                named_values=self.named_values,
             )
         return self._contexts[key]
 
@@ -4732,7 +5082,11 @@ def _log_bind_decision(state: ResolveState, decision: BindResult | None) -> None
     tie-break (``answered``, `_elected_index`), each None when the reply elects none, the
     policy pool, the policies that narrowed, the reply's
     ratings as it wrote them (None on a refusal), the binder's own scores
-    (`BindResult.scores`), the facts the policies read of each pool shape, and whether the
+    (`BindResult.scores`, Jev's per-shape measure score among them), beside them the
+    verdict rule 4 read on each name of measure nouns the variable holds, for each menu
+    shape (``verdicts``, `_logged_verdicts`), the facts the policies read of
+    each pool shape, the axis a place named without a direction is read on and the rule
+    that settled it (`ResolveState.undirected`, None while it stays open), and whether the
     schema refused the reply (`decision` None)."""
     pool = decision.policy_pool if decision is not None else None
     choice = decision.policy_choice if decision is not None else None
@@ -4749,10 +5103,30 @@ def _log_bind_decision(state: ResolveState, decision: BindResult | None) -> None
         "fired": list(choice.fired) if choice is not None else [],
         "ratings": [r.model_dump() for r in output.measuring] if output is not None else None,
         "scores": dict(decision.scores) if decision is not None else {},
+        "verdicts": _logged_verdicts(state),
         "facts": [asdict(f) for f in choice.facts] if choice is not None else [],
+        "undirected_axis": state.undirected_axis,
+        "undirected_rule": state.undirected.rule if state.undirected is not None else None,
         "refused": decision is None,
     }
     logger.info("bind_decision %s", json.dumps(record, separators=(",", ":")))
+
+
+def _logged_verdicts(state: ResolveState) -> list[dict[str, str]]:
+    """For each menu shape, in menu order, the verdict rule 4 read on each of the part's
+    `ResolveState.named_measures`, keyed by the words of its first occurrence, as rule 4
+    stored them (`ResolveState.measure_verdicts`), for each admissible shape when the phase
+    judged them and for a stand-in for a declined election when `_stand_in_declined` added
+    it. The line judges nothing, and a shape with no stored verdicts logs none."""
+    spans = state.named_measures
+    words = [state.variable[slice(*span.occurrences[0])] for span in spans]
+    return [
+        dict(zip(words, verdicts, strict=True))
+        if (verdicts := state.measure_verdicts.get(shape.shape_id)) is not None
+        else {}
+        for shape in state.capped_shapes
+        if spans
+    ]
 
 
 async def _phase_bind(state: ResolveState) -> RegionResult | None:
@@ -4828,6 +5202,7 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
         available = None if series is None else has_data_where_asked(state, shape, series=series)
         return _shape_qualifiers(state, shape), available
 
+    variable = _bind_variable(state, menu)
     policies = _HousePolicyStep(
         shapes=state.capped_shapes,
         frame=state.frame,
@@ -4838,9 +5213,15 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
         undirected_axis=state.undirected_axis,
         siblings=state.basis_siblings,
         read_sibling=read_sibling,
+        named_values=frozenset().union(
+            *(
+                measure_values_named(text, get_measure_index())
+                for text in (variable, *state.unclaimed)
+            )
+        ),
     )
     request = BindRequest(
-        variable=_bind_variable(state, menu),
+        variable=variable,
         shapes=menu,
         admitted_qualifiers=admitted_qualifiers,
         admitted_ties=admitted_ties,
@@ -4926,7 +5307,7 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
             "part %r: the binder broke the house-policy contract: %s", state.variable, breach
         )
         usage = refusal.usage if refusal is not None else _bind_usage
-        return state.no_data("variable_not_resolved", llm_usage=_sum_usage(state.var_usage, usage))
+        return state.no_data("variable_not_resolved", llm_usage=sum_usage(state.var_usage, usage))
     if refusal is not None:
         state.warnings.append(
             Warning(
@@ -4939,9 +5320,9 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
             )
         )
         return state.no_data(
-            "variable_not_resolved", llm_usage=_sum_usage(state.var_usage, refusal.usage)
+            "variable_not_resolved", llm_usage=sum_usage(state.var_usage, refusal.usage)
         )
-    _var_usage = state.var_usage = _sum_usage(state.var_usage, _bind_usage)
+    _var_usage = state.var_usage = sum_usage(state.var_usage, _bind_usage)
 
     # An ask that names a refused reading stands that reading in as the elected shape. Any
     # other ask, or an out-of-range shape index, ends the part here: on code terms no shape
@@ -5045,10 +5426,7 @@ async def _stray_requirements(
     answer that binds one of them, or every member of which holds one, applies it, and the
     elected answer, which drops the draft, leaves it unmet unless every member holds one.
     Its term is ``unbound`` with evidence ``"model"``, named by the values' labels joined
-    by "and", each a menu shape's (`ShapeDraft.value_labels`), else the code
-    index's, else the graph's (`ResolveState.label_dcids`), read under the fail-open budget
-    (`fail_open_reads`). When the graph's read is lost, the values it was to label are named
-    by their dcid's tail in words (`_humanize_ref`) and the lost read is noted.
+    by "and" (`draft_value_labels`).
 
     A set of two or more values adds one requirement per value (origin ``set_value``),
     named by its label: an answer that meets the set but whose selected members hold not
@@ -5062,23 +5440,7 @@ async def _stray_requirements(
             for value in draft.value_dcids
         )
     )
-    index = get_index()
-    labels: dict[str, str] = {}
-    for shape in state.capped_shapes:
-        labels.update((shape.value_labels or {}).items())
-    for _prop, value in values:
-        if value not in labels and (row := index.code_by_dcid(value)) is not None:
-            labels[value] = row.label
-    unlabelled = list(dict.fromkeys(value for _prop, value in values if value not in labels))
-    if unlabelled:
-        read = [_humanize_ref(value, None) for value in unlabelled]
-        with fail_open_reads(
-            "stray value labels",
-            budget_s=settings().fail_open_read_budget_s,
-            about={"unlabelled": unlabelled},
-        ):
-            read = await asyncio.to_thread(state.label_dcids, unlabelled)
-        labels.update(zip(unlabelled, read, strict=True))
+    labels = await draft_value_labels(state, [value for _prop, value in values])
     by_prop: dict[str, list[str]] = {}
     for prop, value in values:
         by_prop.setdefault(prop, []).append(value)
@@ -5157,8 +5519,14 @@ def _stand_in_declined(state: ResolveState, declined: Interpretation) -> None:
     whose name the variable phrase states (`_with_named_values`), the codes the question
     names in its vocabulary join the part's matches (`ResolveState.pinned_part_matches`),
     which vetting forces where it can bind them, and repair applies the declared defaults
-    and the values its family shares."""
+    and the values its family shares. Rule 4's verdicts on it are stored beside the menu's
+    (`ResolveState.measure_verdicts`) when the phase did not judge it, so the `bind_decision`
+    line logs them."""
     state.declined = declined
+    if declined.shape.shape_id not in state.measure_verdicts:
+        state.measure_verdicts[declined.shape.shape_id] = rule_four_verdicts(
+            declined.shape, state.named_measures, state.denominator_reads
+        )
     vocabulary = shape_vocabulary(declined.shape)
     if vocabulary not in state.query_qualifier_matches:
         state.query_qualifier_matches = {

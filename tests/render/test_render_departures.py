@@ -359,6 +359,35 @@ _CASES: list[tuple[DepartureFact, str | None, str]] = [
         "You asked for 2020 to 2021. The source's total for every official donor holds no "
         "figure for those years, so this covers each donor with data and shows 2020.",
     ),
+    # A span counted back from now that a member passed over in election shortens.
+    (
+        DepartureFact(
+            code="year_unavailable",
+            binding_ref="when:",
+            asked="2022 to 2026",
+            shown="2019 to 2022",
+            requested_years=(2022, 2026),
+            limited_by="passed_over",
+        ),
+        "aid",
+        "You asked for 2022 to 2026. The series shown holds nothing newer, and earlier years "
+        "would read a different series, so this shows 2019 to 2022.",
+    ),
+    # The same, from data whose newest year is stale.
+    (
+        DepartureFact(
+            code="year_unavailable",
+            binding_ref="when:",
+            asked="2022 to 2026",
+            shown="2019 to 2022",
+            requested_years=(2022, 2026),
+            data_years=(2000, 2022),
+            limited_by="passed_over",
+        ),
+        "aid",
+        "You asked for 2022 to 2026. The data ends in 2022, and earlier years would read a "
+        "different series, so this shows 2019 to 2022.",
+    ),
     # Deflators that leave out some donors' rows: before, after and inside the years kept,
     # every year, and a count past the third.
     (
@@ -836,6 +865,78 @@ _CASES: list[tuple[DepartureFact, str | None, str]] = [
         "You named Kenya as a recipient. This measure has no recipients, so this shows the "
         "place itself.",
     ),
+    (
+        DepartureFact(
+            code="organisation_read_as_source",
+            binding_ref="source:",
+            asked="the IMF",
+        ),
+        None,
+        "You named the IMF as a party to the flow. The data that best matches this question "
+        "does not list the IMF as a party to a flow, so this reads it as the source of the data.",
+    ),
+    # "World Bank core contributions": no World Bank table publishes the measure.
+    (
+        DepartureFact(
+            code="organisation_read_as_party",
+            binding_ref=None,
+            asked="World Bank",
+            party_reason="no_own_data",
+        ),
+        None,
+        "You named World Bank. None of the data it publishes measures this, so this reads "
+        "World Bank as a party to the flow.",
+    ),
+    # "Norway contributions to the World Bank": no World Bank table leads the recall.
+    (
+        DepartureFact(
+            code="organisation_read_as_party",
+            binding_ref=None,
+            asked="the World Bank",
+            party_reason="no_own_data",
+        ),
+        None,
+        "You named the World Bank. None of the data it publishes measures this, so this reads "
+        "the World Bank as a party to the flow.",
+    ),
+    # "CRS World Bank disbursements to Kenya": the CRS lists IBRD and IDA as donors.
+    (
+        DepartureFact(
+            code="organisation_read_as_party",
+            binding_ref=None,
+            asked="World Bank",
+            shown="CRS",
+            party_reason="named_source",
+        ),
+        None,
+        "You named World Bank. CRS lists World Bank as a party to the flow, so this reads "
+        "World Bank as a party, not as the source of the data.",
+    ),
+    # Words that resolve to no single source.
+    (
+        DepartureFact(
+            code="organisation_read_as_party",
+            binding_ref=None,
+            asked="the Fund",
+            party_reason="source_unresolved",
+        ),
+        None,
+        "You named the Fund. Its words name no single source of data, so this reads the Fund "
+        "as a party to the flow.",
+    ),
+    # "Ghana debt service to the World Bank": the extraction returns the World Bank as an
+    # entity, and IDS publishes IBRD and IDA as creditors.
+    (
+        DepartureFact(
+            code="organisation_read_as_party",
+            binding_ref=None,
+            asked="the World Bank",
+            party_reason="named_as_party",
+        ),
+        "debt_service",
+        "You named the World Bank as a party to the flow. This reads the World Bank as a party, "
+        "not as the source of the data.",
+    ),
     # An undirected place whose data sits under one direction alone.
     (
         DepartureFact(
@@ -844,6 +945,73 @@ _CASES: list[tuple[DepartureFact, str | None, str]] = [
         "aid",
         "You named Kenya without a direction. Only the data with Kenya as the recipient "
         "holds values, so this reads it as the recipient.",
+    ),
+    (
+        DepartureFact(
+            code="direction_inferred",
+            binding_ref="where:",
+            asked="Kenya",
+            over="destination",
+            read_by="coverage",
+        ),
+        "aid",
+        "You named Kenya without a direction. Only the data with Kenya as the recipient "
+        "holds values, so this reads it as the recipient.",
+    ),
+    # "Low income countries budget support from Germany": Germany takes the donor side.
+    (
+        DepartureFact(
+            code="direction_inferred",
+            binding_ref="where:",
+            asked="Low income countries",
+            over="destination",
+            read_by="complement",
+        ),
+        "aid",
+        "You named Low income countries without a direction. The question names the "
+        "provider, so this reads it as the recipient.",
+    ),
+    # "Korea's top donors": the rank takes the donor side, and names no donor.
+    (
+        DepartureFact(
+            code="direction_inferred",
+            binding_ref="where:",
+            asked="Korea",
+            over="destination",
+            read_by="operation",
+        ),
+        "aid",
+        "You named Korea without a direction. The question looks across the providers, so "
+        "this reads it as the recipient.",
+    ),
+    # "Korea total aid": DAC2a lists Korea among its providers.
+    (
+        DepartureFact(
+            code="direction_inferred",
+            binding_ref="where:",
+            asked="Korea",
+            over="origin",
+            read_by="declaration",
+            listed_by="OECD DAC2a",
+        ),
+        "aid",
+        "You named Korea without a direction. OECD DAC2a lists Korea among its providers, so "
+        "this reads it as the provider.",
+    ),
+    # A debt table by creditor lists no providers: the sentence names the aid table that
+    # declares Korea one, in that table's own word, and the answer's role in its own.
+    (
+        DepartureFact(
+            code="direction_inferred",
+            binding_ref="where:",
+            asked="Korea",
+            over="origin",
+            read_by="declaration",
+            listed_by="OECD DAC2a",
+        ),
+        "debt_lending",
+        "You named Korea without a direction. OECD DAC2a lists Korea among its providers, so "
+        "this reads it as the creditor.",
     ),
     # crs-010: the check covered only the ODA default the engine chose.
     (
@@ -1042,6 +1210,78 @@ _NO_DATA_CASES: list[tuple[DepartureFact, str | None, str]] = [
         None,
         "You named Kenya as a recipient, but this measure has no recipients, so this checked "
         "Kenya itself.",
+    ),
+    (
+        DepartureFact(
+            code="organisation_read_as_source",
+            binding_ref="source:",
+            asked="the IMF",
+        ),
+        None,
+        "You named the IMF as a party to the flow. The data that best matches this question "
+        "does not list the IMF as a party to a flow, so this reads it as the source of the data.",
+    ),
+    # "World Bank core contributions": no World Bank table publishes the measure.
+    (
+        DepartureFact(
+            code="organisation_read_as_party",
+            binding_ref=None,
+            asked="World Bank",
+            party_reason="no_own_data",
+        ),
+        None,
+        "You named World Bank. None of the data it publishes measures this, so this reads "
+        "World Bank as a party to the flow.",
+    ),
+    # "Norway contributions to the World Bank": no World Bank table leads the recall.
+    (
+        DepartureFact(
+            code="organisation_read_as_party",
+            binding_ref=None,
+            asked="the World Bank",
+            party_reason="no_own_data",
+        ),
+        None,
+        "You named the World Bank. None of the data it publishes measures this, so this reads "
+        "the World Bank as a party to the flow.",
+    ),
+    # "CRS World Bank disbursements to Kenya": the CRS lists IBRD and IDA as donors.
+    (
+        DepartureFact(
+            code="organisation_read_as_party",
+            binding_ref=None,
+            asked="World Bank",
+            shown="CRS",
+            party_reason="named_source",
+        ),
+        None,
+        "You named World Bank. CRS lists World Bank as a party to the flow, so this reads "
+        "World Bank as a party, not as the source of the data.",
+    ),
+    # Words that resolve to no single source.
+    (
+        DepartureFact(
+            code="organisation_read_as_party",
+            binding_ref=None,
+            asked="the Fund",
+            party_reason="source_unresolved",
+        ),
+        None,
+        "You named the Fund. Its words name no single source of data, so this reads the Fund "
+        "as a party to the flow.",
+    ),
+    # "Ghana debt service to the World Bank": the extraction returns the World Bank as an
+    # entity, and IDS publishes IBRD and IDA as creditors.
+    (
+        DepartureFact(
+            code="organisation_read_as_party",
+            binding_ref=None,
+            asked="the World Bank",
+            party_reason="named_as_party",
+        ),
+        "debt_service",
+        "You named the World Bank as a party to the flow. This reads the World Bank as a party, "
+        "not as the source of the data.",
     ),
     (
         DepartureFact(

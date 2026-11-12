@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Literal
 
+from dfo_frame_grammar import DeflationBasis
 from pydantic import (
     Field,
     PrivateAttr,
@@ -59,8 +60,9 @@ class ResolvedFacet(StrictModel):
     basis: FacetBasis = Field(
         description=(
             "'bound' when this axis was constrained by the request, "
-            "'declared_default' when an unbound axis was completed from a "
-            "declared deployment policy, 'fallback' when neither applies and "
+            "'declared_default' when an unbound axis took the default the "
+            "StatVar declares in the graph (its defaultMeasurementMethod arc on "
+            "measurementMethod), 'fallback' when neither applies and "
             "the deployment policy supplied the value: facets holding a point in "
             "the requested years first, then DFO's facets for a variable both DFO "
             "and base Data Commons hold, then the most places or role tuples "
@@ -563,6 +565,14 @@ class UnitConversion(StrictModel):
             "arc) of the one entity bound on each role, among `currencies`. A role bound "
             "to several entities, or to one no single currency names, is absent. A "
             "request may name the role ({'role': 'origin'}) or the code"
+        ),
+    )
+    deflation_basis: DeflationBasis | None = Field(
+        default=None,
+        description=(
+            "whose prices a conversion to constant prices deflates the values by: the "
+            "donor's, the recipient's, or the national prices of the place a series is about. "
+            "Null when the served members deflate on roles of different bases or declare none"
         ),
     )
 

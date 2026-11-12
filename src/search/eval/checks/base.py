@@ -247,6 +247,10 @@ class ScoreContext:
     """The responding app's members door (``runner.members_door_reader``): the wire states
     how many StatVars a Spec serves, and the door names them (``served_stat_vars``). None
     leaves a check that needs them unverifiable on an app whose wire does not list them."""
+    run_agreement: tuple[int, int] | None = None
+    """``(agreeing, completed)`` for the run of samples the scored sample belongs to: the
+    size of its modal answer group (``runner.modal_sample``) and how many of its samples
+    completed. None when the sample is scored alone."""
 
 
 class SpecRead(Protocol):

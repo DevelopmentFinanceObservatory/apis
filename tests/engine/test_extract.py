@@ -798,19 +798,24 @@ class _MemoFakeResponse:
 
 class _MemoCountingClient:
     """Stands in for genai.Client: records every generate_content call and
-    answers every one of them with the same `answer`."""
+    answers each with the response `by_seed` holds for its seed, `answer` otherwise."""
 
     class _Models:
-        def __init__(self, answer: _MemoFakeResponse) -> None:
+        def __init__(
+            self, answer: _MemoFakeResponse, by_seed: dict[int, _MemoFakeResponse]
+        ) -> None:
             self.answer = answer
+            self.by_seed = by_seed
             self.calls: list[tuple[str, str, object]] = []
 
         async def generate_content(self, *, model, contents, config):
             self.calls.append((model, contents, config))
-            return self.answer
+            return self.by_seed.get(config.seed, self.answer)
 
-    def __init__(self, answer: _MemoFakeResponse) -> None:
-        self.models = self._Models(answer)
+    def __init__(
+        self, answer: _MemoFakeResponse, by_seed: dict[int, _MemoFakeResponse] | None = None
+    ) -> None:
+        self.models = self._Models(answer, by_seed or {})
         # `_fetch_text` uses `client.aio.models`; sharing `models` records calls on both paths.
         self.aio = SimpleNamespace(models=self.models)
 
@@ -840,7 +845,8 @@ def test_extract_reattaches_on_a_memo_hit_too(monkeypatch):
     first, _ = _run(extract(query, llm=llm))
     second, _ = _run(extract(query, llm=llm))
 
-    assert len(client.models.calls) == 1  # the memo served the second call
+    # The memo served the second call's two samples, one per seed.
+    assert sorted(call[2].seed for call in client.models.calls) == [1, 2]
     for result in (first, second):
         extraction = result.extraction
         # variables is never rewritten: the bare measure text the model
@@ -861,12 +867,23 @@ def test_extract_reattaches_on_a_memo_hit_too(monkeypatch):
 # Spies prove excess input never reaches the scanners.
 
 
-def test_extract_clamps_oversized_variables_before_the_reattach_scan(monkeypatch):
+@pytest.mark.parametrize(
+    ("second_differs", "scans"),
+    [(False, 1), (True, 2)],
+    ids=["samples_equal", "samples_differ"],
+)
+def test_extract_clamps_oversized_variables_before_the_reattach_scan(
+    monkeypatch, second_differs, scans
+):
     """Variables clamp to the first `max_variables`.
 
     `raw_variable_count` records the distinct total. Reattachment scans all distinct variables
-    first, so a qualifier targeting a discarded variable stays unapplied.
+    first, so a qualifier targeting a discarded variable stays unapplied. The judge
+    post-processes the second sample only when its raw extraction differs from the first's.
     """
+    import search.engine.clients.llm as llm_module
+    from search.engine.clients.llm import LLM
+
     seen_lengths: list[int] = []
     original = extract_module._variable_preceding
 
@@ -878,16 +895,23 @@ def test_extract_clamps_oversized_variables_before_the_reattach_scan(monkeypatch
 
     n = settings().max_variables + 20
     query = "an oversized variables query naming type of finance 110"
-    llm = _stub_for(
-        query,
-        {
-            "variables": [f"measure {i}" for i in range(n)],
-            "entities": [],
-            "dropped_qualifiers": ["type of finance 110"],
-            "dates": [],
-        },
+    answer = Extraction(
+        kind="resolution",
+        variables=[f"measure {i}" for i in range(n)],
+        dropped_qualifiers=["type of finance 110"],
     )
-    result, _ = _run(extract(query, llm=llm))
+    client = _MemoCountingClient(
+        _MemoFakeResponse(parsed=answer),
+        by_seed={
+            2: _MemoFakeResponse(
+                parsed=answer.model_copy(update={"variables": answer.variables[::-1]})
+            )
+        }
+        if second_differs
+        else None,
+    )
+    monkeypatch.setattr(llm_module, "_get_client", lambda: client)
+    result, _ = _run(extract(query, llm=LLM(seed=1)))
     extraction = result.extraction
 
     assert len(extraction.variables) == settings().max_variables
@@ -896,7 +920,8 @@ def test_extract_clamps_oversized_variables_before_the_reattach_scan(monkeypatch
     # The spy ran (a coded phrase was present to trigger it) and saw every
     # one of the n distinct variables, not just the settings().max_variables
     # survivors.
-    assert seen_lengths == [n]
+    # One scan per post-processed sample, each before the clamp.
+    assert seen_lengths == [n] * scans
 
 
 def test_clamped_variables_keeps_every_occurrence_of_an_admitted_variable_with_its_position():
@@ -1000,7 +1025,7 @@ def test_extract_reindexes_an_entitys_measures_onto_the_admitted_variables(linke
             "aid to Kenya and Uganda over the last five years",
             ["aid", "aid"],
             [{"kind": "range", "relative": "over the last five years"}],
-            [{"kind": "range", "start": "2022", "end": "2026"}],
+            [{"kind": "range", "start": "2022", "end": "2026", "trailing_years": 5}],
             [],
         ),
     ],
@@ -1142,6 +1167,8 @@ def test_extract_clears_the_places_of_a_question_past_a_cap_it_does_not_resolve(
     result, _ = _run(extract(query, llm=llm))
     assert result.extraction.kind == kind
     assert result.extraction.entities == []
+    # The first sample's reading reaches the role scan empty; the equal second is not
+    # post-processed.
     assert scanned == [[]]
 
 
@@ -1213,7 +1240,8 @@ def test_extract_bounds_dropped_qualifiers_count_before_the_reattach_scan(monkey
     assert extraction.dropped_qualifiers == [
         f"unsupported qualifier {i}" for i in range(settings().max_dropped_qualifiers)
     ]
-    assert call_count <= settings().max_dropped_qualifiers
+    # The cap bounds the scan of each sample's reading.
+    assert call_count <= 2 * settings().max_dropped_qualifiers
 
 
 def test_extract_bounds_a_dropped_qualifiers_phrase_length():
@@ -2843,17 +2871,17 @@ def test_extract_leaves_a_qualifier_no_operation_touches_to_the_region():
     [
         (
             [{"kind": "range", "relative": "over the last decade"}],
-            [{"kind": "range", "start": "2017", "end": "2026"}],
+            [{"kind": "range", "start": "2017", "end": "2026", "trailing_years": 10}],
             [],
         ),
         (
             [{"kind": "range", "relative": "in the last 5 years"}],
-            [{"kind": "range", "start": "2022", "end": "2026"}],
+            [{"kind": "range", "start": "2022", "end": "2026", "trailing_years": 5}],
             [],
         ),
         (
             [{"kind": "range", "relative": "the past decade"}],
-            [{"kind": "range", "start": "2017", "end": "2026"}],
+            [{"kind": "range", "start": "2017", "end": "2026", "trailing_years": 10}],
             [],
         ),
         (
@@ -2863,7 +2891,7 @@ def test_extract_leaves_a_qualifier_no_operation_touches_to_the_region():
         ),
         (
             [{"kind": "range", "relative": "los últimos 10 años"}],
-            [{"kind": "range", "start": "2017", "end": "2026"}],
+            [{"kind": "range", "start": "2017", "end": "2026", "trailing_years": 10}],
             [],
         ),
         ([{"kind": "range", "relative": "last 0 years"}], [], ["time_text_not_parsed"]),
@@ -2918,7 +2946,8 @@ def test_resolve_relative_dates_reads_the_wording_against_the_current_year(
 ):
     extraction = Extraction(kind="resolution", variables=["aid"], dates=dates)
     out, warnings, _ = _resolve_relative_dates(extraction, current_year=2026)
-    # A resolved date dumps without `relative`, as the wire and the response cache keys read it.
+    # A resolved date dumps without `relative`, as the wire and the response cache keys read it,
+    # and a span counted back states the years it trails.
     assert [d.model_dump(mode="json") for d in out.dates] == resolved
     assert [w.code for w in warnings] == warning_codes
     assert out.model_copy(update={"dates": extraction.dates}) == extraction

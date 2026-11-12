@@ -118,12 +118,13 @@ async def read_stated_quantity(
     without it. The prompt holds only the variable phrase and graph-sourced labels.
     """
     try:
-        return await generate_structured_async(
+        sampled = await generate_structured_async(
             for_stage(llm, "quantity"),
             prompt=build_quantity_prompt(variable, denominators),
             system=_QUANTITY_SYSTEM_PROMPT,
             schema=QuantityOutput,
         )
+        return sampled.answer, sampled.usage
     except LLMInfraError:
         logger.warning("quantity read failed; the phrase reads as naming no form", exc_info=True)
         note_degraded_read("quantity read")

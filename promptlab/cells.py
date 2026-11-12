@@ -37,7 +37,7 @@ from search.engine.clients.llm import LLM, SupportsLLM, for_stage
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.core import resolve_async
 from search.engine.errors import EngineInputError
-from search.engine.extract import Extraction, dates_to_request, extract
+from search.engine.extract import EXTRACTION_CALLS, Extraction, dates_to_request, extract
 from search.eval.cases import Case, ShapeKey
 from search.eval.runner import build_request
 from search.models import ResolveRequest
@@ -114,7 +114,9 @@ async def run_capture(
     sdmx: EngineSdmxClient,
     concurrency: int,
 ) -> None:
-    """Run the production pipeline once per case and persist extract and bind calls.
+    """Run the production pipeline once per case and persist extract and bind calls. An
+    extraction sends `EXTRACTION_CALLS` samples of one prompt, and the capture keeps the one
+    under the client's own seed, the sample production serves.
 
     Pass `graph` through to `resolve_async`. It must be non-`None`. A live capture
     can use `GraphCache`, while tests can use `FakeGraph`. `LadderLLM` records every
@@ -154,9 +156,10 @@ async def run_capture(
 
             extract_calls = [r for r in sink if r.schema == "Extraction"]
             bind_calls = [r for r in sink if r.schema == "_UniversalBindOutput"]
-            if len(extract_calls) > 1:
+            if len(extract_calls) > EXTRACTION_CALLS:
                 raise ValueError(
-                    f"{case_id}: expected at most one extract call, got {len(extract_calls)}"
+                    f"{case_id}: expected at most {EXTRACTION_CALLS} extract calls, "
+                    f"got {len(extract_calls)}"
                 )
 
             for leg, call in sorted(_assign_legs(bind_calls, variable_text)):
@@ -177,8 +180,9 @@ async def run_capture(
                     )
                 )
 
-            if extract_calls:
-                call = extract_calls[0]
+            served = [r for r in extract_calls if r.seed == wrapped._seed]
+            if served:
+                call = served[0]
                 out.append_extract(
                     ExtractRecord(
                         case_id=case_id,
@@ -434,8 +438,9 @@ async def run_extract_cell(
     recall, resolved entities, dates, and the variable split against the capture.
     Replace `[[TODAY]]` with the capture's date and `[[YEAR]]` with its year so extraction
     matches its bind menus.
-    Store each single extract call under `leg=0`. A captured extraction that does not fit
-    the `Extraction` schema raises `StoreError`, which asks for a new capture."""
+    Store the served sample of each extraction (`EXTRACTION_CALLS`) under `leg=0`. A
+    captured extraction that does not fit the `Extraction` schema raises `StoreError`, which
+    asks for a new capture."""
     capture.require_complete()
     case_by_id = {c.id: c for c in cases}
     substituted_date = capture.manifest.substituted_date
@@ -459,7 +464,7 @@ async def run_extract_cell(
             sink: list[CallRecord] = []
             wrapped = LadderLLM(seeded, systems={"extract": extract_system}, sink=sink)
             extract_result, _usage = await extract(record.query, llm=wrapped)
-            call = sink[0]
+            call = next(r for r in sink if r.seed == wrapped._seed)
 
             scores = await asyncio.to_thread(
                 _score_extract,

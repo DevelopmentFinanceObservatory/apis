@@ -199,7 +199,8 @@ def test_group_selection_ranks_by_summed_obs_count_not_a_single_members_local_ma
         requests,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
+        enrichment=EnrichmentLookup(graph),
+        parties={},
         materialiser_build="build-123",
         capability_version="cap-v1",
         deadline=deadline,
@@ -300,7 +301,8 @@ def test_group_honours_graph_declared_policy_agreed_across_members():
         requests,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
+        enrichment=EnrichmentLookup(graph),
+        parties={},
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -361,7 +363,8 @@ def test_a_group_sharing_no_facet_serves_the_top_members_rows_and_names_the_othe
         group_requests,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
+        enrichment=EnrichmentLookup(graph),
+        parties={},
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -429,7 +432,8 @@ def test_member_missing_bound_axis_refuses_with_its_own_alternatives_and_pointer
             [request_a, request_b],
             sdmx=sdmx,
             graph=graph,
-            enrichment=EnrichmentLookup(graph, parties=lambda: {}),
+            enrichment=EnrichmentLookup(graph),
+            parties={},
             materialiser_build="build-123",
             capability_version="cap-v1",
             coverage=coverage,
@@ -511,7 +515,8 @@ def test_axis_absent_from_chosen_facet_is_none_in_trace_and_omitted_from_preimag
         requests,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
+        enrichment=EnrichmentLookup(graph),
+        parties={},
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -569,7 +574,8 @@ def test_provenance_absent_from_chosen_facet_raises_default_facet_undefined():
             group_requests,
             sdmx=sdmx,
             graph=graph,
-            enrichment=EnrichmentLookup(graph, parties=lambda: {}),
+            enrichment=EnrichmentLookup(graph),
+            parties={},
             materialiser_build="build-123",
             capability_version="cap-v1",
             coverage=coverage,
@@ -625,7 +631,8 @@ def test_one_member_with_no_bound_entity_mints_every_covered_series_beside_a_bou
         [request_a, request_b],
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
+        enrichment=EnrichmentLookup(graph),
+        parties={},
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -658,7 +665,8 @@ def test_two_members_with_no_bound_entity_share_one_exhaustive_fetch():
         [request_a, request_b],
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
+        enrichment=EnrichmentLookup(graph),
+        parties={},
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -689,7 +697,8 @@ def test_members_with_no_bound_entity_and_no_coverage_are_the_empty_result():
         [request_a, request_b],
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
+        enrichment=EnrichmentLookup(graph),
+        parties={},
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -736,7 +745,8 @@ def test_role_bearing_members_with_no_bound_entity_mint_across_every_entity():
         group_requests,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
+        enrichment=EnrichmentLookup(graph),
+        parties={},
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -1506,7 +1516,8 @@ def test_index_sourced_group_materialises_both_members_rows_despite_differing_me
         requests,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
+        enrichment=EnrichmentLookup(graph),
+        parties={},
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -1562,7 +1573,8 @@ def test_group_materialise_with_one_empty_and_one_populated_member_serves_the_po
         [request_a, request_b],
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
+        enrichment=EnrichmentLookup(graph),
+        parties={},
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -1647,7 +1659,8 @@ def test_group_materialise_member_with_empty_probe_reports_zero_rows_despite_a_m
         [request_a, request_b],
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph, parties=lambda: {}),
+        enrichment=EnrichmentLookup(graph),
+        parties={},
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -1858,3 +1871,133 @@ def test_group_generate_chunk_role_bearing_member_with_empty_dispatch_ids_report
 
     assert result[0].table.num_rows == 1
     assert result[1].table.num_rows == 0
+
+
+_ONE_CLIMATE = "provenance/ONEClimateFinance"
+_ONE_WEIGHTING = "ONEClimateFinanceWeighting"
+_FULL_VALUE = "OECDClimateFinanceFullValue"
+
+
+def _climate_facet(facet_id: str, method: str, obs_count: int) -> Facet:
+    """A facet of a ONE Data Climate Finance StatVar under `method`."""
+    return Facet(
+        facet_id=facet_id,
+        provenance_id=_ONE_CLIMATE,
+        measurement_method=method,
+        unit="USDollar",
+        obs_count=obs_count,
+        earliest_date="2022",
+        latest_date="2022",
+    )
+
+
+@pytest.mark.parametrize(
+    ("declared", "method", "basis"),
+    [
+        pytest.param(_ONE_WEIGHTING, _ONE_WEIGHTING, "declared_default", id="declared"),
+        pytest.param("NoSuchMethod", _FULL_VALUE, "deployment_fallback", id="declared_missing"),
+    ],
+)
+def test_an_index_sourced_group_whose_members_declare_a_method_serves_one_method(
+    declared: str, method: str, basis: str
+):
+    """Members of an index-resolved family each hold their series under two methods. Declaring
+    one, the group serves it over the better-observed one; declaring a method no member holds,
+    the group serves the ranking's one method. Each member dispatches one facet either way."""
+    policy = FacetDefaultPolicy(
+        resolved_ref=declared,
+        policy_node="defaultMeasurementMethod",
+        policy_version="1",
+        selection_reason="graph_declared",
+    )
+    graph = FakeGraphReader(
+        policies={
+            (_STAT_VAR_A, "measurementMethod"): policy,
+            (_STAT_VAR_B, "measurementMethod"): policy,
+        }
+    )
+    requests = [
+        _request(stat_var=_STAT_VAR_A, facet_bindings={}, index_sourced=True),
+        _request(stat_var=_STAT_VAR_B, facet_bindings={}, index_sourced=True),
+    ]
+    member_a = [
+        _climate_facet("aWeighting", _ONE_WEIGHTING, 2),
+        _climate_facet("aFull", _FULL_VALUE, 5),
+    ]
+    member_b = [
+        _climate_facet("bWeighting", _ONE_WEIGHTING, 1),
+        _climate_facet("bFull", _FULL_VALUE, 4),
+    ]
+
+    group = select_group_facets(requests, [member_a, member_b], graph=graph)
+
+    selection = group.election.selections["measurementMethod"]
+    assert (selection.ref, selection.basis) == (method, basis)
+    assert [
+        [facet.measurement_method for facet in group.served(index, member)]
+        for index, member in enumerate([member_a, member_b])
+    ] == [[method], [method]]
+
+
+@pytest.mark.parametrize(
+    ("declared", "member_b", "served"),
+    [
+        pytest.param(
+            _ONE_WEIGHTING,
+            [_climate_facet("bFull", _FULL_VALUE, 4)],
+            [["aWeighting"], []],
+            id="declared",
+        ),
+        pytest.param(
+            "NoSuchMethod",
+            [_climate_facet("bOther", "OtherMethod", 4)],
+            [["aFull"], []],
+            id="declared_missing",
+        ),
+    ],
+)
+def test_a_group_member_lacking_the_declared_method_is_unserved_in_the_mint_as_in_search(
+    declared: str, member_b: list[Facet], served: list[list[str]]
+):
+    """Member B of an index-resolved family holds the elected source and unit but not the
+    method the declaration resolves the group to, the declared one or, where no member holds
+    it, the ranking's. The mint serves member A and names B unserved, as Search's election of
+    the same candidates does, where it used to refuse the group."""
+    policy = FacetDefaultPolicy(
+        resolved_ref=declared,
+        policy_node="defaultMeasurementMethod",
+        policy_version="1",
+        selection_reason="graph_declared",
+    )
+    graph = FakeGraphReader(
+        policies={
+            (_STAT_VAR_A, "measurementMethod"): policy,
+            (_STAT_VAR_B, "measurementMethod"): policy,
+        }
+    )
+    requests = [
+        _request(stat_var=_STAT_VAR_A, facet_bindings={}, index_sourced=True),
+        _request(stat_var=_STAT_VAR_B, facet_bindings={}, index_sourced=True),
+    ]
+    members = [
+        [_climate_facet("aWeighting", _ONE_WEIGHTING, 2), _climate_facet("aFull", _FULL_VALUE, 5)],
+        member_b,
+    ]
+
+    mint = select_group_facets(requests, members, graph=graph)
+    search = elect_group(
+        members,
+        stat_vars=[_STAT_VAR_A, _STAT_VAR_B],
+        window=None,
+        index_sourced=True,
+        requires_provenance=False,
+        policies={"measurementMethod": policy},
+    )
+
+    assert search is not None
+    for group in (mint, search):
+        assert group.unserved == (1,)
+        assert [
+            [facet.facet_id for facet in group.served(index, member)]
+            for index, member in enumerate(members)
+        ] == served

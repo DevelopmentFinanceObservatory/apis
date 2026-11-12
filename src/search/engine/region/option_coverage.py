@@ -295,9 +295,7 @@ class RoleServedFilter:
 
     A member's rows are exact when its series sit in one collapse group
     (`series_coverage.index.KeptFacets.groups`): a per-series read elects one group per
-    member across every role tuple, so of several it can serve fewer. Under `latest`
-    they are an upper bound when one of its facets states a period shorter than a year,
-    whose latest period the index cannot find within the year. `bulk_read`, for an
+    member across every role tuple, so of several it can serve fewer. `bulk_read`, for an
     answer read in bulk (`read_plan.BulkPlan`), carries each member's facet ids, so a
     pick whose members sit in more than one facet counts an upper bound
     (`bound_values.served_rows`). `facets_pinned` marks every count an upper bound, for
@@ -362,7 +360,7 @@ class RoleServedFilter:
                 continue
             for (sv, recipient, donor), years in zip(found.keys(), found.year_bits(), strict=True):
                 kept = found.variables[sv]
-                exact = kept.groups == 1 and not (latest and kept.sub_annual)
+                exact = kept.groups == 1
                 served.setdefault(sv, {})[(sv, f"{recipient}|{donor}")] = SeriesRows(
                     rows=years.bit_count(),
                     exact=counted_exact(
@@ -1004,6 +1002,7 @@ def _maybe_enrich_slot_options(
     entities: Mapping[str, list[str]],
     open_axes: frozenset[RoleAxis],
     date_request: DateRequest | None,
+    graph: EngineGraphClient,
     materialise_graph: GraphReader | None,
     place_dcids: list[str] | None = None,
     include_option_coverage: bool,
@@ -1038,6 +1037,7 @@ def _maybe_enrich_slot_options(
             shape=shape_draft,
             slot_options=menus,
             entities=entities,
+            graph=graph,
             materialise_graph=materialise_graph,
             date_request=date_request,
             place_dcids=place_dcids,
@@ -1160,6 +1160,7 @@ def _stream_slot_options_events(
             entities=entities,
             open_axes=open_axes,
             date_request=date_request,
+            graph=graph,
             materialise_graph=materialise_graph,
             place_dcids=place_dcids,
             include_option_coverage=True,
@@ -1478,8 +1479,8 @@ def _maybe_build_facet_options(
 
 
 # Probe inputs follow _stream_slot_options_events' positional fields, then its
-# `facets_pinned` and `variable_labels`. A missing facet probe skips facets.
-# `entity_options` carries the raw list for streamed events.
+# `facets_pinned`, `variable_labels` and `date_request`, the probed Spec's own. A missing
+# facet probe skips facets. `entity_options` carries the raw list for streamed events.
 _SlotOptionsProbe = tuple[
     str,
     ShapeDraft,
@@ -1492,13 +1493,13 @@ _SlotOptionsProbe = tuple[
     "FacetProbe | None",
     bool,
     Mapping[str, str],
+    "DateRequest | None",
 ]
 
 
 async def _gather_slot_options_events(
     probes: list[_SlotOptionsProbe],
     *,
-    date_request: DateRequest | None,
     graph: EngineGraphClient,
     sdmx: EngineSdmxClient,
     materialise_graph: GraphReader | None,
@@ -1543,6 +1544,7 @@ async def _gather_slot_options_events(
                 facet_probe,
                 facets_pinned,
                 variable_labels,
+                date_request,
             ) in probes
         ]
     )

@@ -12,6 +12,7 @@ coverage on every route.
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import dataclasses
 import threading
@@ -19,6 +20,7 @@ import threading
 import httpx
 import pytest
 
+import search.engine.region.candidate_options as candidate_options
 import search.engine.region.phase_answer as phase_answer
 import search.engine.region.promote_ground as promote_ground
 import search.engine.region.related_read as related_read
@@ -29,10 +31,11 @@ import tests.engine.test_parsed_pipeline as parsed
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from search.engine.clients.graph import EngineGraphClient, Facet
 from search.engine.departures import spec_departure_facts
-from search.engine.extract import DateRequest
+from search.engine.extract import DateRequest, dates_to_request
 from search.engine.region import resolve_spec_resubmit
 from search.engine.region.state import EngineOptions
 from search.engine.retrieval.coverage import CoverageForm, scope_members
+from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
 from search.engine.retrieval.member_facts import ArcsMemberFacts
 from search.engine.retrieval.read_plan import (
     BulkPlan,
@@ -42,6 +45,7 @@ from search.engine.retrieval.read_plan import (
     served_dates,
 )
 from search.engine.retrieval.retrieve import Materialised
+from search.engine.time_bind import parse_time_text
 from search.models import (
     DateRange,
     IdentityBindingValue,
@@ -200,7 +204,7 @@ _NAMED_FIRST = [
     "node_arcs_batch",
     "node_labels_batch",
     "node_arcs_many",
-    *["default_facet_policy"] * 3,
+    "default_facet_policies",
     "node_labels_batch",
     "node_types_batch",
     "node_labels_batch",
@@ -211,7 +215,7 @@ _NAMED_RESUBMIT = [
     # The posted places are no party of the fixture index, so the role kind check types them
     # (`search.role_kinds.check_role_kinds`).
     "node_arcs_many",
-    *["default_facet_policy"] * 3,
+    "default_facet_policies",
     "node_labels_batch",
     "node_types_batch",
     "node_labels_batch",
@@ -220,13 +224,13 @@ _DISCOVERED_FIRST = [
     "detect_svs",
     "node_arcs_batch",
     "node_labels_batch",
-    *["default_facet_policy"] * 3,
+    "default_facet_policies",
     *["node_labels_batch"] * 2,
     "node_types_batch",
 ]
 _DISCOVERED_RESUBMIT = [
     "node_arcs_batch",
-    *["default_facet_policy"] * 3,
+    "default_facet_policies",
     "node_labels_batch",
     "node_labels_batch",
     "node_types_batch",
@@ -242,7 +246,7 @@ _STANDARD_FIRST = [
     # (`phase_rank_bind._read_denominators`).
     "node_arcs_batch",
     "node_labels_batch",
-    *["default_facet_policy"] * 3,
+    "default_facet_policies",
     "observation_facets_batch",
     "node_labels_batch",
     "node_types_batch",
@@ -257,7 +261,7 @@ _STANDARD_RESUBMIT = [
     "node_arcs_batch",
     "node_labels_batch",
     "node_labels_batch",
-    *["default_facet_policy"] * 3,
+    "default_facet_policies",
     "observation_facets_batch",
     "node_labels_batch",
     "node_types_batch",
@@ -741,6 +745,125 @@ def test_a_unit_request_dates_every_answer_from_its_narrowed_plan(
         ]
 
 
+@_ROUTES
+def test_a_trailing_span_ends_at_the_newest_year_the_admitted_unit_holds(
+    monkeypatch, search_settings, discovered: bool, bulk: bool
+) -> None:
+    """IDS reports no unit at Aland to 2020 and Alternative US dollars for 2016 to 2018, so
+    "the last ten years" in USD ends at Alternative's 2018, the newest year of the series
+    the unit admits, where IDS's 2020 would end the unfiltered plan. The answer reads 2009
+    to 2018 and departs naming 2018, eight years before 2026."""
+    case = cited_sources._DOLLAR_CASES["runner_up_alone"]
+    dates, _warning = parse_time_text("the last ten years", current_year=2026)
+    result, _index = _role_answer(
+        monkeypatch,
+        search_settings,
+        discovered=discovered,
+        bulk=bulk,
+        rows=cited_sources._two_source_rows(),
+        metadata=case.metadata,
+        date_request=dates_to_request(dates),
+        unit_text="USD",
+        sdmx=cited_sources._dollar_series(case),
+        options=cited_sources._dollar_options(case),
+    )
+
+    assert result.status == "definite", (result.status, result.no_data_reason)
+    spec = result.specs[0]
+    window = spec.definition.identity.requested_window
+    assert (window.kind, window.start_year, window.end_year) == ("range", 2009, 2018)
+    assert _dates(spec) == [DateRange(start="2016", end="2018")]
+    stale = [fact for fact in result.departure_facts.values() if fact.code == "year_unavailable"]
+    assert [(f.requested_years, f.data_years and f.data_years[1]) for f in stale] == [
+        ((2017, 2026), 2018)
+    ]
+
+
+@_ROUTES
+def test_each_candidate_reads_the_newest_years_its_own_series_hold(
+    monkeypatch, search_settings, discovered: bool, bulk: bool
+) -> None:
+    """Flow holds Aland to 2024 and FlowAlt to 2021. Offered side by side for "the last five
+    years", each candidate's Spec states the five newest years its own series hold, and
+    only FlowAlt's, five years before 2026, departs naming its newest year."""
+    alt_flow = cited_sources._ALT_FLOW
+    dates, _warning = parse_time_text("the last five years", current_year=2026)
+    result, _index = _role_answer(
+        monkeypatch,
+        search_settings,
+        discovered=discovered,
+        bulk=bulk,
+        rows=[
+            (_FLOW, "f1", _CREDITOR, _ALAND, list(range(2010, 2025))),
+            (alt_flow, "f1", _CREDITOR, _ALAND, list(range(2010, 2022))),
+        ],
+        metadata=_TWO_SOURCES,
+        flows=(_FLOW, alt_flow),
+        llm=cited_sources._BindLLM(also_plausible=(1,)),
+        date_request=dates_to_request(dates),
+    )
+
+    assert result.status == "candidates", (result.status, result.no_data_reason)
+    windows = {
+        spec.resolved.members[0].ref.ref: (
+            spec.definition.identity.requested_window.start_year,
+            spec.definition.identity.requested_window.end_year,
+        )
+        for spec in result.specs
+    }
+    assert windows == {_FLOW: (2020, 2024), alt_flow: (2017, 2021)}
+    stale = [fact for fact in result.departure_facts.values() if fact.code == "year_unavailable"]
+    assert [fact.data_years and fact.data_years[1] for fact in stale] == [2021]
+
+
+@_ROUTES
+def test_each_candidates_slot_options_read_its_own_settled_years(
+    monkeypatch, search_settings, discovered: bool, bulk: bool
+) -> None:
+    """Flow holds Aland to 2024 and FlowAlt to 2021. Under "the last five years" each
+    candidate's slot-option probe reads the range its own Spec states, the range a pick
+    resubmits, and never the widened years the request read before it settled."""
+    probed: dict[str, DateRequest | None] = {}
+
+    def gather(batch, **_: object):
+        probed.update({spec_id: date_request for spec_id, *_rest, date_request in batch})
+        return asyncio.sleep(0, result=((), ()))
+
+    monkeypatch.setattr(candidate_options, "_gather_slot_options_events", gather)
+    monkeypatch.setattr(candidate_options, "create_owned_task", asyncio.ensure_future)
+    alt_flow = cited_sources._ALT_FLOW
+    dates, _warning = parse_time_text("the last five years", current_year=2026)
+    result, _index = _role_answer(
+        monkeypatch,
+        search_settings,
+        discovered=discovered,
+        bulk=bulk,
+        rows=[
+            (_FLOW, "f1", _CREDITOR, _ALAND, list(range(2010, 2025))),
+            (alt_flow, "f1", _CREDITOR, _ALAND, list(range(2010, 2022))),
+        ],
+        metadata=_TWO_SOURCES,
+        flows=(_FLOW, alt_flow),
+        llm=cited_sources._BindLLM(also_plausible=(1,)),
+        date_request=dates_to_request(dates),
+        options=EngineOptions(stream_slot_options=True),
+    )
+
+    assert result.status == "candidates", (result.status, result.no_data_reason)
+    stated = {
+        spec.spec_id: (
+            spec.definition.identity.requested_window.start_year,
+            spec.definition.identity.requested_window.end_year,
+        )
+        for spec in result.specs
+    }
+    assert {
+        spec_id: (request.window.start_year, request.window.end_year, request.trailing)
+        for spec_id, request in probed.items()
+        if request is not None and request.window is not None
+    } == {spec_id: (*years, None) for spec_id, years in stated.items()}
+
+
 @pytest.mark.parametrize("discovered", [False, True], ids=["named", "discovered"])
 def test_a_unit_request_reports_its_facets_from_the_plan_with_or_without_a_preview(
     monkeypatch, search_settings, discovered: bool
@@ -865,6 +988,7 @@ def _named_plan(index) -> ReadPlan:
         bound_roles={"recipient": frozenset(_RECIPIENTS)},
         years=role_years(None, index.horizon),
         coverage_index=index,
+        declared=NO_DECLARED_POLICIES,
     )
 
 
@@ -881,6 +1005,7 @@ def _discovered_plan(index) -> ReadPlan | None:
         facet_filters={},
         date_request=None,
         coverage_snapshot=FakeCoverageService(index).snapshot(),
+        declared=NO_DECLARED_POLICIES,
     )
     assert isinstance(result, Materialised)
     return result.read_plan
@@ -1003,6 +1128,7 @@ def test_a_per_pair_plan_builds_only_the_series_holding_a_point_in_its_years(
             facet_filters={},
             date_request=_RECENT,
             coverage_snapshot=FakeCoverageService(index).snapshot(),
+            declared=NO_DECLARED_POLICIES,
         )
         assert isinstance(result, Materialised)
         plan = result.read_plan
@@ -1016,6 +1142,7 @@ def test_a_per_pair_plan_builds_only_the_series_holding_a_point_in_its_years(
             bound_roles={"recipient": frozenset({_ALAND, _BLAND})},
             years=years,
             coverage_index=index,
+            declared=NO_DECLARED_POLICIES,
         )
 
     assert isinstance(plan, PairPlan)

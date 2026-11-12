@@ -24,7 +24,12 @@ from functools import cache
 from types import MappingProxyType
 from typing import Final
 
-from code_index.labels import HOW_CONNECTIVES, ROLE_CLASS_PROPERTIES, compose_measure_label
+from code_index.labels import (
+    HOW_CONNECTIVES,
+    ROLE_CLASS_PROPERTIES,
+    compose_measure_label,
+    held_codes,
+)
 from code_index.query import CodeIndex
 from code_index.types import MeasureIndex, label_for_pairs
 from description.stored import DEFINITION_MAX_LENGTH, clipped
@@ -135,8 +140,8 @@ class Vocabulary:
                 `measuredProperty`, `statType`, `measurementQualifier`).
             constraints: the values the definition fixes, by property.
 
-        The measure is the partition label over the measure axes, each read from `shape` or
-        `constraints` by its kind as Search keys a partition (`measure_label_for_partition`)
+        The measure is the partition label over the measure axes and the codes `constraints`
+        holds (`code_index.labels.held_codes`), each axis read from `shape` or `constraints` by its kind as Search keys a partition (`measure_label_for_partition`)
         and worded by `code_index.labels.compose_measure_label` ("gross disbursements"), else
         the measure noun (`MeasureIndex.nouns`) over the shape and constraints ("external
         debt service"), as the Graph service names a variable's measure. Its definition is
@@ -146,7 +151,10 @@ class Vocabulary:
             (axis.axis, (shape if axis.kind == "shape" else constraints).get(axis.axis))
             for axis in self.measure_index.axes
         ]
-        if (match := label_for_pairs(pairs, self.measure_index.partition_labels)) is not None:
+        codes = held_codes(self.index, {prop: [value] for prop, value in constraints.items()})
+        if (
+            match := label_for_pairs(pairs, self.measure_index.partition_labels, held_codes=codes)
+        ) is not None:
             return MeasureWords(
                 label=compose_measure_label(match, self.measure_index.values),
                 definition=_definition(match.definition),

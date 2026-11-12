@@ -8,7 +8,7 @@ from __future__ import annotations
 from code_index import CodeIndex, IndexStamp, StatVarRow
 from code_index.types import MeasureAxis
 from search.engine.retrieval.bound_values import elect_measure_family
-from search.engine.shape import ShapeDraft
+from search.engine.shape import ShapeDraft, SlotKeyDraft
 from tests.engine._index_slots import crs_flow_slot_keys, query_for
 
 _FIVE_TUPLE = {
@@ -55,7 +55,10 @@ def _index(statvars: list[StatVarRow]) -> CodeIndex:
     )
 
 
-def _shape(*, declared_roles: tuple[str, ...] | None = None) -> ShapeDraft:
+def _shape(index: CodeIndex, *, declared_roles: tuple[str, ...] | None = None) -> ShapeDraft:
+    """The shape of the test five-tuple, with a slot key for each constraint property the
+    rows of `index` carry, as `derive_shapes` gives an index-carried shape."""
+    properties = sorted({prop for row in index.statvars for prop in row.constraint_properties})
     return ShapeDraft(
         shape_id="widget",
         label="widget",
@@ -64,7 +67,9 @@ def _shape(*, declared_roles: tuple[str, ...] | None = None) -> ShapeDraft:
         stat_type_dcid=_FIVE_TUPLE["stat_type_dcid"],
         meas_qual_dcid=_FIVE_TUPLE["meas_qual_dcid"],
         meas_denom_dcid=_FIVE_TUPLE["meas_denom_dcid"],
-        slot_keys=(),
+        slot_keys=tuple(
+            SlotKeyDraft(axis="how", property_dcid=prop, label=prop) for prop in properties
+        ),
         declared_roles=declared_roles,
     )
 
@@ -85,7 +90,9 @@ def test_most_significant_axis_decides_over_a_later_one():
     ]
     index = _index(rows)
 
-    election = elect_measure_family(_shape(), index, (_MATERIAL, _FINISH), query_for(_shape(), {}))
+    election = elect_measure_family(
+        _shape(index), index, (_MATERIAL, _FINISH), query_for(_shape(index), {})
+    )
 
     assert election is not None
     assert election.forced == (("material", "Plastic"), ("finish", "Glossy"))
@@ -99,7 +106,10 @@ def test_axis_already_bound_is_not_elected():
     index = _index(rows)
 
     election = elect_measure_family(
-        _shape(), index, (_MATERIAL, _FINISH), query_for(_shape(), {"material": ["Metal"]})
+        _shape(index),
+        index,
+        (_MATERIAL, _FINISH),
+        query_for(_shape(index), {"material": ["Metal"]}),
     )
 
     assert election is not None
@@ -118,7 +128,7 @@ def test_axis_whose_elected_partition_carries_none_yields_no_pair():
     index = _index(rows)
 
     election = elect_measure_family(
-        _shape(), index, (_MATERIAL, _WARRANTY), query_for(_shape(), {})
+        _shape(index), index, (_MATERIAL, _WARRANTY), query_for(_shape(index), {})
     )
 
     assert election is not None
@@ -137,13 +147,18 @@ def test_empty_populated_set_fails_open_rather_than_electing_unscoped():
     index = _index(rows)
 
     election = elect_measure_family(
-        _shape(), index, (_MATERIAL, _FINISH), query_for(_shape(), {"material": ["Chrome"]})
+        _shape(index),
+        index,
+        (_MATERIAL, _FINISH),
+        query_for(_shape(index), {"material": ["Chrome"]}),
     )
 
     assert election is None
 
     # Without the unmatched filter, the same index elects `finish`.
-    unscoped = elect_measure_family(_shape(), index, (_MATERIAL, _FINISH), query_for(_shape(), {}))
+    unscoped = elect_measure_family(
+        _shape(index), index, (_MATERIAL, _FINISH), query_for(_shape(index), {})
+    )
     assert unscoped is not None
     assert unscoped.forced != ()
 
@@ -161,7 +176,9 @@ def test_joint_election_never_returns_a_combination_no_row_carries():
     ]
     index = _index(rows)
 
-    election = elect_measure_family(_shape(), index, (mode, status), query_for(_shape(), {}))
+    election = elect_measure_family(
+        _shape(index), index, (mode, status), query_for(_shape(index), {})
+    )
 
     assert election is not None
     assert election.forced == (("packageMode", "Air"), ("packageStatus", "Delivered"))
@@ -176,10 +193,10 @@ def test_forced_and_dropped_partition_the_open_constraint_axes_disjointly():
     index = _index(rows)
 
     election = elect_measure_family(
-        _shape(),
+        _shape(index),
         index,
         (_MATERIAL, _FINISH, _WARRANTY),
-        query_for(_shape(), {"material": ["Plastic"]}),
+        query_for(_shape(index), {"material": ["Plastic"]}),
     )
 
     assert election is not None
@@ -216,7 +233,9 @@ def test_siblings_differ_only_on_free_axes_and_exclude_the_elected_partition():
     # Widget, grade A, and preferred finish Matte form the elected partition.
     index = _index(_family_rows())
 
-    election = elect_measure_family(_shape(), index, _FAMILY_AXES, query_for(_shape(), {}))
+    election = elect_measure_family(
+        _shape(index), index, _FAMILY_AXES, query_for(_shape(index), {})
+    )
 
     assert election is not None
     assert election.elected.values == (
@@ -242,7 +261,7 @@ def test_full_set_still_offers_the_other_measure_value_as_a_sibling():
     index = _index(_family_rows())
 
     election = elect_measure_family(
-        _shape(), index, _FAMILY_AXES, query_for(_shape(), {"finish": ["Glossy"]})
+        _shape(index), index, _FAMILY_AXES, query_for(_shape(index), {"finish": ["Glossy"]})
     )
 
     assert election is not None
@@ -268,12 +287,12 @@ def test_a_bound_non_measure_property_removes_a_partition_outside_its_scope():
     ]
     index = _index(rows)
 
-    unscoped = elect_measure_family(_shape(), index, (_FINISH,), query_for(_shape(), {}))
+    unscoped = elect_measure_family(_shape(index), index, (_FINISH,), query_for(_shape(index), {}))
     assert unscoped is not None
     assert len(unscoped.siblings) == 1
 
     scoped = elect_measure_family(
-        _shape(), index, (_FINISH,), query_for(_shape(), {"region": ["West"]})
+        _shape(index), index, (_FINISH,), query_for(_shape(index), {"region": ["West"]})
     )
     assert scoped is not None
     assert scoped.elected.values == (("finish", "Matte"),)
@@ -288,7 +307,9 @@ def test_no_consistent_partition_yields_no_forced_pair_and_no_sibling():
     ]
     index = _index(rows)
 
-    election = elect_measure_family(_shape(), index, (_POPULATION, _GRADE), query_for(_shape(), {}))
+    election = elect_measure_family(
+        _shape(index), index, (_POPULATION, _GRADE), query_for(_shape(index), {})
+    )
 
     assert election is None
 
@@ -344,7 +365,7 @@ def test_row_declaring_different_roles_is_neither_elected_nor_a_sibling():
         _row("SV_OTHER_ROLE", observation_properties=("financingProvider",), finish="Glossy"),
     ]
     index = _index(rows)
-    shape = _shape(declared_roles=("financingRecipient",))
+    shape = _shape(index, declared_roles=("financingRecipient",))
 
     election = elect_measure_family(shape, index, (_FINISH,), query_for(shape, {}))
 
@@ -362,7 +383,7 @@ def test_row_declaring_the_shapes_own_roles_is_elected():
         _row("SV_OTHER_ROLE", observation_properties=("financingProvider",), finish="Glossy"),
     ]
     index = _index(rows)
-    shape = _shape(declared_roles=("financingProvider",))
+    shape = _shape(index, declared_roles=("financingProvider",))
 
     election = elect_measure_family(shape, index, (_FINISH,), query_for(shape, {}))
 
@@ -378,7 +399,7 @@ def test_empty_observation_properties_reads_as_observation_about():
     # declaring that role still matches it.
     rows = [_row("SV_SUBJECT", observation_properties=(), finish="Matte")]
     index = _index(rows)
-    shape = _shape(declared_roles=("observationAbout",))
+    shape = _shape(index, declared_roles=("observationAbout",))
 
     election = elect_measure_family(shape, index, (_FINISH,), query_for(shape, {}))
 
@@ -398,7 +419,7 @@ def test_declared_roles_none_leaves_role_filtering_off():
         _row("SV_ROLE", observation_properties=("financingRecipient",), finish="Glossy"),
     ]
     index = _index(rows)
-    shape = _shape(declared_roles=None)
+    shape = _shape(index, declared_roles=None)
 
     election = elect_measure_family(shape, index, (_FINISH,), query_for(shape, {}))
 

@@ -339,7 +339,7 @@
   why: The ratio is a published IDS series with an exports denominator; a no_data refusal also fits, as the menu holds no such series and the nearest pick rates 0.5.
   reuse: panel/ids-037
   tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical}
-  known_failure: {issue: 1156, checks: [measure]}
+  known_failure: {issue: 1156, checks: [measure, refusal]}
   expect:
     definite:
       measure: {family: ids.debt_service_ratio}
@@ -679,3 +679,23 @@
     definite:
       measure: {family: ids.debt_service, stat_vars: [Amount_FinancialFlow_ServicingPayment_PublicOrPubliclyGuaranteed_Nominal]}
       entities: [{dcid: country/GEO, role: destination}]
+
+- id: dq-ids-065
+  query: World Bank external debt owed to China
+  why: No words state the World Bank's role, its only cue being its own name before the measure, so it is the source and IDS answers debt owed to China.
+  tags: {theme: debt, entity: organisation, direction: origin_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical}
+  expect:
+    definite:
+      measure: {family: ids.debt_stock}
+      entities: [{dcid: country/CHN, role: origin}]
+
+- id: dq-ids-066
+  query: World Bank debt service from Kenya to the IMF
+  why: No words state the World Bank's role, so it is the source; IDS lists the IMF as a creditor, so the IMF reads as a party beside Kenya as debtor.
+  tags: {theme: debt, entity: organisation, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical}
+  # Known failure: the binder labels ServicingPayment a sole option, the family walk refutes it because the by-creditor family also holds interest, and measure election binds no value the noun "external debt service" pins.
+  known_failure: {issue: 1156, checks: [measure]}
+  expect:
+    definite:
+      measure: {family: ids.debt_service}
+      entities: [{dcid: InternationalMonetaryFund, role: origin}, {dcid: country/KEN, role: destination}]

@@ -9,6 +9,7 @@ from search.engine.region.facets import FacetAdmission
 from search.engine.region.resubmit_request import _facet_filter_from_bindings
 from search.engine.retrieval.coverage import CoverageForm, answer_coverage
 from search.engine.retrieval.facet_election import merge_role_candidates
+from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
 from search.engine.retrieval.read_plan import BulkPlan
 from search.models import (
     BreadthDim,
@@ -59,7 +60,13 @@ def _served_facet_after(bindings, candidates: list[RoleFacetCandidate]) -> str |
     """The facet a bulk plan over `candidates` serves once the posted `bindings` narrow it
     (`resubmit_request._facet_filter_from_bindings`, `facets.FacetAdmission`)."""
     merged = merge_role_candidates({"sv_a": candidates}, ["sv_a"])
-    plan = BulkPlan(members=("sv_a",), years=None, facet_id=None, candidates=merged)
+    plan = BulkPlan(
+        members=("sv_a",),
+        years=None,
+        facet_id=None,
+        candidates=merged,
+        declared=NO_DECLARED_POLICIES,
+    )
     facet_filter = _facet_filter_from_bindings(FakeGraph(), [], bindings, deadline=None)
     return plan.narrowed(FacetAdmission(axes=facet_filter).admits).facet_id
 
@@ -115,6 +122,7 @@ def _discovered_plan(years) -> BulkPlan:
         facet_id="F1",
         selected=lead_selected(merged, "F1"),
         candidates=merged,
+        declared=NO_DECLARED_POLICIES,
     )
 
 

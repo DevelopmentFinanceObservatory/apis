@@ -15,13 +15,17 @@ from unittest.mock import patch
 import pytest
 
 from entity_resolution import Admission
+from search.engine.clients.llm import FixedAgreement
 from search.engine.concurrency import scoped_concurrency
 from search.engine.entry import raw_text
-from search.engine.extract import Extraction, ExtractionResult
+from search.engine.exclusion_read import Exclusion, ExclusionRead
+from search.engine.extract import ExtractedEntity, Extraction, ExtractionResult
+from search.engine.extracted_date import ExtractedDate
 from search.engine.response_cache import ResponseCache
 from search.engine.source_spans import (
     locate_variables,
     read_sources,
+    unclaimed_stretches,
     unclaimed_words,
 )
 from search.models import RawTextInput
@@ -233,23 +237,140 @@ def test_variables_align_to_the_query_words(query, variables, spans):
 
 
 @pytest.mark.parametrize(
-    ("query", "claimed", "read", "unclaimed"),
+    ("query", "claimed", "read", "unclaimed", "stretches"),
     [
-        pytest.param(_COMPARE, ["health aid", "education aid"], {0}, (), id="all-claimed"),
+        pytest.param(_COMPARE, ["health aid", "education aid"], {0}, (), (), id="all-claimed"),
         pytest.param(
-            _COMPARE, ["health aid", "education aid"], set(), ("compare",), id="connective-unread"
+            _COMPARE,
+            ["health aid", "education aid"],
+            set(),
+            ("compare",),
+            ("compare",),
+            id="connective-unread",
         ),
         pytest.param(
             "maternal health ODA to Kenya in 2020",
             ["health ODA", "Kenya", "2020"],
             set(),
             ("maternal",),
+            ("maternal",),
             id="modifier",
+        ),
+        pytest.param(
+            "Germany attributed climate finance commitments 2022",
+            ["climate finance commitments", "Germany", "2022"],
+            set(),
+            ("attributed",),
+            ("attributed",),
+            id="a-measure-word-outside-the-variable",
+        ),
+        pytest.param(
+            "aid attributed to donors from Japan, in real terms",
+            ["aid", "Japan"],
+            set(),
+            ("attributed", "donors", "real", "terms"),
+            ("attributed to donors", "real terms"),
+            id="a-function-word-joins-a-stretch",
         ),
     ],
 )
-def test_unclaimed_words_are_the_content_words_nothing_claims(query, claimed, read, unclaimed):
-    assert unclaimed_words(query, claimed=claimed, read_connectives=frozenset(read)) == unclaimed
+def test_unclaimed_words_are_the_content_words_nothing_claims(
+    query, claimed, read, unclaimed, stretches
+):
+    """A claimed word or a read connective ends a stretch, and a function word joins the
+    words around it."""
+    read_connectives = frozenset(read)
+    assert unclaimed_words(query, claimed=claimed, read_connectives=read_connectives) == unclaimed
+    assert (
+        unclaimed_stretches(query, claimed=claimed, read_connectives=read_connectives) == stretches
+    )
+
+
+async def _legs_unclaimed(
+    query: str, extraction: Extraction, excluded: Exclusion | None
+) -> list[tuple[str, ...]]:
+    """The `unclaimed` stretches each fan-out leg of `query` receives, the exclusion read
+    reporting `excluded`."""
+    legs: list[tuple[str, ...]] = []
+
+    async def _extract(query, *, llm):
+        return ExtractionResult(extraction=extraction, qualifiers={}), None
+
+    async def _read_exclusions(query, *, llm):
+        return ExclusionRead(exclusions=[excluded] if excluded else []), None, FixedAgreement(True)
+
+    async def _resolve_variable(variable, **kwargs):
+        legs.append(kwargs["unclaimed"])
+        return _stub_region(variable)
+
+    async def _combiner(regions, **kwargs):
+        yield None
+
+    graph = FakeGraph()
+    with (
+        patch("search.engine.entry.raw_text.extract", _extract),
+        patch("search.engine.entry.raw_text.read_exclusions", _read_exclusions),
+        patch("search.engine.fanout.resolve_variable", _resolve_variable),
+        patch("search.engine.entry.raw_text._stream_combined_regions", _combiner),
+    ):
+        async with scoped_concurrency():
+            async for _ in raw_text.handle(
+                RawTextInput(query=query),
+                graph=graph,
+                resolver=make_resolver(graph),
+                admission=Admission(graph=graph),
+                llm=FakeLLM(),
+                sdmx=FakeSdmxClient(observations={}, availability={}),
+                materialise_graph=None,
+                materialise_sdmx=None,
+                start_ms=0,
+                params=_params(),
+            ):
+                pass
+    return legs
+
+
+_EXCLUDED = Exclusion(phrase="excluding attributed amounts", left_out=["attributed amounts"])
+
+
+@pytest.mark.parametrize(
+    ("query", "variables", "excluded", "legs"),
+    [
+        pytest.param(
+            "Germany attributed climate finance commitments 2022",
+            ["climate finance commitments"],
+            None,
+            [("attributed",)],
+            id="one-part",
+        ),
+        pytest.param(
+            "Germany climate finance commitments 2022 excluding attributed amounts",
+            ["climate finance commitments"],
+            _EXCLUDED,
+            [()],
+            id="an-excluded-word-is-blanked",
+        ),
+        pytest.param(
+            "Germany attributed climate finance commitments and ODA 2022",
+            ["climate finance commitments", "ODA"],
+            None,
+            [(), ()],
+            id="two-parts-own-no-stretch",
+        ),
+    ],
+)
+def test_a_single_part_receives_the_stretches_no_reader_claims(query, variables, excluded, legs):
+    """The part of a single-variable request reads the measure word extraction left outside
+    its variable. A stretch the exclusion read leaves out is blanked first, and a stretch of
+    a request with two parts has no one owner, so neither part reads it."""
+    extraction = Extraction(
+        kind="resolution",
+        variables=variables,
+        entities=[ExtractedEntity(text="Germany", span="Germany")],
+        dates=[ExtractedDate(kind="point", start="2022")],
+    )
+
+    assert asyncio.run(_legs_unclaimed(query, extraction, excluded)) == legs
 
 
 class _RecordingScope:
@@ -261,6 +382,12 @@ class _RecordingScope:
     async def lookup_parsed(self, **kwargs):
         self.separate = list(kwargs["separate"])
         return None
+
+    def hold_samples(self, llm):
+        return llm
+
+    def note_extraction(self, *agreed) -> None:
+        pass
 
     def note_health(self, *, timed_out: bool, degraded_leg: bool) -> None:
         pass

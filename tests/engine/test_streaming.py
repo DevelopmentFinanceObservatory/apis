@@ -1393,7 +1393,7 @@ def test_done_carries_the_departures_a_streamed_read_adds(projected_count, late)
     )
     from tests.engine._builders import conjoin_spec, shape_five_tuple
 
-    spec = conjoin_spec(shape_five_tuple("Person", "count"), "x", sv_dcid="Test_SV")
+    spec = conjoin_spec(shape_five_tuple("Person", "count"), "v", sv_dcid="Test_SV")
     conversion = ObservationSeriesConversion(
         recipe_id="recipe/Test",
         table_provenance=SeriesFacetRef(ref="provenance/TestRateTables"),
@@ -1892,3 +1892,35 @@ def test_extract_step_event_precedes_first_per_variable_event():
         assert events.index(extract_steps[0]) < min(per_variable_indices)
 
     _run(_body())
+
+
+def test_the_interpretation_event_restates_a_trailing_span_as_its_calendar_years(
+    monkeypatch, search_settings
+):
+    """ "The last five years" in a parsed part reaches the `interpretation` event as the
+    calendar years its words cover, with no count of newest years, the event's wire shape."""
+    frozen_monotonic_clock(monkeypatch)
+    search_settings(request_timeout_s=0.02, finalise_grace_s=DEADLINE_TIMEOUT_S)
+    monkeypatch.setattr("entity_resolution.EntityResolver.resolve", _slow_resolver_resolve)
+    monkeypatch.setattr("search.engine.entry.parsed.current_year", lambda: 2026)
+    client = TestClient(_fake_app(graph=FakeGraph()), raise_server_exceptions=False)
+
+    resp = client.post(
+        "/api/search/resolve",
+        json={
+            "input": {
+                "kind": "parsed",
+                "parts": [
+                    {
+                        "variable_text": "v0",
+                        "entities": [{"text": "E0"}],
+                        "time_text": "the last five years",
+                    }
+                ],
+            }
+        },
+        headers={"Accept": "text/event-stream"},
+    )
+
+    (interpretation,) = [data for ev, data in _parse_sse(resp.text) if ev == "interpretation"]
+    assert interpretation["dates"] == [{"kind": "range", "start": "2022", "end": "2026"}]
