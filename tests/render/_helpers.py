@@ -173,7 +173,7 @@ def _spec(
                 identity=identity_doc,
                 provenance=None,
             ),
-            entities=_resolved_entities(entities or []),
+            entities=_resolved_entities(entities or [], parties={}, datasets=()),
             coverage=coverage,
             scope=scope,
             facets=facets or {},

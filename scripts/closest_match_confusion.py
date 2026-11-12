@@ -1,27 +1,19 @@
 """Score the `closest_match` rule against recorded panel responses.
 
 Reads `raw-*.jsonl` panel responses (one `{"id", "query", "body"}` record per line, the
-body a full search response), runs `search.engine.closest_match.closest_match_fact` over
-every reading each response shows (a definite part's Spec, each Spec of a candidates
-part), and compares the result with hand labels. A query is predicted positive when any of
-its readings raises the fact.
+body a full search response), judges every reading each response shows (a definite part's
+Spec, each Spec of a candidates part) as assembly judges it, and compares the result with
+hand labels. A query is predicted positive when any of its readings raises the fact.
 
-Each reading's inputs come from the recorded body: `variable_text` and the
-`retrieval_score_weak` warning from its part, the measure noun from the authored noun
-`search.heading.measure_noun` gives the Spec's shape and shared constraint values, else the
-first `what` token of the Spec's own recorded `sentence_plan`, the StatVar names from its
-members' labels, and the bound codes from the how-slot bindings and the members'
-constraint values.
-
-Responses carry neither a Spec's members nor any `alternateName`, so both come from
-snapshot files. The members snapshot maps a `spec_id` to the `members` the Datasets
+Each reading runs `search.engine.closest_match.spec_closest_match_fact` on its part's
+`variable_text`, the measure noun its heading shows (`heading_for`), and the inputs
+`closest_match.reading_inputs` builds from the Spec. A response carries no Spec's members,
+so they come from a members snapshot, which maps a `spec_id` to the `members` the Datasets
 members door (`POST /api/datasets/{id}/members`) lists for the Spec's `definition`: the
 StatVars a mint of it serves. `--fetch-members` writes it from the service at `--base` for
-every Spec the responses show. The names snapshot maps a StatVar dcid to every `name` and
-`alternateName` it holds. `--fetch-alternate-names` writes it from the graph at
-`SEARCH_GRAPH_BASE` (the service root, as the engine reads it) for the StatVars of every
-weak reading. A run with neither flag reads the snapshots and touches no network, so it
-reruns to the same output.
+every Spec the responses show. A run without the flag reads the snapshot and touches no
+network beyond the graph release at `GRAPH_RELEASE_URI`, whose code and measure indexes the
+rule and the heading read, so it reruns to the same output on one release.
 
 `search.eval.apis_auth` adds the Cloud Run ID token an `https` base URL needs. Set
 `DFO_APIS_ID_TOKEN`, or point the base URL at `gcloud run services proxy` on localhost.
@@ -32,30 +24,27 @@ The labels file maps a query id to `{"closest_match": bool, "basis": "assessment
 Usage:
     uv run python scripts/closest_match_confusion.py --raw-dir RUNS --labels LABELS.json \\
         --members MEMBERS.json --fetch-members
-    uv run --env-file .env python scripts/closest_match_confusion.py --raw-dir RUNS \\
-        --labels LABELS.json --members MEMBERS.json --alternate-names NAMES.json \\
-        --fetch-alternate-names
     uv run python scripts/closest_match_confusion.py --raw-dir RUNS --labels LABELS.json \\
-        --members MEMBERS.json --alternate-names NAMES.json --out confusion.md
+        --members MEMBERS.json --out confusion.md
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
-from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
 
-from search.engine.closest_match import bound_code_names, closest_match_fact
+from graph_release.context import bound_served_release
+from graph_release.service import get_release_service
+from search.engine.closest_match import bound_code_names, reading_inputs, spec_closest_match_fact
 from search.eval.apis_auth import apis_auth
-from search.heading.measure_noun import measure_noun
 from search.heading.words import content_words
+from search.models import GraphRef, SentenceFacts, Spec
+from search.render.heading import heading_for
 
-_WEAK = "retrieval_score_weak"
 _DCID_PREFIX = "dcid:"
 DEFAULT_BASE = "https://dfo-dev-apis-zms5lj4zhq-nn.a.run.app"
 TIMEOUT_S = 150
@@ -63,14 +52,30 @@ TIMEOUT_S = 150
 
 @dataclass(frozen=True)
 class Reading:
-    """One Spec a recorded part shows, with the rule's inputs read off it."""
+    """One Spec a recorded part shows, stating its members' sentence facts, with the
+    request's words for its variable and the measure noun its heading shows."""
 
-    query_id: str
     variable_text: str
-    weak: bool
     measure_noun: str
-    stat_vars: tuple[tuple[str, str | None], ...]
-    bound_codes: tuple[str, ...]
+    spec: Spec
+
+    def fires(self) -> bool:
+        fact = spec_closest_match_fact(
+            self.spec, variable_text=self.variable_text, measure_noun=self.measure_noun
+        )
+        return fact is not None
+
+    def shared_words(self) -> list[str]:
+        """The content words of the variable text that some name of the measure holds,
+        each with the first name that holds it. These words keep the rule silent."""
+        evidence, bound_codes, _series = reading_inputs(self.spec, measure_noun=self.measure_noun)
+        names = [self.measure_noun, *evidence.member_names, *bound_code_names(bound_codes)]
+        shared: dict[str, str] = {}
+        for word in sorted(content_words(self.variable_text)):
+            holder = next((name for name in names if word in content_words(name)), None)
+            if holder is not None:
+                shared[word] = holder
+        return [f"{word!r} in {holder!r}" for word, holder in shared.items()]
 
 
 @dataclass(frozen=True)
@@ -106,114 +111,45 @@ def _load_queries(records: list[dict], members: dict[str, list[dict]]) -> list[Q
             record["id"],
             record["query"],
             tuple(
-                reading
+                _reading(record["id"], part, spec, members)
                 for part in _parts(record)
-                for reading in _readings(record["id"], part, members)
+                for spec in _shown_specs(part)
             ),
         )
         for record in records
     ]
 
 
-def _readings(query_id: str, part: dict, members: dict[str, list[dict]]) -> Iterator[Reading]:
-    weak = any(warning["code"] == _WEAK for warning in part.get("warnings", []))
-    for spec in _shown_specs(part):
-        resolved = spec["resolved"]
-        if spec["spec_id"] not in members:
-            raise SystemExit(
-                f"the members snapshot holds no {spec['spec_id']} (query {query_id}); "
-                "write it with --fetch-members"
-            )
-        items = members[spec["spec_id"]]
-        what = [token["text"] for token in resolved["sentence_plan"] if token.get("axis") == "what"]
-        codes = [
-            value["ref"]["ref"]
-            for slot in resolved["slots"]
-            if slot["key"]["axis"] == "how"
-            for value in _binding_values(slot["binding"])
-        ]
-        codes.extend(value for item in items for value in item["constraints"].values() if value)
-        noun = _authored_noun(resolved["shape"], items)
-        yield Reading(
-            query_id=query_id,
-            variable_text=part["variable_text"],
-            weak=weak,
-            measure_noun=noun or (what[0] if what else resolved["shape"]["label"]),
-            stat_vars=tuple(
-                (item["ref"].removeprefix(_DCID_PREFIX), item["label"]) for item in items
-            ),
-            bound_codes=tuple(dict.fromkeys(codes)),
+def _reading(query_id: str, part: dict, raw: dict, members: dict[str, list[dict]]) -> Reading:
+    """The reading `raw`, a Spec `part` shows, stating the members the snapshot lists."""
+    if raw["spec_id"] not in members:
+        raise SystemExit(
+            f"the members snapshot holds no {raw['spec_id']} (query {query_id}); "
+            "write it with --fetch-members"
         )
-
-
-def _authored_noun(shape: dict, items: list[dict]) -> str | None:
-    """The authored measure noun the heading shows for `shape`, from the
-    constraint values every member in `items` shares."""
-    bound = [
-        {prop: value for prop, value in item["constraints"].items() if value} for item in items
-    ]
-    shared = (
-        {
-            prop: value
-            for prop, value in bound[0].items()
-            if all(other.get(prop) == value for other in bound)
-        }
-        if bound
-        else {}
+    items = members[raw["spec_id"]]
+    facts = SentenceFacts(
+        members=[
+            GraphRef(ref=item["ref"].removeprefix(_DCID_PREFIX), label=item["label"])
+            for item in items
+        ],
+        constraint_properties=[
+            list(properties)
+            for properties in sorted(
+                {
+                    tuple(sorted(p for p, value in item["constraints"].items() if value))
+                    for item in items
+                }
+            )
+        ],
     )
-    noun = measure_noun(
-        population_type=(shape.get("population_type") or {}).get("ref"),
-        measured_property=(shape.get("measured_property") or {}).get("ref"),
-        stat_type=(shape.get("stat_type") or {}).get("ref"),
-        constraints=shared,
+    spec = Spec.model_validate(raw)
+    spec = spec.model_copy(update={"resolved": spec.resolved.stating_sentence_facts(facts)})
+    return Reading(
+        variable_text=part["variable_text"],
+        measure_noun=heading_for(spec).heading.noun.inline_text,
+        spec=spec,
     )
-    return noun.noun if noun else None
-
-
-def _binding_values(binding: dict) -> list[dict]:
-    if binding["kind"] == "value":
-        return [binding["value"]]
-    if binding["kind"] == "set":
-        return list(binding["values"])
-    return []
-
-
-def _stat_var_names(reading: Reading, alternate_names: dict[str, list[str]]) -> list[str]:
-    return [
-        name
-        for dcid, label in reading.stat_vars
-        for name in (label, *alternate_names.get(dcid, ()))
-        if name
-    ]
-
-
-def _fires(reading: Reading, alternate_names: dict[str, list[str]]) -> bool:
-    fact = closest_match_fact(
-        variable_text=reading.variable_text,
-        retrieval_score_weak=reading.weak,
-        measure_noun=reading.measure_noun,
-        stat_var_names=_stat_var_names(reading, alternate_names),
-        bound_codes=reading.bound_codes,
-    )
-    return fact is not None
-
-
-def _shared_words(reading: Reading, alternate_names: dict[str, list[str]]) -> list[str]:
-    """The content words of a weak reading's variable text that some name of its measure
-    holds, each with the first name that holds it. These words keep the rule silent."""
-    if not reading.weak:
-        return []
-    names = [
-        reading.measure_noun,
-        *_stat_var_names(reading, alternate_names),
-        *bound_code_names(reading.bound_codes),
-    ]
-    shared: dict[str, str] = {}
-    for word in sorted(content_words(reading.variable_text)):
-        holder = next((name for name in names if word in content_words(name)), None)
-        if holder is not None:
-            shared[word] = holder
-    return [f"{word!r} in {holder!r}" for word, holder in shared.items()]
 
 
 def _fetch_members(records: list[dict], path: Path, *, base: str) -> None:
@@ -241,26 +177,7 @@ def _fetch_members(records: list[dict], path: Path, *, base: str) -> None:
     print(f"wrote the members of {len(members)} Specs to {path}")
 
 
-def _fetch_alternate_names(queries: list[Query], path: Path) -> None:
-    from dc_graph.client import GraphClient
-
-    base = os.environ.get("SEARCH_GRAPH_BASE", "").strip()
-    if not base:
-        raise SystemExit("SEARCH_GRAPH_BASE must be set to fetch alternate names")
-    dcids = sorted(
-        {dcid for q in queries for r in q.readings if r.weak for dcid, _label in r.stat_vars}
-    )
-    if not dcids:
-        raise SystemExit("no weak reading names a StatVar; nothing to fetch")
-    client = GraphClient(
-        base_url=f"{base.rstrip('/')}/core/api", token=os.environ.get("SEARCH_GRAPH_TOKEN") or None
-    )
-    names = client.node_names_many(dcids)
-    path.write_text(json.dumps({dcid: list(names[dcid]) for dcid in dcids}, indent=1) + "\n")
-    print(f"wrote names for {len(dcids)} StatVars to {path}")
-
-
-def _report(queries: list[Query], labels: dict, alternate_names: dict[str, list[str]]) -> str:
+def _report(queries: list[Query], labels: dict) -> str:
     unknown = sorted(set(labels) - {q.query_id for q in queries})
     if unknown:
         raise SystemExit(f"labels name queries the responses do not hold: {unknown}")
@@ -268,12 +185,11 @@ def _report(queries: list[Query], labels: dict, alternate_names: dict[str, list[
     for q in queries:
         label = labels.get(q.query_id, {})
         expected = bool(label.get("closest_match", False))
-        predicted = any(_fires(r, alternate_names) for r in q.readings)
-        weak = any(r.weak for r in q.readings)
-        rows.append((q, expected, predicted, weak, label))
+        predicted = any(r.fires() for r in q.readings)
+        rows.append((q, expected, predicted, label))
 
     def count(expected: bool, predicted: bool) -> int:
-        return sum(1 for _q, e, p, _w, _l in rows if e == expected and p == predicted)
+        return sum(1 for _q, e, p, _l in rows if e == expected and p == predicted)
 
     tp, fp, fn, tn = count(True, True), count(False, True), count(True, False), count(False, False)
     precision = f"{tp / (tp + fp):.2f}" if tp + fp else "n/a"
@@ -282,8 +198,7 @@ def _report(queries: list[Query], labels: dict, alternate_names: dict[str, list[
     lines = [
         "# Closest-match rule: confusion over the recorded panel",
         "",
-        f"{len(rows)} queries, {sum(1 for r in rows if r[3])} with a weak shown reading. "
-        f"{own} labels are the labeller's own reading of the query and its assessment; every "
+        f"{len(rows)} queries. {own} labels are the labeller's own reading of the query and its assessment; every "
         "other label follows the assessment, and a query the labels file omits is a negative.",
         "",
         "| | labelled closest match | labelled not |",
@@ -305,19 +220,16 @@ def _report(queries: list[Query], labels: dict, alternate_names: dict[str, list[
             lines += ["None.", ""]
             continue
         lines += [
-            "| id | query | weak | label basis | reason | readings shown | shared words |",
-            "| --- | --- | --- | --- | --- | --- | --- |",
+            "| id | query | label basis | reason | readings shown | shared words |",
+            "| --- | --- | --- | --- | --- | --- |",
         ]
-        for q, _e, _p, weak, label in selected:
+        for q, _e, _p, label in selected:
             shown = "; ".join(
                 dict.fromkeys(f"{r.variable_text!r} -> {r.measure_noun}" for r in q.readings)
             )
-            shared = "; ".join(
-                dict.fromkeys(w for r in q.readings for w in _shared_words(r, alternate_names))
-            )
+            shared = "; ".join(dict.fromkeys(w for r in q.readings for w in r.shared_words()))
             lines.append(
-                f"| {q.query_id} | {q.query} | {'yes' if weak else 'no'} | "
-                f"{label.get('basis', 'assessment')} | {label.get('reason', '')} | {shown} | "
+                f"| {q.query_id} | {q.query} | {label.get('basis', 'assessment')} | {label.get('reason', '')} | {shown} | "
                 f"{shared} |"
             )
         lines.append("")
@@ -331,8 +243,6 @@ def main() -> None:
     parser.add_argument("--members", type=Path, required=True)
     parser.add_argument("--fetch-members", action="store_true")
     parser.add_argument("--base", default=DEFAULT_BASE)
-    parser.add_argument("--alternate-names", type=Path)
-    parser.add_argument("--fetch-alternate-names", action="store_true")
     parser.add_argument("--out", type=Path)
     args = parser.parse_args()
 
@@ -340,14 +250,9 @@ def main() -> None:
     if args.fetch_members:
         _fetch_members(records, args.members, base=args.base)
         return
-    if args.alternate_names is None:
-        parser.error("--alternate-names is required without --fetch-members")
-    queries = _load_queries(records, json.loads(args.members.read_text()))
-    if args.fetch_alternate_names:
-        _fetch_alternate_names(queries, args.alternate_names)
-        return
-    alternate_names = json.loads(args.alternate_names.read_text())
-    report = _report(queries, json.loads(args.labels.read_text()), alternate_names)
+    with bound_served_release(get_release_service()):
+        queries = _load_queries(records, json.loads(args.members.read_text()))
+        report = _report(queries, json.loads(args.labels.read_text()))
     if args.out is None:
         print(report)
     else:

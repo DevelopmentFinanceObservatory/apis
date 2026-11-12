@@ -83,7 +83,7 @@ from search.engine.conjoin import _unbound_terms
 from search.engine.departures import WarningKey, warning_key
 from search.engine.interpret import Recall
 from search.engine.options.population import options_population
-from search.engine.qualifier_match import QualifierMatch, _normalize
+from search.engine.qualifier_match import QualifierMatch, _normalize, declared_measures_named
 from search.engine.quantity import quantity_requirement
 from search.engine.region import option_coverage as option_coverage_module
 from search.engine.region import phase_election as phase_election_module
@@ -981,7 +981,11 @@ def test_a_named_part_refuses_a_code_its_table_does_not_carry(index, named, refu
     assert [row.code_system for span in spans for row in span.rows] == ["channel"]
 
     undeclared = _undeclared_qualifiers(
-        "K1 aid", spans, [shape], {vocabulary: reading.by_vocabulary[vocabulary].spans}
+        "K1 aid",
+        spans,
+        [shape],
+        {vocabulary: reading.by_vocabulary[vocabulary].spans},
+        named=declared_measures_named("K1 aid"),
     )
 
     assert [record.text for record in undeclared] == (["K1"] if refused else [])

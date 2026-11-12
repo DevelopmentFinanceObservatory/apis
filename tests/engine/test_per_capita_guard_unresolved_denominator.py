@@ -1280,3 +1280,67 @@ def test_the_quantity_read_reads_no_word_a_place_owns(base_words, stated_form, r
     assert (result.status, result.no_data_reason) == ("no_data", reason)
     if reason == "qualifier_not_bound":
         _assert_refuses_unread(result, ["service", "private creditors"], [_DEBT_LEVEL])
+
+
+_CHINA = ("China", "country/CHN")
+_USA = ("United States", "country/USA")
+_NETHERLANDS = ("Netherlands", "country/NLD")
+
+
+@pytest.mark.parametrize(
+    ("query", "place", "axis", "phrase"),
+    [
+        ("debt service to China", _CHINA, "destination", "debt service"),
+        ("debt service from China", _CHINA, "origin", "debt service"),
+        ("debt service to the United States", _USA, "destination", "debt service"),
+        ("debt service from the Netherlands", _NETHERLANDS, "origin", "debt service"),
+        (
+            "external debt relative to China's GDP",
+            _CHINA,
+            "destination",
+            "external debt relative to GDP",
+        ),
+        (
+            "debt service relative to China's exports",
+            _CHINA,
+            "destination",
+            "debt service relative to exports",
+        ),
+        (
+            "external debt relative to the United States' GDP",
+            _USA,
+            "destination",
+            "external debt relative to GDP",
+        ),
+    ],
+    ids=[
+        "to",
+        "from",
+        "to-the",
+        "from-the",
+        "possessive-gdp",
+        "possessive-exports",
+        "possessive-apostrophe",
+    ],
+)
+def test_the_quantity_read_reads_no_role_preposition_a_place_owns(
+    query, place, axis, phrase, monkeypatch
+):
+    """#47: the parsed door's variable "debt service to China" carries the creditor and
+    its preposition. The quantity read reads "debt service": a "to" left dangling reads
+    as a ratio to a missing base, as in "debt to GDP", and the live read stated a rate. An
+    article between them goes too: "debt service to the United States" reads as "debt
+    service". A place in the possessive owns the noun after it, so its preposition stays:
+    "relative to China's GDP" reads as "relative to GDP"."""
+    name, dcid = place
+    llm = _ReadingLLM("External debt (current US$)")
+    _resolve(
+        query,
+        nodes={**_DEBT_NODES, dcid: {"label": name, "type": "Country"}},
+        svs=_CREDITOR_MENU,
+        place=place,
+        monkeypatch=monkeypatch,
+        llm=llm,
+        roles=[DoorRole(axis=axis, span=name)],
+    )
+    assert llm.quantity_prompts[0].splitlines()[0] == f"Variable phrase: {phrase}"

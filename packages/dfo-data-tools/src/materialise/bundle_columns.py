@@ -40,7 +40,7 @@ from dfo_frame_grammar import (
 )
 
 from dc_graph import GraphReadError
-from dfo_platform.columns import column_noun, column_title, role_noun
+from dfo_platform.columns import PROVENANCE_COLUMN, column_noun, column_title, role_noun
 from dfo_platform.roles import role_key_axis
 from materialise.bundle import CODES_PATH, CodeEntry, ColumnDoc
 from materialise.bundle_naming import years_text
@@ -54,7 +54,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 MEASUREMENT_METHOD_COLUMN = "measurementMethod"
-PROVENANCE_COLUMN = "provenance"
 
 VARIABLE_KIND = "variable"
 PLACE_KIND = "place"

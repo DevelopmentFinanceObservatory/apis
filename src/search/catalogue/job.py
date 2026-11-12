@@ -449,9 +449,7 @@ async def _assemble(
         catalogue=catalogue,
         coverage=covered.index,
         datasets=index.datasets,
-        # Read over every dataset: a party that is a total in some datasets only, such as the
-        # IMF trust funds, is a donor of its own in the others and counts as one.
-        totals=[dcid for dcid, party in index.parties.items() if party.kind_over() == "total"],
+        parties=index.parties,
     )
     names = place_names(sorted(counted.places))
 

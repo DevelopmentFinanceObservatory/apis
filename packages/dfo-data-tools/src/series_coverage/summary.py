@@ -25,7 +25,8 @@ import numpy as np
 import pyarrow as pa
 
 from code_index.types import PartyKind, PartyRow
-from series_coverage.coverage_types import Role
+from dfo_platform.roles import RoleAxis
+from series_coverage.coverage_types import COVERAGE_ROLE_AXES, Role
 from series_coverage.schema import (
     ABSENT_ENTITY,
     DONOR_COLUMN,
@@ -54,9 +55,11 @@ class PartyCounts:
     `totals` parties that hold other parties' figures ("Africa, Total"; a whole total such as
     "Official Donors, Total" is one), and `residual` parties holding figures no other party
     does ("Africa, unallocated by country"). `unclassified` counts parties the code index
-    does not list. Each party counts once, under the first of `party`, `residual` and `total`
-    it takes in the datasets of the facets that hold it (`PartyRow.kinds_over`, every dataset
-    that publishes it for a facet with no provenance), so the kinds sum to the distinct parties.
+    does not list or publishes on no dataset on the role's axis. Each party counts once, under
+    the first of `party`, `residual` and `total` it takes on the role's axis
+    (`coverage_types.COVERAGE_ROLE_AXES`) in the datasets of the facets that hold it
+    (`PartyRow.kinds_over`, every dataset that publishes it there for a facet with no
+    provenance), so the kinds sum to the distinct parties.
     One that is a total in DAC2A and a party in the CRS has figures of its own in the CRS and
     counts in `parties` across both.
     """
@@ -139,15 +142,19 @@ class VariableSummary:
                     datasets = held[role][dcid]
                     if provenance is not None:
                         datasets.add(provenance)
-        return {role: _split_by_kind(held[role], parties) for role in roles}
+        return {
+            role: _split_by_kind(held[role], parties, axis=COVERAGE_ROLE_AXES[role])
+            for role in roles
+        }
 
 
 def _split_by_kind(
-    held: Mapping[str, Collection[str]], parties: Mapping[str, PartyRow]
+    held: Mapping[str, Collection[str]], parties: Mapping[str, PartyRow], *, axis: RoleAxis
 ) -> PartyCounts:
     """`held`'s parties, each mapped to the provenances of the facets holding it, counted once
-    under the first kind of `_KIND_PRECEDENCE` it takes there. A party counted as a `party` is
-    private when its class as a `party` is (`PartyRow.class_of`)."""
+    under the first kind of `_KIND_PRECEDENCE` it takes there on the role's `axis`, and as
+    unclassified where it takes none there. A party counted as a `party` is private when its
+    class as a `party` is (`PartyRow.class_of`)."""
     kinds: Counter[PartyKind | None] = Counter()
     private = 0
     for dcid, datasets in held.items():
@@ -155,8 +162,8 @@ def _split_by_kind(
         if row is None:
             kinds[None] += 1
             continue
-        taken = row.kinds_over(datasets)
-        kind = next(kind for kind in _KIND_PRECEDENCE if kind in taken)
+        taken = row.kinds_over(axis, datasets)
+        kind = next((kind for kind in _KIND_PRECEDENCE if kind in taken), None)
         kinds[kind] += 1
         if kind == "party" and row.class_of(kind) == "private":
             private += 1

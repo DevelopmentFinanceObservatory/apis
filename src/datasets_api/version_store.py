@@ -165,8 +165,9 @@ _VERSION_LINK_LOCK_CLASS = 0x4446_4F4C  # "DFOL" packed into an int4
 
 
 def lock_version_links(tx: Transaction, *, subject_id: str, content_version: str) -> None:
-    """Serialise this transaction with every other link write, pin reference write and
-    coverage fill (`_fill_year_coverage`) for one version, until it ends.
+    """Serialise this transaction with every other link write, pin reference write, coverage
+    fill (`_fill_year_coverage`) and party-kind backfill
+    (`maintenance.run_backfill_party_kind_coverage`) for one version, until it ends.
 
     Run it as its own statement before the statement it guards. Under READ COMMITTED the next
     statement then takes its snapshot after the lock, so it sees every row a previous holder

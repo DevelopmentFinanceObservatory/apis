@@ -463,7 +463,9 @@ def _record_head_hit_derived(
         artifact_store=deps.artifact_store,
     )
     reshape_models = reshape_warning_models(reshape_warnings)
-    output_profile = derived_output_profile(derived, enrichment=deps.enrichment)
+    output_profile = derived_output_profile(
+        derived, enrichment=deps.enrichment, parties=deps.code_index.parties
+    )
     capabilities = build_capabilities(
         capability_version=deps.capability_version,
         build=deps.materialiser_build,

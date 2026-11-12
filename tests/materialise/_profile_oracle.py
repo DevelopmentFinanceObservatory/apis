@@ -13,7 +13,15 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 
 from dfo_frame_grammar import Frame
 
-from materialise.enrichment import ENRICHMENT_FIELDS, EnrichmentLookup
+from code_index.types import PartyRow
+from dfo_platform.columns import PROVENANCE_COLUMN
+from materialise.enrichment import (
+    ENRICHMENT_FIELDS,
+    PARTY_KIND_FIELD,
+    EnrichmentLookup,
+    pivot_party_cell,
+    row_party_cell,
+)
 from materialise.errors import MaterialisationUsageError
 from materialise.profile import (
     ColumnProfile,
@@ -53,6 +61,7 @@ def reference_output_profile_from_chunks(
     *,
     role_columns: Sequence[str],
     enrichment: EnrichmentLookup,
+    parties: Mapping[str, PartyRow],
 ) -> OutputProfile:
     """Compute the exact profile from a fresh chunk iterator on each pass.
     State is bounded by distinct column values and candidate pivot keys,
@@ -114,12 +123,20 @@ def reference_output_profile_from_chunks(
     }
     dup_found: dict[tuple[str, str], bool] = dict.fromkeys(pair_names, False)
 
+    datasets_by_column: dict[str, dict[object, set[object]]] = {
+        role_column: {} for role_column in role_columns
+    }
     total_rows = 0
     for chunk in _chain_first(first_chunk, chunks):
         for row in _iter_rows(chunk):
             total_rows += 1
             for name in distinct_columns:
                 distinct_by_column[name].add(row[positions[name]])
+            if PROVENANCE_COLUMN in positions:
+                for role_column in role_columns:
+                    datasets_by_column[role_column].setdefault(
+                        row[positions[role_column]], set()
+                    ).add(row[positions[PROVENANCE_COLUMN]])
             for pair, seen in fd_seen.items():
                 if pair in fd_violated:
                     continue
@@ -217,7 +234,11 @@ def reference_output_profile_from_chunks(
         coverage
         for role_column in role_columns
         for coverage in _enrichment_coverage_for_column(
-            role_column, distinct_by_column[role_column], resolved
+            role_column,
+            distinct_by_column[role_column],
+            resolved,
+            parties=parties,
+            datasets=datasets_by_column[role_column] if PROVENANCE_COLUMN in positions else None,
         )
     )
 
@@ -347,26 +368,58 @@ def _pivot_feasibility(
 
 
 def _enrichment_coverage_for_column(
-    role_column: str, refs_seen: set[object], resolved: Mapping[str, Mapping[str, str]]
+    role_column: str,
+    refs_seen: set[object],
+    resolved: Mapping[str, Mapping[str, str]],
+    *,
+    parties: Mapping[str, PartyRow],
+    datasets: Mapping[object, set[object]] | None,
 ) -> tuple[EnrichmentCoverage, ...]:
     # Role columns contain string dcids. `resolved` is the shared lookup
-    # across all role columns; this function reads its own refs from it.
+    # across all role columns; `party_kind` comes from `parties` on the
+    # column's axis, covered where a long download fills it for each row's
+    # provenance and a pivot fills it over every provenance the ref is in.
     refs = sorted({ref for ref in refs_seen if isinstance(ref, str)})
     if not refs:
         return ()
+    fields: dict[str, Mapping[str, str]] = {}
+    for ref in refs:
+        fields[ref] = resolved.get(ref, {})
+        provenances = datasets.get(ref, {None}) if datasets is not None else {None}
+        kinds = [
+            row_party_cell(
+                PARTY_KIND_FIELD,
+                ref,
+                role=role_column,
+                parties=parties,
+                period=None,
+                provenance=provenance,
+            )
+            for provenance in provenances
+        ]
+        kinds.append(
+            pivot_party_cell(
+                PARTY_KIND_FIELD,
+                ref,
+                role=role_column,
+                parties=parties,
+                datasets=[cell for cell in provenances if isinstance(cell, str)],
+            )
+        )
+        if all(kind is not None for kind in kinds):
+            fields[ref] = {**fields[ref], PARTY_KIND_FIELD: "covered"}
 
     coverage: list[EnrichmentCoverage] = []
     for field_name in ENRICHMENT_FIELDS:
         if field_name not in SUPPORTED_ENRICHMENTS:
             continue
-        covered_refs = [ref for ref in refs if field_name in resolved.get(ref, {})]
+        covered_refs = [ref for ref in refs if field_name in fields[ref]]
         if not covered_refs:
             continue
-        missing_refs = [ref for ref in refs if field_name not in resolved.get(ref, {})]
+        missing_refs = [ref for ref in refs if field_name not in fields[ref]]
         truncated = len(missing_refs) > _MAX_NAMED_MISSING_REFS
         missing = tuple(
-            (ref, resolved.get(ref, {}).get("label", ""))
-            for ref in missing_refs[:_MAX_NAMED_MISSING_REFS]
+            (ref, fields[ref].get("label", "")) for ref in missing_refs[:_MAX_NAMED_MISSING_REFS]
         )
         coverage.append(
             EnrichmentCoverage(

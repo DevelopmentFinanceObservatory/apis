@@ -299,13 +299,14 @@
 
 - id: dq-weo-029
   query: GDP per capita current prices in Kenya from the April 2025 World Economic Outlook
-  why: Only the latest WEO release is kept and no WEO StatVar has a vintage slot, so the April 2025 edition is qualifier_not_bound.
+  why: Only the latest WEO release is held, so Kenya's answer serves the WEO GDP per capita from it and discloses the April 2025 vintage it could not apply.
   reuse: panel/weo-045
   tags: {theme: macro, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical}
-  known_failure: {issue: 1156, checks: [refusal]}
   expect:
-    entities: [{dcid: country/KEN, role: observationAbout}]
-    no_data: {reason: qualifier_not_bound, category: absent}
+    definite:
+      measure: {family: weo.gdp_per_capita}
+      provenance: {dataset: provenance/IMFWorldEconomicOutlook}
+      entities: [{dcid: country/KEN, role: observationAbout}]
 
 - id: dq-weo-030
   query: 'parsed: GDP per capita of Kenya, in PPP'

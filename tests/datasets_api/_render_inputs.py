@@ -12,4 +12,4 @@ from ._graph_doubles import FakeMintGraphReader
 
 PREPARED_AT = datetime(2026, 10, 4, 9, 0, tzinfo=UTC)
 SITE = PublicSiteSettings(public_site_url="https://site.example")
-ENRICHMENT = EnrichmentLookup(FakeMintGraphReader(), parties=lambda: {})
+ENRICHMENT = EnrichmentLookup(FakeMintGraphReader())

@@ -12,6 +12,7 @@ import pytest
 from code_index import CodeIndex, IndexFormatError
 from code_index.loader import parse_measure_axes
 from code_index.query import CrossSystemParent, CyclicParent, DuplicateDcid, InvalidDeclaredDefault
+from code_index.types import ANY_DATASET
 from tests.code_index.support import INDEX_FIXTURE, load_index, load_measure_axes
 
 from .conftest import FIXTURE_PATH
@@ -138,8 +139,7 @@ def _scoped_party(**fields: object) -> dict[str, object]:
         "kind": "party",
         "party_class": "official",
         "totals": None,
-        "datasets": [_CRS, _DAC2A],
-        "axes": ["origin"],
+        "published": [{"dataset": _CRS, "axis": "origin"}, {"dataset": _DAC2A, "axis": "origin"}],
         **fields,
     }
 
@@ -154,31 +154,64 @@ def _scoped_party(**fields: object) -> dict[str, object]:
             IndexFormatError,
             "more than once",
         ),
-        ([], [{"dcid": "X", "kind": "aggregate", "totals": None}], IndexFormatError, "aggregate"),
         (
             [],
-            [{"dcid": "X", "kind": "party", "totals": None, "axes": ["recipient"]}],
+            [{"dcid": "X", "kind": "aggregate", "totals": None, "published": []}],
+            IndexFormatError,
+            "aggregate",
+        ),
+        ([], [{"dcid": "X", "kind": "party", "totals": None}], IndexFormatError, "no `published`"),
+        (
+            [],
+            [{"dcid": "X", "kind": "party", "totals": None, "published": [], "datasets": []}],
+            IndexFormatError,
+            "release format 1",
+        ),
+        (
+            [],
+            [{"dcid": "X", "kind": "party", "totals": None, "published": [], "axes": ["origin"]}],
+            IndexFormatError,
+            "release format 1",
+        ),
+        (
+            [],
+            [
+                {
+                    "dcid": "X",
+                    "kind": "party",
+                    "totals": None,
+                    "published": [{"dataset": "provenance/P", "axis": "recipient"}],
+                }
+            ],
             IndexFormatError,
             "recipient",
         ),
         (
             [],
-            [{"dcid": "country/FRA", "kind": "party", "totals": "europe"}],
+            [{"dcid": "country/FRA", "kind": "party", "totals": "europe", "published": []}],
             IndexFormatError,
             "only a total",
         ),
         (
             [],
             [
-                {"dcid": "DACAfrica", "kind": "total", "totals": "africa"},
-                {"dcid": "DACAfrica", "kind": "total", "totals": None},
+                {"dcid": "DACAfrica", "kind": "total", "totals": "africa", "published": []},
+                {"dcid": "DACAfrica", "kind": "total", "totals": None, "published": []},
             ],
             DuplicateDcid,
             "DACAfrica",
         ),
         (
             [],
-            [{"dcid": "DACCountriesTotal", "kind": "total", "totals": None, "sums_members": False}],
+            [
+                {
+                    "dcid": "DACCountriesTotal",
+                    "kind": "total",
+                    "totals": None,
+                    "sums_members": False,
+                    "published": [],
+                }
+            ],
             IndexFormatError,
             "claims no sum",
         ),
@@ -191,6 +224,7 @@ def _scoped_party(**fields: object) -> dict[str, object]:
                     "totals": "africa",
                     "residuals": ["DACAfricaUnallocated"],
                     "sums_members": False,
+                    "published": [],
                 }
             ],
             IndexFormatError,
@@ -252,6 +286,9 @@ def _scoped_party(**fields: object) -> dict[str, object]:
         "type-kind",
         "type-twice",
         "party-kind",
+        "published-missing",
+        "legacy-datasets",
+        "legacy-axes",
         "party-axis",
         "group-on-a-party",
         "party-twice",
@@ -272,6 +309,49 @@ def test_refuses_a_malformed_party_declaration(tmp_path, party_types, parties, e
     broken.write_text(json.dumps(payload))
     with pytest.raises(error, match=message):
         load_index(broken)
+
+
+def test_a_party_on_both_axes_counts_on_each_only_where_a_dataset_publishes_it_there(tmp_path):
+    """A private provider published as a donor in the CRS and a recipient in DAC2A, as IDA is
+    an origin in one table and a destination in another: each `(dataset, axis)` pair reads as
+    published and the crossed pairs do not, and a side's classes follow the pairs."""
+    payload = json.loads(FIXTURE_PATH.read_text())
+    payload["party_types"] = []
+    payload["parties"] = [
+        {
+            "dcid": "Gates",
+            "kind": "party",
+            "party_class": "private",
+            "totals": None,
+            "published": [
+                {"dataset": _CRS, "axis": "origin"},
+                {"dataset": _DAC2A, "axis": "destination"},
+            ],
+        }
+    ]
+    document = tmp_path / "parties.json"
+    document.write_text(json.dumps(payload))
+
+    index = load_index(document)
+    row = index.parties["Gates"]
+
+    assert [
+        row.publishes(axis, datasets)
+        for axis, datasets in [
+            ("origin", {_CRS}),
+            ("destination", {_DAC2A}),
+            ("origin", {_DAC2A}),
+            ("destination", {_CRS}),
+            ("origin", ANY_DATASET),
+            ("origin", set()),
+        ]
+    ] == [True, True, False, False, True, False]
+    assert {side for side, classes in index.side_classes.items() if "private" in classes} == {
+        ("origin", _CRS),
+        ("destination", _DAC2A),
+    }
+    with pytest.raises(ValueError, match="not on one axis"):
+        row.sole_axis()
 
 
 @pytest.mark.parametrize(

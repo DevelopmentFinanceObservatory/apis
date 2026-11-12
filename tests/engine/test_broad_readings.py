@@ -249,7 +249,9 @@ def _notes(answer) -> list[str]:
             {"guaranteeStatus": _CLAIM, "idsDebtorType": _GOVERNMENT},
             [_PPG],
             [_NOTE],
-            ["how:idsDebtorType"],
+            # "government debt" is a declared measure noun (WEO's), which the external
+            # debt stock shown is not, so the closest match departs first.
+            [None, "how:idsDebtorType"],
             True,
         ),
         ("public or publicly guaranteed debt", {"guaranteeStatus": _PPG}, [_PPG], [], [], True),

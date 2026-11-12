@@ -834,3 +834,23 @@
         family: crs.disbursement_gross
         bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode720}
       entities: [{dcid: country/SOM, role: destination}]
+
+- id: dq-crs-070
+  query: Global Fund disbursements to Kenya since 2015
+  why: The Global Fund named before the measure is the provider, so the CRS answers its gross disbursements to Kenya, as "aid from the Global Fund" reads it.
+  tags: {theme: health, entity: organisation, direction: both, unit: default, time: range, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: [crs.disbursement_gross, dac2a.oda_gross_received]}
+      entities: [{dcid: GlobalFund, role: origin}, {dcid: country/KEN, role: destination}]
+      window: {kind: range, start: 2015}
+
+- id: dq-crs-071
+  query: Global Fund disbursements to Malawi since 2015
+  why: The Global Fund named before the measure is the provider, so the CRS answers its gross disbursements to Malawi, as "aid from the Global Fund" reads it.
+  tags: {theme: health, entity: organisation, direction: both, unit: default, time: range, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: [crs.disbursement_gross, dac2a.oda_gross_received]}
+      entities: [{dcid: GlobalFund, role: origin}, {dcid: country/MWI, role: destination}]
+      window: {kind: range, start: 2015}

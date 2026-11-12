@@ -5,7 +5,7 @@ A release lives under `GRAPH_RELEASE_URI`:
 
     parts/<sha256>.arrow | .json | .json.gz
     manifests/<release_id>.json
-    format-1/current.json        {"release_id": "...", "hold": null}
+    format-<FORMAT>/current.json {"release_id": "...", "hold": null}
 
 A tabular part is an uncompressed Arrow IPC file holding one record batch,
 sorted by the part's key, with dictionary key columns whose dictionaries are
@@ -43,13 +43,12 @@ import pyarrow.compute as pc
 
 from artifact_publication.uri import download_uri_to_path, join_uri, read_uri_bytes
 
-FORMAT: Final[int] = 1
+FORMAT: Final[int] = 2
 
 MAX_ROWS = 2**21
 """The most rows a `series` or `edges` file holds, unless one variable or
 subject alone has more. A module variable so a test can lower it."""
 
-POINTER_PATH: Final[str] = f"format-{FORMAT}/current.json"
 MANIFESTS_DIR: Final[str] = "manifests"
 PARTS_DIR: Final[str] = "parts"
 
@@ -424,8 +423,15 @@ class LoadedRelease:
     file_names: frozenset[str]
 
 
-def pointer_uri(root_uri: str) -> str:
-    return join_uri(root_uri, POINTER_PATH)
+def pointer_path(*, format_version: int = FORMAT) -> str:
+    """The pointer of `format_version` under a release root,
+    `format-<format_version>/current.json`."""
+    return f"format-{format_version}/current.json"
+
+
+def pointer_uri(root_uri: str, *, format_version: int = FORMAT) -> str:
+    """The pointer of `format_version` under `root_uri` (`pointer_path`)."""
+    return join_uri(root_uri, pointer_path(format_version=format_version))
 
 
 def manifest_uri(root_uri: str, release_id: str) -> str:
@@ -719,10 +725,11 @@ def _stage(data: bytes | pa.Buffer, suffix: str, staging_dir: Path) -> tuple[Pat
 # ---------------------------------------------------------------- reading
 
 
-def read_pointer(root_uri: str) -> Pointer | None:
-    """The format's pointer, or `None` when no release is published."""
+def read_pointer(root_uri: str, *, format_version: int = FORMAT) -> Pointer | None:
+    """The pointer of `format_version`, this reader's format by default, or `None` when no
+    release of that format is published."""
     try:
-        data = read_uri_bytes(pointer_uri(root_uri))
+        data = read_uri_bytes(pointer_uri(root_uri, format_version=format_version))
     except FileNotFoundError:
         return None
     return Pointer.from_json(data)
@@ -844,7 +851,6 @@ __all__ = [
     "PARTS_DIR",
     "PART_SCHEMAS",
     "PLATFORM",
-    "POINTER_PATH",
     "SERIES",
     "JsonPart",
     "LoadedRelease",
@@ -860,6 +866,7 @@ __all__ = [
     "manifest_uri",
     "open_release",
     "part_uri",
+    "pointer_path",
     "pointer_uri",
     "read_pointer",
     "write_blob_part",

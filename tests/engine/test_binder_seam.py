@@ -12,6 +12,7 @@ from typing import cast
 
 import pytest
 
+from code_index.types import BroadReading
 from entity_resolution import Admission, EntityResolver
 from search.engine.bind import (
     ShapeRating,
@@ -35,11 +36,30 @@ from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.interpret import Recall
+from search.engine.interpretation import Interpretation
+from search.engine.qualifier_match import declared_measures_named
 from search.engine.quantity_read import QuantityOutput
-from search.engine.region.phase_rank_bind import _phase_bind, _read_stated_quantity
-from search.engine.region.state import ResolveState
+from search.engine.region import candidate_collapse, phase_rank_bind
+from search.engine.region.candidate_collapse import _record_unheld_values, _unheld_requirement
+from search.engine.region.phase_rank_bind import (
+    _logged_verdicts,
+    _phase_bind,
+    _read_stated_quantity,
+    _stand_in_declined,
+    judge_value_requirements,
+)
+from search.engine.region.requirements import settle_answer, settle_candidate_set
+from search.engine.region.state import (
+    Requirement,
+    ResolveState,
+    SlotDefaultDisclosure,
+    ValueRule,
+)
+from search.engine.retrieval.retrieve import NoDataDraft
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.engine.source_code import SeriesCodeMembers
+from search.models import GraphRef, ResolvedQualifier
+from tests.engine._assemble_fixtures import _make_spec
 from tests.engine._binders import FakeAsk, FixedBinder, elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._quantity import NO_QUANTITY
@@ -321,3 +341,528 @@ def test_a_code_only_part_sends_the_quantity_read_the_codes_graph_name():
 
     (request,) = binder.quantity_requests
     assert (request.variable, request.bind_variable) == ("DT.DOD.DECT.CD", name)
+
+
+_DEBTOR_SLOT = SlotKeyDraft(axis="how", property_dcid="idsDebtorType", label="debtor type")
+_GUARANTEE_SLOT = SlotKeyDraft(axis="how", property_dcid="guaranteeStatus", label="guarantee")
+# The IDS stock by debtor type and guarantee status, and a commitments series that binds
+# guarantee status and has no debtor-type slot.
+_DEBT_MENU = [
+    dataclasses.replace(
+        _shape("stock_by_debtor", _DEBTOR_SLOT, _GUARANTEE_SLOT),
+        slot_taxonomy={
+            "how:idsDebtorType": ["IDSDebtorTypePS", "IDSDebtorTypePrivate"],
+            "how:guaranteeStatus": ["PublicOrPubliclyGuaranteed", "PrivateNonguaranteed"],
+        },
+        value_labels={
+            "IDSDebtorTypePS": "Public sector",
+            "PublicOrPubliclyGuaranteed": "Public and publicly guaranteed",
+        },
+    ),
+    dataclasses.replace(
+        _shape("commitments_ppg", _GUARANTEE_SLOT),
+        slot_taxonomy={
+            "how:guaranteeStatus": ["PublicOrPubliclyGuaranteed", "PrivateNonguaranteed"]
+        },
+    ),
+]
+_DEBT_DRAFTS = [
+    SlotBindingDraft(
+        axis="how", property_dcid=prop, kind="value", value_dcids=[value], evidence="mentioned"
+    )
+    for prop, value in (
+        ("idsDebtorType", "IDSDebtorTypePS"),
+        ("guaranteeStatus", "PublicOrPubliclyGuaranteed"),
+    )
+]
+_DEBT_JEV_ANSWERS = {
+    "m|0": {"type": "noul", "noul": 0.9},
+    "m|1": {"type": "noul", "noul": 0.9},
+    "elect": {"type": "choice", "probabilities": {"Shape 0": 0.51, "Shape 1": 0.49}},
+    "named|0": {"type": "noul", "noul": 0.9},
+    "named|1": {"type": "noul", "noul": 0.05},
+    "part|how:idsDebtorType": {"type": "noul", "noul": 0.9},
+    "n|how:idsDebtorType|0": {"type": "noul", "noul": 0.9},
+    "n|how:idsDebtorType|1": {"type": "noul", "noul": 0.05},
+    "part|how:guaranteeStatus": {"type": "noul", "noul": 0.9},
+    "n|how:guaranteeStatus|0": {"type": "noul", "noul": 0.9},
+    "n|how:guaranteeStatus|1": {"type": "noul", "noul": 0.05},
+}
+
+
+@pytest.mark.parametrize(
+    ("binder", "llm"),
+    [
+        pytest.param(
+            GeminiBinder(),
+            _ReplyLLM(elected_reply(0, bindings=_DEBT_DRAFTS, also_plausible=[1])),
+            id="gemini",
+        ),
+        pytest.param(JevBinder(ask=FakeAsk(_DEBT_JEV_ANSWERS)), _NoCallLLM(), id="jev"),
+    ],
+)
+def test_a_nominated_reading_that_cannot_hold_a_typed_value_departs_it(binder, llm):
+    """The phrase "public sector PPG debt" elects the stock by debtor type, binding both
+    typed values, and nominates commitments, which have no debtor-type slot: Gemini's pool
+    sets it aside but its rating keeps the nomination, and Jev's dataset-named pool leaves
+    it out while its election keeps it plausible. The candidate set discloses "Public
+    sector" as a departure (`candidate_collapse._record_unheld_values`). A set whose
+    readings hold every typed value, in a slot or on each member under the value's own
+    property, records and departs nothing, as does a value the request's words do not
+    name. A member carrying the value under another property holds nothing of it."""
+    state = _state(llm=llm, binder=binder)
+    state.variable = state.detect_query = "public sector PPG debt"
+    state.capped_shapes = list(_DEBT_MENU)
+
+    assert asyncio.run(_phase_bind(state)) is None
+
+    bound = state.bind_result
+    assert (bound.chosen_shape_index, bound.also_plausible) == (0, [1])
+    assert {(b.property_dcid, b.evidence) for b in bound.bindings} == {
+        ("idsDebtorType", "mentioned"),
+        ("guaranteeStatus", "mentioned"),
+    }
+    elected = (_DEBT_MENU[0], list(bound.bindings))
+    nominated = (_DEBT_MENU[1], [b for b in bound.bindings if b.property_dcid == "guaranteeStatus"])
+
+    def settle(answers):
+        state.shape_draft, state.bindings = elected
+        state.requirements = ()
+        asyncio.run(_record_unheld_values(state, answers))
+        settle_candidate_set(state, answers)
+        assert state.judgement is not None
+        return [fact.asked for _warning, fact in state.judgement.departures()]
+
+    assert settle([elected, nominated]) == ["Public sector"]
+
+    # Each member of a public-sector commitments series carries the debtor type beside the
+    # guarantee status its slot binds, so the reading holds it without a debtor-type slot.
+    def commitments(debtor_property: str) -> ShapeDraft:
+        return dataclasses.replace(
+            _DEBT_MENU[1],
+            shape_id="public_commitments",
+            sv_arc_facts={
+                "sv_public_commitments": {
+                    "constraintProperties": {
+                        "nodes": [{"dcid": "guaranteeStatus"}, {"dcid": debtor_property}]
+                    },
+                    "guaranteeStatus": {"nodes": [{"dcid": "PublicOrPubliclyGuaranteed"}]},
+                    debtor_property: {"nodes": [{"dcid": "IDSDebtorTypePS"}]},
+                }
+            },
+        )
+
+    assert settle([elected, (commitments("idsDebtorType"), nominated[1])]) == []
+    assert state.requirements == ()
+    # The same code under a property of another name is no debtor type.
+    assert settle([elected, (commitments("debtorSector"), nominated[1])]) == ["Public sector"]
+    assert (
+        settle([elected, (dataclasses.replace(_DEBT_MENU[0], shape_id="flows"), elected[1])]) == []
+    )
+    assert state.requirements == ()
+    # A value no word of the request names is the bind model's reading, as LiveBirth is of
+    # "birth rate", and the user did not type it.
+    state.variable = state.detect_query = "PPG debt"
+    assert settle([elected, nominated]) == []
+    assert state.requirements == ()
+
+
+def _member(sv: str, prop: str, value: str) -> dict[str, dict]:
+    return {
+        sv: {
+            "constraintProperties": {"nodes": [{"dcid": prop}]},
+            prop: {"nodes": [{"dcid": value}]},
+        }
+    }
+
+
+_SECTOR = SlotKeyDraft(axis="how", property_dcid="crsPurpose", label="sector")
+_HEALTH, _EDUCATION = "CRSPurposeCode120", "CRSPurposeCode110"
+# Aid by CRS sector, and an imputed multilateral health series with no sector slot whose
+# member carries the health sector.
+_AID_MENU = [
+    dataclasses.replace(
+        _shape("aid_by_sector", _SECTOR),
+        slot_taxonomy={"how:crsPurpose": [_EDUCATION, _HEALTH]},
+        value_labels={_EDUCATION: "Education", _HEALTH: "Health"},
+    ),
+    dataclasses.replace(
+        _shape("imputed_health"), sv_arc_facts=_member("sv_health", "crsPurpose", _HEALTH)
+    ),
+]
+_AID_JEV_ANSWERS = {
+    "m|0": {"type": "noul", "noul": 0.9},
+    "m|1": {"type": "noul", "noul": 0.9},
+    "elect": {"type": "choice", "probabilities": {"Shape 0": 0.51, "Shape 1": 0.49}},
+    "named|0": {"type": "noul", "noul": 0.9},
+    "named|1": {"type": "noul", "noul": 0.05},
+    "part|how:crsPurpose": {"type": "noul", "noul": 0.9},
+    "n|how:crsPurpose|0": {"type": "noul", "noul": 0.9},
+    "n|how:crsPurpose|1": {"type": "noul", "noul": 0.9},
+    "several|how:crsPurpose": {"type": "noul", "noul": 0.9},
+}
+
+
+@pytest.mark.parametrize(
+    ("binder", "llm"),
+    [
+        pytest.param(
+            GeminiBinder(),
+            _ReplyLLM(
+                elected_reply(
+                    0,
+                    bindings=[
+                        SlotBindingDraft(
+                            axis="how",
+                            property_dcid="crsPurpose",
+                            kind="set",
+                            value_dcids=[_EDUCATION, _HEALTH],
+                            evidence="mentioned",
+                        )
+                    ],
+                    also_plausible=[1],
+                )
+            ),
+            id="gemini",
+        ),
+        pytest.param(JevBinder(ask=FakeAsk(_AID_JEV_ANSWERS)), _NoCallLLM(), id="jev"),
+    ],
+)
+def test_a_nominated_reading_holding_part_of_a_typed_set_departs_the_rest(binder, llm):
+    """The phrase "aid to health and education" elects aid by sector, binding both sectors
+    as a set, and nominates an imputed health series whose members carry health alone. The
+    candidate set departs "Education" and not "Health"
+    (`phase_rank_bind.judge_value_requirements`). A reading whose members carry each of the
+    two departs nothing. Beside a reading holding
+    neither, each value is one requirement and departs once."""
+    state = _state(llm=llm, binder=binder)
+    state.variable = state.detect_query = "aid to health and education"
+    state.capped_shapes = list(_AID_MENU)
+
+    assert asyncio.run(_phase_bind(state)) is None
+
+    bound = state.bind_result
+    assert (bound.chosen_shape_index, bound.also_plausible) == (0, [1])
+    assert [(b.kind, sorted(b.value_dcids), b.evidence) for b in bound.bindings] == [
+        ("set", [_EDUCATION, _HEALTH], "mentioned")
+    ]
+    elected = (_AID_MENU[0], list(bound.bindings))
+
+    def settle(shape):
+        state.shape_draft, state.bindings = elected
+        state.requirements = ()
+        asyncio.run(_record_unheld_values(state, [elected, (shape, [])]))
+        settle_candidate_set(state, [elected, (shape, [])])
+        assert state.judgement is not None
+        return [fact.asked for _warning, fact in state.judgement.departures()]
+
+    assert settle(_AID_MENU[1]) == ["Education"]
+    both = dataclasses.replace(
+        _AID_MENU[1],
+        shape_id="imputed_health_and_education",
+        sv_arc_facts={
+            **_member("sv_health", "crsPurpose", _HEALTH),
+            **_member("sv_education", "crsPurpose", _EDUCATION),
+        },
+    )
+    assert settle(both) == []
+    assert state.requirements == ()
+    # Three readings, holding both, health alone and neither: each value departs once.
+    neither = dataclasses.replace(_AID_MENU[1], shape_id="general_budget", sv_arc_facts={})
+    state.shape_draft, state.bindings = elected
+    state.requirements = ()
+    answers = [elected, (both, []), (_AID_MENU[1], []), (neither, [])]
+    asyncio.run(_record_unheld_values(state, answers))
+    settle_candidate_set(state, answers)
+    assert state.judgement is not None
+    assert [fact.asked for _warning, fact in state.judgement.departures()] == [
+        "Education",
+        "Health",
+    ]
+    assert [r.term.text for r in state.requirements] == ["Education", "Health"]
+
+
+@pytest.mark.parametrize(
+    ("binder", "llm"),
+    [
+        pytest.param(
+            GeminiBinder(),
+            _ReplyLLM(elected_reply(0, bindings=_DEBT_DRAFTS, also_plausible=[1])),
+            id="gemini",
+        ),
+        pytest.param(JevBinder(ask=FakeAsk(_DEBT_JEV_ANSWERS)), _NoCallLLM(), id="jev"),
+    ],
+)
+def test_a_lone_nominated_reading_answering_alone_departs_a_typed_value_it_cannot_hold(
+    monkeypatch, binder, llm
+):
+    """The phrase "public sector PPG debt" elects the stock by debtor type, which has data
+    but misses the quantity the question names, and nominates commitments, which serve it
+    and have no debtor-type slot. The quantity filter leaves commitments to answer alone,
+    and the definite answer departs "Public sector" (`candidate_collapse.assemble_candidates`)."""
+    # Imported here: the rule-one module builds its grounded doubles at import.
+    from tests.engine.test_candidate_collapse_rule_one import _grounded, _settle
+
+    state = _state(llm=llm, binder=binder)
+    state.variable = state.detect_query = "public sector PPG debt"
+    state.capped_shapes = list(_DEBT_MENU)
+    assert asyncio.run(_phase_bind(state)) is None
+    assert state.bind_result.also_plausible == [1]
+    state.shape_draft, state.bindings = _DEBT_MENU[0], list(state.bind_result.bindings)
+    state.elected_has_data = True
+    state.quantity_refusal = NoDataDraft(reason="no_observations")
+    monkeypatch.setattr(candidate_collapse, "start_elected_related_read", lambda *_: None)
+    monkeypatch.setattr(
+        candidate_collapse, "serves_leg_quantity", lambda _state, shape: shape is _DEBT_MENU[1]
+    )
+    elected = _make_spec("sv_stock", "stock", "country/KEN")
+    commitments = _make_spec("sv_commitments", "commitments", "country/KEN")
+    nominee = [b for b in state.bindings if b.property_dcid == "guaranteeStatus"]
+
+    specs, state = _settle(
+        monkeypatch,
+        state,
+        _grounded(
+            (elected, "sv_stock", _DEBT_MENU[0], None),
+            (commitments, "sv_commitments", _DEBT_MENU[1], "nominated"),
+        ),
+    )
+
+    assert [spec.spec_id for spec in specs] == [commitments.spec_id]
+    settle_answer(state, _DEBT_MENU[1], nominee)
+    assert state.judgement is not None
+    assert [fact.asked for _warning, fact in state.judgement.departures()] == ["Public sector"]
+
+
+@pytest.mark.parametrize(
+    ("twin", "departed"),
+    [
+        pytest.param(_DEBT_MENU[1], ["Public sector"], id="twin-without-the-slot"),
+        pytest.param(_DEBT_MENU[0], [], id="twin-holding-every-value"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("binder", "llm"),
+    [
+        pytest.param(
+            GeminiBinder(),
+            _ReplyLLM(elected_reply(0, bindings=_DEBT_DRAFTS, also_plausible=[1])),
+            id="gemini",
+        ),
+        pytest.param(JevBinder(ask=FakeAsk(_DEBT_JEV_ANSWERS)), _NoCallLLM(), id="jev"),
+    ],
+)
+def test_a_lone_twin_is_judged_on_the_typed_values_as_any_reading_is(
+    monkeypatch, binder, llm, twin, departed
+):
+    """With no data on the elected stock, a registry twin answers for it alone, and is
+    judged as every answering reading is: a twin whose shape cannot hold "Public sector"
+    departs it, and one holding every typed value records nothing."""
+    from tests.engine.test_candidate_collapse_rule_one import (
+        _ELECTED_SV,
+        _TWIN_SV,
+        _grounded,
+        _settle,
+    )
+
+    state = _state(llm=llm, binder=binder)
+    state.variable = state.detect_query = "public sector PPG debt"
+    state.capped_shapes = list(_DEBT_MENU)
+    assert asyncio.run(_phase_bind(state)) is None
+    state.shape_draft, state.bindings = _DEBT_MENU[0], list(state.bind_result.bindings)
+    state.mat_result = NoDataDraft(reason="no_observations", sv_dcids=[_ELECTED_SV])
+    twin_spec = _make_spec(_TWIN_SV, "twin", "country/KEN")
+    slots = {slot.property_dcid for slot in twin.slot_keys}
+    held = [b for b in state.bindings if b.property_dcid in slots]
+
+    grounded = _grounded((twin_spec, _TWIN_SV, twin, "twin"))
+    # The twin answers on the drafts its slots hold, as grounding binds them.
+    entry = grounded[twin_spec.spec_id]
+    grounded = dataclasses.replace(
+        grounded,
+        entries={
+            twin_spec.spec_id: dataclasses.replace(
+                entry, candidate=dataclasses.replace(entry.candidate, bindings=held)
+            )
+        },
+    )
+
+    specs, state = _settle(monkeypatch, state, grounded)
+
+    assert [spec.spec_id for spec in specs] == [twin_spec.spec_id]
+    assert [r.term.text for r in state.requirements if r.origin == "unheld"] == departed
+    settle_answer(state, twin, held)
+    assert state.judgement is not None
+    assert [fact.asked for _warning, fact in state.judgement.departures()] == departed
+
+
+def test_a_stand_in_s_verdict_is_stored_when_it_joins_the_menu(monkeypatch):
+    """A stand-in for a declined election joins the menu after rule 4 judged the admissible
+    shapes, so rule 4 judges it as it joins and the `bind_decision` line logs the stored
+    verdicts of every shape without judging one."""
+    state = _state(llm=_NoCallLLM())
+    state.variable = "GDP"
+    state.named_measures = tuple(declared_measures_named("GDP"))
+    state.measure_verdicts = {"population": ["base"], "population_by_sex": ["holds"]}
+    state.bind_result = elected_reply(0, bindings=[], also_plausible=[])
+    stand_in = _shape("population_stand_in")
+
+    _stand_in_declined(state, Interpretation(shape=stand_in, reason="variable_not_resolved"))
+
+    def judged(*_args: object) -> list[str]:
+        raise AssertionError("the line judged rule 4")
+
+    monkeypatch.setattr(phase_rank_bind, "rule_four_verdicts", judged)
+    assert _logged_verdicts(state) == [{"GDP": "base"}, {"GDP": "holds"}, {"GDP": "unknown"}]
+
+
+@pytest.mark.parametrize("fired", [True, False], ids=["broad-reading", "no-reading"])
+def test_a_value_drafted_in_a_set_is_applied_by_the_broad_reading_that_fired(fired):
+    """ "girls and men" drafts Girls in a set. The part's broad reading of Girls as Female
+    fired, and the answer binds Female, so Girls is applied as the reading says; with no
+    reading the answer leaves it unmet."""
+    state = _state(llm=_NoCallLLM())
+    if fired:
+        state.slot_defaults = {
+            "gender": SlotDefaultDisclosure(
+                reading=BroadReading(
+                    property_dcid="gender",
+                    value_dcid="Girls",
+                    reads_as="Female",
+                    unless_bound="age",
+                    held_with="Adult",
+                    note="girls read as female",
+                )
+            )
+        }
+    requirement = Requirement(
+        term=ResolvedQualifier(
+            text="girls", named=[GraphRef(ref="Girls", label="Girls")], disposition="unbound"
+        ),
+        origin="value",
+        rule=ValueRule(
+            values=frozenset({("gender", "Girls")}),
+            drafted_set=frozenset({("gender", "Girls"), ("gender", "Male")}),
+        ),
+    )
+    bindings = [
+        SlotBindingDraft(axis="how", property_dcid="gender", kind="value", value_dcids=["Female"])
+    ]
+
+    unmet = judge_value_requirements([requirement], _MENU[1], bindings, state)
+
+    assert unmet == (() if fired else (requirement,))
+
+
+@pytest.mark.parametrize(
+    ("members", "reads"),
+    [
+        pytest.param({_HEALTH, _EDUCATION}, False, id="every-answer-holds-both"),
+        pytest.param({_HEALTH}, True, id="one-answer-holds-health-alone"),
+    ],
+)
+def test_labels_are_read_only_for_a_value_some_answer_leaves_unmet(monkeypatch, members, reads):
+    """An answer whose members carry each drafted sector applies both by value, so recording
+    the unheld values reads no label. One holding health alone leaves education unmet, and
+    only education's label is read."""
+    read: list[list[str]] = []
+
+    async def labels(state, values):
+        read.append(list(values))
+        return {value: value for value in values}
+
+    monkeypatch.setattr(candidate_collapse, "draft_value_labels", labels)
+    state = _state(llm=_NoCallLLM())
+    drafts = [
+        SlotBindingDraft(
+            axis="how",
+            property_dcid="crsPurpose",
+            kind="set",
+            value_dcids=[_EDUCATION, _HEALTH],
+            evidence="mentioned",
+        )
+    ]
+    state.variable = state.detect_query = "aid to health and education"
+    state.shape_draft, state.bindings = _AID_MENU[0], drafts
+    nominated = dataclasses.replace(
+        _AID_MENU[1],
+        sv_arc_facts={
+            key: value
+            for member in members
+            for key, value in _member(f"sv_{member}", "crsPurpose", member).items()
+        },
+    )
+
+    asyncio.run(_record_unheld_values(state, [(_AID_MENU[0], drafts), (nominated, [])]))
+
+    assert read == ([[_EDUCATION]] if reads else [])
+
+
+def test_a_value_is_judged_by_its_label_and_never_by_the_words_of_its_dcid(monkeypatch):
+    """The series states "person", a word of the dcid `Person`, and not "women", the label
+    the value is read by. The value rules leave the value unmet on the answer without a
+    gender slot, so its label is read, and the label's words leave it unmet as well."""
+    read: list[list[str]] = []
+
+    async def labels(state, values):
+        read.append(list(values))
+        return dict.fromkeys(values, "Women")
+
+    monkeypatch.setattr(candidate_collapse, "draft_value_labels", labels)
+    state = _state(llm=_NoCallLLM())
+    state.variable = state.detect_query = "women population"
+    drafts = [
+        SlotBindingDraft(
+            axis="how",
+            property_dcid="gender",
+            kind="value",
+            value_dcids=["Person"],
+            evidence="mentioned",
+        )
+    ]
+    state.shape_draft, state.bindings = _MENU[1], drafts
+
+    asyncio.run(_record_unheld_values(state, [(_MENU[1], drafts), (_MENU[0], [])]))
+
+    assert read == [["Person"]]
+    assert [requirement.term.text for requirement in state.requirements] == ["Women"]
+
+
+_IDS_GNI = ShapeDraft(
+    shape_id="ids_gni",
+    label="Gross national income (current US$)",
+    pop_type_dcid="EconomicActivity",
+    meas_prop_dcid="amount",
+    stat_type_dcid="measuredValue",
+    meas_qual_dcid="CurrentPricesScenario",
+    meas_denom_dcid=None,
+    slot_keys=(),
+    sv_arc_facts={
+        "Amount_EconomicActivity_GrossNationalIncome_NominalScenario": {
+            "name": {"nodes": [{"value": "Gross national income (current US$)"}]},
+            "constraintProperties": {"nodes": [{"dcid": "economicActivityType"}]},
+            "economicActivityType": {"nodes": [{"dcid": "GrossNationalIncome"}]},
+        }
+    },
+)
+
+
+@pytest.mark.parametrize("read_words", [True, False], ids=["with-words", "values-alone"])
+def test_gross_national_income_on_another_property_is_met_by_its_label(read_words):
+    """The placeless-reelect IDS reading of "gross national income": the bind drafts
+    `activitySource` GrossNationalIncome, which the PPP and Atlas series carry, and the IDS
+    series carries GrossNationalIncome on `economicActivityType` instead. No value rule
+    applies the drafted value across properties; the member's name holds every word of the
+    value's label, so the label meets it."""
+    requirement = _unheld_requirement(
+        "activitySource",
+        "GrossNationalIncome",
+        "Gross national income",
+        frozenset(),
+    )
+
+    unmet = judge_value_requirements(
+        [requirement], _IDS_GNI, [], _state(llm=_NoCallLLM()), read_words=read_words
+    )
+
+    assert unmet == (() if read_words else (requirement,))

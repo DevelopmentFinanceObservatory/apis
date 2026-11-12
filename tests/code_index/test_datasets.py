@@ -280,8 +280,7 @@ _MULTILATERALS = {
     "dcid": "DACMultilaterals",
     "kind": "total",
     "totals": None,
-    "datasets": [_CRS_PROVENANCE],
-    "axes": ["origin"],
+    "published": [{"dataset": _CRS_PROVENANCE, "axis": "origin"}],
 }
 _MULTILATERAL = {
     "word": "multilateral",
@@ -320,8 +319,24 @@ def test_loader_reads_the_words_a_dataset_names_a_party_for():
         ({**_MULTILATERAL, "party": ""}, _MULTILATERALS),
         ({**_MULTILATERAL, "where": {"destination": "Country"}}, _MULTILATERALS),
         (_MULTILATERAL, None),
-        (_MULTILATERAL, {**_MULTILATERALS, "datasets": [_DAC2A_PROVENANCE]}),
-        (_MULTILATERAL, {**_MULTILATERALS, "axes": ["destination"]}),
+        (
+            _MULTILATERAL,
+            {**_MULTILATERALS, "published": [{"dataset": _DAC2A_PROVENANCE, "axis": "origin"}]},
+        ),
+        (
+            _MULTILATERAL,
+            {**_MULTILATERALS, "published": [{"dataset": _CRS_PROVENANCE, "axis": "destination"}]},
+        ),
+        (
+            _MULTILATERAL,
+            {
+                **_MULTILATERALS,
+                "published": [
+                    {"dataset": _CRS_PROVENANCE, "axis": "destination"},
+                    {"dataset": _DAC2A_PROVENANCE, "axis": "origin"},
+                ],
+            },
+        ),
     ],
     ids=[
         "uppercase",
@@ -333,11 +348,13 @@ def test_loader_reads_the_words_a_dataset_names_a_party_for():
         "party-not-listed",
         "party-of-another-dataset",
         "party-on-another-axis",
+        "party-on-the-axis-in-another-dataset",
     ],
 )
 def test_loader_rejects_a_party_word_that_is_malformed(row: dict, party: dict | None):
-    """The last three rows are well formed, but the `parties` block does not list the party
-    for the fixture's one dataset on the word's axis, which `_check_party_words` refuses."""
+    """The last four rows are well formed, but the `parties` block does not list the party
+    for the fixture's one dataset on the word's axis, which `_check_party_words` refuses. The
+    last lists the dataset and the axis, each paired with another."""
     payload = _fixture()
     payload["parties"] = [] if party is None else [party]
     payload["datasets"][0]["party_words"] = [row]
@@ -350,7 +367,15 @@ def test_loader_rejects_one_word_naming_two_parties_on_an_axis():
     """One word names one party on an axis of a measured property. The same word on the
     other axis loads."""
     payload = _fixture()
-    payload["parties"] = [{**_MULTILATERALS, "axes": ["origin", "destination"]}]
+    payload["parties"] = [
+        {
+            **_MULTILATERALS,
+            "published": [
+                {"dataset": _CRS_PROVENANCE, "axis": "destination"},
+                {"dataset": _CRS_PROVENANCE, "axis": "origin"},
+            ],
+        }
+    ]
     payload["datasets"][0]["party_words"] = [
         _MULTILATERAL,
         {**_MULTILATERAL, "axis": "destination", "where": {}},

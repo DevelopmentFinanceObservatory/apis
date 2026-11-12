@@ -10,6 +10,7 @@ from contextlib import AbstractContextManager
 from code_index.composites import DECLARED_COMPOSITES
 from code_index.members import pinned_refs
 from code_index.shared import get_index
+from code_index.types import ANY_DATASET
 from dfo_platform.executor import submit_with_context
 from dfo_platform.roles import role_key_axis
 from entity_resolution import shared_membership_policy
@@ -514,7 +515,10 @@ def resubmit_named_groups(
         role_entities = frozenset(entities[role])
         # A summed region binds its residual buckets beside its members; the group stands
         # for the members (`scope.region.is_residual`).
-        role_members = frozenset(without_residuals(role_entities, get_index())) or role_entities
+        role_members = (
+            frozenset(without_residuals(role_entities, get_index(), axis=role_key_axis(role)))
+            or role_entities
+        )
         total = _bound_total(group, role, role_entities)
         if group.total is not None and total is None:
             logger.info(
@@ -632,7 +636,7 @@ def _whole_named_groups(
 def _bound_total(group: EntityGroup, role: str, role_entities: frozenset[str]) -> str | None:
     """The one party `role` binds when the code index declares it the total
     (`PartyRow.totals`) of the group the posted `group.ref` or `group.group_id` names, or of
-    any group when it posts neither, published on `role`'s flow axis (`PartyRow.axes`), and
+    any group when it posts neither, published on `role`'s flow axis (`PartyRow.publishes`), and
     `group` posts that party as its `total` or no total. `None` otherwise, so a subject role,
     which names no flow axis, binds no total."""
     if len(role_entities) != 1:
@@ -642,6 +646,7 @@ def _bound_total(group: EntityGroup, role: str, role_entities: frozenset[str]) -
     posted = group.ref or group.group_id
     if row is None or row.totals is None or posted not in (None, row.totals):
         return None
-    if role_key_axis(role) not in row.axes:
+    axis = role_key_axis(role)
+    if axis is None or not row.publishes(axis, ANY_DATASET):
         return None
     return party if group.total in (None, party) else None

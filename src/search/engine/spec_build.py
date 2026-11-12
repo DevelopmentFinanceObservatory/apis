@@ -266,26 +266,37 @@ def inapplicable_property_dcid(
 
 
 def _resolved_entities(
-    entities: list[Entity], *, multilateral_dcids: Collection[str] = ()
+    entities: list[Entity], *, parties: Mapping[str, PartyRow], datasets: Collection[str]
 ) -> list[ResolvedEntity]:
-    """Project entities with the shared role mapping, marking the origin entities whose
-    dcids are among `multilateral_dcids` (`ResolvedEntity.multilateral`). Confidence is
-    unset."""
-    return [
-        ResolvedEntity(
-            ref=e.ref.ref,
-            label=e.ref.label,
-            entity_type=e.entity_type.ref if e.entity_type else None,
-            role=(role := entity_role_key(e)),
-            multilateral=(
-                True
-                if role_key_axis(role) == "origin" and e.ref.ref in multilateral_dcids
-                else None
-            ),
-            confidence=None,
+    """Project entities with the shared role mapping. An entity on a flow role with a
+    `parties` row states its kind and class where `datasets` publish it, and on the origin
+    role whether it is a multilateral (`multilaterals.party_facts`), each read on the role's
+    axis. Confidence is unset."""
+    resolved = []
+    for e in entities:
+        role = entity_role_key(e)
+        axis = role_key_axis(role)
+        row = parties.get(e.ref.ref) if axis is not None else None
+        facts = (
+            multilaterals.party_facts(row, axis=axis, datasets=datasets)
+            if row is not None and axis is not None
+            else None
         )
-        for e in entities
-    ]
+        resolved.append(
+            ResolvedEntity(
+                ref=e.ref.ref,
+                label=e.ref.label,
+                entity_type=e.entity_type.ref if e.entity_type else None,
+                role=role,
+                party_kind=facts.kind if facts is not None else None,
+                party_class=facts.party_class if facts is not None else None,
+                multilateral=(
+                    facts.multilateral if facts is not None and axis == "origin" else None
+                ),
+                confidence=None,
+            )
+        )
+    return resolved
 
 
 @dataclass(frozen=True)
@@ -405,7 +416,7 @@ def role_entity_groups(
     groups = tuple(groups)
     result: dict[str, EntityGroup] = {}
     for role, dcids in _dcids_by_role(entities).items():
-        group = _role_group(groups, dcids)
+        group = _role_group(groups, role, dcids)
         if group is not None:
             total = group.total if {group.total} == dcids else None
             result[role] = EntityGroup(
@@ -485,7 +496,7 @@ def role_group_totals(
     groups = tuple(groups)
     result: list[tuple[str, str]] = []
     for role, dcids in _dcids_by_role(entities).items():
-        group = _role_group(groups, dcids)
+        group = _role_group(groups, role, dcids)
         if group is not None and group.total is not None and {group.total} != dcids:
             result.append((role, group.total))
     return tuple(result)
@@ -498,12 +509,13 @@ def _dcids_by_role(entities: Iterable[Entity]) -> dict[str, set[str]]:
     return dcids_by_role
 
 
-def _role_group(groups: Sequence[NamedGroup], dcids: set[str]) -> NamedGroup | None:
+def _role_group(groups: Sequence[NamedGroup], role: str, dcids: set[str]) -> NamedGroup | None:
     """The group whose members or total a role's dcids equal, the members with or without
-    the residual buckets a summed region binds beside them (`scope.region.is_residual`).
+    the residual buckets a summed group binds beside them on `role`'s axis
+    (`scope.region.is_residual`).
     Of groups with the same members, one with a node wins over one without, then the first
     by dcid, then label."""
-    members = set(without_residuals(dcids, get_index())) or dcids
+    members = set(without_residuals(dcids, get_index(), axis=role_key_axis(role))) or dcids
     matches = [g for g in groups if g.member_dcids in (dcids, members) or {g.total} == dcids]
     if not matches:
         return None
@@ -991,8 +1003,8 @@ def _role_axis_facts(
 ) -> list[RoleAxisFact] | None:
     """Project open role axes, returning None when no facts were supplied.
 
-    Each count is `party_count` of the population, read in `datasets`, the provenances
-    of the served StatVars. A missing member population yields ``member_count=None``
+    Each count is `party_count` of the population on its axis, read in `datasets`, the
+    provenances of the served StatVars. A missing member population yields ``member_count=None``
     and ``members_available=False``. The origin axis states whether its population holds
     a multilateral: one of its members where they are known, else one `datasets` publish
     on the axis (`RoleAxisFact.holds_multilaterals`).
@@ -1003,7 +1015,7 @@ def _role_axis_facts(
         RoleAxisFact(
             role=fact.role,
             member_count=(
-                party_count(fact.member_dcids, parties=parties, datasets=datasets)
+                party_count(fact.member_dcids, axis=fact.role, parties=parties, datasets=datasets)
                 if fact.member_dcids is not None
                 else None
             ),
@@ -1546,18 +1558,7 @@ def build_spec(
                 identity=identity_doc,
                 provenance=provenance.ref if provenance is not None else None,
             ),
-            entities=_resolved_entities(
-                entities,
-                multilateral_dcids={
-                    dcid
-                    for role, dcids in identity_doc.entities.items()
-                    if role_key_axis(role) == "origin"
-                    for dcid in dcids
-                    if multilaterals.is_multilateral(
-                        index.parties.get(dcid), datasets=served_datasets
-                    )
-                },
-            ),
+            entities=_resolved_entities(entities, parties=index.parties, datasets=served_datasets),
             entity_groups=entity_groups or None,
             coverage=coverage,
             headline=headline,

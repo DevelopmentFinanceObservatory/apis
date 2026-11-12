@@ -154,6 +154,7 @@ from datasets_api.versions import (
 from dc_graph import GraphReadError
 from dfo_platform import Alternative
 from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
+from dfo_platform.columns import PROVENANCE_COLUMN
 from dfo_platform.config import PublicSiteSettings
 from dfo_platform.request_deadline import bounded_deadline
 from dfo_platform.validation import pointer_segment
@@ -181,7 +182,7 @@ from materialise.bundle_naming import heading, member_slugs, sources_slug
 from materialise.bundle_sources import source_provenance
 from materialise.codes import MaterialisationWarning
 from materialise.content_version import mint_version_from_digest
-from materialise.enrichment import PARTY_FIELDS, EnrichmentLookup
+from materialise.enrichment import PARTY_FIELDS, EnrichmentLookup, pivot_party_cell
 from materialise.errors import OverCeilingError
 from materialise.formats import (
     DATA_SHEET_TITLE,
@@ -1092,10 +1093,7 @@ def _reshape_select_pivot_enrich(
         enrichment_plan = EnrichmentPlan(
             requests=parsed.enrichments,
             lookup=reads.fields_of(refs, fields={field for _, field in parsed.enrichments}),
-            # A pivot's index and columns group rows, so a cell that varied with the period
-            # would split one party into several index rows. Its party cells are read for no
-            # dataset and year, where a whole total's `party_whole` is empty (`whole_cell`).
-            parties=None if pivot is not None else reads.enrichment.parties,
+            parties=reads.parties,
         )
     warning_order = (
         *decoded_column_names,
@@ -1794,9 +1792,10 @@ class _RenderReads:
     outright: a cited source's label, a summed family's label. Every other value is read
     through `enrichment` by `lookup` against one absolute `deadline`, the render's. After one
     read fails, `lookup` refuses without reading, so a graph outage costs the render at most
-    one read's wait."""
+    one read's wait. A party's fields come from `parties`, the code index's party rows."""
 
     enrichment: EnrichmentLookup
+    parties: Mapping[str, PartyRow]
     known: Mapping[str, str]
     deadline: float | None
     failed: bool = False
@@ -1806,6 +1805,7 @@ class _RenderReads:
         cls,
         *,
         enrichment: EnrichmentLookup,
+        parties: Mapping[str, PartyRow],
         citations: Mapping[str, CitationSource],
         family: tuple[str, str] | None,
         deadline: float | None,
@@ -1815,6 +1815,7 @@ class _RenderReads:
             known[family[0]] = family[1]
         return cls(
             enrichment=enrichment,
+            parties=parties,
             known=known,
             deadline=deadline,
         )
@@ -1833,19 +1834,14 @@ class _RenderReads:
     def fields_of(
         self, nodes: Sequence[str], *, fields: Collection[str]
     ) -> dict[str, dict[str, str]]:
-        """Each of `nodes` mapped to those of its enrichment `fields` that could be read. A
-        party's cells for the party fields (`PARTY_FIELDS`) are the ones the code index declares
-        for no dataset and year (`EnrichmentLookup.party_cells`), read with no graph call; a
-        party the index does not list has none. One `lookup` reads the graph fields of every
+        """Each of `nodes` mapped to those of its enrichment graph `fields` that could be read.
+        The party fields (`PARTY_FIELDS`) are left out. A party's cells depend on the axis of
+        the column that holds it, so readers take them from the code index per column
+        (`materialise.enrichment.row_party_cell`). One `lookup` reads the graph fields of every
         node, and runs only when one is asked for. A read that fails, or follows a failed one,
         leaves those fields out. An absent field's cells stay empty and count as
         `enrichment_unavailable`."""
         read: dict[str, dict[str, str]] = {node: {} for node in nodes}
-        if party_fields := set(fields).intersection(PARTY_FIELDS):
-            for node, node_fields in read.items():
-                for field_name, cell in self.enrichment.party_cells(node).items():
-                    if field_name in party_fields:
-                        node_fields[field_name] = cell
         graph_fields = set(fields).difference(PARTY_FIELDS)
         if not graph_fields or not nodes or self.failed:
             return read
@@ -2078,9 +2074,7 @@ class _LongLayout:
                 grain=self.grain,
             )
         self._read_names(self.projection.refs_to_name(table))
-        projected = self.projection.apply(
-            table, names=self.names, parties=self.reads.enrichment.parties
-        )
+        projected = self.projection.apply(table, names=self.names, parties=self.reads.parties)
         self.unavailable.update(projected.unavailable)
         if self.totals is None:
             return cast(Table, projected.table)
@@ -2245,8 +2239,9 @@ def _stream_bare_pivot(
     processing. `distinct_dcids` gathers the required refs during the fold.
 
     The fold counts rows per enrichment ref, and one `_RenderReads.fields_of` read after it
-    gives the whole-table missing-value warnings. Pivot output carries the index and pivoted
-    values.
+    gives the whole-table missing-value warnings. A party field counts as a pivot reads it,
+    over the datasets the fold finds the party in (`pivot_party_cell`). Pivot output carries
+    the index and pivoted values.
 
     `output_profile` describes the frame these chunks carry. Its facts for the requested pair let
     the fold refuse a cap before scanning and name the `varying` columns of a non-unique pair. A
@@ -2332,6 +2327,14 @@ def _stream_bare_pivot(
     # Non-string entity cells count as lookup misses for every field. Count them once per entity
     # column, separate from the ref counts.
     enrichment_non_string_counts: dict[str, int] = dict.fromkeys(enrichment_entity_columns, 0)
+    # The datasets each party is served from, which its one pivot cell reads its kind over,
+    # gathered only for the columns a party field is asked of.
+    party_columns = frozenset(
+        entity_column
+        for entity_column, field in (parsed.enrichments if parsed is not None else ())
+        if field in PARTY_FIELDS
+    )
+    party_datasets: dict[tuple[str, str], set[str]] = {}
 
     def _decoded_selected_chunks() -> Iterator[Table]:
         for chunk in rest_of_frame_chunks:
@@ -2351,13 +2354,22 @@ def _stream_bare_pivot(
                     cell = row[pos]
                     if isinstance(cell, str):
                         distinct_dcids.add(cell)
+            provenance_pos = (
+                decoded.columns.index(PROVENANCE_COLUMN)
+                if PROVENANCE_COLUMN in decoded.columns
+                else None
+            )
             for entity_column in enrichment_entity_columns:
                 entity_pos = decoded.columns.index(entity_column)
                 counts = enrichment_ref_counts[entity_column]
+                gathered = provenance_pos if entity_column in party_columns else None
                 for row in decoded.rows:
                     ref = row[entity_pos]
                     if isinstance(ref, str):
                         counts[ref] = counts.get(ref, 0) + 1
+                        provenance = None if gathered is None else row[gathered]
+                        if isinstance(provenance, str):
+                            party_datasets.setdefault((entity_column, ref), set()).add(provenance)
                     else:
                         enrichment_non_string_counts[entity_column] += 1
             if select is not None:
@@ -2418,7 +2430,18 @@ def _stream_bare_pivot(
         for entity_column, field_name in parsed.enrichments:
             total_missing = enrichment_non_string_counts.get(entity_column, 0)
             for ref, row_count in enrichment_ref_counts.get(entity_column, {}).items():
-                if lookup_cell(lookup, ref, field_name) is None:
+                cell = (
+                    pivot_party_cell(
+                        field_name,
+                        ref,
+                        role=entity_column,
+                        parties=reads.parties,
+                        datasets=party_datasets.get((entity_column, ref), ()),
+                    )
+                    if field_name in PARTY_FIELDS
+                    else lookup_cell(lookup, ref, field_name)
+                )
+                if cell is None:
                     total_missing += row_count
             if total_missing:
                 missing_counts[(entity_column, field_name)] = total_missing
@@ -2898,9 +2921,11 @@ def render_and_store(
     caller's count of the frame `frame_chunks` holds. The wait ends at `deadline` and then
     raises `FoldPermitWaitExpired`.
 
-    `code_index` controls decoding, and the artifact carries its `enrichment_digest` as
-    `enrichment_stamp` when it holds party-kind cells (`versions.enrichment_stamp`, over
-    the role columns of the frame it renders). `resolved_stat_var_refs` and `provenance_refs`
+    `code_index` controls decoding and gives the party rows (`CodeIndex.parties`) that every
+    party cell, cut of totals and split of totals reads. A render without one reads no party
+    row. The artifact carries its `enrichment_digest` as `enrichment_stamp` when it holds
+    party-kind cells (`versions.enrichment_stamp`, over the role columns of the frame it
+    renders). `resolved_stat_var_refs` and `provenance_refs`
     support groupby population and source checks: `provenance_refs` are the provenances the
     frame's rows carry. `citation_refs` are the sources the bundle names and the datasets whose
     totals the file splits out, `provenance_refs` when `None`. A composite's rows carry its own
@@ -2922,7 +2947,7 @@ def render_and_store(
 
     `options.without_party_totals` cuts the group totals of the open party roles of `spec`'s
     identity out of the frame before any reshape (`datasets_api.party_totals`), reading the
-    kinds from `enrichment.parties`. A cut that leaves rows out renders from the cut frame,
+    kinds from the code index's party rows. A cut that leaves rows out renders from the cut frame,
     which is a version of its own, so the artifact and any collapse of it belong to a version
     minted from their own frame (`RenderedDefinition.derived`). A cut that leaves nothing out
     renders the frame as it is.
@@ -2934,6 +2959,7 @@ def render_and_store(
     keeps its label.
     """
     check_options_supported(options, code_index=code_index)
+    parties = code_index.parties if code_index is not None else {}
     cited_refs = list(citation_refs) if citation_refs is not None else provenance_refs
     subject_id = str(spec.get("spec_id"))
     identity = spec.get("identity")
@@ -2941,7 +2967,7 @@ def render_and_store(
         cut_party_totals(
             frame_chunks,
             roles=open_party_roles(identity, entity_columns),
-            parties=enrichment.parties,
+            parties=parties,
         )
         if options.without_party_totals and frame_mode is FrameMode.RAW
         else None
@@ -2964,6 +2990,7 @@ def render_and_store(
     )
     name_reads = _RenderReads.for_render(
         enrichment=enrichment,
+        parties=parties,
         citations=citations,
         family=(
             (f"{_STAT_VAR_REF_PREFIX}{subject_id}", subject_label)
@@ -2976,7 +3003,7 @@ def render_and_store(
         options,
         identity=identity,
         entity_columns=entity_columns,
-        parties=enrichment.parties,
+        parties=parties,
         datasets=cited_refs,
     )
     with phase("render"):

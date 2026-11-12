@@ -605,6 +605,45 @@ def _direction_inferred(fact: DepartureFact, family: FlowFamily | None, _shows_d
     )
 
 
+def _organisation_read_as_source(
+    fact: DepartureFact, _family: FlowFamily | None, _shows_data: bool
+) -> str:
+    asked = _asked(fact)
+    return (
+        f"You named {asked} as a party to the flow. The data that best matches this question "
+        f"does not list {asked} as a party to a flow, so this reads it as the source of the data."
+    )
+
+
+def _organisation_read_as_party(
+    fact: DepartureFact, _family: FlowFamily | None, _shows_data: bool
+) -> str:
+    asked = _asked(fact)
+    match fact.party_reason:
+        case "named_as_party":
+            return (
+                f"You named {asked} as a party to the flow. This reads {asked} as a party, not "
+                "as the source of the data."
+            )
+        case "named_source":
+            return (
+                f"You named {asked}. {fact.shown} lists {asked} as a party to the flow, so this "
+                f"reads {asked} as a party, not as the source of the data."
+            )
+        case "source_unresolved":
+            return (
+                f"You named {asked}. Its words name no single source of data, so this reads "
+                f"{asked} as a party to the flow."
+            )
+        case "no_own_data":
+            return (
+                f"You named {asked}. None of the data it publishes measures this, so this reads "
+                f"{asked} as a party to the flow."
+            )
+        case None:
+            raise ValueError("organisation_read_as_party needs the reason for the reading")
+
+
 def _scope_limited(fact: DepartureFact, _family: FlowFamily | None, _shows_data: bool) -> str:
     return no_data_limit_text(fact.limits)
 
@@ -630,7 +669,9 @@ _TEXT_BY_CODE: Final[Mapping[DepartureCode, _TextWriter]] = MappingProxyType(
         "whole_total_read": _whole_total_read,
         "whole_total_unpublished": _whole_total_unpublished,
         "direction_discarded": _direction_discarded,
+        "organisation_read_as_source": _organisation_read_as_source,
         "direction_inferred": _direction_inferred,
+        "organisation_read_as_party": _organisation_read_as_party,
         "scope_limited": _scope_limited,
     }
 )

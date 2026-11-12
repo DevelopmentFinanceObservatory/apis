@@ -46,13 +46,13 @@ from assembler.ports import ResolvedFrame
 from assembler.resolve import ResolvedSeries
 from description.facts import Coordinate, DrawnSeries, SelectionFacts, Span, StatusCounts
 from description.steps import ComposedUnit, SimpleUnit, Unit, VariableSide
+from dfo_platform.columns import PROVENANCE_COLUMN
 from materialise.method_status import method_status_classes, reported_provenances
 from materialise.statistics import count_statuses
 from materialise.unit_cells import composed_unit_sides
 
 __all__ = ["selection_facts"]
 
-_PROVENANCE_COLUMN = "provenance"
 _METHOD_COLUMN = "measurementMethod"
 
 
@@ -89,7 +89,7 @@ def selection_facts(
         for column in dimension_columns(
             columns=cast("Sequence[str]", resolved_frame.frame["columns"])
         )
-        if column not in (UNIT_COLUMN, _PROVENANCE_COLUMN)
+        if column not in (UNIT_COLUMN, PROVENANCE_COLUMN)
     ]
     return SelectionFacts(
         window=Span(start=str(window["start"]), end=str(window["end"])),
@@ -139,7 +139,7 @@ def _status(*, rows: Sequence[Mapping[str, object]], periods: Sequence[str]) -> 
     values_by_facet: Counter[tuple[str | None, str | None]] = Counter(
         (
             cast("str | None", rows_by_period[period].get(_METHOD_COLUMN)),
-            cast("str | None", rows_by_period[period].get(_PROVENANCE_COLUMN)),
+            cast("str | None", rows_by_period[period].get(PROVENANCE_COLUMN)),
         )
         for period in periods
     )

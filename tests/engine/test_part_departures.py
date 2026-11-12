@@ -201,7 +201,7 @@ def test_a_no_data_part_carries_its_raised_and_operation_departures():
     region = dataclasses.replace(
         _region(
             None,
-            "population",
+            "val a",
             status="no_data",
             no_data_reason="no_observations",
             gate="only_alternate_has_data",
@@ -284,7 +284,7 @@ def test_a_dropped_price_basis_shows_the_unit_the_byline_states():
         }
     )
     region = dataclasses.replace(
-        _region(spec, "gdp"),
+        _region(spec, "val a"),
         warnings=(_PRICES,),
         departure_facts={
             warning_key(_PRICES): price_basis_not_applied(asked="constant 2022 dollars", shown=None)
@@ -312,7 +312,7 @@ def test_a_qualifier_the_heading_states_does_not_depart():
         message=f'The requested qualifier "{noun_word}" was not applied.',
     )
     region = dataclasses.replace(
-        _region(spec, "gdp"),
+        _region(spec, "val a"),
         warnings=(stated, _PRICES),
         departure_facts={
             warning_key(stated): measure_not_applied(
@@ -374,7 +374,7 @@ def test_a_group_s_departures_ask_in_the_request_s_words(region_words, door_word
     )
     region = with_entity_words(
         dataclasses.replace(
-            _region(_unserved(spec, "country/SOM"), "aid"), entity_words=region_words
+            _region(_unserved(spec, "country/SOM"), "val a"), entity_words=region_words
         ),
         door_words,
     )
@@ -421,7 +421,7 @@ def test_a_resubmit_s_departures_ask_for_nothing():
         message='The requested qualifier "debt instruments" was not applied.',
     )
     region = dataclasses.replace(
-        _region(_unserved(spec, "country/SOM"), "aid"),
+        _region(_unserved(spec, "country/SOM"), "val a"),
         entity_words=None,
         warnings=(dropped,),
         departure_facts={
@@ -479,7 +479,7 @@ def test_a_role_states_one_entity_unavailable_whichever_reads_raise_it():
     spec = _unserved(_spec(_PERSON_SHAPE, "ValA", entities=_places()), "country/SOM")
     refused = Warning(code="un_system_unavailable", severity="warn", message="refused")
     region = dataclasses.replace(
-        _region(spec, "population"),
+        _region(spec, "val a"),
         warnings=(refused,),
         departure_facts={
             warning_key(refused): DepartureFact(

@@ -22,6 +22,7 @@ from assembler.ports import NamedSeries, ResolvedFrame
 from description.citation import citation_line, figures_processed
 from description.compose import change_step
 from description.steps import Step
+from dfo_platform.columns import PROVENANCE_COLUMN
 
 DESCRIPTION_PROVENANCE_MEMBERS = ("sources", "freshness", "warnings", "citation")
 """The provenance members a lineage-only provenance leaves out, since a description carries
@@ -36,7 +37,6 @@ _SOURCE_ID_RE = re.compile(r"^src_[a-z0-9_]{1,60}$")
 _UNATTRIBUTED_SOURCE_ID = "src_unattributed"
 _UNATTRIBUTED_SOURCE_NAME = "Unattributed source"
 _DERIVED_SPEC_PREFIX = "ops_"  # a derived frame's spec id, its recipe's roots cited on it
-_PROVENANCE_COLUMN = "provenance"  # frame-grammar's FACET_IDENTITY_COLUMNS names this axis
 # The envelope requires a non-empty `licence`. This states that the graph
 # declares no licence for the source; it names no licence of its own.
 _LICENCE_NOT_STATED = "Not stated"
@@ -173,9 +173,9 @@ def _build_all_sources(
 
     A ref with no citation entry is handled by `_build_sources_for_refs`."""
     columns = cast("Sequence[str]", resolved_frame.frame["columns"])
-    if _PROVENANCE_COLUMN not in columns:
+    if PROVENANCE_COLUMN not in columns:
         return (), {}
-    index = columns.index(_PROVENANCE_COLUMN)
+    index = columns.index(PROVENANCE_COLUMN)
     rows = cast("Sequence[Sequence[object]]", resolved_frame.frame["rows"])
     raw_refs = list(dict.fromkeys(cast("str | None", row[index]) for row in rows))
     return _build_sources_for_refs(raw_refs=raw_refs, resolved_frame=resolved_frame)

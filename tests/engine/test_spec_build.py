@@ -237,8 +237,8 @@ class TestBuildSpecStatVars:
 
     def test_an_open_role_counts_the_parties_beside_the_totals_of_the_code_index(self):
         parties = get_index().parties
-        totals = [dcid for dcid, row in parties.items() if row.kind_over() == "total"][:2]
-        members = [dcid for dcid, row in parties.items() if row.kind_over() == "party"][:3]
+        totals = [dcid for dcid, row in parties.items() if row.kind_over("origin") == "total"][:2]
+        members = [dcid for dcid, row in parties.items() if row.kind_over("origin") == "party"][:3]
         population = frozenset((*totals, *members))
 
         spec = self._build(

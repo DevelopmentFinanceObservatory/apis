@@ -80,7 +80,12 @@ def test_an_axis_the_index_lists_no_party_on_is_not_judged():
         statvars=(),
         party_types={"Country": "party"},
         parties=(
-            PartyRow(dcid="country/FRA", kind="party", party_class="official", axes=("origin",)),
+            PartyRow(
+                dcid="country/FRA",
+                kind="party",
+                party_class="official",
+                published=(("provenance/P", "origin"),),
+            ),
         ),
     )
     reads: list[list[str]] = []

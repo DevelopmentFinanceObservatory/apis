@@ -329,6 +329,10 @@ WARNING_CODES: frozenset[str] = frozenset(
         "candidates_collapsed_no_data",
         # The elected shape cannot carry the named place's flow direction.
         "direction_discarded",
+        # A contested organisation was read as the source of the data or as a party to the
+        # flow, the reading chosen before the part's pass from its recall (region/codes.py).
+        "organisation_read_as_source",
+        "organisation_read_as_party",
         # Failed role-declaration reads leave candidates on the roles already read.
         "role_declaration_unverified",
         # Origin catalogue outcomes: a series withheld by the registry, a UN

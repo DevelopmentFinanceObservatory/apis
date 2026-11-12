@@ -16,6 +16,7 @@ from types import MappingProxyType
 
 from code_index.tokens import Token, TokenLookup, word_tokens
 from code_index.types import (
+    ANY_AXIS,
     POPULATION_CLASS,
     AbsentObservation,
     Bound,
@@ -544,20 +545,19 @@ class CodeIndex:
         side_classes: dict[tuple[RoleAxis, str], set[PartyClass]] = defaultdict(set)
         population_totals_by_axis: dict[RoleAxis, list[str]] = defaultdict(list)
         for party in self.parties.values():
-            for dataset in party.datasets:
+            for dataset, axis in party.published:
                 kind = party.kind_in(dataset)
                 party_class = party.class_of(kind)
                 if kind != "total" and party_class is not None:
-                    for axis in party.axes:
-                        side_classes[axis, dataset].add(party_class)
+                    side_classes[axis, dataset].add(party_class)
             if any(POPULATION_CLASS in marker.covers for marker in party.whole):
-                population_totals_by_axis[party.axes[0]].append(party.dcid)
+                population_totals_by_axis[party.sole_axis()].append(party.dcid)
         self.side_classes: dict[tuple[RoleAxis, str], frozenset[PartyClass]] = {
             side: frozenset(classes) for side, classes in side_classes.items()
         }
         """The classes of party, totals aside, each dataset publishes on each
-        flow axis, by `(axis, dataset)`. A `PartyRow` keeps its axes and datasets apart, so a
-        party published on both axes counts on each in every dataset that publishes it."""
+        flow axis, by `(axis, dataset)`. A party counts on an axis only in the datasets that
+        publish it there (`PartyRow.published`)."""
         self.population_totals_by_axis: dict[RoleAxis, tuple[str, ...]] = {
             axis: tuple(sorted(dcids)) for axis, dcids in population_totals_by_axis.items()
         }
@@ -768,7 +768,9 @@ class CodeIndex:
         its types give (`code_index.types.party_kind`). A reader with a dataset in hand reads
         `PartyRow.kind_in` instead."""
         party = self.parties.get(dcid)
-        return party.kind_over() if party is not None else party_kind(types, self.party_types)
+        if party is None:
+            return party_kind(types, self.party_types)
+        return party.kind_over(ANY_AXIS)
 
     def whole_set(self, phrase: str) -> WholeTotalSet | None:
         """The whole total set a `phrase` names, compared under `fold_text`, or `None`."""

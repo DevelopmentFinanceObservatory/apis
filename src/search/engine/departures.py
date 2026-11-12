@@ -39,7 +39,12 @@ from typing import TYPE_CHECKING, Literal
 from code_index.composites import provenance_datasets
 from code_index.shared import get_index
 from dfo_platform.roles import role_key_axis
-from search.heading.departure_fact import DepartureFact, UnservedMembers, ordered_facts
+from search.heading.departure_fact import (
+    DepartureFact,
+    PartyReason,
+    UnservedMembers,
+    ordered_facts,
+)
 from search.heading.words import content_words
 from search.models import (
     SOURCE_REF,
@@ -240,6 +245,29 @@ def direction_discarded(name: str, axis: RoleAxis) -> DepartureFact:
     return DepartureFact(code="direction_discarded", binding_ref=WHERE_REF, asked=name, over=axis)
 
 
+def organisation_read_as_source(words: str) -> DepartureFact:
+    """An organisation the request named as a party to a flow, in its words `words`, which
+    the answer reads as the source of the data, the only reading the data allow: the data
+    that best matches the request does not list it as a party to a flow
+    (`source_choice.choose_reading`). Naming another source clears it."""
+    return DepartureFact(code="organisation_read_as_source", binding_ref=SOURCE_REF, asked=words)
+
+
+def organisation_read_as_party(
+    words: str, *, reason: PartyReason, listed_by: str | None = None
+) -> DepartureFact:
+    """An organisation the request named, in its words `words`, which the answer reads as a
+    party to the flow for `reason`; `listed_by` names the other sources that list it as a
+    party, for `named_source`. No slot edit clears it."""
+    return DepartureFact(
+        code="organisation_read_as_party",
+        binding_ref=None,
+        asked=words,
+        shown=listed_by,
+        party_reason=reason,
+    )
+
+
 def direction_inferred(name: str, axis: RoleAxis) -> DepartureFact:
     """A place `name` the request named without a direction, which the answer reads on the
     flow `axis`, the one direction that holds data (`region.status_rule`)."""
@@ -372,7 +400,7 @@ def _role_members(spec: Spec, role: str) -> list[str]:
     return [
         entity.ref
         for entity in spec.resolved.entities
-        if entity.role == role and not is_residual(entity.ref, index)
+        if entity.role == role and not is_residual(entity.ref, index, axis=role_key_axis(role))
     ]
 
 
@@ -384,7 +412,7 @@ def _residuals_bound(spec: Spec, role: str) -> tuple[str, ...]:
     return tuple(
         index.parties[entity.ref].label or entity.ref
         for entity in spec.resolved.entities
-        if entity.role == role and is_residual(entity.ref, index)
+        if entity.role == role and is_residual(entity.ref, index, axis=role_key_axis(role))
     )
 
 
@@ -410,8 +438,8 @@ def members_left_out(spec: Spec, role: str, group: str | None) -> tuple[tuple[st
     code index: the labels of the residuals the total counts beside them
     (`PartyRow.residuals`) that the role does not bind beside them, and whether the total is
     a figure that can differ from their sum (`PartyRow.sums_members` false). Each counts only
-    where a dataset `spec` serves publishes the party (`PartyRow.datasets`) on the flow axis
-    of `role` (`PartyRow.axes`).
+    where a dataset `spec` serves publishes the party on the flow axis of `role`
+    (`PartyRow.publishes`).
 
     The total is the one the role keeps for the group it reads as members
     (`ResolvedSpec.group_totals`), which a group with no node of its own, such as a resolver
@@ -430,7 +458,7 @@ def members_left_out(spec: Spec, role: str, group: str | None) -> tuple[tuple[st
     bound = {entity.ref for entity in spec.resolved.entities if entity.role == role}
 
     def published(party: PartyRow) -> bool:
-        return axis in party.axes and bool(served.intersection(party.datasets))
+        return party.publishes(axis, served)
 
     residuals = (index.parties.get(dcid) for dcid in total.residuals if dcid not in bound)
     excluded = tuple(
@@ -614,7 +642,9 @@ def unavailable_entity_facts(
     for entity in spec.resolved.entities:
         # A residual bucket a summed region binds beside its members is no member, so it
         # neither counts toward the group's size nor departs as a member without values.
-        if entity.role in groups and is_residual(entity.ref, index):
+        if entity.role in groups and is_residual(
+            entity.ref, index, axis=role_key_axis(entity.role)
+        ):
             continue
         size_by_role[entity.role] = size_by_role.get(entity.role, 0) + 1
         if (entity.role, entity.ref) in unserved:

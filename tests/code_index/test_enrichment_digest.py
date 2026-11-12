@@ -17,13 +17,17 @@ _DAC2B = "provenance/OECD_DAC2B"
 _WHOLE = [{"dataset": _DAC2A, "covers": ["official"], "years": [1960, 2023]}]
 
 
+def _donor_in(*datasets: str) -> list[dict[str, str]]:
+    """A `parties` row's `published` pairs: a donor in each of `datasets`."""
+    return [{"dataset": dataset, "axis": "origin"} for dataset in datasets]
+
+
 def _party(dcid: str, kind: str, **extra: Any) -> dict[str, Any]:
     return {
         "dcid": dcid,
         "kind": kind,
         "totals": None,
-        "datasets": [_DAC2A],
-        "axes": ["origin"],
+        "published": _donor_in(_DAC2A),
         **extra,
     }
 
@@ -34,7 +38,7 @@ _ROWS = [
         "DACOfficialDonors",
         "total",
         party_class="official",
-        datasets=[_DAC2A, _DAC2B],
+        published=_donor_in(_DAC2A, _DAC2B),
         whole=_WHOLE,
     ),
     _party("Africa", "total", totals="africa"),
@@ -58,9 +62,9 @@ def test_the_digest_ignores_row_order_and_everything_outside_kind_class_and_whol
 
     assert _index(list(reversed(_ROWS))).enrichment_digest == baseline
     assert _index(_replaced(0, label="Gates Foundation")).enrichment_digest == baseline
-    assert _index(_replaced(0, datasets=[_DAC2A, "provenance/OECD_DAC2B"])).enrichment_digest == (
-        baseline
-    )
+    assert _index(
+        _replaced(0, published=_donor_in(_DAC2A, "provenance/OECD_DAC2B"))
+    ).enrichment_digest == (baseline)
     assert _index(_replaced(2, totals="Africa")).enrichment_digest == baseline
     restamped = json.loads(FIXTURE_PATH.read_text())["stamp"] | {"content_hash": "another-export"}
     assert _index(_ROWS, stamp=restamped).enrichment_digest == baseline
@@ -68,7 +72,10 @@ def test_the_digest_ignores_row_order_and_everything_outside_kind_class_and_whol
 
 def _marked(party_class: str | None = "official", **marker: Any) -> list[dict[str, Any]]:
     return _replaced(
-        1, datasets=[_DAC2A, _DAC2B], party_class=party_class, whole=[{**_WHOLE[0], **marker}]
+        1,
+        published=_donor_in(_DAC2A, _DAC2B),
+        party_class=party_class,
+        whole=[{**_WHOLE[0], **marker}],
     )
 
 
@@ -81,11 +88,17 @@ def _marked(party_class: str | None = "official", **marker: Any) -> list[dict[st
         _marked(years=[1960, 2022]),
         _marked(years=None),
         _marked(dataset=_DAC2B),
-        _replaced(1, datasets=[_DAC2A, _DAC2B], whole=[*_WHOLE, {**_WHOLE[0], "dataset": _DAC2B}]),
+        _replaced(
+            1,
+            published=_donor_in(_DAC2A, _DAC2B),
+            whole=[*_WHOLE, {**_WHOLE[0], "dataset": _DAC2B}],
+        ),
         _replaced(1, whole=[], party_class=None),
         _ROWS[:-1],
         _replaced(
-            0, datasets=[_DAC2A, _DAC2B], dataset_kinds=[{"dataset": _DAC2A, "kind": "total"}]
+            0,
+            published=_donor_in(_DAC2A, _DAC2B),
+            dataset_kinds=[{"dataset": _DAC2A, "kind": "total"}],
         ),
     ],
     ids=[

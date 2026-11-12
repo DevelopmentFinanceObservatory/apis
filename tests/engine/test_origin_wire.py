@@ -1079,7 +1079,7 @@ def test_a_streamed_read_states_the_refused_places_on_done(
 
     spec = conjoin_spec(
         shape_five_tuple("Person", "count"),
-        "x",
+        "population",
         sv_dcid=sv_dcid,
         entities=[
             Entity(ref=GraphRef(ref="country/KEN", label="Kenya"), role=EntityRoleSubject()),

@@ -13,6 +13,7 @@ import time
 import zipfile
 from collections import Counter
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from itertools import product
 
 import openpyxl
 import pyarrow.parquet as pq
@@ -122,15 +123,25 @@ _ARCS = {
     "WDI_GDP": {"name": ("GDP",)},
 }
 _GRAPH = FakeMintGraphReader(arcs=_ARCS)
+_BOTH_SIDES: tuple[tuple[str, RoleAxis], ...] = (("p1", "origin"), ("p1", "destination"))
+"""A publication on both flow axes, so a fixture party reads its kind on either."""
+
 _PARTIES = {
-    "country/USA": PartyRow(dcid="country/USA", kind="party", party_class="official"),
-    "country/KEN": PartyRow(dcid="country/KEN", kind="party", party_class="official"),
-    "DACAfrica": PartyRow(dcid="DACAfrica", kind="total", datasets=("p1",), axes=("destination",)),
+    "country/USA": PartyRow(
+        dcid="country/USA", kind="party", party_class="official", published=_BOTH_SIDES
+    ),
+    "country/KEN": PartyRow(
+        dcid="country/KEN", kind="party", party_class="official", published=_BOTH_SIDES
+    ),
+    "DACAfrica": PartyRow(dcid="DACAfrica", kind="total", published=(("p1", "destination"),)),
     "DACAfricaUnallocated": PartyRow(
-        dcid="DACAfricaUnallocated", kind="residual", party_class="residual"
+        dcid="DACAfricaUnallocated",
+        kind="residual",
+        party_class="residual",
+        published=_BOTH_SIDES,
     ),
     "DACDevelopingCountries": PartyRow(
-        dcid="DACDevelopingCountries", kind="total", datasets=("p1",), axes=("destination",)
+        dcid="DACDevelopingCountries", kind="total", published=(("p1", "destination"),)
     ),
 }
 _BY_PURPOSE = GroupbyOptions(by=["financingProvider", "financingRecipient", "crsPurpose"], op="sum")
@@ -167,6 +178,17 @@ _COLLAPSE_HEADER = (*_LONG_HEADER[:9], *_LONG_HEADER[11:])
 """`_LONG_HEADER` after a groupby by purpose sums over the type of finance."""
 
 
+def _with_parties(index: CodeIndex, parties: Mapping[str, PartyRow]) -> CodeIndex:
+    """`index` holding `parties` as its party rows."""
+    return CodeIndex(
+        stamp=index.stamp,
+        declarations=index.declarations.values(),
+        codes=index.codes,
+        statvars=index.statvars,
+        parties=parties.values(),
+    )
+
+
 def _render(
     options: MintOptions,
     *,
@@ -199,10 +221,10 @@ def _render(
         site=SITE,
         artifact_store=store,
         entity_columns=_ENTITY_COLUMNS,
-        enrichment=EnrichmentLookup(graph, parties=lambda: parties),
+        enrichment=EnrichmentLookup(graph),
         pivot_max_output_cells=5_000_000,
         groupby_fold_max_rows=2_000_000,
-        code_index=index,
+        code_index=_with_parties(index, parties),
         resolved_stat_var_refs=(
             tuple(stat_var_refs)
             if stat_var_refs is not None
@@ -855,7 +877,9 @@ def _totals_published(
     return {
         **_PARTIES,
         **{
-            dcid: PartyRow(dcid=dcid, kind="total", datasets=datasets, axes=axes, whole=whole)
+            dcid: PartyRow(
+                dcid=dcid, kind="total", published=tuple(product(datasets, axes)), whole=whole
+            )
             for dcid in _TOTAL_ROWS
         },
     }
@@ -905,6 +929,38 @@ def test_a_bare_csv_drops_totals_only_on_the_roles_the_options_document_names(pa
         == named
     )
     assert _recipients(_records(body)) == kept
+
+
+@pytest.mark.parametrize(
+    ("total_in", "named"),
+    [
+        pytest.param("p1", [], id="total-only-where-a-recipient"),
+        pytest.param("p2", ["financingProvider"], id="total-where-a-donor"),
+    ],
+)
+def test_an_open_role_reads_a_party_s_kind_on_its_own_axis(total_in, named):
+    """A party published as a recipient in p1 and a donor in p2 holds a total on the donor
+    side only where the dataset publishing it as a donor gives it that kind."""
+    parties = {
+        **_PARTIES,
+        "MixedParty": PartyRow(
+            dcid="MixedParty",
+            kind="party",
+            party_class="official",
+            published=(("p1", "destination"), ("p2", "origin")),
+            dataset_kinds=((total_in, "total"),),
+        ),
+    }
+    identity = _spec({"entities": {"destination": ["country/KEN"]}, "open_roles": ["origin"]})[
+        "identity"
+    ]
+
+    assert (
+        list(
+            movable_totals_roles(identity, _ENTITY_COLUMNS, parties=parties, datasets=["p1", "p2"])
+        )
+        == named
+    )
 
 
 @pytest.mark.parametrize("bundle", [False, True])
@@ -1239,23 +1295,23 @@ _DAC_PARTIES = {
     "DACAllRecipients": PartyRow(
         dcid="DACAllRecipients",
         kind="total",
-        datasets=(_DAC2A, _DAC2B),
-        axes=("destination",),
+        published=((_DAC2A, "destination"), (_DAC2B, "destination")),
         party_class="official",
         whole=(WholeMarker(dataset=_DAC2A, covers=("official", "residual"), years=(2020, 2021)),),
     ),
     "DACOfficialDonors": PartyRow(
         dcid="DACOfficialDonors",
         kind="total",
-        datasets=(_DAC2A, _DAC2B),
-        axes=("origin",),
+        published=((_DAC2A, "origin"), (_DAC2B, "origin")),
         party_class="official",
         whole=(
             WholeMarker(dataset=_DAC2A, covers=("official",)),
             WholeMarker(dataset=_DAC2B, covers=("official",)),
         ),
     ),
-    "GatesFoundation": PartyRow(dcid="GatesFoundation", kind="party", party_class="private"),
+    "GatesFoundation": PartyRow(
+        dcid="GatesFoundation", kind="party", party_class="private", published=_BOTH_SIDES
+    ),
 }
 
 

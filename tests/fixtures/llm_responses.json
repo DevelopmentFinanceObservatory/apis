@@ -1406,61 +1406,6 @@
       }
     ]
   },
-  "_UniversalBindOutput@7105c7d81a38:ca11a68c5e600738497eecaf664b32f5ab691e89": {
-    "chosen_shape_index": 2,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "activitySource",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "economicSector",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "naics",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": [
-      3,
-      4,
-      5
-    ],
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 2,
-        "rating": 1.0
-      },
-      {
-        "index": 3,
-        "rating": 0.9
-      },
-      {
-        "index": 4,
-        "rating": 0.85
-      },
-      {
-        "index": 5,
-        "rating": 0.85
-      }
-    ]
-  },
   "_UniversalBindOutput@7105c7d81a38:662c8a09b096e1e4f812192971264a7cc5a5e314": {
     "chosen_shape_index": 0,
     "bindings": [
@@ -2323,73 +2268,6 @@
       }
     ]
   },
-  "_UniversalBindOutput@7105c7d81a38:e49b58f3c6c4d073d4247fd71115937d651f43e6": {
-    "chosen_shape_index": 2,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "activitySource",
-        "kind": "value",
-        "value_dcids": [
-          "GrossDomesticProduction"
-        ],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "economicSector",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "naics",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": [
-      3,
-      4,
-      5,
-      6,
-      7
-    ],
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 2,
-        "rating": 1.0
-      },
-      {
-        "index": 3,
-        "rating": 0.9
-      },
-      {
-        "index": 4,
-        "rating": 0.8
-      },
-      {
-        "index": 5,
-        "rating": 0.8
-      },
-      {
-        "index": 6,
-        "rating": 0.7
-      },
-      {
-        "index": 7,
-        "rating": 0.7
-      }
-    ]
-  },
   "_UniversalBindOutput@7105c7d81a38:60bccd604940e8fe77d35df6482c8c2ec3d945f4": {
     "chosen_shape_index": 0,
     "bindings": [
@@ -3038,63 +2916,6 @@
       }
     ]
   },
-  "_UniversalBindOutput@7105c7d81a38:3aadb42855fc0a8cd127f6a29292f32fc10e11f4": {
-    "chosen_shape_index": 2,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "activitySource",
-        "kind": "value",
-        "value_dcids": [
-          "GrossDomesticProduction"
-        ],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "economicSector",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "naics",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": [
-      3,
-      4,
-      5
-    ],
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 2,
-        "rating": 1.0
-      },
-      {
-        "index": 3,
-        "rating": 0.95
-      },
-      {
-        "index": 4,
-        "rating": 0.8
-      },
-      {
-        "index": 5,
-        "rating": 0.8
-      }
-    ]
-  },
   "_UniversalBindOutput@7105c7d81a38:0f5165dcfbf3d50b9278aaea9639d10739e26042": {
     "chosen_shape_index": 0,
     "bindings": [
@@ -3310,165 +3131,6 @@
       },
       {
         "index": 7,
-        "rating": 0.8
-      }
-    ]
-  },
-  "_UniversalBindOutput@7105c7d81a38:fb8ee870a064ed829336e0f3f22e9abf2ffd7d67": {
-    "chosen_shape_index": 2,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "activitySource",
-        "kind": "value",
-        "value_dcids": [
-          "GrossDomesticProduction"
-        ],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "economicSector",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "naics",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": [
-      3,
-      4,
-      5,
-      6,
-      7
-    ],
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 2,
-        "rating": 1.0
-      },
-      {
-        "index": 3,
-        "rating": 0.9
-      },
-      {
-        "index": 4,
-        "rating": 0.8
-      },
-      {
-        "index": 5,
-        "rating": 0.8
-      },
-      {
-        "index": 6,
-        "rating": 0.7
-      },
-      {
-        "index": 7,
-        "rating": 0.6
-      }
-    ]
-  },
-  "_UniversalBindOutput@7105c7d81a38:9b033fe3ad2201f9291d502a3b00b9628b341969": {
-    "chosen_shape_index": 1,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "activitySource",
-        "kind": "value",
-        "value_dcids": [
-          "GrossDomesticProduction"
-        ],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": [
-      2
-    ],
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 0,
-        "rating": 1.0
-      },
-      {
-        "index": 1,
-        "rating": 1.0
-      },
-      {
-        "index": 2,
-        "rating": 0.8
-      }
-    ]
-  },
-  "_UniversalBindOutput@7105c7d81a38:ece9540c439a7c9f0051b2cc9f77197cd80e8375": {
-    "chosen_shape_index": 2,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "activitySource",
-        "kind": "value",
-        "value_dcids": [
-          "GrossDomesticProduction"
-        ],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "economicSector",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "naics",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": [
-      3,
-      4,
-      5
-    ],
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 2,
-        "rating": 1.0
-      },
-      {
-        "index": 3,
-        "rating": 0.9
-      },
-      {
-        "index": 4,
-        "rating": 0.8
-      },
-      {
-        "index": 5,
         "rating": 0.8
       }
     ]
@@ -3964,61 +3626,6 @@
       }
     ]
   },
-  "_UniversalBindOutput@7105c7d81a38:b4ebc500b7480ea0f2e48221918b725d416fa722": {
-    "chosen_shape_index": 2,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "activitySource",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "economicSector",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "naics",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": [
-      3,
-      4,
-      5
-    ],
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 2,
-        "rating": 1.0
-      },
-      {
-        "index": 3,
-        "rating": 0.9
-      },
-      {
-        "index": 4,
-        "rating": 0.8
-      },
-      {
-        "index": 5,
-        "rating": 0.8
-      }
-    ]
-  },
   "_UniversalBindOutput@7105c7d81a38:b29936aaf5781935a4eac392172fe742e0bd8b4c": {
     "chosen_shape_index": 0,
     "bindings": [
@@ -4312,61 +3919,6 @@
       }
     ]
   },
-  "_UniversalBindOutput@7105c7d81a38:a068c5646dc6fa6c9bc0228addc9dca90ed21df4": {
-    "chosen_shape_index": 2,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "activitySource",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "economicSector",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "naics",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": [
-      3,
-      4,
-      5
-    ],
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 2,
-        "rating": 1.0
-      },
-      {
-        "index": 3,
-        "rating": 0.95
-      },
-      {
-        "index": 4,
-        "rating": 0.85
-      },
-      {
-        "index": 5,
-        "rating": 0.85
-      }
-    ]
-  },
   "_UniversalBindOutput@7105c7d81a38:c4f8cba24a7efc318fce52231e8ab93200993468": {
     "chosen_shape_index": 3,
     "bindings": [
@@ -4434,129 +3986,6 @@
       {
         "index": 2,
         "rating": 1.0
-      }
-    ]
-  },
-  "_UniversalBindOutput@7105c7d81a38:67099b6de52e6b5a1afdf7a0e0a91d0274d4bba6": {
-    "chosen_shape_index": 2,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "activitySource",
-        "kind": "value",
-        "value_dcids": [
-          "GrossDomesticProduction"
-        ],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "economicSector",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "naics",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": [
-      3,
-      5,
-      4
-    ],
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 2,
-        "rating": 1.0
-      },
-      {
-        "index": 3,
-        "rating": 0.9
-      },
-      {
-        "index": 5,
-        "rating": 0.8
-      },
-      {
-        "index": 4,
-        "rating": 0.8
-      }
-    ]
-  },
-  "_UniversalBindOutput@7105c7d81a38:bb197a749d24737c62647f71e728055cac3785ad": {
-    "chosen_shape_index": 1,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "activitySource",
-        "kind": "value",
-        "value_dcids": [
-          "GrossDomesticProduction"
-        ],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": [
-      2
-    ],
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 0,
-        "rating": 1.0
-      },
-      {
-        "index": 1,
-        "rating": 1.0
-      },
-      {
-        "index": 2,
-        "rating": 0.8
-      }
-    ]
-  },
-  "_UniversalBindOutput@7105c7d81a38:c0fe158dda396cdac106e4ebf78084dab211a55c": {
-    "chosen_shape_index": 1,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "activitySource",
-        "kind": "value",
-        "value_dcids": [
-          "GrossDomesticProduction"
-        ],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": [
-      2
-    ],
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 1,
-        "rating": 1.0
-      },
-      {
-        "index": 2,
-        "rating": 0.85
       }
     ]
   },
@@ -5141,134 +4570,6 @@
       }
     ]
   },
-  "_UniversalBindOutput@7105c7d81a38:4f8e065eec49fa31870267c732fceff0c27750bb": {
-    "chosen_shape_index": 2,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "activitySource",
-        "kind": "value",
-        "value_dcids": [
-          "GrossDomesticProduction"
-        ],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "economicSector",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "naics",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": [
-      3,
-      5,
-      4
-    ],
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 2,
-        "rating": 1.0
-      },
-      {
-        "index": 3,
-        "rating": 0.9
-      },
-      {
-        "index": 5,
-        "rating": 0.8
-      },
-      {
-        "index": 4,
-        "rating": 0.8
-      }
-    ]
-  },
-  "_UniversalBindOutput@7105c7d81a38:6107f58e4e297df5b2d87fa61893389c19c20c3a": {
-    "chosen_shape_index": 1,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "activitySource",
-        "kind": "value",
-        "value_dcids": [
-          "GrossDomesticProduction"
-        ],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": [
-      0,
-      2
-    ],
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 1,
-        "rating": 1.0
-      },
-      {
-        "index": 0,
-        "rating": 0.9
-      },
-      {
-        "index": 2,
-        "rating": 0.7
-      }
-    ]
-  },
-  "_UniversalBindOutput@7105c7d81a38:7a41d55699798c6b269a8addf36f63af0824cb9e": {
-    "chosen_shape_index": 1,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "activitySource",
-        "kind": "value",
-        "value_dcids": [
-          "GrossDomesticProduction"
-        ],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": [
-      2
-    ],
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 0,
-        "rating": 1.0
-      },
-      {
-        "index": 1,
-        "rating": 1.0
-      },
-      {
-        "index": 2,
-        "rating": 0.85
-      }
-    ]
-  },
   "_UniversalBindOutput@7105c7d81a38:03bb8ae01c3f33810329a32bc3c28fc9733d89c6": {
     "chosen_shape_index": 0,
     "bindings": [
@@ -5313,31 +4614,6 @@
       {
         "index": 4,
         "rating": 0.8
-      }
-    ]
-  },
-  "_UniversalBindOutput@7105c7d81a38:f594c539f41d49adc6f6b74aff3adf54cbb43e30": {
-    "chosen_shape_index": 0,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "activitySource",
-        "kind": "value",
-        "value_dcids": [
-          "GrossNationalIncome"
-        ],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": null,
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 0,
-        "rating": 1.0
       }
     ]
   },
@@ -6549,63 +5825,6 @@
       }
     ]
   },
-  "_UniversalBindOutput@7105c7d81a38:18a82baa2bb6d249cf3062a94a192322bcf2f023": {
-    "chosen_shape_index": 2,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "activitySource",
-        "kind": "value",
-        "value_dcids": [
-          "GrossDomesticProduction"
-        ],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "economicSector",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "naics",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": [
-      3,
-      4,
-      5
-    ],
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 2,
-        "rating": 1.0
-      },
-      {
-        "index": 3,
-        "rating": 0.95
-      },
-      {
-        "index": 4,
-        "rating": 0.9
-      },
-      {
-        "index": 5,
-        "rating": 0.9
-      }
-    ]
-  },
   "_UniversalBindOutput@7105c7d81a38:eff74f6c31ad912e97fcdafbc5b6c38edc5bd274": {
     "chosen_shape_index": 0,
     "bindings": [
@@ -6778,94 +5997,6 @@
       {
         "index": 0,
         "rating": 1.0
-      }
-    ]
-  },
-  "_UniversalBindOutput@7105c7d81a38:fcaa04f3103cdc04609d6c89053171ab5191d30b": {
-    "chosen_shape_index": 1,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "activitySource",
-        "kind": "value",
-        "value_dcids": [
-          "GrossDomesticProduction"
-        ],
-        "evidence": "sole_option",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": [
-      2
-    ],
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 1,
-        "rating": 1.0
-      },
-      {
-        "index": 2,
-        "rating": 0.8
-      }
-    ]
-  },
-  "_UniversalBindOutput@7105c7d81a38:647bb6159627d9b728190627284519643fafcc35": {
-    "chosen_shape_index": 2,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "activitySource",
-        "kind": "value",
-        "value_dcids": [
-          "GrossDomesticProduction"
-        ],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "economicSector",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "naics",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": [
-      3,
-      4,
-      5
-    ],
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 2,
-        "rating": 1.0
-      },
-      {
-        "index": 3,
-        "rating": 0.95
-      },
-      {
-        "index": 4,
-        "rating": 0.9
-      },
-      {
-        "index": 5,
-        "rating": 0.9
       }
     ]
   },
@@ -23725,63 +22856,6 @@
     "denominator_index": null,
     "stated_form": null
   },
-  "_UniversalBindOutput@7105c7d81a38:6149efd50b671d957a214661f4eeaddd47d39e9b": {
-    "chosen_shape_index": 2,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "activitySource",
-        "kind": "value",
-        "value_dcids": [
-          "GrossDomesticProduction"
-        ],
-        "evidence": "sole_option",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "economicSector",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "naics",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": [
-      3,
-      4,
-      5
-    ],
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 2,
-        "rating": 1.0
-      },
-      {
-        "index": 3,
-        "rating": 0.9
-      },
-      {
-        "index": 4,
-        "rating": 0.8
-      },
-      {
-        "index": 5,
-        "rating": 0.8
-      }
-    ]
-  },
   "_UniversalBindOutput@7105c7d81a38:5beb729f25871acb33d791a5e1e550a7226a91c6": {
     "chosen_shape_index": 0,
     "bindings": [
@@ -24001,73 +23075,6 @@
       },
       {
         "index": 0,
-        "rating": 0.7
-      }
-    ]
-  },
-  "_UniversalBindOutput@7105c7d81a38:11b48071aa629f17ff0f81d258bd3559644b3fe6": {
-    "chosen_shape_index": 2,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "activitySource",
-        "kind": "value",
-        "value_dcids": [
-          "GrossDomesticProduction"
-        ],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "economicSector",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "naics",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": [
-      3,
-      6,
-      4,
-      5,
-      7
-    ],
-    "ask": null,
-    "nearest_refused_index": null,
-    "unplaced": [],
-    "measuring": [
-      {
-        "index": 2,
-        "rating": 1.0
-      },
-      {
-        "index": 3,
-        "rating": 0.9
-      },
-      {
-        "index": 4,
-        "rating": 0.8
-      },
-      {
-        "index": 5,
-        "rating": 0.8
-      },
-      {
-        "index": 6,
-        "rating": 0.7
-      },
-      {
-        "index": 7,
         "rating": 0.7
       }
     ]
@@ -24728,5 +23735,1083 @@
         "end": "2022"
       }
     ]
+  },
+  "ExclusionRead@3c024839b279:f63fdb5740eb9e2d2ebf47a766ba76bbe2bd2b20": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:60cfa1ed5a23f43a7598b4c425c5bec9949ac21c": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:ea0a5579891427657761f1e959da41d9c152e1e1": {
+    "exclusions": []
+  },
+  "Extraction@840d8db0c01a:c11bee06aebd3fcaa442f5968f36a232c5d5f66a": {
+    "kind": "resolution",
+    "variables": [
+      "Global Fund disbursements"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "variables": [
+          0
+        ],
+        "cue": "to",
+        "role": "recipient",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "range",
+        "start": "2015",
+        "end": null
+      }
+    ]
+  },
+  "Extraction@840d8db0c01a:7d50106d53fbd6f2eaef43b2ccd2d0bcb7321233": {
+    "kind": "resolution",
+    "variables": [
+      "Global Fund disbursements"
+    ],
+    "entities": [
+      {
+        "text": "Malawi",
+        "span": "Malawi",
+        "variables": [
+          0
+        ],
+        "cue": "to",
+        "role": "recipient",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "range",
+        "start": "2015",
+        "end": null
+      }
+    ]
+  },
+  "Extraction@840d8db0c01a:2167cfece41711467b125e4b8b41f5c7bc373daf": {
+    "kind": "resolution",
+    "variables": [
+      "GNI"
+    ],
+    "entities": [
+      {
+        "text": "Denmark",
+        "span": "Denmark",
+        "variables": [
+          0
+        ],
+        "cue": null,
+        "role": null,
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "World Bank"
+    ],
+    "dates": []
+  },
+  "_UniversalBindOutput@7105c7d81a38:a300e8ad8ca6c90fb4e8e11723bffa7f1d67fe92": {
+    "chosen_shape_index": 2,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "activitySource",
+        "kind": "value",
+        "value_dcids": [
+          "GrossDomesticProduction"
+        ],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "economicSector",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "naics",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": [
+      3,
+      5,
+      4
+    ],
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 2,
+        "rating": 1.0
+      },
+      {
+        "index": 3,
+        "rating": 0.9
+      },
+      {
+        "index": 4,
+        "rating": 0.8
+      },
+      {
+        "index": 5,
+        "rating": 0.8
+      }
+    ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:de98858369cbe13aab790485473ef494661d2a1c": {
+    "chosen_shape_index": 5,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "activitySource",
+        "kind": "value",
+        "value_dcids": [
+          "GrossDomesticProduction"
+        ],
+        "evidence": "sole_option",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": [
+      2,
+      4,
+      3
+    ],
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 2,
+        "rating": 1.0
+      },
+      {
+        "index": 3,
+        "rating": 0.9
+      },
+      {
+        "index": 4,
+        "rating": 0.9
+      },
+      {
+        "index": 5,
+        "rating": 1.0
+      }
+    ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:8c0d71ecdb261140987dceea35e993b2af5c1c9b": {
+    "chosen_shape_index": 2,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "activitySource",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "economicSector",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "naics",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": [
+      3,
+      5,
+      4
+    ],
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 2,
+        "rating": 1.0
+      },
+      {
+        "index": 3,
+        "rating": 0.95
+      },
+      {
+        "index": 5,
+        "rating": 0.9
+      },
+      {
+        "index": 4,
+        "rating": 0.9
+      }
+    ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:a9bdf7cddf8adef36d011b3d074d2fa986385868": {
+    "chosen_shape_index": 2,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "activitySource",
+        "kind": "value",
+        "value_dcids": [
+          "GrossDomesticProduction"
+        ],
+        "evidence": "sole_option",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "economicSector",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "naics",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": [
+      3,
+      5,
+      4
+    ],
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 2,
+        "rating": 1.0
+      },
+      {
+        "index": 3,
+        "rating": 0.9
+      },
+      {
+        "index": 5,
+        "rating": 0.85
+      },
+      {
+        "index": 4,
+        "rating": 0.85
+      }
+    ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:c9f16e5613f6f43e4addf8b4a04baf504aa3e135": {
+    "chosen_shape_index": 1,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "activitySource",
+        "kind": "value",
+        "value_dcids": [
+          "GrossDomesticProduction"
+        ],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": null,
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 1,
+        "rating": 1.0
+      },
+      {
+        "index": 0,
+        "rating": 1.0
+      }
+    ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:5d333eef79dbc3ba9e97237e35269275b3f00913": {
+    "chosen_shape_index": 1,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "activitySource",
+        "kind": "value",
+        "value_dcids": [
+          "GrossDomesticProduction"
+        ],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": null,
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 1,
+        "rating": 1.0
+      },
+      {
+        "index": 0,
+        "rating": 0.95
+      }
+    ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:90f0409c8dd32c43b5f8e7c2f933589ae1d9db9b": {
+    "chosen_shape_index": 2,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "activitySource",
+        "kind": "value",
+        "value_dcids": [
+          "GrossDomesticProduction"
+        ],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "economicSector",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "naics",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": [
+      3,
+      5,
+      4
+    ],
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 2,
+        "rating": 1.0
+      },
+      {
+        "index": 3,
+        "rating": 0.9
+      },
+      {
+        "index": 4,
+        "rating": 0.8
+      },
+      {
+        "index": 5,
+        "rating": 0.8
+      }
+    ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:b28ef85c3b9e72acc74aaa6fd4544a3b2bbd6736": {
+    "chosen_shape_index": 2,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "activitySource",
+        "kind": "value",
+        "value_dcids": [
+          "GrossDomesticProduction"
+        ],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "economicSector",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "naics",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": [
+      3,
+      5,
+      4
+    ],
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 2,
+        "rating": 1.0
+      },
+      {
+        "index": 3,
+        "rating": 0.9
+      },
+      {
+        "index": 4,
+        "rating": 0.8
+      },
+      {
+        "index": 5,
+        "rating": 0.8
+      }
+    ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:f3b7fde7b72a682949b01857693976573bd99368": {
+    "chosen_shape_index": 1,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "activitySource",
+        "kind": "value",
+        "value_dcids": [
+          "GrossDomesticProduction"
+        ],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": [
+      0
+    ],
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 0,
+        "rating": 1.0
+      },
+      {
+        "index": 1,
+        "rating": 1.0
+      }
+    ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:3c81a885c7a87ab372345134a3b9f533291100c3": {
+    "chosen_shape_index": 1,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "activitySource",
+        "kind": "value",
+        "value_dcids": [
+          "GrossDomesticProduction"
+        ],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": [
+      0
+    ],
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 0,
+        "rating": 1.0
+      },
+      {
+        "index": 1,
+        "rating": 1.0
+      }
+    ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:193c41ba3b3355ca98c077b48f521013b7cdd370": {
+    "chosen_shape_index": 2,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "activitySource",
+        "kind": "value",
+        "value_dcids": [
+          "GrossDomesticProduction"
+        ],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "economicSector",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "naics",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": [
+      3,
+      4,
+      5
+    ],
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 2,
+        "rating": 1.0
+      },
+      {
+        "index": 3,
+        "rating": 0.95
+      },
+      {
+        "index": 4,
+        "rating": 0.9
+      },
+      {
+        "index": 5,
+        "rating": 0.9
+      }
+    ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:b0bd026fb43f952ac5f87f91fee78382ecd34099": {
+    "chosen_shape_index": 2,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "activitySource",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "economicSector",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "naics",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": [
+      3,
+      4,
+      5
+    ],
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 2,
+        "rating": 1.0
+      },
+      {
+        "index": 3,
+        "rating": 0.95
+      },
+      {
+        "index": 4,
+        "rating": 0.9
+      },
+      {
+        "index": 5,
+        "rating": 0.9
+      }
+    ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:a4627fd07784b639bcd98c359c67c16f102f6455": {
+    "chosen_shape_index": 1,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "activitySource",
+        "kind": "value",
+        "value_dcids": [
+          "GrossDomesticProduction"
+        ],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": [
+      0
+    ],
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 0,
+        "rating": 1.0
+      },
+      {
+        "index": 1,
+        "rating": 1.0
+      }
+    ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:6d1b1e73071c6e3ae8d46e5a68c26f20e1a27f63": {
+    "chosen_shape_index": 2,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "activitySource",
+        "kind": "value",
+        "value_dcids": [
+          "GrossDomesticProduction"
+        ],
+        "evidence": "sole_option",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "economicSector",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "naics",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": [
+      3,
+      4,
+      5
+    ],
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 2,
+        "rating": 1.0
+      },
+      {
+        "index": 3,
+        "rating": 0.9
+      },
+      {
+        "index": 4,
+        "rating": 0.8
+      },
+      {
+        "index": 5,
+        "rating": 0.8
+      }
+    ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:1c7728f367a9ae2712c37c1e4405a5f9b83c43c3": {
+    "chosen_shape_index": 1,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "activitySource",
+        "kind": "value",
+        "value_dcids": [
+          "GrossDomesticProduction"
+        ],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": null,
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 1,
+        "rating": 1.0
+      },
+      {
+        "index": 0,
+        "rating": 1.0
+      }
+    ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:0350d3e012b2f8d43fc3ae8d5220b44e0ac4bb73": {
+    "chosen_shape_index": 2,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "activitySource",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "economicSector",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "naics",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": [
+      3,
+      4,
+      5
+    ],
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 2,
+        "rating": 1.0
+      },
+      {
+        "index": 3,
+        "rating": 0.95
+      },
+      {
+        "index": 4,
+        "rating": 0.9
+      },
+      {
+        "index": 5,
+        "rating": 0.9
+      }
+    ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:41ce0938462ea160ed74a8ad173cb35a23e17113": {
+    "chosen_shape_index": 2,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "activitySource",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "economicSector",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "naics",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": [
+      3,
+      4,
+      5
+    ],
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 2,
+        "rating": 1.0
+      },
+      {
+        "index": 3,
+        "rating": 0.9
+      },
+      {
+        "index": 4,
+        "rating": 0.8
+      },
+      {
+        "index": 5,
+        "rating": 0.8
+      }
+    ]
+  },
+  "_UniversalBindOutput@7105c7d81a38:c2d8442b17761e03efb2cec14686f66b1a281c19": {
+    "chosen_shape_index": 2,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "activitySource",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "economicSector",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "naics",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": [
+      3,
+      4,
+      5
+    ],
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 2,
+        "rating": 1.0
+      },
+      {
+        "index": 3,
+        "rating": 0.95
+      },
+      {
+        "index": 4,
+        "rating": 0.9
+      },
+      {
+        "index": 5,
+        "rating": 0.9
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:228be2cf0dd6c4cb59bff1a34d0e3d1c9d7b3e86": {
+    "exclusions": []
+  },
+  "Extraction@840d8db0c01a:deb63b3d53ee6531f31a29fee1555a3e229d699b": {
+    "kind": "resolution",
+    "variables": [
+      "national income per person"
+    ],
+    "entities": [
+      {
+        "text": "Ghana",
+        "span": "Ghana",
+        "variables": [
+          0
+        ],
+        "cue": "Ghana's",
+        "role": null,
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2019",
+        "end": "2019"
+      }
+    ]
+  },
+  "QuantityOutput@a3c624b93c02:44bfc59714929bb4aed138a653aeaa137ba58ba1": {
+    "base_words": null,
+    "denominator_index": null,
+    "stated_form": "per_person"
+  },
+  "_UniversalBindOutput@7105c7d81a38:0229fdb8889fbe5cc03c0307c8b6560f70cdddd5": {
+    "chosen_shape_index": 2,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "activitySource",
+        "kind": "value",
+        "value_dcids": [
+          "GrossNationalIncome"
+        ],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": [
+      0,
+      1
+    ],
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 0,
+        "rating": 0.9
+      },
+      {
+        "index": 1,
+        "rating": 0.9
+      },
+      {
+        "index": 2,
+        "rating": 1.0
+      }
+    ]
+  },
+  "ExclusionRead@3c024839b279:55d06873d0cc7bf02b9ac3c165b715d12e77cf67": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:9380f2162b6e7e20093ca4c7fe0e8c5ed9f68919": {
+    "exclusions": []
+  },
+  "_UniversalBindOutput@7105c7d81a38:c78f6784ba6961fd59104fce6875e3dfff36a798": {
+    "chosen_shape_index": 0,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "activitySource",
+        "kind": "value",
+        "value_dcids": [
+          "GrossNationalIncome"
+        ],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": null,
+    "ask": null,
+    "nearest_refused_index": null,
+    "unplaced": [],
+    "measuring": [
+      {
+        "index": 0,
+        "rating": 1.0
+      }
+    ]
+  },
+  "Extraction@840d8db0c01a:acdd3f45c2754d3b12a7ee98c96ebe5061cbc2db": {
+    "kind": "resolution",
+    "variables": [
+      "external debt"
+    ],
+    "entities": [
+      {
+        "text": "China",
+        "span": "China",
+        "variables": [
+          0
+        ],
+        "cue": "to",
+        "role": "creditor",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@840d8db0c01a:c8d4bda13686bd36cb20bba5859fe10f9b07f2e8": {
+    "kind": "resolution",
+    "variables": [
+      "debt service"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "variables": [
+          0
+        ],
+        "cue": "from",
+        "role": "debtor",
+        "members": false
+      },
+      {
+        "text": "IMF",
+        "span": "IMF",
+        "variables": [
+          0
+        ],
+        "cue": "to",
+        "role": "creditor",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
   }
 }

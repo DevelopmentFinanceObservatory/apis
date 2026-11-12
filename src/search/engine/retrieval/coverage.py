@@ -57,6 +57,7 @@ from search.models import (
     HeadlineYear,
     TimeWindow,
 )
+from series_coverage.coverage_types import COVERAGE_ROLE_AXES
 
 if TYPE_CHECKING:
     from search.engine.extract import DateRequest
@@ -137,12 +138,20 @@ def scope_members(plan: ReadPlan, form: CoverageForm) -> list[str]:
     return list(dict.fromkeys(s.role_tuple[0][1] for s in plan.served))
 
 
-def _scope_party_count(members: Collection[str], *, sv_dcids: Iterable[str]) -> int:
-    """How many of an open role's `members` are parties (`enrichment.party_count`), read in
-    the datasets that publish `sv_dcids`: the parties a frame minted `without_party_totals`
+def _scope_party_count(
+    members: Collection[str], *, role: CoverageRole, sv_dcids: Iterable[str]
+) -> int:
+    """How many of an open `role`'s `members` are parties on its axis
+    (`series_coverage.coverage_types.COVERAGE_ROLE_AXES`, `enrichment.party_count`), read in the
+    datasets that publish `sv_dcids`: the parties a frame minted `without_party_totals`
     holds, as the role's heading and warning count them."""
     index = get_index()
-    return party_count(members, parties=index.parties, datasets=index.statvar_provenances(sv_dcids))
+    return party_count(
+        members,
+        axis=COVERAGE_ROLE_AXES[role],
+        parties=index.parties,
+        datasets=index.statvar_provenances(sv_dcids),
+    )
 
 
 def _variables_dim(count: int) -> BreadthDim:
@@ -205,7 +214,7 @@ def _pair_coverage(
     observation_count, obs_dim_count = sum(per_series), max(per_series, default=0)
 
     if form.open_axis is not None:
-        label, _role = form.open_axis
+        label, role = form.open_axis
         return CoverageBreadth(
             has_data=bool(served),
             window=window,
@@ -213,7 +222,9 @@ def _pair_coverage(
                 BreadthDim(
                     label=label,
                     count=_scope_party_count(
-                        scope_members(plan, form), sv_dcids={s.stat_var for s in served}
+                        scope_members(plan, form),
+                        role=role,
+                        sv_dcids={s.stat_var for s in served},
                     ),
                 ),
                 facet_dim,
@@ -242,14 +253,16 @@ def _bulk_coverage(plan: BulkPlan, form: CoverageForm) -> CoverageExact | Covera
     }
     variables = [_variables_dim(len(served_svs))] if form.variables else []
     if form.open_axis is not None:
-        label, _role = form.open_axis
+        label, role = form.open_axis
         return CoverageBreadth(
             has_data=plan.population > 0,
             window=window,
             dimensions=[
                 BreadthDim(
                     label=label,
-                    count=_scope_party_count(scope_members(plan, form), sv_dcids=served_svs),
+                    count=_scope_party_count(
+                        scope_members(plan, form), role=role, sv_dcids=served_svs
+                    ),
                 ),
                 facet_dim,
                 *variables,

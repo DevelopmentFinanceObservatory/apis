@@ -11,6 +11,7 @@ import gzip
 import json
 import re
 from dataclasses import dataclass, field
+from itertools import product
 from pathlib import Path
 
 import pytest
@@ -1428,6 +1429,7 @@ _MEASURE_NOUNS_FOR_TEST = (
     MeasurePartitionLabel(
         axis_values=(("populationType", "EconomicProduction"), ("measuredProperty", "valueAdded")),
         label="GDP",
+        also_called=("gross domestic product",),
     ),
 )
 
@@ -1701,6 +1703,7 @@ def test_export_index_wires_measure_axes_into_the_document(tmp_path):
             "label": "commitments",
             "named_values": [],
             "definition": None,
+            "also_called": [],
         },
         {
             "axis_values": [
@@ -1711,6 +1714,7 @@ def test_export_index_wires_measure_axes_into_the_document(tmp_path):
             "label": "disbursements",
             "named_values": [],
             "definition": None,
+            "also_called": [],
         },
         {
             "axis_values": [
@@ -1722,6 +1726,7 @@ def test_export_index_wires_measure_axes_into_the_document(tmp_path):
             "label": "gross alpha disbursements",
             "named_values": [["sysFlat", "SysFlatA"]],
             "definition": "The total amount released before any repayments are subtracted.",
+            "also_called": [],
         },
     ]
     assert document["measure_nouns"] == [
@@ -1733,6 +1738,7 @@ def test_export_index_wires_measure_axes_into_the_document(tmp_path):
             "label": "GDP",
             "named_values": [],
             "definition": None,
+            "also_called": ["gross domestic product"],
         }
     ]
     # The loader reads both blocks back into the authored values.
@@ -3231,8 +3237,7 @@ def _export_parties(
     )
     published = frozenset(types_by_party) if parties is None else parties
     publication = PartyPublication(
-        datasets=published_in,
-        axes=axes or frozenset({axis}),
+        pairs=frozenset(product(published_in, axes or {axis})),
         years=dict.fromkeys(published_in, published_years),
     )
     coverage = dataclasses.replace(_covered(graph), parties=dict.fromkeys(published, publication))
@@ -3285,18 +3290,19 @@ def test_export_index_writes_each_partys_kind_label_and_the_group_a_total_holds(
             kind="party",
             party_class="official",
             label="France",
-            datasets=published,
-            axes=recipient,
+            published=tuple(product(published, recipient)),
         ),
         "country/IND": PartyRow(
             dcid="country/IND",
             kind="party",
             party_class="official",
-            datasets=published,
-            axes=recipient,
+            published=tuple(product(published, recipient)),
         ),
         "IDA": PartyRow(
-            dcid="IDA", kind="party", party_class="official", datasets=published, axes=recipient
+            dcid="IDA",
+            kind="party",
+            party_class="official",
+            published=tuple(product(published, recipient)),
         ),
         "DACAfrica": PartyRow(
             dcid="DACAfrica",
@@ -3304,27 +3310,24 @@ def test_export_index_writes_each_partys_kind_label_and_the_group_a_total_holds(
             totals="africa",
             residuals=("DACAfricaUnallocated",),
             label="Africa (DAC)",
-            datasets=published,
-            axes=recipient,
+            published=tuple(product(published, recipient)),
         ),
         "DACAllRecipients": PartyRow(
-            dcid="DACAllRecipients", kind="total", datasets=published, axes=recipient
+            dcid="DACAllRecipients", kind="total", published=tuple(product(published, recipient))
         ),
         "DACCountriesTotal": PartyRow(
             dcid="DACCountriesTotal",
             kind="total",
             totals="groups/OECD.DAC",
             sums_members=False,
-            datasets=published,
-            axes=recipient,
+            published=tuple(product(published, recipient)),
         ),
         "DACAfricaUnallocated": PartyRow(
             dcid="DACAfricaUnallocated",
             kind="residual",
             party_class="residual",
             label="Africa, unallocated by country (DAC)",
-            datasets=published,
-            axes=recipient,
+            published=tuple(product(published, recipient)),
         ),
     }
     assert index.totals_by_group == {
@@ -3417,22 +3420,19 @@ def test_a_kind_override_replaces_the_kind_the_types_give(tmp_path: Path):
             dcid="WorldBankGroup",
             kind="total",
             totals="groups/WB",
-            datasets=published,
-            axes=recipient,
+            published=tuple(product(published, recipient)),
         ),
         "InternationalFinanceCorporation": PartyRow(
             dcid="InternationalFinanceCorporation",
             kind="party",
             party_class="official",
-            datasets=published,
-            axes=recipient,
+            published=tuple(product(published, recipient)),
         ),
         "Mystery": PartyRow(
             dcid="Mystery",
             kind="residual",
             party_class="residual",
-            datasets=published,
-            axes=recipient,
+            published=tuple(product(published, recipient)),
         ),
     }
 
@@ -3464,8 +3464,7 @@ def test_a_kind_override_scoped_to_a_dataset_holds_there_and_nowhere_else(tmp_pa
         dcid="TrustFund",
         kind="party",
         party_class="official",
-        datasets=published,
-        axes=donor,
+        published=tuple(product(published, donor)),
         dataset_kinds=((_TEST_PROVENANCE, "total"),),
     )
     assert [parties["TrustFund"].kind_in(dataset) for dataset in published] == ["party", "total"]
@@ -3579,13 +3578,14 @@ def test_the_fixture_index_reads_each_imf_trust_fund_a_total_only_beside_the_imf
 ):
     index = get_index()
     row = index.parties[trust]
-    assert dataset in index.parties[equals].datasets
-    assert {name: row.kind_in(name) for name in row.datasets} == {
-        name: "total" if name == dataset else "party" for name in row.datasets
+    publishing = {name for name, _ in row.published}
+    assert dataset in {name for name, _ in index.parties[equals].published}
+    assert {name: row.kind_in(name) for name in publishing} == {
+        name: "total" if name == dataset else "party" for name in publishing
     }
     assert row.kind_in("provenance/OECDCreditorReportingSystem") == "party"
     assert PARTY_KIND_OVERRIDES[trust].reviewed == _REVIEWED_AGAINST[trust]
-    assert set(row.datasets) <= _REVIEWED_AGAINST[trust]
+    assert publishing <= _REVIEWED_AGAINST[trust]
 
 
 @pytest.mark.parametrize(("group", "members"), sorted(_REVIEWED_KIND_OVERRIDES.items()))
@@ -3708,7 +3708,7 @@ def test_the_fixture_index_carries_each_reviewed_total_group(party: str, total: 
     )
     assert index.totals_by_group[total.group] == row
     assert {index.parties[residual].kind for residual in total.residuals} <= {"residual"}
-    assert all(index.parties[residual].datasets for residual in total.residuals)
+    assert all(index.parties[residual].published for residual in total.residuals)
 
 
 @pytest.mark.parametrize(
@@ -3724,10 +3724,9 @@ def test_the_fixture_index_declares_the_ids_parties(party: str, kind: str, axis:
     """IDS is a listed dataset, outside `DATASETS`, and its debtors and creditors still need
     a kind for a sum across them."""
     row = get_index().parties[party]
-    assert (row.kind, row.datasets, row.axes) == (
+    assert (row.kind, row.published) == (
         kind,
-        ("provenance/WorldBankInternationalDebtStatistics",),
-        (axis,),
+        (("provenance/WorldBankInternationalDebtStatistics", axis),),
     )
 
 
@@ -3816,41 +3815,48 @@ def test_export_index_refuses_a_private_provider_table_the_graph_contradicts(
 
 
 @pytest.mark.parametrize(
-    ("types_by_party", "dac_codes", "private_providers", "refused"),
+    ("types_by_party", "dac_codes", "private_providers", "kind", "party_class"),
     [
+        pytest.param({"Canada": ("Country",)}, {}, {}, "party", "official", id="official-party"),
         pytest.param(
             {"GatesFoundation": ("Organization",)},
             {"GatesFoundation": ("1601",)},
             {1601: "GatesFoundation"},
-            "'party', 'private'",
+            "party",
+            "private",
             id="private-party",
         ),
         pytest.param(
             {"DACAfricaUnallocated": ("DACRecipientUnallocatedByCountry",)},
             {},
             {},
-            "'residual', 'residual'",
+            "residual",
+            "residual",
             id="residual",
         ),
-        pytest.param({"DACAllRecipients": ("DACGroup",)}, {}, {}, "'total', None", id="total"),
+        pytest.param({"DACAllRecipients": ("DACGroup",)}, {}, {}, "total", None, id="total"),
     ],
 )
-def test_export_index_refuses_a_party_other_than_official_on_both_axes(
-    types_by_party, dac_codes, private_providers, refused
+def test_export_index_lists_a_party_of_any_class_on_both_axes(
+    types_by_party, dac_codes, private_providers, kind, party_class
 ):
-    with pytest.raises(ExportRefused, match=rf"more than one axis.*{refused}.*destination.*origin"):
-        _export_parties(
-            types_by_party,
-            dac_codes=dac_codes,
-            private_providers=private_providers,
-            axes=frozenset({"origin", "destination"}),
+    """Each row lists the `(dataset, axis)` pairs that publish it, which readers ask
+    (`PartyRow.publishes`), so a party of any class may stand on both axes."""
+    document = _export_parties(
+        types_by_party,
+        dac_codes=dac_codes,
+        private_providers=private_providers,
+        axes=frozenset({"origin", "destination"}),
+    )
+    assert [(row["kind"], row["party_class"], row["published"]) for row in document["parties"]] == [
+        (
+            kind,
+            party_class,
+            [
+                {"dataset": _TEST_PROVENANCE, "axis": "destination"},
+                {"dataset": _TEST_PROVENANCE, "axis": "origin"},
+            ],
         )
-
-
-def test_export_index_accepts_an_official_party_on_both_axes():
-    document = _export_parties({"Canada": ("Country",)}, axes=frozenset({"origin", "destination"}))
-    assert [(row["kind"], row["party_class"], row["axes"]) for row in document["parties"]] == [
-        ("party", "official", ["destination", "origin"])
     ]
 
 
@@ -3928,7 +3934,7 @@ def test_the_fixture_index_makes_exactly_the_listed_providers_private():
     classes = {(row.kind, row.party_class) for row in index.parties.values()}
     private = {dcid for dcid, row in index.parties.items() if row.party_class == "private"}
     assert private - {"DACPrivateDonors"} == set(_REVIEWED_PRIVATE_PROVIDERS.values())
-    assert all(index.parties[dcid].axes == ("origin",) for dcid in private)
+    assert all(index.parties[dcid].sole_axis() == "origin" for dcid in private)
     # Every other party is official, and every residual reads residual.
     assert classes == {
         ("party", "official"),
@@ -4215,10 +4221,10 @@ def test_the_fixture_index_carries_each_reviewed_whole_total():
     index = get_index()
     for dcid, (axis, datasets) in _REVIEWED_WHOLE_TOTALS.items():
         row = index.parties[dcid]
-        assert (row.kind, row.party_class, row.axes) == (
+        assert (row.kind, row.party_class, row.sole_axis()) == (
             "total",
             _REVIEWED_WHOLE_CLASSES[dcid],
-            (axis,),
+            axis,
         )
         assert row.whole == tuple(
             WholeMarker(dataset, covers, years)

@@ -12,7 +12,6 @@ imports `dc_graph`: a reader supplies the graph reads, and the names the export 
 from __future__ import annotations
 
 import gzip
-import hashlib
 import json
 import re
 import sys
@@ -23,6 +22,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from code_index.declarations import (
     BROAD_READINGS,
+    CODE_ALSO_CALLED,
     CODE_SHORT_NAMES,
     CODE_SYNONYMS,
     CODE_SYSTEMS,
@@ -54,6 +54,7 @@ from code_index.declarations import (
     WholePopulationTotal,
     WholeWindow,
 )
+from code_index.loader import content_hash
 from code_index.members import key_sets_cover
 from code_index.tokens import Token, TokenLookup, singular, tokenize, word_tokens
 from code_index.types import (
@@ -131,13 +132,22 @@ class ExportRefused(Exception):
 
 @dataclass(frozen=True)
 class PartyPublication:
-    """The datasets that publish one party, by provenance, and the flow axes they publish it
-    on: `origin` as a donor, `destination` as a recipient. `years` gives the first and last
-    year, inclusive, in which each dataset publishes it."""
+    """Each `(dataset, axis)` pair that publishes one party: a dataset's provenance and the
+    flow axis it publishes the party on, `origin` as a donor, `destination` as a recipient.
+    `years` gives the first and last year, inclusive, in which each dataset publishes it."""
 
-    datasets: frozenset[str]
-    axes: frozenset[RoleAxis]
+    pairs: frozenset[tuple[str, RoleAxis]]
     years: Mapping[str, tuple[int, int]] = field(default_factory=dict)
+
+    @property
+    def datasets(self) -> frozenset[str]:
+        """The datasets of `pairs`."""
+        return frozenset(dataset for dataset, _ in self.pairs)
+
+    @property
+    def axes(self) -> frozenset[RoleAxis]:
+        """The axes of `pairs`."""
+        return frozenset(axis for _, axis in self.pairs)
 
 
 def _kind_from_types(
@@ -270,34 +280,6 @@ def _check_whole_population_totals(
             )
 
 
-def _check_classes_on_one_axis(
-    rows: Sequence[Mapping], parties: Mapping[str, PartyPublication]
-) -> None:
-    """Raises `ExportRefused` for a party of any class but `official`, or a total, published on
-    more than one axis.
-
-    A row keeps `axes` and `datasets` as two lists, so a reader cannot tell which dataset holds
-    which axis. `datasets_api.output_options` reads the totals a side holds in a dataset from
-    `axis in party.axes and dataset in party.datasets`, and search reads the classes a side
-    holds the same way. That is exact for a one-axis party and for an `official` party, because
-    every side a two-axis party reaches already holds an `official` row. A private party, a
-    residual or a total on both axes would count on both axes in every dataset. `rows` are the
-    exported `parties` rows, each with its `kind`, `party_class` and any `dataset_kinds`; a
-    row taking another kind in some dataset is no official party there."""
-    ambiguous = sorted(
-        (row["dcid"], row["kind"], row["party_class"], sorted(parties[row["dcid"]].axes))
-        for row in rows
-        if ((row["kind"], row["party_class"]) != ("party", "official") or "dataset_kinds" in row)
-        and len(parties[row["dcid"]].axes) > 1
-    )
-    if ambiguous:
-        raise ExportRefused(
-            f"parties other than official parties are published on more than one axis: "
-            f"{ambiguous!r} (party, kind, class, axes) -- the index format cannot tell which "
-            "dataset holds which axis"
-        )
-
-
 def export_parties(
     reader: ExportReader,
     parties: Mapping[str, PartyPublication],
@@ -331,9 +313,8 @@ def export_parties(
     whose types give it no single kind, a `total_groups` row naming a party that is not a total
     of `parties`, a `total_groups` residual that is not a residual of `parties`, a
     `private_providers` row the graph contradicts (`_check_private_providers`) or whose party the
-    types give a kind other than `party`, a party of a class other than `official` or a total
-    published on more than one axis (`_check_classes_on_one_axis`), and a `whole_totals` row the
-    parties contradict (`_check_whole_population_totals`).
+    types give a kind other than `party`, and a `whole_totals` row the parties contradict
+    (`_check_whole_population_totals`).
     """
     published = frozenset(parties)
     unpublished = sorted(kind_overrides.keys() - published)
@@ -382,8 +363,9 @@ def export_parties(
             "totals": None if total is None else total.group,
             "residuals": [] if total is None else sorted(total.residuals),
             "sums_members": True if total is None else total.sums_members,
-            "datasets": sorted(parties[dcid].datasets),
-            "axes": sorted(parties[dcid].axes),
+            "published": [
+                {"dataset": dataset, "axis": axis} for dataset, axis in sorted(parties[dcid].pairs)
+            ],
         }
         if dcid in dataset_kinds:
             row["dataset_kinds"] = [
@@ -410,7 +392,6 @@ def export_parties(
             f"TOTAL_GROUPS counts {not_residuals!r} as residuals, which no declared or listed dataset "
             "publishes as a residual"
         )
-    _check_classes_on_one_axis(rows, parties)
     _check_whole_population_totals(whole_totals, kinds, dataset_kinds, parties)
     for row in rows:
         if (whole := whole_totals.get(row["dcid"])) is not None:
@@ -598,6 +579,7 @@ def _build_code_row(config: CodeSystemConfig, dcid: str, arcs: dict[str, tuple[s
         "short_name": short_name,
         "parent": parent,
         "definition": _first_or_none(arcs.get("description", ())),
+        "also_called": list(CODE_ALSO_CALLED.get(dcid, ())),
     }
 
 
@@ -1976,6 +1958,7 @@ def _measure_partition_label_to_dict(partition_label: MeasurePartitionLabel) -> 
             if partition_label.codes
             else {}
         ),
+        "also_called": list(partition_label.also_called),
     }
 
 
@@ -2283,12 +2266,6 @@ def stamp_counts(blocks: Mapping[str, list[dict]]) -> dict[str, dict[str, int]]:
         },
         "statvar_shape_counts": _statvar_shape_counts(blocks["statvars"], code_systems),
     }
-
-
-def content_hash(blocks: Mapping[str, list[dict]]) -> str:
-    """SHA-256 of canonical JSON for the document's data blocks, which excludes `stamp`."""
-    encoded = json.dumps(blocks, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
 
 
 def index_bytes(document: Mapping[str, object]) -> bytes:

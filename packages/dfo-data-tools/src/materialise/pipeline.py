@@ -10,7 +10,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from code_index.types import ComponentRole
+from code_index.types import ComponentRole, PartyRow
 from dc_sdmx import EntityFilter, SdmxClient
 from materialise.ceiling import DEFAULT_SYNC_CEILING_ROWS
 from materialise.codes import MaterialisationWarning
@@ -288,6 +288,7 @@ def materialise_group(
     materialiser_build: str,
     capability_version: str,
     enrichment: EnrichmentLookup,
+    parties: Mapping[str, PartyRow],
     member_concurrency: int = DEFAULT_MEMBER_CONCURRENCY,
     rate_cache: RateTableCache | None = None,
     precomputed_probe: CollectionFacetProbe | None = None,
@@ -382,6 +383,7 @@ def materialise_group(
             materialiser_build=materialiser_build,
             capability_version=capability_version,
             enrichment=enrichment,
+            parties=parties,
             dependencies=build_dependencies(
                 requests,
                 source_refs=dispatched_provenances(outcome.selections),
@@ -416,6 +418,7 @@ def materialise_group(
         materialiser_build=materialiser_build,
         capability_version=capability_version,
         enrichment=enrichment,
+        parties=parties,
         absent_reads_zero=reads_absent_as_zero(outcome.selections, absent_reads_zero),
         dependencies=build_dependencies(
             requests,
@@ -438,6 +441,7 @@ def materialise_spec(
     materialiser_build: str,
     capability_version: str,
     enrichment: EnrichmentLookup,
+    parties: Mapping[str, PartyRow],
     rate_cache: RateTableCache | None = None,
     coverage: CoverageIndex | None = None,
     deadline: float | None = None,
@@ -458,6 +462,7 @@ def materialise_spec(
         materialiser_build=materialiser_build,
         capability_version=capability_version,
         enrichment=enrichment,
+        parties=parties,
         rate_cache=rate_cache,
         coverage=coverage,
         deadline=deadline,

@@ -1,24 +1,53 @@
 """The closest-match rule, on inputs copied from recorded panel responses.
 
-Each row's variable text, weak flag, StatVar names and bound codes come from the
-response the panel recorded for that query id; the measure noun is the one the heading
-shows for its shape (`search.heading.measure_noun`, or the CRS flow and partition names).
+Each row's variable text, StatVar names and bound codes come from the response the panel
+recorded for that query id, or from the dev answer its id names; the measure noun is the one
+the heading shows for its shape (`search.heading.measure_noun`, or the CRS flow and partition
+names). The rule reads no retrieval score.
 """
 
 from __future__ import annotations
 
+import dataclasses
+import gzip
+import json
+from collections.abc import Sequence
+from pathlib import Path
+
 import pytest
 
-from search.engine.closest_match import closest_match_fact
+from code_index.shared import get_index
+from scripts.sentence_golden import golden_parts
+from search.engine import measure_verdict
+from search.engine.closest_match import closest_match_fact, reading_inputs, spec_closest_match_fact
+from search.engine.measure_verdict import (
+    ReadingEvidence,
+    measure_verdicts,
+    property_evidence,
+    reading_evidence,
+)
+from search.engine.qualifier_match import declared_measures_named
+from search.engine.quantity import DenominatorRead
+from search.engine.region.admissibility import rule_four_verdicts
+from search.engine.shape import ShapeDraft
 from search.heading.departure_fact import DepartureFact
+from search.models import CandidatesPart, DefinitePart, GraphRef, Spec
+from search.models.spec import OpenAxisValueCount, OpenConstraintAxisFact
+
+_PANEL_DIR = Path(__file__).parents[1] / "fixtures" / "sentence_panel"
+_PRODUCT_TAX = "productTaxBasis"
+_INCLUDING_TAXES = GraphRef(ref="IncludingProductTaxes", label="Including product taxes")
+_GDP_PPP_SHAPE = "Gross domestic product (GDP), per capita, purchasing power parity (PPP)"
+# What weo-020 asks of that reading; "GDP" names the noun keyed on its price basis only beside
+# the basis.
+_GDP_PPP_ASKED = "GDP per capita PPP"
 
 
 @pytest.mark.parametrize(
-    ("variable_text", "weak", "measure_noun", "stat_var_names", "bound_codes", "fires"),
+    ("variable_text", "measure_noun", "stat_var_names", "bound_codes", "fires"),
     [
         pytest.param(
             "cost of living",
-            True,
             "health expenditure",
             ["Healthcare expenditure per person"],
             ["ExpenditureActivity", "HealthcareExpenditure"],
@@ -27,7 +56,6 @@ from search.heading.departure_fact import DepartureFact
         ),
         pytest.param(
             "GGXWDG_NGDP",
-            True,
             "GDP",
             ["Gross domestic product (GDP), Current prices"],
             ["GrossOfFixedCapitalConsumption", "IncludingProductTaxes"],
@@ -36,7 +64,6 @@ from search.heading.departure_fact import DepartureFact
         ),
         pytest.param(
             "debt service",
-            True,
             "external debt service",
             ["Debt service on external debt, by creditor (current US$)"],
             ["ServicingPayment"],
@@ -45,7 +72,6 @@ from search.heading.departure_fact import DepartureFact
         ),
         pytest.param(
             "aid",
-            False,
             "ODA gross disbursements",
             [
                 "Official development assistance gross disbursements for education "
@@ -53,32 +79,87 @@ from search.heading.departure_fact import DepartureFact
             ],
             ["CRSTypeOfFlow10", "Disbursement", "Gross"],
             False,
-            id="crs-001-aid-strong-score",
+            id="crs-001-aid-names-the-oda-default",
         ),
         pytest.param(
             "aid",
-            True,
-            "ODA gross disbursements",
-            [
-                "Official development assistance gross disbursements for education "
-                "facility and training (standard grant)"
-            ],
-            ["CRSTypeOfFlow10", "Disbursement", "Gross"],
+            "gross disbursements",
+            ["Official development assistance (gross disbursements)"],
+            ["DAC2aAidType206", "Disbursement", "Gross"],
             False,
-            id="crs-001-aid-weak-score-names-the-oda-default",
+            id="crs-001-dac2a-aid-names-the-oda-code-also-called",
+        ),
+        pytest.param(
+            "loans",
+            "gross ODA disbursements",
+            [
+                "Official development assistance gross disbursements for education policy "
+                "and administrative management (standard grant)",
+                "Official development assistance gross disbursements for teacher training "
+                "(standard grant)",
+            ],
+            ["Disbursement", "Gross"],
+            True,
+            id="crs-033-loans-answered-with-gross-oda-fires",
         ),
         pytest.param(
             "GDP",
-            False,
             "GDP",
             ["Nominal gross domestic product"],
             ["GrossDomesticProduction"],
             False,
-            id="weo-004-gdp-strong-score",
+            id="weo-004-gdp",
+        ),
+        pytest.param(
+            "GDP",
+            "nominal gross domestic product",
+            ["Nominal gross domestic product"],
+            [],
+            False,
+            id="std-02-gdp-names-gross-domestic-product",
+        ),
+        pytest.param(
+            "gross domestic product",
+            "GDP",
+            ["GDP (current US$)"],
+            [],
+            False,
+            id="gross-domestic-product-names-gdp",
+        ),
+        pytest.param(
+            "gross",
+            "GDP",
+            ["GDP (current US$)"],
+            [],
+            True,
+            id="a-word-of-a-declared-name-names-no-measure",
+        ),
+        pytest.param(
+            "national income per person",
+            "GDP",
+            ["Nominal gross domestic product per capita"],
+            ["GrossDomesticProduction"],
+            True,
+            id="ghana-national-income-answered-with-gdp-per-capita-fires",
+        ),
+        pytest.param(
+            "GDP per capita PPP",
+            "gross national income based on purchasing power parity per capita",
+            ["Gross National Income Based on Purchasing Power Parity Per Capita"],
+            ["GrossNationalIncome"],
+            True,
+            id="weo-020-a-declared-measure-not-shown-fires-beside-shared-words",
+        ),
+        pytest.param(
+            "GNI",
+            "gross national income",
+            ["Gross national income"],
+            ["GrossOfFixedCapitalConsumption"],
+            False,
+            id="a-declared-acronym-names-its-expansion",
         ),
         pytest.param(
             "investment as share of GDP",
-            True,
             "gross capital formation",
             ["Gross capital formation, Percent of GDP"],
             ["CapitalFormation", "GrossOfFixedCapitalConsumption"],
@@ -87,7 +168,6 @@ from search.heading.departure_fact import DepartureFact
         ),
         pytest.param(
             "humanitarian aid",
-            True,
             "ODA gross disbursements",
             [
                 "Official development assistance gross disbursements for material relief "
@@ -101,7 +181,6 @@ from search.heading.departure_fact import DepartureFact
         ),
         pytest.param(
             "climate finance",
-            True,
             "gross disbursements",
             [
                 "Official development assistance gross disbursements for education "
@@ -115,18 +194,72 @@ from search.heading.departure_fact import DepartureFact
         ),
         pytest.param(
             "of the",
-            True,
             "GDP",
             ["Nominal gross domestic product"],
             [],
             False,
             id="no-content-word-asked",
         ),
+        pytest.param(
+            "GDP growth",
+            "GDP",
+            ["Nominal gross domestic product"],
+            ["GrossDomesticProduction"],
+            True,
+            id="a-shown-name-inside-a-longer-asked-noun-fires",
+        ),
+        pytest.param(
+            "net disbursements",
+            "gross disbursements",
+            ["Official development assistance (gross disbursements)"],
+            ["Disbursement", "Gross"],
+            True,
+            id="a-shown-name-inside-a-longer-asked-label-fires",
+        ),
+        pytest.param(
+            "GDP",
+            "GDP growth",
+            ["GDP growth (annual %)"],
+            ["GrossDomesticProduction"],
+            True,
+            id="a-longer-shown-name-holding-the-asked-one-fires",
+        ),
+        pytest.param(
+            "GDP growth",
+            "GDP growth",
+            ["Gross domestic product growth rate"],
+            ["GrossDomesticProduction"],
+            False,
+            id="the-longer-asked-name-shown",
+        ),
+        pytest.param(
+            "gross national income per capita",
+            "GDP",
+            ["Nominal gross domestic product per capita"],
+            ["GrossDomesticProduction"],
+            True,
+            id="a-declared-measure-asked-by-name-against-gdp-per-capita-fires",
+        ),
+        pytest.param(
+            "GNI per capita",
+            "GDP",
+            ["Nominal gross domestic product per capita"],
+            ["GrossDomesticProduction"],
+            True,
+            id="a-declared-acronym-names-its-measure-against-gdp-per-capita-fires",
+        ),
+        pytest.param(
+            "GNI per capita",
+            "gross national income",
+            ["Gross national income per capita"],
+            ["GrossNationalIncome"],
+            False,
+            id="a-declared-acronym-whose-measure-is-shown",
+        ),
     ],
 )
 def test_closest_match_fact(
     variable_text: str,
-    weak: bool,
     measure_noun: str,
     stat_var_names: list[str],
     bound_codes: list[str],
@@ -134,9 +267,7 @@ def test_closest_match_fact(
 ) -> None:
     fact = closest_match_fact(
         variable_text=variable_text,
-        retrieval_score_weak=weak,
-        measure_noun=measure_noun,
-        stat_var_names=stat_var_names,
+        evidence=ReadingEvidence(noun=measure_noun, member_names=tuple(stat_var_names)),
         bound_codes=bound_codes,
     )
     expected = (
@@ -147,3 +278,449 @@ def test_closest_match_fact(
         else None
     )
     assert fact == expected
+
+
+@pytest.mark.parametrize(
+    ("variable_text", "series_codes", "fires"),
+    [
+        pytest.param("DT.TDS.DEGG.CD", ["DT.TDS.DEGG.CD"], False, id="the-code-names-its-series"),
+        pytest.param("DT.TDS.DEGG.CD", [], True, id="a-code-standing-for-another-series"),
+    ],
+)
+def test_a_series_code_standing_for_the_answer_names_its_measure(
+    variable_text: str, series_codes: list[str], fires: bool
+) -> None:
+    fact = closest_match_fact(
+        variable_text=variable_text,
+        evidence=ReadingEvidence(
+            noun="external debt service",
+            member_names=("Debt service on external debt, public sector (PPG) (TDS, current US$)",),
+        ),
+        bound_codes=["ServicingPayment"],
+        series_codes=series_codes,
+    )
+    assert (fact is not None) is fires
+
+
+_HEALTH = (
+    ("populationType", "EconomicActivity"),
+    ("measuredProperty", "amount"),
+    ("statType", "measuredValue"),
+    ("activitySource", "ExpenditureActivity"),
+    ("expenditureType", "HealthcareExpenditure"),
+)
+_EDUCATION = (*_HEALTH[:4], ("expenditureType", "EducationExpenditure"))
+_DEBT_SERVICE = (
+    ("populationType", "FinancialFlow"),
+    ("measuredProperty", "amount"),
+    ("statType", "measuredValue"),
+    ("financialFlowType", "ServicingPayment"),
+)
+_GROSS_CAPITAL_FORMATION = (
+    ("populationType", "FinalExpenditure"),
+    ("measuredProperty", "amount"),
+    ("statType", "measuredValue"),
+    ("finalExpenditureType", "CapitalFormation"),
+    ("fixedCapitalConsumptionBasis", "GrossOfFixedCapitalConsumption"),
+)
+_GDP = "Gross domestic product (GDP)"
+_SHAPE_KEYS = frozenset({"populationType", "measuredProperty", "statType"})
+
+
+@pytest.mark.parametrize(
+    ("variable_text", "measure_noun", "stat_var_name", "pairs", "denominator", "fires"),
+    [
+        pytest.param(
+            "external health expenditure as a share of GDP",
+            "government expenditure",
+            "Government expenditure on education, total (% of GDP)",
+            _EDUCATION,
+            _GDP,
+            True,
+            id="issue-47-education-shown-for-health-share-of-gdp-fires",
+        ),
+        pytest.param(
+            "debt service to GNI",
+            "external debt service",
+            "External debt service, percent of GDP",
+            _DEBT_SERVICE,
+            _GDP,
+            True,
+            id="a-share-of-gdp-shown-for-a-share-of-gni-fires",
+        ),
+        pytest.param(
+            "health expenditure as a share of GDP",
+            "health expenditure",
+            "Current health expenditure (% of GDP)",
+            _HEALTH,
+            _GDP,
+            False,
+            id="numerator-and-base-shown",
+        ),
+        pytest.param(
+            "health expenditure as a share of GDP",
+            "health expenditure",
+            "Current health expenditure",
+            _HEALTH,
+            _GDP,
+            False,
+            id="a-base-only-the-denominator-names-is-shown",
+        ),
+        pytest.param(
+            "GDP",
+            "gross capital formation",
+            "Gross capital formation, Percent of GDP",
+            _GROSS_CAPITAL_FORMATION,
+            _GDP,
+            False,
+            id="weo-009-gdp-answered-with-a-share-of-gdp-is-silent",
+        ),
+    ],
+)
+def test_closest_match_fact_on_a_ratio(
+    variable_text: str,
+    measure_noun: str,
+    stat_var_name: str,
+    pairs: tuple[tuple[str, str], ...],
+    denominator: str,
+    fires: bool,
+) -> None:
+    """Every declared measure the words name must be held or be the base the reading
+    divides by (its denominator's name). The base counts whether or not the words asked for
+    it, so "GDP" answered with a share of GDP stays silent."""
+    fact = closest_match_fact(
+        variable_text=variable_text,
+        evidence=ReadingEvidence(
+            five_tuple=frozenset(pair for pair in pairs if pair[0] in _SHAPE_KEYS),
+            properties=property_evidence(
+                [{prop: value for prop, value in pairs if prop not in _SHAPE_KEYS}]
+            ),
+            noun=measure_noun,
+            member_names=(stat_var_name,),
+            denominator_name=denominator,
+        ),
+        bound_codes=[value for prop, value in pairs if prop not in _SHAPE_KEYS],
+    )
+    assert (fact is not None) == fires
+
+
+def _panel_reading(query_id: str, shape_label: str) -> Spec:
+    """The reading of `query_id` in the recorded sentence panel whose shape `shape_label`
+    names."""
+    for path in sorted(_PANEL_DIR.glob("*.jsonl.gz")):
+        for text in gzip.decompress(path.read_bytes()).splitlines():
+            line = json.loads(text)
+            if line["id"] != query_id:
+                continue
+            for part in golden_parts(line["parts"]):
+                specs = (
+                    [part.spec]
+                    if isinstance(part, DefinitePart)
+                    else part.candidates.specs
+                    if isinstance(part, CandidatesPart)
+                    else []
+                )
+                for spec in specs:
+                    if spec.resolved.shape.label == shape_label:
+                        return spec
+    raise AssertionError(f"no {shape_label!r} reading of {query_id}")
+
+
+_SPLIT_AXIS = OpenConstraintAxisFact(
+    property=_PRODUCT_TAX,
+    varies=True,
+    distinct_count=2,
+    undeclared_count=0,
+    values=[
+        OpenAxisValueCount(value=_INCLUDING_TAXES, count=1),
+        OpenAxisValueCount(
+            value=GraphRef(ref="ExcludingProductTaxes", label="Excluding product taxes"), count=1
+        ),
+    ],
+)
+
+
+_INCLUDING_IMPORT_DUTIES = GraphRef(
+    ref="IncludingProductTaxesAndImportDuties", label="Including product taxes and import duties"
+)
+
+
+class _IndexWithChild:
+    """The code index, with `_INCLUDING_IMPORT_DUTIES` a child of `_INCLUDING_TAXES`: the
+    fixture index declares no child under any value a declared measure keys on."""
+
+    def __init__(self, index: object) -> None:
+        self._index = index
+
+    def descendants(self, code: str) -> frozenset[str]:
+        found = frozenset(self._index.descendants(code))
+        if code == _INCLUDING_TAXES.ref:
+            return found | {_INCLUDING_IMPORT_DUTIES.ref}
+        return found
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._index, name)
+
+
+def _open_axis(values: Sequence[GraphRef], *, undeclared: int = 0) -> OpenConstraintAxisFact:
+    """The open product tax basis axis whose served members declare `values`, one member
+    each, and `undeclared` members declare none."""
+    distinct = list({value.ref: value for value in values}.values())
+    return OpenConstraintAxisFact(
+        property=_PRODUCT_TAX,
+        varies=len(distinct) > 1,
+        value=distinct[0] if len(distinct) == 1 else None,
+        distinct_count=len(distinct),
+        undeclared_count=undeclared,
+        values=[OpenAxisValueCount(value=value, count=1) for value in distinct],
+    )
+
+
+def _weo_reading_without_tax_slot(open_axis: OpenConstraintAxisFact | None) -> Spec:
+    """The weo-020 reading of GDP per capita at purchasing power parity, its product tax
+    basis on no slot and its members' tax bases `open_axis`."""
+    spec = _panel_reading("weo-020", _GDP_PPP_SHAPE)
+    resolved = spec.resolved
+    slots = [
+        s for s in resolved.slots if s.key.property is None or s.key.property.ref != _PRODUCT_TAX
+    ]
+    return spec.model_copy(
+        update={
+            "resolved": resolved.model_copy(
+                update={
+                    "slots": slots,
+                    "open_axis_facts": [open_axis] if open_axis is not None else None,
+                }
+            )
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    ("open_axis", "verdicts"),
+    [
+        pytest.param(_open_axis([_INCLUDING_TAXES]), ["holds"], id="every-member-holds"),
+        pytest.param(
+            _open_axis([_INCLUDING_TAXES, _INCLUDING_IMPORT_DUTIES]),
+            ["holds"],
+            id="varied-every-value-related",
+        ),
+        pytest.param(_SPLIT_AXIS, ["some"], id="members-split"),
+        pytest.param(_open_axis([_INCLUDING_TAXES], undeclared=1), ["some"], id="some-undeclared"),
+        pytest.param(None, ["unknown"], id="no-open-axis"),
+    ],
+)
+def test_the_values_members_declare_on_an_open_axis_reach_the_verdict(
+    open_axis: OpenConstraintAxisFact | None, verdicts: list[str], monkeypatch
+) -> None:
+    """The weo-020 reading of GDP per capita at purchasing power parity binds its product
+    tax basis on a slot. Left on no slot, the values its served members declare on the open
+    axis (`ResolvedSpec.open_axis_facts`) are its evidence on the property, so "GDP per capita
+    PPP" holds where every member declares a value related to including the taxes, varied or not, and
+    some members holding it reads `some`, whether the rest exclude the taxes or declare no
+    basis."""
+    monkeypatch.setattr(measure_verdict, "get_index", lambda: _IndexWithChild(get_index()))
+    reading = _weo_reading_without_tax_slot(open_axis)
+
+    evidence, _bound, _series = reading_inputs(reading, measure_noun="")
+    values_alone = dataclasses.replace(evidence, noun=None, member_names=())
+
+    assert measure_verdicts(declared_measures_named(_GDP_PPP_ASKED), values_alone) == verdicts
+
+
+def test_rule_four_and_closest_match_read_a_split_reading_alike() -> None:
+    """A shape whose two members split on the product tax basis, one including the taxes
+    and one excluding them, and the reading those members serve read "GDP per capita PPP"
+    alike: `some`,
+    which rule 4 admits and closest match departs."""
+    reading = _weo_reading_without_tax_slot(_SPLIT_AXIS)
+    evidence, _bound, _series = reading_inputs(reading, measure_noun="")
+    shape = reading.resolved.shape
+    constraints = {prop: next(iter(found.values)) for prop, found in evidence.properties.items()}
+
+    def member(tax_basis: str) -> dict:
+        declared = {**constraints, _PRODUCT_TAX: tax_basis}
+        return {
+            "populationType": {"nodes": [{"dcid": shape.population_type.ref}]},
+            "measuredProperty": {"nodes": [{"dcid": shape.measured_property.ref}]},
+            "statType": {"nodes": [{"dcid": shape.stat_type.ref}]},
+            "constraintProperties": {"nodes": [{"dcid": prop} for prop in declared]},
+            **{prop: {"nodes": [{"dcid": value}]} for prop, value in declared.items()},
+        }
+
+    draft = ShapeDraft(
+        shape_id="weo_gdp_ppp",
+        label=_GDP_PPP_SHAPE,
+        pop_type_dcid=shape.population_type.ref,
+        meas_prop_dcid=shape.measured_property.ref,
+        stat_type_dcid=shape.stat_type.ref,
+        meas_qual_dcid=None,
+        meas_denom_dcid=None,
+        slot_keys=(),
+        sv_arc_facts={
+            "weo/including": member(_INCLUDING_TAXES.ref),
+            "weo/excluding": member("ExcludingProductTaxes"),
+        },
+    )
+    named = declared_measures_named(_GDP_PPP_ASKED)
+
+    assert rule_four_verdicts(draft, named, {}) == ["some"]
+    assert measure_verdicts(named, dataclasses.replace(evidence, noun=None, member_names=())) == [
+        "some"
+    ]
+    assert closest_match_fact(variable_text=_GDP_PPP_ASKED, evidence=evidence) is not None
+
+
+_GNI_PPP_SHAPE = "Gross National Income Based on Purchasing Power Parity Per Capita"
+
+
+@pytest.mark.parametrize(
+    ("shape_label", "variable_text", "verdicts", "departs"),
+    [
+        pytest.param(_GNI_PPP_SHAPE, "GNI per capita", ["unknown"], True, id="gni"),
+        pytest.param(_GNI_PPP_SHAPE, "GNI, PPP per capita", ["holds"], False, id="gni-ppp-noun"),
+        pytest.param(_GNI_PPP_SHAPE, "PPP GNI per capita", ["holds"], False, id="ppp-gni"),
+        pytest.param(_GNI_PPP_SHAPE, "GNI per capita PPP", ["holds"], False, id="gni-then-ppp"),
+        pytest.param(_GDP_PPP_SHAPE, "GDP per capita", ["unknown"], True, id="gdp"),
+        pytest.param(_GDP_PPP_SHAPE, "GDP per capita PPP", ["holds"], False, id="gdp-then-ppp"),
+    ],
+)
+def test_rule_four_and_closest_match_read_a_reading_at_purchasing_power_parity_alike(
+    shape_label: str, variable_text: str, verdicts: list[str], departs: bool
+) -> None:
+    """weo-020's readings at purchasing power parity, the World Bank's GNI per capita and the
+    WEO's GDP per capita, each hold a noun keyed on that price basis ("GNI, PPP", "GDP, PPP").
+    "GNI" or "GDP" names that noun only where the request also names the basis, so the
+    reading reads `unknown` and departs on the bare name, and holds wherever the request
+    names the basis, before or after the measure. Rule 4 and closest match read it alike."""
+    reading = _panel_reading("weo-020", shape_label)
+    evidence, _bound, _series = reading_inputs(reading, measure_noun=shape_label)
+    shape = reading.resolved.shape
+    constraints = {prop: next(iter(found.values)) for prop, found in evidence.properties.items()}
+    draft = ShapeDraft(
+        shape_id="ppp_reading",
+        label=shape_label,
+        pop_type_dcid=shape.population_type.ref,
+        meas_prop_dcid=shape.measured_property.ref,
+        stat_type_dcid=shape.stat_type.ref,
+        meas_qual_dcid=_ref(shape.measurement_qualifier),
+        meas_denom_dcid=_ref(shape.measurement_denominator),
+        slot_keys=(),
+        sv_arc_facts={
+            "ppp_member": {
+                "populationType": {"nodes": [{"dcid": shape.population_type.ref}]},
+                "measuredProperty": {"nodes": [{"dcid": shape.measured_property.ref}]},
+                "statType": {"nodes": [{"dcid": shape.stat_type.ref}]},
+                "constraintProperties": {"nodes": [{"dcid": prop} for prop in constraints]},
+                **{prop: {"nodes": [{"dcid": value}]} for prop, value in constraints.items()},
+            }
+        },
+    )
+    named = declared_measures_named(variable_text)
+
+    assert rule_four_verdicts(draft, named, {}) == verdicts
+    assert measure_verdicts(named, evidence) == verdicts
+    fact = spec_closest_match_fact(reading, variable_text=variable_text, measure_noun=shape_label)
+    assert (fact is not None) is departs
+
+
+def _ref(ref: GraphRef | None) -> str | None:
+    return ref.ref if ref is not None else None
+
+
+_HEALTH_SHARE_MEMBER = {
+    "populationType": {"nodes": [{"dcid": "EconomicActivity"}]},
+    "measuredProperty": {"nodes": [{"dcid": "amount"}]},
+    "statType": {"nodes": [{"dcid": "measuredValue"}]},
+    "constraintProperties": {"nodes": [{"dcid": "activitySource"}, {"dcid": "expenditureType"}]},
+    "activitySource": {"nodes": [{"dcid": "ExpenditureActivity"}]},
+    "expenditureType": {"nodes": [{"dcid": "HealthcareExpenditure"}]},
+}
+_HEALTH_SHARE = ShapeDraft(
+    shape_id="health_share",
+    label="health expenditure",
+    pop_type_dcid="EconomicActivity",
+    meas_prop_dcid="amount",
+    stat_type_dcid="measuredValue",
+    meas_qual_dcid=None,
+    meas_denom_dcid="Amount_Gdp_Unread",
+    slot_keys=(),
+    sv_arc_facts={"health_share_member": _HEALTH_SHARE_MEMBER},
+)
+_GDP_NAMED = "Gross domestic product (GDP)"
+
+
+@pytest.mark.parametrize(
+    ("denominator_pairs", "verdicts"),
+    [
+        pytest.param((("populationType", "Person"),), ["contradicts"], id="pairs-read"),
+        pytest.param((), ["base"], id="graph-gives-no-pairs"),
+    ],
+)
+def test_rule_four_reads_a_denominator_s_name_only_where_none_of_its_pairs_are_known(
+    denominator_pairs: tuple[tuple[str, str], ...], verdicts: list[str]
+) -> None:
+    """A health expenditure series divided by a StatVar named "Gross domestic product (GDP)"
+    contradicts "GDP" before bind where the graph gives the StatVar pairs that hold no
+    declared measure. Where it gives none, the name is all that is known of the denominator,
+    and the series divides by GDP."""
+    denominators = {
+        "Amount_Gdp_Unread": DenominatorRead(kind="other", name=_GDP_NAMED, pairs=denominator_pairs)
+    }
+
+    assert (
+        rule_four_verdicts(_HEALTH_SHARE, declared_measures_named("GDP"), denominators) == verdicts
+    )
+
+
+_HEALTH_SHARE_EVIDENCE = ReadingEvidence(
+    five_tuple=frozenset(
+        {
+            ("populationType", "EconomicActivity"),
+            ("measuredProperty", "amount"),
+            ("statType", "measuredValue"),
+        }
+    ),
+    properties=property_evidence(
+        [{"activitySource": "ExpenditureActivity", "expenditureType": "HealthcareExpenditure"}]
+    ),
+    denominator_name=_GDP_NAMED,
+)
+
+
+@pytest.mark.parametrize(
+    "spec_evidence",
+    [
+        pytest.param(_HEALTH_SHARE_EVIDENCE, id="no-pairs"),
+        pytest.param(
+            reading_evidence(
+                population_type="EconomicActivity",
+                measured_property="amount",
+                stat_type="measuredValue",
+                measurement_qualifier=None,
+                measurement_denominator=None,
+                properties=_HEALTH_SHARE_EVIDENCE.properties,
+                noun=None,
+                denominator_pairs=(),
+                denominator_name=_GDP_NAMED,
+            ),
+            id="built-with-empty-pairs",
+        ),
+        pytest.param(
+            dataclasses.replace(_HEALTH_SHARE_EVIDENCE, denominator_pairs=frozenset()),
+            id="empty-pairs",
+        ),
+    ],
+)
+def test_rule_four_and_closest_match_read_a_denominator_known_by_name_alike(
+    spec_evidence: ReadingEvidence,
+) -> None:
+    """A shape whose denominator the graph gives no pairs, and a Spec of the same members,
+    which states its denominator by name alone, hold the same evidence and read "GDP" alike.
+    Empty pairs are no pairs known, and evidence built with them holds none."""
+    named = declared_measures_named("GDP")
+    denominators = {"Amount_Gdp_Unread": DenominatorRead(kind="other", name=_GDP_NAMED, pairs=())}
+
+    assert spec_evidence.denominator_pairs is None
+    assert rule_four_verdicts(_HEALTH_SHARE, named, denominators) == ["base"]
+    assert measure_verdicts(named, spec_evidence) == ["base"]

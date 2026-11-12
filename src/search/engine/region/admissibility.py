@@ -18,13 +18,26 @@ at the first that refuses it, so a shape refused on a pinned part passed every o
    pattern names or, where none does, the one the quantity read's model states
    (`phase_rank_bind._read_stated_quantity`; `quantity.serves_every_form`;
    ``denominator_not_available``, pinned part `form`);
-4. pinned codes: a code the question names on a property the shape's slots hold must be
+4. named measure: a name of measure nouns the question holds, by a label, an
+   `also_called` name or a declared acronym of one (`CodeIndex.variable_aliases`, so "GNI
+   per capita" names gross national income) (`phase_rank_bind._named_measure_nouns`),
+   refuses a shape whose verdict on it is ``contradicts`` (`rule_four_verdicts`) with
+   ``variable_not_resolved``: a noun of the shape's population type
+   keys on a constraint property every member carries another value on, one neither an
+   ancestor nor a descendant of the noun's in the code index, and every other noun that
+   shares the name and the population type is contradicted too. "health expenditure"
+   refuses the share of GDP spent on education and on the military. A shape the name
+   holds, or whose denominator holds it as the base, is not contradicted, and "GDP", the
+   name of three nouns, refuses no WEO series at market exchange rates though one of them
+   keys on purchasing power parity. `also_called` names a measure for judgement, here and
+   in the closest-match test, and never binds;
+5. pinned codes: a code the question names on a property the shape's slots hold must be
    one the shape's family holds (``qualifier_not_bound``, pinned part `pinned_code`). A
    part naming a source binds first, and its code check runs once the bindings are final
    (`phase_rank_bind._unavailable_qualifiers`), so the refusal flags the elected identity.
 
 The steps around the rules run in a fixed order too: measure and roles; the quantity read;
-the form rule; pinned codes; the refusals written to the part's interpretations;
+the form rule; named measures; pinned codes; the refusals written to the part's interpretations;
 open-axis preference, family election and collapse; seating; the availability read; bind.
 The form rule runs before seating, so a shape it refuses holds no seat, and a menu it
 empties ends in a refusal because the refusals are already recorded.
@@ -43,11 +56,20 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 
 from code_index.shared import get_measure_index
 from search.engine.interpretation import Interpretation
-from search.engine.qualifier_match import QualifierMatch
-from search.engine.quantity import serves_every_form
+from search.engine.measure_verdict import (
+    ReadingEvidence,
+    Verdict,
+    measure_verdicts,
+    property_evidence,
+    reading_evidence,
+)
+from search.engine.qualifier_match import NamedMeasure, QualifierMatch
+from search.engine.quantity import DenominatorRead, serves_every_form
 from search.engine.region.alternate_guard import measure_class, shape_measure_class
 from search.engine.region.place_roles import lacks_query_axis, subject_shapes_refused
 from search.engine.region.state import ResolveState, for_shape, shape_vocabulary
+from search.engine.retrieval.bound_values import shape_constraint_values, shape_population_arcs
+from search.engine.retrieval.facts import read_constraints
 from search.engine.shape import ShapeDraft, is_role_bearing
 from search.models import GraphRef, NoDataReason, ResolvedQualifier
 
@@ -73,10 +95,15 @@ def judge_pinned_parts(
     state: ResolveState,
     interpretations: Iterable[Interpretation],
     matches: Mapping[frozenset[str], tuple[QualifierMatch, ...]],
+    spans: Sequence[NamedMeasure],
+    verdicts: Mapping[str, Sequence[Verdict]] | None = None,
 ) -> list[Interpretation]:
-    """`interpretations` with each admissible one judged on the form the question names and
-    on the codes it names (rules 3 and 4). `matches` holds the question's codes read in
-    each shape's vocabulary. A part naming a source is judged on the form alone."""
+    """`interpretations` with each admissible one judged on the form the question names, on
+    the names of measure nouns it holds, `spans`, and on the codes it names (rules 3 to 5).
+    `matches` holds the question's codes read in each shape's vocabulary, and `verdicts`
+    rule 4's verdicts on each shape by shape id where the phase already read them
+    (`rule_four_verdicts`, computed here for a shape it lacks). A part naming a source is
+    judged on the form and the nouns alone."""
     measure_axes = frozenset(axis.axis for axis in get_measure_index().axes)
     names_source = state.scope is not None and state.scope.named
 
@@ -88,6 +115,11 @@ def judge_pinned_parts(
             return Interpretation(
                 shape=shape, reason="denominator_not_available", pinned_failure="form"
             )
+        read = verdicts.get(shape.shape_id) if verdicts is not None else None
+        if read is None:
+            read = rule_four_verdicts(shape, spans, state.denominator_reads)
+        if "contradicts" in read:
+            return Interpretation(shape=shape, reason="variable_not_resolved")
         if names_source:
             return interpretation
         unheld = _unheld_pinned_codes(
@@ -103,6 +135,74 @@ def judge_pinned_parts(
         return interpretation
 
     return [judged(interpretation) for interpretation in interpretations]
+
+
+def own_member_verdicts(
+    shapes: Iterable[ShapeDraft],
+    spans: Sequence[NamedMeasure],
+    denominators: Mapping[str, DenominatorRead],
+) -> dict[str, list[Verdict]]:
+    """Rule 4's verdicts on each name in `spans` for each of `shapes`, by shape id, judged
+    on its own members (`ShapeDraft.sv_arc_facts`). The phase reads the family of each held
+    shape they contradict (`bound_values.read_held_families`) before `rule_four_verdicts`
+    judges it again on every member."""
+    if not spans:
+        return {}
+    return {
+        shape.shape_id: measure_verdicts(
+            spans, draft_evidence(shape, shape.sv_arc_facts or {}, denominators)
+        )
+        for shape in shapes
+    }
+
+
+def rule_four_verdicts(
+    shape: ShapeDraft,
+    spans: Sequence[NamedMeasure],
+    denominators: Mapping[str, DenominatorRead],
+    own: Sequence[Verdict] | None = None,
+) -> list[Verdict]:
+    """The verdict rule 4 reads on each name in `spans` for `shape`: `own`, its verdicts on
+    its own members (`own_member_verdicts`, computed here when `None`), or, when they
+    contradict a name and the shape stands for a held family, its verdicts on every member
+    of that family (`shape_population_arcs`)."""
+    if not spans:
+        return []
+    if own is None:
+        own = own_member_verdicts([shape], spans, denominators)[shape.shape_id]
+    if "contradicts" not in own or shape.held_family is None:
+        return list(own)
+    return measure_verdicts(
+        spans, draft_evidence(shape, shape_population_arcs(shape), denominators)
+    )
+
+
+def draft_evidence(
+    shape: ShapeDraft, arcs: Mapping[str, dict], denominators: Mapping[str, DenominatorRead]
+) -> ReadingEvidence:
+    """What `shape` states of its measure before bind (`measure_verdict.reading_evidence`):
+    its five-tuple; on each constraint property the values the members whose arcs `arcs`
+    holds declare and whether every one of them declares one, beside the values its own
+    members and its held family's summary hold (`shape_constraint_values`) as summary values,
+    which can reach ``some`` and never decide ``holds`` (`measure_verdict.property_evidence`);
+    its label as its noun; and the pairs and name the graph gives the StatVar it divides by,
+    as `denominators` read them, its pairs `None` where the graph gives none, the evidence
+    a Spec holds of its denominator (`closest_match.reading_inputs`)."""
+    read = denominators.get(shape.meas_denom_dcid) if shape.meas_denom_dcid else None
+    return reading_evidence(
+        population_type=shape.pop_type_dcid,
+        measured_property=shape.meas_prop_dcid,
+        stat_type=shape.stat_type_dcid,
+        measurement_qualifier=shape.meas_qual_dcid,
+        measurement_denominator=shape.meas_denom_dcid,
+        properties=property_evidence(
+            [read_constraints(member) for member in arcs.values()],
+            summary=shape_constraint_values(shape),
+        ),
+        noun=shape.label,
+        denominator_pairs=read.pairs if read is not None else None,
+        denominator_name=read.name if read is not None else None,
+    )
 
 
 def _unheld_pinned_codes(

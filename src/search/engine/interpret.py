@@ -314,6 +314,35 @@ def _with_reading_families(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class Detected:
+    """The graph's detection of `text` for the part variable `variable`, as `recall` makes
+    it with no party word removed, made under the catalogue bound when it ran
+    (`detect_measure`). `recall` takes it in place of its own detection of the same text and
+    variable (`recall`'s `detected`)."""
+
+    text: str
+    variable: str
+    detection: Detection
+
+    @property
+    def candidates(self) -> list[DetectedSV]:
+        """The candidates `recall` keeps of the detection: those above the recall floor."""
+        return _above_recall_floor(self.detection.candidates)
+
+
+async def detect_measure(graph: EngineGraphClient, text: str, *, variable: str) -> Detected:
+    """The graph's detection of `text` for the part variable `variable` under the bound
+    catalogue, as `recall` makes it with no entity resolved and no party word removed. A
+    failed search raises."""
+    canonical = _canonicalize_acronyms(text)
+    return Detected(
+        text=canonical,
+        variable=variable,
+        detection=await _detect(graph, canonical, variable=variable),
+    )
+
+
 def _member_detection(members: Sequence[str]) -> Detection:
     """`members` as a detection whose hits the request's catalogue admits (`cut_hits`),
     standing as `detect_svs` stands its own (`stand_candidates`), with no UN candidate."""
@@ -339,6 +368,7 @@ async def recall(
     entity_surfaces: Mapping[str, str] | None = None,
     members: Sequence[str] | None = None,
     party_words: AbstractSet[str] = frozenset(),
+    detected: Detected | None = None,
 ) -> Recall:
     """Recall candidate StatVars and resolve entity names concurrently.
 
@@ -363,6 +393,12 @@ async def recall(
     `members` are the StatVars a part's series code names (`search.engine.source_code`).
     They are the candidates, each at score 1.0 and admitted by the request's catalogue as a
     resolve's hits are, and neither resolver is asked, so the part has no UN candidate.
+
+    `detected` is a detection already made under the catalogue recall reads through
+    (`detect_measure`). Recall takes it in place of searching the graph when it detected the
+    text and variable recall would and recall removes no party word, so a part whose reading
+    was chosen from that detection (`region.source_choice.read_organisations`) searches the
+    graph once.
     """
     detect_query = raw_query or variable
     _pre = pre_resolved or {}
@@ -370,17 +406,20 @@ async def recall(
     misses = [name for name in entities if name not in _pre]
     surfaces = entity_surfaces or {}
 
+    canonical = _canonicalize_acronyms(detect_query)
     if members is not None:
         detection = _member_detection(members)
         miss_resolutions = await resolve_names(misses, resolver=resolver, surfaces=surfaces)
+    elif (
+        detected is not None
+        and (detected.text, detected.variable) == (canonical, variable)
+        and not party_words
+    ):
+        detection = detected.detection
+        miss_resolutions = await resolve_names(misses, resolver=resolver, surfaces=surfaces)
     else:
         detection, miss_resolutions = await asyncio.gather(
-            _detect(
-                graph,
-                _canonicalize_acronyms(detect_query),
-                party_words,
-                variable=variable,
-            ),
+            _detect(graph, canonical, party_words, variable=variable),
             resolve_names(misses, resolver=resolver, surfaces=surfaces),
         )
     candidates = _above_recall_floor(detection.candidates)

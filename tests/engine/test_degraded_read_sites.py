@@ -206,7 +206,7 @@ _SCOPED_SITES: dict[str, tuple[Callable[[pytest.MonkeyPatch, Exception], None], 
     "walk": (_relaxation_walk, "nearest-real relaxation walk"),
     "presence": (_relaxations_presence, "nearest-real presence"),
     "suggestion": (_relaxed_suggestion, "nearest-real suggestion"),
-    "stray-labels": (lambda _mp, error: _stray_value_labels(error), "stray value labels"),
+    "stray-labels": (lambda _mp, error: _stray_value_labels(error), "drafted value labels"),
 }
 
 

@@ -277,11 +277,11 @@ def _variable_provenances(inputs: DfoInputs) -> dict[str, tuple[str, ...]]:
 
 
 def _parties(inputs: DfoInputs, datasets: set[str]) -> dict[str, PartyPublication]:
-    """Every donor and recipient on a row of `datasets`, with the datasets that publish it, the
-    flow axes they publish it on (`origin` as a donor, `destination` as a recipient) and the
-    first and last year each publishes it."""
+    """Every donor and recipient on a row of `datasets`, with each `(dataset, axis)` pair that
+    publishes it (`origin` as a donor, `destination` as a recipient) and the first and last
+    year each dataset publishes it."""
     years: dict[str, dict[str, tuple[int, int]]] = {}
-    axes: dict[str, set[RoleAxis]] = {}
+    pairs: dict[str, set[tuple[str, RoleAxis]]] = {}
     for column, axis in _PARTY_AXES.items():
         spans = inputs.coverage.group_by([column, FACET_COLUMN], use_threads=False).aggregate(
             ((FIRST_YEAR_COLUMN, "min"), (LAST_YEAR_COLUMN, "max"))
@@ -297,11 +297,9 @@ def _parties(inputs: DfoInputs, datasets: set[str]) -> dict[str, PartyPublicatio
             if party == ABSENT_ENTITY or provenance not in datasets:
                 continue
             widen_span(years.setdefault(party, {}), provenance, first, last)
-            axes.setdefault(party, set()).add(axis)
+            pairs.setdefault(party, set()).add((provenance, axis))
     return {
-        party: PartyPublication(
-            datasets=frozenset(published), axes=frozenset(axes[party]), years=published
-        )
+        party: PartyPublication(pairs=frozenset(pairs[party]), years=published)
         for party, published in years.items()
     }
 

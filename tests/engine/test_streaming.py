@@ -1393,7 +1393,7 @@ def test_done_carries_the_departures_a_streamed_read_adds(projected_count, late)
     )
     from tests.engine._builders import conjoin_spec, shape_five_tuple
 
-    spec = conjoin_spec(shape_five_tuple("Person", "count"), "x", sv_dcid="Test_SV")
+    spec = conjoin_spec(shape_five_tuple("Person", "count"), "v", sv_dcid="Test_SV")
     conversion = ObservationSeriesConversion(
         recipe_id="recipe/Test",
         table_provenance=SeriesFacetRef(ref="provenance/TestRateTables"),

@@ -97,6 +97,7 @@ from dfo_analysis_engine.place_type import (
     kind_column,
     type_column,
 )
+from dfo_platform.columns import PROVENANCE_COLUMN
 from materialise.bundle import (
     ArtifactEntry,
     BundleContext,
@@ -149,7 +150,6 @@ _WRITERS: Mapping[str, Callable[..., WrittenArtifact]] = {
     "parquet": write_parquet,
 }
 _SERIES_COLUMN = "series"
-_PROVENANCE_COLUMN = "provenance"
 _LABEL_SUFFIX = "_label"
 _ZIP_FIXED_DATE_TIME = (1980, 1, 1, 0, 0, 0)
 _DATA_MEMBER_TYPES = frozenset({"line_chart", "bar_chart", "table", "stat_card"})
@@ -723,7 +723,7 @@ def _export_table(
     columns = tuple(cast("Sequence[str]", resolved_frame.frame["columns"]))
     index = {column: position for position, column in enumerate(columns)}
 
-    labelled = {STAT_VAR_COLUMN, *role_columns(columns=columns), _PROVENANCE_COLUMN}
+    labelled = {STAT_VAR_COLUMN, *role_columns(columns=columns), PROVENANCE_COLUMN}
     taken = set(columns)
     series_column = _free_name(_SERIES_COLUMN, taken=taken)
     generated: dict[str, str | None] = {series_column: None}
@@ -747,9 +747,9 @@ def _export_table(
         out_rows.append(tuple(cells))
 
     provenance_refs: tuple[str | None, ...] = ()
-    if _PROVENANCE_COLUMN in index:
+    if PROVENANCE_COLUMN in index:
         provenance_refs = tuple(
-            dict.fromkeys(cast("str | None", row[index[_PROVENANCE_COLUMN]]) for _, row in rows)
+            dict.fromkeys(cast("str | None", row[index[PROVENANCE_COLUMN]]) for _, row in rows)
         )
     return (
         ReshapeTable(columns=tuple(out_columns), rows=tuple(out_rows)),

@@ -102,7 +102,7 @@ def test_render_and_store_streaming_write_aborts_when_the_chunk_iterator_raises(
             content_version="sha256:" + "0" * 64,
             artifact_store=store,
             entity_columns=("recipient",),
-            enrichment=EnrichmentLookup(_GRAPH, parties=lambda: {}),
+            enrichment=EnrichmentLookup(_GRAPH),
             resolved_stat_var_refs=(),
             pivot_max_output_cells=5_000_000,
             groupby_fold_max_rows=2_000_000,

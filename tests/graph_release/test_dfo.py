@@ -21,8 +21,7 @@ import pytest
 
 from code_index import declarations as code_index_declarations
 from code_index import scope_conventions
-from code_index.export import content_hash
-from code_index.loader import parse_index
+from code_index.loader import content_hash, parse_index
 from dc_graph import GraphClient, parse_arcs
 from graph_release import declarations as release_declarations
 from graph_release.declarations import DECLARATIONS, Declarations
@@ -224,7 +223,14 @@ def test_dfo_parts_rebuild_byte_for_byte_and_join_coverage(tmp_path: Path) -> No
         ("Amount", _CRS),
         ("AttributedAmount", "provenance/ONEImputedMultilateralSectors"),
     }
-    parties = {row["dcid"]: (row["kind"], row["label"], row["axes"]) for row in blocks["parties"]}
+    parties = {
+        row["dcid"]: (
+            row["kind"],
+            row["label"],
+            sorted({entry["axis"] for entry in row["published"]}),
+        )
+        for row in blocks["parties"]
+    }
     assert parties.keys() == {*RELEASE_PARTIES, *MIXER_PARTIES}
     assert {
         party: parties[party] for party in (*RELEASE_PARTIES, PLACEHOLDER_PARTY, UNHELD_PARTY)
@@ -239,15 +245,16 @@ def test_dfo_parts_rebuild_byte_for_byte_and_join_coverage(tmp_path: Path) -> No
 def test_parties_publish_each_dataset_between_its_first_and_last_year() -> None:
     # `Donor` is on two facets of one dataset, whose spans merge, and on a facet of a second
     # dataset with its own span. `Other` sits on a facet of a dataset the call leaves out.
+    # `Recipient` is a donor in the second dataset alone.
     inputs = dataclasses.replace(
         dfo_inputs(slice_platform_parts(), SLICE_DECLARATIONS),
         coverage=pa.table(
             {
-                "donor": ["Donor", "Donor", "Donor", "Other", ""],
-                "recipient": ["Recipient", "Recipient", "Recipient", "Recipient", "Recipient"],
-                "facet_id": ["f1", "f2", "f3", "f4", "f1"],
-                "first_year": [2000, 1995, 2010, 1990, 1980],
-                "last_year": [2005, 2001, 2020, 2022, 2024],
+                "donor": ["Donor", "Donor", "Donor", "Other", "", "Recipient"],
+                "recipient": ["Recipient", "Recipient", "Recipient", "Recipient", "Recipient", ""],
+                "facet_id": ["f1", "f2", "f3", "f4", "f1", "f3"],
+                "first_year": [2000, 1995, 2010, 1990, 1980, 2012],
+                "last_year": [2005, 2001, 2020, 2022, 2024, 2018],
             }
         ),
         facet_provenances={"f1": "d/A", "f2": "d/A", "f3": "d/B", "f4": "d/C"},
@@ -257,8 +264,13 @@ def test_parties_publish_each_dataset_between_its_first_and_last_year() -> None:
 
     assert set(parties) == {"Donor", "Recipient"}
     assert parties["Donor"].years == {"d/A": (1995, 2005), "d/B": (2010, 2020)}
-    assert parties["Donor"].datasets == {"d/A", "d/B"}
+    assert parties["Donor"].pairs == {("d/A", "origin"), ("d/B", "origin")}
     assert parties["Recipient"].years == {"d/A": (1980, 2024), "d/B": (2010, 2020)}
+    assert parties["Recipient"].pairs == {
+        ("d/A", "destination"),
+        ("d/B", "destination"),
+        ("d/B", "origin"),
+    }
 
 
 def test_dfo_parts_refuse_a_party_neither_the_release_nor_the_mixer_answers() -> None:
