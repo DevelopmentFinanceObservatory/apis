@@ -29,6 +29,7 @@ from materialise.recipe_bodies import RECIPE_BODIES
 from search.engine.region.codes import OBSERVATIONS_PROBE_FAILED
 from search.engine.region.observations.bulk_pair_reads import BulkPairSdmx, PlannedRead
 from search.engine.region.observations.fetch import _build_observations
+from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
 from search.engine.retrieval.read_plan import PairPlan, PlanRoles, PlanSeries, plan_pairs
 from search.models import IdentityUnitRequest, SpecObservations, TimeWindow, Warning
 from search.models.identity import IdentityCurrencyRole
@@ -236,6 +237,7 @@ def _plan(holdings: Sequence[_Holding], case: _Case) -> PairPlan:
             role_names={"donor": "creditor", "recipient": "debtor"},
         ),
         elect=None if elect is None else (lambda _plan: elect),
+        declared=NO_DECLARED_POLICIES,
     )
 
 
