@@ -40,7 +40,7 @@ from search.engine.clients.graph import (
     with_reading_families,
 )
 from search.engine.config import settings
-from search.engine.qualifier_match import read_by_vocabulary
+from search.engine.qualifier_match import cross_vocabulary_codes, read_by_vocabulary
 from search.engine.retrieval.topics import is_topic_candidate
 from search.engine.surface_resolution import resolve_names
 
@@ -282,17 +282,14 @@ async def _detect(
 
 
 def _code_phrases(variable: str, index: CodeIndex) -> list[list[CodeRow]]:
-    """The code rows of each span of `variable` read in every code system, for each span
-    naming one or more codes, with the reader the bind phase reads it with
-    (`read_by_vocabulary`, as `phase_rank_bind._read_sources` calls it), so recall adds a
-    family for exactly the phrases the later checks find in the variable. The reader keeps
-    the scan, so the bind phase reads the variable without scanning it again."""
+    """The code rows each span of `variable` read in every code system names there
+    (`cross_vocabulary_codes`), for each span naming one or more codes, with the reader the
+    bind phase reads it with (`read_by_vocabulary`, as `phase_rank_bind._read_sources` calls
+    it), so recall adds a family for exactly the phrases the later checks find in the
+    variable. The reader keeps the scan, so the bind phase reads the variable without
+    scanning it again."""
     (reading,) = read_by_vocabulary((variable,), index, get_measure_index(), vocabularies=())
-    return [
-        codes
-        for span in reading.everywhere.spans
-        if (codes := [row for row in span.rows if isinstance(row, CodeRow)])
-    ]
+    return [codes for span in reading.everywhere.spans if (codes := cross_vocabulary_codes(span))]
 
 
 def _with_reading_families(

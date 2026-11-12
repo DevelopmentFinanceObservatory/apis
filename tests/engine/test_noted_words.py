@@ -178,14 +178,16 @@ def _notes(result) -> list[str]:
     ],
 )
 def test_aid_on_the_climate_table_is_read_and_its_note_stated(query, variable, entities, answers):
-    """Recall finds the CRS, the climate family joins on the objective the variable reads,
-    and the answer reads "aid" on the climate table and states its note. "ODA" and
+    """Recall finds the CRS and the climate family beside it, as the dev graph's resolve
+    recalls a climate finance family for "adaptation aid from Germany in 2022", and the
+    answer reads "aid" on the climate table and states its note. "ODA" and
     "official development assistance" name a CRS flow type the climate rows lack. The
     climate family reads its noted word beside "climate", so the CRS, which reads the word
     alone, leaves at the family election and the recipient house default never reaches it
     (`phase_rank_bind._phrases_reader`), and the CRS family's record of the flow type
     refuses nothing (`phase_rank_bind._rival_held_qualifiers`)."""
-    result = _resolve(query, variable, ((_CRS_HEALTH.dcid, 0.8),), _CLIMATE_TOTAL.dcid, entities)
+    recalled = ((_CRS_HEALTH.dcid, 0.8), (_CLIMATE_TOTAL.dcid, 0.7))
+    result = _resolve(query, variable, recalled, _CLIMATE_TOTAL.dcid, entities)
 
     assert result.status == "definite", result
     assert result.unbound_qualifiers == ()

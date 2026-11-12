@@ -1259,6 +1259,24 @@ def _cf_bind(
             ("attributed",),
             id="jev-attributed-left-outside-the-variable",
         ),
+        pytest.param(
+            _CF_COMMITMENTS_MENU,
+            "imputed multilateral climate finance commitments",
+            _cf_jev(_CF_COMMITMENTS_JEV | {"mv|attributedAmount": 0.9}, {0: 0.05, 2: 0.95}),
+            None,
+            2,
+            (),
+            id="jev-imputed-multilateral-electing-attributed",
+        ),
+        pytest.param(
+            _CF_COMMITMENTS_MENU,
+            "climate finance commitments excluding attributed amounts",
+            _cf_jev(_CF_COMMITMENTS_JEV, {0: 0.95, 2: 0.05}),
+            None,
+            0,
+            (),
+            id="jev-attributed-amounts-excluded",
+        ),
     ],
 )
 def test_an_unnamed_basis_value_follows_the_declared_preference(
@@ -1272,7 +1290,8 @@ def test_an_unnamed_basis_value_follows_the_declared_preference(
     """Amounts and attributed amounts of one dataset's flow differ on the basis axis alone,
     and ``prefer`` lists the amount. A phrase that names no attribution answers with the
     amounts, whatever the binder scored, read or rated; one naming attributed amounts, by
-    "attributed" or "attributed aid", answers with them, whatever the binder elected. A
-    word extraction left outside the variable names them as one inside it does: "Germany
-    attributed climate finance commitments 2022" leaves "attributed" unclaimed."""
+    "attributed", "attributed aid" or "imputed multilateral", answers with them, whatever the
+    binder elected, and one that excludes them answers with the amounts. A word extraction
+    left outside the variable names them as one inside it does: "Germany attributed climate
+    finance commitments 2022" leaves "attributed" unclaimed."""
     assert _cf_bind(shapes, variable, binder, reply, unclaimed) == elected
