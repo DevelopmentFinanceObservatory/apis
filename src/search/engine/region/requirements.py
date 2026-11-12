@@ -535,11 +535,16 @@ def answer_terms(
 
 
 def refusal_terms(
-    state: ResolveState, shape: ShapeDraft, bindings: Sequence[SlotBindingDraft]
+    state: ResolveState,
+    shape: ShapeDraft,
+    bindings: Sequence[SlotBindingDraft],
+    *,
+    served: PriceBasis | None = None,
 ) -> tuple[ResolvedQualifier, ...]:
     """The terms a `qualifier_not_bound` refusal on an answer of `shape` read under
-    `bindings` names: every term of its trace (`answer_terms`) that is not bound."""
-    return _unbound(answer_terms(state, shape, bindings))
+    `bindings` and served under a unit request at `served` prices names: every term of its
+    trace (`answer_terms`) that is not bound."""
+    return _unbound(answer_terms(state, shape, bindings, served=served))
 
 
 def _unbound(terms: Iterable[ResolvedQualifier]) -> tuple[ResolvedQualifier, ...]:

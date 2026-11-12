@@ -955,6 +955,7 @@ def derive_shapes(
     sv_scores: dict[str, float] | None = None,
     sv_types: dict[str, str | None] | None = None,
     rival_svs: frozenset[str] = frozenset(),
+    closure_svs: frozenset[str] = frozenset(),
     basis_of: Mapping[str, frozenset[str]] | None = None,
     place_dcids: list[str] | None = None,
     full_facets_max_candidates: int | None = None,
@@ -980,9 +981,11 @@ def derive_shapes(
 
     `rival_svs` are the rows recall added past its cut (`clients.graph.with_rival_families`).
     They are confirmed with the other candidates, and a shape whose members are all rivals
-    is marked `ShapeDraft.rival`. `basis_of` maps those of them that measure another
-    convention basis of recalled families to those families, and a shape whose members are
-    all among them takes them as `ShapeDraft.basis_of`.
+    is marked `ShapeDraft.rival`, and `ShapeDraft.closure` when they are all among
+    `closure_svs`, the rows recall added for a query phrase no recalled family reads
+    (`clients.graph.with_reading_families`). `basis_of` maps those of them that measure
+    another convention basis of recalled families to those families, and a shape whose
+    members are all among them takes them as `ShapeDraft.basis_of`.
 
     `sv_scores` supplies measured recall scores; expansion-only groups retain
     no score and carry a separate ordering rank. `sv_types` identifies Topic
@@ -1138,6 +1141,7 @@ def derive_shapes(
                 shape = dataclasses.replace(
                     shape,
                     rival=True,
+                    closure=closure_svs.issuperset(group_svs),
                     basis_of=frozenset().union(*(sources[sv] for sv in group_svs))
                     if all(sv in sources for sv in group_svs)
                     else frozenset(),

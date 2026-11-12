@@ -348,11 +348,20 @@ def _install_filtered_answer(
 def _gate_carve_out(state: ResolveState, mat_result: Materialised) -> bool:
     """Whether a carve-out answers before the bound-unit gate is read: no member with data at
     the place, no place and no data, or a requirement the answer leaves unmet
-    (`requirements.refusal_terms`, `_assemble_carve_outs`)."""
+    (`requirements.refusal_terms`, `_assemble_carve_outs`). The requirements are judged under
+    the unit request the answer's identity binds (`_answer_facet_bindings`), as the Spec's
+    carve-out judges them, so a part this refuses never reaches an answer."""
     return (
         mat_result.available_at_place is False
         or (state.destination_dcid is None and not mat_result.has_data)
-        or bool(refusal_terms(state, state.shape_draft, state.bindings))
+        or bool(
+            refusal_terms(
+                state,
+                state.shape_draft,
+                state.bindings,
+                served=bound_prices(_answer_facet_bindings(state, mat_result)),
+            )
+        )
     )
 
 
@@ -881,8 +890,10 @@ async def _gather_definite_coverage(
     slot/facet probes launch. Record option probe timing and return the coverage bundle
     otherwise.
     """
-    # Skip option probes when a known carve-out guarantees no definite result.
-    skip_coverage_probe = _gate_carve_out(state, mat_result) or not state.stat_vars
+    # A known carve-out guarantees no definite result, so the part reads no preview and
+    # runs no option probe.
+    refuses = _gate_carve_out(state, mat_result)
+    skip_coverage_probe = refuses or not state.stat_vars
 
     # The bound unit is decided from the answer's read plan before any fetch, so a request
     # without a preview reads none: the plan must serve a StatVar the unit decision serves, under its elected unit
@@ -915,7 +926,7 @@ async def _gather_definite_coverage(
             )
         )
     obs_fetch_task: asyncio.Task[tuple[SpecObservations, Warning | None] | None] | None = None
-    if state.include_observations and not state.stream_observations:
+    if state.include_observations and not state.stream_observations and not refuses:
         obs_fetch_task = asyncio.create_task(_preview_unless_composite(decision_task, setup, state))
     facet_options: list[FacetOptions] = []
     obs_result: tuple[SpecObservations, Warning | None] | None = None
@@ -924,7 +935,7 @@ async def _gather_definite_coverage(
         # Streaming defers points, but status and ``resolved.facets`` belong on the
         # immediate response. Fetch eagerly for every streamed preview but a composite's.
         # A later task sends points.
-        if state.stream_observations:
+        if state.stream_observations and not refuses:
             eager_obs_availability = await _preview_unless_composite(decision_task, setup, state)
         answer_scope = await decision_task
         state.scope_decision = answer_scope.decision

@@ -1974,6 +1974,34 @@ def test_a_declared_unexpressed_word_refuses_without_an_llm_unplaced_record(
     assert _has_miss(qualifiers)
 
 
+@pytest.mark.parametrize(
+    ("variable", "bindings", "refused"),
+    [
+        pytest.param(
+            "investment climate",
+            [_binding("crsPurpose", kind="value", value_dcids=["CRSPurposeCode25010"])],
+            [],
+            id="inside-a-code-name",
+        ),
+        pytest.param("climate", [], ["climate"], id="bare-word"),
+    ],
+)
+def test_a_declared_unexpressed_word_inside_a_code_span_is_no_term(variable, bindings, refused):
+    """ "investment climate" is a synonym of CRS purpose 25010, so its word "climate" is
+    read as part of that code; "climate" beside no code still refuses."""
+    state = _state(
+        variable=variable,
+        query_text=f"{variable} to Kenya",
+        shape_draft=_shape(SlotKeyDraft(axis="how", property_dcid="crsPurpose", label="sector")),
+        bindings=bindings,
+        unplaced=[],
+    )
+
+    qualifiers = _run(state)
+
+    assert [q.text for q in qualifiers if q.disposition != "bound"] == refused
+
+
 def test_f02_non_concessional_in_raw_query_refuses_when_extraction_omits_it():
     """The raw-query pass keeps the closed detector active after extraction
     omits the unsupported term from the variable phrase."""
