@@ -22,6 +22,7 @@ from code_index.query import row_five_tuple
 from code_index.types import (
     BroadReading,
     ImpliedValue,
+    NotedWord,
     PartlyStatedValue,
     PartyWord,
     StatedWord,
@@ -226,6 +227,50 @@ def test_loader_rejects_a_stated_word_that_is_malformed(row: dict):
     property, which `_check_datasets` refuses."""
     payload = _fixture()
     payload["datasets"][0]["stated_words"] = [row]
+
+    with pytest.raises(IndexFormatError):
+        parse_index(payload)
+
+
+def test_loader_reads_the_words_and_phrases_a_dataset_notes():
+    payload = _fixture()
+    payload["datasets"][0]["noted_words"] = [
+        {"word": "aid", "note": "Wider than aid."},
+        {"word": "official development assistance", "note": "Wider than aid."},
+    ]
+
+    index = parse_index(payload)
+
+    assert index.datasets[_CRS_PROVENANCE].noted_words == (
+        NotedWord(word="aid", note="Wider than aid."),
+        NotedWord(word="official development assistance", note="Wider than aid."),
+    )
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [{"word": "Aid", "note": "Wider than aid."}],
+        [{"word": "official  aid", "note": "Wider than aid."}],
+        [{"word": " aid", "note": "Wider than aid."}],
+        [{"word": "non-oda, aid", "note": "Wider than aid."}],
+        [{"word": "aid", "note": " "}],
+        [{"word": "aid", "note": None}],
+        [{"word": "aid", "note": "Wider."}, {"word": "aid", "note": "Wider still."}],
+    ],
+    ids=[
+        "uppercase",
+        "double-space",
+        "leading-space",
+        "separator",
+        "blank-note",
+        "no-note",
+        "noted-twice",
+    ],
+)
+def test_loader_rejects_a_noted_word_that_is_malformed(rows: list[dict]):
+    payload = _fixture()
+    payload["datasets"][0]["noted_words"] = rows
 
     with pytest.raises(IndexFormatError):
         parse_index(payload)

@@ -103,24 +103,29 @@ def occurrence_negated(text: str, start: int, end: int) -> bool:
 
 def word_stated(word: str, texts: Sequence[str]) -> bool:
     """Whether `texts`, a part's variable and typed qualifier phrases, state the casefolded
-    `word` as a modifier of the measure (`_modifies_the_measure`), with no occurrence in them
-    negated or excluded (`_label_has_negated_occurrence`)."""
+    `word`, one word or words joined by single spaces, as a modifier of the measure
+    (`_modifies_the_measure`), with no occurrence in them negated or excluded
+    (`_label_has_negated_occurrence`)."""
     if not any(_modifies_the_measure(word, text) for text in texts):
         return False
     return not any(_label_has_negated_occurrence(word, text) for text in texts)
 
 
 def _modifies_the_measure(word: str, text: str) -> bool:
-    """Whether the casefolded `word` is a whole word of `text` with nothing before it but
-    other words of the measure phrase: no function word (`FUNCTION_WORDS`), connective
-    (`CONNECTIVES`) or separator. "Bilateral" modifies the measure in "gross bilateral ODA
-    disbursements" and in "bilateral aid for health". In "ODA net of bilateral flows" and
-    "ODA, bilateral excluded" it belongs to a clause that restricts the measure."""
-    for token in tokenize(text):
+    """Whether the casefolded `word` is a run of whole words of `text` with nothing before
+    it but other words of the measure phrase: no function word (`FUNCTION_WORDS`),
+    connective (`CONNECTIVES`) or separator. "Bilateral" modifies the measure in "gross
+    bilateral ODA disbursements" and in "bilateral aid for health", and "official development
+    assistance" in "climate official development assistance". In "ODA net of bilateral
+    flows" and "ODA, bilateral excluded" the word belongs to a clause that restricts the
+    measure."""
+    parts = word.split(" ")
+    tokens = tokenize(text)
+    for position, token in enumerate(tokens):
         folded = token.text.casefold()
         if token.kind != "word" or folded in FUNCTION_WORDS or folded in CONNECTIVES:
             return False
-        if folded == word:
+        if [t.text.casefold() for t in tokens[position : position + len(parts)]] == parts:
             return True
     return False
 

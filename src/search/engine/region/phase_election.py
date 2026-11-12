@@ -66,6 +66,7 @@ from search.engine.region.phase_rank_bind import (
     _unread_qualifier_phrases,
     _with_named_values,
     _withheld_qualifiers,
+    dataset_noted_words,
     judge_value_requirements,
     operation_slot_phrases,
     served_member_names,
@@ -1190,6 +1191,14 @@ async def _repair_bindings(state: ResolveState) -> RegionResult | None:
             state.slot_defaults[reading.property_dcid] = SlotDefaultDisclosure(
                 warnings=(warning,), reading=reading
             )
+
+    # A word the question uses for the elected shape's rows that their figures do not mean
+    # exactly ("aid" on the climate finance tables) is read, and its note says what the
+    # figure holds instead.
+    for note in dict.fromkeys(
+        noted.note for noted in dataset_noted_words(state.shape_draft, get_index(), state)
+    ):
+        state.warnings.append(Warning(code=SLOT_DEFAULTED, severity="warn", message=note))
 
     # The query's places bind to the elected shape once, here, with a whole total where the
     # shape offers one and the bindings settled under its role keys hold its series

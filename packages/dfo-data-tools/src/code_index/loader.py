@@ -10,6 +10,7 @@ from typing import cast, get_args
 
 from code_index.declarations import COMPOSITES
 from code_index.query import CodeIndex, DuplicateDcid, fold_text, partly_stated_five_tuples
+from code_index.tokens import tokenize
 from code_index.types import (
     PARTY_CLASSES,
     PARTY_KINDS,
@@ -28,6 +29,7 @@ from code_index.types import (
     MeasureIndex,
     MeasurePartitionLabel,
     MeasureValueRow,
+    NotedWord,
     PartlyStatedValue,
     PartyKind,
     PartyRow,
@@ -671,6 +673,35 @@ def _parse_party_words(provenance: str, rows: Sequence[Mapping]) -> tuple[PartyW
     return tuple(named)
 
 
+def _parse_noted_words(provenance: str, rows: Sequence[Mapping]) -> tuple[NotedWord, ...]:
+    """A datasets row's `noted_words`, refusing an entry that is not lowercase words joined
+    by single spaces ("aid", "official development assistance"), a note that is not a
+    non-empty string, and an entry noted twice. Absent reads as empty."""
+    noted: list[NotedWord] = []
+    for row in rows:
+        word, note = row["word"], row["note"]
+        if invalid_when_named_entry([word]) is not None or not _is_word_phrase(word):
+            raise IndexFormatError(
+                f"datasets row for {provenance!r} notes {word!r}, which is not lowercase "
+                "words joined by single spaces"
+            )
+        if not isinstance(note, str) or not note.strip():
+            raise IndexFormatError(f"datasets row for {provenance!r} notes {word!r} with no note")
+        if any(word == other.word for other in noted):
+            raise IndexFormatError(f"datasets row for {provenance!r} notes {word!r} twice")
+        noted.append(NotedWord(word=word, note=note))
+    return tuple(noted)
+
+
+def _is_word_phrase(text: str) -> bool:
+    """Whether `text` is one or more words (`code_index.tokens.tokenize`) joined by
+    single spaces, with no separator."""
+    tokens = tokenize(text)
+    return all(token.kind == "word" for token in tokens) and (
+        " ".join(token.text for token in tokens) == text
+    )
+
+
 def _check_declared_word(provenance: str, word: str, prop: str) -> None:
     """Refuses a declared word that is not a single lowercase word, and a measured
     property that is not a non-empty string."""
@@ -707,8 +738,9 @@ def _parse_datasets(rows: Sequence[Mapping]) -> list[DatasetDeclaration]:
     `absent_observation` value outside `{"zero", "unknown"}`, an `account`
     outside `dfo_platform.roles.FlowAccount`, an `opt_in` that is not a boolean,
     a `rank` that is not an integer, an empty `label`, an empty `description`,
-    a `stated_words` row `_parse_stated_words` refuses or a `party_words` row
-    `_parse_party_words` refuses (both keys are optional), a `house_default_for`
+    a `stated_words` row `_parse_stated_words` refuses, a `party_words` row
+    `_parse_party_words` refuses or a `noted_words` row `_parse_noted_words` refuses (the
+    three keys are optional), a `house_default_for`
     (optional) that is not a list of `HouseDefaultCase` values, a `ratio_base_axis`
     (optional, absent reads as `None`) outside `AXIS_LABELS`, or a
     `provenance` or `rank` repeated across rows. Each raises
@@ -729,6 +761,7 @@ def _parse_datasets(rows: Sequence[Mapping]) -> list[DatasetDeclaration]:
                 invariants=dict(row["invariants"]),
                 stated_words=_parse_stated_words(row["provenance"], row.get("stated_words", ())),
                 party_words=_parse_party_words(row["provenance"], row.get("party_words", ())),
+                noted_words=_parse_noted_words(row["provenance"], row.get("noted_words", ())),
                 house_default_for=tuple(row.get("house_default_for", ())),
                 ratio_base_axis=row.get("ratio_base_axis"),
             )

@@ -1419,7 +1419,7 @@ _MEASURE_PARTITION_LABELS_FOR_TEST = (
             ("nettingBasis", "Gross"),
             ("populationType", "FinancialFlow"),
         ),
-        label="gross disbursements",
+        label="gross alpha disbursements",
         named_values=(("sysFlat", "SysFlatA"),),
         definition="The total amount released before any repayments are subtracted.",
     ),
@@ -1458,10 +1458,12 @@ def _measure_label_nodes(*, include_net: bool = True) -> dict[str, dict[str, tup
 
 
 def _two_system_graph_with_measure_labels(*, include_net: bool = True) -> _FakeGraph:
-    """Add labels per node while preserving constraint values' `typeOf` arcs."""
+    """Add labels per node while preserving constraint values' `typeOf` arcs. SysFlatA, the
+    value the gross label names, reads "alpha", a word of that label."""
     graph = _two_system_graph()
     for dcid, arcs in _measure_label_nodes(include_net=include_net).items():
         graph.forward_arcs[dcid] = graph.forward_arcs.get(dcid, {}) | arcs
+    graph.forward_arcs["SysFlatA"]["alternateName"] = ("alpha",)
     return graph
 
 
@@ -1717,7 +1719,7 @@ def test_export_index_wires_measure_axes_into_the_document(tmp_path):
                 ["nettingBasis", "Gross"],
                 ["populationType", "FinancialFlow"],
             ],
-            "label": "gross disbursements",
+            "label": "gross alpha disbursements",
             "named_values": [["sysFlat", "SysFlatA"]],
             "definition": "The total amount released before any repayments are subtracted.",
         },
@@ -1987,13 +1989,18 @@ def test_a_measure_label_named_value_no_partition_row_carries_aborts_the_export(
         },
     }
     codes = [
-        {"dcid": "SysFlatA", "code_system": "sysFlat"},
-        {"dcid": "SysFlatB", "code_system": "sysFlat"},
+        {
+            "dcid": "SysFlatA",
+            "code_system": "sysFlat",
+            "label": "flat alpha",
+            "synonyms": ["alpha"],
+        },
+        {"dcid": "SysFlatB", "code_system": "sysFlat", "label": "flat beta", "synonyms": []},
     ]
     (label,) = [
         label
         for label in _MEASURE_PARTITION_LABELS_FOR_TEST
-        if label.label == "gross disbursements"
+        if label.label == "gross alpha disbursements"
     ]
     _verify_measure_label_named_values([row], codes, _MEASURE_AXES_FOR_TEST, [label])
     wrong = dataclasses.replace(label, named_values=(named_value,))
@@ -2023,14 +2030,32 @@ def test_a_row_reading_a_label_that_names_none_of_its_codes_aborts_until_a_code_
     }
     del named_row["constraint_properties"]["objective"]
     codes = [
-        {"dcid": "SysFlatA", "code_system": "sysFlat", "parent": None},
-        {"dcid": "ObjectiveTotal", "code_system": "objective", "parent": None},
-        {"dcid": "ObjectivePart", "code_system": "objective", "parent": "ObjectiveTotal"},
+        {
+            "dcid": "SysFlatA",
+            "code_system": "sysFlat",
+            "label": "flat alpha",
+            "synonyms": ["alpha"],
+            "parent": None,
+        },
+        {
+            "dcid": "ObjectiveTotal",
+            "code_system": "objective",
+            "label": "objective total",
+            "synonyms": ["objective"],
+            "parent": None,
+        },
+        {
+            "dcid": "ObjectivePart",
+            "code_system": "objective",
+            "label": "objective part",
+            "synonyms": [],
+            "parent": "ObjectiveTotal",
+        },
     ]
     (gross,) = [
         label
         for label in _MEASURE_PARTITION_LABELS_FOR_TEST
-        if label.label == "gross disbursements"
+        if label.label == "gross alpha disbursements"
     ]
     naming = dataclasses.replace(gross, named_values=(("sysFlat", "SysFlatA"),))
     with pytest.raises(ExportRefused, match="sv_objective_part"):
@@ -2046,6 +2071,45 @@ def test_a_row_reading_a_label_that_names_none_of_its_codes_aborts_until_a_code_
     _verify_measure_label_named_values(
         [row, named_row], codes, _MEASURE_AXES_FOR_TEST, [naming, keyed]
     )
+
+
+@pytest.mark.parametrize(
+    "synonyms",
+    [
+        pytest.param(["alpha flow"], id="synonym-with-a-word-outside-the-label"),
+        pytest.param([], id="no-synonym"),
+    ],
+)
+def test_a_measure_label_named_value_no_query_text_reads_aborts_the_export(synonyms):
+    """A heading drops a named value as the measure label's noun, so a query using that noun
+    must read the value: one of the value's texts must lie inside the label. The climate
+    total's graph name, "climate change policy objective", lies inside none of the climate
+    labels."""
+    row = {
+        "dcid": "sv_gross",
+        "population_type": "FinancialFlow",
+        "measured_property": "amount",
+        "stat_type": "measuredValue",
+        "measurement_qualifier": "Nominal",
+        "constraint_properties": {
+            "financialFlowType": "Disbursement",
+            "nettingBasis": "Gross",
+            "sysFlat": "SysFlatA",
+        },
+    }
+    code = {"dcid": "SysFlatA", "code_system": "sysFlat", "label": "flat alpha"}
+    labels = [
+        label
+        for label in _MEASURE_PARTITION_LABELS_FOR_TEST
+        if label.label == "gross alpha disbursements"
+    ]
+    _verify_measure_label_named_values(
+        [row], [code | {"synonyms": ["alpha"]}], _MEASURE_AXES_FOR_TEST, labels
+    )
+    with pytest.raises(ExportRefused, match=r"no label or synonym.*SysFlatA"):
+        _verify_measure_label_named_values(
+            [row], [code | {"synonyms": synonyms}], _MEASURE_AXES_FOR_TEST, labels
+        )
 
 
 # --- plain_name and enum_dcid flow from the code-system table into the declaration row ---

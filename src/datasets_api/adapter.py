@@ -825,9 +825,11 @@ def resolve_definition_members(
     them (`MemberGroup.undismissed_candidates` is empty). A candidate that may
     duplicate the root still refuses, since its roles are unverified. The refusal is
     retryable when a later walk can settle a candidate it names
-    (`MemberGroup.undismissed_rereadable`). A possible duplicate whose complete read carries
-    no definition arc is settled out under the root (`MemberGroup.stub_candidates`), and
-    each shape names it (`StatVarShape.stub_candidates`) for the trace.
+    (`MemberGroup.undismissed_rereadable`). A possible duplicate whose trusted read (complete,
+    single-dcid, or a batch read with no probe budget) carries no definition arc or finds no
+    node, and which no read showed a definition arc, is settled out under the root
+    (`MemberGroup.stub_candidates`), and each shape names it (`StatVarShape.stub_candidates`)
+    for the trace.
     Both paths elect one role class (`statvar_members.elect_role_class`): the
     members whose declared roles cover the role keys `entities` is bound under,
     least-constrained first, then those declaring the fewest roles, so a member

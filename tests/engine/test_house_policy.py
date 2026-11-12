@@ -1,4 +1,4 @@
-"""House policies: fact extraction, the part's context, the six policies and the tie-break."""
+"""House policies: fact extraction, the part's context, the seven policies and the tie-break."""
 
 from __future__ import annotations
 
@@ -821,6 +821,27 @@ _SDG_SERIES = _facts(
             _ctx(),
             [0, 2],
             id="sdg-series-beside-output",
+        ),
+        pytest.param(
+            "declared_basis",
+            (
+                _facts(0, measured_property="attributedAmount", datasets=(_WANTED["sector"],)),
+                _facts(1, datasets=(_WANTED["donor"],)),
+            ),
+            _ctx(),
+            [0, 1],
+            id="attributed-amounts-beside-another-dataset-s-amounts",
+        ),
+        pytest.param(
+            "declared_basis",
+            (
+                _facts(0, measured_property="attributedAmount"),
+                _facts(1, measured_property="grantEquivalent"),
+                _facts(2),
+            ),
+            _ctx(),
+            [1, 2],
+            id="grant-equivalent-beside-amounts-left-to-amount-vs-ge",
         ),
     ],
 )

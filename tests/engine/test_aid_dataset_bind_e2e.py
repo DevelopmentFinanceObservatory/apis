@@ -51,6 +51,7 @@ from search.engine.quantity_read import QuantityOutput
 from search.engine.region import phase_rank_bind as rank_bind_module
 from search.engine.region import pipeline as pipeline_module
 from search.engine.region.decisions import PartyReadingWithdrawn
+from search.engine.region.observations.dispatch import PreviewReader
 from search.engine.region.phase_rank_bind import _phase_prune_and_rank
 from search.engine.region.state import ResolveState
 from search.engine.retrieval.bound_values import identity_dataset, identity_query
@@ -64,6 +65,7 @@ from search.models import (
     ParsedInput,
     ParsedPart,
     RawTextInput,
+    ResolveOptions,
     ResolveRequest,
     ResolveResponse,
     SourceMention,
@@ -1961,6 +1963,46 @@ def test_an_exclusion_refusal_stands_though_the_un_system_has_a_candidate(
         [CRS_PROVENANCE],
         [_SECOND],
     ]
+
+
+@pytest.mark.parametrize(
+    ("provenance", "variable", "answers"),
+    [(IMPUTED_PROVENANCE, "grants", False), (CRS_PROVENANCE, "aid", True)],
+    ids=["refused", "answered"],
+)
+def test_a_part_that_refuses_for_an_unmet_requirement_reads_no_preview(
+    monkeypatch: pytest.MonkeyPatch,
+    source_catalogue: None,
+    provenance: str,
+    variable: str,
+    answers: bool,
+):
+    """The answer phase judges the part's requirements before it launches the preview
+    (`phase_answer._gate_carve_out`), so a part that refuses `qualifier_not_bound` never
+    requests the preview read, and a part that answers requests it."""
+    _name_dataset(monkeypatch, provenance)
+    reads: list[str] = []
+    real = PreviewReader.observations
+
+    def record(self: PreviewReader) -> Any:
+        reads.append("observations")
+        return real(self)
+
+    monkeypatch.setattr(PreviewReader, "observations", record)
+    request = make_request(f"{variable} to Kenya").model_copy(
+        update={"response_options": ResolveOptions(include_observations=True)}
+    )
+
+    response = offline_resolve(
+        request,
+        graph=_graph(variable),
+        llm=_ScriptedLLM(variable),
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+    )
+
+    (part,) = response.parts
+    assert isinstance(part, NoDataPart) is not answers
+    assert reads == (["observations"] if answers else [])
 
 
 # Each row: a raw-text question whose identity binds a table it did not name in a typed

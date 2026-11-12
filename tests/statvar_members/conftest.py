@@ -117,7 +117,11 @@ class FlakyMemberArcReader(FakeMemberArcReader):
     `drop_first_batch` drops a property on the first multi-dcid appearance. `drop_second_batch`
     drops on the second, and `drop_always` drops on every request. Single-dcid reads return full
     arcs. The `empty_*` options return `None` for the entire arc map. Their dcids remain in `arcs`
-    to model a reverse-index hit with an empty forward read.
+    to model a reverse-index hit with an empty forward read. `empty_always` keeps the
+    `MemberArcReader` contract, under which a `None` from a read with no probe budget is a
+    single-dcid verdict: it models a node the graph never defined. `empty_first_batch` breaks
+    it, to exercise the reconciliation passes, which re-read every empty entry; the root-twin
+    pass trusts that contract, so its tests use the other options.
     """
 
     def __init__(
@@ -283,3 +287,37 @@ def kenya_reader(*, force_truncated: bool = False) -> FakeMemberArcReader:
 
 def male_female_only_reader(*, force_truncated: bool = False) -> FakeMemberArcReader:
     return FakeMemberArcReader(arcs=_MALE_FEMALE_ONLY_ARCS, force_truncated=force_truncated)
+
+
+class SequencedMemberArcReader(FakeMemberArcReader):
+    """Serves `reads[dcid][n]` on the nth forward read of `dcid`, the last one thereafter.
+    Every other dcid, and the reverse query, read `arcs`."""
+
+    def __init__(
+        self,
+        *,
+        arcs: Mapping[str, Mapping[str, tuple[str, ...]]],
+        reads: Mapping[str, Sequence[Mapping[str, tuple[str, ...]] | None]],
+    ) -> None:
+        super().__init__(arcs=arcs)
+        self._reads = reads
+        self._count: dict[str, int] = {}
+
+    def node_arcs_many(
+        self,
+        dcids: Sequence[str],
+        *,
+        properties: Sequence[str],
+        individual_probe_budget: int | None = None,
+        deadline: float | None = None,
+    ) -> dict[str, dict[str, tuple[str, ...]] | None]:
+        result = super().node_arcs_many(dcids, properties=properties)
+        for dcid, served in self._reads.items():
+            if dcid in result:
+                position = self._count.get(dcid, 0)
+                self._count[dcid] = position + 1
+                read = served[min(position, len(served) - 1)]
+                result[dcid] = (
+                    None if read is None else {prop: read.get(prop, ()) for prop in properties}
+                )
+        return result

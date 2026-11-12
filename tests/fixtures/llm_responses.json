@@ -24458,5 +24458,275 @@
         "end": "2022"
       }
     ]
+  },
+  "ExclusionRead@3c024839b279:7a3821f3d4105d0d1ecdc2cd7c95e710f4450033": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:b3b8d01ada784637935acd93681d472423f2a0f8": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:64393bd23c46f83d96cc79574cb074f0f0b3ce75": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:314c2f1ab65530cd9f7ae8c94ca255d8e101ab10": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:af2eec7b1e0516e62c70dd9cde3e8d6167f0ee16": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:09ae6c6f66daa0ab7ba11d9d74dae468466adb0a": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:92513425012b0431c6bc72c4d110e104197320af": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:0af3093d6ce37051dc6fcc78b8b78c0303363e39": {
+    "exclusions": []
+  },
+  "ExclusionRead@3c024839b279:fd32e15415db2bed12e49dacc1bd2da510cd67ee": {
+    "exclusions": []
+  },
+  "Extraction@840d8db0c01a:bcbfe8bda0c34e4eec435f41b62f0f3696ab1d6e": {
+    "kind": "resolution",
+    "variables": [
+      "climate finance commitments"
+    ],
+    "entities": [
+      {
+        "text": "Germany",
+        "span": "Germany",
+        "variables": [
+          0
+        ],
+        "cue": "from",
+        "role": "source",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "Extraction@840d8db0c01a:1c4ee6120a7419b23c589c2a3139650b89bf2c84": {
+    "kind": "resolution",
+    "variables": [
+      "climate finance commitments"
+    ],
+    "entities": [
+      {
+        "text": "Germany",
+        "span": "Germany",
+        "variables": [
+          0
+        ],
+        "cue": "Germany",
+        "role": "source",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "Extraction@840d8db0c01a:7aadc979fedc741899021a4209d24abda48073a0": {
+    "kind": "resolution",
+    "variables": [
+      "climate finance gross disbursements"
+    ],
+    "entities": [
+      {
+        "text": "Germany",
+        "span": "Germany",
+        "variables": [
+          0
+        ],
+        "cue": "from",
+        "role": "source",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "Extraction@840d8db0c01a:eea639c16fd89c72368327fa6aec2a6ef91d69d9": {
+    "kind": "resolution",
+    "variables": [
+      "attributed climate finance commitments"
+    ],
+    "entities": [
+      {
+        "text": "Germany",
+        "span": "Germany",
+        "variables": [
+          0
+        ],
+        "cue": "from",
+        "role": "source",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "Extraction@840d8db0c01a:ca5f040e90f8e73ec917c9f7cd1e4fc0c80843ca": {
+    "kind": "resolution",
+    "variables": [
+      "climate finance"
+    ],
+    "entities": [
+      {
+        "text": "Germany",
+        "span": "Germany",
+        "variables": [
+          0
+        ],
+        "cue": "from",
+        "role": "source",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "Extraction@840d8db0c01a:4de05809a73570bf94a1a662197a2205f0d72f12": {
+    "kind": "resolution",
+    "variables": [
+      "adaptation disbursements"
+    ],
+    "entities": [
+      {
+        "text": "Germany",
+        "span": "germany",
+        "variables": [
+          0
+        ],
+        "cue": "germany",
+        "role": "source",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "Extraction@840d8db0c01a:5f77dfb4d1c161161f0f4f1603bd59815ddffa78": {
+    "kind": "resolution",
+    "variables": [
+      "mitigation commitments"
+    ],
+    "entities": [
+      {
+        "text": "Germany",
+        "span": "Germany",
+        "variables": [
+          0
+        ],
+        "cue": null,
+        "role": null,
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "Extraction@840d8db0c01a:ea6247085d00751cd2b2a9cda9afe88260be5aed": {
+    "kind": "resolution",
+    "variables": [
+      "cross-cutting climate finance commitments"
+    ],
+    "entities": [
+      {
+        "text": "Germany",
+        "span": "Germany",
+        "variables": [
+          0
+        ],
+        "cue": null,
+        "role": null,
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "Extraction@840d8db0c01a:6f1c696fa9397a8c658a4aa5460f9e804591ca79": {
+    "kind": "resolution",
+    "variables": [
+      "CRS adaptation disbursements"
+    ],
+    "entities": [
+      {
+        "text": "Germany",
+        "span": "Germany",
+        "variables": [
+          0
+        ],
+        "cue": "from",
+        "role": "source",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
   }
 }
