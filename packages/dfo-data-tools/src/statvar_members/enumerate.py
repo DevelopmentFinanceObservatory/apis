@@ -134,14 +134,14 @@ walked candidates remain unbudgeted. Unresolved reads mark the group inconsisten
 and suppress `proven_complete`."""
 
 _TWIN_PROBE_BUDGET = 8
-"""Under a confirmed root, `_read_root_twins` reads at most 8 possible root twins one dcid
-at a time: 8 arc reads beyond the reconciliation passes. Under an unresolved-denominator ask,
-a twin naming a denominator target `_ProvisionalDenominatorReader` has not seen adds one
-batched `typeOf` read, and each target that reads empty in a batch of several adds one
-single-target re-read. The pass therefore costs at most 8 arc reads, 8 `typeOf` reads, and
-one re-read per target that reads empty in a batch. A twin whose complete read carries no
-definition arc is settled without a read and spends none of the budget
-(`MemberGroup.stub_candidates`).
+"""Under a confirmed root, `_read_root_twins` reads alone at most 8 possible root twins whose
+batch read carried definition arcs: 8 arc reads beyond the reconciliation passes. Under an
+unresolved-denominator ask, a twin naming a denominator target `_ProvisionalDenominatorReader`
+has not seen adds one batched `typeOf` read, and each target that reads empty in a batch of
+several adds one single-target re-read. The budget leaves out the twins whose batch read was
+bare, which a stub family holds by the dozen: each is read alone and settled from that read
+(`MemberGroup.stub_candidates`), at about 0.19 s a read, as is a twin an earlier pass read
+alone at no cost.
 Live families share one target (`PerCapita`), which the root's read has seen, so they add
 none. Twins past the budget stay in `undismissed_candidates`. Root-shaped suspects take the
 reconciliation budgets first, so few reach this pass: dev walks of GDP per capita in Guatemala,
@@ -283,10 +283,11 @@ class MemberGroup:
     not match `slots`. Under `root_confirmed`, a possible root twin that
     `_read_root_twins` settles leaves this list."""
     stub_candidates: tuple[str, ...] = ()
-    """The possible root twins `_read_root_twins` settled as non-members because the reader
-    holds their arcs complete (`CompleteArcReads.arcs_complete`) and their read carries none
-    of `_FIVE_TUPLE_PROPERTIES`, though the reverse query named them under the five-tuple.
-    No read of such a node confirms it, since every read answers the same body. The dev
+    """The possible root twins `_read_root_twins` settled as non-members because a trusted
+    read carries none of `_FIVE_TUPLE_PROPERTIES` or finds no node, though the reverse query
+    named them under the five-tuple. A read is trusted when the reader holds the twin's arcs
+    complete (`CompleteArcReads.arcs_complete`) or reads the twin alone. No read of such a
+    node confirms it, since every read answers the same body. The dev
     graph's `Count_Person` marital-status splits from `dc/base/Mongolia_Demographics` are
     such nodes: their forward body is a single `memberOf` arc while their reverse arcs place
     them under Person/count/measuredValue. Settled only under `root_confirmed`: such a twin is a
@@ -1036,8 +1037,8 @@ def _confirm_group(
     Missing `typeOf` is inconclusive, so winners receive a trusted re-read.
     A candidate rejected for an absent arc is re-read (`_reconcile_absence_rejected`)
     unless `arcs_complete` says its read holds every arc, which makes it a non-member.
-    Under a confirmed root, a possible root twin whose complete read carries no definition
-    arc is settled out (`MemberGroup.stub_candidates`).
+    Under a confirmed root, a possible root twin whose complete or single-dcid read carries
+    no definition arc is settled out (`MemberGroup.stub_candidates`).
 
     Extras are deduplicated and receive the same membership and reduction checks,
     and skip filter reconciliation, which applies only to candidates the reverse
@@ -1154,8 +1155,7 @@ def _confirm_group(
             arcs_complete=arcs_complete,
             five_tuple=five_tuple,
             slots=slots,
-            graph=graph,
-            properties=properties,
+            graph=single_reads,
         )
         confirmed += read_twins
         settled = frozenset(twins) - frozenset(undismissed)
@@ -1330,36 +1330,47 @@ def _read_root_twins(
     arcs_complete: Callable[[str], bool],
     five_tuple: FiveTuple,
     slots: Mapping[str, SlotBinding],
-    graph: MemberArcReader,
-    properties: Sequence[str],
+    graph: _SingleReads,
 ) -> tuple[tuple[Member, ...], tuple[str, ...], tuple[str, ...]]:
-    """Settle the twins whose complete read carries no definition arc, then read the first
-    `_TWIN_PROBE_BUDGET` of the rest one dcid at a time.
+    """Settle each twin from a trusted read: a complete read, or a single-dcid read.
 
     A twin whose read in `arcs_by_dcid` carries none of `_FIVE_TUPLE_PROPERTIES` and whose
-    reader holds its arcs complete (`arcs_complete`) is settled as a non-member without a
-    read, since every read answers the same: the limit `MemberGroup.stub_candidates` states.
-    A batch read of a live reader can drop every arc, so a bare read it does not hold
-    complete settles nothing.
-    A single-dcid read is trusted, so a read settles its twin: a confirmed member
+    reader holds its arcs complete (`arcs_complete`) is settled as a stub without a read.
+    Every other twin is settled from its single-dcid read: one an earlier pass made
+    (`_SingleReads.arcs`), or one made here. Each twin whose batch read was bare is read
+    alone. A batch read of these is no cheaper: a stub reads empty in every batch, and a
+    reader probes each empty batch entry alone. Of the twins whose batch read carried
+    definition arcs, the first `_TWIN_PROBE_BUDGET` are read alone.
+
+    A single-dcid read is trusted. One that carries no definition arc, or finds no node,
+    settles its twin as a stub (`MemberGroup.stub_candidates`). Otherwise a confirmed member
     joins the group (a root twin survives beside the root, any other the root dominates),
     and a non-match is dismissed. A twin in `walked` is the exception when its read lacks
     a filter-covered arc: the reverse query proved that arc, so the read contradicts the
     index and settles nothing, as in `_reconcile_filter_covered`. Returns the confirmed
-    members, the twins still unsettled (those whose read came back empty or contradicted
-    the index, and those past the budget), and the twins settled as stubs."""
-    stubs = tuple(
+    members, the twins still unsettled (those whose read contradicted the index, and those
+    past the budget), and the twins settled as stubs."""
+    held_stubs = frozenset(
         dcid for dcid in twins if _is_stub(arcs_by_dcid.get(dcid)) and arcs_complete(dcid)
     )
-    settled = frozenset(stubs)
-    to_read = [dcid for dcid in twins if dcid not in settled]
+    to_settle = [dcid for dcid in twins if dcid not in held_stubs]
+    unread = [dcid for dcid in to_settle if dcid not in graph.arcs]
+    bare = [dcid for dcid in unread if _is_stub(arcs_by_dcid.get(dcid))]
+    defined = [dcid for dcid in unread if not _is_stub(arcs_by_dcid.get(dcid))]
+    for dcid in (*bare, *defined[:_TWIN_PROBE_BUDGET]):
+        graph.node_arcs_many([dcid], properties=graph.properties)
+
     scalar_expected, slot_expected = _filter_covered_expectations(five_tuple, slots)
     confirmed: list[Member] = []
     unsettled: list[str] = []
-    for dcid in to_read[:_TWIN_PROBE_BUDGET]:
-        arcs = graph.node_arcs_many([dcid], properties=properties).get(dcid)
-        if arcs is None:
+    stubs = set(held_stubs)
+    for dcid in to_settle:
+        if dcid not in graph.arcs:
             unsettled.append(dcid)
+            continue
+        arcs = graph.arcs[dcid]
+        if arcs is None or _is_stub(arcs):
+            stubs.add(dcid)
             continue
         if _type_of_names_a_non_stat_var(arcs):
             continue
@@ -1371,7 +1382,7 @@ def _read_root_twins(
         ).member
         if member is not None:
             confirmed.append(member)
-    return tuple(confirmed), (*unsettled, *to_read[_TWIN_PROBE_BUDGET:]), stubs
+    return tuple(confirmed), tuple(unsettled), tuple(dcid for dcid in twins if dcid in stubs)
 
 
 def _is_stub(arcs: Mapping[str, tuple[str, ...]] | None) -> bool:

@@ -11,6 +11,7 @@ from statvar_members.enumerate import (
     _arcs_unproven,
     _ProvisionalDenominatorReader,
     _read_root_twins,
+    _SingleReads,
     enumerate_members,
 )
 from statvar_members.types import FiveTuple
@@ -57,7 +58,7 @@ def test_confirmed_roots_that_disagree_refuse_beside_an_unreadable_twin():
     }
 
 
-def test_an_unreadable_twin_beside_agreeing_roots_stays_undismissed():
+def test_a_twin_that_reads_no_node_alone_beside_agreeing_roots_settles_as_a_stub():
     arcs = {**_DISAGREEING_ROOTS, "Count_Person_B": _root(("recipient",))}
     reader = FlakyMemberArcReader(arcs=arcs, empty_always=["Count_Person_Z"])
 
@@ -65,8 +66,9 @@ def test_an_unreadable_twin_beside_agreeing_roots_stays_undismissed():
 
     assert [member.stat_var for member in group.members] == ["Count_Person_A", "Count_Person_B"]
     assert group.root_confirmed is True
-    assert group.inconsistent_candidates == ("Count_Person_Z",)
-    assert group.undismissed_candidates == ("Count_Person_Z",)
+    assert group.stub_candidates == ("Count_Person_Z",)
+    assert group.inconsistent_candidates == ()
+    assert group.undismissed_candidates == ()
 
 
 _CONTRADICTED_TWIN = {
@@ -122,8 +124,7 @@ def test_a_twin_read_missing_a_filtered_arc_settles_only_a_caller_supplied_twin(
         arcs_complete=_arcs_unproven,
         five_tuple=_COUNT,
         slots={},
-        graph=reader,
-        properties=tuple(_root()),
+        graph=_SingleReads(reader, properties=tuple(_root())),
     )
 
     assert confirmed == ()
@@ -147,26 +148,34 @@ def test_roots_past_the_reprobe_budget_are_read_alone_and_join_the_members():
     assert reader.calls["node_arcs_many"] == 3 + 8
 
 
-def test_the_twin_pass_adds_at_most_its_budget_of_reads():
-    """Twelve possible twins read empty every time. The pass reads `_TWIN_PROBE_BUDGET` of
-    them, and all twelve stay undismissed."""
-    twins = [f"Count_Person_Twin{i:02d}" for i in range(_TWIN_PROBE_BUDGET + 4)]
-    arcs = {"Count_Person": _root(), **dict.fromkeys(twins, _root())}
-    reader = FlakyMemberArcReader(arcs=arcs, empty_always=twins)
+def test_stub_twins_past_the_twin_budget_settle_and_a_defined_twin_joins():
+    """Forty twins read no node every time, as dev's rural age-band splits of
+    `Count_Person_Rural` read, and the catalogue holds none of them complete. The re-probe
+    reads 32 of them alone, and the twin pass settles those from that read and reads the
+    other 8 alone. `Count_Person_Zz` reads empty only on the first batch and sorts past the
+    re-probe budget; its read alone confirms it beside the root."""
+    stubs = [f"Count_Person_Twin{i:02d}" for i in range(_REPROBE_BUDGET + _TWIN_PROBE_BUDGET)]
+    arcs = {"Count_Person": _root(), "Count_Person_Zz": _root(), **dict.fromkeys(stubs, _root())}
+    reader = FlakyMemberArcReader(
+        arcs=arcs, empty_always=stubs, empty_first_batch=["Count_Person_Zz"]
+    )
 
     group = enumerate_members(five_tuple=_COUNT, slots={}, graph=reader)
 
-    assert [member.stat_var for member in group.members] == ["Count_Person"]
-    assert group.undismissed_candidates == tuple(twins)
-    # Before the pass: the initial batch, one re-probe batch of the 12 empty reads, one
-    # single-dcid retry for each, and the root's verification.
-    reads_before_the_pass = 1 + 1 + len(twins) + 1
-    assert reader.calls["node_arcs_many"] == reads_before_the_pass + _TWIN_PROBE_BUDGET
+    assert [member.stat_var for member in group.members] == ["Count_Person", "Count_Person_Zz"]
+    assert group.stub_candidates == tuple(stubs)
+    assert group.inconsistent_candidates == ()
+    assert group.undismissed_candidates == ()
+    # The initial batch, the 32-suspect re-probe batch and one single-dcid retry each, the
+    # root's verification, and one read alone per twin past the re-probe: no stub is read
+    # alone twice.
+    assert reader.calls["node_arcs_many"] == 1 + 1 + _REPROBE_BUDGET + 1 + _TWIN_PROBE_BUDGET + 1
 
 
 def test_the_twin_pass_adds_a_type_read_for_each_unseen_denominator_target():
-    """Twelve twins each name their own provisional denominator. The pass reads eight of
-    them alone, and each read costs one more for its target's `typeOf`."""
+    """Twelve twins whose batch read carried definition arcs each name their own provisional
+    denominator. The pass reads eight of them alone, and each read costs one more for its
+    target's `typeOf`."""
     ask = FiveTuple(
         population_type="Person",
         measured_property="count",
@@ -183,12 +192,11 @@ def test_the_twin_pass_adds_a_type_read_for_each_unseen_denominator_target():
     confirmed, unsettled, _ = _read_root_twins(
         twins,
         walked=frozenset(twins),
-        arcs_by_dcid={},
+        arcs_by_dcid={twin: arcs[twin] for twin in twins},
         arcs_complete=_arcs_unproven,
         five_tuple=ask,
         slots={},
-        graph=_ProvisionalDenominatorReader(reader),
-        properties=tuple(_root()),
+        graph=_SingleReads(_ProvisionalDenominatorReader(reader), properties=tuple(_root())),
     )
 
     assert [member.stat_var for member in confirmed] == twins[:_TWIN_PROBE_BUDGET]

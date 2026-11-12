@@ -35,7 +35,7 @@ from statvar_members import (
     enumerate_members,
     role_class_facts,
 )
-from statvar_members.enumerate import _ROLE_PROBE_BUDGET
+from statvar_members.enumerate import _REPROBE_BUDGET, _ROLE_PROBE_BUDGET
 from statvar_members.types import FiveTuple
 
 from .conftest import FakeMemberArcReader, FlakyMemberArcReader
@@ -781,17 +781,28 @@ def test_a_dropped_role_arc_does_not_cost_the_walk_a_covering_member():
 
 
 def test_a_by_creditor_twin_read_only_as_a_root_twin_answers_an_open_creditor():
-    """The twin reads empty on the batch and on the filter re-probe, so the election before
-    the twin pass sees the recipient-only total alone and reads the destination alone. Read
-    as a root twin, the twin covers the open origin and the final election elects it."""
-    arcs = {"Service": _arcs(_RECIPIENT), "Service_ByCreditor": _arcs(_PAIR)}
+    """The twin reads empty on the batch and sorts past the filter re-probe's budget, behind
+    stubs that read no node, so the election before the twin pass sees the recipient-only
+    total alone and reads the destination alone. Read as a root twin, the twin covers the
+    open origin and the final election elects it."""
+    stubs = [f"Service_A{i:02d}" for i in range(_REPROBE_BUDGET)]
+    arcs = {
+        "Service": _arcs(_RECIPIENT),
+        "Service_ByCreditor": _arcs(_PAIR),
+        **dict.fromkeys(stubs, _arcs(())),
+    }
     reader = _SequencedReader(
-        arcs=arcs, reads={"Service_ByCreditor": [None, None, arcs["Service_ByCreditor"]]}
+        arcs=arcs,
+        reads={
+            "Service_ByCreditor": [None, arcs["Service_ByCreditor"]],
+            **{s: [None] for s in stubs},
+        },
     )
 
     group = _walk("destination", reader=reader, open_role_keys=("origin",))
 
     assert [member.stat_var for member in group.members] == ["Service_ByCreditor"]
+    assert group.stub_candidates == tuple(stubs)
     assert group.undismissed_candidates == ()
 
 
