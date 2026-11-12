@@ -730,29 +730,15 @@ class OriginGraphClient:
 
     def default_facet_policy(self, *, stat_var: str, axis: str) -> FacetDefaultPolicy | None:
         """The default `stat_var` declares for `axis` on its `DEFAULT_FACET_ARCS` arc
-        (`dc_graph.declared_facet_policy`). A variable the catalogue's tables hold answers from
-        its held arc rows, with no graph request and no arc answer built; any other is read
-        from its backend, which every DFO, base and UN variable the catalogue lists avoids."""
+        (`dc_graph.declared_facet_policy`), read through `node_arc_values`: a variable the
+        catalogue's tables hold answers with no graph request, and any other reads its
+        backend, which every DFO, base and UN variable the catalogue lists avoids."""
         arc = DEFAULT_FACET_ARCS.get(axis)
         if arc is None:
             return None
         dcid = stat_var.removeprefix("dcid:")
-
-        def tables(catalogue: Catalogue, dcid: str) -> FacetDefaultPolicy | None | _Unmirrored:
-            rows = _node_arcs(catalogue, dcid)
-            if rows is None:
-                return _OMITTED if _absent(catalogue, dcid) else _LIVE
-            refs = dict.fromkeys(
-                ref for row in rows if row.property == arc and (ref := row.dcid or row.value)
-            )
-            return declared_facet_policy(dcid, arc=arc, refs=tuple(refs))
-
-        return self._route_one(
-            current_catalogue(),
-            dcid,
-            tables,
-            lambda backend: backend.default_facet_policy(stat_var=dcid, axis=axis),
-        )
+        refs = self.node_arc_values(dcid, properties=[arc])[arc]
+        return declared_facet_policy(dcid, arc=arc, refs=refs)
 
     # -- facet reads, admitted --
 

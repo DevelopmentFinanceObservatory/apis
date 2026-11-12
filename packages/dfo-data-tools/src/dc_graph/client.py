@@ -46,6 +46,7 @@ from dc_graph.errors import (
 from dc_graph.visible_arcs import dfo_visible
 from dfo_platform.cloud_run_auth import cloud_run_auth
 from dfo_platform.executor import submit_with_context
+from dfo_platform.lru_memo import LruMemo
 from dfo_platform.request_deadline import bounded_deadline
 from dfo_platform.single_flight_cache import SingleFlightCache, WaitTimeout
 from dfo_platform.timings import count
@@ -91,6 +92,10 @@ _GRAPH_DECLARED_POLICY_VERSION: Final[str] = "1"
 
 _GRAPH_DECLARED_SELECTION_REASON: Final[str] = "graph_declared"
 """`FacetDefaultPolicy.selection_reason` of every arc-declared default."""
+
+_CONFLICTING_DECLARATIONS_LOGGED: Final[LruMemo[tuple[str, str], bool]] = LruMemo(4_096)
+"""The `(stat_var, arc)` pairs `declared_facet_policy` has logged as declaring several values,
+the most recent kept, so each logs once per process however often it is read."""
 
 CURRENCY_UNIT_OF_MEASURE_ISO_CODES: Final[Mapping[str, str]] = MappingProxyType(
     {"USDollar": "USD", "Euro": "EUR", "CanadianDollar": "CAD", "IndianRupee": "INR"}
@@ -2494,18 +2499,21 @@ def declared_facet_policy(
     """The default facet policy `stat_var` declares through `refs`, the distinct targets of its
     `arc` (`DEFAULT_FACET_ARCS`). The policy names `arc` as its `policy_node`, so a trace
     records which declaration chose the facet. `None` when the StatVar carries no target, and
-    `None` with an error log when it carries several: two defaults decide nothing, and the
-    unbound axis takes the deployment ranking, as it does without a declaration."""
+    `None` with an error log, once per process for each StatVar and arc, when it carries
+    several: two defaults decide nothing, and the unbound axis takes the deployment ranking, as
+    it does without a declaration."""
     if not refs:
         return None
     if len(refs) > 1:
-        logger.error(
-            "%s declares %d values on %s, so no default applies: %s",
-            stat_var,
-            len(refs),
-            arc,
-            list(refs),
-        )
+        if _CONFLICTING_DECLARATIONS_LOGGED.get((stat_var, arc)) is None:
+            _CONFLICTING_DECLARATIONS_LOGGED.put((stat_var, arc), True)
+            logger.error(
+                "%s declares %d values on %s, so no default applies: %s",
+                stat_var,
+                len(refs),
+                arc,
+                list(refs),
+            )
         return None
     return FacetDefaultPolicy(
         resolved_ref=refs[0],

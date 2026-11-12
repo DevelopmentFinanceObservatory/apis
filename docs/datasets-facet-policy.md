@@ -34,21 +34,23 @@ catalogue's arc tables hold from its held arc rows, with no graph request,
 so the arc takes effect at the first catalogue build after the graph
 carries it. A variable the tables do not hold is read from the graph. A
 StatVar carrying two values on the arc declares nothing: the read logs an
-error naming the StatVar and its values, and the axis ranks as it would
+error naming the StatVar and its values, once per process, and the axis ranks as it would
 without a declaration.
 
 On an unbound `measurementMethod` axis, the declared method serves when
-any probed candidate carries it, whatever the other candidates' coverage
-or observation count. The selection records `basis: declared_default`,
+any probed candidate carrying every bound value carries it, whatever the
+other candidates' coverage or observation count. The selection records `basis: declared_default`,
 `default_policy: defaultMeasurementMethod`, `default_policy_version: 1`
 and `selection_reason: graph_declared`. The ranking then runs on the other
 unbound axes over the candidates that carry the declared method
 (`materialise.facets.fallback_pool`). A bound axis overrides the
-declaration, as it overrides the deployment policy.
+declaration, as it overrides the deployment policy: under a bound
+provenance whose candidates lack the declared method, the ranking chooses
+the method among that provenance's candidates.
 
 A declared method that no probed candidate carries serves the ranking's
 choice, one method, with `basis: deployment_fallback`, and logs one line
-naming the StatVar and the declared method
+naming the StatVar and the declared method, once per StatVar in a process
 (`materialise.facets.log_declared_miss`). The pipeline checks that every
 StatVar holds observations under its declared method, but a request is
 narrower than the StatVar: one provider and one recipient can hold none.
@@ -58,9 +60,11 @@ A group follows the same rule over the facets its members share
 member declares the same method. An index-sourced group, which otherwise
 lets each member serve every method under the elected source and unit,
 then resolves the axis to one method too: the declared one where the shared
-pool holds it, else the top-ranked candidate's. A member of the group that
-holds no facet under that method refuses with `facet_not_available`, as a
-member holding no facet matching any group's declared defaults does.
+pool holds it, else the top-ranked candidate's. A member that holds the
+elected source and unit but no facet under that method serves nothing, and
+the group's warning counts it among the series holding no observations
+under the selected source, unit and method, as Search leaves it out of the
+answer.
 Members declaring different methods, or some none, give the group no
 declared method, and it elects as it would without one.
 

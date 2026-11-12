@@ -1924,3 +1924,67 @@ def test_an_index_sourced_group_whose_members_declare_a_method_serves_one_method
         [facet.measurement_method for facet in group.served(index, member)]
         for index, member in enumerate([member_a, member_b])
     ] == [[method], [method]]
+
+
+@pytest.mark.parametrize(
+    ("declared", "member_b", "served"),
+    [
+        pytest.param(
+            _ONE_WEIGHTING,
+            [_climate_facet("bFull", _FULL_VALUE, 4)],
+            [["aWeighting"], []],
+            id="declared",
+        ),
+        pytest.param(
+            "NoSuchMethod",
+            [_climate_facet("bOther", "OtherMethod", 4)],
+            [["aFull"], []],
+            id="declared_missing",
+        ),
+    ],
+)
+def test_a_group_member_lacking_the_declared_method_is_unserved_in_the_mint_as_in_search(
+    declared: str, member_b: list[Facet], served: list[list[str]]
+):
+    """Member B of an index-resolved family holds the elected source and unit but not the
+    method the declaration resolves the group to, the declared one or, where no member holds
+    it, the ranking's. The mint serves member A and names B unserved, as Search's election of
+    the same candidates does, where it used to refuse the group."""
+    policy = FacetDefaultPolicy(
+        resolved_ref=declared,
+        policy_node="defaultMeasurementMethod",
+        policy_version="1",
+        selection_reason="graph_declared",
+    )
+    graph = FakeGraphReader(
+        policies={
+            (_STAT_VAR_A, "measurementMethod"): policy,
+            (_STAT_VAR_B, "measurementMethod"): policy,
+        }
+    )
+    requests = [
+        _request(stat_var=_STAT_VAR_A, facet_bindings={}, index_sourced=True),
+        _request(stat_var=_STAT_VAR_B, facet_bindings={}, index_sourced=True),
+    ]
+    members = [
+        [_climate_facet("aWeighting", _ONE_WEIGHTING, 2), _climate_facet("aFull", _FULL_VALUE, 5)],
+        member_b,
+    ]
+
+    mint = select_group_facets(requests, members, graph=graph)
+    search = elect_group(
+        members,
+        stat_vars=[_STAT_VAR_A, _STAT_VAR_B],
+        window=None,
+        index_sourced=True,
+        requires_provenance=False,
+        policies={"measurementMethod": policy},
+    )
+
+    assert search is not None
+    for group in (mint, search):
+        assert group.unserved == (1,)
+        assert [
+            [facet.facet_id for facet in group.served(index, member)]
+            for index, member in enumerate(members)
+        ] == served

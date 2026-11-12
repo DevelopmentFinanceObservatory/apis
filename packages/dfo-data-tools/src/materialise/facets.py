@@ -26,13 +26,14 @@ from enum import Enum
 from functools import partial, reduce
 from itertools import chain, groupby
 from threading import Lock
-from typing import TYPE_CHECKING, Literal, Protocol, cast, final
+from typing import TYPE_CHECKING, Final, Literal, Protocol, cast, final
 
 from dfo_spec_kit.units import Money, UnpricedMoney, parse_unit
 
 from dc_graph import earliest_date as _earliest
 from dc_graph import latest_date as _latest
 from dc_sdmx import ContainedIn, EntityFilter
+from dfo_platform.lru_memo import LruMemo
 from dfo_platform.named import cut
 from dfo_platform.problem import Alternative
 from materialise.continued_series import ContinuedSeries
@@ -1695,15 +1696,16 @@ def _declared_refs(
     except_axis: str,
 ) -> dict[str, str | None]:
     """The declared defaults that resolve on the axes other than `except_axis`: each policy
-    some candidate carries, matched in the pool `select_facet` matches it in (every candidate
-    for an unbound axis, the bound-narrowed pool for a unit request)."""
+    some candidate carries, matched in the pool `select_facet` matches it in (the candidates
+    carrying every bound ref for an unbound axis, those then narrowed to a currency-native unit
+    for a unit request)."""
     refs: dict[str, str | None] = {}
     for axis, policy in policies.items():
         if axis == except_axis or policy is None:
             continue
         state = all_bindings.get(axis, FacetBinding(state="unbound")).state
         pool = (
-            dispatchable
+            _narrow_by_bound_axes_only(dispatchable, all_bindings)
             if state == "unbound"
             else _narrow_by_bound_axes(dispatchable, all_bindings)
         )
@@ -2328,8 +2330,9 @@ def select_facet(
     resolves the native unit and applies only to `unit`. Other axes raise
     `MaterialisationUsageError`.
 
-    An unbound axis first tries the graph's declared default. A matching ref returns
-    `basis="declared_default"`. A declared ref no candidate carries is logged
+    An unbound axis first tries the graph's declared default among the candidates carrying
+    every bound ref, so a bound axis still governs. A matching ref returns
+    `basis="declared_default"`. A declared ref no such candidate carries is logged
     (`log_declared_miss`) and the axis ranks as it would without one, so the member serves one
     value under `basis="deployment_fallback"`. Without a matching policy, candidates are
     narrowed by bound axes, then to those overlapping
@@ -2382,7 +2385,7 @@ def select_facet(
 
     policy = policies.get(axis)
     if policy is not None:
-        match = _match_policy(policy, dispatchable, axis)
+        match = _match_policy(policy, _narrow_by_bound_axes_only(dispatchable, all_bindings), axis)
         if match is not None:
             return _selection(
                 axis,
@@ -3117,17 +3120,37 @@ def _match_policy(
     return next((c for c in candidates if facet_axis_value(c, axis) == policy.resolved_ref), None)
 
 
+_DECLARED_MISSES_LOGGED: Final[LruMemo[tuple[str, str, str], bool]] = LruMemo(16_384)
+"""The `(stat_var, axis, ref)` misses `log_declared_miss` has logged, the most recent kept, so a
+miss logs once per StatVar however often its plans re-elect."""
+
+_DECLARED_MISS_NAMED: Final[int] = 3
+"""How many StatVars a miss's log line names; it counts the rest."""
+
+
 def log_declared_miss(policy: FacetDefaultPolicy, *, axis: str, stat_vars: Sequence[str]) -> None:
     """Logs a declared default no candidate of `stat_vars` carries, the one record besides the
-    selection's `deployment_fallback` basis that the declaration did not serve. The pipeline
+    selection's `deployment_fallback` basis that the declaration did not serve. Each StatVar is
+    logged once per process (`_DECLARED_MISSES_LOGGED`), and the line names the first
+    `_DECLARED_MISS_NAMED` of the StatVars not logged before and counts them all. The pipeline
     that publishes the declaration checks the StatVar holds observations under it; a request
     narrower than the StatVar can still find none."""
+    unlogged = []
+    for stat_var in stat_vars:
+        key = (stat_var, axis, policy.resolved_ref)
+        if _DECLARED_MISSES_LOGGED.get(key) is None:
+            _DECLARED_MISSES_LOGGED.put(key, True)
+            unlogged.append(stat_var)
+    if not unlogged:
+        return
     logger.info(
-        "declared default %s=%s (%s) is on no candidate of %s; the deployment ranking chooses",
+        "declared default %s=%s (%s) is on no candidate of %d StatVars (%s); the deployment "
+        "ranking chooses",
         axis,
         policy.resolved_ref,
         policy.policy_node,
-        ", ".join(stat_vars),
+        len(unlogged),
+        ", ".join(unlogged[:_DECLARED_MISS_NAMED]),
     )
 
 

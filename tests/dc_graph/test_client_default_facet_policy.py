@@ -11,6 +11,8 @@ import logging
 import pytest
 
 from dc_graph import FacetDefaultPolicy, GraphClient
+from dc_graph import client as client_module
+from dfo_platform.lru_memo import LruMemo
 
 _STAT_VAR = "Amount_FinancialObligation_Commitment_ClimateChange_Nominal"
 _ONE_WEIGHTING = "ONEClimateFinanceWeighting"
@@ -89,13 +91,15 @@ def test_repeat_reads_share_the_arcs_cache(monkeypatch) -> None:
     assert len(posted) == 1
 
 
-def test_two_declared_methods_declare_nothing_and_log_an_error(monkeypatch, caplog) -> None:
+def test_two_declared_methods_declare_nothing_and_log_an_error_once(monkeypatch, caplog) -> None:
     """Two defaults decide nothing, so the read returns no policy, leaving the axis to the
-    deployment ranking, and logs the StatVar."""
+    deployment ranking, and logs the StatVar once however often it is read."""
+    monkeypatch.setattr(client_module, "_CONFLICTING_DECLARATIONS_LOGGED", LruMemo(16))
     client = _client(monkeypatch, _method_arc(_ONE_WEIGHTING, "OECDClimateFinanceFullValue"), [])
 
     with caplog.at_level(logging.ERROR, logger="dc_graph.client"):
         policy = client.default_facet_policy(stat_var=_STAT_VAR, axis="measurementMethod")
+        client.default_facet_policy(stat_var=_STAT_VAR, axis="measurementMethod")
 
     assert policy is None
     assert [record.levelno for record in caplog.records] == [logging.ERROR]

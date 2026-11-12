@@ -8,11 +8,14 @@ which also carries a full-value facet.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 
 import pytest
 
 from dc_graph import GraphClient
+from dfo_platform.lru_memo import LruMemo
+from materialise import facets
 from materialise.facets import (
     DEPLOYMENT_FACET_POLICY,
     FacetBinding,
@@ -95,11 +98,45 @@ def test_declared_method_decides_the_unbound_axis(monkeypatch, declared, ref, ba
     assert (selection.ref, selection.basis, selection.default_policy) == (ref, basis, policy)
 
 
-def test_a_declared_method_no_candidate_carries_serves_the_ranking_and_logs_it(monkeypatch, caplog):
+def test_a_bound_provenance_without_the_declared_method_serves_the_ranking_under_it(monkeypatch):
+    """The declared method is held only under another provenance than the bound one, so the
+    bound provenance governs and the ranking chooses among its candidates."""
+    other = dataclasses.replace(_BROAD, facet_id="otherFull", provenance_id="provenance/Other")
+    bindings = {
+        _AXIS: FacetBinding(state="unbound"),
+        "provenance": FacetBinding(state="bound", ref="provenance/Other"),
+    }
+    graph = _graph(monkeypatch, _ONE_WEIGHTING)
+
+    selection = select_facet(
+        _AXIS,
+        FacetBinding(state="unbound"),
+        candidates=[_DECLARED, other],
+        graph=graph,
+        stat_var=_STAT_VAR,
+        window=None,
+        all_bindings=bindings,
+        policies=declared_default_policies(bindings, graph=graph, stat_var=_STAT_VAR),
+    )
+
+    assert (selection.ref, selection.basis, selection.dispatch_facet_id) == (
+        "OECDClimateFinanceFullValue",
+        "deployment_fallback",
+        "otherFull",
+    )
+
+
+def test_a_declared_method_no_candidate_carries_serves_the_ranking_and_logs_it_once(
+    monkeypatch, caplog
+):
     """A declared method the probe did not find serves the ranking's one method with a
-    fallback basis, and one log line names the StatVar and the declared method."""
+    fallback basis, and one log line names the StatVar and the declared method however often
+    the StatVar is elected."""
+    monkeypatch.setattr(facets, "_DECLARED_MISSES_LOGGED", LruMemo(16))
+    graph = _graph(monkeypatch, _ONE_WEIGHTING)
     with caplog.at_level(logging.INFO, logger="materialise.facets"):
-        selection = _select(_graph(monkeypatch, _ONE_WEIGHTING), [_BROAD])
+        selection = _select(graph, [_BROAD])
+        _select(graph, [_BROAD])
 
     assert (selection.ref, selection.basis, selection.dispatch_facet_id) == (
         "OECDClimateFinanceFullValue",

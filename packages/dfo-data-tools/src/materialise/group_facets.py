@@ -296,8 +296,8 @@ def _resolve_group_axis_selections(
     Index-sourced groups omit an unbound `measurementMethod` without a declared policy from
     selections so dispatch and row filtering allow members to use different methods. With
     one, the axis resolves to one method like any other: the declared method where the
-    shared pool holds it, else the top candidate's. A bound method remains a hard
-    constraint. Only populated members affect policy
+    shared pool holds it, else the top candidate's, and a member holding no facet under it
+    serves nothing (`elect_group`). A bound method remains a hard constraint. Only populated members affect policy
     agreement. A request binding outside `unit` raises
     `MaterialisationUsageError`.
 
@@ -459,8 +459,10 @@ class GroupElection:
     continue the selected series past its last year (`continuing_ids`,
     `facets.continuing_facet_ids`), how a member the election did not count is left out
     (`uncounted`, `classify_uncounted`, `None` for a counted or unpopulated member), and the
-    members holding the elected group's agreement key that hold no facet matching the
-    selections (`incoherent`), which the mint refuses (`select_group_facets`)."""
+    members holding the elected group's agreement key that hold no facet matching its
+    selections on the key's axes and the bound ones (`incoherent`), which the mint refuses
+    (`select_group_facets`). An index-sourced member holding the key but not the method a
+    declared default resolved is unserved, not incoherent, as Search leaves it out."""
 
     election: FacetElection
     dispatch_ids: tuple[tuple[str, ...], ...]
@@ -510,7 +512,9 @@ def elect_group(
     order, and `electable` those the election may rank (`facets.dataset_candidates`),
     `members` when None. The group is the agreement key (`_group_pool`) held by the most
     members: every populated member when one key serves them all, and otherwise the key
-    serving the most, the rest named in `GroupElection.unserved`. Among those keys' merged
+    serving the most, the rest named in `GroupElection.unserved`. A member of an
+    index-sourced group holding the key but no facet under the method a declared default
+    resolved is unserved too. Among those keys' merged
     candidates, `bindings` and the declared defaults of `policies` (`_group_declared_policies`)
     found among them are kept and narrowed to `window` (`facets.fallback_pool`, the pool
     member selection ranks too), then ranked with DFO's first when any member is in the
@@ -560,10 +564,20 @@ def elect_group(
         variable_breadth=variable_breadth,
     )
     agreement_key = _agreement_key if index_sourced else _facet_id_key
+    coherence = (
+        {
+            axis: selection
+            for axis, selection in selections.items()
+            if axis in _GROUP_AGREEMENT_AXES
+            or bindings.get(axis, FacetBinding(state="unbound")).state == "bound"
+        }
+        if index_sourced
+        else selections
+    )
     incoherent = tuple(
         member
         for member in sorted(holders[agreement_key(ranked_pool.ranked[0])])
-        if not joint_matches(electable[member], selections)
+        if not joint_matches(electable[member], coherence)
     )
     election = group_election(
         members,
@@ -704,7 +718,9 @@ def select_group_facets(
     Raises `FacetNotAvailableError` when a populated member lacks an observation on a bound
     axis (`_check_bound_axes`), when no member holds a candidate carrying the bound refs
     jointly (`_no_group_refusal`), and when a member holding the elected group carries no
-    facet matching its selections jointly (`_coherence_refusal`)."""
+    facet matching its selections jointly (`_coherence_refusal`). A member of an index-sourced
+    group lacking only the method a declared default resolved is no refusal: it serves nothing
+    and the group's warning names it (`GroupElection.unserved`)."""
     electable = [
         dataset_candidates(request, member_candidates)
         for request, member_candidates in zip(requests, candidates, strict=True)
