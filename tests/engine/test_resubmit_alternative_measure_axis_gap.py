@@ -1,6 +1,11 @@
-"""A CRSPurposeCode700 sibling omits a member-only slot, yet its no-seed resubmit must recover.
+"""A resubmit of an identity that binds measure axes serves the family a Datasets mint of it
+serves (`code_index.members.index_family`): members asserting a slot the identity omits stay
+out (conformance-search C184, conformance-datasets C157), and a measure axis bound to a set
+serves every value of the set.
 
-The fixture index lacks this purpose's modality variation, so the fixture adds it to one real member.
+The Net partition in the fixture index holds rows under CRSPurposeCode700 that
+carry crsCooperationModality, a slot the alternative's identity omits. The second Net test
+adds the modality to one more member, so the sibling's own resolution still round-trips.
 """
 
 from __future__ import annotations
@@ -8,6 +13,7 @@ from __future__ import annotations
 import dataclasses
 
 from code_index import CodeIndex
+from code_index.members import index_family
 from code_index.shared import get_index, get_measure_index
 from search.engine.clients.graph import Facet
 from search.engine.region import resolve_spec_resubmit
@@ -15,6 +21,7 @@ from search.engine.region.state import EngineOptions
 from search.engine.retrieval import bound_values as bound_values_module
 from search.engine.retrieval.bound_values import (
     elect_default_partition,
+    identity_query,
     measure_family_partitions,
 )
 from search.engine.shape import ShapeDraft, identity_shape_for
@@ -30,6 +37,7 @@ from search.models import (
 )
 from tests.engine._axis_doubles import axis_confirming_reader
 from tests.engine._base_identity import destination_entity, make_base
+from tests.engine._builders import binding_set_slot
 from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import walk_options
@@ -66,19 +74,21 @@ def _unbound_slot(prop: str) -> Slot:
     )
 
 
+_NOMINAL_FLOW_SHAPE = identity_shape_for(
+    pop_type_dcid="FinancialFlow",
+    meas_prop_dcid="amount",
+    stat_type_dcid="measuredValue",
+    meas_qual_dcid="Nominal",
+    meas_denom_dcid=None,
+)
+
+
 def _elected_identity():
-    shape = identity_shape_for(
-        pop_type_dcid="FinancialFlow",
-        meas_prop_dcid="amount",
-        stat_type_dcid="measuredValue",
-        meas_qual_dcid="Nominal",
-        meas_denom_dcid=None,
-    )
     slots = [
         _bound_slot(_PURPOSE_PROP, _PURPOSE),
         *(_unbound_slot(p) for p in _ROUTING_PROPS),
     ]
-    return make_base(shape, slots, entities=[destination_entity(_KEN)])
+    return make_base(_NOMINAL_FLOW_SHAPE, slots, entities=[destination_entity(_KEN)])
 
 
 def _real_election():
@@ -167,10 +177,48 @@ def _augmented_index(target_dcid: str) -> CodeIndex:
     )
 
 
-def test_no_seed_resubmit_of_the_net_alternative_recovers_its_own_partition_members(
-    monkeypatch,
-):
-    """A no-seed resubmit recovers the Net partition's real members."""
+def _family_members(identity) -> frozenset[str]:
+    """The members a Datasets mint of `identity` reads: its index family's rows."""
+    family = index_family(get_index(), identity_query(identity))
+    assert family is not None
+    return frozenset(row.dcid for row in family.rows)
+
+
+def _resubmit_over_rows(monkeypatch, identity, rows):
+    """Resubmit `identity` with no seed over a graph, observations and coverage holding every
+    row of `rows`, so only the member election decides which of them the answer serves."""
+    nodes = {_KEN: {"label": "Kenya", "type": "Country"}}
+    for row in rows:
+        nodes[row.dcid] = {
+            "label": row.dcid,
+            "type": "StatisticalVariable",
+            "arcs": _arcs_for_row(row),
+        }
+    graph = FakeGraph(nodes=nodes, obs={})
+    dcids = [row.dcid for row in rows]
+    return resolve_spec_resubmit(
+        inp=ResubmitIdentityPayload(identity=identity),
+        graph=graph,
+        sdmx=_multi_sibling_sdmx(dcids),
+        coverage=_coverage_for_svs(monkeypatch, dcids),
+        options=walk_options(
+            graph, EngineOptions(materialise_graph=axis_confirming_reader(*dcids, graph=graph))
+        ),
+    )
+
+
+def _rows_holding(**values: str) -> list:
+    """The fixture index's rows asserting every value in `values`."""
+    return [
+        row
+        for row in get_index().statvars
+        if all(row.constraint_properties.get(prop) == value for prop, value in values.items())
+    ]
+
+
+def test_no_seed_resubmit_of_the_net_alternative_serves_its_identitys_family(monkeypatch):
+    """The Net alternative's partition holds rows asserting crsCooperationModality, which its
+    identity omits; the resubmit serves the identity's family, without them."""
     election = _real_election()
     net_partition = _net_partition(election)
 
@@ -178,34 +226,81 @@ def test_no_seed_resubmit_of_the_net_alternative_recovers_its_own_partition_memb
     alternatives, _ = _measure_alternatives(elected_identity, election.elected, election.siblings)
     assert alternatives is not None
     net_alt = _net_alternative(alternatives)
+    identity = net_alt.definition.identity
 
     by_dcid = {row.dcid: row for row in get_index().statvars}
-    member_rows = [by_dcid[dcid] for dcid in net_partition.members]
+    family = _family_members(identity)
+    assert family < set(net_partition.members)  # fixture guard: the partition is wider
 
-    nodes = {_KEN: {"label": "Kenya", "type": "Country"}}
-    for row in member_rows:
-        nodes[row.dcid] = {
-            "label": row.dcid,
-            "type": "StatisticalVariable",
-            "arcs": _arcs_for_row(row),
-        }
-    graph = FakeGraph(nodes=nodes, obs={})
-    sdmx = _multi_sibling_sdmx(row.dcid for row in member_rows)
-    materialise_graph = axis_confirming_reader(*(row.dcid for row in member_rows), graph=graph)
-
-    identity = net_alt.definition.identity
-    inp = ResubmitIdentityPayload(identity=identity)
-    region = resolve_spec_resubmit(
-        inp=inp,
-        graph=graph,
-        sdmx=sdmx,
-        coverage=_coverage_for_svs(monkeypatch, (row.dcid for row in member_rows)),
-        options=walk_options(graph, EngineOptions(materialise_graph=materialise_graph)),
+    region = _resubmit_over_rows(
+        monkeypatch, identity, [by_dcid[dcid] for dcid in net_partition.members]
     )
 
     assert region.status == "definite", region.no_data_reason
     assert region.specs[0].resolved.measure_label == net_alt.label
-    assert region.specs[0].resolved.stat_vars.member_count == len(net_partition.members)
+    assert region.specs[0].resolved.stat_vars.member_count == len(family)
+
+
+def test_resubmit_of_a_five_slot_crs_identity_serves_the_member_asserting_no_other_slot(
+    monkeypatch,
+):
+    """Sixteen rows share the identity's five bound values and fifteen of them also assert
+    crsCooperationModality, a slot the identity omits; the answer serves the one row the
+    mint serves."""
+    bound = {
+        "crsPurpose": "CRSPurposeCode99810",
+        "crsTypeOfFinance": "CRSTypeOfFinance110",
+        "crsTypeOfFlow": "CRSTypeOfFlow10",
+        "financialFlowType": "Disbursement",
+        "nettingBasis": "Gross",
+    }
+    _, identity = make_base(
+        _NOMINAL_FLOW_SHAPE,
+        [_bound_slot(prop, value) for prop, value in bound.items()],
+        entities=[destination_entity(_KEN)],
+    )
+    rows = [
+        row
+        for row in _rows_holding(**bound)
+        if (row.population_type, row.measured_property) == ("FinancialFlow", "amount")
+        and row.measurement_denominator is None
+    ]
+    family = _family_members(identity)
+    assert (len(rows), len(family)) == (16, 1)  # fixture guard
+
+    region = _resubmit_over_rows(monkeypatch, identity, rows)
+
+    assert region.status == "definite", region.no_data_reason
+    assert region.specs[0].resolved.stat_vars.member_count == 1
+    assert region.specs[0].resolved.stat_vars.served_count == 1
+
+
+def test_resubmit_of_a_measure_axis_set_binding_serves_every_value_of_the_set(monkeypatch):
+    """An identity binding nettingBasis to {Gross, Net} serves a member of each value, as
+    the mint does, where one measure partition holds only one."""
+    _, identity = make_base(
+        _NOMINAL_FLOW_SHAPE,
+        [
+            _bound_slot("dac2aAidType", "DAC2aAidType206"),
+            _unbound_slot("dacTypeOfFinance"),
+            _bound_slot("financialFlowType", "Disbursement"),
+            binding_set_slot("how", "nettingBasis", "nettingBasis", ["Gross", "Net"]),
+        ],
+        entities=[destination_entity(_KEN)],
+    )
+    rows = [
+        row
+        for row in _rows_holding(dac2aAidType="DAC2aAidType206", financialFlowType="Disbursement")
+        if row.measurement_denominator is None
+    ]
+    family = _family_members(identity)
+    assert len(family) == 2  # fixture guard: one Gross and one Net member
+
+    region = _resubmit_over_rows(monkeypatch, identity, rows)
+
+    assert region.status == "definite", region.no_data_reason
+    assert region.specs[0].resolved.stat_vars.member_count == 2
+    assert region.specs[0].resolved.stat_vars.served_count == 2
 
 
 def test_the_net_alternative_round_trips_definite_and_remints_its_own_spec_id(

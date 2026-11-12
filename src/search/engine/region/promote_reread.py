@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import cast
 
+from code_index.members import FamilyQuery, bind_slot_value
 from code_index.shared import get_index, get_measure_index
 from dfo_platform.named import named_capped
 from materialise.graph import UNRESOLVED_NODE
@@ -32,7 +33,7 @@ from search.engine.retrieval.bound_values import (
 from search.engine.retrieval.derive import group_shape_id, member_group_class
 from search.engine.retrieval.facts import _value_for, read_five_tuple
 from search.engine.shape import identity_shape_for
-from search.models import IdentityShapeSchema, Warning
+from search.models import BaseIdentity, IdentityShapeSchema, Warning
 
 
 def _family_measurement_qualifier(arcs: dict) -> str | None:
@@ -44,13 +45,27 @@ def _family_measurement_qualifier(arcs: dict) -> str | None:
     return UNRESOLVED_NODE if nodes else None
 
 
+def _index_family_members(identity: BaseIdentity, query: FamilyQuery) -> list[str]:
+    """The rows of the family the code index resolves for `query`, an index-decided
+    identity's query, read through `code_index.members.index_family` as the mint reads
+    it (`shape_member_facts`)."""
+    # A synthetic shape holds no members, so it must not read as an exact elected set,
+    # which `shape_member_facts` would return as its (empty) members.
+    shape = replace(
+        synthetic_shape_for_identity(cast(IdentityShapeSchema, identity.shape)),
+        sv_arc_facts_complete=False,
+    )
+    members, _index_sourced = shape_member_facts(shape, query)
+    return list(members)
+
+
 def _elected_members(state: _PromoteState) -> list[str] | RegionResult:
     """The members of the family the posted identity resolves, as the Datasets mint elects
-    them: the release's code index's election for an identity that names a measure family, the
-    code index's family when it decides the identity, else the antichain-minimal members
-    of the mint's graph walk (`RoleClassWalks.family` in its resubmit mode), which reads
-    the whole filtered set up to the subject ceiling when its first page truncates without
-    proof. A family holding a row the index lists outside its code systems, as IDS families
+    them: the code index's family when it decides the identity, with each measure axis the
+    identity holds unbound bound to the value its measure-family election chooses, else the
+    antichain-minimal members of the mint's graph walk (`RoleClassWalks.family` in its
+    resubmit mode), which reads the whole filtered set up to the subject ceiling when its
+    first page truncates without proof. A family holding a row the index lists outside its code systems, as IDS families
     do, is elected from the index with no graph read (`code_index.members.listed_group`).
 
     A settled walk that finds no member returns `no_matching_slice`, where the mint refuses
@@ -72,18 +87,18 @@ def _elected_members(state: _PromoteState) -> list[str] | RegionResult:
         )
         if election is None:
             return _no_data_region(state.variable_text)
-        # Record forced axes; bindings are rebuilt from the elected members' arcs.
-        state.measure_elected_properties = frozenset(prop for prop, _value in election.forced)
-        return list(election.elected.members)
+        # The election chooses a value for each slot the identity leaves unbound; the
+        # members are the index family of the identity with those values bound, so they
+        # equal the mint's family for the Spec stated with them. A forced axis the
+        # identity holds no slot for stays out, as the mint reads its absence (C184).
+        forced = tuple((prop, value) for prop, value in election.forced if prop in query.slots)
+        state.measure_elected_properties = frozenset(prop for prop, _value in forced)
+        index = get_index()
+        for prop, value in forced:
+            query = bind_slot_value(index, query, prop, value)
+        return _index_family_members(identity, query)
     if index_decides_membership(identity):
-        # A synthetic shape holds no members, so it must not read as an exact elected
-        # set, which `shape_member_facts` would return as its (empty) members.
-        shape = replace(
-            synthetic_shape_for_identity(cast(IdentityShapeSchema, identity.shape)),
-            sv_arc_facts_complete=False,
-        )
-        members, _index_sourced = shape_member_facts(shape, query)
-        return list(members)
+        return _index_family_members(identity, query)
     if state.role_class_walks is None:
         raise EngineInfraError(
             "materialise graph client not initialised; cannot elect the members of a "
