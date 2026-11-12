@@ -589,14 +589,19 @@
         role: observationAbout
 - id: female-literacy-bangladesh
   query: female literacy rate in Bangladesh
-  why: When the DFO and base paths end no_data for female literacy in Bangladesh, the UN System Data Commons answers with the PCT_LITERATE series for women aged 15 and over.
+  why: With no total, the UN System answers female literacy in Bangladesh with every PCT_LITERATE age band holding data, and a family_total_absent warning.
   tags:
     directional_flow: na
     conjunction: none
   expect:
     definite:
       measure:
-        stat_vars: [undata/unfpa/PCT_LITERATE.AGE--Y_GE15__SEX--F]
+        open: [undataAge]
+        stat_vars:
+        - undata/unfpa/PCT_LITERATE.AGE--Y15T24__SEX--F
+        - undata/unfpa/PCT_LITERATE.AGE--Y25T64__SEX--F
+        - undata/unfpa/PCT_LITERATE.AGE--Y_GE15__SEX--F
+        - undata/unfpa/PCT_LITERATE.AGE--Y_GE65__SEX--F
       entities:
       - dcid: country/BGD
         role: observationAbout
@@ -866,7 +871,7 @@
       entities: []
 - id: hiv-prevalence-nigeria
   query: HIV prevalence in Nigeria
-  why: When the DFO and base paths end no_data for HIV prevalence in Nigeria, the UN System Data Commons answers with undata/unaids/HIV_PREV.AGE--Y_GE15.
+  why: With no total, the UN System answers HIV prevalence in Nigeria with every HIV_PREV age band holding data, and a family_total_absent warning.
   tags:
     directional_flow: na
     conjunction: none
@@ -879,14 +884,18 @@
           stat_type: measuredValue
           measurement_qualifier: null
           measurement_denominator: null
-        stat_vars: [undata/unaids/HIV_PREV.AGE--Y_GE15]
+        open: [undataAge]
+        stat_vars:
+        - undata/unaids/HIV_PREV.AGE--Y15T24
+        - undata/unaids/HIV_PREV.AGE--Y15T49
+        - undata/unaids/HIV_PREV.AGE--Y_GE15
       entities:
       - dcid: country/NGA
         role: observationAbout
 - id: hiv-trend-africa-2010-2020
   query: HIV prevalence trends in Africa 2010 to 2020
   include_observations: true
-  why: The africa node holds no observation of undata/unaids/HIV_PREV.AGE--Y_GE15, so Africa reads as its member countries. The first pass refuses the SDG incidence shape.
+  why: Africa holds no HIV_PREV observation, so it reads as its countries; the series has no total, so every age band holding data in 2010 to 2020 answers with a family_total_absent warning.
   tags:
     directional_flow: na
     conjunction: none
@@ -899,7 +908,11 @@
           stat_type: measuredValue
           measurement_qualifier: null
           measurement_denominator: null
-        stat_vars: [undata/unaids/HIV_PREV.AGE--Y_GE15]
+        open: [undataAge]
+        stat_vars:
+        - undata/unaids/HIV_PREV.AGE--Y15T24
+        - undata/unaids/HIV_PREV.AGE--Y15T49
+        - undata/unaids/HIV_PREV.AGE--Y_GE15
       entities:
       - dcid: africa
         role: observationAbout
@@ -1025,7 +1038,7 @@
       entities: []
 - id: literacy-rate
   query: literacy rate
-  why: When the DFO and base paths end no_data for literacy rate, the UN System Data Commons answers with undata/unfpa/PCT_LITERATE.AGE--Y_GE15.
+  why: With no total, the UN System answers literacy rate with every PCT_LITERATE age band holding data, and a family_total_absent warning.
   tags:
     directional_flow: na
     conjunction: none
@@ -1038,7 +1051,12 @@
           stat_type: measuredValue
           measurement_qualifier: null
           measurement_denominator: null
-        stat_vars: [undata/unfpa/PCT_LITERATE.AGE--Y_GE15]
+        open: [undataAge]
+        stat_vars:
+        - undata/unfpa/PCT_LITERATE.AGE--Y15T24
+        - undata/unfpa/PCT_LITERATE.AGE--Y25T64
+        - undata/unfpa/PCT_LITERATE.AGE--Y_GE15
+        - undata/unfpa/PCT_LITERATE.AGE--Y_GE65
       entities: []
 - id: median-age-togo
   query: median age in Togo
@@ -1357,7 +1375,7 @@
         role: observationAbout
 - id: synth-literacy-bangladesh
   query: literacy in Bangladesh
-  why: When the DFO and base paths end no_data for literacy in Bangladesh, the UN System Data Commons answers with undata/unfpa/PCT_LITERATE.AGE--Y_GE15.
+  why: With no total, the UN System answers literacy in Bangladesh with every PCT_LITERATE age band holding data, and a family_total_absent warning.
   tags:
     directional_flow: na
     conjunction: none
@@ -1370,7 +1388,12 @@
           stat_type: measuredValue
           measurement_qualifier: null
           measurement_denominator: null
-        stat_vars: [undata/unfpa/PCT_LITERATE.AGE--Y_GE15]
+        open: [undataAge]
+        stat_vars:
+        - undata/unfpa/PCT_LITERATE.AGE--Y15T24
+        - undata/unfpa/PCT_LITERATE.AGE--Y25T64
+        - undata/unfpa/PCT_LITERATE.AGE--Y_GE15
+        - undata/unfpa/PCT_LITERATE.AGE--Y_GE65
       entities:
       - dcid: country/BGD
         role: observationAbout
