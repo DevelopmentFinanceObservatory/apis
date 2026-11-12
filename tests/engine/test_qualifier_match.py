@@ -600,18 +600,30 @@ def test_measure_value_plural_reaches_its_singular_registered_label():
     ("text", "named"),
     [
         pytest.param(
-            "attributed climate finance", {"attributedAmount"}, id="a-word-every-name-holds"
+            "attributed climate finance", {"attributedAmount"}, id="a-declared-word-alone"
         ),
         pytest.param("aid attributed to donors", {"attributedAmount"}, id="a-whole-name"),
+        pytest.param(
+            "imputed multilateral climate finance",
+            {"attributedAmount"},
+            id="a-declared-phrase",
+        ),
+        pytest.param(
+            "climate finance commitments excluding attributed amounts",
+            {"Commitment"},
+            id="a-name-after-a-negation-cue",
+        ),
+        pytest.param("private finance mobilised", {"amountMobilised"}, id="a-graph-name"),
+        pytest.param("finance mobilised by guarantees", {"amountMobilised"}, id="a-declared-word"),
         pytest.param("climate finance commitments", {"Commitment"}, id="no-attribution"),
         pytest.param("aid in real terms", {"RealValue"}, id="a-name-sharing-no-word"),
         pytest.param("amount of aid", set(), id="an-unmatchable-value"),
     ],
 )
 def test_a_text_names_a_measure_value_by_a_word_or_a_whole_name(text: str, named: set[str]):
-    """A measure value is named by a content word every one of its names holds, or by a
-    whole name: "real terms", "constant prices" and "inflation-adjusted" share no word, so
-    only a whole name of them names `RealValue`. `amount` takes no query text."""
+    """A measure value is named by a whole name or a declared `named_by` text, outside a
+    negation: "attributed" names `attributedAmount` wherever it stands, and only a whole
+    name names `RealValue`. `amount` takes no query text."""
     assert measure_values_named(text, get_measure_index()) == named
 
 

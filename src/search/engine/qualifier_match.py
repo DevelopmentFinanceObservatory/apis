@@ -28,6 +28,7 @@ from functools import lru_cache, partial
 from itertools import pairwise
 from typing import Literal, Protocol
 
+from code_index.declarations import MEASURE_VALUE_TEXT
 from code_index.labels import PRICE_BASIS_AXIS
 from code_index.query import CodeIndex, fold_word
 from code_index.shared import get_index, get_measure_index, per_index
@@ -41,7 +42,7 @@ from code_index.tokens import (
 )
 from code_index.types import CodeRow, MeasureIndex, MeasurePartitionLabel, MeasureValueRow
 from dfo_platform.lru_memo import LruMemo
-from search.engine.function_words import FUNCTION_WORDS
+from search.engine.function_words import FUNCTION_WORDS, NEGATION_CUE
 from search.engine.role_text import ROLE_PREPOSITIONS
 
 MatchSource = Literal["code", "label", "synonym"]
@@ -819,30 +820,32 @@ def measure_value_names(measure_index: MeasureIndex, dcid: str) -> list[tuple[st
 
 
 def measure_values_named(text: str, measure_index: MeasureIndex) -> frozenset[str]:
-    """The canonical matchable measure values `text` names: a value `text` holds a name of
-    (`measure_value_names`) as a run of its words, or one a content word of `text` names,
-    a word every name of the value holds. "attributed climate finance" names
-    `attributedAmount`, whose names are "attributed amount", "attributed aid" and
-    "attributed to donors". "climate finance" names none.
+    """The canonical matchable measure values `text` names: a value `text` holds a whole
+    name of (`measure_value_names`) or a declared `MeasureValueText.named_by` text of as a
+    run of its words. "attributed climate finance" and "imputed multilateral climate
+    finance" name `attributedAmount`, whose `named_by` are "attributed" and "imputed
+    multilateral". "climate finance" names none.
 
-    The bare-word rule reads any content word of `text` wherever it stands, and the function
-    reads no negation, so "excluding attributed amounts" names `attributedAmount` as
-    "attributed amounts" does. On the raw-text door the exclusion read blanks an excluded
-    stretch before any reader (`exclusion_read.admit_exclusions`), so neither the variable
-    nor a stretch no reader claims (`source_spans.unclaimed_stretches`) holds an excluded
-    word."""
-    tokens = word_tokens(text)
-    words = [fold_word(token.text) for token in tokens]
-    content = {
-        fold_word(token.text) for token in tokens if token.text.casefold() not in FUNCTION_WORDS
-    }
+    `text` is one stretch, a part's variable or a stretch no reader claims
+    (`source_spans.unclaimed_stretches`), and a name after a negation cue in it
+    (`function_words.NEGATION_CUE`) names nothing: "climate finance commitments excluding
+    attributed amounts" names `Commitment` alone."""
+    cue = NEGATION_CUE.search(text)
+    read = text if cue is None else text[: cue.start()]
+    words = [fold_word(token.text) for token in word_tokens(read)]
     named: set[str] = set()
     for value in measure_index.values:
         if value.same_reading_as is not None or not value.matchable:
             continue
-        names = measure_value_names(measure_index, value.dcid)
-        shared = frozenset.intersection(*(frozenset(name) for name in names))
-        if not content.isdisjoint(shared) or any(_holds_run(words, name) for name in names):
+        declared = MEASURE_VALUE_TEXT.get(value.dcid)
+        names = [
+            *measure_value_names(measure_index, value.dcid),
+            *(
+                tuple(fold_word(word.text) for word in word_tokens(named_by))
+                for named_by in (declared.named_by if declared is not None else ())
+            ),
+        ]
+        if any(_holds_run(words, name) for name in names):
             named.add(value.dcid)
     return frozenset(named)
 

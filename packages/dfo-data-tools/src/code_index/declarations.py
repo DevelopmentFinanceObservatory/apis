@@ -1034,21 +1034,24 @@ class MeasureValueText:
     lookup. `amount` keeps a display label but skips text indexing because queries use it as a
     determiner. `same_reading_as` names the canonical value of an alias dcid. Query text naming
     the alias resolves to the canonical value, so authored synonyms belong on the canonical one.
+    `named_by` are further texts that name the value wherever a text holds one as a run of
+    words, beside its whole names, when Search asks which basis values a phrase names
+    (`qualifier_match.measure_values_named`). The qualifier matcher reads no `named_by` text,
+    so one takes no span from a code that reads it.
     """
 
     label: str | None = None
     synonyms: tuple[str, ...] = ()
     matchable: bool = True
     same_reading_as: str | None = None
+    named_by: tuple[str, ...] = ()
 
 
 # Text overrides merge into measure rows.
 # Unmapped dcids keep graph names and aliases, and stay matchable.
 # A text names a value when it holds a whole name of the value (its label, a synonym or a
-# graph name) as a run of words, or a content word every name of the value holds
-# (`qualifier_match.measure_values_named`). Every name of `attributedAmount` holds
-# "attributed", so the bare word names it, whatever surrounds it. The synonyms below keep
-# the bare verb out of the names, which "deaths attributed to air pollution" would read.
+# graph name) or one of its `named_by` texts as a run of words
+# (`qualifier_match.measure_values_named`).
 MEASURE_VALUE_TEXT: Mapping[str, MeasureValueText] = {
     "Nominal": MeasureValueText(
         label="nominal",
@@ -1072,10 +1075,18 @@ MEASURE_VALUE_TEXT: Mapping[str, MeasureValueText] = {
     "InflationAdjusted": MeasureValueText(label="inflation adjusted", same_reading_as="RealValue"),
     "PurchasingPowerParity": MeasureValueText(label="purchasing power parity", synonyms=("PPP",)),
     "amount": MeasureValueText(matchable=False),
-    # These phrases name the imputed tables' measure as "grant equivalent" names CRS's. The
-    # bare verb would read in any question using "attributed to" ("deaths attributed to air
-    # pollution") and warn that it was not applied.
-    "attributedAmount": MeasureValueText(synonyms=("attributed aid", "attributed to donors")),
+    # "Mobilised" alone names private finance mobilised ("finance mobilised by guarantees").
+    "amountMobilised": MeasureValueText(named_by=("mobilised",)),
+    # These phrases name the imputed tables' measure as "grant equivalent" names CRS's. As a
+    # synonym the bare verb would read in any question using "attributed to" ("deaths
+    # attributed to air pollution") and warn that it was not applied. "Imputed multilateral"
+    # is the name DAC2a's imputed multilateral ODA and the imputed multilateral commitments
+    # give the measure; as a synonym it would take "imputed" from DAC2aAidType106 in "imputed
+    # multilateral aid". Both name the value only for the declared basis preference.
+    "attributedAmount": MeasureValueText(
+        synonyms=("attributed aid", "attributed to donors"),
+        named_by=("attributed", "imputed multilateral"),
+    ),
 }
 
 # Values exported whether or not a CRS StatVar row carries them. The price bases below are

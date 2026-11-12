@@ -50,6 +50,7 @@ from dataclasses import dataclass
 
 from code_index.scope_conventions import MeasureBasis
 from search.engine.bind_repair import occurrence_negated
+from search.engine.function_words import NEGATION_CUE
 from search.engine.response_cache_keys import normalise_query
 from search.models import SCOPE_AXES, Entry, ScopeAxis, TextOrigin
 from search.scope.state import ScopeIntake
@@ -137,13 +138,6 @@ _MULTILATERAL_ROW = re.compile(
     re.IGNORECASE,
 )
 _TOTAL = re.compile(r"\btotal(?:s|led|ed|ling|ing)?\b", re.IGNORECASE)
-# The words that negate or exclude what follows (`bind_repair.occurrence_negated`), found
-# again only to start an exclusion's origin at its cue.
-_NEGATION_CUE = re.compile(
-    r"\b(?:non|not|no|never|excluding|exclude|excludes|except|without|other\s+than|"
-    r"rather\s+than|excl)\b",
-    re.IGNORECASE,
-)
 _CUE_REACH_WORDS = 3
 
 
@@ -296,7 +290,7 @@ def _cue_start(text: str, start: int) -> int:
     `start` itself when there is none, or for a fused "non"."""
     words = list(re.finditer(r"[\w']+", text[:start]))
     window_start = words[-_CUE_REACH_WORDS].start() if len(words) >= _CUE_REACH_WORDS else 0
-    cues = list(_NEGATION_CUE.finditer(text, window_start, start))
+    cues = list(NEGATION_CUE.finditer(text, window_start, start))
     return cues[-1].start() if cues else start
 
 
