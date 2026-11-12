@@ -3,8 +3,8 @@ serves (`code_index.members.index_family`): members asserting a slot the identit
 out (conformance-search C184, conformance-datasets C157), and a measure axis bound to a set
 serves every value of the set.
 
-The Net partition in the fixture index holds rows under CRSPurposeCode700 that
-carry crsCooperationModality, a slot the alternative's identity omits. The second Net test
+The fixture index holds Net rows under CRSPurposeCode700 that carry crsCooperationModality,
+a slot the Net alternative's identity omits, so the Net partition leaves them out. The second Net test
 adds the modality to one more member, so the sibling's own resolution still round-trips.
 """
 
@@ -41,7 +41,6 @@ from tests.engine._builders import binding_set_slot
 from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import walk_options
-from tests.engine._index_slots import query_for
 from tests.engine.test_candidates_measure_alternatives import _ROLE_NAMES, _ROLE_RECIPIENT
 from tests.engine.test_resubmit_alternative_measure_round_trip import (
     _KEN,
@@ -87,12 +86,15 @@ def _elected_identity():
     slots = [
         _bound_slot(_PURPOSE_PROP, _PURPOSE),
         *(_unbound_slot(p) for p in _ROUTING_PROPS),
+        _bound_slot("financialFlowType", "Disbursement"),
+        _bound_slot("nettingBasis", "Gross"),
     ]
     return make_base(_NOMINAL_FLOW_SHAPE, slots, entities=[destination_entity(_KEN)])
 
 
 def _real_election():
-    """Elects the real Gross/Disbursement partition and its two siblings."""
+    """Elects the real Gross/Disbursement partition and its two siblings, read with the
+    elected identity's query."""
     axes = get_measure_index().axes
     shape = ShapeDraft(
         shape_id="",
@@ -105,7 +107,7 @@ def _real_election():
         slot_keys=(),
     )
     partitions = measure_family_partitions(
-        shape, get_index(), axes, query_for(shape, {_PURPOSE_PROP: [_PURPOSE]})
+        shape, get_index(), axes, identity_query(_elected_identity()[1])
     )
     election = elect_default_partition(partitions, axes)
     assert election is not None
@@ -216,25 +218,53 @@ def _rows_holding(**values: str) -> list:
     ]
 
 
-def test_no_seed_resubmit_of_the_net_alternative_serves_its_identitys_family(monkeypatch):
-    """The Net alternative's partition holds rows asserting crsCooperationModality, which its
-    identity omits; the resubmit serves the identity's family, without them."""
+def _net_alternative_identity():
+    """The elected partition's Net sibling, and the identity of the alternative it mints."""
     election = _real_election()
-    net_partition = _net_partition(election)
-
     _, elected_identity = _elected_identity()
     alternatives, _ = _measure_alternatives(elected_identity, election.elected, election.siblings)
     assert alternatives is not None
     net_alt = _net_alternative(alternatives)
+    return _net_partition(election), net_alt
+
+
+def _net_rows_of_the_purpose() -> list:
+    """Every Net disbursement row of the nominal flow five-tuple under the purpose, those
+    asserting crsCooperationModality included."""
+    purposes = set(get_index().descendants(_PURPOSE))
+    return [
+        row
+        for row in _rows_holding(financialFlowType="Disbursement", nettingBasis="Net")
+        if row.constraint_properties.get(_PURPOSE_PROP) in purposes
+        and (row.population_type, row.measured_property, row.measurement_qualifier)
+        == ("FinancialFlow", "amount", "Nominal")
+        and row.measurement_denominator is None
+    ]
+
+
+def test_the_net_sibling_partition_is_the_family_of_the_identity_it_mints():
+    """A sibling partition holds the rows its minted identity's family holds: the Net
+    alternative's identity omits crsCooperationModality, so the rows asserting it stay out
+    of the partition."""
+    net_partition, net_alt = _net_alternative_identity()
+
+    family = _family_members(net_alt.definition.identity)
+
+    assert set(net_partition.members) == family
+    assert family < {row.dcid for row in _net_rows_of_the_purpose()}  # fixture guard
+
+
+def test_no_seed_resubmit_of_the_net_alternative_serves_its_identitys_family(monkeypatch):
+    """Rows asserting crsCooperationModality, which the Net alternative's identity omits,
+    hold the alternative's values; the resubmit serves the identity's family, without
+    them."""
+    _, net_alt = _net_alternative_identity()
     identity = net_alt.definition.identity
-
-    by_dcid = {row.dcid: row for row in get_index().statvars}
+    rows = _net_rows_of_the_purpose()
     family = _family_members(identity)
-    assert family < set(net_partition.members)  # fixture guard: the partition is wider
+    assert family < {row.dcid for row in rows}  # fixture guard: the rows are wider
 
-    region = _resubmit_over_rows(
-        monkeypatch, identity, [by_dcid[dcid] for dcid in net_partition.members]
-    )
+    region = _resubmit_over_rows(monkeypatch, identity, rows)
 
     assert region.status == "definite", region.no_data_reason
     assert region.specs[0].resolved.measure_label == net_alt.label
@@ -273,6 +303,57 @@ def test_resubmit_of_a_five_slot_crs_identity_serves_the_member_asserting_no_oth
     assert region.status == "definite", region.no_data_reason
     assert region.specs[0].resolved.stat_vars.member_count == 1
     assert region.specs[0].resolved.stat_vars.served_count == 1
+
+
+def test_resubmit_with_an_unbound_measure_axis_elects_a_value_its_family_holds(monkeypatch):
+    """Under these four values only rows asserting crsCooperationModality, a slot the
+    identity omits, hold Gross; the rows the identity's family can hold are Net. The
+    election forces Net, and the answer serves the family's one member."""
+    bound = {
+        "crsPurpose": "CRSPurposeCode99810",
+        "crsTypeOfFinance": "CRSTypeOfFinance422",
+        "crsTypeOfFlow": "CRSTypeOfFlow10",
+        "financialFlowType": "Disbursement",
+    }
+    _, identity = make_base(
+        _NOMINAL_FLOW_SHAPE,
+        [
+            *(_bound_slot(prop, value) for prop, value in bound.items()),
+            _unbound_slot("nettingBasis"),
+        ],
+        entities=[destination_entity(_KEN)],
+    )
+    rows = [
+        row
+        for row in _rows_holding(**bound)
+        if (row.population_type, row.measured_property) == ("FinancialFlow", "amount")
+        and row.measurement_denominator is None
+    ]
+    _, net_identity = make_base(
+        _NOMINAL_FLOW_SHAPE,
+        [
+            *(_bound_slot(prop, value) for prop, value in bound.items()),
+            _bound_slot("nettingBasis", "Net"),
+        ],
+        entities=[destination_entity(_KEN)],
+    )
+    family = _family_members(net_identity)
+    assert len(family) == 1  # fixture guard
+    assert any(row.constraint_properties.get("nettingBasis") == "Gross" for row in rows)
+
+    region = _resubmit_over_rows(monkeypatch, identity, rows)
+
+    assert region.status == "definite", region.no_data_reason
+    netting = next(
+        s
+        for s in region.specs[0].resolved.slots
+        if s.key.property is not None and s.key.property.ref == "nettingBasis"
+    )
+    assert netting.binding.kind == "value"
+    assert netting.binding.value.ref is not None
+    assert netting.binding.value.ref.ref == "Net"
+    assert {sv.ref.ref for sv in region.specs[0].resolved.members} == family
+    assert region.specs[0].resolved.stat_vars.member_count == 1
 
 
 def test_resubmit_of_a_measure_axis_set_binding_serves_every_value_of_the_set(monkeypatch):

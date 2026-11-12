@@ -199,3 +199,19 @@ def test_named_family_with_an_empty_election_answers_no_data_beside_a_posted_see
     )
     assert region.status == "no_data"
     assert region.no_data_reason == "variable_not_resolved"
+
+
+def test_named_family_whose_index_family_holds_no_row_answers_no_matching_slice(monkeypatch):
+    """An election that settles values but whose index family reads no row, as when the
+    family's dataset election refuses (`shape_member_facts`), answers `no_matching_slice`,
+    where the mint refuses `spec_not_exportable`."""
+    monkeypatch.setattr(promote_reread, "shape_member_facts", lambda shape, query: ({}, True))
+    _spec_id, identity = _b_identity()
+    region = resolve_spec_resubmit(
+        inp=ResubmitIdentityPayload(identity=identity),
+        graph=_graph(),
+        sdmx=FakeSdmxClient(),
+        coverage=empty_coverage_snapshot(),
+        options=walk_options(_graph()),
+    )
+    assert (region.status, region.no_data_reason) == ("no_data", "no_matching_slice")

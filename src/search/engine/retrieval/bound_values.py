@@ -824,6 +824,12 @@ def _measure_family_rows(
     sibling five-tuple the named dataset does not publish adds no partition.
     Ignore bound values on declared measure axes so named values cannot hide siblings.
 
+    A row declares only keys the identity of its five-tuple can hold, so every partition is
+    the family an identity minted from it resolves. A row of `query`'s own five-tuple
+    declares only keys in `query.slots`, the row filter `index_family` applies. A row of a
+    sibling five-tuple may also declare the measure axes in `axes`, since
+    `mint_sibling_identity` adds the sibling's own measure-axis slots.
+
     Keep rows whose role set a member of `shape` could declare
     (`shape.declares_shape_roles`); an empty row declaration means
     `observationAbout`. Shapes without declared roles skip this check.
@@ -852,10 +858,14 @@ def _measure_family_rows(
     datasets = frozenset(family.datasets)
     if query.source in datasets:
         datasets = frozenset({query.source})
+    own_keys = query.slots.keys()
+    sibling_keys = own_keys | axis_names
     matched = tuple(
         row
         for row in index.filter(constraints)
         if not datasets.isdisjoint(row.provenances)
+        and row.constraint_properties.keys()
+        <= (own_keys if row_five_tuple(row) == query.five_tuple else sibling_keys)
         and all(
             getattr(IndexMemberFacts(row=row).read_five_tuple(), field) == getattr(target, field)
             for field in free_fields

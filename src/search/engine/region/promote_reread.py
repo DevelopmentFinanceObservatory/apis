@@ -33,7 +33,7 @@ from search.engine.retrieval.bound_values import (
 from search.engine.retrieval.derive import group_shape_id, member_group_class
 from search.engine.retrieval.facts import _value_for, read_five_tuple
 from search.engine.shape import identity_shape_for
-from search.models import BaseIdentity, IdentityShapeSchema, Warning
+from search.models import IdentityShapeSchema, Warning
 
 
 def _family_measurement_qualifier(arcs: dict) -> str | None:
@@ -45,17 +45,19 @@ def _family_measurement_qualifier(arcs: dict) -> str | None:
     return UNRESOLVED_NODE if nodes else None
 
 
-def _index_family_members(identity: BaseIdentity, query: FamilyQuery) -> list[str]:
+def _index_family_members(state: _PromoteState, query: FamilyQuery) -> list[str] | RegionResult:
     """The rows of the family the code index resolves for `query`, an index-decided
     identity's query, read through `code_index.members.index_family` as the mint reads
-    it (`shape_member_facts`)."""
+    it (`shape_member_facts`), or `no_matching_slice` when the family holds no row."""
     # A synthetic shape holds no members, so it must not read as an exact elected set,
     # which `shape_member_facts` would return as its (empty) members.
     shape = replace(
-        synthetic_shape_for_identity(cast(IdentityShapeSchema, identity.shape)),
+        synthetic_shape_for_identity(cast(IdentityShapeSchema, state.inp.identity.shape)),
         sv_arc_facts_complete=False,
     )
     members, _index_sourced = shape_member_facts(shape, query)
+    if not members:
+        return _no_data_region(state.variable_text, "no_matching_slice")
     return list(members)
 
 
@@ -65,23 +67,25 @@ def _elected_members(state: _PromoteState) -> list[str] | RegionResult:
     identity holds unbound bound to the value its measure-family election chooses, else the
     antichain-minimal members of the mint's graph walk (`RoleClassWalks.family` in its
     resubmit mode), which reads the whole filtered set up to the subject ceiling when its
-    first page truncates without proof. A family holding a row the index lists outside its code systems, as IDS families
-    do, is elected from the index with no graph read (`code_index.members.listed_group`).
+    first page truncates without proof. A family holding a row the index lists outside its
+    code systems, as IDS families do, is elected from the index with no graph read
+    (`code_index.members.listed_group`).
 
-    A settled walk that finds no member returns `no_matching_slice`, where the mint refuses
-    `spec_not_exportable`. A family the mint refuses as too broad returns
-    `scope_too_broad`. Role sets the election cannot order return `no_data`
-    `role_signature_incompatible`. A member at fault, a query with no measured property and
-    a walk whose reads leave a candidate undismissed return `no_data`
+    An index family with no row and a settled walk that finds no member return
+    `no_matching_slice`, where the mint refuses `spec_not_exportable`. A family the mint
+    refuses as too broad returns `scope_too_broad`. Role sets the election cannot order
+    return `no_data` `role_signature_incompatible`. A member at fault, a query with no
+    measured property and a walk whose reads leave a candidate undismissed return `no_data`
     `variable_not_resolved`. A walk past its deadline or a failed graph read raises,
     failing the request. A walk that runs the full read raises `state.deadline` to the
     bound it ran to, so the phases after it share that bound."""
     identity = state.inp.identity
     query = identity_query(identity)
     if identity_names_measure_family(identity, get_measure_index().axes):
+        index = get_index()
         election = elect_measure_family(
             synthetic_shape_for_identity(cast(IdentityShapeSchema, identity.shape)),
-            get_index(),
+            index,
             get_measure_index().axes,
             query,
         )
@@ -93,12 +97,11 @@ def _elected_members(state: _PromoteState) -> list[str] | RegionResult:
         # identity holds no slot for stays out, as the mint reads its absence (C184).
         forced = tuple((prop, value) for prop, value in election.forced if prop in query.slots)
         state.measure_elected_properties = frozenset(prop for prop, _value in forced)
-        index = get_index()
         for prop, value in forced:
             query = bind_slot_value(index, query, prop, value)
-        return _index_family_members(identity, query)
+        return _index_family_members(state, query)
     if index_decides_membership(identity):
-        return _index_family_members(identity, query)
+        return _index_family_members(state, query)
     if state.role_class_walks is None:
         raise EngineInfraError(
             "materialise graph client not initialised; cannot elect the members of a "
