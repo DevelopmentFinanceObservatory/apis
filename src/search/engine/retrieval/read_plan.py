@@ -17,7 +17,8 @@ and every consumer reads that plan rather than derive its own:
 - A `BulkPlan` reads a role-bearing population whose bound pairs or series pass
   `obs_preview_max_pairs` (`search.observations.preview_mode`) in one read of one facet,
   elected over the merged role index as a group of its members
-  (`facet_election.select_role_candidate`). Its pairs can run to 1.6M and are not listed.
+  (`facet_election.select_role_candidate`). One member elects its method too, as its mint
+  does (`role_election`). Its pairs can run to 1.6M and are not listed.
 
 Both carry the antichain-minimal members the preview reads and the years it reads
 (`plan_years`). The years apply before anything is counted, ranked or built: a per-pair
@@ -789,8 +790,9 @@ class BulkPlan:
     range too long to list, which no bulk read can serve). `facet_id` leads the election
     over them (`facet_election.select_role_candidate`), and `selected` holds each served
     member's facet ids the group's selection serves, `facet_id` first where the member holds
-    it (`facet_election.role_group_selection`): under `index_sourced` a member holding the
-    group's provenance and unit under another method's facet serves that facet. `continuing`
+    it (`facet_election.role_group_selection`): under `index_sourced` a member of several
+    holding the group's provenance and unit under another method's facet serves that facet,
+    and one member serves its elected method alone (`role_election`). `continuing`
     holds the facets continuing the lead past its last year
     (`facet_election.role_continuation`), which the read dispatches beside the selection, as
     a mint of the answer's Spec does (`role_election`). `unserved` holds the populated
@@ -1172,10 +1174,14 @@ def role_election(
     (`facet_election.select_role_candidate`), each member's facet ids its selection serves
     and the members it leaves out (`facet_election.role_group_selection`), and the facets
     continuing the lead there (`facet_election.role_continuation`), or None and nothing
-    with no candidate."""
+    with no candidate. `index_sourced` lets several members agree on provenance and unit
+    alone. One member elects its method too, as a mint of one StatVar does
+    (`materialise.generation._select_member_facets`), so every election and re-election of
+    a one-member read serves the facets that mint serves."""
     declared_defaults = plan_declared_defaults(
         declared, _bulk_populated(candidates, members=members)
     )
+    index_sourced = index_sourced and len(members) > 1
     best = select_role_candidate(
         candidates,
         stat_vars=members,
