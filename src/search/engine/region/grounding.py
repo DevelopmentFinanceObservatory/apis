@@ -1278,7 +1278,8 @@ def _relaxed_binding_suggestion(
                 member_facts=mat.member_facts or {},
             )
 
-            # Count the admitted population, not only the elected StatVars.
+            # Count the admitted population, not only the elected StatVars. `build_spec`
+            # restates it as the family's where it states the mint's family digest.
             shape_model = build_shape_model(
                 shape,
                 slot_key_models,

@@ -7,7 +7,7 @@ defines its own structural graph protocol, independent of `materialise`."""
 from __future__ import annotations
 
 from statvar_members.cache import MemberEnumerator, shared_enumerator
-from statvar_members.digest import member_digest
+from statvar_members.digest import MemberFamily, member_digest, member_family_of
 from statvar_members.enumerate import (
     CANDIDATE_CAP,
     DEFAULT_MEMBER_CAP,
@@ -66,6 +66,7 @@ __all__ = [
     "MemberArcReader",
     "MemberEnumerationTooLarge",
     "MemberEnumerator",
+    "MemberFamily",
     "MemberGroup",
     "MemberQueryUnanchored",
     "MemberReadDeadline",
@@ -92,6 +93,7 @@ __all__ = [
     "five_tuple_reverse_filters",
     "group_of_arcs",
     "member_digest",
+    "member_family_of",
     "role_class_covers",
     "role_class_facts",
     "root_can_prove_complete",

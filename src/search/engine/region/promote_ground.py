@@ -390,7 +390,8 @@ def _ground_answer_and_models(
         arcs_by_sv=state.resolved_arcs,
     )
 
-    # Use the admitted population, which can exceed the final winner count. The
+    # Use the admitted population, which can exceed the final winner count. `build_spec`
+    # restates the count as the family's where it states the mint's family digest. The
     # flagged-unavailable carrier has no population record, so use its sole grounded member.
     state.shape_model = build_shape_model(
         state.shape_draft,

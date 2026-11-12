@@ -10,13 +10,13 @@ from dfo_frame_grammar import FRAME_GRAMMAR_VERSION
 
 from materialise.trace import (
     ManifestTrace,
-    MemberFamily,
     RecordedFamily,
     ResolvedStatVar,
     StatedFamily,
     parse_recorded_family,
     recorded_family_json,
 )
+from statvar_members import MemberFamily
 
 # `conversion` appears only when a recipe runs; the dedicated test covers that field set.
 _CONTRACT_TRACE_FIELDS = frozenset(

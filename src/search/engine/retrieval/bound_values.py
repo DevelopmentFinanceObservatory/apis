@@ -146,6 +146,7 @@ from statvar_members import (
 from statvar_members import FiveTuple as MemberFiveTuple
 from statvar_members import (
     MemberEnumerationTooLarge,
+    MemberFamily,
     MemberQueryUnanchored,
     MemberRoleDisagreement,
     MultiValuedConstraint,
@@ -153,7 +154,7 @@ from statvar_members import (
     SlotBinding,
     elect_role_class,
     group_of_arcs,
-    member_digest,
+    member_family_of,
     shared_enumerator,
 )
 
@@ -824,6 +825,12 @@ def _measure_family_rows(
     sibling five-tuple the named dataset does not publish adds no partition.
     Ignore bound values on declared measure axes so named values cannot hide siblings.
 
+    A row declares only keys the identity of its five-tuple can hold, so every partition is
+    the family an identity minted from it resolves. A row of `query`'s own five-tuple
+    declares only keys in `query.slots`, the row filter `index_family` applies. A row of a
+    sibling five-tuple may also declare the measure axes in `axes`, since
+    `mint_sibling_identity` adds the sibling's own measure-axis slots.
+
     Keep rows whose role set a member of `shape` could declare
     (`shape.declares_shape_roles`); an empty row declaration means
     `observationAbout`. Shapes without declared roles skip this check.
@@ -852,10 +859,14 @@ def _measure_family_rows(
     datasets = frozenset(family.datasets)
     if query.source in datasets:
         datasets = frozenset({query.source})
+    own_keys = query.slots.keys()
+    sibling_keys = own_keys | axis_names
     matched = tuple(
         row
         for row in index.filter(constraints)
         if not datasets.isdisjoint(row.provenances)
+        and row.constraint_properties.keys()
+        <= (own_keys if row_five_tuple(row) == query.five_tuple else sibling_keys)
         and all(
             getattr(IndexMemberFacts(row=row).read_five_tuple(), field) == getattr(target, field)
             for field in free_fields
@@ -2293,12 +2304,12 @@ def _publishing_datasets(shape: ShapeDraft, index: CodeIndex) -> tuple[str, ...]
 @dataclass(frozen=True)
 class StatedMembers:
     """What a Datasets mint of an identity states of its members: how many it serves (the
-    length of its `trace.resolved_stat_vars`) and the digest of the family they come from
-    (`trace.family_member_digest`), `None` when Search cannot name every member of that
-    family."""
+    length of its `trace.resolved_stat_vars`), and the digest and size of the family they
+    come from (`trace.family_member_digest` and `trace.family_member_count`), `None` when
+    Search cannot name every member of that family."""
 
     served_count: int
-    digest: str | None
+    family: MemberFamily | None
 
 
 type WalkKey = tuple[
@@ -2366,7 +2377,7 @@ class WalkedMembers:
             key=key,
             stated=StatedMembers(
                 served_count=len(group.members),
-                digest=member_digest(family) if family is not None else None,
+                family=member_family_of(family) if family is not None else None,
             ),
             asked=asked if asked != key else None,
         )
@@ -2409,7 +2420,7 @@ def stated_members(identity: BaseIdentity, walked: WalkedMembers | None) -> Stat
         if family is None or (served := _index_served_rows(family)) is None:
             return None
         return StatedMembers(
-            served_count=len(served), digest=member_digest(row.dcid for row in family.rows)
+            served_count=len(served), family=member_family_of(row.dcid for row in family.rows)
         )
     if (
         walked is None

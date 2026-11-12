@@ -1817,6 +1817,29 @@ def _verify_measure_partition_labels(
         )
 
 
+def _verify_constraint_axis_values_preferred(
+    statvars: Sequence[dict], axes: Sequence[MeasureAxis]
+) -> None:
+    """Require every value an exported StatVar row carries on a constraint measure axis to
+    appear in that axis's `prefer`. A measure family spans values of the axis only through
+    `prefer`: a value outside it can sit in a partition no election orders, and a family
+    holding rows with and without a value on the axis would then span values the election
+    never chose between."""
+    outside = {
+        (axis.axis, value)
+        for axis in axes
+        if axis.kind == "constraint"
+        for row in statvars
+        if (value := _measure_axis_value(row, axis)) is not None and value not in axis.prefer
+    }
+    if outside:
+        raise ExportRefused(
+            f"{len(outside)} constraint measure axis value(s) carried by the exported StatVar "
+            f"rows are absent from the axis's prefer list: {sorted(outside)!r} -- add each to "
+            "its MeasureAxis.prefer"
+        )
+
+
 def _verify_measure_nouns(statvars: Sequence[dict], nouns: Sequence[MeasurePartitionLabel]) -> None:
     """Require that no exported StatVar row matches a measure noun: every row belongs to a
     measure partition, whose label names it, and a noun beside it would put two names on
@@ -2127,6 +2150,7 @@ def export_graph_blocks(
     _verify_broad_readings([*statvars, *listed_statvars], broad_readings)
     source_codes = export_source_codes(reader, sorted(listed)) if listed else []
     value_parents = export_value_parents(reader, listed_statvars)
+    _verify_constraint_axis_values_preferred(statvars, measure_axes)
     _verify_measure_partition_labels(statvars, measure_axes, measure_partition_labels)
     _verify_measure_nouns(statvars, measure_nouns)
     _verify_measure_label_named_values(statvars, codes, measure_axes, measure_partition_labels)

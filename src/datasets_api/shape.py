@@ -27,7 +27,7 @@ from materialise.facets import ElectedDataset
 from materialise.graph import GraphReader
 from materialise.roles import DegenerateObservationProperties
 from materialise.roles import declared_roles as derive_declared_roles
-from materialise.trace import MemberFamily
+from statvar_members import MemberFamily
 
 _STAT_VAR_PREFIX = "dcid:"
 

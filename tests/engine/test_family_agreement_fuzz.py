@@ -372,7 +372,7 @@ def _index_digest(model: BaseIdentity) -> str | None:
     """The family digest Search states for `model` from the code index alone
     (`stated_members` with no walk)."""
     stated = stated_members(model, None)
-    return stated.digest if stated is not None else None
+    return stated.family.digest if stated is not None and stated.family is not None else None
 
 
 def _check_pinned(drawn: _Drawn, kinds: dict[str, int]) -> list[str]:

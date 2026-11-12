@@ -9,7 +9,7 @@ from code_index.shared import get_index, get_measure_index
 from search.engine.clients.graph import Facet
 from search.engine.region import resolve_spec_resubmit
 from search.engine.region.state import EngineOptions
-from search.engine.retrieval.bound_values import measure_family_partitions
+from search.engine.retrieval.bound_values import identity_query, measure_family_partitions
 from search.engine.shape import ShapeDraft, identity_shape_for
 from search.models import ResubmitIdentityPayload, TimeWindow
 from tests.engine._axis_doubles import axis_confirming_reader
@@ -19,7 +19,6 @@ from tests.engine._builders import value_slot as _value_slot
 from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import walk_options
-from tests.engine._index_slots import query_for
 from tests.engine.test_candidates_measure_alternatives import _ROLE_NAMES, _ROLE_RECIPIENT
 from tests.engine.test_resubmit_alternative_measure_round_trip import _arcs_for_row
 from tests.fixtures import FakeGraph
@@ -62,16 +61,11 @@ def _synthetic_shape() -> ShapeDraft:
 
 
 def _elected_members(purpose: str) -> tuple[str, ...]:
-    """Return the fixture-index members for a health-family identity."""
-    index = get_index()
-    axes = get_measure_index().axes
-    bound_values = {
-        "crsPurpose": list(index.descendants(purpose)),
-        "financialFlowType": ["Disbursement"],
-        "nettingBasis": ["Gross"],
-    }
+    """Return the fixture-index members of the elected partition of the health-family
+    identity under `purpose`, read with the query of that identity."""
+    _spec_id, identity = _health_base(purpose=purpose)
     partitions = measure_family_partitions(
-        _synthetic_shape(), index, axes, query_for(_synthetic_shape(), bound_values)
+        _synthetic_shape(), get_index(), get_measure_index().axes, identity_query(identity)
     )
     match = next(p for p in partitions if dict(p.values) == _MEASURE_VALUES)
     return match.members

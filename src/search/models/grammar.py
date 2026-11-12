@@ -308,9 +308,11 @@ class Shape(StrictModel):
     )
     member_count: int = Field(
         description=(
-            "the size of the resolved population behind this response: how many "
-            "StatVars the shape's current bindings admit, narrowing as a slot "
-            "binds and widening again as one is cleared"
+            "the size of the family member_digest names, the Datasets mint's "
+            "trace.family_member_count, wherever member_digest is stated. Where it "
+            "is null, the size of the population Search resolved: how many StatVars "
+            "the shape's current bindings admit, narrowing as a slot binds and "
+            "widening again as one is cleared"
         )
     )
     member_digest: str | None = Field(

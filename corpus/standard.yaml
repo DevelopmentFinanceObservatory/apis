@@ -1844,7 +1844,7 @@
           value_kind: enum_value
           time_window: null
           literal: null
-  why: Promoting a place-less CRS gross-disbursement identity returns a definite answer with a role_scope_defaulted warning.
+  why: Promoting a place-less CRS gross-disbursement identity that leaves crsCooperationModality out serves the one member asserting no other slot, as a mint of it does, and warns role_scope_defaulted.
   tags:
     directional_flow: na
     conjunction: none
@@ -1864,21 +1864,6 @@
           financialFlowType: Disbursement
           nettingBasis: Gross
         stat_vars:
-        - Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityA02_CRSPurposeCode99810_Nominal
-        - Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityB01_CRSPurposeCode99810_Nominal
-        - Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityB031_CRSPurposeCode99810_Nominal
-        - Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityB032_CRSPurposeCode99810_Nominal
-        - Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityB033_CRSPurposeCode99810_Nominal
-        - Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityB03_CRSPurposeCode99810_Nominal
-        - Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityB04_CRSPurposeCode99810_Nominal
-        - Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityC01_CRSPurposeCode99810_Nominal
-        - Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityD01_CRSPurposeCode99810_Nominal
-        - Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityD02_CRSPurposeCode99810_Nominal
-        - Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityE01_CRSPurposeCode99810_Nominal
-        - Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityE02_CRSPurposeCode99810_Nominal
-        - Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityG01_CRSPurposeCode99810_Nominal
-        - Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityH01_CRSPurposeCode99810_Nominal
-        - Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityH02_CRSPurposeCode99810_Nominal
         - Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSPurposeCode99810_Nominal
       entities: []
       warnings: [role_scope_defaulted]
@@ -1894,6 +1879,14 @@
       stat_type: measuredValue
       measurement_qualifier: Nominal
     slots:
+    - key:
+        axis: how
+        property:
+          ref: crsCooperationModality
+          label: CRS cooperation modality
+        label: CRS cooperation modality
+      binding:
+        kind: unbound
     - key:
         axis: how
         property:
@@ -1970,7 +1963,7 @@
           time_window: null
           literal: null
     origin_dcids: [country/FRA]
-  why: Promoting the same CRS gross-disbursement identity with provider France binds country/FRA on the origin axis and warns role_scope_defaulted.
+  why: The CRS gross-disbursement identity with crsCooperationModality unbound and provider France serves the sixteen members its mint serves and warns role_scope_defaulted.
   tags:
     directional_flow: na
     conjunction: none
@@ -1990,16 +1983,21 @@
           financialFlowType: Disbursement
           nettingBasis: Gross
         stat_vars:
+        - Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityA02_CRSPurposeCode99810_Nominal
         - Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityB01_CRSPurposeCode99810_Nominal
         - Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityB031_CRSPurposeCode99810_Nominal
         - Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityB032_CRSPurposeCode99810_Nominal
+        - Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityB033_CRSPurposeCode99810_Nominal
         - Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityB03_CRSPurposeCode99810_Nominal
         - Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityB04_CRSPurposeCode99810_Nominal
         - Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityC01_CRSPurposeCode99810_Nominal
         - Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityD01_CRSPurposeCode99810_Nominal
         - Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityD02_CRSPurposeCode99810_Nominal
         - Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityE01_CRSPurposeCode99810_Nominal
+        - Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityE02_CRSPurposeCode99810_Nominal
+        - Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityG01_CRSPurposeCode99810_Nominal
         - Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityH01_CRSPurposeCode99810_Nominal
+        - Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityH02_CRSPurposeCode99810_Nominal
         - Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSPurposeCode99810_Nominal
       entities:
       - dcid: country/FRA

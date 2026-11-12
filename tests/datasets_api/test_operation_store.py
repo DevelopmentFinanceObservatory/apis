@@ -23,8 +23,9 @@ from datasets_api.operation_store import (
 from datasets_api.operations.lease import LEASE_SECONDS
 from datasets_api.operations.task_client import DISPATCH_DEADLINE_SECONDS
 from dfo_platform import Alternative, ProblemIssue, ProblemSpec
-from materialise.trace import UNKNOWN_FAMILY, MemberFamily, RecordedFamily, StatedFamily
+from materialise.trace import UNKNOWN_FAMILY, RecordedFamily, StatedFamily
 from series_coverage.index import Estimate
+from statvar_members import MemberFamily
 
 from ._operation_store import FakeOperationDatasetStore
 from ._version_record_store import TEST_BASIS

@@ -625,7 +625,8 @@ def build_shape_model(
     suppress_unresolved_population_type_ref: bool = False,
 ) -> Shape:
     """Build a grounded Shape, using the caller's member count. `build_spec` states its
-    `member_digest` (`stated_members`).
+    `member_digest` (`stated_members`) and, beside it, the size of the family it digests
+    as its `member_count`.
 
     ``members`` are the StatVars the answer serves. ``data_commons`` lists the origins
     holding data for one of them, and ``upstream`` names the one source all of them come
@@ -1448,7 +1449,8 @@ def build_spec(
         walked: What the mint states of the members Search's walk settled for the query it
             walked. The Spec states the mint's served count and family digest
             (``stated_members``) for an identity the code index decides and one ``walked``
-            walked, and neither otherwise.
+            walked, and neither otherwise. Where it states the digest, ``shape.member_count``
+            is the size of that family; elsewhere it keeps the count ``shape`` carries.
         Other optional arguments populate response metadata, including render data,
             facets, observations, scope, qualifiers, and open-axis facts. Slot provenance
             properties, scope, qualifiers, open-axis facts, and role-axis facts never feed
@@ -1495,9 +1497,15 @@ def build_spec(
     definition = SpecDefinition(spec_id=spec_id, identity=identity_doc)
     slots = slots_in_identity_order(slots, identity_doc)
     stated = stated_members(identity_doc, walked)
-    digest = stated.digest if stated is not None else None
-    if shape.member_digest != digest:
-        shape = shape.model_copy(update={"member_digest": digest})
+    # A stated family is the one a mint of the definition digests and counts. The admitted
+    # population the shape was built with can hold members asserting slots the identity
+    # leaves out, which that family excludes.
+    if stated is not None and stated.family is not None:
+        shape = shape.model_copy(
+            update={"member_digest": stated.family.digest, "member_count": stated.family.count}
+        )
+    elif shape.member_digest is not None:
+        shape = shape.model_copy(update={"member_digest": None})
 
     alternative_measures, measure_label = _measure_alternatives(
         identity_doc, measure_partition, measure_siblings, measure_served_rows

@@ -44,6 +44,7 @@ from code_index.export import (
     _partly_stated_value_to_dict,
     _validate_declared_defaults,
     _verify_axis_coverage,
+    _verify_constraint_axis_values_preferred,
     _verify_measure_label_named_values,
     _verify_measure_nouns,
     _verify_measure_partition_labels,
@@ -1914,6 +1915,22 @@ def test_guard_names_every_offending_partition_not_just_the_first():
     message = str(exc_info.value)
     assert "Gross" in message
     assert "Net" in message
+
+
+@pytest.mark.parametrize(
+    ("netting_basis", "refused"),
+    [("Net", False), ("Gross", False), ("Unlisted", True)],
+    ids=["preferred-net", "preferred-gross", "outside-prefer"],
+)
+def test_constraint_axis_values_must_appear_in_the_axis_prefer_list(netting_basis, refused):
+    rows = [_guard_row(financial_flow_type="Disbursement", netting_basis=netting_basis)]
+
+    if not refused:
+        _verify_constraint_axis_values_preferred(rows, _GUARD_AXES)  # raises nothing
+        return
+    with pytest.raises(ExportRefused, match="Unlisted") as exc_info:
+        _verify_constraint_axis_values_preferred(rows, _GUARD_AXES)
+    assert "nettingBasis" in str(exc_info.value)
 
 
 def test_guard_is_a_noop_when_no_measure_axes_are_declared():
