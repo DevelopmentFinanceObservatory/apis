@@ -146,6 +146,7 @@ from statvar_members import (
 from statvar_members import FiveTuple as MemberFiveTuple
 from statvar_members import (
     MemberEnumerationTooLarge,
+    MemberFamily,
     MemberQueryUnanchored,
     MemberRoleDisagreement,
     MultiValuedConstraint,
@@ -153,7 +154,7 @@ from statvar_members import (
     SlotBinding,
     elect_role_class,
     group_of_arcs,
-    member_digest,
+    member_family_of,
     shared_enumerator,
 )
 
@@ -2304,12 +2305,11 @@ def _publishing_datasets(shape: ShapeDraft, index: CodeIndex) -> tuple[str, ...]
 class StatedMembers:
     """What a Datasets mint of an identity states of its members: how many it serves (the
     length of its `trace.resolved_stat_vars`), and the digest and size of the family they
-    come from (`trace.family_member_digest` and `trace.family_member_count`), both `None`
-    when Search cannot name every member of that family."""
+    come from (`trace.family_member_digest` and `trace.family_member_count`), `None` when
+    Search cannot name every member of that family."""
 
     served_count: int
-    digest: str | None
-    family_count: int | None
+    family: MemberFamily | None
 
 
 type WalkKey = tuple[
@@ -2377,8 +2377,7 @@ class WalkedMembers:
             key=key,
             stated=StatedMembers(
                 served_count=len(group.members),
-                digest=member_digest(family) if family is not None else None,
-                family_count=len(family) if family is not None else None,
+                family=member_family_of(family) if family is not None else None,
             ),
             asked=asked if asked != key else None,
         )
@@ -2420,9 +2419,8 @@ def stated_members(identity: BaseIdentity, walked: WalkedMembers | None) -> Stat
         family = _identity_family(identity)
         if family is None or (served := _index_served_rows(family)) is None:
             return None
-        dcids = frozenset(row.dcid for row in family.rows)
         return StatedMembers(
-            served_count=len(served), digest=member_digest(dcids), family_count=len(dcids)
+            served_count=len(served), family=member_family_of(row.dcid for row in family.rows)
         )
     if (
         walked is None

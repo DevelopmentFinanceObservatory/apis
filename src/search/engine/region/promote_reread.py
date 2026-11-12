@@ -93,9 +93,10 @@ def _elected_members(state: _PromoteState) -> list[str] | RegionResult:
             return _no_data_region(state.variable_text)
         # The election chooses a value for each slot the identity leaves unbound; the
         # members are the index family of the identity with those values bound, so they
-        # equal the mint's family for the Spec stated with them. A forced axis the
-        # identity holds no slot for stays out, as the mint reads its absence (C184).
-        forced = tuple((prop, value) for prop, value in election.forced if prop in query.slots)
+        # equal the mint's family for the Spec stated with them. The elected partition's
+        # rows declare only slot keys (`_measure_family_rows`), so every forced axis is
+        # one the identity holds a slot for.
+        forced = election.forced
         state.measure_elected_properties = frozenset(prop for prop, _value in forced)
         for prop, value in forced:
             query = bind_slot_value(index, query, prop, value)

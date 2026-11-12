@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import cast
 
+from statvar_members import MemberFamily
+
 logger = logging.getLogger(__name__)
 
 
@@ -36,19 +38,6 @@ class ResolvedStatVar:
             "roles": list(self.roles),
             "observation_count": self.observation_count,
         }
-
-
-@dataclass(frozen=True)
-class MemberFamily:
-    """The whole population an identity admits, before antichain reduction.
-
-    `digest` is `statvar_members.member_digest` over the bare dcids of every admitted
-    member and `count` their number. `resolved_stat_vars` lists the members served, which
-    leave out each admitted member a broader one dominates.
-    """
-
-    digest: str
-    count: int
 
 
 @dataclass(frozen=True)

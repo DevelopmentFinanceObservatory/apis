@@ -68,6 +68,7 @@ from search.models import (
     SlotValue,
     StatVar,
 )
+from statvar_members import MemberFamily
 
 if TYPE_CHECKING:
     from search.engine.region import RegionResult
@@ -935,8 +936,11 @@ def _merge_shape(group: list[RegionResult], base_spec: Spec, is_where: bool):
     """Recompute shape population metadata across the merged group.
 
     Count the union of admitted dcids only when every population is present and exact,
-    and the merge is not on the where axis. Otherwise report the largest member count as a
-    lower bound. `build_spec` states the merged Spec's `member_digest`, and labels the
+    and the merge is not on the where axis. Otherwise report the largest admitted population
+    as a lower bound, counting a part with no measured population by its shape's
+    `member_count`. A part's `member_count` is a family size wherever it states a digest, so
+    it stands for the part's admitted members only where no population was measured.
+    `build_spec` states the merged Spec's `member_digest`, and labels the
     shape for the merged members from the label the base's shape was built with
     (`ResolvedSpec.built_shape_label`).
     """
@@ -949,7 +953,12 @@ def _merge_shape(group: list[RegionResult], base_spec: Spec, is_where: bool):
             admitted_dcids.update(r.member_population.admitted_dcids)
         merged_member_count = len(admitted_dcids)
     else:
-        merged_member_count = max(r.spec.resolved.shape.member_count for r in group)
+        merged_member_count = max(
+            r.member_population.admitted
+            if r.member_population is not None
+            else r.spec.resolved.shape.member_count
+            for r in group
+        )
     return base_spec.resolved.shape.model_copy(
         update={
             "label": base_spec.resolved.built_shape_label,
@@ -968,10 +977,12 @@ def _merged_walked(group: list[RegionResult]) -> WalkedMembers | None:
     statements = {
         (
             r.spec.resolved.stat_vars.served_count,
-            r.spec.resolved.shape.member_digest,
-            r.spec.resolved.shape.member_count
-            if r.spec.resolved.shape.member_digest is not None
-            else None,
+            None
+            if r.spec.resolved.shape.member_digest is None
+            else MemberFamily(
+                digest=r.spec.resolved.shape.member_digest,
+                count=r.spec.resolved.shape.member_count,
+            ),
         )
         for r in group
     }
@@ -980,17 +991,12 @@ def _merged_walked(group: list[RegionResult]) -> WalkedMembers | None:
         isinstance(identity.shape, IdentityShapeSchema) for identity in identities
     ):
         return None
-    ((served_count, digest, member_count),) = statements
+    ((served_count, family),) = statements
     keys = {walk_key(identity_query(identity)) for identity in identities}
     if served_count is None or len(keys) != 1:
         return None
     return WalkedMembers(
-        key=keys.pop(),
-        stated=StatedMembers(
-            served_count=served_count,
-            digest=digest,
-            family_count=member_count,
-        ),
+        key=keys.pop(), stated=StatedMembers(served_count=served_count, family=family)
     )
 
 

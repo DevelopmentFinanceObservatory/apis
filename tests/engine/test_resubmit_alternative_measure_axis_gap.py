@@ -242,6 +242,52 @@ def _net_rows_of_the_purpose() -> list:
     ]
 
 
+def _five_slot_crs_resubmit():
+    """Sixteen rows share the identity's five bound values. Fifteen also assert
+    crsCooperationModality, which the identity omits, so its family is the one row
+    asserting no other slot."""
+    bound = {
+        "crsPurpose": "CRSPurposeCode99810",
+        "crsTypeOfFinance": "CRSTypeOfFinance110",
+        "crsTypeOfFlow": "CRSTypeOfFlow10",
+        "financialFlowType": "Disbursement",
+        "nettingBasis": "Gross",
+    }
+    _, identity = make_base(
+        _NOMINAL_FLOW_SHAPE,
+        [_bound_slot(prop, value) for prop, value in bound.items()],
+        entities=[destination_entity(_KEN)],
+    )
+    rows = [
+        row
+        for row in _rows_holding(**bound)
+        if (row.population_type, row.measured_property) == ("FinancialFlow", "amount")
+        and row.measurement_denominator is None
+    ]
+    return identity, rows
+
+
+def _measure_axis_set_resubmit():
+    """nettingBasis bound to {Gross, Net}: the family holds a member of each value, beside
+    rows asserting slots the identity omits."""
+    _, identity = make_base(
+        _NOMINAL_FLOW_SHAPE,
+        [
+            _bound_slot("dac2aAidType", "DAC2aAidType206"),
+            _unbound_slot("dacTypeOfFinance"),
+            _bound_slot("financialFlowType", "Disbursement"),
+            binding_set_slot("how", "nettingBasis", "nettingBasis", ["Gross", "Net"]),
+        ],
+        entities=[destination_entity(_KEN)],
+    )
+    rows = [
+        row
+        for row in _rows_holding(dac2aAidType="DAC2aAidType206", financialFlowType="Disbursement")
+        if row.measurement_denominator is None
+    ]
+    return identity, rows
+
+
 def test_the_net_sibling_partition_is_the_family_of_the_identity_it_mints():
     """A sibling partition holds the rows its minted identity's family holds: the Net
     alternative's identity omits crsCooperationModality, so the rows asserting it stay out
@@ -277,24 +323,7 @@ def test_resubmit_of_a_five_slot_crs_identity_serves_the_member_asserting_no_oth
     """Sixteen rows share the identity's five bound values and fifteen of them also assert
     crsCooperationModality, a slot the identity omits; the answer serves the one row the
     mint serves."""
-    bound = {
-        "crsPurpose": "CRSPurposeCode99810",
-        "crsTypeOfFinance": "CRSTypeOfFinance110",
-        "crsTypeOfFlow": "CRSTypeOfFlow10",
-        "financialFlowType": "Disbursement",
-        "nettingBasis": "Gross",
-    }
-    _, identity = make_base(
-        _NOMINAL_FLOW_SHAPE,
-        [_bound_slot(prop, value) for prop, value in bound.items()],
-        entities=[destination_entity(_KEN)],
-    )
-    rows = [
-        row
-        for row in _rows_holding(**bound)
-        if (row.population_type, row.measured_property) == ("FinancialFlow", "amount")
-        and row.measurement_denominator is None
-    ]
+    identity, rows = _five_slot_crs_resubmit()
     family = _family_members(identity)
     assert (len(rows), len(family)) == (16, 1)  # fixture guard
 
@@ -359,21 +388,7 @@ def test_resubmit_with_an_unbound_measure_axis_elects_a_value_its_family_holds(m
 def test_resubmit_of_a_measure_axis_set_binding_serves_every_value_of_the_set(monkeypatch):
     """An identity binding nettingBasis to {Gross, Net} serves a member of each value, as
     the mint does, where one measure partition holds only one."""
-    _, identity = make_base(
-        _NOMINAL_FLOW_SHAPE,
-        [
-            _bound_slot("dac2aAidType", "DAC2aAidType206"),
-            _unbound_slot("dacTypeOfFinance"),
-            _bound_slot("financialFlowType", "Disbursement"),
-            binding_set_slot("how", "nettingBasis", "nettingBasis", ["Gross", "Net"]),
-        ],
-        entities=[destination_entity(_KEN)],
-    )
-    rows = [
-        row
-        for row in _rows_holding(dac2aAidType="DAC2aAidType206", financialFlowType="Disbursement")
-        if row.measurement_denominator is None
-    ]
+    identity, rows = _measure_axis_set_resubmit()
     family = _family_members(identity)
     assert len(family) == 2  # fixture guard: one Gross and one Net member
 

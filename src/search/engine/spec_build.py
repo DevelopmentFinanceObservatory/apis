@@ -1463,9 +1463,9 @@ def build_spec(
     # A stated family is the one a mint of the definition digests and counts. The admitted
     # population the shape was built with can hold members asserting slots the identity
     # leaves out, which that family excludes.
-    if stated is not None and stated.family_count is not None:
+    if stated is not None and stated.family is not None:
         shape = shape.model_copy(
-            update={"member_digest": stated.digest, "member_count": stated.family_count}
+            update={"member_digest": stated.family.digest, "member_count": stated.family.count}
         )
     elif shape.member_digest is not None:
         shape = shape.model_copy(update={"member_digest": None})

@@ -21,17 +21,12 @@ from datasets_api.adapter import resolve_definition_members, to_materialisation_
 from search.engine.retrieval.bound_values import StatedMembers, WalkedMembers, stated_members
 from search.models import BaseIdentity
 from statvar_members import MemberEnumerator, MemberGroup, member_digest
-from tests.engine._base_identity import destination_entity, make_base
-from tests.engine._builders import binding_set_slot
 from tests.engine.test_crs_family_member_digest import _EXTRA_SV, _RECALLED_SV
 from tests.engine.test_crs_family_member_digest import _run as _search_resolve
 from tests.engine.test_resubmit_alternative_measure_axis_gap import (
-    _KEN,
-    _NOMINAL_FLOW_SHAPE,
-    _bound_slot,
+    _five_slot_crs_resubmit,
+    _measure_axis_set_resubmit,
     _resubmit_over_rows,
-    _rows_holding,
-    _unbound_slot,
 )
 
 from ._graph_doubles import FakeMintGraphReader
@@ -165,53 +160,7 @@ def test_a_family_with_a_dominated_member_has_one_digest_and_a_reduced_served_se
     assert served.stat_var == "dcid:Person"
     assert request.family is not None
     assert (request.family.digest, request.family.count) == (member_digest(_PERSON_FAMILY), 3)
-    assert stated == StatedMembers(served_count=1, digest=request.family.digest, family_count=3)
-
-
-def _five_slot_crs_resubmit():
-    """Sixteen rows share the identity's five bound values. Fifteen also assert
-    crsCooperationModality, which the identity omits, so its family is the one row
-    asserting no other slot."""
-    bound = {
-        "crsPurpose": "CRSPurposeCode99810",
-        "crsTypeOfFinance": "CRSTypeOfFinance110",
-        "crsTypeOfFlow": "CRSTypeOfFlow10",
-        "financialFlowType": "Disbursement",
-        "nettingBasis": "Gross",
-    }
-    _, identity = make_base(
-        _NOMINAL_FLOW_SHAPE,
-        [_bound_slot(prop, value) for prop, value in bound.items()],
-        entities=[destination_entity(_KEN)],
-    )
-    rows = [
-        row
-        for row in _rows_holding(**bound)
-        if (row.population_type, row.measured_property) == ("FinancialFlow", "amount")
-        and row.measurement_denominator is None
-    ]
-    return identity, rows
-
-
-def _measure_axis_set_resubmit():
-    """nettingBasis bound to {Gross, Net}: the family holds a member of each value, beside
-    rows asserting slots the identity omits."""
-    _, identity = make_base(
-        _NOMINAL_FLOW_SHAPE,
-        [
-            _bound_slot("dac2aAidType", "DAC2aAidType206"),
-            _unbound_slot("dacTypeOfFinance"),
-            _bound_slot("financialFlowType", "Disbursement"),
-            binding_set_slot("how", "nettingBasis", "nettingBasis", ["Gross", "Net"]),
-        ],
-        entities=[destination_entity(_KEN)],
-    )
-    rows = [
-        row
-        for row in _rows_holding(dac2aAidType="DAC2aAidType206", financialFlowType="Disbursement")
-        if row.measurement_denominator is None
-    ]
-    return identity, rows
+    assert stated == StatedMembers(served_count=1, family=request.family)
 
 
 @pytest.mark.parametrize(
@@ -289,9 +238,7 @@ def test_a_graph_walk_that_reads_every_candidate_states_the_same_family():
     assert served.family is not None
     assert served.family.digest == member_digest(_PERSON_FAMILY)
     assert served.family.count == 3
-    assert walked.stated == StatedMembers(
-        served_count=len(resolved.shapes), digest=served.family.digest, family_count=3
-    )
+    assert walked.stated == StatedMembers(served_count=len(resolved.shapes), family=served.family)
 
 
 @pytest.mark.parametrize("stat_var", ["Person", "Person_Male"])

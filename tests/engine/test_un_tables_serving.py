@@ -1021,9 +1021,7 @@ def test_a_narrowed_part_whose_walk_settles_another_query_raises(bind_catalogue)
     query = identity_query(answer.definition.identity)
     wider = dataclasses.replace(query, slots={**query.slots, _SEX: ("unbound",)})
     shape = SimpleNamespace(shape_id="un_wealth", omitted_slots=frozenset({_SEX}))
-    walked = WalkedMembers(
-        key=walk_key(wider), stated=StatedMembers(served_count=7, digest=None, family_count=None)
-    )
+    walked = WalkedMembers(key=walk_key(wider), stated=StatedMembers(served_count=7, family=None))
 
     with pytest.raises(AssertionError, match="settles no members"):
         check_breakdown_settled(shape, walked, answer)

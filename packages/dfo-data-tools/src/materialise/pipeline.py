@@ -56,9 +56,10 @@ from materialise.rate_tables import RateTableCache
 from materialise.reshape import TableLike
 from materialise.series_conversion import SeriesConversion, SeriesKey
 from materialise.statistics import SeriesStatisticsFile
-from materialise.trace import UNKNOWN_FAMILY, ManifestTrace, MemberFamily, StatedFamily
+from materialise.trace import UNKNOWN_FAMILY, ManifestTrace, StatedFamily
 from materialise.window import Coverage, LatestYear, ReadSeries, RequestedWindow
 from origin_catalogue import note_un_unserved
+from statvar_members import MemberFamily
 
 if TYPE_CHECKING:
     # Keep the optional coverage index lazy because it imports NumPy, absent from pure installs.

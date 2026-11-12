@@ -83,7 +83,6 @@ from materialise.recipes import (
     graph_role_for_spec_role,
 )
 from materialise.roles import axis_ambiguous_for, axis_for_role, declared_role_for
-from materialise.trace import MemberFamily
 from materialise.window import RequestedWindow, election_window
 from origin_catalogue import scoped_reads
 from origin_catalogue.context import current_build_id
@@ -94,11 +93,12 @@ from statvar_members import (
     DegenerateObservationProperties,
     MemberEnumerationTooLarge,
     MemberEnumerator,
+    MemberFamily,
     MemberQueryUnanchored,
     MemberRoleDisagreement,
     MultiValuedConstraint,
     NotAStatisticalVariable,
-    member_digest,
+    member_family_of,
 )
 
 # Identity documents store bare dcids. Shapes carry the `dcid:` prefix.
@@ -533,7 +533,7 @@ def admitted_family(identity: Mapping[str, object], shape: StatVarShape) -> Memb
     """Return the population `identity` admits, as the trace states it. A pinned identity
     admits its one StatVar. A described identity admits the family member resolution stated on `shape`."""
     if cast("Mapping[str, object]", identity.get("shape", {})).get("kind") == "stat_var":
-        return _member_family(frozenset((shape.stat_var.removeprefix(_STAT_VAR_PREFIX),)))
+        return member_family_of(frozenset((shape.stat_var.removeprefix(_STAT_VAR_PREFIX),)))
     return shape.family
 
 
@@ -681,12 +681,6 @@ class ResolvedMembers:
     and every member a broader member dominates."""
 
 
-def _member_family(dcids: frozenset[str]) -> MemberFamily:
-    """State a whole admitted population by the digest Search states it by
-    (`statvar_members.member_digest`) and its count."""
-    return MemberFamily(digest=member_digest(dcids), count=len(dcids))
-
-
 def _resolve_index_members(
     query: FamilyQuery, *, spec_id: str, code_index: CodeIndex
 ) -> ResolvedMembers | None:
@@ -736,7 +730,7 @@ def _resolve_index_members(
         raise RoleSignatureIncompatible(spec_id=spec_id, roles_by_stat_var=roles_by_dcid)
     family_dcids = frozenset(row.dcid for row in family)
     # The index holds every row of the family, so the whole of it is stated.
-    stated = _member_family(family_dcids)
+    stated = member_family_of(family_dcids)
     shapes = tuple(
         StatVarShape(
             stat_var=f"{_STAT_VAR_PREFIX}{row.dcid}",
@@ -965,7 +959,7 @@ def resolve_definition_members(
         )
 
     walked = frozenset(group.family)
-    stated = _member_family(group.stated_family) if group.stated_family is not None else None
+    stated = member_family_of(group.stated_family) if group.stated_family is not None else None
     stubs = tuple(f"{_STAT_VAR_PREFIX}{candidate}" for candidate in group.stub_candidates)
     shapes = tuple(
         StatVarShape(

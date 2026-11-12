@@ -52,14 +52,13 @@ from materialise import EnrichmentLookup, MaterialisationRequest
 from materialise.content_version import recipe_dependency_fingerprint
 from materialise.rate_tables import RateTableCache
 from materialise.recipe_bodies import RECIPE_BODIES
-from materialise.trace import MemberFamily
 from materialise.window import RequestedWindow
 from origin_catalogue import Catalogue, bound_catalogue, current_catalogue
 from origin_catalogue.origins import BASE, DFO, DataCommons
 from spec_registry import LiveSpecRegistry
 from spec_registry.identity import recompute_identity
 from spec_registry.reader import LiveSpecReader, StoredDefinition
-from statvar_members import MemberEnumerator
+from statvar_members import MemberEnumerator, MemberFamily
 from tests.graph_release.support import release_with
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue, provenance_row
 

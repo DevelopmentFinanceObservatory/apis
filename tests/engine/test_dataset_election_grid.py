@@ -4114,8 +4114,8 @@ def test_no_door_serves_a_part_from_a_table_it_excludes_or_does_not_own(monkeypa
                 resubmitted = canonicalise_identity(outcome.identity)
                 assert identity_dataset(resubmitted) == outcome.elected, case
                 stated = stated_members(outcome.identity, None)
-                assert stated is not None, case
-                assert stated.digest == member_digest(outcome.members), case
+                assert stated is not None and stated.family is not None, case
+                assert stated.family.digest == member_digest(outcome.members), case
                 answered += 1
     assert answered > 800
     assert refused > 400

@@ -32,6 +32,11 @@ def _population(dcids: list[str], *, exact: bool = True) -> MemberPopulation:
     )
 
 
+def _sized_population(admitted: int) -> MemberPopulation:
+    """A population of `admitted` members."""
+    return _population([f"sv_{i}" for i in range(admitted)])
+
+
 def _with_population(region, population: MemberPopulation | None):
     """Attach the admitted population to a fixture `RegionResult`."""
     return dataclasses.replace(region, member_population=population)
@@ -111,7 +116,8 @@ def test_collapse_same_shape_roster_merge_counts_the_admitted_union():
 
 
 def test_collapse_same_shape_no_member_digest_when_a_member_is_inexact():
-    """An inexact admitted population withholds the digest and keeps the maximum member count."""
+    """An inexact admitted population withholds the digest and keeps the largest admitted
+    population, whatever the parts' shapes count."""
     spec_a = _with_shape_member_count(
         _roster_variant_spec("country/KEN", "sv_a", member_count=1, carry_open_what_slot=False), 3
     )
@@ -123,7 +129,7 @@ def test_collapse_same_shape_no_member_digest_when_a_member_is_inexact():
     )
     r_b = _with_population(
         _region(spec_b, "population of Kenya", earliest_index=1),
-        _population(["sv_a", "sv_y"], exact=False),
+        _population(["sv_a", "sv_y", "sv_z"], exact=False),
     )
 
     effective, residual = collapse_same_shape([r_a, r_b])
@@ -132,7 +138,7 @@ def test_collapse_same_shape_no_member_digest_when_a_member_is_inexact():
     assert residual == []
     merged_shape = effective[0].spec.resolved.shape
     assert merged_shape.member_digest is None
-    assert merged_shape.member_count == 7
+    assert merged_shape.member_count == 3
 
 
 def test_collapse_same_shape_no_member_digest_when_a_member_has_no_population():
@@ -159,18 +165,25 @@ def test_collapse_same_shape_no_member_digest_when_a_member_has_no_population():
 
 
 @pytest.mark.parametrize(
-    ("uganda", "stated"),
+    ("uganda", "admitted", "stated"),
     [
-        pytest.param((2, "d", 5), (2, "d", 5), id="parts-agree"),
-        pytest.param((3, "d", 5), (None, None, 5), id="served-counts-differ"),
-        pytest.param((2, "e", 7), (None, None, 7), id="digests-differ"),
+        pytest.param((2, "d", 5), (5, 5), (2, "d", 5), id="parts-agree"),
+        pytest.param((3, "d", 5), (5, 5), (None, None, 5), id="served-counts-differ"),
+        pytest.param((2, "e", 7), (5, 7), (None, None, 7), id="digests-differ"),
+        pytest.param(
+            (None, None, 7), (250, 7), (None, None, 250), id="family-smaller-than-admitted"
+        ),
     ],
 )
-def test_collapse_same_shape_where_axis_merge_keeps_the_walk_its_parts_share(uganda, stated):
+def test_collapse_same_shape_where_axis_merge_keeps_the_walk_its_parts_share(
+    uganda, admitted, stated
+):
     """A where-axis merge binds one identity's members at more places, so the walk both
     parts settled stands for it, and the merge counts the family that walk digests. Parts
-    that disagree state nothing, and the member count is the maximum."""
+    that disagree state nothing, and the member count is the largest admitted population:
+    a part stating a digest counts its family, which can be smaller than what it admits."""
     served_count, digest, member_count = uganda
+    kenya_admitted, uganda_admitted = admitted
     spec_kenya = _stating(
         _with_shape_member_count(
             _where_bound_spec_with_member_count("country/KEN", "sv_kenya", member_count=5), 5
@@ -178,21 +191,19 @@ def test_collapse_same_shape_where_axis_merge_keeps_the_walk_its_parts_share(uga
         2,
         "d",
     )
-    spec_uganda = _stating(
-        _with_shape_member_count(
-            _where_bound_spec_with_member_count(
-                "country/UGA", "sv_uganda", member_count=member_count
-            ),
-            member_count,
-        ),
-        served_count,
-        digest,
+    spec_uganda = _with_shape_member_count(
+        _where_bound_spec_with_member_count("country/UGA", "sv_uganda", member_count=member_count),
+        member_count,
     )
+    if digest is not None:
+        spec_uganda = _stating(spec_uganda, served_count, digest)
     r_a = _with_population(
-        _region(spec_kenya, "population of Kenya", earliest_index=0), _population(["sv_kenya"])
+        _region(spec_kenya, "population of Kenya", earliest_index=0),
+        _sized_population(kenya_admitted),
     )
     r_b = _with_population(
-        _region(spec_uganda, "population of Uganda", earliest_index=1), _population(["sv_uganda"])
+        _region(spec_uganda, "population of Uganda", earliest_index=1),
+        _sized_population(uganda_admitted),
     )
 
     effective, residual = collapse_same_shape([r_a, r_b])

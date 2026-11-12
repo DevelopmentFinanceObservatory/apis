@@ -52,7 +52,7 @@ from search.models import (
     Spec,
     StatVar,
 )
-from statvar_members import member_digest
+from statvar_members import member_family_of
 from tests.code_index.aid_identity import (
     CRS_MEMBER_COUNT,
     CRS_MEMBERS_WITHOUT_MODALITY,
@@ -265,9 +265,7 @@ class TestBuildSpecStatVars:
         identity = unwalked.definition.identity
         assert not index_decides_membership(identity)
         family = ["sv0", "sv1", "sv2"]
-        stated = StatedMembers(
-            served_count=2, digest=member_digest(family), family_count=len(family)
-        )
+        stated = StatedMembers(served_count=2, family=member_family_of(family))
         own = WalkedMembers(key=walk_key(identity_query(identity)), stated=stated)
         other_key = (*own.key[:2], frozenset({"origin"}), own.key[3])
         open_key = (*own.key[:3], frozenset({"origin"}))
@@ -280,7 +278,7 @@ class TestBuildSpecStatVars:
                 resolved.shape.member_count,
             )
 
-        assert statement(self._build(_stat_vars(3), walked=own)) == (2, stated.digest, 3)
+        assert statement(self._build(_stat_vars(3), walked=own)) == (2, stated.family.digest, 3)
         assert statement(unwalked) == (None, None, 250)
         assert statement(self._build(_stat_vars(3), walked=replace(own, key=other_key))) == (
             None,
@@ -345,8 +343,7 @@ class TestStatedMembers:
 
         assert stated_members(identity, None) == StatedMembers(
             served_count=len(antichain_minimal_rows(get_index(), family.rows)),
-            digest=member_digest(row.dcid for row in family.rows),
-            family_count=rows,
+            family=member_family_of(row.dcid for row in family.rows),
         )
 
     def test_an_identity_the_index_resolves_no_family_for_states_none(self):
@@ -360,9 +357,7 @@ class TestStatedMembers:
         document = education_aid_identity()
         document["shape"]["population_type"] = "EconomicActivity"
         _, identity = mint_identity(document)
-        stated = StatedMembers(
-            served_count=1, digest=member_digest(["Amount_EconomicActivity"]), family_count=1
-        )
+        stated = StatedMembers(served_count=1, family=member_family_of(["Amount_EconomicActivity"]))
         walked = WalkedMembers(key=walk_key(identity_query(identity)), stated=stated)
         _, other_identity = mint_identity(education_aid_identity())
         elsewhere = replace(walked, key=walk_key(identity_query(other_identity)))
