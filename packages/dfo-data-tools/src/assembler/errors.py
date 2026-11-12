@@ -11,6 +11,7 @@ from assembler.ports import (
     StructuralView,
     WriteSubjectKind,
 )
+from dfo_platform.codes import RegisteredLimitName
 
 __all__ = [
     "AssemblerRefusal",
@@ -93,9 +94,10 @@ class ResourceExhausted(AssemblerRefusal):
     """A pre-resolution or resolved quantity exceeds a `limits.py` maximum.
     `resolve.py` raises this for the selector-count cap and the series-count
     estimate, checked before any selector is matched against frame rows,
-    ahead of the cross-product expansion."""
+    ahead of the cross-product expansion. `limit_name` is a name the spec-kit limit registry
+    holds (`dfo_platform.codes.RegisteredLimitName`)."""
 
-    def __init__(self, *, pointer: str, limit_name: str, detail: str) -> None:
+    def __init__(self, *, pointer: str, limit_name: RegisteredLimitName, detail: str) -> None:
         super().__init__(pointer=pointer, detail=detail)
         self.limit_name = limit_name
 

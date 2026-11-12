@@ -118,8 +118,8 @@ from search.engine.region.scope import (
 from search.engine.region.scope_decision import (
     ScopeDecision,
     answer_scope_facts,
+    decide_guarded,
     decide_scope,
-    decide_spec_scope,
     guarded_scope_decision,
 )
 from search.engine.region.state import MeasureFamily, ResolveState, raised_facts
@@ -1219,8 +1219,8 @@ async def _assemble_carve_outs(
 async def _finished_scope(state: ResolveState, spec: Spec) -> ScopeDecision:
     """The scope `spec` states, as decided before its preview launched
     (`ResolveState.scope_decision`). A decision made for another `spec_id` is decided again
-    from `spec` (`scope_decision.decide_spec_scope`) and kept for
-    `pipeline._with_scope_choices`."""
+    from `spec`, guarded as every decision is (`scope_decision.decide_guarded`), and kept
+    for `pipeline._with_scope_choices`."""
     decision = cast(ScopeDecision, state.scope_decision)
     if decision.spec_id == spec.spec_id:
         return decision
@@ -1230,7 +1230,7 @@ async def _finished_scope(state: ResolveState, spec: Spec) -> ScopeDecision:
         spec.spec_id,
     )
     state.scope_decision = await asyncio.to_thread(
-        decide_spec_scope,
+        decide_guarded,
         spec,
         selection=state.scope_selection,
         operations=state.operations,

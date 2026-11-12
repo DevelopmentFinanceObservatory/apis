@@ -12,6 +12,7 @@ from collections.abc import Mapping
 from typing import cast
 
 from assembler.errors import BindingInvalid, escape_pointer_segment
+from assembler.ports import StructuralView
 
 __all__ = [
     "canonical_select",
@@ -24,7 +25,9 @@ __all__ = [
 
 def canonical_select(*, select: Mapping[str, object]) -> dict[str, object]:
     """`select` with each list of values sorted and its repeats dropped. A scalar value stays
-    as it is."""
+    as it is, since a scalar and a one-value list draw differently (`has_arrayed_dimension`).
+    Two selects naming the same values the same way compare equal in this form whatever their
+    key order, as a `jsonb` column returns them."""
     return {
         # The intent schema holds a dimension's values as strings.
         dimension: sorted(set(cast("list[str]", value))) if isinstance(value, list) else value
@@ -41,16 +44,22 @@ def normalize_select(*, select: Mapping[str, object]) -> list[dict[str, object]]
     return [{"bindings": bindings}]
 
 
-def check_select_nonempty(*, select: Mapping[str, object]) -> None:
+def check_select_nonempty(*, select: Mapping[str, object], view: StructuralView) -> None:
     """Requires at least one dimension. An empty map is schema-valid and would resolve to
-    every frame series."""
+    every frame series. The refusal names each of the frame's dimensions (`view`) with the
+    count of values it holds."""
     if not select:
+        held = ", ".join(
+            f"{dimension.name} ({dimension.total_count} "
+            f"{'value' if dimension.total_count == 1 else 'values'})"
+            for dimension in view.dimensions
+        )
         raise BindingInvalid(
             pointer="/select",
             dimension="",
             legal_values=(),
             truncated=False,
-            detail="select must name at least one dimension",
+            detail=(f"select must name at least one dimension; this frame's dimensions are {held}"),
         )
 
 

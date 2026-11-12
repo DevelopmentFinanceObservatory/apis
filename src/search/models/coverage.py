@@ -32,7 +32,9 @@ class CoverageExact(StrictModel):
     observation_count: int = Field(
         description=(
             "exact distinct (date, facet) observation pairs for resolved stat_vars and "
-            "entities in the resolved window, or full history when window is absent"
+            "entities in the resolved window, or full history when window is absent. "
+            "A role-bearing series holds one observation per year, so a bulk read counts "
+            "its years with data"
         )
     )
     evidence: Literal["facet_metadata", "observed"] = Field(
@@ -171,7 +173,7 @@ class Headline(StrictModel):
             "year any of them holds at or before the year the coverage artifact was built, or "
             "at the newest year any holds when none holds a year that early; `year` is one of "
             "the three: the newest year a variable heads, which is the year it elected or, for "
-            "a variable that elects none, such as one of monthly data, its newest year at or "
+            "a variable that elects none, its newest year at or "
             "before the build year. When no variable holds a year that early, each heads its "
             "newest year. `observations`, `series` and `role_counts` count only the variables "
             "heading it. For a named window they end at "

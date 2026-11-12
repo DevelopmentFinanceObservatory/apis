@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal, Self
 
+from dfo_frame_grammar import DeflationBasis
 from pydantic import AfterValidator, Field, Strict, StringConstraints, model_validator
 from pydantic.experimental.missing_sentinel import MISSING
 
@@ -90,7 +91,10 @@ class SimpleUnit(Stored):
     `ref` is the unit's dcid. `currency` is an ISO 4217 code, which a converted unit
     `{currency, prices, base_year}` names in place of a dcid. `prices` says whether money is
     in `current` or `constant` prices, and `base_year` names the year constant prices are
-    expressed in; it is present exactly when prices are constant.
+    expressed in; it is present exactly when prices are constant. `deflation_basis` says whose
+    prices deflated a constant-price amount, the frame grammar's `DeflationBasis`. It is
+    optional and present only when prices are constant. A record holding one is of schema
+    version 3 (`description.facts.lowest_schema_version`).
     """
 
     ref: Text | MISSING = MISSING
@@ -99,6 +103,7 @@ class SimpleUnit(Stored):
     at_mint: Literal[True] | MISSING = MISSING
     prices: Literal["current", "constant"] | MISSING = MISSING
     base_year: Annotated[int, Strict(), Field(ge=1900, le=2100)] | MISSING = MISSING
+    deflation_basis: DeflationBasis | MISSING = MISSING
 
     @model_validator(mode="after")
     def _ref_or_currency(self) -> Self:
@@ -110,6 +115,12 @@ class SimpleUnit(Stored):
     def _base_year_with_constant_prices(self) -> Self:
         if (self.prices == "constant") != (self.base_year is not MISSING):
             raise ValueError("base_year is present exactly when prices are constant")
+        return self
+
+    @model_validator(mode="after")
+    def _deflation_basis_at_constant_prices(self) -> Self:
+        if self.deflation_basis is not MISSING and self.prices != "constant":
+            raise ValueError("deflation_basis is present only when prices are constant")
         return self
 
 

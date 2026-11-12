@@ -955,7 +955,8 @@ def _unit_label(side: SimpleUnit | VariableSide, vocabulary: Vocabulary) -> str 
 
 
 def _unit_words(unit: Unit | None, vocabulary: Vocabulary) -> str | None:
-    """A unit as a sentence names it: "US dollars in constant 2023 prices"."""
+    """A unit as a sentence names it: "US dollars in constant 2023 prices", or "Nigerian naira
+    in constant 2024 donor prices" for a conversion that names whose prices deflated it."""
     if isinstance(unit, ComposedUnit):
         numerator = _unit_label(unit.numerator, vocabulary)
         denominator = _unit_label(unit.denominator, vocabulary)
@@ -966,7 +967,8 @@ def _unit_words(unit: Unit | None, vocabulary: Vocabulary) -> str | None:
     if prices is None:
         return label
     year = _held(unit.base_year)
-    basis = f"{prices} {year}" if year is not None else prices
+    deflated_by = _held(unit.deflation_basis)
+    basis = " ".join(str(word) for word in (prices, year, deflated_by) if word is not None)
     return f"{label} in {basis} prices"
 
 

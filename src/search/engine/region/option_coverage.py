@@ -295,9 +295,7 @@ class RoleServedFilter:
 
     A member's rows are exact when its series sit in one collapse group
     (`series_coverage.index.KeptFacets.groups`): a per-series read elects one group per
-    member across every role tuple, so of several it can serve fewer. Under `latest`
-    they are an upper bound when one of its facets states a period shorter than a year,
-    whose latest period the index cannot find within the year. `bulk_read`, for an
+    member across every role tuple, so of several it can serve fewer. `bulk_read`, for an
     answer read in bulk (`read_plan.BulkPlan`), carries each member's facet ids, so a
     pick whose members sit in more than one facet counts an upper bound
     (`bound_values.served_rows`). `facets_pinned` marks every count an upper bound, for
@@ -362,7 +360,7 @@ class RoleServedFilter:
                 continue
             for (sv, recipient, donor), years in zip(found.keys(), found.year_bits(), strict=True):
                 kept = found.variables[sv]
-                exact = kept.groups == 1 and not (latest and kept.sub_annual)
+                exact = kept.groups == 1
                 served.setdefault(sv, {})[(sv, f"{recipient}|{donor}")] = SeriesRows(
                     rows=years.bit_count(),
                     exact=counted_exact(

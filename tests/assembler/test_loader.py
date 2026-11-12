@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
-from assembler.catalogue import BakedReleaseRegistry, load_release
+from assembler.catalogue import (
+    BakedReleaseRegistry,
+    CatalogueShapeError,
+    _line_chart_max_series,
+    load_release,
+)
 from assembler.catalogue.constraints import CONSTRAINT_REGISTRY
 
 _MEMBERS = ("line_chart", "bar_chart", "table", "stat_card", "note_narration", "source_card")
@@ -18,7 +25,7 @@ def test_load_release_is_not_run_at_import_time():
 
 def test_load_release_populates_every_pinned_field(catalogue_dir):
     release = load_release(catalogue_dir=catalogue_dir)
-    assert release.catalog_version == "2026.10.0"
+    assert release.catalog_version == "2026.11.0"
     assert release.schema_version == 1
     assert release.envelope_schema["$id"].endswith("envelope.schema.json")
     assert set(release.component_schemas) == set(_MEMBERS)
@@ -38,6 +45,62 @@ def test_load_release_populates_every_pinned_field(catalogue_dir):
     assert "significant_digits" in release.formatter_profile
     assert release.retry_modes["schema_invalid"] == "correct_and_retry"
     assert release.retry_modes["release_mismatch"] == "retry_after_delay"
+    assert release.line_chart_max_series == 8
+
+
+def _without_array_cap(schema):
+    select = schema["properties"]["select"]
+    branches = [
+        {key: value for key, value in branch.items() if key != "maxItems"}
+        for branch in select["additionalProperties"]["anyOf"]
+    ]
+    return {
+        **schema,
+        "properties": {
+            **schema["properties"],
+            "select": {**select, "additionalProperties": {"anyOf": branches}},
+        },
+    }
+
+
+def _with_two_array_caps(schema):
+    select = schema["properties"]["select"]
+    branches = select["additionalProperties"]["anyOf"]
+    (array,) = [branch for branch in branches if branch.get("type") == "array"]
+    return {
+        **schema,
+        "properties": {
+            **schema["properties"],
+            "select": {
+                **select,
+                "additionalProperties": {"anyOf": [*branches, {**array, "maxItems": 24}]},
+            },
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "reshape",
+    [
+        pytest.param(_without_array_cap, id="array-without-maxItems"),
+        pytest.param(_with_two_array_caps, id="two-arrays-with-maxItems"),
+        pytest.param(
+            lambda schema: {**schema, "properties": {"type": schema["properties"]["type"]}},
+            id="no-select",
+        ),
+    ],
+)
+def test_a_line_chart_select_without_an_array_cap_fails_the_load(release, reshape):
+    with pytest.raises(CatalogueShapeError):
+        _line_chart_max_series(tolerant=reshape(release.intent_schemas_tolerant["line_chart"]))
+
+
+@pytest.mark.parametrize("schemas", ["intent_schemas", "intent_schemas_tolerant"])
+def test_a_release_without_a_line_chart_schema_fails_to_build(release, schemas):
+    held = getattr(release, schemas)
+    without = {member: schema for member, schema in held.items() if member != "line_chart"}
+    with pytest.raises(CatalogueShapeError):
+        dataclasses.replace(release, **{schemas: without})
 
 
 def test_tolerant_intent_schemas_declare_no_required_fields(release):

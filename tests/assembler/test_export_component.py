@@ -33,6 +33,7 @@ from assembler.pipeline.export_component import (
 )
 from assembler.ports import FrameRef, ResolvedFrame
 from assembler.testing import FIXTURE_RETRIEVED_ON, build_resolved_frame
+from dfo_analysis_engine.place_type import UNTYPED
 from materialise.bundle_naming import card_slug
 from tests.presentation_store.test_frame_store import (
     _FakeGraphReader,
@@ -487,6 +488,318 @@ def test_bundle_validates_and_documents_its_sources_columns_and_codes(
     assert _FRAME_REF.spec_id in readme and _FRAME_REF.content_version in readme
 
 
+_MEMBERS = tuple(f"country/C{number:02d}" for number in range(45))
+
+
+@pytest.mark.parametrize(
+    "second_method",
+    [
+        pytest.param(frozenset(), id="one-method"),
+        pytest.param(frozenset(_MEMBERS[-3:]), id="shown-members-under-a-second-method"),
+        pytest.param(frozenset(_MEMBERS[:5]), id="cut-members-under-a-second-method"),
+    ],
+)
+def test_a_cut_bar_chart_bundles_every_member_of_its_frame_beside_the_shown_rows(
+    second_method, tmp_path, frame_store, revision_store, release_registry
+):
+    """A bar chart listing 24 of the 45 recipients its frame holds in 2024 bundles the 24 rows
+    it shows and a second file of all 45, leaving out the frame's 2023 rows and another
+    variable's, which differ from the card in a dimension its select binds. A recipient served
+    under a second measurement method, shown or cut, is one of the 45, since the select
+    leaves the method free."""
+    rows = [
+        _row(recipient=recipient, period=period, value=float(number))
+        | {"measurementMethod": "dcid:SecondMethod" if recipient in second_method else None}
+        for number, recipient in enumerate(_MEMBERS)
+        for period in ("2023", "2024")
+    ]
+    rows.append(_row(recipient=_MEMBERS[0], period="2024", value=1.0, stat_var="dcid:Other"))
+    frame_store.put(
+        resolved_frame=build_resolved_frame(
+            frame_ref=_FRAME_REF, role_keys=("recipient",), rows=rows
+        )
+    )
+    created = write_component(
+        intent={
+            "type": "bar_chart",
+            "frame_ref": _frame_ref_body(_FRAME_REF),
+            "title": "Largest recipients",
+            "select": {"stat_var": _STAT_VAR, "recipient": list(_MEMBERS[-24:])},
+            "window": {"start": "2024", "end": "2024"},
+        },
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+
+    files = _unzip(
+        _export(created, frame_store=frame_store, revision_store=revision_store, bundle=True).data
+    )
+    descriptor = _validated(tmp_path, files)
+    shown = _csv_rows(files["data/largest-recipients.csv"])
+    every = _csv_rows(files["data/largest-recipients-all-members.csv"])
+    bare = _csv_rows(_export(created, frame_store=frame_store, revision_store=revision_store).data)
+
+    assert len(shown) == 24
+    assert len(every) == 45
+    assert bare == shown
+    assert {row["recipient"] for row in every} == set(_MEMBERS)
+    assert {(row["stat_var"], row["time_period"]) for row in every} == {(_STAT_VAR, "2024")}
+    assert {row["recipient"]: row["series"] for row in every if row["series"]} == {
+        row["recipient"]: row["series"] for row in shown
+    }
+    descriptions = {
+        resource["path"]: resource["description"]
+        for resource in descriptor["resources"]
+        if "description" in resource
+    }
+    assert (
+        "The card shows 24 of 45; data/largest-recipients-all-members.csv holds all 45."
+        in (descriptions["data/largest-recipients.csv"])
+    )
+    assert "all 45 recipient values" in descriptions["data/largest-recipients-all-members.csv"]
+    assert "The card shows 24 of 45" in files["README.md"].decode("utf-8")
+    series_docs = {
+        resource["path"]: field["description"]
+        for resource in descriptor["resources"]
+        if "schema" in resource
+        for field in resource["schema"]["fields"]
+        if field["name"] == "series"
+    }
+    assert series_docs == {
+        "data/largest-recipients.csv": "The card's own label for the row's series.",
+        "data/largest-recipients-all-members.csv": (
+            "The card's own label for the row's series, empty on a row the card does not show."
+        ),
+    }
+
+
+_TOTALS = "marks which rows are totals."
+_PLACE_TYPE = "gives each row's place type."
+
+
+def test_a_card_leaving_stat_var_unbound_keeps_the_all_members_file_to_its_measures(
+    frame_store, revision_store, release_registry
+):
+    """A bar chart listing 2 of 12 recipients with `stat_var` unbound shows the one StatVar
+    those recipients hold. The all-members file holds that StatVar for all 12 and leaves out
+    a second StatVar the frame holds only for a 13th recipient the card does not list."""
+    members = tuple(f"country/C{number:02d}" for number in range(12))
+    rows = [
+        *(
+            _row(recipient=member, period="2024", value=float(n))
+            for n, member in enumerate(members)
+        ),
+        _row(recipient="country/D00", period="2024", value=5.0, stat_var="dcid:Other"),
+    ]
+    frame_store.put(
+        resolved_frame=build_resolved_frame(
+            frame_ref=_FRAME_REF, role_keys=("recipient",), rows=rows
+        )
+    )
+    created = write_component(
+        intent={
+            "type": "bar_chart",
+            "frame_ref": _frame_ref_body(_FRAME_REF),
+            "title": "Largest members",
+            "select": {"recipient": list(members[:2])},
+            "window": {"start": "2024", "end": "2024"},
+        },
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+
+    files = _unzip(
+        _export(created, frame_store=frame_store, revision_store=revision_store, bundle=True).data
+    )
+    every = _csv_rows(files["data/largest-members-all-members.csv"])
+
+    assert {row["stat_var"] for row in every} == {_STAT_VAR}
+    assert {row["recipient"] for row in every} == set(members)
+    assert "The card shows 2 of 12" in files["README.md"].decode("utf-8")
+
+
+@pytest.mark.parametrize(
+    ("role", "cell_column", "member_cell", "aggregate", "aggregate_cell", "counted", "note"),
+    [
+        pytest.param(
+            "financingRecipient",
+            "financingRecipient_party_kind",
+            "party",
+            "dac/AfricaTotal",
+            "total",
+            13,
+            _TOTALS,
+            id="party-total",
+        ),
+        # An aggregate with no row at the shown period holds no row of either file, so no
+        # kept row is a total.
+        pytest.param(
+            "financingRecipient",
+            "financingRecipient_party_kind",
+            "party",
+            "dac/AfricaTotal@2023",
+            "total",
+            12,
+            None,
+            id="party-total-at-another-period",
+        ),
+        # A kind column whose cells name no kind marks no total.
+        pytest.param(
+            "financingRecipient",
+            "financingRecipient_party_kind",
+            UNTYPED,
+            "dac/Unkinded",
+            UNTYPED,
+            13,
+            None,
+            id="no-member-with-a-kind",
+        ),
+        pytest.param(
+            "observationAbout",
+            "observationAbout_type",
+            "Country",
+            "wb/LowIncome",
+            "ProvisionalNode",
+            13,
+            _PLACE_TYPE,
+            id="place-aggregate",
+        ),
+        # Places sharing one type need no column to tell them apart.
+        pytest.param(
+            "observationAbout",
+            "observationAbout_type",
+            "Country",
+            "country/D00",
+            "Country",
+            13,
+            None,
+            id="place-countries",
+        ),
+        # Countries typed apart still share the Country level, so no type tells them apart.
+        pytest.param(
+            "observationAbout",
+            "observationAbout_type",
+            "Country",
+            "country/D00",
+            "Country,Place",
+            13,
+            None,
+            id="place-countries-typed-apart",
+        ),
+        pytest.param(
+            "financingRecipient",
+            "financingRecipient_type",
+            "Country",
+            "dac/AfricaTotal",
+            "Place",
+            13,
+            None,
+            id="party-type-column-alone",
+        ),
+    ],
+)
+def test_a_cut_card_counts_every_member_with_a_value_at_its_periods(
+    role,
+    cell_column,
+    member_cell,
+    aggregate,
+    aggregate_cell,
+    counted,
+    note,
+    tmp_path,
+    frame_store,
+    revision_store,
+    release_registry,
+):
+    """A card showing 8 of a frame's 12 members beside an aggregate larger than any of them
+    counts every member with a value at the shown period, the aggregate included, and the
+    all-members file's description names a party kind column where a kept row holds
+    `total`, and a place type column where the kept rows' places sit at more than one
+    level. An aggregate `@`-suffixed with a period holds its one row there, outside the
+    card's window."""
+    members = tuple(f"country/C{number:02d}" for number in range(12))
+    aggregate, _, aggregate_period = aggregate.partition("@")
+    rows = [
+        {
+            "stat_var": _STAT_VAR,
+            role: member,
+            cell_column: cell,
+            "time_period": period,
+            "value": value,
+            "unit": None,
+            "measurementMethod": None,
+            "provenance": "src_oecd_dac",
+        }
+        for member, cell, value, period in (
+            *(
+                (member, member_cell, float(number), "2024")
+                for number, member in enumerate(members)
+            ),
+            (aggregate, aggregate_cell, 1000.0, aggregate_period or "2024"),
+        )
+    ]
+    frame_store.put(
+        resolved_frame=build_resolved_frame(
+            frame_ref=_FRAME_REF, role_keys=(role, cell_column), rows=rows
+        )
+    )
+    created = write_component(
+        intent={
+            "type": "bar_chart",
+            "frame_ref": _frame_ref_body(_FRAME_REF),
+            "title": "Largest members",
+            "select": {"stat_var": _STAT_VAR, role: list(members[-8:])},
+            "window": {"start": "2024", "end": "2024"},
+        },
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+
+    files = _unzip(
+        _export(created, frame_store=frame_store, revision_store=revision_store, bundle=True).data
+    )
+    every = _csv_rows(files["data/largest-members-all-members.csv"])
+    (description,) = (
+        resource["description"]
+        for resource in _validated(tmp_path, files)["resources"]
+        if resource["path"] == "data/largest-members-all-members.csv"
+    )
+
+    assert len({row[role] for row in every}) == counted
+    assert set(members) <= {row[role] for row in every}
+    assert f"The card shows 8 of {counted}" in files["README.md"].decode("utf-8")
+    if note is None:
+        assert f"`{cell_column}`" not in description
+    else:
+        assert f"The `{cell_column}` column {note}" in description
+    assert f"all {counted} {role} values with a value at those periods" in description
+
+
+@pytest.mark.parametrize("member", ["bar_chart", "table", "stat_card"])
+def test_a_card_showing_every_member_it_varies_on_bundles_one_data_file(
+    member, frame_store, revision_store, release_registry
+):
+    """The bar chart lists both recipients its source holds, the table varies on two
+    dimensions and the stat card on none, so none names a member the card leaves out."""
+    created = _create(
+        member=member,
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+
+    files = _unzip(
+        _export(created, frame_store=frame_store, revision_store=revision_store, bundle=True).data
+    )
+
+    assert [name for name in files if name.startswith("data/") and name != "data/codes.csv"] == [
+        f"data/{card_slug(created.resolved_payload['component']['title']['text'])}.csv"
+    ]
+
+
 def test_a_card_over_a_thin_root_frame_exports_the_licence_the_live_fill_reads(
     frame_store, revision_store, release_registry
 ):
@@ -639,6 +952,73 @@ def test_a_frame_missing_a_shown_row_refuses(frame_store, revision_store, releas
 
     with pytest.raises(ComponentExportMismatch):
         _export(created, frame_store=frame_store, revision_store=revision_store)
+
+
+_CONSTANT_USD = {"currency": "USD", "prices": "constant", "base_year": 2024}
+_PERSON = {"stat_var": "dcid:Count_Person"}
+
+
+@pytest.mark.parametrize(
+    ("unit", "stored_key", "drawn_key"),
+    [
+        pytest.param(
+            {**_CONSTANT_USD, "deflation_basis": "donor"},
+            "USD/constant/2024",
+            "USD/constant/2024/donor",
+            id="converted",
+        ),
+        pytest.param(
+            {"numerator": {**_CONSTANT_USD, "deflation_basis": "donor"}, "denominator": _PERSON},
+            '{"denominator":{"stat_var":"dcid:Count_Person"},'
+            '"numerator":{"base_year":2024,"currency":"USD","prices":"constant"}}',
+            '{"denominator":{"stat_var":"dcid:Count_Person"},'
+            '"numerator":{"base_year":2024,"currency":"USD","deflation_basis":"donor",'
+            '"prices":"constant"}}',
+            id="composed",
+        ),
+    ],
+)
+def test_coordinates_stored_without_a_deflation_basis_match_a_re_minted_frame(
+    unit, stored_key, drawn_key, frame_store, revision_store, release_registry
+):
+    frame = Frame.build(
+        role_keys=("recipient",),
+        rows=[
+            {**_row(recipient=recipient, period=str(year), value=float(year)), "unit": unit}
+            for recipient in ("country/ETH", "country/KEN")
+            for year in (2020, 2021, 2022)
+        ],
+    )
+    document = json.loads(canonical_frame_bytes(frame))
+    frame_store.put(
+        resolved_frame=ResolvedFrame(
+            frame_ref=_FRAME_REF,
+            frame=document,
+            structural_view=compute_structural_view(frame=document, continuation=None),
+            manifest={"schema_version": 1},
+            labels={},
+            retrieved_on=FIXTURE_RETRIEVED_ON,
+        )
+    )
+    created = write_component(
+        intent={**_INTENTS["line_chart"], "frame_ref": _frame_ref_body(_FRAME_REF)},
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+    records = revision_store._revisions[created.component_id]
+    stored = [
+        {**entry, "coordinates": {**entry["coordinates"], "unit": stored_key}}
+        for entry in records[-1].series_coordinates
+    ]
+    assert {entry["coordinates"]["unit"] for entry in records[-1].series_coordinates} == {drawn_key}
+    records[-1] = dataclasses.replace(records[-1], series_coordinates=stored)
+
+    rows = _csv_rows(_export(created, frame_store=frame_store, revision_store=revision_store).data)
+
+    assert [(row["series"], row["time_period"]) for row in rows] == _shown(
+        created.resolved_payload["component"]
+    )
 
 
 def test_a_note_holds_no_data(frame_store, revision_store, release_registry):

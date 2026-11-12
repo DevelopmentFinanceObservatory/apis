@@ -46,6 +46,35 @@ class CatalogueRelease:
     formatter_profile: Mapping[str, object]
     retry_modes: Mapping[str, str]
     referenced_schemas: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
+    line_chart_max_series: int = field(init=False)
+    """Series a `line_chart` draws, the `maxItems` of its tolerant select schema's one array
+    (`intent_schemas_tolerant`). Derived on construction, as `write_schemas` is, so a
+    release with no `line_chart` schema in `intent_schemas` or `intent_schemas_tolerant`, or
+    one naming no single cap, fails (`CatalogueShapeError`)."""
+    write_schemas: Mapping[str, Mapping[str, object]] = field(init=False)
+    """`intent_schemas` as a write validates against them: `line_chart`'s without its select
+    array's `maxItems` (`without_select_list_cap`), the series cap a write checks only where
+    it applies. Derived from `intent_schemas` on construction, so `dataclasses.replace`
+    derives it again."""
+    write_schemas_tolerant: Mapping[str, Mapping[str, object]] = field(init=False)
+    """`intent_schemas_tolerant` as a write validates against them, as `write_schemas`."""
+
+    def __post_init__(self) -> None:
+        if (
+            "line_chart" not in self.intent_schemas
+            or "line_chart" not in self.intent_schemas_tolerant
+        ):
+            msg = "the catalogue release holds no line_chart intent schema"
+            raise CatalogueShapeError(msg)
+        object.__setattr__(
+            self,
+            "line_chart_max_series",
+            _line_chart_max_series(tolerant=self.intent_schemas_tolerant["line_chart"]),
+        )
+        object.__setattr__(self, "write_schemas", _write_schemas(self.intent_schemas))
+        object.__setattr__(
+            self, "write_schemas_tolerant", _write_schemas(self.intent_schemas_tolerant)
+        )
 
 
 class CatalogueIntegrityError(Exception):
@@ -132,6 +161,67 @@ def _derive_tolerant_schema(*, strict: Mapping[str, object]) -> dict[str, object
         for name, schema in properties.items()
     }
     return {**strict, "properties": tolerant_properties, "required": []}
+
+
+class CatalogueShapeError(Exception):
+    """A schema in the bundle lacks a value the assembler reads from it."""
+
+
+def _select_value_branches(schema: Mapping[str, object]) -> Sequence[Mapping[str, object]]:
+    """The `anyOf` branches a select value of a member's intent schema may take. A tolerant
+    schema holds `select` as the strict one does (`_NON_CLEARABLE_FIELDS`)."""
+    properties = cast("Mapping[str, Mapping[str, object]]", schema.get("properties", {}))
+    select = properties.get("select", {})
+    values = cast("Mapping[str, object]", select.get("additionalProperties", {}))
+    return cast("Sequence[Mapping[str, object]]", values.get("anyOf", ()))
+
+
+def _line_chart_max_series(*, tolerant: Mapping[str, object]) -> int:
+    """The `maxItems` of the array a `line_chart` select may bind one dimension to."""
+    caps = [
+        branch["maxItems"]
+        for branch in _select_value_branches(tolerant)
+        if branch.get("type") == "array" and isinstance(branch.get("maxItems"), int)
+    ]
+    if len(caps) != 1:
+        msg = "the line_chart select schema names no single array maxItems"
+        raise CatalogueShapeError(msg)
+    return cast(int, caps[0])
+
+
+def without_select_list_cap(schema: Mapping[str, object]) -> dict[str, object]:
+    """`schema`, a `line_chart` intent schema, without the `maxItems` of its select array.
+
+    The array's `maxItems` is the line chart's series cap
+    (`CatalogueRelease.line_chart_max_series`), which a write holds a select to only where it
+    creates a line chart or changes its select, so the assembler validates against this form
+    and checks the cap itself. Every other rule of the schema is kept."""
+    properties = cast("Mapping[str, Mapping[str, object]]", schema["properties"])
+    select = properties["select"]
+    values = cast("Mapping[str, object]", select["additionalProperties"])
+    branches = [
+        {key: value for key, value in branch.items() if key != "maxItems"}
+        if branch.get("type") == "array"
+        else branch
+        for branch in _select_value_branches(schema)
+    ]
+    return {
+        **schema,
+        "properties": {
+            **properties,
+            "select": {**select, "additionalProperties": {**values, "anyOf": branches}},
+        },
+    }
+
+
+def _write_schemas(
+    schemas: Mapping[str, Mapping[str, object]],
+) -> Mapping[str, Mapping[str, object]]:
+    """`schemas` with `line_chart`'s select list cap dropped (`without_select_list_cap`)."""
+    return {
+        member: without_select_list_cap(schema) if member == "line_chart" else schema
+        for member, schema in schemas.items()
+    }
 
 
 def load_release(*, catalogue_dir: Path | None = None) -> CatalogueRelease:

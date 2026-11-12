@@ -109,13 +109,15 @@ def test_a_candidate_offers_only_the_provenance_its_elected_unit_admits():
     spec = SimpleNamespace(
         spec_id="spec_c", definition=SimpleNamespace(identity=SimpleNamespace(facets=_FACETS))
     )
-    grounded = SimpleNamespace(
-        cand_obs_entities={"spec_c": ([_SV], _ENTITIES)},
-        cand_probe_entities={"spec_c": _ENTITIES},
-        cand_plans={},
-        cand_elected={"spec_c": _ELECTED},
-        cand_scopes={},
-    )
+    grounded = {
+        "spec_c": SimpleNamespace(
+            sv_dcids=[_SV],
+            probe_entities=_ENTITIES,
+            plan=None,
+            elected=_ELECTED,
+            candidate=SimpleNamespace(mat=SimpleNamespace(member_facts=None)),
+        )
+    }
 
     probe = _candidate_facet_probe(
         cast(Any, SimpleNamespace(date_request=None)), cast(Any, grounded), cast(Any, spec)

@@ -1,13 +1,14 @@
 """Exports the frame rows behind a component revision's shown values as CSV, XLSX, or Parquet.
 
 `export_component_data` reads one stored revision and collects the `(series, period)` pairs the
-card shows a value for: each valued point of a line or bar chart series, each valued table row,
-and a stat card's headline period plus both of its change basis periods. Series ids map to frame
-coordinates through the revision's `series_coordinates`. The frame loads through
-`FrameStore.load`, which rechecks revocation and expiry, and a frame row is kept when its
-period and either of its `frame_view.series_keys` keys, its own cells or its key under the
-frame's continuation (`ResolvedFrame.continuation`), as `resolve_selectors` groups them, name a shown pair. Every shown pair
-must match exactly one row, observed and holding the value the card shows, or the export
+card shows a value for: each valued point of a line or bar chart series, each valued table row, and
+a stat card's headline period plus both of its change basis periods. Series ids map to frame
+coordinates through the revision's `series_coordinates`, a stored `unit` coordinate read as the
+frame cell it binds (`unit_cells.bind_unit_key`). The frame loads through `FrameStore.load`,
+which rechecks revocation and expiry, and a frame row is kept when its period and either of its
+`frame_view.series_keys` keys, its own cells or its key under the frame's continuation
+(`ResolvedFrame.continuation`), as `resolve_selectors` groups them, name a shown pair. Every shown
+pair must match exactly one row, observed and holding the value the card shows, or the export
 raises `ComponentExportMismatch` and serves nothing. A table's rows are traced by their
 `series_id`. A table revision stored before rows carried it raises
 `ComponentPredatesRowIdentities`, and one whose rows carry it on only some rows, or carry a
@@ -28,21 +29,36 @@ every frame column keeps its own name. The Datasets writers render it, so CSV an
 cells starting with a formula trigger are neutralised.
 
 A bundle is a zip holding the file at `data/<card-slug>.<format>` beside
-`materialise.bundle.assemble_component_bundle`'s documents, `data/codes.csv` among them. Each
-provenance ref the kept rows carry is cited from the frame manifest's citation, its licence and
-documentation included, through `materialise.bundle_sources`. Columns are documented by
-`materialise.bundle_columns`, and the codes table is labelled from `ResolvedFrame.labels` and
-the cited source names with no graph read, so a role's codes keep the kind `entity`. Links and
-the reproducing call sit under the public site origin the caller passes.
+`materialise.bundle.assemble_component_bundle`'s documents, `data/codes.csv` among them. When the
+revision's `select` lists the members of exactly one dimension other than `stat_var` and the frame
+holds a member of it the card leaves out, as for a chart cut to its largest members, the bundle
+also holds `data/<card-slug>-all-members.<format>`. It holds the valued frame rows at the periods
+the card shows whose other `select`-bound dimensions match the card, so every member with a value
+at those periods, group totals, aggregates and `untyped` members included, in frame order, its
+`series` cell empty on rows the card does not show. On a party role whose kind column holds `total`
+in one of those rows, its description names that column as marking the totals. On the place role,
+where those rows' places sit at more than one level
+(`dfo_analysis_engine.place_type.at_one_level`), it names the type column as giving each row's
+place type (`_column_note`). `stat_var` is held to the StatVars the card's shown series hold, at
+the periods it shows them, even where `select` leaves it unbound. Every other dimension `select`
+leaves unbound, `unit`, `measurementMethod` and `provenance` among them when unbound, is free, so a
+member served under another method or source is kept. The revision does not record whether the
+listed members were cut for display or chosen, so both get the same file. Each file's resource
+`description` and README row say which file is which, with "The card shows N of M; <file> holds all
+M." on the shown file. `ComponentExportMismatch` guards the shown file alone, and a bare file holds
+the shown rows. Each provenance ref the kept rows carry is cited from the frame manifest's
+citation, its licence and documentation included, through `materialise.bundle_sources`. Columns are
+documented by `materialise.bundle_columns`, and the codes table is labelled from
+`ResolvedFrame.labels` and the cited source names with no graph read, so a role's codes keep the
+kind `entity`. Links and the reproducing call sit under the public site origin the caller passes.
 
-The revision's stored `created_at` is the bundle's prepared date and dates the file name, so
-one revision always serves one name. An export on a target frame takes both from that frame's
-`retrieved_on`, at midnight UTC. `FrameStore.load` reads the graph's labels for the frame's
-codes, and the sources' documentation for a derived frame or a root frame whose stored citation
-left fields empty. Bytes match from one request to the next while those reads are unchanged. Names follow
-`materialise.bundle_naming`: `dfo_<card-slug>_<YYYY-MM-DD>_<format>_r<revision>.zip` for a
-bundle and `dfo_<card-slug>_<YYYY-MM-DD>_r<revision>.<format>` for a bare file, the date
-in UTC.
+The revision's stored `created_at` is the bundle's prepared date and dates the file name, so one
+revision always serves one name. An export on a target frame takes both from that frame's
+`retrieved_on`, at midnight UTC. `FrameStore.load` reads the graph's labels for the frame's codes,
+and the sources' documentation for a derived frame or a root frame whose stored citation left
+fields empty. Bytes match from one request to the next while those reads are unchanged. Names
+follow `materialise.bundle_naming`: `dfo_<card-slug>_<YYYY-MM-DD>_<format>_r<revision>.zip` for a
+bundle and `dfo_<card-slug>_<YYYY-MM-DD>_r<revision>.<format>` for a bare file, the date in UTC.
 
 This module imports the `formats` extra, so `assembler.pipeline` does not re-export it.
 """
@@ -50,6 +66,7 @@ This module imports the `formats` extra, so `assembler.pipeline` does not re-exp
 from __future__ import annotations
 
 import dataclasses
+import functools
 import io
 import zipfile
 from collections.abc import Callable, Mapping, Sequence
@@ -57,7 +74,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, time
 from typing import Literal, cast
 
-from dfo_frame_grammar import STAT_VAR_COLUMN, STATUS_COLUMN, TIME_PERIOD_COLUMN, VALUE_COLUMN
+from dfo_frame_grammar import (
+    STAT_VAR_COLUMN,
+    STATUS_COLUMN,
+    TIME_PERIOD_COLUMN,
+    UNIT_COLUMN,
+    VALUE_COLUMN,
+)
 from dfo_frame_grammar.grammar import unit_cell_from_json
 
 from assembler.bind import role_columns
@@ -66,6 +89,14 @@ from assembler.mint.provenance import _UNATTRIBUTED_SOURCE_NAME, _citation_sourc
 from assembler.pipeline.render import render_on_frame
 from assembler.pipeline.stored_revision import read_stored_revision
 from assembler.ports import FrameRef, FrameStore, ReleaseRegistry, ResolvedFrame, RevisionStore
+from dfo_analysis_engine.place_type import (
+    PARTY_ROLES,
+    PLACE_ROLE,
+    TOTAL_KIND,
+    at_one_level,
+    kind_column,
+    type_column,
+)
 from materialise.bundle import (
     ArtifactEntry,
     BundleContext,
@@ -98,6 +129,7 @@ from materialise.formats import (
 )
 from materialise.projection import period_cell, period_grain
 from materialise.reshape import Table as ReshapeTable
+from materialise.unit_cells import UnitKeyAmbiguous, bind_unit_key
 
 __all__ = [
     "ComponentExportFile",
@@ -273,8 +305,11 @@ def export_component_data(
     )
     if resolved_frame is None:
         resolved_frame = frame_store.load(frame_ref=frame_ref)
+    keyed = _keyed_frame(resolved_frame)
+    shown = _bind_units(shown, keyed=keyed, mismatch=mismatch)
     table, provenance_refs, generated = _export_table(
-        resolved_frame=resolved_frame, shown=shown, mismatch=mismatch
+        resolved_frame=resolved_frame,
+        rows=_shown_rows(keyed=keyed, shown=shown, mismatch=mismatch),
     )
 
     title = _card_title(component, component_id=component_id)
@@ -296,43 +331,78 @@ def export_component_data(
             file_name=bare_file_name(slug=slug, prepared=prepared, tag=tag, extension=format),
         )
 
+    select = cast("Mapping[str, object] | None", record.stored_intent.get("select"))
     export = ComponentExport(
         component_id=component_id,
         revision=revision,
         frame_ref={"spec_id": frame_ref.spec_id, "content_version": frame_ref.content_version},
-        select=cast("Mapping[str, object] | None", record.stored_intent.get("select")),
+        select=select,
         window=cast("Mapping[str, object] | None", record.stored_intent.get("window")),
     )
     # A card titled "codes" would put its data file on the codes table's path.
     data_slug = f"{slug}-2" if slug in RESERVED_MEMBER_SLUGS else slug
     data_path = f"data/{data_slug}.{format}"
-    scan = TableScan(
-        role_columns=role_columns(columns=cast("Sequence[str]", resolved_frame.frame["columns"]))
+    all_members = None if select is None else _all_members(select=select, keyed=keyed, shown=shown)
+    all_path = f"data/{data_slug}-all-members.{format}"
+    shown_description = "One row per value the card shows."
+    if all_members is not None:
+        shown_description += (
+            f" The card shows {all_members.shown} of {all_members.members}; {all_path} holds "
+            f"all {all_members.members}."
+        )
+
+    bundled_member = functools.partial(
+        _bundled_member,
+        format=format,
+        spec_id=frame_ref.spec_id,
+        title=title,
+        resolved_frame=resolved_frame,
+        generated=generated,
     )
     archive = io.BytesIO()
     with zipfile.ZipFile(archive, "w") as zf:
-        with zf.open(zipfile.ZipInfo(data_path, date_time=_ZIP_FIXED_DATE_TIME), mode="w") as entry:
-            written = _WRITERS[format](
-                scan.observe((table,)), rendering=Rendering(), sink=cast(Sink, entry)
-            )
-        sources = _sources(resolved_frame=resolved_frame, provenance_refs=provenance_refs)
-        codes = bundle_codes(
-            (scan,), known_labels=_known_labels(resolved_frame, sources=sources), lookup=None
-        ).entries
-        member_provenance = MemberProvenance(
-            spec_id=frame_ref.spec_id,
-            title=title,
-            artifact=ArtifactEntry(
+        bundled = [
+            bundled_member(
+                zf,
                 path=data_path,
-                bytes=written.size_bytes,
-                digest=written.digest,
-                media_type=written.media_type,
-                table_schema=table_schema_for(table, rendering=Rendering()),
+                member_table=table,
+                refs=provenance_refs,
+                description=shown_description,
+                partly_shown=False,
+            )
+        ]
+        if all_members is not None:
+            all_table, all_refs, _ = _export_table(
+                resolved_frame=resolved_frame, rows=all_members.rows
+            )
+            series_column = next(name for name, column in generated.items() if column is None)
+            bundled.append(
+                bundled_member(
+                    zf,
+                    path=all_path,
+                    member_table=all_table,
+                    refs=all_refs,
+                    description=(
+                        "Every frame row for the card's measure at the periods it shows, "
+                        f"across all {all_members.members} {all_members.dimension} values "
+                        "with a value at those periods."
+                        + all_members.column_note
+                        + f" The {series_column} column holds the card's label on the rows "
+                        "the card shows. A download without the bundle holds only the shown "
+                        "rows."
+                    ),
+                    partly_shown=True,
+                )
+            )
+        members = tuple(member for member, _ in bundled)
+        scans = tuple(scan for _, scan in bundled)
+        codes = bundle_codes(
+            scans,
+            known_labels=_known_labels(
+                resolved_frame, sources=[source for member in members for source in member.sources]
             ),
-            sources=sources,
-            columns=_column_docs(scan, generated=generated),
-            description="One row per value the card shows.",
-        )
+            lookup=None,
+        ).entries
         route = export_path(component_id=component_id, revision=revision)
         # The render export route needs the live-refresh principal, so a bundle on a target
         # frame names no call a reader could repeat.
@@ -343,11 +413,11 @@ def export_component_data(
         )
         files = assemble_component_bundle(
             export=export,
-            member=member_provenance,
+            members=members,
             reproducing_call=reproducing_call,
             context=BundleContext(
                 heading=title,
-                summary=summary_line((scan,), codes=codes),
+                summary=summary_line(scans[:1], codes=codes),
                 slug=slug,
                 version=tag,
                 prepared_at=prepared_at,
@@ -457,30 +527,99 @@ def _coordinate_key(coordinates: Mapping[str, object]) -> _CoordinateKey:
     return tuple(sorted(coordinates.items()))
 
 
-def _export_table(
-    *,
-    resolved_frame: ResolvedFrame,
-    shown: Sequence[_ShownPoint],
-    mismatch: Callable[[str], ComponentExportMismatch],
-) -> tuple[Table, tuple[str | None, ...], dict[str, str | None]]:
-    """Match each shown point to its one frame row and build the export table. Also returns
-    the distinct provenance refs of the kept rows in first-seen order, and each generated
-    column's name mapped to the frame column it labels, `None` for the series column."""
+type _ExportRow = tuple[str | None, Sequence[object]]
+"""A frame row and the card's label for its series, `None` for a row the card does not show."""
+
+
+@dataclass(frozen=True)
+class _AllMembers:
+    """The frame rows of every member of the one dimension a card's `select` lists, at the
+    periods the card shows. `shown` and `members` count the dimension's distinct values on
+    the card and in `rows`. `column_note` is the description's sentence naming the column
+    that tells the rows apart (`_column_note`), or empty."""
+
+    dimension: str
+    rows: tuple[_ExportRow, ...]
+    shown: int
+    members: int
+    column_note: str
+
+
+@dataclass(frozen=True)
+class _KeyedFrame:
+    """A frame's column positions, its rows, and each row's own and continued series keys, as
+    `resolve_selectors` groups them."""
+
+    index: Mapping[str, int]
+    rows: Sequence[Sequence[object]]
+    keys: Sequence[tuple[_CoordinateKey, _CoordinateKey]]
+
+
+def _keyed_frame(resolved_frame: ResolvedFrame) -> _KeyedFrame:
     columns = tuple(cast("Sequence[str]", resolved_frame.frame["columns"]))
     rows = cast("Sequence[Sequence[object]]", resolved_frame.frame["rows"])
-    index = {column: position for position, column in enumerate(columns)}
     cell_keys = series_keys(columns=columns, rows=rows, continuation=None)
     continued_keys = series_keys(
         columns=columns, rows=rows, continuation=resolved_frame.continuation
     )
+    return _KeyedFrame(
+        index={column: position for position, column in enumerate(columns)},
+        rows=rows,
+        keys=tuple(zip(cell_keys, continued_keys, strict=True)),
+    )
 
+
+def _bind_units(
+    shown: Sequence[_ShownPoint],
+    *,
+    keyed: _KeyedFrame,
+    mismatch: Callable[[str], ComponentExportMismatch],
+) -> tuple[_ShownPoint, ...]:
+    """`shown` with each `unit` coordinate read as the frame cell it binds (`bind_unit_key`),
+    so coordinates stored before converted units named their deflation basis match a frame
+    whose cells name it. A unit the frame holds under several bases raises
+    `ComponentExportMismatch`."""
+    held = frozenset(
+        value
+        for row_keys in keyed.keys
+        for key in row_keys
+        for name, value in key
+        if name == UNIT_COLUMN and isinstance(value, str)
+    )
+    units = {
+        unit for point in shown if isinstance(unit := dict(point.coordinates).get(UNIT_COLUMN), str)
+    }
+    try:
+        bound = {unit: bind_unit_key(unit, held=held) for unit in units}
+    except UnitKeyAmbiguous as exc:
+        raise mismatch(str(exc)) from exc
+
+    def rebound(point: _ShownPoint) -> _ShownPoint:
+        coordinates = dict(point.coordinates)
+        unit = coordinates.get(UNIT_COLUMN)
+        if not isinstance(unit, str) or bound[unit] == unit:
+            return point
+        coordinates[UNIT_COLUMN] = bound[unit]
+        return dataclasses.replace(point, coordinates=_coordinate_key(coordinates))
+
+    return tuple(rebound(point) for point in shown)
+
+
+def _shown_rows(
+    *,
+    keyed: _KeyedFrame,
+    shown: Sequence[_ShownPoint],
+    mismatch: Callable[[str], ComponentExportMismatch],
+) -> tuple[_ExportRow, ...]:
+    """Each shown point's one frame row, in the card's order, labelled by the card."""
+    index = keyed.index
     wanted = {(point.coordinates, point.period): point for point in shown}
     if len(wanted) != len(shown):
         raise mismatch("the card shows the same series and period twice")
     matched: dict[tuple[_CoordinateKey, str], Sequence[object]] = {}
-    for row, own, continued in zip(rows, cell_keys, continued_keys, strict=True):
+    for row, row_keys in zip(keyed.rows, keyed.keys, strict=True):
         period = cast(str, row[index[TIME_PERIOD_COLUMN]])
-        for key in {(own, period), (continued, period)}:
+        for key in {(series_key, period) for series_key in row_keys}:
             if key not in wanted:
                 continue
             if key in matched:
@@ -499,6 +638,90 @@ def _export_table(
             raise mismatch(
                 f"the frame value for {point.period} of {point.series_label!r} differs from the card"
             )
+    return tuple((point.series_label, matched[key]) for key, point in wanted.items())
+
+
+def _all_members(
+    *, select: Mapping[str, object], keyed: _KeyedFrame, shown: Sequence[_ShownPoint]
+) -> _AllMembers | None:
+    """The valued frame rows of every member of the one dimension `select` lists, at the
+    periods the card shows and with each dimension `select` binds to one value as the card
+    holds it, in frame order. `stat_var` is held to the card's even where `select` leaves it
+    unbound, so a row is kept only for a StatVar a shown series holds at that period, and the
+    file holds no other measure. Every other dimension `select` leaves unbound, the facets
+    among them, is free, so a member served under another unit, method or source is kept.
+    `None` when `select` lists no dimension, more than one, or `stat_var`, the card's
+    measure, or when the frame holds no member the card leaves out.
+
+    The revision does not record whether the listed members were cut for display or chosen,
+    so a card listing some of the frame's members gets this file either way."""
+    listed = [name for name, value in select.items() if isinstance(value, list)]
+    if len(listed) != 1 or listed[0] == STAT_VAR_COLUMN or not shown:
+        return None
+    (dimension,) = listed
+    # The measure is the card's, bound or not.
+    bound = (frozenset(select) | {STAT_VAR_COLUMN}) - {dimension}
+
+    def fixed(key: _CoordinateKey, period: str) -> tuple[_CoordinateKey, str]:
+        return tuple(item for item in key if item[0] in bound), period
+
+    wanted = {fixed(point.coordinates, point.period) for point in shown}
+    label_of = {(point.coordinates, point.period): point.series_label for point in shown}
+    shown_members = {dict(point.coordinates)[dimension] for point in shown}
+    index = keyed.index
+    kept: list[_ExportRow] = []
+    members: set[object] = set()
+    for row, (own, continued) in zip(keyed.rows, keyed.keys, strict=True):
+        if STATUS_COLUMN in index and row[index[STATUS_COLUMN]] is not None:
+            continue
+        period = cast(str, row[index[TIME_PERIOD_COLUMN]])
+        if fixed(own, period) not in wanted and fixed(continued, period) not in wanted:
+            continue
+        member = dict(own)[dimension]
+        label = label_of.get((own, period), label_of.get((continued, period)))
+        kept.append((label, row))
+        members.add(member)
+    if len(members) <= len(shown_members):
+        return None
+    return _AllMembers(
+        dimension=dimension,
+        rows=tuple(kept),
+        shown=len(shown_members),
+        members=len(members),
+        column_note=_column_note(dimension, index=index, rows=[row for _, row in kept]),
+    )
+
+
+def _column_note(
+    dimension: str, *, index: Mapping[str, int], rows: Sequence[Sequence[object]]
+) -> str:
+    """The sentence naming the frame column that tells `rows` apart, with a leading space,
+    or empty. On a party role, its kind column (`kind_column`) where a row holds
+    `TOTAL_KIND`, as marking the totals. On the place role, its type column (`type_column`)
+    where the rows' places sit at more than one level (`place_type.at_one_level`), as giving
+    each row's place type, which tells a region from a country."""
+    if dimension in PARTY_ROLES:
+        column = kind_column(dimension)
+        if column in index and any(row[index[column]] == TOTAL_KIND for row in rows):
+            return f" The `{column}` column marks which rows are totals."
+    elif dimension == PLACE_ROLE:
+        column = type_column(dimension)
+        if column in index:
+            cells = {cast(str, row[index[column]]) for row in rows}
+            places = {row[index[dimension]] for row in rows}
+            if not at_one_level(cells, place_count=lambda: len(places)):
+                return f" The `{column}` column gives each row's place type."
+    return ""
+
+
+def _export_table(
+    *, resolved_frame: ResolvedFrame, rows: Sequence[_ExportRow]
+) -> tuple[Table, tuple[str | None, ...], dict[str, str | None]]:
+    """The export table of `rows`. Also returns the distinct provenance refs of the rows in
+    first-seen order, and each generated column's name mapped to the frame column it labels,
+    `None` for the series column."""
+    columns = tuple(cast("Sequence[str]", resolved_frame.frame["columns"]))
+    index = {column: position for position, column in enumerate(columns)}
 
     labelled = {STAT_VAR_COLUMN, *role_columns(columns=columns), _PROVENANCE_COLUMN}
     taken = set(columns)
@@ -513,11 +736,10 @@ def _export_table(
             out_columns.append(label_column)
 
     labels = resolved_frame.labels
-    grain = period_grain(matched[key][index[TIME_PERIOD_COLUMN]] for key in wanted)
+    grain = period_grain(row[index[TIME_PERIOD_COLUMN]] for _, row in rows)
     out_rows: list[tuple[object, ...]] = []
-    for key, point in wanted.items():
-        row = matched[key]
-        cells: list[object] = [point.series_label]
+    for series_label, row in rows:
+        cells: list[object] = [series_label]
         for column, cell in zip(columns, row, strict=True):
             cells.append(_export_cell(column=column, cell=cell, grain=grain))
             if column in labelled:
@@ -527,9 +749,7 @@ def _export_table(
     provenance_refs: tuple[str | None, ...] = ()
     if _PROVENANCE_COLUMN in index:
         provenance_refs = tuple(
-            dict.fromkeys(
-                cast("str | None", matched[key][index[_PROVENANCE_COLUMN]]) for key in wanted
-            )
+            dict.fromkeys(cast("str | None", row[index[_PROVENANCE_COLUMN]]) for _, row in rows)
         )
     return (
         ReshapeTable(columns=tuple(out_columns), rows=tuple(out_rows)),
@@ -563,6 +783,46 @@ def _export_cell(*, column: str, cell: object, grain: str | None) -> object:
     return cell
 
 
+def _bundled_member(
+    zf: zipfile.ZipFile,
+    *,
+    path: str,
+    member_table: Table,
+    refs: Sequence[str | None],
+    description: str,
+    partly_shown: bool,
+    format: str,
+    spec_id: str,
+    title: str,
+    resolved_frame: ResolvedFrame,
+    generated: Mapping[str, str | None],
+) -> tuple[MemberProvenance, TableScan]:
+    """Writes `member_table` to `path` in `zf` as one data file of the export bundle, and
+    returns its provenance record and the scan of the columns it wrote."""
+    scan = TableScan(
+        role_columns=role_columns(columns=cast("Sequence[str]", resolved_frame.frame["columns"]))
+    )
+    with zf.open(zipfile.ZipInfo(path, date_time=_ZIP_FIXED_DATE_TIME), mode="w") as entry:
+        written = _WRITERS[format](
+            scan.observe((member_table,)), rendering=Rendering(), sink=cast(Sink, entry)
+        )
+    provenance = MemberProvenance(
+        spec_id=spec_id,
+        title=title,
+        artifact=ArtifactEntry(
+            path=path,
+            bytes=written.size_bytes,
+            digest=written.digest,
+            media_type=written.media_type,
+            table_schema=table_schema_for(member_table, rendering=Rendering()),
+        ),
+        sources=_sources(resolved_frame=resolved_frame, provenance_refs=refs),
+        columns=_column_docs(scan, generated=generated, partly_shown=partly_shown),
+        description=description,
+    )
+    return provenance, scan
+
+
 def _sources(
     *, resolved_frame: ResolvedFrame, provenance_refs: Sequence[str | None]
 ) -> tuple[SourceProvenance, ...]:
@@ -593,10 +853,13 @@ def _known_labels(
     return labels
 
 
-def _column_docs(scan: TableScan, *, generated: Mapping[str, str | None]) -> tuple[ColumnDoc, ...]:
+def _column_docs(
+    scan: TableScan, *, generated: Mapping[str, str | None], partly_shown: bool
+) -> tuple[ColumnDoc, ...]:
     """Each column documented by `bundle_columns.column_docs`, with the series column and each
     `{column}_label` column described as what they are, the card's label and the name of the
-    column they follow."""
+    column they follow. When the member also holds rows the card does not show
+    (`partly_shown`), the series column says it is empty on those."""
     docs = column_docs(scan, code_system_names={})
     # A doc names its column as written, so match `generated`'s frame names by file position.
     titles = {column: doc.title for column, doc in zip(scan.columns, docs, strict=True)}
@@ -608,6 +871,11 @@ def _column_docs(scan: TableScan, *, generated: Mapping[str, str | None]) -> tup
         labelled = generated[column]
         if labelled is None:
             title, description = "Series", "The card's own label for the row's series."
+            if partly_shown:
+                description = (
+                    "The card's own label for the row's series, empty on a row the card does "
+                    "not show."
+                )
         else:
             noun = titles[labelled]
             title, description = f"{noun} name", f"The name of the {noun.lower()}."

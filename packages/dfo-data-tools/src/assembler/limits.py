@@ -5,7 +5,11 @@ from __future__ import annotations
 MAX_SERIES_PER_COMPONENT = 24
 """Resolved series one component may carry. `resolve.py` checks an estimate
 of this against a selector's declared shape before it ever groups a frame's
-rows into series, ahead of the cross-product expansion."""
+rows into series, ahead of the cross-product expansion.
+
+A line chart draws fewer. Its cap is `CatalogueRelease.line_chart_max_series`, the catalogue's
+limit on its select array, which the write path checks against the resolved series and
+reports as `MAX_LINE_CHART_SERIES`."""
 
 MAX_POINTS_PER_SERIES = 500
 """Maximum periods per series at the frame's grain. Checked before binding.

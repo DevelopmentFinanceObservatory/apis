@@ -14,15 +14,27 @@ from fastapi import APIRouter
 from assembler.errors import FrameUnavailable, WriteRefused
 from assembler.fakes import FakeReleaseRegistry
 from assembler.ports import FrameUnavailableReason
-from dfo_platform import codes
+from dfo_platform import Alternative, ProblemSpec, codes
+from dfo_platform import refusal as platform_refusal
 from dfo_platform.codes import bound_registry_endpoint
 from dfo_platform.doors import DoorContribution, check_endpoint_exemplars, combine_classifiers
+from presentation_api import refusals
 from presentation_api.app import presentation_surface
-from presentation_api.codes import _UNCHANGED_RETRY_MODES, CODE_RETRY_MODE
+from presentation_api.codes import (
+    CODE_RETRY_MODE,
+    PRESENTATION_SERVED_CODES,
+    SHARE_CODE_CATALOGUE,
+    UNCHANGED_RETRY_MODES,
+)
 from presentation_api.doors.components import classify_components_exception
-from presentation_api.refusals import frame_unavailable_spec
+from presentation_api.refusals import frame_unavailable_spec, retry_mode, retry_mode_codes
 from presentation_api.routes import RENDER_ENDPOINT, ROUTE_ENDPOINTS
-from tests.code_registry import problem_statuses, registered_endpoints, unbound_routes
+from tests.code_registry import (
+    problem_statuses,
+    registered_endpoints,
+    registered_status_codes,
+    unbound_routes,
+)
 
 # The route of a real registry endpoint the exemplar contract tests bind or leave unbound.
 _ROUTE = next(iter(ROUTE_ENDPOINTS))
@@ -73,7 +85,7 @@ def test_every_presentation_refusal_goes_out_at_its_registered_status(
         if problem_statuses(spec.code, endpoint) != {spec.status}:
             disagreements.add((type(exemplar).__qualname__, endpoint, spec.code, spec.status))
         if endpoint == RENDER_ENDPOINT and spec.retryable:
-            assert CODE_RETRY_MODE[spec.code] in _UNCHANGED_RETRY_MODES, repr(exemplar)
+            assert CODE_RETRY_MODE[spec.code] in UNCHANGED_RETRY_MODES, repr(exemplar)
     assert swept == registered_endpoints("presentation.")
     assert sorted(disagreements) == []
 
@@ -209,3 +221,160 @@ def test_a_frame_refusal_that_names_a_server_fault_carries_a_log_line(
         spec = frame_unavailable_spec(FrameUnavailable(reason=reason, detail="exemplar"))
 
     assert (spec.log is not None) is logged
+
+
+@pytest.mark.parametrize(
+    ("spec", "stored_intent", "mode"),
+    [
+        pytest.param(
+            ProblemSpec(
+                400, "resource_exhausted", False, pointer="/select", limit_name="MAX_TABLE_ROWS"
+            ),
+            False,
+            "correct_and_retry",
+            id="limit-at-select",
+        ),
+        pytest.param(
+            ProblemSpec(400, "resource_exhausted", False, pointer="/window"),
+            False,
+            "correct_and_retry",
+            id="limit-at-window",
+        ),
+        pytest.param(
+            ProblemSpec(
+                400, "resource_exhausted", False, pointer="/", limit_name="MAX_ENVELOPE_BYTES"
+            ),
+            False,
+            "correct_and_retry",
+            id="envelope-bytes",
+        ),
+        # A limit the request's own content crossed, though its pointer names the whole body.
+        pytest.param(
+            ProblemSpec(
+                400, "resource_exhausted", False, pointer="/", limit_name="MAX_INTENT_BYTES"
+            ),
+            False,
+            "correct_and_retry",
+            id="intent-bytes",
+        ),
+        pytest.param(
+            ProblemSpec(413, "payload_too_large", False),
+            False,
+            "correct_and_retry",
+            id="payload-too-large",
+        ),
+        pytest.param(
+            ProblemSpec(504, "timeout", True),
+            False,
+            "retry_after_delay",
+            id="timeout",
+        ),
+        pytest.param(
+            ProblemSpec(409, "resource_exhausted", False, pointer="/select"),
+            True,
+            "do_not_retry",
+            id="limit-on-replay",
+        ),
+        # The stored intent the render replays fails to bind: the caller cannot correct it.
+        pytest.param(
+            ProblemSpec(422, "binding_invalid", False, pointer="/select"),
+            True,
+            "do_not_retry",
+            id="stored-intent-on-replay",
+        ),
+        # The render request's own body is malformed: the caller corrects it.
+        pytest.param(
+            ProblemSpec(400, "request_invalid", False, pointer="/frame/spec_id"),
+            False,
+            "correct_and_retry",
+            id="render-request-own-body",
+        ),
+        pytest.param(
+            ProblemSpec(400, "binding_invalid", False, pointer="/select"),
+            False,
+            "correct_and_retry",
+            id="headline-mode",
+        ),
+        pytest.param(
+            ProblemSpec(
+                400, "schema_invalid", False, alternatives=[Alternative(ref="type", label="type")]
+            ),
+            False,
+            "correct_and_retry",
+            id="illegal-field",
+        ),
+        pytest.param(
+            ProblemSpec(404, "frame_unavailable", False),
+            False,
+            "do_not_retry",
+            id="unchanged-retry-not-retryable",
+        ),
+        pytest.param(
+            ProblemSpec(404, "frame_unavailable", True),
+            False,
+            "refresh_then_retry",
+            id="unchanged-retry-retryable",
+        ),
+        pytest.param(
+            ProblemSpec(429, "allowance_exhausted", False),
+            False,
+            "retry_after_delay",
+            id="allowance-resets-at-retry-after",
+        ),
+        pytest.param(
+            ProblemSpec(403, "write_token_required", False),
+            False,
+            "correct_and_retry",
+            id="write-token-header-missing",
+        ),
+        pytest.param(
+            ProblemSpec(403, "write_token_invalid", False),
+            False,
+            "do_not_retry",
+            id="write-token-wrong",
+        ),
+        # The same body without its top-level `schema_version` is accepted.
+        pytest.param(
+            ProblemSpec(422, "unsupported_schema_version", False),
+            False,
+            "correct_and_retry",
+            id="schema-version-field",
+        ),
+    ],
+)
+def test_each_refusal_states_the_retry_mode_a_caller_acts_on(spec, stored_intent, mode):
+    assert retry_mode(spec, stored_intent=stored_intent) == mode
+
+
+def test_every_code_the_surface_answers_states_a_mode_of_its_own(
+    release_registry: FakeReleaseRegistry,
+):
+    """Each code a Presentation refusal can carry is named by `retry_mode`'s tables: the codes
+    the registry maps on a presentation endpoint, the surface's own catalogue, the shares
+    door's codes, and the platform's default refusals. None falls to a default."""
+    surface = presentation_surface(release_registry=release_registry)
+    answered = (
+        {
+            code
+            for endpoint in registered_endpoints("presentation.")
+            for code, _status in registered_status_codes(endpoint)
+        }
+        | set(surface.codes)
+        | set(SHARE_CODE_CATALOGUE)
+        | set(PRESENTATION_SERVED_CODES)
+        | set(platform_refusal.STATUS_CODE_MAP.values())
+        | {
+            platform_refusal.CLIENT_ERROR_FALLBACK_CODE,
+            platform_refusal.SERVER_ERROR_FALLBACK_CODE,
+            platform_refusal.TIMEOUT_DEFAULT.code,
+            platform_refusal.UNHANDLED_DEFAULT.code,
+        }
+    )
+
+    assert answered - retry_mode_codes() == set()
+
+
+def test_the_stated_modes_name_only_codes_outside_the_headline_table():
+    """A code `CODE_RETRY_MODE` names states its headline mode, so no occurrence contradicts the
+    release document's `retry_modes`."""
+    assert set(refusals._STATED_MODES) & set(CODE_RETRY_MODE) == set()

@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Literal
 
+from dfo_frame_grammar import DeflationBasis
 from pydantic import (
     Field,
     PrivateAttr,
@@ -564,6 +565,14 @@ class UnitConversion(StrictModel):
             "arc) of the one entity bound on each role, among `currencies`. A role bound "
             "to several entities, or to one no single currency names, is absent. A "
             "request may name the role ({'role': 'origin'}) or the code"
+        ),
+    )
+    deflation_basis: DeflationBasis | None = Field(
+        default=None,
+        description=(
+            "whose prices a conversion to constant prices deflates the values by: the "
+            "donor's, the recipient's, or the national prices of the place a series is about. "
+            "Null when the served members deflate on roles of different bases or declare none"
         ),
     )
 

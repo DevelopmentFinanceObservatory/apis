@@ -2,8 +2,9 @@
 the release this surface serves. The hash covers the release document with a fixed
 `catalog_version`, strict intent schemas, formatter profile, grammar members, encoding classes,
 constraints, rendered refusal exemplars, frame-unavailable and bare-spec outcomes, the status the code registry
-gives each code on each `presentation.*` endpoint, the endpoint each route serves, and the
-replay rule of the render routes. Wording in the release schemas affects the hash.
+gives each code on each `presentation.*` endpoint, the endpoint each route serves, the
+replay rule of the render routes, and the `retry_mode` each refusal states, of a request or of
+a replayed stored intent (`occurrence_retry_modes`, from `presentation_api.refusals.retry_mode_table`). Wording in the release schemas affects the hash.
 """
 
 from __future__ import annotations
@@ -16,16 +17,16 @@ from collections.abc import Mapping
 from assembler.catalogue import CatalogueRelease
 from assembler.ports import FRAME_UNAVAILABLE_OUTCOME, FrameOutcome, FrameUnavailableReason
 from dfo_platform import Alternative, Cause, CodeCatalogue, Envelope, ProblemIssue
-from dfo_platform.codes import endpoint_statuses
+from dfo_platform.codes import RetryMode, endpoint_statuses
 from dfo_platform.doors import RouteKey
 from dfo_platform.trace import set_trace_id
 from presentation_api.codes import (
-    _UNCHANGED_RETRY_MODES,
     CODE_RETRY_MODE,
     PRESENTATION_CODE_CATALOGUE,
+    UNCHANGED_RETRY_MODES,
 )
 from presentation_api.doors.release import release_document
-from presentation_api.refusals import NEWEST_NOT_READY_OUTCOME
+from presentation_api.refusals import NEWEST_NOT_READY_OUTCOME, retry_mode_table
 from presentation_api.routes import RENDER_ENDPOINT, ROUTE_ENDPOINTS
 
 __all__ = ["compute_presentation_capability_version"]
@@ -39,7 +40,7 @@ _EXEMPLAR_CATALOG_VERSION = "cv_exemplar_placeholder"
 
 
 def _render_refusal_exemplars(
-    code_catalogue: CodeCatalogue, retry_modes: Mapping[str, str]
+    code_catalogue: CodeCatalogue, retry_modes: Mapping[str, RetryMode]
 ) -> dict[str, dict[str, object]]:
     """Render one sorted `ProblemDetails` body per code. The first includes every optional
     field, so removing a field changes the hash. Run in a fresh context with the fixed trace ID
@@ -71,6 +72,8 @@ def _render_refusal_exemplars(
                         detail="exemplar issue detail",
                     )
                 ],
+                limit_name="MAX_LINE_CHART_SERIES",
+                retry_mode=retry_modes[code],
                 retryable=retryable,
             )
         else:
@@ -83,14 +86,14 @@ def compute_presentation_capability_version(
     *,
     release: CatalogueRelease,
     code_catalogue: CodeCatalogue = PRESENTATION_CODE_CATALOGUE,
-    retry_modes: Mapping[str, str] = CODE_RETRY_MODE,
+    retry_modes: Mapping[str, RetryMode] = CODE_RETRY_MODE,
     frame_unavailable_outcome: Mapping[
         FrameUnavailableReason, FrameOutcome
     ] = FRAME_UNAVAILABLE_OUTCOME,
     registry_statuses: Mapping[str, Mapping[str, tuple[int, ...]]] = PRESENTATION_STATUSES,
     newest_not_ready_outcome: tuple[str, bool] = NEWEST_NOT_READY_OUTCOME,
     route_endpoints: Mapping[RouteKey, str] = ROUTE_ENDPOINTS,
-    replay_modes: frozenset[str] = _UNCHANGED_RETRY_MODES,
+    replay_modes: frozenset[RetryMode] = UNCHANGED_RETRY_MODES,
 ) -> str:
     """Return the capability hash for `release` and the supplied refusal data."""
     refusal_exemplars = contextvars.copy_context().run(
@@ -119,6 +122,8 @@ def compute_presentation_capability_version(
         "newest_not_ready_outcome": list(newest_not_ready_outcome),
         "route_endpoints": sorted((*key, endpoint) for key, endpoint in route_endpoints.items()),
         "replay": {"endpoint": RENDER_ENDPOINT, "retry_modes": sorted(replay_modes)},
+        # What each refusal states as `retry_mode`, so a change to the rule moves the version.
+        "occurrence_retry_modes": retry_mode_table(),
         "release_document": pinned_release_document,
     }
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))

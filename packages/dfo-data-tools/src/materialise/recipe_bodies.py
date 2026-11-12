@@ -9,8 +9,11 @@ configuration error.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from types import MappingProxyType
 
+from dfo_frame_grammar import DeflationBasis
 from dfo_spec_kit.identity import canonicalize
 
 
@@ -24,8 +27,13 @@ class ConversionRecipe:
     are about countries and aggregates, each series rebased to 100 in one
     base year. Both are read under `table_provenance`.
 
-    `deflator_entity_roles` is the unordered set of graph roles that may
-    supply a row's deflator entity. `flow_population_types` is the set of
+    `deflator_entity_roles` maps each graph role that may supply a row's
+    deflator entity to whose prices that entity's deflator is (`DeflationBasis`,
+    the frame grammar's). A conversion deflates each row by the entity on the one
+    role `resolve_deflator_role` settles, so the basis follows the recipe's table
+    and that role. A converted cell carries it as `deflation_basis`, so it reaches
+    a constant-price frame's content version through the frame's bytes.
+    `flow_population_types` is the set of
     StatVar population types the recipe converts. Any other population type,
     stocks among them, refuses. `fallback_entity` stands in for a deflator
     entity absent from the whole deflator table.
@@ -34,7 +42,8 @@ class ConversionRecipe:
     recipe_id: str
     exchange_rate_variable: str
     deflator_variable: str
-    deflator_entity_roles: frozenset[str]
+    # A mapping cannot be hashed, so the hash leaves it out. Equality compares it.
+    deflator_entity_roles: Mapping[str, DeflationBasis] = field(hash=False)
     flow_population_types: frozenset[str]
     forecast_policy: str
     table_provenance: str
@@ -44,7 +53,8 @@ class ConversionRecipe:
 def recipe_body_digest(recipe: ConversionRecipe) -> str:
     """SHA-256 hex digest of recipe fields in the same canonical JCS form as
     content-version minting. Sets become sorted arrays and `None` becomes
-    JSON null.
+    JSON null. `deflator_entity_roles` contributes its sorted roles only, since the basis
+    each role maps to follows from the recipe's table and that role.
     """
     projection: dict[str, object] = {
         "recipe_id": recipe.recipe_id,
@@ -73,7 +83,11 @@ RECIPE_BODIES: dict[str, ConversionRecipe] = {
         recipe_id="ConversionRecipeDAC",
         exchange_rate_variable="ExchangeRate_CurrencyUnit_ConversionRecipeDAC",
         deflator_variable="Deflator_EconomicProduction_ConversionRecipeDAC",
-        deflator_entity_roles=frozenset({"financingProvider", "observationAbout"}),
+        # The DAC table holds donors' deflators and the DAC countries' total, so a
+        # row deflated through it is in donor prices whichever role keys it.
+        deflator_entity_roles=MappingProxyType(
+            {"financingProvider": "donor", "observationAbout": "donor"}
+        ),
         flow_population_types=_FINANCE_FLOW_POPULATION_TYPES,
         forecast_policy="FlagProjected",
         table_provenance=_DAC_TABLES,
@@ -83,7 +97,9 @@ RECIPE_BODIES: dict[str, ConversionRecipe] = {
         recipe_id="ConversionRecipeIMF",
         exchange_rate_variable="ExchangeRate_CurrencyUnit_ConversionRecipeIMF",
         deflator_variable="Deflator_EconomicProduction_ConversionRecipeIMF",
-        deflator_entity_roles=frozenset({"financingProvider", "observationAbout"}),
+        deflator_entity_roles=MappingProxyType(
+            {"financingProvider": "donor", "observationAbout": "national"}
+        ),
         # The population type the WEO import gives its nominal GDP StatVars
         # (`weo_indicator_mapping.csv`).
         flow_population_types=frozenset({"EconomicProduction"}),
@@ -96,7 +112,7 @@ RECIPE_BODIES: dict[str, ConversionRecipe] = {
         deflator_variable="Deflator_EconomicProduction_ConversionRecipeIMF",
         # Debt deflates by the debtor's prices, and every IDS StatVar
         # declares the debtor role.
-        deflator_entity_roles=frozenset({"financingRecipient"}),
+        deflator_entity_roles=MappingProxyType({"financingRecipient": "recipient"}),
         flow_population_types=_FINANCE_FLOW_POPULATION_TYPES,
         forecast_policy="FlagProjected",
         table_provenance=_IMF_TABLES,

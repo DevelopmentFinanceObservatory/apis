@@ -264,10 +264,9 @@ def _member_ranks(
     last of them. A facet the selection serves `sv` counts every pair the plan holds there.
     A facet continuing the lead counts only what the continuation keeps after the selected
     facets' last year at each pair (`BulkPlan.continued_years`), as a mint ranks rows its
-    continuation mask has already cut. Inside a window coverage counts a sub-annual facet's
-    years, not its observations, so its rows are low there (#161). Coverage that holds no
-    row of a facet in `years`, as when it disagrees with SDMX over a member's latest year,
-    ranks it with no rows."""
+    continuation mask has already cut. Coverage counts one observation per year. Coverage
+    that holds no row of a facet in `years`, as when it disagrees with SDMX over a member's
+    latest year, ranks it with no rows."""
     first, last = years
     selected = plan.selected.get(sv, ())
     continued: dict[str, list[tuple[int, int]]] = {}

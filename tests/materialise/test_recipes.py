@@ -168,7 +168,10 @@ def test_resolve_recipe_returns_the_packages_own_dac_body() -> None:
     assert recipe is RECIPE_BODIES[_DAC_RECIPE]
     assert recipe.exchange_rate_variable == "ExchangeRate_CurrencyUnit_ConversionRecipeDAC"
     assert recipe.deflator_variable == "Deflator_EconomicProduction_ConversionRecipeDAC"
-    assert recipe.deflator_entity_roles == frozenset({"financingProvider", "observationAbout"})
+    assert recipe.deflator_entity_roles == {
+        "financingProvider": "donor",
+        "observationAbout": "donor",
+    }
     assert recipe.flow_population_types == frozenset({"FinancialFlow", "FinancialObligation"})
     assert recipe.fallback_entity == "DACCountriesTotal"
     assert recipe.forecast_policy == "FlagProjected"
@@ -180,7 +183,10 @@ def test_resolve_recipe_returns_the_packages_own_imf_body() -> None:
     assert recipe is RECIPE_BODIES[_WEO_RECIPE]
     assert recipe.exchange_rate_variable == "ExchangeRate_CurrencyUnit_ConversionRecipeIMF"
     assert recipe.deflator_variable == "Deflator_EconomicProduction_ConversionRecipeIMF"
-    assert recipe.deflator_entity_roles == frozenset({"financingProvider", "observationAbout"})
+    assert recipe.deflator_entity_roles == {
+        "financingProvider": "donor",
+        "observationAbout": "national",
+    }
     assert recipe.flow_population_types == frozenset({"EconomicProduction"})
     assert recipe.fallback_entity is None
     assert recipe.forecast_policy == "FlagProjected"
@@ -194,7 +200,7 @@ def test_resolve_recipe_returns_the_ids_body_reading_the_imf_tables_by_the_debto
     assert recipe.exchange_rate_variable == imf.exchange_rate_variable
     assert recipe.deflator_variable == imf.deflator_variable
     assert recipe.table_provenance == imf.table_provenance
-    assert recipe.deflator_entity_roles == frozenset({"financingRecipient"})
+    assert recipe.deflator_entity_roles == {"financingRecipient": "recipient"}
     assert recipe.flow_population_types == frozenset({"FinancialFlow", "FinancialObligation"})
     assert recipe.fallback_entity is None
 
@@ -432,7 +438,7 @@ def test_resolve_deflator_role_refuses_more_than_one_match() -> None:
         recipe_id="recipe/TwoAxisTest",
         exchange_rate_variable="ExchangeRate_X",
         deflator_variable="Deflator_X",
-        deflator_entity_roles=frozenset({"financingProvider", "financingRecipient"}),
+        deflator_entity_roles={"financingProvider": "donor", "financingRecipient": "recipient"},
         flow_population_types=frozenset({"FinancialFlow"}),
         forecast_policy="FlagProjected",
         table_provenance="provenance/Test",

@@ -7,6 +7,7 @@ import dataclasses
 import pytest
 
 from materialise.recipe_bodies import RECIPE_BODIES, RECIPE_CLASSES, recipe_body_digest
+from materialise.recipes import deflation_basis
 
 _RECIPE = RECIPE_BODIES["ConversionRecipeDAC"]
 
@@ -44,6 +45,22 @@ def test_recipe_body_digest_is_stable_across_calls():
     assert recipe_body_digest(_RECIPE) == recipe_body_digest(_RECIPE)
 
 
+@pytest.mark.parametrize(
+    ("recipe_id", "digest"),
+    [
+        ("ConversionRecipeDAC", "e4d337bf7d1d083c675c12c885005d158618296e4be750c3e94770997a81f29b"),
+        ("ConversionRecipeIMF", "4a6c6773244c68103c83bff3deae69ba49107134db0d67726680879b1153f432"),
+        ("ConversionRecipeIDS", "7514a2e96ec7776a42dbb5f6ee9a748cc3289c48fcfd1e3cd0f6b6c38a2e7f88"),
+    ],
+)
+def test_recipe_body_digest_hashes_the_deflator_roles_without_their_bases(
+    recipe_id: str, digest: str
+):
+    """The deployed digests, which every converted frame's content version carries. The
+    basis each deflator role maps to stays out, so these hold whatever bases the roles name."""
+    assert recipe_body_digest(RECIPE_BODIES[recipe_id]) == digest
+
+
 def test_recipe_body_digest_differs_between_the_imf_and_ids_bodies():
     """The IDS recipe reads the IMF tables, so only its role and population
     sets tell the two digests apart."""
@@ -58,7 +75,7 @@ def test_recipe_body_digest_changes_when_any_field_replaced():
         "recipe_id": "ConversionRecipeOther",
         "exchange_rate_variable": "OtherExchangeRate",
         "deflator_variable": "OtherDeflator",
-        "deflator_entity_roles": frozenset({"financingRecipient"}),
+        "deflator_entity_roles": {"financingRecipient": "recipient"},
         "flow_population_types": frozenset({"FinancialFlow"}),
         "forecast_policy": "OtherPolicy",
         "table_provenance": "provenance/Other",
@@ -68,3 +85,45 @@ def test_recipe_body_digest_changes_when_any_field_replaced():
     for field, new_value in replacements.items():
         changed = dataclasses.replace(_RECIPE, **{field: new_value})
         assert recipe_body_digest(changed) != baseline, field
+
+
+_FLOW = ("financingProvider", "financingRecipient")
+
+
+@pytest.mark.parametrize(
+    ("recipe_id", "role_sets", "expected"),
+    [
+        pytest.param(
+            "ConversionRecipeDAC", (_FLOW,), "donor", id="dac2a-aid-deflates-by-the-donor"
+        ),
+        pytest.param(
+            "ConversionRecipeIDS", (_FLOW,), "recipient", id="ids-debt-deflates-by-the-debtor"
+        ),
+        pytest.param(
+            "ConversionRecipeDAC",
+            (("observationAbout",),),
+            "donor",
+            id="dac-subject-deflates-by-the-dac-table",
+        ),
+        pytest.param("ConversionRecipeIMF", (("observationAbout",),), "national", id="imf-gdp"),
+        pytest.param(
+            "ConversionRecipeDAC",
+            (_FLOW, ("observationAbout",)),
+            "donor",
+            id="dac-statvars-on-two-roles-of-one-basis",
+        ),
+        pytest.param(
+            "ConversionRecipeIMF",
+            (("financingProvider",), ("observationAbout",)),
+            None,
+            id="imf-statvars-on-two-bases",
+        ),
+        pytest.param(
+            "ConversionRecipeIDS", (("financingProvider",),), None, id="no-deflator-role-declared"
+        ),
+    ],
+)
+def test_the_deflation_basis_follows_the_recipe_and_the_role_it_deflates_by(
+    recipe_id: str, role_sets: tuple[tuple[str, ...], ...], expected: str | None
+):
+    assert deflation_basis(RECIPE_BODIES[recipe_id], role_sets=role_sets) == expected

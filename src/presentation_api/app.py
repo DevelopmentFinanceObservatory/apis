@@ -61,7 +61,7 @@ from presentation_api.doors.meta import build_meta_door
 from presentation_api.doors.release import build_release_door
 from presentation_api.doors.shares import build_shares_door
 from presentation_api.newest_frames import NewestFrames
-from presentation_api.refusals import request_validation_spec
+from presentation_api.refusals import request_validation_spec, with_retry_mode
 from presentation_api.version import compute_presentation_capability_version
 from presentation_store import ShareStore
 
@@ -197,6 +197,8 @@ def presentation_surface(
         capability_version=capability_version,
         codes=merge_catalogues(PRESENTATION_CODE_CATALOGUE, SHARE_CODE_CATALOGUE),
         classify=classify,
+        # Every refusal body states its retry mode, the platform's defaults included.
+        finish=with_retry_mode,
         exception_types=tuple(exc_type for door in doors for exc_type in door.exception_types),
         exception_exemplars=endpoint_exemplars(doors),
         lifespan=lifespan,

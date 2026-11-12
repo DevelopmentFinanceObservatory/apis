@@ -99,8 +99,8 @@ class CompileFacts:
 class PartFacts:
     """What the part asks beside its identity, which a rule reads on both doors alike: its
     operations, the groups its roles stand for by role key (`ResolvedSpec.entity_groups`,
-    or those a dataset_resubmit posts), and the datasets its identity is served from,
-    empty when unknown."""
+    or those a dataset_resubmit posts), and the datasets its identity is served from, empty
+    when unknown."""
 
     operations: tuple[Operation, ...] = ()
     entity_groups: Mapping[str, EntityGroup] = field(default_factory=dict)

@@ -7,10 +7,12 @@ and series count.
 from __future__ import annotations
 
 import pytest
+from dfo_frame_grammar import unit_cell_from_json
 
 from assembler.errors import BindingInvalid
 from assembler.frame_view import compute_structural_view, dimension_columns, hashable_cell
 from assembler.testing import build_frame_doc
+from dfo_analysis_engine.anchor import coordinate_text
 
 
 def _rows(*, periods, recipient="country/ETH"):
@@ -315,6 +317,18 @@ _USD_PER_PERSON_TEXT = '{"denominator":{"stat_var":"dcid:Count_Person"},"numerat
 def test_a_composed_unit_keys_apart_from_every_other_cell(other):
     assert hashable_cell(_USD_PER_PERSON) == _USD_PER_PERSON_TEXT
     assert hashable_cell(other) != _USD_PER_PERSON_TEXT
+
+
+def test_converted_units_key_apart_by_deflation_basis_as_the_anchor_groups_them():
+    """Aid a donor's deflator converts and debt the debtor's converts share a currency and
+    base year. Their keys differ, and the analysis anchor groups a series by the same text."""
+    ngn = {"currency": "NGN", "prices": "constant", "base_year": 2024}
+    cells = [ngn, {**ngn, "deflation_basis": "donor"}, {**ngn, "deflation_basis": "recipient"}]
+
+    keys = [hashable_cell(cell) for cell in cells]
+
+    assert keys == ["NGN/constant/2024", "NGN/constant/2024/donor", "NGN/constant/2024/recipient"]
+    assert keys == [coordinate_text(unit_cell_from_json(cell)) for cell in cells]
 
 
 @pytest.mark.parametrize(

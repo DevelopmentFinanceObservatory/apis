@@ -396,6 +396,25 @@ def test_the_unit_splits_into_node_label_currency_basis_and_year(unit, stat_var,
     assert _unavailable(rendered) == []
 
 
+def test_one_currency_and_base_year_reads_whose_prices_deflated_each_series():
+    """DAC2a aid deflates by the donor's prices and IDS debt service by the debtor's, so
+    Nigeria's two series in constant 2024 naira name different parties, read from each
+    converted cell's `deflation_basis`."""
+    aid = UnitRequest("NGN", "constant", 2024, deflation_basis="donor")
+    debt = UnitRequest("NGN", "constant", 2024, deflation_basis="recipient")
+    rows = [
+        ("dcid:SV_AID", "country/USA", "country/NGA", "2022", 10.0, aid, None, "p1", None),
+        ("dcid:SV_DEBT", "country/USA", "country/NGA", "2022", 5.0, debt, None, "p1", None),
+    ]
+
+    _rendered, body = _render(MintOptions(format="csv", bundle=False), rows=rows)
+
+    assert {record["stat_var"]: record["unit_label"] for record in _records(body)} == {
+        "dcid:SV_AID": "Constant 2024 Nigerian naira, donor prices",
+        "dcid:SV_DEBT": "Constant 2024 Nigerian naira, recipient prices",
+    }
+
+
 def test_a_statvar_without_a_value_on_an_axis_gets_an_empty_code_and_the_absent_reading():
     _rendered, body = _render(MintOptions(format="csv", bundle=False))
     by_stat_var = {record["stat_var"]: record for record in _records(body)}

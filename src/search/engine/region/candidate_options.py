@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 
 from search.engine.concurrency import create_owned_task
 from search.engine.region.candidate_grounding import _GroundedCandidates
@@ -24,7 +24,7 @@ from search.engine.region.un_system import member_labels
 from search.engine.retrieval.elected_dataset import elected_datasets
 from search.engine.retrieval.read_plan import preview_years
 from search.engine.retrieval.retrieve import NoDataDraft
-from search.models import SlotOptions, Spec, Warning
+from search.models import EntityOptions, SlotOptions, Spec, Warning
 
 
 def _candidate_facet_probe(
@@ -33,47 +33,47 @@ def _candidate_facet_probe(
     """What a surviving candidate's facet options are judged over: its captured StatVars
     and probe entities, its plan's years, and its identity's facet pins admitted per StatVar by
     the candidate's elected units."""
-    sv_dcids, _ = grounded.cand_obs_entities.get(spec.spec_id, ([], {}))
+    entry = grounded[spec.spec_id]
     return facet_probe(
-        sv_dcids,
-        grounded.cand_probe_entities.get(spec.spec_id, {}),
-        years=preview_years(grounded.cand_plans.get(spec.spec_id)),
-        pins=option_pins(spec.definition.identity.facets, grounded.cand_elected.get(spec.spec_id)),
-        datasets=(
-            elected_datasets(grounded.cand_scopes[spec.spec_id][0].member_facts)
-            if spec.spec_id in grounded.cand_scopes
-            else None
-        ),
+        entry.sv_dcids,
+        entry.probe_entities,
+        years=preview_years(entry.plan),
+        pins=option_pins(spec.definition.identity.facets, entry.elected),
+        datasets=elected_datasets(entry.candidate.mat.member_facts),
     )
 
 
 def _make_slot_options_task(
-    state: ResolveState, grounded: _GroundedCandidates, surviving: list[Spec]
+    state: ResolveState,
+    grounded: _GroundedCandidates,
+    surviving: list[Spec],
+    *,
+    entity_options_raw: Mapping[str, list[EntityOptions]],
 ) -> asyncio.Task[_OptionProbeResult] | None:
     """Launch slot-option events for surviving specs with captured probe inputs.
 
-    Per-spec entities and windows preserve buffered/SSE parity. Raw entity options are
-    present only for the single-survivor definite path.
+    Per-spec entities and windows preserve buffered/SSE parity. `entity_options_raw` holds
+    the raw entity options `_attach_candidate_entity_options` built, by `spec_id`, present
+    only for the single-survivor definite path.
     """
     if not state.stream_slot_options:
         return None
     probes: list[_SlotOptionsProbe] = []
     for s in surviving:
-        if s.spec_id not in grounded.cand_probe_inputs:
+        entry = grounded[s.spec_id]
+        if (inputs := entry.probe_inputs) is None:
             continue
-        _cand_shape, _cand_bindings, _cand_slot_options, _cand_place_dcids = (
-            grounded.cand_probe_inputs[s.spec_id]
-        )
+        _cand_shape, _cand_bindings, _cand_slot_options, _cand_place_dcids = inputs
         probes.append(
             (
                 s.spec_id,
                 _cand_shape,
                 _cand_bindings,
                 _cand_slot_options,
-                grounded.cand_places[s.spec_id].roles.resolved_entities,
-                grounded.cand_places[s.spec_id].roles.open_axes,
+                entry.candidate.place.roles.resolved_entities,
+                entry.candidate.place.roles.open_axes,
                 _cand_place_dcids,
-                grounded.cand_entity_options_raw.get(s.spec_id),
+                entity_options_raw.get(s.spec_id),
                 _candidate_facet_probe(state, grounded, s),
                 bool(s.definition.identity.facets),
                 member_labels((s,)),
@@ -96,24 +96,30 @@ def _make_slot_options_task(
 
 
 def _make_slot_options_relaunch(
-    state: ResolveState, grounded: _GroundedCandidates, original_spec: Spec
+    state: ResolveState,
+    grounded: _GroundedCandidates,
+    original_spec: Spec,
+    *,
+    entity_options_raw: list[EntityOptions] | None,
 ) -> Callable[[str, list[SlotOptions], FacetProbe | None], asyncio.Task] | None:
-    """Bind the surviving spec's probe context to the public relaunch callable.
+    """Bind the surviving spec's probe context to the public relaunch callable, with the raw
+    entity options `_attach_candidate_entity_options` built for it.
 
     Expose the same optional facet probe override as the single-shape path.
     """
-    if not state.stream_slot_options or original_spec.spec_id not in grounded.cand_probe_inputs:
+    entry = grounded[original_spec.spec_id]
+    if not state.stream_slot_options or (inputs := entry.probe_inputs) is None:
         return None
-    _shape, _bindings, _, _place_dcids = grounded.cand_probe_inputs[original_spec.spec_id]
+    _shape, _bindings, _, _place_dcids = inputs
     return functools.partial(
         _relaunch_slot_options,
         state=state,
         shape_draft=_shape,
         bindings=_bindings,
-        entities=grounded.cand_places[original_spec.spec_id].roles.resolved_entities,
-        open_axes=grounded.cand_places[original_spec.spec_id].roles.open_axes,
+        entities=entry.candidate.place.roles.resolved_entities,
+        open_axes=entry.candidate.place.roles.open_axes,
         place_dcids=_place_dcids,
-        entity_options=grounded.cand_entity_options_raw.get(original_spec.spec_id),
+        entity_options=entity_options_raw,
         default_facet_probe=_candidate_facet_probe(state, grounded, original_spec),
         facets_pinned=bool(original_spec.definition.identity.facets),
         variable_labels=member_labels((original_spec,)),
@@ -212,16 +218,17 @@ async def _attach_candidate_slot_options(
     state: ResolveState, grounded: _GroundedCandidates, spec: Spec
 ) -> Spec:
     """Enrich one surviving spec's slot options from its captured probe inputs."""
-    if not state.include_option_coverage or spec.spec_id not in grounded.cand_probe_inputs:
+    entry = grounded[spec.spec_id]
+    if not state.include_option_coverage or (inputs := entry.probe_inputs) is None:
         return spec
-    _shape, _bindings, _raw_options, _place_dcids = grounded.cand_probe_inputs[spec.spec_id]
+    _shape, _bindings, _raw_options, _place_dcids = inputs
     _enriched, _warn = await asyncio.to_thread(
         _maybe_enrich_slot_options,
         _shape,
         _bindings,
         _raw_options,
-        entities=grounded.cand_places[spec.spec_id].roles.resolved_entities,
-        open_axes=grounded.cand_places[spec.spec_id].roles.open_axes,
+        entities=entry.candidate.place.roles.resolved_entities,
+        open_axes=entry.candidate.place.roles.open_axes,
         date_request=state.date_request,
         graph=state.graph,
         materialise_graph=state.materialise_graph,
@@ -238,34 +245,32 @@ async def _attach_candidate_slot_options(
 
 async def _attach_candidate_entity_options(
     state: ResolveState, grounded: _GroundedCandidates, spec: Spec
-) -> Spec:
+) -> tuple[Spec, list[EntityOptions] | None]:
     """Build entity options for the single surviving Spec, reusing its role-axis facts.
 
-    Membership and counts are unconditional. Labels follow the coverage gate. Save raw
-    options for a later slot-options relaunch.
+    Membership and counts are unconditional. Labels follow the coverage gate. Return the
+    Spec with its options and the raw options a later slot-options probe or relaunch reads,
+    None when its shape has no role-axis facts.
     """
-    if spec.spec_id not in grounded.cand_role_axis_facts:
-        return spec
-    _shape, _role_axis_facts, _place_dcids = grounded.cand_role_axis_facts[spec.spec_id]
-    if not _role_axis_facts:
-        return spec
-    _sv_dcids, _ = grounded.cand_obs_entities.get(spec.spec_id, ([], {}))
+    entry = grounded[spec.spec_id]
+    if not entry.role_axis_facts:
+        return spec, None
     _entity_options_raw, _entity_options, _entity_warn = await asyncio.to_thread(
         _build_and_enrich_entity_options,
-        _shape,
-        grounded.cand_places[spec.spec_id].roles.resolved_entities,
+        entry.candidate.shape,
+        entry.candidate.place.roles.resolved_entities,
         state.entity_objects,
-        _sv_dcids,
+        entry.sv_dcids,
         date_request=state.date_request,
         graph=state.graph,
         sdmx=state.sdmx,
         include_option_coverage=state.include_option_coverage,
-        role_axis_facts=_role_axis_facts,
-        place_dcids=_place_dcids,
+        role_axis_facts=entry.role_axis_facts,
+        place_dcids=entry.candidate.place.probe_places,
     )
-    grounded.cand_entity_options_raw[spec.spec_id] = _entity_options_raw
     if _entity_warn is not None:
         state.warnings.append(_entity_warn.model_copy(update={"spec_id": spec.spec_id}))
-    return spec.model_copy(
+    spec = spec.model_copy(
         update={"resolved": spec.resolved.model_copy(update={"entity_options": _entity_options})}
     )
+    return spec, _entity_options_raw

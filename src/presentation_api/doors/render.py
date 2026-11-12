@@ -50,6 +50,12 @@ For five codes it differs from the status the write routes serve: `binding_inval
 `retryable` is the write routes' value read through `presentation_api.codes.replay_retryable`
 (`replayed`, which wraps the components door's classifier): true only for a `retry_after_delay`
 or `refresh_then_retry` code whose occurrence is retryable.
+
+A refusal of the stored intent itself, an `AssemblerRefusal` the replay raises, leaves the route
+as `StoredIntentRefused` (`presentation_api.stored_intent`), which states the `retry_mode` of
+such a refusal (`presentation_api.refusals.retry_mode`): `do_not_retry` where the write routes
+would answer `correct_and_retry`. A refusal of the render request itself, its body, path,
+`schema_version` or headers, states the mode the write routes would.
 """
 
 from __future__ import annotations
@@ -92,6 +98,7 @@ from presentation_api.path_params import (
 from presentation_api.reply import serialize_read_reply
 from presentation_api.retention import stated_retention
 from presentation_api.routes import RENDER_DATA_PATH, RENDER_ENDPOINT, RENDER_PATH
+from presentation_api.stored_intent import StoredIntentRefused, replaying_stored_intent
 
 if TYPE_CHECKING:
     from presentation_api.doors.components import ComponentsDeps
@@ -147,6 +154,7 @@ def replayed(
 
 
 RENDER_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
+    StoredIntentRefused,
     RenderTargetMismatch,
     ComponentHoldsNoFrame,
     RefreshNotPermitted,
@@ -325,15 +333,16 @@ def build_render_router(
 
         def job() -> JSONResponse:
             record = accepted_revision(component_id=component_id, revision=revision, target=target)
-            reply = render_component(
-                component_id=component_id,
-                revision=revision,
-                target_frame=target,
-                frame_store=deps.frame_store,
-                revision_store=deps.revision_store,
-                release_registry=deps.release_registry,
-                vocabulary_source=deps.vocabulary_source,
-            )
+            with replaying_stored_intent():
+                reply = render_component(
+                    component_id=component_id,
+                    revision=revision,
+                    target_frame=target,
+                    frame_store=deps.frame_store,
+                    revision_store=deps.revision_store,
+                    release_registry=deps.release_registry,
+                    vocabulary_source=deps.vocabulary_source,
+                )
             retention = stated_retention(target, snapshot_reader=deps.snapshot_reader)
             return JSONResponse(
                 {
@@ -370,17 +379,18 @@ def build_render_router(
 
         def job() -> Response:
             accepted_revision(component_id=component_id, revision=revision, target=target)
-            exported = export_component_data(
-                component_id=component_id,
-                revision=revision,
-                format=format_,
-                bundle=bundle,
-                revision_store=deps.revision_store,
-                frame_store=deps.frame_store,
-                site_url=deps.site.public_site_url,
-                target_frame=target,
-                release_registry=deps.release_registry,
-            )
+            with replaying_stored_intent():
+                exported = export_component_data(
+                    component_id=component_id,
+                    revision=revision,
+                    format=format_,
+                    bundle=bundle,
+                    revision_store=deps.revision_store,
+                    frame_store=deps.frame_store,
+                    site_url=deps.site.public_site_url,
+                    target_frame=target,
+                    release_registry=deps.release_registry,
+                )
             return Response(
                 content=exported.data,
                 media_type=exported.media_type,

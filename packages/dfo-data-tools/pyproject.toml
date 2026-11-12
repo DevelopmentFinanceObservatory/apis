@@ -30,6 +30,9 @@ dependencies = [
     "rfc8785>=0.1.4",
     # skills_index.frontmatter parses a skill's front matter with YAML's base loader.
     "pyyaml>=6.0",
+    # assembler's component export names a party role's kind column
+    # (dfo_analysis_engine.place_type.kind_column) as marking an all-members file's totals.
+    "dfo-analysis-engine",
 ]
 
 [project.optional-dependencies]
@@ -88,13 +91,14 @@ coverage = [
 graph-release = ["google-cloud-spanner>=3.57", "dfo-data-tools[coverage]"]
 
 [tool.uv.sources]
+dfo-analysis-engine = { workspace = true }
 # See the root pyproject.toml's dfo-spec-kit source comment for the
 # pin-consistency invariant this rev must satisfy.
-dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "c6bbf0c23a8cdbb19e3cc29e59291f59165dc666", subdirectory = "python/spec-kit" }
-dfo-spec-kit-frame-grammar = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "c6bbf0c23a8cdbb19e3cc29e59291f59165dc666", subdirectory = "python/frame-grammar" }
-dfo-spec-kit-components = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "c6bbf0c23a8cdbb19e3cc29e59291f59165dc666", subdirectory = "python/dfo-spec-kit-components" }
-dfo-spec-kit-provenance-docs = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "c6bbf0c23a8cdbb19e3cc29e59291f59165dc666", subdirectory = "python/provenance-docs" }
-dfo-spec-kit-descriptions = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "c6bbf0c23a8cdbb19e3cc29e59291f59165dc666", subdirectory = "python/descriptions" }
+dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "8ca97391ce7ad7f61a6ba6d45fba850d47f48102", subdirectory = "python/spec-kit" }
+dfo-spec-kit-frame-grammar = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "8ca97391ce7ad7f61a6ba6d45fba850d47f48102", subdirectory = "python/frame-grammar" }
+dfo-spec-kit-components = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "8ca97391ce7ad7f61a6ba6d45fba850d47f48102", subdirectory = "python/dfo-spec-kit-components" }
+dfo-spec-kit-provenance-docs = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "8ca97391ce7ad7f61a6ba6d45fba850d47f48102", subdirectory = "python/provenance-docs" }
+dfo-spec-kit-descriptions = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "8ca97391ce7ad7f61a6ba6d45fba850d47f48102", subdirectory = "python/descriptions" }
 
 [build-system]
 requires = ["uv_build>=0.11,<0.12"]

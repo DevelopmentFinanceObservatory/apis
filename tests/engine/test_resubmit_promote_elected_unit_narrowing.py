@@ -40,10 +40,13 @@ from search.engine.unit.conversion_catalogue import (
     bound_conversion_catalogue,
 )
 from search.models import (
+    DatasetResubmitInput,
     IdentityBindingValue,
     IdentityFacetValueAbsent,
     IdentityFacetValueRequest,
     IdentityUnitRequest,
+    ResolveRequest,
+    ResubmitIdentityEntry,
     ResubmitIdentityPayload,
     Warning,
 )
@@ -61,6 +64,7 @@ from tests.engine._harness import (
     _csv_header,
     _csv_row,
     _facet_from_fixture,
+    offline_resolve,
     walk_options,
     with_member_arcs,
 )
@@ -163,9 +167,13 @@ _RATES = {"CurrencyUSD": {int(_YEAR): 1.0}, "CurrencyEUR": {int(_YEAR): 0.9}}
 
 
 def _sdmx_router(
-    observations_by_sv: dict[str, str], *, rates: dict[str, dict[int, float]] = _RATES
+    observations_by_sv: dict[str, str],
+    *,
+    rates: dict[str, dict[int, float]] = _RATES,
+    deflators: dict[str, dict[int, float]] | None = None,
 ) -> MaterialiseSdmxClient:
-    """Serve exchange-rate rows, USD at 1.0 and EUR at 0.9 by default, beside each StatVar's body."""
+    """Serve exchange-rate rows, USD at 1.0 and EUR at 0.9 by default, and `deflators` when
+    given, beside each StatVar's body."""
 
     def observations(request: httpx.Request) -> httpx.Response:
         params = dict(httpx.QueryParams(request.url.query.decode()))
@@ -174,7 +182,7 @@ def _sdmx_router(
         return httpx.Response(200, text=body, headers={"content-type": _SDMX_CSV_CONTENT_TYPE})
 
     server = RateTableServer(
-        recipe_table_bodies(_RECIPE, rates=rates),
+        recipe_table_bodies(_RECIPE, rates=rates, deflators=deflators),
         fallback=observations,
     )
     return server.client(base_url=MATERIALISE_BASE_URL)
@@ -241,7 +249,10 @@ def _request(
     years: tuple[str, ...] = (_YEAR,),
     currency: str = "USD",
     places: tuple[str, ...] = (_ENTITY,),
+    deflators: dict[str, dict[int, float]] | None = None,
 ) -> _Request:
+    """A resubmit converting to `currency`, at constant prices of `_YEAR` when `deflators`
+    are served, and at current prices otherwise."""
     graph = FakeGraph(nodes=_NODES, obs=_obs(years, places))
     materialise_graph = FakeGraphReader(
         arcs={
@@ -283,9 +294,14 @@ def _request(
             ),
         },
         rates=rates,
+        deflators=deflators,
     )
     entities = [subject_entity(place) for place in places]
-    request = IdentityUnitRequest(currency=currency, prices="current")
+    request = (
+        IdentityUnitRequest(currency=currency, prices="current")
+        if deflators is None
+        else IdentityUnitRequest(currency=currency, prices="constant", base_year=int(_YEAR))
+    )
     base_identity = make_identity(_SHAPE, slots=[_HOW_SET_SLOT], entities=entities)
     inp = ResubmitIdentityPayload(
         identity=base_identity.model_copy(
@@ -784,14 +800,18 @@ def test_definite_result_carries_obs_entities_warning_once_in_definite_warnings_
     ) == (_OBS_ENTITIES_WARNING, stamped)
 
 
-def _catalogue(rate_years: dict[str, frozenset[int]]) -> ConversionCatalogue:
-    """The DAC recipe on `_PROVENANCE_A` and `_PROVENANCE_B`, with rates in `rate_years`."""
+def _catalogue(
+    rate_years: dict[str, frozenset[int]],
+    deflator_years: dict[str, frozenset[int]] | None = None,
+) -> ConversionCatalogue:
+    """The DAC recipe on `_PROVENANCE_A` and `_PROVENANCE_B`, with rates in `rate_years` and
+    deflators in `deflator_years`."""
     return ConversionCatalogue(
         recipes={_PROVENANCE_A: _RECIPE, _PROVENANCE_B: _RECIPE},
         tables={
             _RECIPE: RecipeTables(
                 rate_years=rate_years,
-                deflator_years={},
+                deflator_years=deflator_years or {},
                 base_year_min=2019,
                 base_year_max=2020,
             )
@@ -832,3 +852,32 @@ def test_a_rate_gap_shortens_the_period_to_the_years_the_rates_cover():
 
     unbound = _run(include_observations=True, rates=rates, years=years, currency="GBP")
     assert unbound.no_data_reason == "rate_coverage_gap"
+
+
+def test_a_constant_price_answer_names_whose_prices_deflated_it_in_its_byline():
+    """A constant 2020 euro answer under the DAC recipe deflates by the DAC table, so its
+    rows are in donor prices even though its members declare the subject role alone, and the
+    response's byline names that basis."""
+    year = int(_YEAR)
+    resubmit = _request(currency="EUR", deflators={_ENTITY: {year: 100.0}})
+    entry = ResubmitIdentityEntry(variable_text="convert multi", identity=resubmit.inp.identity)
+    catalogue = _catalogue(
+        {"USD": frozenset({year}), "EUR": frozenset({year})},
+        deflator_years={_ENTITY: frozenset({year})},
+    )
+    with bound_conversion_catalogue(catalogue):
+        response = offline_resolve(
+            ResolveRequest(input=DatasetResubmitInput(entries=[entry])),
+            graph=resubmit.graph,
+            sdmx=resubmit.sdmx,
+            materialise_graph=resubmit.options.materialise_graph,
+            materialise_sdmx=resubmit.options.materialise_sdmx,
+            rate_cache=RateTableCache(),
+        )
+
+    (part,) = response.parts
+    assert part.status == "definite", part
+    assert part.spec.resolved.unit_conversion is not None
+    assert part.spec.resolved.unit_conversion.deflation_basis == "donor"
+    unit = [token.text for token in response.sentence_plan if token.axis == "unit"]
+    assert unit == ["Constant 2020 euros, donor prices"]

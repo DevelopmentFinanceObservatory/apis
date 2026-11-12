@@ -7,8 +7,12 @@ import pytest
 import assembler.series_id as series_id_module
 from assembler.errors import BindingInvalid, ResourceExhausted
 from assembler.frame_view import compute_structural_view
+from assembler.limits import MAX_SERIES_PER_COMPONENT
 from assembler.ports import FrameRef, ResolvedFrame
-from assembler.resolve import _group_by_coordinate, resolve_selectors
+from assembler.resolve import (
+    _group_by_coordinate,
+    resolve_selectors,
+)
 from assembler.series_id import mint_series_id
 from assembler.testing import FIXTURE_RETRIEVED_ON, build_resolved_frame
 
@@ -375,6 +379,57 @@ def test_series_count_estimate_refuses_before_touching_frame_rows():
     assert excinfo.value.limit_name == "MAX_SERIES_PER_COMPONENT"
 
 
+@pytest.mark.parametrize(
+    ("stat_vars", "selectors", "named"),
+    [
+        pytest.param(
+            5,
+            [{"bindings": []}],
+            ["stat_var (5 values) and recipient (6 values) multiply", "at most {listed} values"],
+            id="two-unbound",
+        ),
+        pytest.param(
+            1,
+            [{"bindings": [{"dimension": "stat_var", "values": ["dcid:X00"]}]}],
+            ["recipient (26 values) is the series dimension", "at most {listed} values"],
+            id="one-unbound",
+        ),
+        # A listed dimension stays the series; the unbound one is bound.
+        pytest.param(
+            5,
+            [
+                {
+                    "bindings": [
+                        {"dimension": "stat_var", "values": [f"dcid:X{i:02d}" for i in range(5)]}
+                    ]
+                }
+            ],
+            ["bind recipient (6 values) to one value, keeping stat_var (5 values) as the series"],
+            id="listed-and-unbound",
+        ),
+    ],
+)
+def test_the_estimate_refusal_names_the_dimensions_it_multiplies(stat_vars, selectors, named):
+    """Five variables at six recipients estimate 30 series; one variable at 26 recipients
+    estimates 26. The refusal names the limit the estimate tests, `MAX_SERIES_PER_COMPONENT`,
+    each dimension with the count the estimate gives it, and the number of values a
+    component takes."""
+    recipients = 6 if stat_vars > 1 else 26
+    rows = [
+        _row(stat_var=f"dcid:X{index:02d}", recipient=f"country/{place:03d}", period="2020")
+        for index in range(stat_vars)
+        for place in range(recipients)
+    ]
+    with pytest.raises(ResourceExhausted) as excinfo:
+        resolve_selectors(resolved_frame=_resolved_frame(rows), selectors=selectors, window=None)
+    assert (excinfo.value.pointer, excinfo.value.limit_name) == (
+        "/select",
+        "MAX_SERIES_PER_COMPONENT",
+    )
+    for words in named:
+        assert words.format(listed=MAX_SERIES_PER_COMPONENT) in excinfo.value.detail
+
+
 def test_series_count_estimate_runs_before_any_row_grouping(monkeypatch):
     """The structural estimate refuses before `_group_by_coordinate` reads frame rows."""
     import assembler.resolve as resolve_module
@@ -559,6 +614,80 @@ def test_group_by_coordinate_two_rows_differing_only_by_base_year_are_distinct()
     assert len(groups) == 2
     units = {dict(coordinates)["unit"] for coordinates in groups}
     assert units == {"USD/constant/2010", "USD/constant/2015"}
+
+
+def _constant(currency, basis=None):
+    unit = {"currency": currency, "prices": "constant", "base_year": 2024}
+    return unit if basis is None else {**unit, "deflation_basis": basis}
+
+
+def _per_person(currency, basis=None):
+    return {
+        "numerator": _constant(currency, basis),
+        "denominator": {"stat_var": "dcid:Count_Person"},
+    }
+
+
+_USD_PER_PERSON = (
+    '{"denominator":{"stat_var":"dcid:Count_Person"},'
+    '"numerator":{"base_year":2024,"currency":"USD","prices":"constant"}}'
+)
+
+
+@pytest.mark.parametrize(
+    ("units", "value", "bound"),
+    [
+        pytest.param(
+            (_constant("USD", "donor"), _constant("EUR", "donor")),
+            "USD/constant/2024",
+            "USD/constant/2024/donor",
+            id="re-minted frame",
+        ),
+        pytest.param(
+            (_constant("USD"), _constant("EUR")),
+            "USD/constant/2024",
+            "USD/constant/2024",
+            id="frame without bases",
+        ),
+        pytest.param(
+            (_per_person("USD", "donor"), _per_person("EUR", "donor")),
+            _USD_PER_PERSON,
+            _USD_PER_PERSON.replace('"prices"', '"deflation_basis":"donor","prices"'),
+            id="composed unit on a re-minted frame",
+        ),
+    ],
+)
+def test_a_unit_without_a_basis_binds_the_one_cell_the_frame_holds_for_it(units, value, bound):
+    rf = _unit_resolved_frame(
+        [["dcid:X", "country/ETH", unit, "2020", float(n)] for n, unit in enumerate(units)]
+    )
+    series = resolve_selectors(
+        resolved_frame=rf,
+        selectors=[{"bindings": [{"dimension": "unit", "values": [value]}]}],
+        window=None,
+    )
+    assert [dict(s.coordinates)["unit"] for s in series] == [bound]
+
+
+def test_a_unit_without_a_basis_refuses_a_frame_holding_it_under_two_bases():
+    rf = _unit_resolved_frame(
+        [
+            ["dcid:X", "country/ETH", _constant("USD", "donor"), "2020", 1.0],
+            ["dcid:X", "country/ETH", _constant("USD", "recipient"), "2020", 2.0],
+            ["dcid:X", "country/ETH", _constant("EUR", "donor"), "2020", 3.0],
+        ]
+    )
+    with pytest.raises(BindingInvalid) as excinfo:
+        resolve_selectors(
+            resolved_frame=rf,
+            selectors=[{"bindings": [{"dimension": "unit", "values": ["USD/constant/2024"]}]}],
+            window=None,
+        )
+    assert excinfo.value.dimension == "unit"
+    assert excinfo.value.legal_values == (
+        "USD/constant/2024/donor",
+        "USD/constant/2024/recipient",
+    )
 
 
 def test_resolve_selectors_collapses_two_rows_sharing_one_converted_unit_into_one_series():

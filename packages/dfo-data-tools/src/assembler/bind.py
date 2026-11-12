@@ -67,7 +67,8 @@ class BoundSeries:
     `source_ref` is the raw graph ref or `None`. Minting resolves it to an
     envelope source id. `unit` is `None`, a unit dcid's label (the dcid when
     unlabelled) cut to 200 characters, the resolved `{currency, prices,
-    base_year}` object, or the catalogue's composed unit `{numerator,
+    base_year, deflation_basis}` object (`base_year` and `deflation_basis` at
+    constant prices only), or the catalogue's composed unit `{numerator,
     denominator}`. No unit conversion occurs here.
     """
 

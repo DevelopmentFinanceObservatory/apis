@@ -95,7 +95,7 @@ from search.engine.region.result import (
     every_member_phrases,
     with_composite_answer,
 )
-from search.engine.region.scope_decision import decide_spec_scope, scope_facts
+from search.engine.region.scope_decision import decide_guarded, scope_facts
 from search.engine.region.source_choice import (
     allows_un_system,
     answer_provenances,
@@ -597,7 +597,8 @@ def _with_scope_choices(result: RegionResult, state: ResolveState) -> RegionResu
     """`result` stating how its definite answer was counted (`RegionResult.scope_choices`),
     the scope the answer phase or the candidates path decided for it before its preview
     launched (`ResolveState.scope_decision`), else one decided here from the answer
-    (`scope_decision.decide_spec_scope`). A result
+    (`scope_decision.decide_guarded`), so a decision that raises leaves the answer as one
+    table. A result
     that is not definite states none. The scope is built in memory, and the rules read the
     bound release's code index, the request's coverage snapshot and the part's operations,
     groups and served datasets (`scope_facts`). Only a dataset_resubmit's posted
@@ -613,7 +614,7 @@ def _with_scope_choices(result: RegionResult, state: ResolveState) -> RegionResu
     spec = result.spec
     decision = state.scope_decision
     if decision is None or decision.spec_id != spec.spec_id:
-        decision = decide_spec_scope(
+        decision = decide_guarded(
             spec,
             selection=state.scope_selection,
             operations=state.operations,

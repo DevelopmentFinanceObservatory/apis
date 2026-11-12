@@ -5,11 +5,13 @@ The answer phase decides it once the answer's identity is known
 (`spec_build.answer_identity`), and the candidates path from its survivor's Spec, so an
 answer the binders settle as a composite reads no preview of the one table it resolved.
 `pipeline._with_scope_choices` states the decision on the finished answer, and decides it
-there for an answer neither path decided."""
+there for an answer neither path decided. Every decision over a finished answer's Spec is
+guarded (`decide_guarded`)."""
 
 from __future__ import annotations
 
 import dataclasses
+import functools
 import logging
 from collections.abc import Callable, Iterable, Mapping, Sequence
 
@@ -144,6 +146,30 @@ def guarded_scope_decision(
         entity_groups={}, facets={}, sources=(), operations=operations, coverage=coverage
     )
     return ScopeDecision(spec_id=spec_id, facts=facts, scope=None, composite=False)
+
+
+def decide_guarded(
+    spec: Spec,
+    *,
+    selection: ScopeState,
+    operations: Sequence[Operation],
+    coverage: CoverageSnapshot,
+) -> ScopeDecision:
+    """The scope the finished answer `spec` states (`decide_spec_scope`), guarded
+    (`guarded_scope_decision`), so a decision that raises leaves `spec` as the one table it
+    resolved."""
+    return guarded_scope_decision(
+        spec.spec_id,
+        functools.partial(
+            decide_spec_scope,
+            spec,
+            selection=selection,
+            operations=operations,
+            coverage=coverage,
+        ),
+        operations=operations,
+        coverage=coverage,
+    )
 
 
 def states_no_scope(identity: BaseIdentity, selection: ScopeState) -> bool:

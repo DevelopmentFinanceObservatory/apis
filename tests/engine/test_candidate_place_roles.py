@@ -2104,7 +2104,7 @@ def test_each_candidates_read_plan_reads_its_own_place_role(monkeypatch, order) 
     def _spy(state, candidate_triples):
         grounded = real(state, candidate_triples)
         for spec in grounded.specs:
-            plans[spec.resolved.members[0].ref.ref] = grounded.cand_plans.get(spec.spec_id)
+            plans[spec.resolved.members[0].ref.ref] = grounded[spec.spec_id].plan
         return grounded
 
     monkeypatch.setattr(candidate_collapse, "ground_candidates", _spy)
@@ -2144,9 +2144,9 @@ def _scenario_candidates(monkeypatch, scenario_id: str, search_settings, **chang
         for spec in grounded.specs:
             grounded_by_sv[spec.resolved.members[0].ref.ref] = SimpleNamespace(
                 spec=spec,
-                probe_entities=grounded.cand_probe_entities[spec.spec_id],
-                place=grounded.cand_places[spec.spec_id],
-                bulk_scope=grounded.cand_bulk_scope.get(spec.spec_id),
+                probe_entities=grounded[spec.spec_id].probe_entities,
+                place=grounded[spec.spec_id].candidate.place,
+                bulk_scope=grounded[spec.spec_id].bulk_scope,
             )
         return grounded
 
@@ -3089,17 +3089,18 @@ def test_each_option_probe_of_a_lone_candidate_binds_its_own_entities(monkeypatc
         definition=SimpleNamespace(identity=SimpleNamespace(facets=None)),
         resolved=SimpleNamespace(members=()),
     )
-    grounded = SimpleNamespace(
-        cand_places={
-            "spec_ppp": SimpleNamespace(
-                roles=SimpleNamespace(resolved_entities=own, open_axes=frozenset())
-            )
-        },
-        cand_probe_inputs={"spec_ppp": (object(), [], [], [_GHA, _NOR])},
-        cand_role_axis_facts={"spec_ppp": (object(), [object()], [_GHA, _NOR])},
-        cand_obs_entities={"spec_ppp": ([_GNI_PPP], own)},
-        cand_entity_options_raw={},
+    place = SimpleNamespace(
+        roles=SimpleNamespace(resolved_entities=own, open_axes=frozenset()),
+        probe_places=[_GHA, _NOR],
     )
+    grounded = {
+        "spec_ppp": SimpleNamespace(
+            candidate=SimpleNamespace(shape=object(), place=place),
+            probe_inputs=(object(), [], [], [_GHA, _NOR]),
+            role_axis_facts=(object(),),
+            sv_dcids=[_GNI_PPP],
+        )
+    }
     state = SimpleNamespace(
         place=SimpleNamespace(
             roles=SimpleNamespace(resolved_entities={"financingRecipient": [_GHA]})
@@ -3135,7 +3136,7 @@ def test_each_option_probe_of_a_lone_candidate_binds_its_own_entities(monkeypatc
             )
         )
     relaunch = candidate_options._make_slot_options_relaunch(
-        cast(Any, state), cast(Any, grounded), cast(Any, spec)
+        cast(Any, state), cast(Any, grounded), cast(Any, spec), entity_options_raw=None
     )
 
     assert relaunch is not None

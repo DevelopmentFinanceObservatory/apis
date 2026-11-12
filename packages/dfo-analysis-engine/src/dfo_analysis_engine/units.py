@@ -4,8 +4,9 @@ A frame's `unit` cell is a unit ref (a plain string), a converted unit (a
 `dfo_frame_grammar.grammar.UnitRequest`), a composed unit (a
 `dfo_frame_grammar.grammar.ComposedUnit`, the unit of one measure divided by
 another), or `None`. A ref reads as itself in both forms. A converted unit
-reads in text as the price-basis words `get_data`'s digest uses, and in JSON
-as its request object. A composed unit reads in text as
+reads in text as the price-basis words `get_data`'s digest uses, with whose
+prices deflated it when the cell names them, and in JSON as its
+request object. A composed unit reads in text as
 `<numerator> per <denominator>` and in JSON as its
 `{numerator, denominator}` object. The digest, each verb's trace and each
 unit refusal all render units through here.
@@ -25,20 +26,27 @@ from dfo_analysis_engine.price_basis import price_basis_reading
 
 
 def _price_basis(unit: UnitRequest) -> str:
-    return price_basis_reading(currency=unit.currency, prices=unit.prices, base_year=unit.base_year)
+    return price_basis_reading(
+        currency=unit.currency,
+        prices=unit.prices,
+        base_year=unit.base_year,
+        deflation_basis=unit.deflation_basis,
+    )
 
 
 def converted_unit_label(unit: UnitRequest) -> str:
     """`unit` in the price-basis words `get_data`'s digest uses, such as
-    "converted to constant 2020 prices, euros"."""
+    "converted to constant 2020 prices, euros" or, for a cell that names whose
+    prices deflated it, "converted to constant 2024 prices, NGN, donor
+    prices"."""
     return f"converted to {_price_basis(unit)}"
 
 
 def _part_name(part: UnitPart) -> str:
     """One side of a composed unit as text names it: a ref as itself, a
-    converted unit by its price basis alone ("constant 2020 prices, euros"),
-    and a side that declares no unit by the id of the StatVar it counts,
-    without the `dcid:` prefix."""
+    converted unit by its price basis ("constant 2020 prices, euros", plus its
+    deflation basis when it names one), and a side that declares no unit by
+    the id of the StatVar it counts, without the `dcid:` prefix."""
     if isinstance(part, str):
         return part
     if isinstance(part, UnitRequest):
