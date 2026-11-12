@@ -21,11 +21,15 @@ publish beside them.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
+from code_index.declarations import DAC1
+from code_index.types import PartyRow
 from search.engine.departures import served_datasets
-from search.engine.region import scope_decision
-from search.engine.region.whole_totals import with_containing_total
+from search.engine.region import scope_decision, whole_totals
+from search.engine.region.whole_totals import containing_reading, with_containing_total
 from search.models import (
     BaseIdentity,
     ChoiceOrigin,
@@ -424,3 +428,20 @@ def test_a_part_naming_no_place_answers_as_it_did_before_its_scope_was_read(
     assert read.model_dump(mode="json", exclude={"timing_ms"}) == before.model_dump(
         mode="json", exclude={"timing_ms"}
     )
+
+
+@pytest.mark.parametrize(("axis", "reads"), [("origin", True), ("destination", False)])
+def test_a_containing_total_reads_only_on_the_axis_the_index_publishes_it(
+    monkeypatch: pytest.MonkeyPatch, axis: RoleAxis, reads: bool
+) -> None:
+    """DAC1 declares DAC countries' total as its donor-side containing total. An index that
+    publishes it as a recipient in DAC1 gives no reading, since declaration and graph
+    disagree on its side."""
+    row = PartyRow(dcid=_DAC_COUNTRIES, kind="total", published=((DAC1, axis),))
+    monkeypatch.setattr(
+        whole_totals, "get_index", lambda: SimpleNamespace(parties={_DAC_COUNTRIES: row})
+    )
+
+    reading = containing_reading(_DAC_COUNTRIES, datasets=(DAC1,))
+
+    assert (reading.axis if reading is not None else None) == ("origin" if reads else None)

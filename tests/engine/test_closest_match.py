@@ -409,34 +409,72 @@ def _panel_reading(query_id: str, shape_label: str) -> Spec:
     raise AssertionError(f"no {shape_label!r} reading of {query_id}")
 
 
-@pytest.mark.parametrize(("open_axis", "verdicts"), [(True, ["holds"]), (False, ["unknown"])])
+_SPLIT_AXIS = OpenConstraintAxisFact(
+    property=_PRODUCT_TAX,
+    varies=True,
+    distinct_count=2,
+    undeclared_count=0,
+    values=[
+        OpenAxisValueCount(value=_INCLUDING_TAXES, count=1),
+        OpenAxisValueCount(
+            value=GraphRef(ref="ExcludingProductTaxes", label="Excluding product taxes"), count=1
+        ),
+    ],
+)
+
+
+@pytest.mark.parametrize(
+    ("open_axis", "verdicts"),
+    [
+        pytest.param("agreed", ["holds"], id="every-member-holds"),
+        pytest.param("split", ["unknown"], id="members-split"),
+        pytest.param("some-undeclared", ["unknown"], id="some-undeclared"),
+        pytest.param(None, ["unknown"], id="no-open-axis"),
+    ],
+)
 def test_a_value_every_member_holds_on_an_open_axis_reaches_the_pairs(
-    open_axis: bool, verdicts: list[str]
+    open_axis: str | None, verdicts: list[str]
 ) -> None:
     """The weo-020 reading of GDP per capita at purchasing power parity binds its product
     tax basis on a slot. Left on no slot, the value every served member holds on the open
-    axis (`ResolvedSpec.open_axis_facts`) is in the reading's pairs, as a shape's family
-    values are in rule 4's (`admissibility.draft_evidence`), so its pairs alone hold
-    "GDP"."""
+    axis (`ResolvedSpec.open_axis_facts`) is in the reading's pairs, so its pairs alone hold
+    "GDP". Members split between including and excluding the taxes hold neither value, and
+    neither do members of which one declares no tax basis."""
     spec = _panel_reading("weo-020", _GDP_PPP_SHAPE)
     resolved = spec.resolved
     slots = [
         s for s in resolved.slots if s.key.property is None or s.key.property.ref != _PRODUCT_TAX
     ]
-    facts = [
-        OpenConstraintAxisFact(
-            property=_PRODUCT_TAX,
-            varies=False,
-            value=_INCLUDING_TAXES,
-            distinct_count=1,
-            undeclared_count=0,
-            values=[OpenAxisValueCount(value=_INCLUDING_TAXES, count=1)],
-        )
-    ]
+    facts = {
+        "agreed": [
+            OpenConstraintAxisFact(
+                property=_PRODUCT_TAX,
+                varies=False,
+                value=_INCLUDING_TAXES,
+                distinct_count=1,
+                undeclared_count=0,
+                values=[OpenAxisValueCount(value=_INCLUDING_TAXES, count=1)],
+            )
+        ],
+        "split": [_SPLIT_AXIS],
+        "some-undeclared": [
+            OpenConstraintAxisFact(
+                property=_PRODUCT_TAX,
+                varies=False,
+                value=_INCLUDING_TAXES,
+                distinct_count=1,
+                undeclared_count=1,
+                values=[OpenAxisValueCount(value=_INCLUDING_TAXES, count=1)],
+            )
+        ],
+    }
     reading = spec.model_copy(
         update={
             "resolved": resolved.model_copy(
-                update={"slots": slots, "open_axis_facts": facts if open_axis else None}
+                update={
+                    "slots": slots,
+                    "open_axis_facts": facts[open_axis] if open_axis else None,
+                }
             )
         }
     )

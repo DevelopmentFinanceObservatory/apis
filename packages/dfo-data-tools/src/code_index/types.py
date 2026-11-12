@@ -610,6 +610,17 @@ ANY_DATASET: Final = AnyDataset.ANY
 An empty collection of datasets publishes nothing."""
 
 
+class AnyAxis(Enum):
+    """The type of `ANY_AXIS`."""
+
+    ANY = "any"
+
+
+ANY_AXIS: Final = AnyAxis.ANY
+"""Both flow axes, as `PartyRow.kinds_over` reads them for a reader that serves no one role:
+the kinds the party takes in every dataset that publishes it, on either axis."""
+
+
 @dataclass(frozen=True, slots=True)
 class PartyRow:
     """One party a declared dataset publishes, as donor or recipient, and its kind.
@@ -648,7 +659,8 @@ class PartyRow:
     kind. IMF Concessional Trust Funds (`IMFConcessionalTrustFunds`) is a `party` in the CRS,
     which publishes it and never the IMF, and a `total` in DAC2A, which publishes it beside
     the IMF it equals. A reader serving one dataset reads `kind_in`, and one serving several or
-    none reads `kinds_over` or `kind_over`. `party_class` is the class of `kind`; where the
+    none reads `kinds_over` or `kind_over` on the axis of the role it serves, so a kind a
+    dataset gives the party on one axis never reaches a role on the other. `party_class` is the class of `kind`; where the
     party takes another kind it takes that kind's class (`class_of`).
     """
 
@@ -690,20 +702,31 @@ class PartyRow:
         """The party's kind in `dataset`: its `dataset_kinds` entry there, else `kind`."""
         return next((kind for named, kind in self.dataset_kinds if named == dataset), self.kind)
 
-    def kinds_over(self, datasets: Collection[str] = ()) -> frozenset[PartyKind]:
-        """The kinds the party takes in those of `datasets` that publish it, or in every
-        dataset that publishes it when none of `datasets` does, as for an empty `datasets`.
-        A row without `dataset_kinds` takes `kind` alone."""
+    def kinds_over(
+        self, axis: RoleAxis | AnyAxis, datasets: Collection[str] = ()
+    ) -> frozenset[PartyKind]:
+        """The kinds the party takes in those of `datasets` that publish it on `axis` (on
+        either axis for `ANY_AXIS`), or in every dataset that publishes it there when none of
+        `datasets` does, as for an empty `datasets`. A party with `dataset_kinds` that no
+        dataset publishes on `axis` takes no kind there. A row without `dataset_kinds` takes
+        `kind` alone."""
         if not self.dataset_kinds:
             return frozenset((self.kind,))
-        publishing = {dataset for dataset, _ in self.published}
+        publishing = {
+            dataset
+            for dataset, published_axis in self.published
+            if axis is ANY_AXIS or published_axis == axis
+        }
         named = (publishing & set(datasets)) or publishing
         return frozenset(self.kind_in(dataset) for dataset in named)
 
-    def kind_over(self, datasets: Collection[str] = ()) -> PartyKind | None:
-        """The one kind of `kinds_over(datasets)`, or `None` when the party takes different
-        kinds there, so a reader that needs one kind refuses rather than guesses."""
-        kinds = self.kinds_over(datasets)
+    def kind_over(
+        self, axis: RoleAxis | AnyAxis, datasets: Collection[str] = ()
+    ) -> PartyKind | None:
+        """The one kind of `kinds_over(axis, datasets)`, or `None` when the party takes
+        different kinds there or none, so a reader that needs one kind refuses rather than
+        guesses."""
+        kinds = self.kinds_over(axis, datasets)
         return next(iter(kinds)) if len(kinds) == 1 else None
 
     def class_of(self, kind: PartyKind) -> PartyClass | None:

@@ -270,13 +270,18 @@ def _resolved_entities(
 ) -> list[ResolvedEntity]:
     """Project entities with the shared role mapping. An entity on a flow role with a
     `parties` row states its kind and class where `datasets` publish it, and on the origin
-    role whether it is a multilateral (`multilaterals.party_facts`). Confidence is unset."""
+    role whether it is a multilateral (`multilaterals.party_facts`), each read on the role's
+    axis. Confidence is unset."""
     resolved = []
     for e in entities:
         role = entity_role_key(e)
         axis = role_key_axis(role)
         row = parties.get(e.ref.ref) if axis is not None else None
-        facts = multilaterals.party_facts(row, datasets=datasets) if row is not None else None
+        facts = (
+            multilaterals.party_facts(row, axis=axis, datasets=datasets)
+            if row is not None and axis is not None
+            else None
+        )
         resolved.append(
             ResolvedEntity(
                 ref=e.ref.ref,

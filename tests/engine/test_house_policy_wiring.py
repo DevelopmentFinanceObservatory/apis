@@ -41,7 +41,7 @@ from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.errors import LLMOutputRefused
 from search.engine.frame import Frame, door_frame
 from search.engine.interpret import Recall
-from search.engine.qualifier_match import QualifierMatch
+from search.engine.qualifier_match import QualifierMatch, declared_measures_named
 from search.engine.quantity import NamedDenominator
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import phase_rank_bind
@@ -708,7 +708,9 @@ def test_the_bind_decision_line_logs_the_verdicts_rule_4_read(
     )
     state.variable = "health expenditure as a share of GDP"
     state.named_denominator = NamedDenominator(ref=None, base_words="GDP")
-    state.named_measures = phase_rank_bind._named_measure_nouns(state)
+    state.named_measures = phase_rank_bind._named_measure_nouns(
+        state, declared_measures_named(state.variable)
+    )
     # Rule 4's verdicts, as the prune-and-rank phase keeps them.
     state.measure_verdicts = {
         shape.shape_id: rule_four_verdicts(shape, state.named_measures, state.denominator_reads)

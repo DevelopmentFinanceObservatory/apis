@@ -27,20 +27,20 @@ from entity_resolution.pack import organisation_dcids
 
 
 class PartyFacts(NamedTuple):
-    """What one party is where some datasets publish it: its kind (`PartyRow.kind_over`), its
-    class (`PartyRow.class_of`), and whether it is a multilateral, each `None` where the
-    datasets give it different kinds."""
+    """What one party is where some datasets publish it on one axis: its kind
+    (`PartyRow.kind_over`), its class (`PartyRow.class_of`), and whether it is a multilateral,
+    each `None` where those datasets give it different kinds."""
 
     kind: PartyKind | None
     party_class: PartyClass | None
     multilateral: bool | None
 
 
-def party_facts(row: PartyRow, *, datasets: Collection[str] = ()) -> PartyFacts:
-    """The facts of `row` where `datasets` publish it. A multilateral is an organisation that
-    is an official party there; a total, such as the World Bank Group beside its members in
-    DAC2a, is none."""
-    kind = row.kind_over(datasets)
+def party_facts(row: PartyRow, *, axis: RoleAxis, datasets: Collection[str] = ()) -> PartyFacts:
+    """The facts of `row` where `datasets` publish it on `axis`. A multilateral is an
+    organisation that is an official party there; a total, such as the World Bank Group beside
+    its members in DAC2a, is none."""
+    kind = row.kind_over(axis, datasets)
     if kind is None:
         return PartyFacts(None, None, None)
     party_class = row.class_of(kind)
@@ -51,8 +51,11 @@ def party_facts(row: PartyRow, *, datasets: Collection[str] = ()) -> PartyFacts:
 
 
 def is_multilateral(row: PartyRow | None, *, datasets: Collection[str] = ()) -> bool:
-    """Whether `row` is a multilateral where `datasets` publish it (`party_facts`)."""
-    return row is not None and party_facts(row, datasets=datasets).multilateral is True
+    """Whether `row` is a multilateral where `datasets` publish it as a donor, on the origin
+    axis (`party_facts`)."""
+    return (
+        row is not None and party_facts(row, axis="origin", datasets=datasets).multilateral is True
+    )
 
 
 def holds_multilaterals(
@@ -77,5 +80,5 @@ def _multilateral_sides(index: CodeIndex) -> frozenset[tuple[RoleAxis, str]]:
         (axis, dataset)
         for row in index.parties.values()
         for dataset, axis in row.published
-        if is_multilateral(row, datasets=(dataset,))
+        if party_facts(row, axis=axis, datasets=(dataset,)).multilateral is True
     )

@@ -35,10 +35,15 @@ from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.interpret import Recall
+from search.engine.qualifier_match import declared_measures_named
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import candidate_collapse
 from search.engine.region.candidate_collapse import _record_unheld_values
-from search.engine.region.phase_rank_bind import _phase_bind, _read_stated_quantity
+from search.engine.region.phase_rank_bind import (
+    _logged_verdicts,
+    _phase_bind,
+    _read_stated_quantity,
+)
 from search.engine.region.requirements import settle_answer, settle_candidate_set
 from search.engine.region.state import ResolveState
 from search.engine.retrieval.retrieve import NoDataDraft
@@ -673,3 +678,15 @@ def test_a_lone_twin_is_judged_on_the_typed_values_as_any_reading_is(
     settle_answer(state, twin, held)
     assert state.judgement is not None
     assert [fact.asked for _warning, fact in state.judgement.departures()] == departed
+
+
+def test_the_bind_line_logs_a_verdict_for_a_menu_shape_rule_four_did_not_judge():
+    """A stand-in for a declined election joins the menu after rule 4 judged the admissible
+    shapes, so the `bind_decision` line judges it there. A shape rule 4 judged logs the
+    verdicts it stored."""
+    state = _state(llm=_NoCallLLM())
+    state.variable = "GDP"
+    state.named_measures = tuple(declared_measures_named("GDP"))
+    state.measure_verdicts = {"population": ["base"]}
+
+    assert _logged_verdicts(state) == [{"GDP": "base"}, {"GDP": "unknown"}]

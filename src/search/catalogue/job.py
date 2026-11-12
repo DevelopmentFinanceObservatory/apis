@@ -97,6 +97,7 @@ from artifact_publication.jobs import (
 )
 from artifact_publication.uri import ArtifactUriError
 from code_index.shared import get_index
+from code_index.types import ANY_AXIS
 from dc_graph import GraphReadError
 from dfo_platform.build import build_commit
 from graph_release.context import URI_ENV_VAR, ReleaseNotBound, bound_served_release, release_uri
@@ -451,7 +452,9 @@ async def _assemble(
         datasets=index.datasets,
         # Read over every dataset: a party that is a total in some datasets only, such as the
         # IMF trust funds, is a donor of its own in the others and counts as one.
-        totals=[dcid for dcid, party in index.parties.items() if party.kind_over() == "total"],
+        totals=[
+            dcid for dcid, party in index.parties.items() if party.kind_over(ANY_AXIS) == "total"
+        ],
     )
     names = place_names(sorted(counted.places))
 

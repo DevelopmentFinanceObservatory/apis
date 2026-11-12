@@ -13,7 +13,7 @@ import threading
 from collections import OrderedDict
 from collections.abc import Callable, Collection, Iterable, Mapping
 
-from code_index.types import PartyKind, PartyRow
+from code_index.types import ANY_AXIS, PartyKind, PartyRow
 from dc_graph import label_or_self_name
 from dfo_platform.roles import role_key_axis
 from graph_release.context import served_origin_key
@@ -202,7 +202,7 @@ def party_kind_of(
     was not exported for leaves that party with no kind. That is index drift, which the
     code-index drift gate reports and a re-export of the index repairs."""
     party = parties.get(ref)
-    return None if party is None else party.kind_over(datasets)
+    return None if party is None else party.kind_over(ANY_AXIS, datasets)
 
 
 def party_count(
@@ -260,7 +260,7 @@ def party_cell(
     if party is None:
         return None
     if field in (PARTY_KIND_FIELD, PARTY_CLASS_FIELD):
-        kind = party.kind_over(() if provenance is None else (provenance,))
+        kind = party.kind_over(ANY_AXIS, () if provenance is None else (provenance,))
         if kind is None:
             return None
         if field == PARTY_KIND_FIELD:

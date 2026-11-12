@@ -38,6 +38,7 @@ from search.engine.qualifier_match import (
     QualifierReadings,
     QualifierTie,
     bindable_codes,
+    declared_measures_named,
     governing_connectives,
     match_qualifier_ties,
     match_qualifiers,
@@ -420,6 +421,7 @@ def test_a_part_naming_the_crs_refuses_only_terms_its_own_reading_cannot_hold(va
         candidates,
         own_variable_spans(variable, *candidates),
         state=_part_state(variable, candidates),
+        named=declared_measures_named(variable),
     )
 
     assert [record.text for record in undeclared] == refused
@@ -474,6 +476,7 @@ def test_a_part_naming_a_table_that_states_a_word_does_not_refuse_it(
         candidates,
         own_variable_spans(variable, *candidates),
         state=_part_state(variable, candidates, recipient),
+        named=declared_measures_named(variable),
     )
 
     assert [record.text for record in undeclared] == refused
@@ -2578,7 +2581,12 @@ def test_a_term_naming_the_elected_measure_is_no_unread_qualifier(
     state.denominator_reads = denominators
 
     undeclared = _undeclared_qualifiers(
-        variable, spans, [shape], own_variable_spans(variable, shape), state=state
+        variable,
+        spans,
+        [shape],
+        own_variable_spans(variable, shape),
+        state=state,
+        named=declared_measures_named(variable),
     )
 
     assert [record.text for record in undeclared] == refused

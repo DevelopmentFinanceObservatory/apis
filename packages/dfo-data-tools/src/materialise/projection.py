@@ -52,7 +52,7 @@ from typing import Literal
 from dfo_frame_grammar import TIME_PERIOD_COLUMN, parse_time_period
 from dfo_frame_grammar.grammar import ComposedUnit, UnitRequest
 
-from code_index.types import PartyRow
+from code_index.types import ANY_AXIS, PartyRow
 from dfo_platform.roles import role_key_axis
 from materialise.enrichment import PARTY_FIELDS, is_party_role, is_whole_total, period_year
 from materialise.errors import MaterialisationUsageError
@@ -149,7 +149,8 @@ def long_kind_cell(
     `unallocated`. A party on the origin axis reads its class, `official` or `private`. A party
     on the destination axis reads `country or organisation`, or `private` for a private one.
     The kind and class are the party's in the row's dataset (`PartyRow.kind_in`,
-    `PartyRow.class_of`). A row with no `provenance` reads the kind of every dataset. `None` for
+    `PartyRow.class_of`), on the role's axis. A row with no `provenance` reads the kind of every
+    dataset that publishes the party on that axis. `None` for
     a ref the code index does not list, one that is not text, and a party that takes no one kind
     for the row (`PartyRow.kind_over`), a party whose kind differs between datasets on a row
     with no `provenance`."""
@@ -157,7 +158,10 @@ def long_kind_cell(
     if party is None:
         return None
     dataset = provenance if isinstance(provenance, str) else None
-    kind = party.kind_over(() if dataset is None else (dataset,))
+    axis = role_key_axis(role)
+    kind = party.kind_over(
+        ANY_AXIS if axis is None else axis, () if dataset is None else (dataset,)
+    )
     if kind is None:
         return None
     if kind == "total":

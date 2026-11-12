@@ -16,6 +16,7 @@ from types import MappingProxyType
 
 from code_index.tokens import Token, TokenLookup, word_tokens
 from code_index.types import (
+    ANY_AXIS,
     POPULATION_CLASS,
     AbsentObservation,
     Bound,
@@ -767,7 +768,9 @@ class CodeIndex:
         its types give (`code_index.types.party_kind`). A reader with a dataset in hand reads
         `PartyRow.kind_in` instead."""
         party = self.parties.get(dcid)
-        return party.kind_over() if party is not None else party_kind(types, self.party_types)
+        if party is None:
+            return party_kind(types, self.party_types)
+        return party.kind_over(ANY_AXIS)
 
     def whole_set(self, phrase: str) -> WholeTotalSet | None:
         """The whole total set a `phrase` names, compared under `fold_text`, or `None`."""

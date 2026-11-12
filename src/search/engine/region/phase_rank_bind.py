@@ -76,7 +76,7 @@ from search.engine.function_words import (
     RATIO_WORDS,
 )
 from search.engine.interpretation import Interpretation, InterpretationSet
-from search.engine.measure_verdict import measure_verdicts
+from search.engine.measure_verdict import Verdict, measure_verdicts
 from search.engine.qualifier_match import (
     BREAKDOWN_FILLER_NOUNS,
     CONNECTIVES,
@@ -425,9 +425,12 @@ def _quantity_phrase(state: ResolveState) -> str:
     return " ".join("".join(words).split())
 
 
-def _named_measure_nouns(state: ResolveState) -> tuple[NamedMeasure, ...]:
-    """The names of measure nouns of the code index (`MeasureIndex.nouns`) the variable
-    phrase holds (`qualifier_match.declared_measures_named`), each with the nouns that
+def _named_measure_nouns(
+    state: ResolveState, named: Sequence[NamedMeasure]
+) -> tuple[NamedMeasure, ...]:
+    """The names of measure nouns of the code index (`MeasureIndex.nouns`) among `named`,
+    the names of declared measures the variable phrase holds
+    (`qualifier_match.declared_measures_named`), each with the nouns that
     share it: a label, another whole name (`MeasurePartitionLabel.also_called`) or a
     declared acronym of one (`CodeIndex.variable_aliases`, "GNI"), outside every longer
     occurrence of a declared name, so the longest declared name wins its words, and
@@ -444,13 +447,13 @@ def _named_measure_nouns(state: ResolveState) -> tuple[NamedMeasure, ...]:
         )
     nouns = frozenset(get_measure_index().nouns)
     spans: list[NamedMeasure] = []
-    for named in declared_measures_named(state.variable):
+    for name in named:
         alternatives = tuple(
-            alternative for alternative in named.alternatives if alternative in nouns
+            alternative for alternative in name.alternatives if alternative in nouns
         )
         occurrences = tuple(
             occurrence
-            for occurrence in named.occurrences
+            for occurrence in name.occurrences
             if not any(_ranges_overlap(occurrence, span) for span in owned)
         )
         if alternatives and occurrences:
@@ -927,7 +930,8 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
         vocabularies=(shape_vocabulary(i.shape) for i in judged if i.admissible),
     )
     state.pinned_part_matches = pinned_part_read.matches
-    state.named_measures = _named_measure_nouns(state)
+    state.declared_names = tuple(declared_measures_named(state.variable))
+    state.named_measures = _named_measure_nouns(state, state.declared_names)
     admissible = [i.shape for i in judged if i.admissible]
     own = own_member_verdicts(admissible, state.named_measures, state.denominator_reads)
     await read_held_families(
@@ -1549,6 +1553,8 @@ def _undeclared_qualifiers(
     own_spans: Mapping[frozenset[str], tuple[QualifierSpan, ...]],
     chosen: Sequence[tuple[int, int]] = (),
     state: ResolveState | None = None,
+    *,
+    named: Sequence[NamedMeasure],
 ) -> tuple[ResolvedQualifier, ...]:
     """The variable's code terms, `spans` read in every code system, that no shape in
     `shapes` can hold, each as an unbound record with evidence ``"unavailable"``.
@@ -1560,7 +1566,8 @@ def _undeclared_qualifiers(
     aid, whose rows carry no type of finance, or a sector only another publisher of the
     five-tuple reports. A shape the index does not carry holds any code of a code system it
     declares a slot for. A span holding a measure value is the measure's to read and is
-    left alone.
+    left alone, and so is a span inside one of `named`, the names of declared measures the
+    variable holds, that the shape holds (`_measure_named_ranges`).
 
     `own_spans` holds `variable` read in each shape's own vocabulary
     (`qualifier_match.read_by_vocabulary`). A shape also holds a term when spans of its own
@@ -1577,7 +1584,6 @@ def _undeclared_qualifiers(
     """
     index = get_index()
     readings = [(shape, _part_codes(shape, index)) for shape in shapes]
-    named = declared_measures_named(variable)
 
     def held_on(
         shape: ShapeDraft, codes: Mapping[str, frozenset[str]] | None, row: CodeRow
@@ -1632,7 +1638,7 @@ def _measure_named_ranges(
     denominators: Mapping[str, DenominatorRead],
 ) -> list[tuple[int, int]]:
     """The range of each of `spans` inside a name of declared measures the variable holds
-    (`named`, `qualifier_match.declared_measures_named`, read once per part) that `shape`
+    (`named`, `ResolveState.declared_names`, read once per part) that `shape`
     holds or divides by (`measure_verdict.measure_verdicts` on
     `admissibility.draft_evidence`, the StatVar it divides by as `denominators` read it).
     Such a span is the measure the part elected or its base, no code qualifying it: "GNI"
@@ -1668,6 +1674,7 @@ def _unbindable_qualifiers(
     own_spans: Mapping[frozenset[str], tuple[QualifierSpan, ...]],
     chosen: Sequence[tuple[int, int]] = (),
     *,
+    named: Sequence[NamedMeasure],
     denominators: Mapping[str, DenominatorRead],
 ) -> tuple[ResolvedQualifier, ...]:
     """The variable's code terms, `spans` read in every code system, that name only codes
@@ -1680,7 +1687,9 @@ def _unbindable_qualifiers(
     "population ODA" refuses on it. A term every word of which the shape reads
     otherwise yields to that reading, and so does one inside a phrase the bind model's
     menu choice reads (`chosen`, `_menu_choices`): "population policies" read as purpose
-    13010 records no unavailable "population".
+    13010 records no unavailable "population". So does a term inside one of `named`, the
+    names of declared measures the variable holds, that the shape holds
+    (`_measure_named_ranges`).
     """
     index = get_index()
     bindable = bindable_codes(index)
@@ -1688,7 +1697,7 @@ def _unbindable_qualifiers(
     read = [
         *((own.start, own.end) for own in for_shape(own_spans, shape)),
         *chosen,
-        *_measure_named_ranges(declared_measures_named(variable), spans, shape, denominators),
+        *_measure_named_ranges(named, spans, shape, denominators),
     ]
     unbindable: list[ResolvedQualifier] = []
     for span in spans:
@@ -1835,6 +1844,7 @@ def _unavailable_qualifiers(state: ResolveState) -> list[ResolvedQualifier]:
             state.variable_spans_by_vocabulary,
             _chosen_ranges(state),
             state=state,
+            named=state.declared_names,
         )
         if (record.start, record.end) not in recorded
     ]
@@ -1856,6 +1866,7 @@ def _inapplicable_terms(state: ResolveState) -> list[ResolvedQualifier]:
             state.shape_draft,
             state.variable_spans_by_vocabulary,
             _chosen_ranges(state),
+            named=state.declared_names,
             denominators=state.denominator_reads,
         )
         if (record.start, record.end) not in recorded
@@ -1880,6 +1891,7 @@ def _unelected_qualifiers(state: ResolveState) -> tuple[ResolvedQualifier, ...]:
         state.capped_shapes,
         state.variable_spans_by_vocabulary,
         state=state,
+        named=state.declared_names,
     )
 
 
@@ -5050,17 +5062,25 @@ def _log_bind_decision(state: ResolveState, decision: BindResult | None) -> None
 
 def _logged_verdicts(state: ResolveState) -> list[dict[str, str]]:
     """For each menu shape, in menu order, the verdict rule 4 read on each of the part's
-    `ResolveState.named_measures` (`ResolveState.measure_verdicts`), keyed by the words of
-    its first occurrence; none for a shape rule 4 did not judge."""
+    `ResolveState.named_measures`, keyed by the words of its first occurrence: the verdicts
+    rule 4 stored (`ResolveState.measure_verdicts`), or for a menu shape it did not judge,
+    such as a stand-in for a declined election, its verdicts judged here
+    (`admissibility.rule_four_verdicts`)."""
     spans = state.named_measures
     words = [state.variable[slice(*span.occurrences[0])] for span in spans]
     return [
-        dict(zip(words, verdicts, strict=True))
-        if (verdicts := state.measure_verdicts.get(shape.shape_id)) is not None
-        else {}
+        dict(zip(words, _shape_verdicts(state, shape), strict=True))
         for shape in state.capped_shapes
         if spans
     ]
+
+
+def _shape_verdicts(state: ResolveState, shape: ShapeDraft) -> list[Verdict]:
+    """Rule 4's verdicts on `shape`: those it stored, else judged now."""
+    stored = state.measure_verdicts.get(shape.shape_id)
+    if stored is not None:
+        return stored
+    return rule_four_verdicts(shape, state.named_measures, state.denominator_reads)
 
 
 async def _phase_bind(state: ResolveState) -> RegionResult | None:

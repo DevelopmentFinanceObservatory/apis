@@ -910,6 +910,38 @@ def test_a_bare_csv_drops_totals_only_on_the_roles_the_options_document_names(pa
     assert _recipients(_records(body)) == kept
 
 
+@pytest.mark.parametrize(
+    ("total_in", "named"),
+    [
+        pytest.param("p1", [], id="total-only-where-a-recipient"),
+        pytest.param("p2", ["financingProvider"], id="total-where-a-donor"),
+    ],
+)
+def test_an_open_role_reads_a_party_s_kind_on_its_own_axis(total_in, named):
+    """A party published as a recipient in p1 and a donor in p2 holds a total on the donor
+    side only where the dataset publishing it as a donor gives it that kind."""
+    parties = {
+        **_PARTIES,
+        "MixedParty": PartyRow(
+            dcid="MixedParty",
+            kind="party",
+            party_class="official",
+            published=(("p1", "destination"), ("p2", "origin")),
+            dataset_kinds=((total_in, "total"),),
+        ),
+    }
+    identity = _spec({"entities": {"destination": ["country/KEN"]}, "open_roles": ["origin"]})[
+        "identity"
+    ]
+
+    assert (
+        list(
+            movable_totals_roles(identity, _ENTITY_COLUMNS, parties=parties, datasets=["p1", "p2"])
+        )
+        == named
+    )
+
+
 @pytest.mark.parametrize("bundle", [False, True])
 @pytest.mark.parametrize("parties", [_PARTIES, _WHOLE_TOTALS], ids=["totals", "whole-totals"])
 def test_an_xlsx_holds_the_totals_on_a_second_sheet_and_years_as_numbers(bundle, parties):

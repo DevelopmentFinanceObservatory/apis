@@ -24,7 +24,7 @@ from typing import cast
 import numpy as np
 import pyarrow as pa
 
-from code_index.types import PartyKind, PartyRow
+from code_index.types import ANY_AXIS, PartyKind, PartyRow
 from series_coverage.coverage_types import Role
 from series_coverage.schema import (
     ABSENT_ENTITY,
@@ -155,7 +155,7 @@ def _split_by_kind(
         if row is None:
             kinds[None] += 1
             continue
-        taken = row.kinds_over(datasets)
+        taken = row.kinds_over(ANY_AXIS, datasets)
         kind = next(kind for kind in _KIND_PRECEDENCE if kind in taken)
         kinds[kind] += 1
         if kind == "party" and row.class_of(kind) == "private":

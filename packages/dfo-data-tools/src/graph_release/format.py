@@ -49,7 +49,6 @@ MAX_ROWS = 2**21
 """The most rows a `series` or `edges` file holds, unless one variable or
 subject alone has more. A module variable so a test can lower it."""
 
-POINTER_PATH: Final[str] = f"format-{FORMAT}/current.json"
 MANIFESTS_DIR: Final[str] = "manifests"
 PARTS_DIR: Final[str] = "parts"
 
@@ -424,9 +423,15 @@ class LoadedRelease:
     file_names: frozenset[str]
 
 
+def pointer_path(*, format_version: int = FORMAT) -> str:
+    """The pointer of `format_version` under a release root,
+    `format-<format_version>/current.json`."""
+    return f"format-{format_version}/current.json"
+
+
 def pointer_uri(root_uri: str, *, format_version: int = FORMAT) -> str:
-    """The pointer of `format_version`, `format-<format_version>/current.json`."""
-    return join_uri(root_uri, f"format-{format_version}", "current.json")
+    """The pointer of `format_version` under `root_uri` (`pointer_path`)."""
+    return join_uri(root_uri, pointer_path(format_version=format_version))
 
 
 def manifest_uri(root_uri: str, release_id: str) -> str:
@@ -846,7 +851,6 @@ __all__ = [
     "PARTS_DIR",
     "PART_SCHEMAS",
     "PLATFORM",
-    "POINTER_PATH",
     "SERIES",
     "JsonPart",
     "LoadedRelease",
@@ -862,6 +866,7 @@ __all__ = [
     "manifest_uri",
     "open_release",
     "part_uri",
+    "pointer_path",
     "pointer_uri",
     "read_pointer",
     "write_blob_part",

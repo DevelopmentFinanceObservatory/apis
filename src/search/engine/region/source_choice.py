@@ -400,8 +400,7 @@ def party_possible(
     admits no flow shape that governs, as when the recall's leading flow family is not
     admitted and a subject-only shape ranks first, the party reading refuses
     `entity_role_not_admitted` on the organisation's words, and the answer says it was read
-    as a party (`read_as_party`). The pass would cost a second recall and admission per
-    contested part to judge both readings."""
+    as a party (`read_as_party`)."""
     return any(
         family.axes and governs(top=position == 0, score=family.score)
         for position, family in enumerate(measure)

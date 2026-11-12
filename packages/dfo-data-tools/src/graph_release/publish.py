@@ -217,15 +217,16 @@ def prune_releases(root_uri: str, *, now: float) -> tuple[str, ...]:
     """Deletes the manifests pruning does not keep and the parts no kept
     manifest names, and returns their paths under `root_uri`, sorted.
 
-    Each format prunes on its own, since the revisions of each image read
-    their own format's pointer. Kept, per format: the `KEEP_RELEASES` most
-    recently written manifests of that format and the release its pointer
-    (`format-<N>/current.json`) names, which is the held one when the pointer
-    is held. Every manifest younger than `KEEP_SECONDS` stays, and so does
-    every manifest of a format other than `FORMAT` that has no pointer.
+    Each format up to `FORMAT` prunes on its own, since the revisions of each
+    image read their own format's pointer. Kept, per format: the
+    `KEEP_RELEASES` most recently written manifests of that format and the
+    release its pointer (`pointer_path`) names, which is the held one when the
+    pointer is held. Every manifest younger than `KEEP_SECONDS` stays, and so
+    does every manifest of an older format that has no pointer and every
+    manifest of a format newer than `FORMAT`, which a newer image prunes.
     Each delete is conditional on the token listed, so an object rewritten
     since stays. A missing or unreadable pointer of `FORMAT`, an unreadable
-    pointer of another format, a manifest of `FORMAT` this reader cannot
+    pointer of an older format, a manifest of `FORMAT` this reader cannot
     parse, or a manifest of another format whose part names do not read,
     deletes nothing.
 
@@ -262,6 +263,9 @@ def prune_releases(root_uri: str, *, now: float) -> tuple[str, ...]:
 
     kept = {name for name, (written, _) in manifests.items() if now - written < KEEP_SECONDS}
     for version, names in by_format.items():
+        if version > FORMAT:
+            kept.update(names)
+            continue
         try:
             current = (
                 pointer if version == FORMAT else read_pointer(root_uri, format_version=version)

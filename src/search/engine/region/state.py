@@ -994,6 +994,11 @@ class ResolveState:
     # (`quantity.NamedDenominator`). `None` when the question names none. Materialise
     # holds the elected shape to it (`quantity.check_denominator`).
     named_denominator: NamedDenominator | None = None
+    # Every name of declared measures the variable holds, partition labels and the quoted base
+    # included (`qualifier_match.declared_measures_named`), read once per part by
+    # `phase_rank_bind._phase_prune_and_rank`. `named_measures` and the coverage of code terms
+    # by a measure name (`phase_rank_bind._measure_named_ranges`) read it.
+    declared_names: tuple[NamedMeasure, ...] = ()
     # The names of measure nouns the variable holds outside its places and quoted base,
     # which admissibility rule 4 judges each shape on (`phase_rank_bind._named_measure_nouns`).
     named_measures: tuple[NamedMeasure, ...] = ()

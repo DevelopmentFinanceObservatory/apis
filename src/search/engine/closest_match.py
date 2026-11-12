@@ -118,8 +118,10 @@ def reading_inputs(
     (`spec_build.build_stat_vars`). Its evidence (`measure_verdict.reading_evidence`, as
     `admissibility.draft_evidence` builds a shape's) is its shape's five-tuple and the
     constraint values its served members hold: each bound value under its slot's
-    constraint property, and each value a member declares on an axis the query left open
-    (`ResolvedSpec.open_axis_facts`). Its series codes are the publisher codes that stand
+    constraint property, and the one value every served member declares on an axis the query
+    left open (`ResolvedSpec.open_axis_facts`, `varies` false and `undeclared_count` 0).
+    Members split across values, or some declaring none, do not all hold a value, so a value
+    only some members declare never answers the asked measure. Its series codes are the publisher codes that stand
     for it (`ResolvedStatVars.source_codes`, `exact`). A Spec states no member constraint
     properties and no denominator pairs, only the denominator's name."""
     resolved = spec.resolved
@@ -139,9 +141,9 @@ def reading_inputs(
         constraint_values=[
             *((prop, code) for prop, code in bound if prop is not None),
             *(
-                (fact.property, count.value.ref)
+                (fact.property, fact.value.ref)
                 for fact in resolved.open_axis_facts or ()
-                for count in fact.values
+                if not fact.varies and fact.undeclared_count == 0 and fact.value is not None
             ),
         ],
         noun=measure_noun,

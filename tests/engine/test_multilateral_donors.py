@@ -189,8 +189,23 @@ def test_a_party_the_datasets_give_different_kinds_states_no_facts():
         dataset_kinds=(("B", "total"),),
     )
 
-    assert party_facts(row, datasets=("A", "B")) == PartyFacts(None, None, None)
+    assert party_facts(row, axis="origin", datasets=("A", "B")) == PartyFacts(None, None, None)
     assert not is_multilateral(row, datasets=("A", "B"))
+
+
+def test_a_kind_on_the_other_axis_leaves_the_donor_s_facts_alone():
+    """A trust fund that is a total where B publishes it as a recipient and a party where A
+    publishes it as a donor is a party on the origin axis."""
+    row = PartyRow(
+        dcid="IMFConcessionalTrustFunds",
+        kind="party",
+        party_class="official",
+        published=(("A", "origin"), ("B", "destination")),
+        dataset_kinds=(("B", "total"),),
+    )
+
+    assert party_facts(row, axis="origin", datasets=("A", "B")).kind == "party"
+    assert party_facts(row, axis="destination", datasets=("A", "B")).kind == "total"
 
 
 def test_a_field_ignoring_consumer_reads_the_entities_as_before():

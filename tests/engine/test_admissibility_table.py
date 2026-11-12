@@ -28,7 +28,7 @@ from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.extract import DateRequest
 from search.engine.interpretation import Interpretation, InterpretationSet
-from search.engine.qualifier_match import QualifierMatch, QualifierReadings
+from search.engine.qualifier_match import QualifierMatch, QualifierReadings, declared_measures_named
 from search.engine.quantity import DenominatorRead, NamedDenominator, quantity_requirement
 from search.engine.quantity_read import QuantityOutput
 from search.engine.reading_coverage import ObservedYears
@@ -2879,7 +2879,7 @@ def test_a_named_measure_noun_refuses_a_shape_every_member_of_which_measures_ano
         "external health expenditure as a share of GDP", places={"Malawi": ("country/MWI", ())}
     )
     state.named_denominator = NamedDenominator(ref=None, base_words="GDP")
-    spans = _named_measure_nouns(state)
+    spans = _named_measure_nouns(state, declared_measures_named(state.variable))
     assert [[noun.label for noun in span.alternatives] for span in spans] == [
         ["health expenditure"]
     ]
@@ -2907,7 +2907,7 @@ def test_the_longest_declared_name_wins_its_words(variable, named):
     names the growth noun and not "GDP". "gross domestic product growth" names GDP through
     its `also_called` name, since no declared name covers the longer phrase. One name
     stands for every noun that shares it, so "GDP" is one name of three nouns."""
-    spans = _named_measure_nouns(_part(variable))
+    spans = _named_measure_nouns(_part(variable), declared_measures_named(variable))
     assert [[noun.label for noun in span.alternatives] for span in spans] == named
 
 
@@ -2957,7 +2957,10 @@ def test_a_name_refuses_only_a_shape_that_contradicts_every_noun_sharing_it(
     state = _part(variable)
 
     (judged,) = judge_pinned_parts(
-        state, [Interpretation(shape=shape)], {}, _named_measure_nouns(state)
+        state,
+        [Interpretation(shape=shape)],
+        {},
+        _named_measure_nouns(state, declared_measures_named(state.variable)),
     )
 
     assert (judged.reason, judged.pinned_failure) == (reason, None)
@@ -3023,7 +3026,7 @@ def test_a_noun_the_denominator_carries_names_the_base(variable, members, reason
     expenditure"."""
     state = _part(variable)
     state.denominator_reads = {_ADM_GDP_NOMINAL: _ADM_GDP_READ}
-    spans = _named_measure_nouns(state)
+    spans = _named_measure_nouns(state, declared_measures_named(state.variable))
     assert "GDP" in {noun.label for span in spans for noun in span.alternatives}
     shape = _with_slot(
         _gdp(None, _ADM_GDP_NOMINAL, label="share of GDP"), "activitySource", members

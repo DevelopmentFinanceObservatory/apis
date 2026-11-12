@@ -30,7 +30,7 @@ from code_index.scope_conventions import (
     REGION_READINGS,
     RegionReading,
 )
-from code_index.types import PartyRow
+from code_index.types import ANY_AXIS, PartyRow
 from entity_resolution.membership import COUNTRY_CLASS
 from entity_resolution.shared import shared_membership_policy
 from search.models import (
@@ -61,7 +61,7 @@ def is_residual(dcid: str, index: CodeIndex) -> bool:
     """Whether `dcid` is a party the code index lists as a residual in every dataset that
     publishes it (`PartyRow.kinds_over`), such as "Africa, unallocated by country"."""
     party = index.parties.get(dcid)
-    return party is not None and party.kinds_over() == {"residual"}
+    return party is not None and party.kinds_over(ANY_AXIS) == {"residual"}
 
 
 def without_residuals(dcids: Iterable[str], index: CodeIndex) -> list[str]:
