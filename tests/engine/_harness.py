@@ -52,6 +52,7 @@ from search.engine.region.state import EngineOptions
 from search.engine.response_cache import ResponseCache
 from search.engine.response_cache_memo import PartMemo
 from search.engine.retrieval.facet_election import merge_role_candidates
+from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
 from search.engine.retrieval.member_facts import MemberFacts
 from search.engine.retrieval.read_plan import (
     BulkPlan,
@@ -217,7 +218,7 @@ def pair_plan(
                 series.append(
                     PlanSeries(stat_var=sv, role_tuple=role_tuple, candidates=tuple(candidates))
                 )
-    return plan_pairs(series, members=sv_dcids, years=years)
+    return plan_pairs(series, members=sv_dcids, years=years, declared=NO_DECLARED_POLICIES)
 
 
 @dataclass
@@ -261,6 +262,7 @@ def harness_plan(
             members=members,
             years=window,
             scope=True,
+            declared=NO_DECLARED_POLICIES,
         )
     role_bearing = "observationAbout" not in obs_entities
     pairs = math.prod(len(dcids) for dcids in obs_entities.values()) * len(members)
@@ -307,8 +309,11 @@ def bulk_plan(
         members=tuple(members),
         years=window,
         read_years=listed,
-        **role_election(merged, members=members, read_years=listed)._asdict(),
+        **role_election(
+            merged, members=members, read_years=listed, declared=NO_DECLARED_POLICIES
+        )._asdict(),
         candidates=merged,
+        declared=NO_DECLARED_POLICIES,
     )
 
 

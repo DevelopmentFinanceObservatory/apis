@@ -442,6 +442,11 @@ class LiveGraphClient:
     ) -> dc_graph.FacetDefaultPolicy | None:
         return self._client.default_facet_policy(stat_var=stat_var, axis=axis)
 
+    def default_facet_policies(
+        self, stat_vars: Sequence[str], *, deadline: float | None = None
+    ) -> dict[str, dict[str, dc_graph.FacetDefaultPolicy]]:
+        return self._client.default_facet_policies(stat_vars, deadline=deadline)
+
     def node_arc_values(
         self, dcid: str, *, properties: Sequence[str]
     ) -> dict[str, tuple[str, ...]]:

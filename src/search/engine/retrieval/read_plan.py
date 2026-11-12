@@ -102,8 +102,8 @@ type Omissions = frozenset[Omission]
 
 type DeclaredDefaults = Mapping[str, FacetDefaultPolicy]
 """The default each facet axis of a plan's members declares in the graph, by axis: the
-policy every member declares on it (`plan_declared_defaults`, `in_elected_datasets`). Every
-election of the plan serves it where the members hold it, as a mint of its Spec does
+policy every populated member declares on it (`plan_declared_defaults`). Every election of
+the plan serves it where the members hold it, as a mint of its Spec does
 (`materialise.group_facets.elect_group`)."""
 
 type Election = Callable[[ReadPlan], Mapping[str, int]]
@@ -585,8 +585,8 @@ class PairPlan:
     leaves out (`leaving_out`), whose candidates the filter then removed: both serve nothing,
     and the answer names them (`unserved_members`). `index_sourced` marks an index-resolved
     family, whose group agrees on provenance and unit alone (`in_elected_datasets`), and
-    `declared_defaults` the defaults its members declare in the graph, which every group
-    serves where it holds them. `roles` is set for a role-bearing read. `probes` holds each
+    `declared` the defaults each member declares in the graph, under which every election
+    of the plan runs (`declared_defaults`). `roles` is set for a role-bearing read. `probes` holds each
     member's election input (`plan_pairs`): its candidates merged across every place and
     role tuple the answer names, and each facet's series count. A unit decision reads the same probes. `places`
     are the places a standard read was asked for, with or without a series
@@ -607,9 +607,15 @@ class PairPlan:
     places: tuple[str, ...] = ()
     omitted: Omissions = frozenset()
     index_sourced: bool = False
-    declared_defaults: DeclaredDefaults = field(default_factory=dict)
+    declared: DeclaredPolicies = field(kw_only=True)
     probes: Mapping[str, MemberProbe] = field(default_factory=dict, compare=False)
     elect: Election | None = field(default=None, compare=False, repr=False)
+
+    @property
+    def declared_defaults(self) -> DeclaredDefaults:
+        """The defaults every populated member declares (`plan_declared_defaults`), which
+        the plan's groups serve where they hold them."""
+        return plan_declared_defaults(self.declared, populated_members(self))
 
     @property
     def held(self) -> tuple[PlanSeries, ...]:
@@ -732,7 +738,7 @@ class PairPlan:
             }
             or None,
             index_sourced=self.index_sourced,
-            declared_defaults=self.declared_defaults,
+            declared=self.declared,
             elect=self.elect,
         )
         return replace(narrowed, omitted=self.omitted, left_out=self.left_out)
@@ -755,7 +761,7 @@ class PairPlan:
             places=self.places,
             probes=self.probes or None,
             index_sourced=self.index_sourced,
-            declared_defaults=self.declared_defaults,
+            declared=self.declared,
             elect=self.elect,
         )
         return replace(dated, omitted=self.omitted, left_out=self.left_out)
@@ -787,9 +793,9 @@ class BulkPlan:
     (`member_year`), as a mint reduces each StatVar to its own period. `elect` is the
     election the plan was built with, which every plan derived from it runs over its own
     rows (`elected_years`). `index_sourced` marks an index-resolved family, whose members
-    agree on provenance and unit alone (`in_elected_datasets`), and `declared_defaults` the
-    defaults its members declare in the graph, which the election serves where the members
-    hold them, as `PairPlan.declared_defaults` does. `left_out` holds the members
+    agree on provenance and unit alone (`in_elected_datasets`), and `declared` the defaults
+    each member declares in the graph, under which the election runs, as
+    `PairPlan.declared` does. `left_out` holds the members
     a unit decision leaves out (`leaving_out`), as `PairPlan.left_out` does.
     """
 
@@ -805,9 +811,15 @@ class BulkPlan:
     omitted: Omissions = frozenset()
     omitted_served: frozenset[str] = frozenset()
     index_sourced: bool = False
-    declared_defaults: DeclaredDefaults = field(default_factory=dict)
+    declared: DeclaredPolicies = field(kw_only=True)
     left_out: frozenset[str] = frozenset()
     elect: Election | None = field(default=None, compare=False, repr=False)
+
+    @property
+    def declared_defaults(self) -> DeclaredDefaults:
+        """The defaults every populated member declares (`plan_declared_defaults`), which
+        the election serves where the members hold them."""
+        return plan_declared_defaults(self.declared, populated_members(self))
 
     def leaving_out(self, members: Collection[str]) -> BulkPlan:
         """This plan naming `members` as left out by the answer's unit decision
@@ -1064,7 +1076,7 @@ class BulkPlan:
             members=self.members,
             read_years=self.read_years,
             index_sourced=self.index_sourced,
-            declared_defaults=self.declared_defaults,
+            declared=self.declared,
         )
         return replace(self, **election._asdict(), candidates=candidates)
 
@@ -1079,7 +1091,7 @@ class BulkPlan:
             members=self.members,
             read_years=listed,
             index_sourced=self.index_sourced,
-            declared_defaults=self.declared_defaults,
+            declared=self.declared,
         )
         return replace(self, **election._asdict(), years=years, read_years=listed)
 
@@ -1144,14 +1156,18 @@ def role_election(
     members: Sequence[str],
     read_years: Sequence[str] | None,
     index_sourced: bool = False,
-    declared_defaults: DeclaredDefaults | None = None,
+    declared: DeclaredPolicies,
 ) -> RoleElection:
     """The election a bulk read of `members` serves from `candidates` inside `read_years`
-    under `declared_defaults`: the lead of the members' one group
+    under the defaults every member `candidates` populates declares (`declared`,
+    `plan_declared_defaults`): the lead of the members' one group
     (`facet_election.select_role_candidate`), each member's facet ids its selection serves
     and the members it leaves out (`facet_election.role_group_selection`), and the facets
     continuing the lead there (`facet_election.role_continuation`), or None and nothing
     with no candidate."""
+    declared_defaults = plan_declared_defaults(
+        declared, _bulk_populated(candidates, members=members)
+    )
     best = select_role_candidate(
         candidates,
         stat_vars=members,
@@ -1524,14 +1540,27 @@ def populated_members(plan: ReadPlan) -> frozenset[str]:
     a per-series plan's members whose probe or series holds a candidate carrying a facet id,
     a bulk plan's those a candidate holds pairs for."""
     if isinstance(plan, BulkPlan):
-        return frozenset(
-            sv
-            for sv in plan.members
-            if is_populated(c for c in plan.candidates.values() if sv in c.by_sv)
-        )
+        return _bulk_populated(plan.candidates, members=plan.members)
+    return _pair_populated(plan.series, plan.probes)
+
+
+def _bulk_populated(
+    candidates: Mapping[str, RoleBulkCandidate], *, members: Sequence[str]
+) -> frozenset[str]:
+    """The `members` a candidate of a bulk read holds pairs for (`populated_members`)."""
     return frozenset(
-        sv for sv, probe in plan.probes.items() if is_populated(probe.candidates)
-    ) | frozenset(s.stat_var for s in plan.series if is_populated(s.candidates))
+        sv for sv in members if is_populated(c for c in candidates.values() if sv in c.by_sv)
+    )
+
+
+def _pair_populated(
+    series: Iterable[PlanSeries], probes: Mapping[str, MemberProbe]
+) -> frozenset[str]:
+    """The members whose probe or series holds a candidate carrying a facet id
+    (`populated_members`)."""
+    return frozenset(
+        sv for sv, probe in probes.items() if is_populated(probe.candidates)
+    ) | frozenset(s.stat_var for s in series if is_populated(s.candidates))
 
 
 def unserved_members(plan: ReadPlan | None) -> tuple[str, ...]:
@@ -1619,7 +1648,8 @@ def plan_declared_defaults(
 ) -> dict[str, FacetDefaultPolicy]:
     """The default every one of `members` declares on each facet axis (`declared`), by axis.
     An axis some member declares nothing on, or on which members declare different defaults,
-    is absent and the deployment ranking chooses it, as for a mint's group
+    is absent and the deployment ranking chooses it. A plan passes its populated members
+    (`populated_members`), as a mint's group agrees over its populated members
     (`materialise.group_facets._group_declared_policies`)."""
     members = list(members)
     defaults: dict[str, FacetDefaultPolicy] = {}
@@ -1630,28 +1660,24 @@ def plan_declared_defaults(
     return defaults
 
 
-def in_elected_datasets(
-    plan: ReadPlan, member_facts: Mapping[str, MemberFacts], *, declared: DeclaredPolicies
-) -> ReadPlan:
+def in_elected_datasets(plan: ReadPlan, member_facts: Mapping[str, MemberFacts]) -> ReadPlan:
     """`plan` with each member of an index-resolved family keeping only the candidates its
-    elected dataset publishes (`elected_dataset.publishes`), under the defaults its members
-    declare in the graph (`declared`, `plan_declared_defaults`), and every group and bulk
-    facet elected again (`narrowed`). A mint filters a member's candidates by the same test
-    before it ranks (`materialise.facets.dataset_candidates`) and serves the same declared
-    defaults (`materialise.group_facets.elect_group`), so an answer and a mint of its Spec
-    elect within one dataset and under one method, and a member holding data under another
-    dataset alone serves nothing. Every resolver passes its plan through here. A plan every
-    member of which has an elected dataset reads an index-resolved family, so its group
-    agrees on provenance and unit alone (`PairPlan.index_sourced`, `BulkPlan.index_sourced`),
-    as the mint's does (`MaterialisationRequest.index_sourced`). A plan none of whose members
-    has an elected dataset or declares a default is returned as it is."""
+    elected dataset publishes (`elected_dataset.publishes`), and every group and bulk facet
+    elected again from them (`narrowed`), under the defaults its populated members then
+    declare (`declared_defaults`). A mint filters a member's candidates by the same test
+    before it ranks (`materialise.facets.dataset_candidates`) and agrees on declared defaults
+    over the members still populated (`materialise.group_facets._group_declared_policies`),
+    so an answer and a mint of its Spec elect within one dataset and under one method, and a
+    member holding data under another dataset alone serves nothing. Every resolver passes
+    its plan through here. A plan every member of which has an elected dataset reads an
+    index-resolved family, so its group agrees on provenance and unit alone
+    (`PairPlan.index_sourced`, `BulkPlan.index_sourced`), as the mint's does
+    (`MaterialisationRequest.index_sourced`). A plan none of whose members has an elected
+    dataset is returned as it is."""
     datasets = elected_datasets(member_facts)
-    defaults = plan_declared_defaults(declared, plan.members)
-    if not datasets and not defaults:
+    if not datasets:
         return plan
-    indexed = replace(plan, declared_defaults=defaults)
-    if datasets:
-        indexed = replace(indexed, index_sourced=all(sv in datasets for sv in plan.members))
+    indexed = replace(plan, index_sourced=all(sv in datasets for sv in plan.members))
     return indexed.narrowed(lambda sv, candidate: publishes(datasets, sv, candidate))
 
 
@@ -1679,7 +1705,7 @@ def plan_pairs(
     places: Sequence[str] = (),
     deadline: float | None = None,
     index_sourced: bool = False,
-    declared_defaults: DeclaredDefaults | None = None,
+    declared: DeclaredPolicies,
     elect: Election | None = None,
 ) -> PairPlan:
     """A per-series plan over `series`, each member's group elected under `years` from its
@@ -1689,16 +1715,17 @@ def plan_pairs(
     plan passes the coverage probe a mint reads (`materialise.facets.coverage_probe`), since
     its series are only the role tuples holding a point in the years, and `elect`, the
     election of the year its `latest` read serves each member in. `index_sourced` marks an
-    index-resolved family (`PairPlan.index_sourced`), and `declared_defaults` the defaults
-    each group serves where it holds them (`PairPlan.declared_defaults`)."""
+    index-resolved family (`PairPlan.index_sourced`), and `declared` the defaults each
+    member declares, those every populated member declares serving where a group holds them
+    (`PairPlan.declared_defaults`)."""
     series = list(series)
-    declared_defaults = declared_defaults or {}
     if probes is None:
         probes = series_probes(
             series,
             places=() if scope else places,
             deadline=deadline,
         )
+    declared_defaults = plan_declared_defaults(declared, _pair_populated(series, probes))
     elected, facet_id, selections, unserved = _elect_groups(
         series,
         members=members,
@@ -1720,7 +1747,7 @@ def plan_pairs(
         probes=probes,
         places=tuple(places),
         index_sourced=index_sourced,
-        declared_defaults=declared_defaults,
+        declared=declared,
         elect=elect,
     )
 
@@ -1736,9 +1763,11 @@ def plan_role_read(
     pair_series: Callable[[Sequence[str]], Iterable[PlanSeries]],
     member_probes: Callable[[Sequence[str]], Mapping[str, MemberProbe]],
     roles: PlanRoles,
+    declared: DeclaredPolicies,
     elect: Election,
 ) -> ReadPlan:
-    """Plan a role-bearing preview's read over `sv_dcids`.
+    """Plan a role-bearing preview's read over `sv_dcids`, every election under the defaults
+    its members declare (`declared`).
 
     `sv_dcids` are the members the role-class election keeps
     (`role_resolve._elect_role_class`, the mint's `statvar_members.elect_role_class`), and
@@ -1769,6 +1798,7 @@ def plan_role_read(
             years=years,
             roles=roles,
             probes=member_probes(members),
+            declared=declared,
             elect=elect,
         )
     merged = candidates(members)
@@ -1777,9 +1807,10 @@ def plan_role_read(
         members=members,
         years=years,
         read_years=listed,
-        **role_election(merged, members=members, read_years=listed)._asdict(),
+        **role_election(merged, members=members, read_years=listed, declared=declared)._asdict(),
         candidates=merged,
         roles=roles,
+        declared=declared,
         elect=elect,
     )
 
@@ -1792,11 +1823,13 @@ def plan_standard(
     scope: bool = False,
     places: Sequence[str] = (),
     deadline: float | None = None,
+    declared: DeclaredPolicies,
 ) -> PairPlan:
     """A standard preview's plan: each `(stat_var, place)` series of `members` read at
-    `observationAbout`, or with `scope` one facet elected across every place. `places` are
-    the places the read was asked for, including any holding no facet. A plan at one place
-    reads each variable's whole breadth by `deadline` when a tie needs it (`plan_pairs`)."""
+    `observationAbout`, or with `scope` one facet elected across every place, under the
+    defaults the members declare (`declared`). `places` are the places the read was asked
+    for, including any holding no facet. A plan at one place reads each variable's whole
+    breadth by `deadline` when a tie needs it (`plan_pairs`)."""
     kept = set(members)
     return plan_pairs(
         (
@@ -1811,4 +1844,5 @@ def plan_standard(
         scope=scope,
         places=places,
         deadline=deadline,
+        declared=declared,
     )

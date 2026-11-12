@@ -162,9 +162,15 @@ class GraphCache:
         return self._lookup("node_type", (dcid,), lambda: self._inner.node_type(dcid))
 
     def default_facet_policy(self, *, stat_var: str, axis: str) -> FacetDefaultPolicy | None:
-        # Passed through uncached: the live client answers from no wire read, and captures
-        # recorded before resolve asked hold no rows for it.
+        # Passed through uncached: the live client reads the arc through its own arcs cache,
+        # and captures recorded before resolve asked hold no rows for it.
         return self._inner.default_facet_policy(stat_var=stat_var, axis=axis)
+
+    def default_facet_policies(
+        self, stat_vars: Sequence[str], *, deadline: float | None = None
+    ) -> dict[str, dict[str, FacetDefaultPolicy]]:
+        # Passed through uncached, as `default_facet_policy` is.
+        return self._inner.default_facet_policies(stat_vars, deadline=deadline)
 
     def node_arcs(self, dcid: str) -> dict | None:
         return self.node_arcs_batch([dcid]).get(dcid)

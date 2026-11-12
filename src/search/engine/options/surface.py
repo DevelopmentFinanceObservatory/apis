@@ -61,6 +61,7 @@ from search.engine.region.resubmit_request import (
 from search.engine.region.un_system import NO_LABELS, un_unavailable_warning
 from search.engine.retrieval.coverage import CoverageForm, answer_coverage
 from search.engine.retrieval.elected_dataset import published
+from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES, read_declared_policies
 from search.engine.retrieval.read_plan import plan_standard, plan_years, reads_dates
 from search.models import (
     GraphRef,
@@ -503,10 +504,16 @@ def _build_observation_about_options(
     include_coverage asked for it, pooling facets across every resolved
     StatVar the same way membership's own facets_batch reads are (each
     facet stays tagged with its stat_var so elected_units can key the
-    lookup correctly). A dcid that fails to resolve a label is omitted,
-    never fabricated.
+    lookup correctly), each place's plan electing under the defaults the
+    StatVars declare (`facet_policy.read_declared_policies`). A dcid that fails
+    to resolve a label is omitted, never fabricated.
     """
     labels = graph.node_labels_batch(present)
+    declared = (
+        read_declared_policies(graph, sv_dcids, deadline=deadline)
+        if include_coverage and facets_batch is not None
+        else NO_DECLARED_POLICIES
+    )
     items: list[SlotOption] = []
     for dcid in present:
         label = labels.get(dcid)
@@ -537,6 +544,7 @@ def _build_observation_about_options(
                     years=plan_years(date_request),
                     places=(dcid,),
                     deadline=deadline,
+                    declared=declared,
                 ),
                 CoverageForm(facet_label="sources", obs_label="years"),
             )

@@ -23,6 +23,7 @@ from materialise.recipes import CONVERSION_NODE_PROPERTIES, resolve_recipe
 from search.engine.clients.graph import Facet
 from search.engine.conjoin import assemble_region
 from search.engine.envelope import now_ms
+from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
 from search.engine.retrieval.facts import FiveTuple
 from search.engine.retrieval.read_plan import PairPlan, PlanSeries, ReadPlan
 from search.engine.unit.base_year import TABLE_PROVENANCES
@@ -163,7 +164,9 @@ def _plan(
         PlanSeries(stat_var="TEST/Flow", role_tuple=roles, candidates=(facet,), group=(facet,))
         for roles in tuples
     )
-    return PairPlan(members=("TEST/Flow",), years=None, series=series)
+    return PairPlan(
+        members=("TEST/Flow",), years=None, series=series, declared=NO_DECLARED_POLICIES
+    )
 
 
 def _offer(spec: Spec, members=None, plans: tuple[ReadPlan, ...] = ()):

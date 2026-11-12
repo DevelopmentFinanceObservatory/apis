@@ -2148,6 +2148,15 @@ class GraphClient:
         arcs = self.node_arcs(dcid)
         return declared_facet_policy(dcid, arc=arc, refs=parse_arcs(arcs or {}, [arc])[arc])
 
+    def default_facet_policies(
+        self, stat_vars: Sequence[str], *, deadline: float | None = None
+    ) -> dict[str, dict[str, FacetDefaultPolicy]]:
+        """The defaults each of `stat_vars`, bare dcids, declares (`declared_facet_policies`),
+        read in one `node_arcs_batch` by `deadline`, which shares its cache with
+        `default_facet_policy`."""
+        dcids = list(dict.fromkeys(stat_vars))
+        return declared_facet_policies(self.node_arcs_batch(dcids, deadline=deadline))
+
     def un_observation_reader(self) -> None:
         """Always `None`. UN System Data Commons rows are read through
         `origin_catalogue.graph.OriginGraphClient`, which admits them."""
@@ -2521,6 +2530,29 @@ def declared_facet_policy(
         policy_version=_GRAPH_DECLARED_POLICY_VERSION,
         selection_reason=_GRAPH_DECLARED_SELECTION_REASON,
     )
+
+
+def declared_facet_policies(
+    arcs_by_dcid: Mapping[str, dict | None],
+) -> dict[str, dict[str, FacetDefaultPolicy]]:
+    """The default each StatVar of `arcs_by_dcid`, its `->*` arcs, declares on each facet
+    axis (`DEFAULT_FACET_ARCS`, `declared_facet_policy`), by StatVar and then by axis. A
+    StatVar or axis declaring nothing is absent."""
+    declared: dict[str, dict[str, FacetDefaultPolicy]] = {}
+    for dcid, arcs in arcs_by_dcid.items():
+        axes = {
+            axis: policy
+            for axis, arc in DEFAULT_FACET_ARCS.items()
+            if (
+                policy := declared_facet_policy(
+                    dcid, arc=arc, refs=parse_arcs(arcs or {}, [arc])[arc]
+                )
+            )
+            is not None
+        }
+        if axes:
+            declared[dcid] = axes
+    return declared
 
 
 def parse_arcs(

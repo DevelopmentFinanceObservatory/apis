@@ -31,6 +31,7 @@ from search.engine.retrieval.coverage import (
     answer_headline,
     citable_source_ids,
 )
+from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
 from search.engine.retrieval.member_facts import ArcsMemberFacts
 from search.engine.retrieval.read_plan import BulkPlan, PairPlan, ReadPlan
 from search.engine.retrieval.retrieve import Materialised
@@ -365,6 +366,7 @@ def _discover(index, date_request, search_settings, max_pairs: int = 120) -> Mat
         facet_filters={},
         date_request=date_request,
         coverage_snapshot=FakeCoverageService(index).snapshot(),
+        declared=NO_DECLARED_POLICIES,
     )
     assert isinstance(result, Materialised)
     return result
@@ -380,6 +382,7 @@ def _named(index, recipients: list[str], date_request) -> ReadPlan:
         bound_roles={"recipient": frozenset(recipients)},
         years=read_plan.role_years(date_request, index.horizon),
         coverage_index=index,
+        declared=NO_DECLARED_POLICIES,
     )
 
 
@@ -496,6 +499,7 @@ def test_a_discovered_provider_scope_counts_the_creditors_of_the_named_debtors(
         facet_filters={},
         date_request=request_,
         coverage_snapshot=FakeCoverageService(index).snapshot(),
+        declared=NO_DECLARED_POLICIES,
     )
 
     assert isinstance(result, Materialised)

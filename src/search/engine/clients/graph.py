@@ -565,6 +565,16 @@ class EngineGraphClient(Protocol):
         """Return the default facet the graph declares for `stat_var` on `axis`, or None."""
         ...
 
+    def default_facet_policies(
+        self, stat_vars: Sequence[str], *, deadline: float | None = None
+    ) -> dict[str, dict[str, FacetDefaultPolicy]]:
+        """Return the defaults each of `stat_vars`, bare dcids, declares on each facet axis,
+        by StatVar and then by axis, read in one batch
+        (`dc_graph.GraphClient.default_facet_policies`). A StatVar or axis declaring nothing
+        is absent. Transport and HTTP failures raise ``GraphInfraError``.
+        """
+        ...
+
     def node_arcs_many(
         self,
         dcids: Sequence[str],

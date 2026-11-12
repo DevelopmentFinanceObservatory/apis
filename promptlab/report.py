@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from dc_graph import ArcTarget
+from dc_graph import ArcTarget, FacetDefaultPolicy
 from graph_generation import UNKNOWN_STAMP, GenerationStamp
 from promptlab.bindmenu import parse_menu
 from promptlab.expectations import LegExpectation, leg_expectation
@@ -354,10 +354,17 @@ class _NoLiveGraph:
         return self._unreachable("node_type")
 
     def default_facet_policy(self, *, stat_var: str, axis: str) -> None:
-        """None, as the live client answers: the graph declares no default facet
-        (`dc_graph.GraphClient.default_facet_policy`), and `GraphCache` passes this read
+        """None: a report reads no live graph, so it sees no `defaultMeasurementMethod`
+        arc (`dc_graph.GraphClient.default_facet_policy`), and `GraphCache` passes this read
         through uncached."""
         return None
+
+    def default_facet_policies(
+        self, stat_vars: Sequence[str], *, deadline: float | None = None
+    ) -> dict[str, dict[str, FacetDefaultPolicy]]:
+        """No declarations, as `default_facet_policy` answers, passed through `GraphCache`
+        uncached."""
+        return {}
 
     def node_arcs_many(
         self,

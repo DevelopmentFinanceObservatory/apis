@@ -129,10 +129,12 @@ _EXECUTORS = (
     (phase_place_materialise, "_WALK_POOL"),
 )
 # The doubles' methods the live graph client answers without a request
-# (`dc_graph.GraphClient.default_facet_policy`, `generation_stamp`, `observation_read_groups`,
-# `source_key`, `un_availability`), which take no tick of the virtual clock.
+# (`dc_graph.GraphClient.default_facet_policy`, `default_facet_policies`, `generation_stamp`,
+# `observation_read_groups`, `source_key`, `un_availability`), which take no tick of the
+# virtual clock: the origin client reads a held variable's declarations from the catalogue.
 _FREE_CALLS = frozenset(
     {
+        "default_facet_policies",
         "default_facet_policy",
         "generation_stamp",
         "observation_read_groups",

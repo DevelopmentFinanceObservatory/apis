@@ -13,6 +13,7 @@ from search.engine.region.facets import FacetAdmission, filter_answer
 from search.engine.region.result import FacetAxisFilter
 from search.engine.region.state import EngineOptions
 from search.engine.retrieval.coverage import CoverageForm, answer_coverage
+from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
 from search.engine.retrieval.read_plan import plan_standard
 from search.engine.retrieval.retrieve import Materialised
 from search.models import (
@@ -296,7 +297,10 @@ def test_a_set_filter_serves_the_best_admitted_facet_as_coverage_dates_it() -> N
         stat_var="Count_Person", entity="country/KEN"
     )
     plan = plan_standard(
-        {("Count_Person", "country/KEN"): facets}, members=["Count_Person"], years=None
+        {("Count_Person", "country/KEN"): facets},
+        members=["Count_Person"],
+        years=None,
+        declared=NO_DECLARED_POLICIES,
     )
     form = CoverageForm(variables=True)
     mat = Materialised(

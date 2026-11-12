@@ -223,6 +223,7 @@ async def _attach_candidate_slot_options(
         entities=grounded.cand_places[spec.spec_id].roles.resolved_entities,
         open_axes=grounded.cand_places[spec.spec_id].roles.open_axes,
         date_request=state.date_request,
+        graph=state.graph,
         materialise_graph=state.materialise_graph,
         place_dcids=_place_dcids,
         include_option_coverage=True,

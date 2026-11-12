@@ -15,6 +15,7 @@ from search.engine.clients.graph import Facet
 from search.engine.region.composite_answer import ComponentReads
 from search.engine.region.result import RegionResult
 from search.engine.retrieval.coverage import CoverageForm
+from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
 from search.engine.retrieval.merged_plan import merged_read_plan
 from search.engine.retrieval.read_plan import PairPlan, plan_standard
 from search.models import Spec
@@ -50,7 +51,11 @@ def test_a_standard_merge_at_one_place_reads_no_breadth_to_break_a_tie(counts, t
     with bound_variable_breadth(reader, refuse_unread=False):
         plans = [
             plan_standard(
-                {(sv, _KEN): [_facet(f"f_{sv}", count)]}, members=[sv], years=None, places=[_KEN]
+                {(sv, _KEN): [_facet(f"f_{sv}", count)]},
+                members=[sv],
+                years=None,
+                places=[_KEN],
+                declared=NO_DECLARED_POLICIES,
             )
             for sv, count in zip(("sv_a", "sv_b"), counts, strict=True)
         ]
@@ -70,7 +75,12 @@ def test_a_standard_merge_with_rows_a_conversion_left_out_rebuilds_no_plan(omitt
     (`PairPlan.omitting`), so the member's plan no longer holds what the merged election
     would read. The merge rebuilds no plan then, and does otherwise."""
     plans = [
-        plan_standard({(sv, _KEN): [_facet(f"f_{sv}", count)]}, members=[sv], years=None)
+        plan_standard(
+            {(sv, _KEN): [_facet(f"f_{sv}", count)]},
+            members=[sv],
+            years=None,
+            declared=NO_DECLARED_POLICIES,
+        )
         for sv, count in (("sv_a", 5), ("sv_b", 3))
     ]
     if omitted:
@@ -103,7 +113,12 @@ def test_a_merge_of_answers_narrowed_to_their_own_elected_units_rebuilds_no_plan
     group = [
         _member(
             sv,
-            plan_standard({(sv, _KEN): [_facet(f"f_{sv}", count)]}, members=[sv], years=None),
+            plan_standard(
+                {(sv, _KEN): [_facet(f"f_{sv}", count)]},
+                members=[sv],
+                years=None,
+                declared=NO_DECLARED_POLICIES,
+            ),
             units_elected=units_elected and sv == "sv_b",
         )
         for sv, count in (("sv_a", 5), ("sv_b", 3))

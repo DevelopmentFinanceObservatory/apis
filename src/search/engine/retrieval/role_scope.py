@@ -39,7 +39,7 @@ from search.engine.retrieval.elected_dataset import (
     published_by_stat_var,
 )
 from search.engine.retrieval.facet_election import merge_role_candidates
-from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES, DeclaredPolicies
+from search.engine.retrieval.facet_policy import DeclaredPolicies
 from search.engine.retrieval.read_plan import (
     NoYearsToRead,
     PlanRoles,
@@ -589,8 +589,8 @@ def _read_scope(
     cap, one bulk facet elected over the discovered index above it. Each variable elects one
     group across its pairs from its facets over every year, as a named read does, and a pair
     with a point in the years serves the facets of that group it holds. `plan` is None when
-    no member or no variable holds data in the years. Every group serves the defaults
-    `declared` names (`read_plan.in_elected_datasets`)."""
+    no member or no variable holds data in the years. Every election runs under the
+    defaults `declared` names."""
     opposite_coverage_role: CoverageRole = "donor" if axis == "recipient" else "recipient"
     # A pair binds, and the headline names, every role the shape places, bound or open.
     role_names: dict[CoverageRole, str] = {axis: role_name}
@@ -646,9 +646,10 @@ def _read_scope(
         ),
         member_probes=lambda read: member_probes(coverage_index, variables=read, bound=bound),
         roles=PlanRoles(bound=bound, role_names=role_names),
+        declared=declared,
         elect=plan_election(coverage_index),
     )
-    plan = in_elected_datasets(plan, member_facts, declared=declared)
+    plan = in_elected_datasets(plan, member_facts)
     return _ScopeRead(members, confirmed_svs, role_index_by_sv, plan)
 
 
@@ -735,7 +736,7 @@ def discover_role_scope(
     surviving_svs: list[str],
     admitted_dcids: Sequence[str],
     member_facts: dict[str, MemberFacts],
-    declared: DeclaredPolicies = NO_DECLARED_POLICIES,
+    declared: DeclaredPolicies,
     member_population_exact: bool,
     role_declaration_unverified: bool = False,
     open_flow_axis: RoleAxis,

@@ -49,6 +49,7 @@ from origin_catalogue.graph import (
 )
 from origin_catalogue.topic_walk import walk_topics
 from search.engine.clients.graph_client import LiveGraphClient
+from search.engine.retrieval.facet_policy import read_declared_policies
 from statvar_members.enumerate import _candidate_properties
 from tests.graph_release.support import origin_release
 from tests.origin_catalogue.fake_catalogue import restrictive_catalogue, un_mirror, un_variable
@@ -1610,3 +1611,35 @@ def test_a_held_variables_declared_method_comes_from_its_arc_rows_with_no_reques
         )
     }
     assert graph.requests == []
+
+
+def test_declared_methods_read_unheld_variables_in_one_request(
+    graph: _Graph, client: OriginGraphClient, bind_catalogue, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Search reads every admitted variable's declared method at once
+    (`facet_policy.read_declared_policies`): a variable the catalogue holds answers from its
+    arc rows, and the variables it does not hold go to the graph in one request."""
+    unheld = [f"TESTFIXTURE/DeclaredMethods/Unheld{i}" for i in range(3)]
+    graph.labels.update({dcid: dcid for dcid in unheld})
+    declaring = {
+        "typeOf": {"nodes": [_STATVAR]},
+        "defaultMeasurementMethod": {"nodes": [{"dcid": _ONE_WEIGHTING}]},
+    }
+    bind_catalogue(_catalogue(overlaps=(_CLIMATE_RECEIVED,)))
+    reader = _wrapped("live", graph, client, monkeypatch)
+    assert isinstance(reader, LiveGraphClient)
+
+    with bound_release(origin_release({_CLIMATE_RECEIVED: declaring})):
+        declared = read_declared_policies(reader, [_CLIMATE_RECEIVED, *unheld], deadline=None)
+
+    assert declared == {
+        _CLIMATE_RECEIVED: {
+            "measurementMethod": FacetDefaultPolicy(
+                resolved_ref=_ONE_WEIGHTING,
+                policy_node="defaultMeasurementMethod",
+                policy_version="1",
+                selection_reason="graph_declared",
+            )
+        }
+    }
+    assert [json.loads(r.content)["nodes"] for r in graph.on(_OURS_HOST)] == [unheld]

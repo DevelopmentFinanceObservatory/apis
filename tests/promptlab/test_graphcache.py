@@ -35,6 +35,7 @@ _EXPECTED_METHODS = (
     "node_arcs",
     "node_type",
     "default_facet_policy",
+    "default_facet_policies",
     "node_arcs_many",
     "node_arc_targets_many",
     "node_names_many",

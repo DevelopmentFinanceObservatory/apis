@@ -201,6 +201,7 @@ _MAX_CANDIDATES = 10
 # hands back the UN deployment's availability client, whose reads are the wire calls.
 _NO_WIRE = frozenset(
     {
+        "default_facet_policies",
         "default_facet_policy",
         "generation_stamp",
         "observation_read_groups",

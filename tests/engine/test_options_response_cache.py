@@ -412,6 +412,9 @@ class TestDegradedResultsAreNeverCached:
             def node_labels_batch(self, dcids):
                 return {dcid: dcid for dcid in dcids}
 
+            def default_facet_policies(self, stat_vars, *, deadline=None):
+                return {}
+
         def compute(deadline: float) -> ComputedOptions:
             calls.append(deadline)
             items = surface._build_observation_about_options(

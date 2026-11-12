@@ -1623,6 +1623,9 @@ def test_place_options_read_the_variables_whole_breadth_once_by_the_request_dead
         def node_labels_batch(self, dcids):
             return {dcid: dcid for dcid in dcids}
 
+        def default_facet_policies(self, stat_vars, *, deadline=None):
+            return {}
+
     with bound_variable_breadth(failing_reader, refuse_unread=False):
         options = surface._build_observation_about_options(
             _Labels(),

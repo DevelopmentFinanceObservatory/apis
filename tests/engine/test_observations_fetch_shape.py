@@ -15,6 +15,7 @@ from search.engine.region.codes import (
     OBSERVATIONS_NOTHING_TO_PROBE,
     OBSERVATIONS_PROBE_FAILED,
 )
+from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
 from search.engine.retrieval.read_plan import plan_standard
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._harness import (
@@ -114,6 +115,7 @@ def test_build_observations_candidate_with_no_facet_dispatchable_still_warns():
         },
         members=["Count_Person"],
         years=None,
+        declared=NO_DECLARED_POLICIES,
     )
     obs, warn = build_observations_planned(
         ["Count_Person"],

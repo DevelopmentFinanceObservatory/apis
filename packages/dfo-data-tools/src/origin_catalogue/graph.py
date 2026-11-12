@@ -76,6 +76,7 @@ from dc_graph import (
     ReadErrorFactory,
     SubjectPage,
     SubjectsCoverageFlag,
+    declared_facet_policies,
     declared_facet_policy,
     label_or_self_name,
     parse_arcs,
@@ -739,6 +740,16 @@ class OriginGraphClient:
         dcid = stat_var.removeprefix("dcid:")
         refs = self.node_arc_values(dcid, properties=[arc])[arc]
         return declared_facet_policy(dcid, arc=arc, refs=refs)
+
+    def default_facet_policies(
+        self, stat_vars: Sequence[str], *, deadline: float | None = None
+    ) -> dict[str, dict[str, FacetDefaultPolicy]]:
+        """The defaults each of `stat_vars`, bare dcids, declares
+        (`dc_graph.declared_facet_policies`), read through one `node_arcs_batch`: the
+        variables the catalogue's tables hold answer with no graph request, and the rest go
+        to their backend in one batch by `deadline`."""
+        dcids = list(dict.fromkeys(stat_vars))
+        return declared_facet_policies(self.node_arcs_batch(dcids, deadline=deadline))
 
     # -- facet reads, admitted --
 

@@ -13,6 +13,7 @@ from search.engine.clients.graph import Facet
 from search.engine.core import resolve_async
 from search.engine.extract import DateRequest
 from search.engine.retrieval.coverage import CoverageForm, answer_coverage
+from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
 from search.engine.retrieval.read_plan import plan_standard, plan_years
 from search.models import CoverageExact, RawTextInput, ResolveOptions, ResolveRequest
 from tests.engine._harness import (
@@ -34,7 +35,10 @@ def _one_series(facets: list[Facet]) -> dict[tuple[str, str], list[Facet]]:
 
 def _coverage(facets: list[Facet], date_request: DateRequest | None = None):
     plan = plan_standard(
-        _one_series(facets), members=["Count_Person"], years=plan_years(date_request)
+        _one_series(facets),
+        members=["Count_Person"],
+        years=plan_years(date_request),
+        declared=NO_DECLARED_POLICIES,
     )
     return answer_coverage(plan, CoverageForm())
 
@@ -86,6 +90,7 @@ def test_a_narrowed_plans_coverage_keeps_the_evidence() -> None:
         _one_series([_facet(obs_count=402), _facet(obs_count=18, provenance_id="dc/base/Other")]),
         members=["Count_Person"],
         years=None,
+        declared=NO_DECLARED_POLICIES,
     )
     narrowed = answer_coverage(
         plan.narrowed(lambda _sv, f: f.provenance_id == "dc/base/WorldPopulationProspects"),
