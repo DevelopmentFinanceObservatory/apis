@@ -461,14 +461,16 @@ class GroupElection:
     (`uncounted`, `classify_uncounted`, `None` for a counted or unpopulated member), and the
     members holding the elected group's agreement key that hold no facet matching its
     selections on the key's axes and the bound ones (`incoherent`), which the mint refuses
-    (`select_group_facets`). An index-sourced member holding the key but not the method a
-    declared default resolved is unserved, as Search leaves it out."""
+    (`select_group_facets`), and the ranked pool's facet ids, top first (`ranked_ids`). An
+    index-sourced member holding the key but not the method a declared default resolved is
+    unserved, as Search leaves it out."""
 
     election: FacetElection
     dispatch_ids: tuple[tuple[str, ...], ...]
     continuing_ids: tuple[tuple[str, ...], ...]
     uncounted: tuple[UncountedKind | None, ...] = ()
     incoherent: tuple[int, ...] = ()
+    ranked_ids: tuple[str, ...] = ()
 
     @property
     def unserved(self) -> tuple[int, ...]:
@@ -483,12 +485,18 @@ class GroupElection:
 
     def served(self, member: int, candidates: Sequence[Facet]) -> tuple[Facet, ...]:
         """Member `member`'s `candidates` its dispatch serves, in serving order: the
-        selection's facets, then those continuing them, each in candidate order."""
+        selection's facets in ranked order (`ranked_ids`), so the election's lead comes first,
+        then those continuing them in candidate order. A selected facet the ranking left out
+        follows the ranked ones in candidate order."""
         continuing = set(self.continuing_ids[member])
         selected = self.selected(member)
-        return tuple(c for c in candidates if c.facet_id in selected) + tuple(
-            c for c in candidates if c.facet_id in continuing
-        )
+        rank = {facet_id: index for index, facet_id in enumerate(self.ranked_ids)}
+        return tuple(
+            sorted(
+                (c for c in candidates if c.facet_id in selected),
+                key=lambda c: rank.get(c.facet_id or "", len(rank)),
+            )
+        ) + tuple(c for c in candidates if c.facet_id in continuing)
 
 
 def elect_group(
@@ -606,6 +614,7 @@ def elect_group(
             for index, (member, member_electable) in enumerate(zip(members, electable, strict=True))
         ),
         incoherent=incoherent,
+        ranked_ids=tuple(c.facet_id for c in ranked_pool.ranked if c.facet_id is not None),
     )
 
 

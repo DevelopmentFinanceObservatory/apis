@@ -7,9 +7,12 @@ and every consumer reads that plan rather than derive its own:
   tuple)` with its candidate facets and the group the preview dispatches for it. The
   members share one group across every place and role tuple the answer names, elected
   over every member's probe as a mint of the answer's Spec elects it (`PairPlan.probes`,
-  `materialise.group_facets.elect_probes`): the group serving the most members. A series
-  the group does not cover serves nothing, so a member the group leaves out serves nothing
-  and its series are `PairPlan.uncovered`. A scope-defaulted read serves the one facet
+  `materialise.group_facets.elect_probes`): the group serving the most members. A plan of
+  one member elects it alone, its method included, as a mint of one StatVar does
+  (`materialise.generation._select_member_facets`), index-resolved or not. Each series
+  names its group's ranked lead (`series_facets`). A series the group does not cover serves
+  nothing, so a member the group leaves out serves nothing and its series are
+  `PairPlan.uncovered`. A scope-defaulted read serves the one facet
   elected across every place (`facet_election.rank_scope_candidates`).
 - A `BulkPlan` reads a role-bearing population whose bound pairs or series pass
   `obs_preview_max_pairs` (`search.observations.preview_mode`) in one read of one facet,
@@ -482,7 +485,8 @@ def _member_groups(
     facet and no selection, and the populated ones among them are returned last, in member
     order (`GroupElection.unserved`). `index_sourced` lets an index-resolved family's members agree on
     provenance and unit alone, as its mint does (`MaterialisationRequest.index_sourced`), and
-    the group serves each of `declared_defaults` it holds."""
+    the group serves each of `declared_defaults` it holds. Each member's facets lead with the
+    election's ranked top among those it serves (`GroupElection.served`)."""
     group = elect_probes(
         probes,
         window=plan_window(years),
@@ -514,7 +518,8 @@ def _elect_groups(
     """Each series with the group its preview dispatches, a scope read's one facet, each
     member's selection (`PairPlan.selections`), and the members the group leaves out
     (`PairPlan.unserved`), none on a scope read. A series holds its member's group where it
-    has those facets, and no group elsewhere."""
+    has those facets, and no group elsewhere. One member elects as a mint of one StatVar
+    does, with no `index_sourced` exemption for its method."""
     if scope:
         group, selection = _scope_group(
             series, members=members, years=years, declared_defaults=declared_defaults
@@ -526,7 +531,10 @@ def _elect_groups(
             (),
         )
     groups, selections, unserved = _member_groups(
-        probes, years=years, index_sourced=index_sourced, declared_defaults=declared_defaults
+        probes,
+        years=years,
+        index_sourced=index_sourced and len(members) > 1,
+        declared_defaults=declared_defaults,
     )
     ids = {
         sv: tuple(f.facet_id for f in group if f.facet_id is not None)
@@ -584,9 +592,9 @@ class PairPlan:
     member order (`GroupElection.unserved`), and `left_out` the members a unit decision
     leaves out (`leaving_out`), whose candidates the filter then removed: both serve nothing,
     and the answer names them (`unserved_members`). `index_sourced` marks an index-resolved
-    family, whose group agrees on provenance and unit alone (`in_elected_datasets`), and
-    `declared` the defaults each member declares in the graph, under which every election
-    of the plan runs (`declared_defaults`). `roles` is set for a role-bearing read. `probes` holds each
+    family, whose group of several members agrees on provenance and unit alone
+    (`in_elected_datasets`), and `declared` the defaults each member declares in the graph,
+    under which every election of the plan runs (`declared_defaults`). `roles` is set for a role-bearing read. `probes` holds each
     member's election input (`plan_pairs`): its candidates merged across every place and
     role tuple the answer names, and each facet's series count. A unit decision reads the same probes. `places`
     are the places a standard read was asked for, with or without a series
@@ -1432,9 +1440,11 @@ def served_dates(plan: ReadPlan) -> dict[str, ServedDates]:
 
 def series_facets(plan: ReadPlan | None) -> list[Facet | RoleBulkCandidate]:
     """One facet per series `plan` serves, carrying the provenance, method and unit its
-    preview dispatches: the elected facet that leads a served series' group, whose facets
-    share all three save the estimated method continuing it past its last year, or in bulk
-    each facet the group's selection serves (`BulkPlan.served_facets`), the lead first."""
+    preview dispatches: the election's ranked lead among a served series' group
+    (`GroupElection.served`), whose facets share all three save the estimated method
+    continuing it past its last year and, in an index-resolved family of several members,
+    the method each series holds, or in bulk each facet the group's selection serves
+    (`BulkPlan.served_facets`), the lead first."""
     if plan is None:
         return []
     if isinstance(plan, BulkPlan):
