@@ -588,6 +588,12 @@ _METHODS = {
 }
 
 
+_SIBLING = (_SV_B, "FM1", _R2, [2020])
+"""A second family member holding the lead facet, so an index-resolved group of `_SV` and
+it serves each member every method under its source and unit."""
+_SIBLING_SERIES = {(_SV_B, _R2): ("Commitment", [("2020", 1.0)])}
+
+
 @pytest.mark.parametrize(
     ("holdings", "index_sourced", "facet_ids", "series"),
     [
@@ -613,23 +619,35 @@ _METHODS = {
             id="two-members-by-facet-id",
         ),
         pytest.param(
-            [(_SV, "FM1", _R1, [2020]), (_SV, "FM1", _R2, [2020]), (_SV, "FM2", _R3, [2020])],
+            [
+                (_SV, "FM1", _R1, [2020]),
+                (_SV, "FM1", _R2, [2020]),
+                (_SV, "FM2", _R3, [2020]),
+                _SIBLING,
+            ],
             True,
             {"FM1", "FM2"},
             {
                 (_SV, _R1): ("Commitment", [("2020", 1.0)]),
                 (_SV, _R2): ("Commitment", [("2020", 1.0)]),
                 (_SV, _R3): ("Disbursement", [("2020", 2.0)]),
+                **_SIBLING_SERIES,
             },
-            id="one-member-a-method-per-pair",
+            id="a-family-member-a-method-per-pair",
         ),
         pytest.param(
-            [(_SV, "FM1", _R1, [2020]), (_SV, "FM2", _R1, [2020]), (_SV, "FM1", _R2, [2020])],
+            [
+                (_SV, "FM1", _R1, [2020]),
+                (_SV, "FM2", _R1, [2020]),
+                (_SV, "FM1", _R2, [2020]),
+                _SIBLING,
+            ],
             True,
             {"FM1", "FM2"},
             {
                 (_SV, _R1): (None, [("2020", 1.0), ("2020", 2.0)]),
                 (_SV, _R2): ("Commitment", [("2020", 1.0)]),
+                **_SIBLING_SERIES,
             },
             id="one-pair-two-methods-one-date",
         ),
@@ -651,13 +669,19 @@ _METHODS = {
             id="one-pair-one-identity-the-wider-facet-wins",
         ),
         pytest.param(
-            [(_SV, "FM1", _R1, [2020]), (_SV, "FM1", _R2, [2020]), (_SV, "FM4", _R3, [2020])],
+            [
+                (_SV, "FM1", _R1, [2020]),
+                (_SV, "FM1", _R2, [2020]),
+                (_SV, "FM4", _R3, [2020]),
+                _SIBLING,
+            ],
             True,
             {"FM1", "FM4"},
             {
                 (_SV, _R1): ("Commitment", [("2020", 1.0)]),
                 (_SV, _R2): ("Commitment", [("2020", 1.0)]),
                 (_SV, _R3): ("Estimated", [("2020", 4.0)]),
+                **_SIBLING_SERIES,
             },
             id="one-pair-an-estimated-method",
         ),
@@ -673,10 +697,12 @@ def test_an_index_sourced_bulk_read_serves_each_member_its_own_method_s_facet(
     facet_ids: set[str],
     series: dict[tuple[str, str], tuple[str | None, list[tuple[str, float]]]],
 ):
-    """`FM1` and `FM2` hold one source, unit and cadence under two methods. An
-    index-resolved family's group is that source and unit, so its one bulk read asks for
-    both facets and each pair serves its own, as its mint dispatches them; grouped by facet
-    id, the read asks for the lead's facet alone and serves its holder. Each series states
+    """`FM1` and `FM2` hold one source, unit and cadence under two methods. The group of an
+    index-resolved family of several members is that source and unit, so its one bulk read
+    asks for both facets and each pair serves its own, as its mint dispatches them; grouped
+    by facet id, the read asks for the lead's facet alone and serves its holder. A row
+    serving two methods holds `_SIBLING`, `_SV_B` at `_R2` under `FM1`, beside `_SV`, since
+    one member elects one method. Each series states
     the method of the facet serving its pair. A pair holding both methods on one date keeps
     both points, as a mint keeps rows of distinct methods, and states no method. A pair
     holding `FM1` and `FM3`, one identity, on one date keeps the best-ranked facet's point
@@ -698,12 +724,14 @@ def test_an_index_sourced_bulk_read_serves_each_member_its_own_method_s_facet(
                 (_SV, "FM1", _R1, [2019, 2020, 2021]),
                 (_SV, lag, _R1, [2019]),
                 (_SV, lag, _R2, [2021]),
+                (_SV_B, "FM1", _R2, [2021]),
             ],
             "latest",
             {"FM1", lag},
             {
                 (_SV, _R1): ("Commitment", [("2021", 1.0)]),
                 (_SV, _R2): (_METHODS[lag], [("2021", float(sorted(_METHODS).index(lag) + 1))]),
+                (_SV_B, _R2): ("Commitment", [("2021", 1.0)]),
             },
             id=f"latest-a-lagging-{_METHODS[lag].lower()}",
         )
@@ -737,6 +765,8 @@ def test_a_bulk_read_labels_and_ranks_the_points_a_mint_keeps(
     `latest`, `_R1` holds `FM1` to 2021 and a lagging second method to 2019, which `_R2`
     holds in 2021: the member's period is 2021, so `_R1` serves `FM1`'s point alone and
     states `FM1`'s method, and holds no estimate where the lagging method is estimated.
+    `_SV_B` holds `FM1` at `_R2`, so the family has several members and its group serves
+    both methods.
 
     `FM1` and `FM3`, one identity, contest 2020 at `_R1`. A mint with no conversion ranks
     each facet over the member's whole table (`member_conversion.apply_member_conversion`),
@@ -923,15 +953,15 @@ def test_a_bulk_plan_counts_sub_annual_facets_of_one_identity_from_above(
 def test_a_latest_member_falling_back_reads_a_selected_facet_without_its_elected_year(
     monkeypatch,
 ):
-    """Coverage holds `FM1` at `_R1` to 2020 and `FM2`, one source and unit under another
-    method, at `_R1` in 2018, so the member elects 2020 and `FM2` holds no pair there.
-    SDMX holds no 2020 row, `FM1`'s last at 2019 and `FM2`'s at 2021, so the member falls
-    back to its newest period, 2021, which only `FM2` serves. The election is stubbed at
-    the year coverage dates, so the test reads the fallback alone. The read asks for every
-    selected facet, `FM2` with `FM1`, and `_R1` serves `FM2`'s 2021 point."""
+    """Coverage holds `FM1` at `_R1` to 2020 and `FM3`, one source, unit and method, at
+    `_R1` in 2018, so the member elects 2020 and `FM3` holds no pair there. SDMX holds no
+    2020 row, `FM1`'s last at 2019 and `FM3`'s at 2021, so the member falls back to its
+    newest period, 2021, which only `FM3` serves. The election is stubbed at the year
+    coverage dates, so the test reads the fallback alone. The read asks for every selected
+    facet, `FM3` with `FM1`, and `_R1` serves `FM3`'s 2021 point."""
     index = patch_coverage(
         monkeypatch,
-        [(_SV, "FM1", _DONOR, _R1, [2019, 2020]), (_SV, "FM2", _DONOR, _R1, [2018])],
+        [(_SV, "FM1", _DONOR, _R1, [2019, 2020]), (_SV, "FM3", _DONOR, _R1, [2018])],
         role_names={_SV: RoleNames(donor="provider", recipient="recipient")},
         facet_metadata={
             facet_id: FacetMetadata(
@@ -940,7 +970,7 @@ def test_a_latest_member_falling_back_reads_a_selected_facet_without_its_elected
                 unit="CurrencyUSD",
                 observation_period="P1Y",
             )
-            for facet_id in ("FM1", "FM2")
+            for facet_id in ("FM1", "FM3")
         },
     )
     sdmx = FakeSdmxClient(
@@ -948,7 +978,7 @@ def test_a_latest_member_falling_back_reads_a_selected_facet_without_its_elected
             _SV: {
                 _role_tuple(_R1): [
                     _facet(dates=["2019"], value=1.0, facet_id="FM1"),
-                    _facet(dates=["2021"], value=2.0, facet_id="FM2"),
+                    _facet(dates=["2021"], value=2.0, facet_id="FM3"),
                 ]
             }
         }
@@ -968,7 +998,7 @@ def test_a_latest_member_falling_back_reads_a_selected_facet_without_its_elected
         elect=lambda _plan: {_SV: 2020},
     )
 
-    assert all(set(call["facet_ids"]) == {"FM1", "FM2"} for call in sdmx.series_calls)
+    assert all(set(call["facet_ids"]) == {"FM1", "FM3"} for call in sdmx.series_calls)
     assert observations is not None
     assert {
         next(e.ref for e in s.entities if e.role == "destination"): [

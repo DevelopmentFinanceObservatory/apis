@@ -1228,8 +1228,8 @@ def test_a_latest_bulk_plan_reads_the_member_s_year_under_every_facet_it_selects
     search_settings,
 ) -> None:
     """`_FLOW` holds `fM1` at `_AAA` and `_CCC` to 2019, so `fM1` leads, and `fM2`, one
-    source and unit under another method, at `_BBB` to 2021. An index-resolved family's
-    group selects both, so under `latest` the member's year is the newest either reaches,
+    source, unit and method, at `_BBB` to 2021. The member's election selects both, so
+    under `latest` the member's year is the newest either reaches,
     2021, its dates are that year, and the facets its series state are those holding a pair
     there: `fM2` alone. Both state a monthly period, so coverage elects the member no year
     (`CoverageIndex.elected_years`) and it serves its own latest period."""
@@ -1248,7 +1248,7 @@ def test_a_latest_bulk_plan_reads_the_member_s_year_under_every_facet_it_selects
                 unit="CurrencyUSD",
                 observation_period="P1M",
             )
-            for facet_id, method in (("fM1", "Commitment"), ("fM2", "Disbursement"))
+            for facet_id, method in (("fM1", "Commitment"), ("fM2", "Commitment"))
         },
     )
     plan = _role_plan(
