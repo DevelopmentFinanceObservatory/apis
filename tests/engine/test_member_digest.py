@@ -52,7 +52,9 @@ def test_a_complete_walk_states_its_served_members_and_hashes_its_sorted_family(
 
     assert walked.key == walk_key(_QUERY)
     assert walked.stated == StatedMembers(
-        served_count=1, digest=_expected_digest(["Count_Person", "Count_Person_Female"])
+        served_count=1,
+        digest=_expected_digest(["Count_Person", "Count_Person_Female"]),
+        family_count=2,
     )
 
 
@@ -73,7 +75,9 @@ def test_a_walk_that_left_candidates_unread_states_no_digest(truncated: bool):
 
     assert group.stated_family == (None if truncated else frozenset({"Count_Person"}))
     assert walked.stated == StatedMembers(
-        served_count=1, digest=None if truncated else _expected_digest(["Count_Person"])
+        served_count=1,
+        digest=None if truncated else _expected_digest(["Count_Person"]),
+        family_count=None if truncated else 1,
     )
 
 
@@ -90,7 +94,7 @@ def test_a_walk_asked_an_open_role_its_members_do_not_serve_states_the_answers_m
     served = replace(dropped, elected_open_role_keys=frozenset({"origin"}))
 
     assert stated_members(identity, WalkedMembers.of(asked, dropped)) == StatedMembers(
-        served_count=1, digest=_expected_digest(["Amount_EconomicActivity"])
+        served_count=1, digest=_expected_digest(["Amount_EconomicActivity"]), family_count=1
     )
     assert WalkedMembers.of(asked, served).key == walk_key(asked)
     assert stated_members(identity, WalkedMembers.of(asked, served)) is None

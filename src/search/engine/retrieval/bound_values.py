@@ -2293,12 +2293,13 @@ def _publishing_datasets(shape: ShapeDraft, index: CodeIndex) -> tuple[str, ...]
 @dataclass(frozen=True)
 class StatedMembers:
     """What a Datasets mint of an identity states of its members: how many it serves (the
-    length of its `trace.resolved_stat_vars`) and the digest of the family they come from
-    (`trace.family_member_digest`), `None` when Search cannot name every member of that
-    family."""
+    length of its `trace.resolved_stat_vars`), and the digest and size of the family they
+    come from (`trace.family_member_digest` and `trace.family_member_count`), both `None`
+    when Search cannot name every member of that family."""
 
     served_count: int
     digest: str | None
+    family_count: int | None
 
 
 type WalkKey = tuple[
@@ -2367,6 +2368,7 @@ class WalkedMembers:
             stated=StatedMembers(
                 served_count=len(group.members),
                 digest=member_digest(family) if family is not None else None,
+                family_count=len(family) if family is not None else None,
             ),
             asked=asked if asked != key else None,
         )
@@ -2408,8 +2410,9 @@ def stated_members(identity: BaseIdentity, walked: WalkedMembers | None) -> Stat
         family = _identity_family(identity)
         if family is None or (served := _index_served_rows(family)) is None:
             return None
+        dcids = frozenset(row.dcid for row in family.rows)
         return StatedMembers(
-            served_count=len(served), digest=member_digest(row.dcid for row in family.rows)
+            served_count=len(served), digest=member_digest(dcids), family_count=len(dcids)
         )
     if (
         walked is None

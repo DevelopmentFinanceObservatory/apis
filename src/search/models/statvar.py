@@ -142,8 +142,10 @@ class ResolvedStatVars(StrictModel):
     lists the ones a mint serves.
 
     member_count is the population confirmed to carry observations at this
-    resolve's own probe entities, not resolved.shape.member_count's
-    bindings-admitted population. The two differ for two reasons. A member the
+    resolve's own probe entities, among the members the shape's bindings admit.
+    resolved.shape.member_count states that admitted population only where no
+    member_digest is stated; otherwise it states the family the digest names. The
+    admitted and confirmed populations differ for two reasons. A member the
     shape's bindings admit can carry no observation at the resolved place. And on
     a role-bearing shape the answer reads one role class of the admitted members:
     where a total stands for its breakdowns the breakdowns are folded into it, so a

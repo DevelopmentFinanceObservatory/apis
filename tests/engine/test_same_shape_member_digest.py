@@ -161,15 +161,16 @@ def test_collapse_same_shape_no_member_digest_when_a_member_has_no_population():
 @pytest.mark.parametrize(
     ("uganda", "stated"),
     [
-        pytest.param((2, "d"), (2, "d"), id="parts-agree"),
-        pytest.param((3, "d"), (None, None), id="served-counts-differ"),
-        pytest.param((2, "e"), (None, None), id="digests-differ"),
+        pytest.param((2, "d", 5), (2, "d", 5), id="parts-agree"),
+        pytest.param((3, "d", 5), (None, None, 5), id="served-counts-differ"),
+        pytest.param((2, "e", 7), (None, None, 7), id="digests-differ"),
     ],
 )
 def test_collapse_same_shape_where_axis_merge_keeps_the_walk_its_parts_share(uganda, stated):
     """A where-axis merge binds one identity's members at more places, so the walk both
-    parts settled stands for it; parts that disagree state nothing. The member count is the
-    maximum."""
+    parts settled stands for it, and the merge counts the family that walk digests. Parts
+    that disagree state nothing, and the member count is the maximum."""
+    served_count, digest, member_count = uganda
     spec_kenya = _stating(
         _with_shape_member_count(
             _where_bound_spec_with_member_count("country/KEN", "sv_kenya", member_count=5), 5
@@ -179,9 +180,13 @@ def test_collapse_same_shape_where_axis_merge_keeps_the_walk_its_parts_share(uga
     )
     spec_uganda = _stating(
         _with_shape_member_count(
-            _where_bound_spec_with_member_count("country/UGA", "sv_uganda", member_count=7), 7
+            _where_bound_spec_with_member_count(
+                "country/UGA", "sv_uganda", member_count=member_count
+            ),
+            member_count,
         ),
-        *uganda,
+        served_count,
+        digest,
     )
     r_a = _with_population(
         _region(spec_kenya, "population of Kenya", earliest_index=0), _population(["sv_kenya"])
@@ -195,8 +200,11 @@ def test_collapse_same_shape_where_axis_merge_keeps_the_walk_its_parts_share(uga
     assert len(effective) == 1
     assert residual == []
     merged = effective[0].spec.resolved
-    assert (merged.stat_vars.served_count, merged.shape.member_digest) == stated
-    assert merged.shape.member_count == 7
+    assert (
+        merged.stat_vars.served_count,
+        merged.shape.member_digest,
+        merged.shape.member_count,
+    ) == stated
 
 
 def test_collapse_same_shape_recomputed_member_count_does_not_move_spec_id():

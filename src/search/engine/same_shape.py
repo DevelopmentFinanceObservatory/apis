@@ -963,21 +963,34 @@ def _merged_walked(group: list[RegionResult]) -> WalkedMembers | None:
     same served count and family digest for the same walk (`walk_key`). A where-axis merge
     binds one identity's members at more places, so `build_spec` keeps the statement.
     It states none for a merge whose identity the parts' walk does not resolve
-    (`stated_members`)."""
+    (`stated_members`). A Spec stating a digest counts that family as its
+    `shape.member_count`, which the statement carries as its family count."""
     statements = {
-        (r.spec.resolved.stat_vars.served_count, r.spec.resolved.shape.member_digest) for r in group
+        (
+            r.spec.resolved.stat_vars.served_count,
+            r.spec.resolved.shape.member_digest,
+            r.spec.resolved.shape.member_count
+            if r.spec.resolved.shape.member_digest is not None
+            else None,
+        )
+        for r in group
     }
     identities = [r.spec.definition.identity for r in group]
     if len(statements) != 1 or not all(
         isinstance(identity.shape, IdentityShapeSchema) for identity in identities
     ):
         return None
-    ((served_count, digest),) = statements
+    ((served_count, digest, member_count),) = statements
     keys = {walk_key(identity_query(identity)) for identity in identities}
     if served_count is None or len(keys) != 1:
         return None
     return WalkedMembers(
-        key=keys.pop(), stated=StatedMembers(served_count=served_count, digest=digest)
+        key=keys.pop(),
+        stated=StatedMembers(
+            served_count=served_count,
+            digest=digest,
+            family_count=member_count,
+        ),
     )
 
 

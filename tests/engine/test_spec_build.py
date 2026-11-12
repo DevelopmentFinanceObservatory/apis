@@ -257,37 +257,40 @@ class TestBuildSpecStatVars:
             )
         ]
 
-    def test_a_walk_of_the_identitys_own_query_states_the_served_count_and_digest(self):
+    def test_a_walk_of_the_identitys_own_query_states_the_served_count_and_family(self):
+        """The shape is built with an admitted population of 250. A walk of the identity's
+        own query states the mint's served count, and the digest and size of its family of
+        three; a walk of another query states neither, and the shape keeps its count."""
         unwalked = self._build(_stat_vars(3))
         identity = unwalked.definition.identity
         assert not index_decides_membership(identity)
-        stated = StatedMembers(served_count=2, digest=member_digest(["sv0", "sv1", "sv2"]))
+        family = ["sv0", "sv1", "sv2"]
+        stated = StatedMembers(
+            served_count=2, digest=member_digest(family), family_count=len(family)
+        )
         own = WalkedMembers(key=walk_key(identity_query(identity)), stated=stated)
         other_key = (*own.key[:2], frozenset({"origin"}), own.key[3])
         open_key = (*own.key[:3], frozenset({"origin"}))
 
-        walked = self._build(_stat_vars(3), walked=own)
-        other = self._build(_stat_vars(3), walked=replace(own, key=other_key))
-        opened = self._build(_stat_vars(3), walked=replace(own, key=open_key))
+        def statement(spec: Spec) -> tuple[int | None, str | None, int]:
+            resolved = spec.resolved
+            return (
+                resolved.stat_vars.served_count,
+                resolved.shape.member_digest,
+                resolved.shape.member_count,
+            )
 
-        assert (
-            unwalked.resolved.stat_vars.served_count,
-            unwalked.resolved.shape.member_digest,
-        ) == (
+        assert statement(self._build(_stat_vars(3), walked=own)) == (2, stated.digest, 3)
+        assert statement(unwalked) == (None, None, 250)
+        assert statement(self._build(_stat_vars(3), walked=replace(own, key=other_key))) == (
             None,
             None,
+            250,
         )
-        assert (walked.resolved.stat_vars.served_count, walked.resolved.shape.member_digest) == (
-            2,
-            stated.digest,
-        )
-        assert (other.resolved.stat_vars.served_count, other.resolved.shape.member_digest) == (
+        assert statement(self._build(_stat_vars(3), walked=replace(own, key=open_key))) == (
             None,
             None,
-        )
-        assert (opened.resolved.stat_vars.served_count, opened.resolved.shape.member_digest) == (
-            None,
-            None,
+            250,
         )
 
 
@@ -343,6 +346,7 @@ class TestStatedMembers:
         assert stated_members(identity, None) == StatedMembers(
             served_count=len(antichain_minimal_rows(get_index(), family.rows)),
             digest=member_digest(row.dcid for row in family.rows),
+            family_count=rows,
         )
 
     def test_an_identity_the_index_resolves_no_family_for_states_none(self):
@@ -356,7 +360,9 @@ class TestStatedMembers:
         document = education_aid_identity()
         document["shape"]["population_type"] = "EconomicActivity"
         _, identity = mint_identity(document)
-        stated = StatedMembers(served_count=1, digest=member_digest(["Amount_EconomicActivity"]))
+        stated = StatedMembers(
+            served_count=1, digest=member_digest(["Amount_EconomicActivity"]), family_count=1
+        )
         walked = WalkedMembers(key=walk_key(identity_query(identity)), stated=stated)
         _, other_identity = mint_identity(education_aid_identity())
         elsewhere = replace(walked, key=walk_key(identity_query(other_identity)))

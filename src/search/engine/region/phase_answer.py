@@ -562,8 +562,10 @@ async def _ground_elected_answer(state: ResolveState) -> RegionResult | None:
     )
     state.unresolved_slots = unresolved_slots
 
-    # Shape counts use admitted members. Elected StatVar refs are representatives. A missing
-    # population occurs only for hand-built ``Materialised`` results and uses the fallback.
+    # Shape counts use admitted members until `build_spec` restates them as the family's
+    # where it states the mint's family digest. Elected StatVar refs are representatives. A
+    # missing population occurs only for hand-built ``Materialised`` results and uses the
+    # fallback.
     shape_model = build_shape_model(
         state.shape_draft,
         slot_key_models,

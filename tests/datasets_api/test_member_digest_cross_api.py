@@ -1,10 +1,11 @@
 """Search and the Datasets mint state one family by one digest and one served count.
 
 The mint's `trace.family_member_digest` hashes the family its member resolution admits,
-before antichain reduction, and `trace.resolved_stat_vars` lists the members it serves after
-it. Search states the same two facts (`bound_values.stated_members`) as
-`resolved.shape.member_digest` and `resolved.stat_vars.served_count`: from the same index
-rows for a family the code index decides, and from the same `MemberGroup` for a walked one
+before antichain reduction, `trace.family_member_count` counts it, and
+`trace.resolved_stat_vars` lists the members it serves after it. Search states the same
+three facts (`bound_values.stated_members`) as `resolved.shape.member_digest`,
+`resolved.shape.member_count` and `resolved.stat_vars.served_count`: from the same index rows
+for a family the code index decides, and from the same `MemberGroup` for a walked one
 (`MemberGroup.stated_family`). Both digests come from `statvar_members.member_digest`.
 """
 
@@ -20,8 +21,18 @@ from datasets_api.adapter import resolve_definition_members, to_materialisation_
 from search.engine.retrieval.bound_values import StatedMembers, WalkedMembers, stated_members
 from search.models import BaseIdentity
 from statvar_members import MemberEnumerator, MemberGroup, member_digest
+from tests.engine._base_identity import destination_entity, make_base
+from tests.engine._builders import binding_set_slot
 from tests.engine.test_crs_family_member_digest import _EXTRA_SV, _RECALLED_SV
 from tests.engine.test_crs_family_member_digest import _run as _search_resolve
+from tests.engine.test_resubmit_alternative_measure_axis_gap import (
+    _KEN,
+    _NOMINAL_FLOW_SHAPE,
+    _bound_slot,
+    _resubmit_over_rows,
+    _rows_holding,
+    _unbound_slot,
+)
 
 from ._graph_doubles import FakeMintGraphReader
 from ._member_bounds import mint_bounds
@@ -154,7 +165,92 @@ def test_a_family_with_a_dominated_member_has_one_digest_and_a_reduced_served_se
     assert served.stat_var == "dcid:Person"
     assert request.family is not None
     assert (request.family.digest, request.family.count) == (member_digest(_PERSON_FAMILY), 3)
-    assert stated == StatedMembers(served_count=1, digest=request.family.digest)
+    assert stated == StatedMembers(served_count=1, digest=request.family.digest, family_count=3)
+
+
+def _five_slot_crs_resubmit():
+    """Sixteen rows share the identity's five bound values. Fifteen also assert
+    crsCooperationModality, which the identity omits, so its family is the one row
+    asserting no other slot."""
+    bound = {
+        "crsPurpose": "CRSPurposeCode99810",
+        "crsTypeOfFinance": "CRSTypeOfFinance110",
+        "crsTypeOfFlow": "CRSTypeOfFlow10",
+        "financialFlowType": "Disbursement",
+        "nettingBasis": "Gross",
+    }
+    _, identity = make_base(
+        _NOMINAL_FLOW_SHAPE,
+        [_bound_slot(prop, value) for prop, value in bound.items()],
+        entities=[destination_entity(_KEN)],
+    )
+    rows = [
+        row
+        for row in _rows_holding(**bound)
+        if (row.population_type, row.measured_property) == ("FinancialFlow", "amount")
+        and row.measurement_denominator is None
+    ]
+    return identity, rows
+
+
+def _measure_axis_set_resubmit():
+    """nettingBasis bound to {Gross, Net}: the family holds a member of each value, beside
+    rows asserting slots the identity omits."""
+    _, identity = make_base(
+        _NOMINAL_FLOW_SHAPE,
+        [
+            _bound_slot("dac2aAidType", "DAC2aAidType206"),
+            _unbound_slot("dacTypeOfFinance"),
+            _bound_slot("financialFlowType", "Disbursement"),
+            binding_set_slot("how", "nettingBasis", "nettingBasis", ["Gross", "Net"]),
+        ],
+        entities=[destination_entity(_KEN)],
+    )
+    rows = [
+        row
+        for row in _rows_holding(dac2aAidType="DAC2aAidType206", financialFlowType="Disbursement")
+        if row.measurement_denominator is None
+    ]
+    return identity, rows
+
+
+@pytest.mark.parametrize(
+    ("resubmit", "family_count"),
+    [(_five_slot_crs_resubmit, 1), (_measure_axis_set_resubmit, 2)],
+    ids=["five-slot-crs-identity", "measure-axis-set-binding"],
+)
+def test_a_resubmit_counts_the_family_the_members_door_counts(
+    monkeypatch, resubmit, family_count: int
+):
+    """The answer's graph holds rows asserting slots the identity omits, which the member
+    walk admits and the identity's family leaves out. The Spec counts the family it digests,
+    as the members door does."""
+    identity, rows = resubmit()
+    region = _resubmit_over_rows(monkeypatch, identity, rows)
+    assert region.status == "definite", region.no_data_reason
+    (spec,) = region.specs
+    shape = spec.resolved.shape
+    assert shape.member_digest is not None
+
+    resp = _client(graph=FakeMintGraphReader(arcs={})).post(
+        f"/api/datasets/{spec.spec_id}/members",
+        json={
+            "schema_version": 1,
+            "definition": {
+                "schema_version": 1,
+                "spec_id": spec.spec_id,
+                "identity": spec.definition.identity.model_dump(mode="json", exclude_none=True),
+            },
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert (shape.member_digest, shape.member_count) == (
+        body["family_member_digest"],
+        body["family_member_count"],
+    )
+    assert shape.member_count == family_count
 
 
 class _RecordingEnumerator(MemberEnumerator):
@@ -194,7 +290,7 @@ def test_a_graph_walk_that_reads_every_candidate_states_the_same_family():
     assert served.family.digest == member_digest(_PERSON_FAMILY)
     assert served.family.count == 3
     assert walked.stated == StatedMembers(
-        served_count=len(resolved.shapes), digest=served.family.digest
+        served_count=len(resolved.shapes), digest=served.family.digest, family_count=3
     )
 
 
