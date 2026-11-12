@@ -1858,3 +1858,133 @@ def test_group_generate_chunk_role_bearing_member_with_empty_dispatch_ids_report
 
     assert result[0].table.num_rows == 1
     assert result[1].table.num_rows == 0
+
+
+_ONE_CLIMATE = "provenance/ONEClimateFinance"
+_ONE_WEIGHTING = "ONEClimateFinanceWeighting"
+_FULL_VALUE = "OECDClimateFinanceFullValue"
+
+
+def _climate_facet(facet_id: str, method: str, obs_count: int) -> Facet:
+    """A facet of a ONE Data Climate Finance StatVar under `method`."""
+    return Facet(
+        facet_id=facet_id,
+        provenance_id=_ONE_CLIMATE,
+        measurement_method=method,
+        unit="USDollar",
+        obs_count=obs_count,
+        earliest_date="2022",
+        latest_date="2022",
+    )
+
+
+@pytest.mark.parametrize(
+    ("declared", "method", "basis"),
+    [
+        pytest.param(_ONE_WEIGHTING, _ONE_WEIGHTING, "declared_default", id="declared"),
+        pytest.param("NoSuchMethod", _FULL_VALUE, "deployment_fallback", id="declared_missing"),
+    ],
+)
+def test_an_index_sourced_group_whose_members_declare_a_method_serves_one_method(
+    declared: str, method: str, basis: str
+):
+    """Members of an index-resolved family each hold their series under two methods. Declaring
+    one, the group serves it over the better-observed one; declaring a method no member holds,
+    the group serves the ranking's one method. Each member dispatches one facet either way."""
+    policy = FacetDefaultPolicy(
+        resolved_ref=declared,
+        policy_node="defaultMeasurementMethod",
+        policy_version="1",
+        selection_reason="graph_declared",
+    )
+    graph = FakeGraphReader(
+        policies={
+            (_STAT_VAR_A, "measurementMethod"): policy,
+            (_STAT_VAR_B, "measurementMethod"): policy,
+        }
+    )
+    requests = [
+        _request(stat_var=_STAT_VAR_A, facet_bindings={}, index_sourced=True),
+        _request(stat_var=_STAT_VAR_B, facet_bindings={}, index_sourced=True),
+    ]
+    member_a = [
+        _climate_facet("aWeighting", _ONE_WEIGHTING, 2),
+        _climate_facet("aFull", _FULL_VALUE, 5),
+    ]
+    member_b = [
+        _climate_facet("bWeighting", _ONE_WEIGHTING, 1),
+        _climate_facet("bFull", _FULL_VALUE, 4),
+    ]
+
+    group = select_group_facets(requests, [member_a, member_b], graph=graph)
+
+    selection = group.election.selections["measurementMethod"]
+    assert (selection.ref, selection.basis) == (method, basis)
+    assert [
+        [facet.measurement_method for facet in group.served(index, member)]
+        for index, member in enumerate([member_a, member_b])
+    ] == [[method], [method]]
+
+
+@pytest.mark.parametrize(
+    ("declared", "member_b", "served"),
+    [
+        pytest.param(
+            _ONE_WEIGHTING,
+            [_climate_facet("bFull", _FULL_VALUE, 4)],
+            [["aWeighting"], []],
+            id="declared",
+        ),
+        pytest.param(
+            "NoSuchMethod",
+            [_climate_facet("bOther", "OtherMethod", 4)],
+            [["aFull"], []],
+            id="declared_missing",
+        ),
+    ],
+)
+def test_a_group_member_lacking_the_declared_method_is_unserved_in_the_mint_as_in_search(
+    declared: str, member_b: list[Facet], served: list[list[str]]
+):
+    """Member B of an index-resolved family holds the elected source and unit but not the
+    method the declaration resolves the group to, the declared one or, where no member holds
+    it, the ranking's. The mint serves member A and names B unserved, as Search's election of
+    the same candidates does, where it used to refuse the group."""
+    policy = FacetDefaultPolicy(
+        resolved_ref=declared,
+        policy_node="defaultMeasurementMethod",
+        policy_version="1",
+        selection_reason="graph_declared",
+    )
+    graph = FakeGraphReader(
+        policies={
+            (_STAT_VAR_A, "measurementMethod"): policy,
+            (_STAT_VAR_B, "measurementMethod"): policy,
+        }
+    )
+    requests = [
+        _request(stat_var=_STAT_VAR_A, facet_bindings={}, index_sourced=True),
+        _request(stat_var=_STAT_VAR_B, facet_bindings={}, index_sourced=True),
+    ]
+    members = [
+        [_climate_facet("aWeighting", _ONE_WEIGHTING, 2), _climate_facet("aFull", _FULL_VALUE, 5)],
+        member_b,
+    ]
+
+    mint = select_group_facets(requests, members, graph=graph)
+    search = elect_group(
+        members,
+        stat_vars=[_STAT_VAR_A, _STAT_VAR_B],
+        window=None,
+        index_sourced=True,
+        requires_provenance=False,
+        policies={"measurementMethod": policy},
+    )
+
+    assert search is not None
+    for group in (mint, search):
+        assert group.unserved == (1,)
+        assert [
+            [facet.facet_id for facet in group.served(index, member)]
+            for index, member in enumerate(members)
+        ] == served

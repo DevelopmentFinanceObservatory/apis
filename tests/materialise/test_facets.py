@@ -1568,7 +1568,8 @@ def test_unbound_policy_resolved_ref_present_among_candidates():
     assert selection.selection_reason == "most-widely-reported currency"
 
 
-def test_unbound_policy_resolved_ref_absent_raises_facet_not_available_not_undefined():
+def test_unbound_policy_resolved_ref_absent_falls_back_to_the_ranking():
+    """A declared ref no candidate carries serves the ranking's top value."""
     policy = FacetDefaultPolicy(
         resolved_ref="GBP",
         policy_node="policy/unit-default",
@@ -1577,21 +1578,23 @@ def test_unbound_policy_resolved_ref_absent_raises_facet_not_available_not_undef
     )
     graph = FakeGraphReader(policies={(_STAT_VAR, "unit"): policy})
 
-    with pytest.raises(MaterialisationError) as excinfo:
-        select_facet(
-            "unit",
-            FacetBinding(state="unbound"),
-            candidates=[_FACET_KEN, _FACET_TGO],
-            graph=graph,
-            stat_var=_STAT_VAR,
-            window=None,
-            policies=declared_default_policies(
-                {"unit": FacetBinding(state="unbound")}, graph=graph, stat_var=_STAT_VAR
-            ),
-        )
+    selection = select_facet(
+        "unit",
+        FacetBinding(state="unbound"),
+        candidates=[_FACET_KEN, _FACET_TGO],
+        graph=graph,
+        stat_var=_STAT_VAR,
+        window=None,
+        policies=declared_default_policies(
+            {"unit": FacetBinding(state="unbound")}, graph=graph, stat_var=_STAT_VAR
+        ),
+    )
 
-    assert isinstance(excinfo.value, FacetNotAvailableError)
-    assert excinfo.value.code == "facet_not_available"
+    assert (selection.ref, selection.basis, selection.dispatch_facet_id) == (
+        "USD",
+        "deployment_fallback",
+        "facet1",
+    )
 
 
 def _selection(axis: str, ref: str) -> FacetSelection:

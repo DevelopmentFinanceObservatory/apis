@@ -29,8 +29,7 @@ from search.engine.retrieval.coverage import (
     plan_election,
 )
 from search.engine.retrieval.elected_dataset import elected_datasets, published
-from search.engine.retrieval.facet_election import merge_role_candidates
-from search.engine.retrieval.facet_policy import refuse_declared_defaults
+from search.engine.retrieval.facet_policy import DeclaredPolicies, read_declared_policies
 from search.engine.retrieval.member_facts import (
     IndexMemberFacts,
     MemberFacts,
@@ -49,6 +48,7 @@ from search.engine.retrieval.read_plan import (
 )
 from search.engine.retrieval.role_scope import (
     FACET_AXES,
+    bulk_candidates,
     check_minted_role_members,
     discover_role_scope,
     facet_axis_filters_from_bound_values,
@@ -428,6 +428,7 @@ def _role_plan(
     bound_roles: BoundRoles,
     years: RoleYears,
     coverage_index: CoverageIndex,
+    declared: DeclaredPolicies,
 ) -> ReadPlan:
     """Plan a role answer's preview read (`read_plan.plan_role_read`) over `confirmed_svs`,
     members the role-class election kept (`_elect_role_class`), at the entities bound on the
@@ -438,8 +439,9 @@ def _role_plan(
     coverage rows (`role_scope.pair_series`), built only once those pairs are counted and fit
     the pair cap (`role_scope.pair_series_count`), and elects each member's one group from
     the coverage probe a mint reads (`role_scope.member_probes`). A member of an index-resolved
-    family keeps only its elected dataset's facets (`read_plan.in_elected_datasets`). A bulk
-    plan elects its one facet over the
+    family keeps only its elected dataset's facets (`read_plan.in_elected_datasets`), and
+    every election runs under the defaults `declared` names. A bulk plan elects its one
+    facet over the
     role index the bulk read builds: the members at the named entities, inside the read's
     year list. Coverage counts the planned facet across every pair of the members, and the
     bulk read reuses it.
@@ -464,12 +466,14 @@ def _role_plan(
         entity_lists,
         years=years.years,
         read_years=years.listed,
-        candidates=lambda members: merge_role_candidates(
+        candidates=lambda members: bulk_candidates(
             role_index_for_named_entities(
                 members, entities, time_period=time_period, coverage_index=coverage_index
             ),
             members,
-            lifetime=coverage_index.facet_spans(variables=members, bound=bound_roles),
+            bound=bound_roles,
+            coverage_index=coverage_index,
+            declared=declared,
         ),
         series_count=lambda members: pair_series_count(
             coverage_index,
@@ -489,6 +493,7 @@ def _role_plan(
             coverage_index, variables=members, bound=bound_roles
         ),
         roles=PlanRoles(bound=bound_roles, role_names=role_names),
+        declared=declared,
         elect=plan_election(coverage_index),
     )
     return in_elected_datasets(plan, member_facts)
@@ -502,6 +507,7 @@ def _confirm_role_bearing(
     surviving_svs: list[str],
     bindings_admitted_dcids: tuple[str, ...],
     member_facts: dict[str, MemberFacts],
+    declared: DeclaredPolicies,
     member_population_exact: bool,
     roles_unverified: bool,
     bound_values: dict[str, list[str]],
@@ -531,6 +537,7 @@ def _confirm_role_bearing(
                 surviving_svs=surviving_svs,
                 admitted_dcids=bindings_admitted_dcids,
                 member_facts=member_facts,
+                declared=declared,
                 member_population_exact=member_population_exact,
                 role_declaration_unverified=roles_unverified,
                 open_flow_axis="origin",
@@ -549,6 +556,7 @@ def _confirm_role_bearing(
             surviving_svs=surviving_svs,
             admitted_dcids=bindings_admitted_dcids,
             member_facts=member_facts,
+            declared=declared,
             member_population_exact=member_population_exact,
             role_declaration_unverified=roles_unverified,
             open_flow_axis="destination",
@@ -636,6 +644,7 @@ def _confirm_role_bearing(
             bound_roles=bound_roles,
             years=years,
             coverage_index=coverage_index,
+            declared=declared,
         )
 
     held_outside_years: dict[str, list[Facet]] = {}
@@ -657,6 +666,7 @@ def _confirm_role_bearing(
             bound_roles=bound_roles,
             years=role_years(None, coverage_index.horizon),
             coverage_index=coverage_index,
+            declared=declared,
         )
         if held_outside_years
         else None
@@ -1043,7 +1053,8 @@ def graph_confirm_resolve(
     # The open axes the identity names. The others stay unnamed.
     elected_open_axes = admitted.open_axes
     surviving_svs = admitted.surviving_svs
-    refuse_declared_defaults(graph, surviving_svs)
+    # The request deadline bound to the context bounds the read.
+    declared = read_declared_policies(graph, surviving_svs, deadline=None)
     member_facts = admitted.member_facts
     names = admitted.names
     # Scope reads the survivors' roles: an optional role only a dropped
@@ -1071,6 +1082,7 @@ def graph_confirm_resolve(
         surviving_svs=surviving_svs,
         bindings_admitted_dcids=bindings_admitted_dcids,
         member_facts=member_facts,
+        declared=declared,
         member_population_exact=member_population_exact,
         roles_unverified=roles_unverified,
         bound_values=bound_values,

@@ -14,6 +14,7 @@ from search.engine.region.facets import (
     narrow_by_elected_unit,
 )
 from search.engine.retrieval.facet_election import merge_role_candidates
+from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
 from search.engine.retrieval.read_plan import BulkPlan
 from tests.engine._harness import lead_selected
 from tests.engine._role_candidates import role_candidate
@@ -95,6 +96,7 @@ def test_role_candidates_narrow_per_stat_var():
         facet_id="F1",
         selected=lead_selected(merge_role_candidates(index, ["sv_a", "sv_b"]), "F1"),
         candidates=merge_role_candidates(index, ["sv_a", "sv_b"]),
+        declared=NO_DECLARED_POLICIES,
     )
     admission = FacetAdmission(
         elected_units={"sv_a": frozenset({"USD"}), "sv_b": frozenset({"EUR"})}
@@ -116,6 +118,7 @@ def test_a_role_candidate_whose_unit_no_stat_var_elects_is_dropped():
         facet_id="F1",
         selected=lead_selected(merge_role_candidates(index, ["sv_a"]), "F1"),
         candidates=merge_role_candidates(index, ["sv_a"]),
+        declared=NO_DECLARED_POLICIES,
     )
 
     narrowed = plan.narrowed(FacetAdmission(elected_units={"sv_a": frozenset({"USD"})}).admits)

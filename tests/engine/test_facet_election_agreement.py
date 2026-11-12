@@ -23,6 +23,8 @@ from materialise import MaterialisationRequest, materialise_preview
 from materialise.facets import probe_facets
 from materialise.generation import _select_member_facets
 from materialise.graph import Facet as MaterialiseFacet
+from materialise.graph import FacetDefaultPolicy
+from materialise.group_facets import select_group_facets
 from materialise.window import RequestedWindow
 from origin_catalogue import BASE, DFO, Catalogue
 from search.engine.clients.graph import Facet
@@ -32,16 +34,21 @@ from search.engine.region import resolve_variable
 from search.engine.region.codes import OBSERVATIONS_SCOPE_PARTIAL
 from search.engine.region.state import EngineOptions
 from search.engine.retrieval import role_resolve
+from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES, read_declared_policies
 from search.engine.retrieval.member_facts import IndexMemberFacts
 from search.engine.retrieval.read_plan import (
+    BulkPlan,
     PairPlan,
     PlanSeries,
     in_elected_datasets,
     plan_pairs,
+    role_years,
     serves_continuation,
 )
+from search.engine.retrieval.role_scope import member_probes
 from search.heading.departure_fact import DepartureFact
 from search.models import Spec, TimeWindow
+from series_coverage.coverage_types import BoundRoles
 from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from tests.engine import test_latest_projection_facet as latest_projection
 from tests.engine import test_place_scope_default as place_scope
@@ -61,7 +68,7 @@ from tests.engine._harness import (
     _csv_row,
     bulk_plan,
 )
-from tests.fixtures import make_resolver
+from tests.fixtures import FakeGraph, make_resolver
 from tests.materialise._scope_availability import NO_SCOPE_READ
 from tests.materialise.conftest import FakeGraphReader
 from tests.origin_catalogue.fake_catalogue import provenance_row, restrictive_catalogue
@@ -685,12 +692,14 @@ def test_a_plan_and_a_mint_keep_a_member_by_one_dataset_test_before_they_rank():
         for place in (_KEN, _NOR)
     ]
     members = {sv: _dataset_member(_ELECTED)}
-    pairs = in_elected_datasets(plan_pairs(series, members=[sv], years=None), members)
+    pairs = in_elected_datasets(
+        plan_pairs(series, members=[sv], years=None, declared=NO_DECLARED_POLICIES), members
+    )
     assert isinstance(pairs, PairPlan)
     assert {f.provenance_id for s in pairs.served for f in s.group} == {_ELECTED}
     assert {f.provenance_id for f in pairs.probes[sv].candidates} == {_ELECTED}
 
-    unelected = plan_pairs(series, members=[sv], years=None)
+    unelected = plan_pairs(series, members=[sv], years=None, declared=NO_DECLARED_POLICIES)
     assert in_elected_datasets(unelected, {sv: _dataset_member(None)}) is unelected
     assert {f.provenance_id for s in unelected.served for f in s.group} == {_OTHER}
 
@@ -734,6 +743,145 @@ def test_a_role_answer_serves_an_index_member_from_its_elected_dataset(
         assert ranked.resolved.facets["provenance"].ref == _OTHER
 
 
+_ONE_CLIMATE = "provenance/ONEClimateFinance"
+_ONE_WEIGHTING = "ONEClimateFinanceWeighting"
+_FULL_VALUE = "OECDClimateFinanceFullValue"
+_RECEIVED = ("TESTFIXTURE/ElectionAgreement/ReceivedA", "TESTFIXTURE/ElectionAgreement/ReceivedB")
+_METHODS = {"fFull": _FULL_VALUE, "fWeighting": _ONE_WEIGHTING}
+_EMPTY_SIBLING = "TESTFIXTURE/ElectionAgreement/ReceivedEmpty"
+
+
+@pytest.mark.parametrize(
+    ("max_pairs", "plan_type"),
+    [pytest.param(1, BulkPlan, id="bulk"), pytest.param(1_000, PairPlan, id="pair")],
+)
+@pytest.mark.parametrize(
+    ("years", "window"),
+    [
+        pytest.param(
+            {"fFull": range(2010, 2021), "fWeighting": range(2015, 2021)},
+            (2010, 2020),
+            id="both-methods-in-the-window",
+        ),
+        # The weighting holds only years before the window, so only the full value reaches
+        # it: the declaration still decides the method, and the window the rows served.
+        pytest.param(
+            {"fFull": range(2015, 2021), "fWeighting": range(1990, 2001)},
+            (2015, 2020),
+            id="declared-method-outside-the-window",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "sibling",
+    [
+        pytest.param((), id="declaring-members"),
+        pytest.param((_EMPTY_SIBLING,), id="with-an-empty-undeclaring-sibling"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("declared", "served"),
+    [
+        pytest.param(_ONE_WEIGHTING, _ONE_WEIGHTING, id="declared"),
+        pytest.param("NoSuchMethod", _FULL_VALUE, id="declared-missing"),
+    ],
+)
+def test_a_member_mint_a_group_mint_and_a_plan_serve_one_declared_method(
+    search_settings,
+    declared: str,
+    served: str,
+    sibling: tuple[str, ...],
+    years: dict[str, range],
+    window: tuple[int, int],
+    max_pairs: int,
+    plan_type: type[BulkPlan | PairPlan],
+):
+    """Two members of an index-resolved family hold Kenya and Norway under two methods over
+    `years`, read over `window`. Both declare `declared` their default method in the graph,
+    and `sibling` declares nothing and holds no data. Given the same candidates and
+    declarations, each member's mint, the group's mint and the plan's own election, bulk or
+    per series by `max_pairs`, serve one method: the declared one, or the ranking's where no
+    candidate carries it. Each elects over the members' candidates in every year, so a
+    declared method holding no point in the window still wins and the window then limits
+    the rows. The sibling holds nothing, so neither the mint nor the plan counts it against
+    the declaration."""
+    search_settings(obs_preview_max_pairs=max_pairs)
+    declaring = list(_RECEIVED)
+    members = [*declaring, *sibling]
+    index = build_coverage_index(
+        [
+            (sv, facet_id, ABSENT_ENTITY, recipient, list(held))
+            for sv in declaring
+            for facet_id, held in years.items()
+            for recipient in (_KEN, _NOR)
+        ],
+        role_names=dict.fromkeys(members, RoleNames(donor=None, recipient="debtor")),
+        facet_metadata={
+            facet_id: FacetMetadata(
+                provenance_id=_ONE_CLIMATE,
+                measurement_method=method,
+                unit="USDollar",
+                observation_period="P1Y",
+            )
+            for facet_id, method in _METHODS.items()
+        },
+    )
+    policy = FacetDefaultPolicy(
+        resolved_ref=declared,
+        policy_node="defaultMeasurementMethod",
+        policy_version="1",
+        selection_reason="graph_declared",
+    )
+    graph = FakeGraphReader(
+        policies={(f"dcid:{sv}", "measurementMethod"): policy for sv in declaring}
+    )
+    bound: BoundRoles = {"recipient": frozenset({_KEN, _NOR})}
+    probes = member_probes(index, variables=members, bound=bound)
+    candidates = [probes[sv].candidates if sv in probes else [] for sv in members]
+    requests = [
+        MaterialisationRequest(
+            stat_var=f"dcid:{sv}",
+            role_bindings={"debtor": [_KEN, _NOR]},
+            declared_roles=("debtor",),
+            facet_bindings={},
+            window=RequestedWindow(kind="range", start_year=window[0], end_year=window[1]),
+            index_sourced=True,
+        )
+        for sv in members
+    ]
+
+    by_member = {
+        _select_member_facets(request, probes[sv].candidates, graph=graph)
+        .selections["measurementMethod"]
+        .ref
+        for sv, request in zip(declaring, requests[: len(declaring)], strict=True)
+    }
+    group = select_group_facets(requests, candidates, graph=graph)
+    plan = role_resolve._role_plan(
+        members,
+        member_facts=dict.fromkeys(members, _dataset_member(_ONE_CLIMATE)),
+        names={"destination": "debtor"},
+        subject_dcids=[_KEN, _NOR],
+        origin_dcids=[],
+        bound_roles=bound,
+        years=role_years(
+            DateRequest(window=TimeWindow(start_year=window[0], end_year=window[1]), latest=False),
+            index.horizon,
+        ),
+        coverage_index=index,
+        declared=read_declared_policies(
+            FakeGraph(default_methods=dict.fromkeys(declaring, declared)), members, deadline=None
+        ),
+    )
+    assert isinstance(plan, plan_type) and plan.index_sourced
+    elected = plan.selected if isinstance(plan, BulkPlan) else plan.selections
+
+    assert by_member == {served}
+    assert group.election.selections["measurementMethod"].ref == served
+    assert plan.declared_defaults == {"measurementMethod": policy}
+    assert {_METHODS[facet_id] for ids in elected.values() for facet_id in ids} == {served}
+
+
 @pytest.mark.parametrize(
     ("end_year", "continued_by"),
     [
@@ -770,6 +918,7 @@ def test_a_plan_and_a_mint_continue_a_series_with_its_estimates_alike(
         members=[weo.GDP],
         years=TimeWindow(start_year=2016, end_year=end_year),
         scope=scope,
+        declared=NO_DECLARED_POLICIES,
     )
     window = RequestedWindow(kind="range", start_year=2016, end_year=end_year)
     probe = plan.probes[weo.GDP]
@@ -894,6 +1043,7 @@ def test_a_plan_continues_the_whole_selection_a_mint_serves(
         members=[weo.GDP],
         years=TimeWindow(start_year=2016, end_year=end_year),
         scope=scope,
+        declared=NO_DECLARED_POLICIES,
     )
     minted = weo.rows(
         weo.mint(

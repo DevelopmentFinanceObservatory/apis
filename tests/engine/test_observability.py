@@ -11,6 +11,7 @@ from search.engine.conjoin import assemble_region
 from search.engine.envelope import make_diagnostics, now_ms
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import RegionResult
+from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
 from search.engine.retrieval.read_plan import plan_standard
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.engine.spec_build import (
@@ -87,6 +88,7 @@ def _plan(facets_by_sv: dict[str, list[Facet]]):
         {(sv, "country/KEN"): facets for sv, facets in facets_by_sv.items()},
         members=list(facets_by_sv),
         years=None,
+        declared=NO_DECLARED_POLICIES,
     )
 
 

@@ -21,17 +21,22 @@ from materialise.facets import (
     at_cadence,
     cadences_by_member,
     continuation,
+    facet_axis_value,
     merge_facets,
     overlaps_window,
     rank_pool,
 )
-from materialise.group_facets import elect_group, rank_group
+from materialise.group_facets import declared_in_pool, elect_group, rank_group
 from materialise.window import RequestedWindow
 from search.engine.clients.graph import Facet
 from search.engine.clients.sdmx import RoleFacetCandidate, RoleFacetIndex, RoleTuple
 
 if TYPE_CHECKING:
+    from materialise.graph import FacetDefaultPolicy
+    from search.engine.clients.sdmx import RolePairs
+    from search.engine.retrieval.facet_policy import DeclaredPolicies
     from series_coverage.coverage_types import FacetSpan
+    from series_coverage.schema import FacetMetadata
 
 
 @dataclass
@@ -92,9 +97,12 @@ def rank_scope_candidates(
     *,
     stat_vars: Sequence[str],
     window: RequestedWindow | None = None,
+    policies: Mapping[str, FacetDefaultPolicy] | None = None,
 ) -> list[ScopeFacetCandidate]:
-    """Narrow to candidates holding a point in `window` (`overlaps_window`, over the places'
-    dates when every place's facet carries them), then rank by `rank_pool`, led by the
+    """Keep the candidates carrying each declared default of `policies` some candidate
+    carries (`materialise.group_facets.declared_in_pool`), narrow to those holding a point in
+    `window` (`overlaps_window`, over the places' dates when every place's facet carries
+    them), then rank by `rank_pool`, led by the
     number of places each facet holds a point at inside `window`
     (`ScopeFacetCandidate.breadth`), then by the window years its span covers across every
     place.
@@ -103,10 +111,12 @@ def rank_scope_candidates(
     252 countries ranked 251/252 places (10,586 observations) above 216/252 (14,010). A
     window no candidate reaches leaves the pool whole.
     """
+    pool = [c.facet for c in candidates.values()]
     ranked = rank_pool(
-        [c.facet for c in candidates.values()],
+        pool,
         stat_vars=stat_vars,
         window=window,
+        declared=declared_in_pool(policies or {}, pool),
         breadth=SeriesCounts(
             counts={c.facet_id: c.breadth(window) for c in candidates.values()},
             union_of=lambda ids: len(
@@ -187,6 +197,104 @@ class RoleBulkCandidate:
     lifetime: dict[str, FacetSpan] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class _NoPairs:
+    """`clients.sdmx.RolePairs` holding no role tuple: a facet a StatVar holds at the bound
+    roles in some year but at no pair in a read's years (`with_declared_lifetime`)."""
+
+    def head(
+        self,
+        limit: int,
+        *,
+        first_year: int | None,
+        last_year: int | None,
+        with_data: bool = False,
+    ) -> list[tuple[RoleTuple, int]]:
+        return []
+
+    def n_obs(self, *, first_year: int | None, last_year: int | None) -> int:
+        return 0
+
+    def n_with_data(self, *, first_year: int | None, last_year: int | None) -> int:
+        return 0
+
+    def max_n_obs(self, *, first_year: int | None, last_year: int | None) -> int:
+        return 0
+
+    def year_span(self, *, first_year: int | None, last_year: int | None) -> tuple[int, int] | None:
+        return None
+
+    def year_counts(
+        self, *, first_year: int | None, last_year: int | None
+    ) -> list[tuple[RoleTuple, tuple[tuple[int, int], ...]]]:
+        return []
+
+    def members_with_data(
+        self, *, first_year: int | None, last_year: int | None, role: str | None = None
+    ) -> frozenset[str]:
+        return frozenset()
+
+    def excluding(self, *, role: str, dcids: frozenset[str]) -> RolePairs:
+        return self
+
+
+_NO_PAIRS = _NoPairs()
+
+
+def with_declared_lifetime(
+    index: RoleFacetIndex,
+    lifetime: Mapping[tuple[str, str], FacetSpan],
+    *,
+    declared: DeclaredPolicies,
+    facet_metadata: Mapping[str, FacetMetadata],
+) -> RoleFacetIndex:
+    """`index`, a role index over a read's years, with each of its StatVars also holding every
+    facet of `lifetime`, its facets at the bound roles over every year, that carries a default
+    the StatVar declares (`declared`) and holds no pair in those years: a candidate with
+    `facet_metadata`'s metadata, no pair and no member.
+
+    A mint elects over every year's facets (`materialise.facets.coverage_probe`), so a facet
+    carrying the declared default wins there however few of its points the window holds. A
+    bulk election given these candidates decides whether a member carries its declared
+    default over the same facets, and the window still limits the rows: such a facet serves
+    none. A StatVar declaring nothing keeps its index as built, so its ranking reads the
+    read's years alone."""
+    extended = {sv: list(candidates) for sv, candidates in index.items()}
+    for sv, facet_id in lifetime:
+        policies = declared.get(sv)
+        held = extended.get(sv)
+        meta = facet_metadata.get(facet_id)
+        if not policies or held is None or meta is None:
+            continue
+        if any(c.facet_id == facet_id for c in held):
+            continue
+        facet = Facet(
+            obs_count=0,
+            earliest_date=None,
+            latest_date=None,
+            facet_id=facet_id,
+            provenance_id=meta.provenance_id,
+            measurement_method=meta.measurement_method,
+            unit=meta.unit,
+        )
+        if any(facet_axis_value(facet, axis) == p.resolved_ref for axis, p in policies.items()):
+            held.append(
+                RoleFacetCandidate(
+                    facet_id=facet_id,
+                    members_by_role={},
+                    pair_count=0,
+                    latest_date=None,
+                    pairs=_NO_PAIRS,
+                    provenance_id=meta.provenance_id,
+                    measurement_method=meta.measurement_method,
+                    unit=meta.unit,
+                    scaling_factor=meta.scaling_factor,
+                    observation_period=meta.observation_period,
+                )
+            )
+    return extended
+
+
 def merge_role_candidates(
     index: RoleFacetIndex,
     sv_dcids: Sequence[str],
@@ -250,12 +358,14 @@ def rank_role_candidates(
     stat_vars: Sequence[str],
     window: RequestedWindow | None,
     index_sourced: bool = False,
+    policies: Mapping[str, FacetDefaultPolicy] | None = None,
 ) -> list[RoleBulkCandidate]:
     """The ranking of the one group a mint of `stat_vars` elects from `candidates`
     (`materialise.group_facets.rank_group`), top first: the facets whose agreement key, the
     facet id or under `index_sourced` the provenance and unit, the most StatVars hold, each
-    read over every StatVar's own copy (`_member_facets`), narrowed to those reaching
-    `window` and ranked by `rank_pool`, led by the role pairs each facet covers summed across
+    read over every StatVar's own copy (`_member_facets`), kept to those carrying each
+    declared default of `policies` they hold, narrowed to those reaching `window` and ranked
+    by `rank_pool`, led by the role pairs each facet covers summed across
     the StatVars, then the window years its span covers, then its observation count. A
     facet serving more StatVars therefore outranks a broader one serving fewer. Every read
     plan builds `candidates` from a role index over the window's years, so each holds a pair
@@ -277,6 +387,7 @@ def rank_role_candidates(
         stat_vars=stat_vars,
         window=window,
         index_sourced=index_sourced,
+        policies=policies,
         breadth=_pair_breadth(candidates, window=window),
     )
     if ranked is None:
@@ -372,6 +483,7 @@ def select_role_candidate(
     stat_vars: Sequence[str],
     time_period: Sequence[str] | None,
     index_sourced: bool = False,
+    policies: Mapping[str, FacetDefaultPolicy] | None = None,
 ) -> RoleBulkCandidate | None:
     """The facet a bulk role read serves from `candidates`: the top of
     `rank_role_candidates` over `time_period`'s window, the lead of the members' one group.
@@ -382,6 +494,7 @@ def select_role_candidate(
         stat_vars=stat_vars,
         window=window_of(time_period),
         index_sourced=index_sourced,
+        policies=policies,
     )
     return ranked[0] if ranked else None
 
@@ -393,6 +506,7 @@ def role_group_selection(
     time_period: Sequence[str] | None,
     lead: str | None,
     index_sourced: bool = False,
+    policies: Mapping[str, FacetDefaultPolicy] | None = None,
 ) -> tuple[dict[str, tuple[str, ...]], tuple[str, ...]]:
     """The one group a mint of `stat_vars` elects from `candidates`
     (`materialise.group_facets.elect_group`), over `time_period`'s window and ranked as
@@ -400,7 +514,8 @@ def role_group_selection(
     (`GroupElection.selected`), the facet `lead` first where the StatVar holds it, and the
     populated StatVars it leaves out (`GroupElection.unserved`), in `stat_vars` order. Under
     `index_sourced` the group is a provenance and unit, so a StatVar holding them under
-    another method's facet id serves that facet, as its mint dispatches it. A StatVar the
+    another method's facet id serves that facet, as its mint dispatches it, unless
+    `policies` declares a method the group holds, which then serves alone. A StatVar the
     group serves no facet of is absent from the first."""
     window = window_of(time_period)
     group = elect_group(
@@ -409,6 +524,7 @@ def role_group_selection(
         window=window,
         index_sourced=index_sourced,
         requires_provenance=False,
+        policies=policies,
         breadth=_pair_breadth(candidates, window=window),
     )
     if group is None:

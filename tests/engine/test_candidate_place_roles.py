@@ -2358,7 +2358,7 @@ def test_placeless_alternate_presence_read_runs_beside_the_elected_materialisati
 
     _, listing_end = spans.first("child_places_batch")
     read_start, _ = spans.first("availability_values")
-    elected_start, _ = spans.first("default_facet_policy")
+    elected_start, _ = spans.first("default_facet_policies")
     assert listing_end <= elected_start
     assert read_start == elected_start
 
@@ -2374,7 +2374,7 @@ def test_a_placeless_election_reads_its_siblings_presence_in_its_own_read(
 
     assert sorted(reads) == sorted([scenarios._MORT, scenarios._MORT_EST])
     read_end = max(end for name, _, _, end in spans.spans if name == "availability_values")
-    elected_start, _ = spans.first("default_facet_policy")
+    elected_start, _ = spans.first("default_facet_policies")
     assert read_end <= elected_start
 
 

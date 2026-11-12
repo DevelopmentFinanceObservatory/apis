@@ -20,24 +20,12 @@
    ],
    "requests": [
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
+      ]
      }
     ],
     [
@@ -613,45 +601,21 @@
    ],
    "requests": [
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_Nominal_ByCreditorScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Amount_EconomicActivity_GrossNationalIncome_Nominal_ByCreditorScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "provenance",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_Nominal_ByCreditorScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_Nominal_ByCreditorScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
+      ]
      }
     ],
     [
@@ -1678,24 +1642,12 @@
    ],
    "requests": [
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_Nominal_ByCreditorScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_Nominal_ByCreditorScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_Nominal_ByCreditorScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Amount_EconomicActivity_GrossNationalIncome_Nominal_ByCreditorScenario"
+      ]
      }
     ],
     [
@@ -2531,24 +2483,12 @@
    ],
    "requests": [
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_Nominal_ByCreditorScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_Nominal_ByCreditorScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_Nominal_ByCreditorScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Amount_EconomicActivity_GrossNationalIncome_Nominal_ByCreditorScenario"
+      ]
      }
     ],
     [
@@ -3078,24 +3018,12 @@
    ],
    "requests": [
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_Nominal_ByCreditorScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_Nominal_ByCreditorScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_Nominal_ByCreditorScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Amount_EconomicActivity_GrossNationalIncome_Nominal_ByCreditorScenario"
+      ]
      }
     ],
     [
@@ -3682,24 +3610,12 @@
    ],
    "requests": [
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
+      ]
      }
     ],
     [
@@ -4001,45 +3917,21 @@
    ],
    "requests": [
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "provenance",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
+      ]
      }
     ],
     [
@@ -5032,45 +4924,21 @@
    ],
    "requests": [
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_Nominal_ByCreditorScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Amount_EconomicActivity_GrossNationalIncome_Nominal_ByCreditorScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "provenance",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_Nominal_ByCreditorScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_Nominal_ByCreditorScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
+      ]
      }
     ],
     [
@@ -6122,45 +5990,21 @@
    ],
    "requests": [
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "provenance",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
+      ]
      }
     ],
     [
@@ -7129,24 +6973,12 @@
    ],
    "requests": [
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
@@ -7632,45 +7464,21 @@
    ],
    "requests": [
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventEstimatedScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
@@ -8270,45 +8078,21 @@
    ],
    "requests": [
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_UnrelatedTopicScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_UnrelatedTopicScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_UnrelatedTopicScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_UnrelatedTopicScenario"
+      ]
      }
     ],
     [
@@ -9334,24 +9118,12 @@
    ],
    "requests": [
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
@@ -9746,45 +9518,21 @@
    ],
    "requests": [
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventEstimatedScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
@@ -10362,45 +10110,21 @@
    ],
    "requests": [
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventEstimatedScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
@@ -11001,66 +10725,30 @@
    ],
    "requests": [
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventEstimatedScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventProjectedScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventProjectedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventProjectedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventProjectedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
@@ -12004,45 +11692,21 @@
    ],
    "requests": [
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
@@ -12647,45 +12311,21 @@
    ],
    "requests": [
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
@@ -13317,87 +12957,39 @@
    ],
    "requests": [
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventEstimatedScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventEstimatedScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
@@ -14115,24 +13707,12 @@
    ],
    "requests": [
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
@@ -14817,24 +14397,12 @@
    ],
    "requests": [
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
@@ -15108,24 +14676,12 @@
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
@@ -15583,24 +15139,12 @@
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
@@ -16134,24 +15678,12 @@
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
@@ -16620,24 +16152,12 @@
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
@@ -17095,24 +16615,12 @@
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
@@ -17582,24 +17090,12 @@
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
@@ -18101,24 +17597,12 @@
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
@@ -18780,45 +18264,21 @@
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_UnrelatedTopicScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_UnrelatedTopicScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_UnrelatedTopicScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_UnrelatedTopicScenario"
+      ]
      }
     ],
     [
@@ -19129,45 +18589,21 @@
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_UnrelatedTopicScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_UnrelatedTopicScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_UnrelatedTopicScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_UnrelatedTopicScenario"
+      ]
      }
     ],
     [
@@ -19989,45 +19425,21 @@
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_UnrelatedTopicScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_UnrelatedTopicScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_UnrelatedTopicScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_UnrelatedTopicScenario"
+      ]
      }
     ],
     [
@@ -20841,24 +20253,12 @@
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
@@ -21392,24 +20792,12 @@
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
@@ -21868,24 +21256,12 @@
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
@@ -22477,24 +21853,12 @@
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
@@ -22669,45 +22033,21 @@
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventEstimatedScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
@@ -23272,45 +22612,21 @@
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventEstimatedScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
@@ -23863,45 +23179,21 @@
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventEstimatedScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
@@ -24507,66 +23799,30 @@
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventEstimatedScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventProjectedScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventProjectedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventProjectedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventProjectedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
@@ -25490,66 +24746,30 @@
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventEstimatedScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_UnrelatedTopicScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_UnrelatedTopicScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_UnrelatedTopicScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_UnrelatedTopicScenario"
+      ]
      }
     ],
     [
@@ -26472,45 +25692,21 @@
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventEstimatedScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
@@ -27162,66 +26358,30 @@
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventEstimatedScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_UnrelatedTopicScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_UnrelatedTopicScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_UnrelatedTopicScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_UnrelatedTopicScenario"
+      ]
      }
     ],
     [
@@ -28286,24 +27446,12 @@
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
@@ -28486,66 +27634,30 @@
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventEstimatedScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventProjectedScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventProjectedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventProjectedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventProjectedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
@@ -29540,66 +28652,30 @@
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventEstimatedScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventProjectedScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventProjectedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventProjectedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventProjectedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
@@ -30704,45 +29780,21 @@
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventEstimatedScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
@@ -30992,66 +30044,30 @@
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventEstimatedScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventProjectedScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventProjectedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventProjectedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventProjectedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
@@ -31854,24 +30870,12 @@
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_AtlasScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_AtlasScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_AtlasScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Amount_EconomicActivity_GrossNationalIncome_AtlasScenario"
+      ]
      }
     ],
     [
@@ -32123,66 +31127,30 @@
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_AtlasScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Amount_EconomicActivity_GrossNationalIncome_AtlasScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "provenance",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_AtlasScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "unit",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_AtlasScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
+      ]
      }
     ],
     [
@@ -33183,66 +32151,30 @@
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_AtlasScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Amount_EconomicActivity_GrossNationalIncome_AtlasScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "provenance",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_AtlasScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "unit",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_AtlasScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
+      ]
      }
     ],
     [
@@ -34236,66 +33168,30 @@
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_AtlasScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Amount_EconomicActivity_GrossNationalIncome_AtlasScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "provenance",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_AtlasScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "unit",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_AtlasScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
+      ]
      }
     ],
     [
@@ -34983,66 +33879,30 @@
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventEstimatedScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventProjectedScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventProjectedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventProjectedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventProjectedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
@@ -35973,66 +34833,30 @@
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventEstimatedScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventProjectedScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventProjectedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventProjectedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventProjectedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
@@ -36962,66 +35786,30 @@
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventEstimatedScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventProjectedScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventProjectedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventProjectedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventProjectedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
@@ -37906,24 +36694,12 @@
    ],
    "requests": [
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
+      ]
      }
     ],
     [
@@ -38423,45 +37199,21 @@
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "provenance",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
+      ]
      }
     ],
     [
@@ -39383,45 +38135,21 @@
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "provenance",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
+      ]
      }
     ],
     [
@@ -40324,24 +39052,12 @@
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
+      ]
      }
     ],
     [
@@ -40663,66 +39379,30 @@
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_AtlasScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Amount_EconomicActivity_GrossNationalIncome_AtlasScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "provenance",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_AtlasScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "unit",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_AtlasScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
+      ]
      }
     ],
     [
@@ -41723,45 +40403,21 @@
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "provenance",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
+      ]
      }
     ],
     [
@@ -42665,45 +41321,21 @@
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
      }
     ],
     [
-     "FakeGraph.default_facet_policy",
+     "FakeGraph.default_facet_policies",
      {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_UnrelatedTopicScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_UnrelatedTopicScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_UnrelatedTopicScenario"
+      "deadline": null,
+      "stat_vars": [
+       "Count_UnrelatedTopicScenario"
+      ]
      }
     ],
     [

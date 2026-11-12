@@ -1001,6 +1001,7 @@ async def _probe_counted_slot_options(
         entities=state.place.roles.resolved_entities,
         open_axes=state.place.roles.open_axes,
         date_request=state.date_request,
+        graph=state.graph,
         materialise_graph=state.materialise_graph,
         # Option probes use filtered entities. Observation fetches use the resolved scope.
         place_dcids=setup.flat_probe_entities,

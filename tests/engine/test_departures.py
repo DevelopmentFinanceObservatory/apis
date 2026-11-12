@@ -25,6 +25,7 @@ from search.engine.departures import (
     without_request_words,
 )
 from search.engine.entry.raw_text import _dropped_phrase_fact
+from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
 from search.engine.retrieval.read_plan import WindowGap, data_years, plan_standard, served_dates
 from search.engine.spec_build import with_members_left_out
 from search.heading.departure_fact import DepartureFact, UnservedMembers, ordered_facts
@@ -146,6 +147,7 @@ def test_year_unavailable_states_where_the_data_starts_unclipped(start, served, 
         members=["Count_Person"],
         years=TimeWindow(start_year=start, end_year=2015),
         places=["country/ETH"],
+        declared=NO_DECLARED_POLICIES,
     )
     spec = _spec(
         served=[served_dates(plan)["Count_Person"]],

@@ -29,6 +29,7 @@ from search.engine.quantity_read import QuantityOutput
 from search.engine.region.convertibility import decide_spec_unit
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.state import EngineOptions
+from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
 from search.engine.retrieval.read_plan import facets_served, plan_standard
 from search.models import IdentityUnitRequest, Spec, TimeWindow
 from tests.engine._binders import elected_reply
@@ -226,7 +227,9 @@ def test_a_converting_unit_decision_dispatches_the_facet_the_plan_cites(from_ans
         _dollar_facet("f-long", _LONG, _LONG_YEARS, dated=True),
         _dollar_facet("f-short", _SHORT, _SHORT_YEARS, dated=True),
     ]
-    plan = plan_standard({(_AMOUNT, _KEN): dated}, members=[_AMOUNT], years=_WINDOW)
+    plan = plan_standard(
+        {(_AMOUNT, _KEN): dated}, members=[_AMOUNT], years=_WINDOW, declared=NO_DECLARED_POLICIES
+    )
     assert [f.provenance_id for f in facets_served(plan)] == [_SHORT]
 
     materialise_graph = FakeGraphReader(
@@ -313,6 +316,7 @@ def test_at_two_places_every_election_names_the_answers_one_group(
         {(_AMOUNT, place): facets(place) for place in held if held[place]},
         members=[_AMOUNT],
         years=years,
+        declared=NO_DECLARED_POLICIES,
     )
     groups = {s.group_ids for s in plan.series if s.group}
     sources = {f.provenance_id for s in plan.series for f in s.group}
@@ -394,7 +398,9 @@ def test_a_mint_passes_over_a_facet_with_a_gap_across_the_window_as_the_answer_d
         )
         for f in _GAP_OBS[f"{_PERSON}|{_ZETA}"]
     ]
-    plan = plan_standard({(_PERSON, _ZETA): dated}, members=[_PERSON], years=window)
+    plan = plan_standard(
+        {(_PERSON, _ZETA): dated}, members=[_PERSON], years=window, declared=NO_DECLARED_POLICIES
+    )
     assert [f.provenance_id for f in facets_served(plan)] == [_RECENT]
 
     materialise_graph, materialise_sdmx = materialise_double_from_obs(_GAP_OBS)

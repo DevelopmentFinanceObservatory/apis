@@ -55,7 +55,11 @@ class _ProfileGraph(FakeGraphReader):
 
 
 class _NoGraph:
-    """A graph and availability reader a coverage-read profile must never call."""
+    """A graph and availability reader a coverage-read profile reads only declared defaults
+    from, which the origin client answers from the catalogue's tables; here none."""
+
+    def default_facet_policy(self, *, stat_var: str, axis: str) -> None:
+        return None
 
     def __getattr__(self, name: str):
         raise AssertionError(f"a role-bearing profile read the graph: {name}")

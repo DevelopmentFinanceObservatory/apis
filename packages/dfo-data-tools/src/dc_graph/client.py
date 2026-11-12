@@ -46,6 +46,7 @@ from dc_graph.errors import (
 from dc_graph.visible_arcs import dfo_visible
 from dfo_platform.cloud_run_auth import cloud_run_auth
 from dfo_platform.executor import submit_with_context
+from dfo_platform.lru_memo import LruMemo
 from dfo_platform.request_deadline import bounded_deadline
 from dfo_platform.single_flight_cache import SingleFlightCache, WaitTimeout
 from dfo_platform.timings import count
@@ -79,6 +80,22 @@ real DCIDs and literal arc values.
 """
 
 _NAME_PROPERTIES: Final[tuple[str, str]] = ("name", "alternateName")
+
+DEFAULT_FACET_ARCS: Final[Mapping[str, str]] = MappingProxyType(
+    {"measurementMethod": "defaultMeasurementMethod"}
+)
+"""The StatVar arc that declares each facet axis's default (`declared_facet_policy`). An axis
+absent here has no graph-declared default."""
+
+_GRAPH_DECLARED_POLICY_VERSION: Final[str] = "1"
+"""`FacetDefaultPolicy.policy_version` of every arc-declared default."""
+
+_GRAPH_DECLARED_SELECTION_REASON: Final[str] = "graph_declared"
+"""`FacetDefaultPolicy.selection_reason` of every arc-declared default."""
+
+_CONFLICTING_DECLARATIONS_LOGGED: Final[LruMemo[tuple[str, str], bool]] = LruMemo(4_096)
+"""The `(stat_var, arc)` pairs `declared_facet_policy` has logged as declaring several values,
+the most recent kept, so each logs once per process however often it is read."""
 
 CURRENCY_UNIT_OF_MEASURE_ISO_CODES: Final[Mapping[str, str]] = MappingProxyType(
     {"USDollar": "USD", "Euro": "EUR", "CanadianDollar": "CAD", "IndianRupee": "INR"}
@@ -2120,8 +2137,25 @@ class GraphClient:
         ).get(stat_var, {})
 
     def default_facet_policy(self, *, stat_var: str, axis: str) -> FacetDefaultPolicy | None:
-        """Always `None`. No declared-default graph convention exists yet."""
-        return None
+        """The default `stat_var` declares for `axis` on its `DEFAULT_FACET_ARCS` arc, read
+        from its `->*` arcs through `node_arcs` and its cache (`declared_facet_policy`). An axis
+        without an arc reads nothing. `stat_var` may carry the `dcid:` prefix materialise
+        requests use."""
+        arc = DEFAULT_FACET_ARCS.get(axis)
+        if arc is None:
+            return None
+        dcid = stat_var.removeprefix("dcid:")
+        arcs = self.node_arcs(dcid)
+        return declared_facet_policy(dcid, arc=arc, refs=parse_arcs(arcs or {}, [arc])[arc])
+
+    def default_facet_policies(
+        self, stat_vars: Sequence[str], *, deadline: float | None = None
+    ) -> dict[str, dict[str, FacetDefaultPolicy]]:
+        """The defaults each of `stat_vars`, bare dcids, declares (`declared_facet_policies`),
+        read in one `node_arcs_batch` by `deadline`, which shares its cache with
+        `default_facet_policy`."""
+        dcids = list(dict.fromkeys(stat_vars))
+        return declared_facet_policies(self.node_arcs_batch(dcids, deadline=deadline))
 
     def un_observation_reader(self) -> None:
         """Always `None`. UN System Data Commons rows are read through
@@ -2466,6 +2500,59 @@ def _merge_node_arcs_page(merged: dict[str, dict], page_data: dict) -> None:
         for prop, prop_data in page_arcs.items():
             nodes = node_entry["arcs"].setdefault(prop, {"nodes": []})["nodes"]
             nodes.extend(prop_data.get("nodes", []))
+
+
+def declared_facet_policy(
+    stat_var: str, *, arc: str, refs: Sequence[str]
+) -> FacetDefaultPolicy | None:
+    """The default facet policy `stat_var` declares through `refs`, the distinct targets of its
+    `arc` (`DEFAULT_FACET_ARCS`). The policy names `arc` as its `policy_node`, so a trace
+    records which declaration chose the facet. `None` when the StatVar carries no target, and
+    `None` with an error log, once per process for each StatVar and arc, when it carries
+    several, since two defaults decide nothing and the unbound axis takes the deployment
+    ranking, as it does without a declaration."""
+    if not refs:
+        return None
+    if len(refs) > 1:
+        if _CONFLICTING_DECLARATIONS_LOGGED.get((stat_var, arc)) is None:
+            _CONFLICTING_DECLARATIONS_LOGGED.put((stat_var, arc), True)
+            logger.error(
+                "%s declares %d values on %s, so no default applies: %s",
+                stat_var,
+                len(refs),
+                arc,
+                list(refs),
+            )
+        return None
+    return FacetDefaultPolicy(
+        resolved_ref=refs[0],
+        policy_node=arc,
+        policy_version=_GRAPH_DECLARED_POLICY_VERSION,
+        selection_reason=_GRAPH_DECLARED_SELECTION_REASON,
+    )
+
+
+def declared_facet_policies(
+    arcs_by_dcid: Mapping[str, dict | None],
+) -> dict[str, dict[str, FacetDefaultPolicy]]:
+    """The default each StatVar of `arcs_by_dcid`, its `->*` arcs, declares on each facet
+    axis (`DEFAULT_FACET_ARCS`, `declared_facet_policy`), by StatVar and then by axis. A
+    StatVar or axis declaring nothing is absent."""
+    declared: dict[str, dict[str, FacetDefaultPolicy]] = {}
+    for dcid, arcs in arcs_by_dcid.items():
+        axes = {
+            axis: policy
+            for axis, arc in DEFAULT_FACET_ARCS.items()
+            if (
+                policy := declared_facet_policy(
+                    dcid, arc=arc, refs=parse_arcs(arcs or {}, [arc])[arc]
+                )
+            )
+            is not None
+        }
+        if axes:
+            declared[dcid] = axes
+    return declared
 
 
 def parse_arcs(

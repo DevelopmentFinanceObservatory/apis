@@ -1331,6 +1331,7 @@ def _relaxed_binding_suggestion(
                             shape=shape,
                             slot_options=slot_opts,
                             entities=_probe_entities,
+                            graph=ctx.graph,
                             materialise_graph=ctx.materialise_graph,
                             date_request=ctx.date_request,
                             place_dcids=_probe_places,

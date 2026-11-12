@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from search.engine.clients.graph import Facet
 from search.engine.region.facets import answer_facet_dcids, answer_facets
+from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
 from search.engine.retrieval.read_plan import PairPlan, PlanSeries
 from search.models import IdentityFacetValueRequest, IdentityUnitRequest, Spec
 from search.render.plan import render_sentence_plan
@@ -52,6 +53,7 @@ def _narrow_plan() -> PairPlan:
                 group=(_native_usd(),),
             ),
         ),
+        declared=NO_DECLARED_POLICIES,
     )
 
 
@@ -73,6 +75,7 @@ def _wide_plan() -> PairPlan:
         ),
         scope=True,
         scope_facet_id="f-usd",
+        declared=NO_DECLARED_POLICIES,
     )
 
 

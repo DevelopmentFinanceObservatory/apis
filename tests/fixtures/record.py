@@ -281,9 +281,15 @@ class _RecordingGraph:
         return self._graph.node_type(dcid)
 
     def default_facet_policy(self, *, stat_var: str, axis: str) -> FacetDefaultPolicy | None:
-        # Passed through unrecorded: the replaying `FakeGraph` declares none, and a declared
-        # default refuses resolve before any recorded row is read.
+        # Passed through unrecorded: the replaying `FakeGraph` reads a declaration from the
+        # node arcs it holds.
         return self._graph.default_facet_policy(stat_var=stat_var, axis=axis)
+
+    def default_facet_policies(
+        self, stat_vars: Sequence[str], *, deadline: float | None = None
+    ) -> dict[str, dict[str, FacetDefaultPolicy]]:
+        # Passed through unrecorded, as `default_facet_policy` is.
+        return self._graph.default_facet_policies(stat_vars, deadline=deadline)
 
     def generation_stamp(self) -> GenerationStamp:
         return self._graph.generation_stamp()

@@ -180,6 +180,7 @@ def _enrich_finalize_options(
             entities=state.place.roles.resolved_entities,
             open_axes=state.place.roles.open_axes,
             date_request=state.date_request,
+            graph=state.graph,
             materialise_graph=state.materialise_graph,
             place_dcids=state.flat_probe_entities,
             include_option_coverage=True,

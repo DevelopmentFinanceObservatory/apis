@@ -17,6 +17,7 @@ from search.engine.extract import DateRequest
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region import resolve_variable
 from search.engine.region.result import RegionResult
+from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
 from search.engine.retrieval.read_plan import plan_standard
 from search.engine.retrieval.retrieve import MemberPopulation
 from search.engine.retrieval.role_resolve import _zero_observation_carrier
@@ -447,7 +448,9 @@ def test_held_data_under_a_latest_or_dateless_read_makes_no_window_answer(
     )
     standard_carrier = _no_data_in_years(
         (_PERSON, held, None),
-        dateless_plan=plan_standard({}, members=[_PERSON], years=None),
+        dateless_plan=plan_standard(
+            {}, members=[_PERSON], years=None, declared=NO_DECLARED_POLICIES
+        ),
         date_request=date_request,
         default_scope_probe=False,
         member_facts={},

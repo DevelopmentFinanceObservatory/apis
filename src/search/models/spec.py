@@ -59,8 +59,9 @@ class ResolvedFacet(StrictModel):
     basis: FacetBasis = Field(
         description=(
             "'bound' when this axis was constrained by the request, "
-            "'declared_default' when an unbound axis was completed from a "
-            "declared deployment policy, 'fallback' when neither applies and "
+            "'declared_default' when an unbound axis took the default the "
+            "StatVar declares in the graph (its defaultMeasurementMethod arc on "
+            "measurementMethod), 'fallback' when neither applies and "
             "the deployment policy supplied the value: facets holding a point in "
             "the requested years first, then DFO's facets for a variable both DFO "
             "and base Data Commons hold, then the most places or role tuples "

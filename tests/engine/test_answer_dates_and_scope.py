@@ -33,6 +33,7 @@ from search.engine.extract import DateRequest
 from search.engine.region import resolve_spec_resubmit
 from search.engine.region.state import EngineOptions
 from search.engine.retrieval.coverage import CoverageForm, scope_members
+from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
 from search.engine.retrieval.member_facts import ArcsMemberFacts
 from search.engine.retrieval.read_plan import (
     BulkPlan,
@@ -200,7 +201,7 @@ _NAMED_FIRST = [
     "node_arcs_batch",
     "node_labels_batch",
     "node_arcs_many",
-    *["default_facet_policy"] * 3,
+    "default_facet_policies",
     "node_labels_batch",
     "node_types_batch",
     "node_labels_batch",
@@ -211,7 +212,7 @@ _NAMED_RESUBMIT = [
     # The posted places are no party of the fixture index, so the role kind check types them
     # (`search.role_kinds.check_role_kinds`).
     "node_arcs_many",
-    *["default_facet_policy"] * 3,
+    "default_facet_policies",
     "node_labels_batch",
     "node_types_batch",
     "node_labels_batch",
@@ -220,13 +221,13 @@ _DISCOVERED_FIRST = [
     "detect_svs",
     "node_arcs_batch",
     "node_labels_batch",
-    *["default_facet_policy"] * 3,
+    "default_facet_policies",
     *["node_labels_batch"] * 2,
     "node_types_batch",
 ]
 _DISCOVERED_RESUBMIT = [
     "node_arcs_batch",
-    *["default_facet_policy"] * 3,
+    "default_facet_policies",
     "node_labels_batch",
     "node_labels_batch",
     "node_types_batch",
@@ -242,7 +243,7 @@ _STANDARD_FIRST = [
     # (`phase_rank_bind._read_denominators`).
     "node_arcs_batch",
     "node_labels_batch",
-    *["default_facet_policy"] * 3,
+    "default_facet_policies",
     "observation_facets_batch",
     "node_labels_batch",
     "node_types_batch",
@@ -257,7 +258,7 @@ _STANDARD_RESUBMIT = [
     "node_arcs_batch",
     "node_labels_batch",
     "node_labels_batch",
-    *["default_facet_policy"] * 3,
+    "default_facet_policies",
     "observation_facets_batch",
     "node_labels_batch",
     "node_types_batch",
@@ -865,6 +866,7 @@ def _named_plan(index) -> ReadPlan:
         bound_roles={"recipient": frozenset(_RECIPIENTS)},
         years=role_years(None, index.horizon),
         coverage_index=index,
+        declared=NO_DECLARED_POLICIES,
     )
 
 
@@ -881,6 +883,7 @@ def _discovered_plan(index) -> ReadPlan | None:
         facet_filters={},
         date_request=None,
         coverage_snapshot=FakeCoverageService(index).snapshot(),
+        declared=NO_DECLARED_POLICIES,
     )
     assert isinstance(result, Materialised)
     return result.read_plan
@@ -1003,6 +1006,7 @@ def test_a_per_pair_plan_builds_only_the_series_holding_a_point_in_its_years(
             facet_filters={},
             date_request=_RECENT,
             coverage_snapshot=FakeCoverageService(index).snapshot(),
+            declared=NO_DECLARED_POLICIES,
         )
         assert isinstance(result, Materialised)
         plan = result.read_plan
@@ -1016,6 +1020,7 @@ def test_a_per_pair_plan_builds_only_the_series_holding_a_point_in_its_years(
             bound_roles={"recipient": frozenset({_ALAND, _BLAND})},
             years=years,
             coverage_index=index,
+            declared=NO_DECLARED_POLICIES,
         )
 
     assert isinstance(plan, PairPlan)

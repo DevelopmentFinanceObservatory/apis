@@ -12,6 +12,7 @@ import pytest
 from materialise.facets import FacetSelection, UnitRequest
 from search.engine.clients.graph import Facet
 from search.engine.region.convertibility import unit_request_period
+from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
 from search.engine.retrieval.read_plan import PairPlan, PlanSeries, served_dates
 from search.engine.unit.conversion import ConversionPeriod
 from search.engine.unit.conversion_catalogue import ConversionCatalogue, RecipeTables
@@ -71,7 +72,7 @@ def _plan(first: int, last: int, *, provenance: str = _CRS) -> PairPlan:
         candidates=(facet,),
         group=(facet,),
     )
-    return PairPlan(members=(_SV,), years=None, series=(series,))
+    return PairPlan(members=(_SV,), years=None, series=(series,), declared=NO_DECLARED_POLICIES)
 
 
 def _elected(

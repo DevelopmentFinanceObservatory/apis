@@ -40,6 +40,7 @@ from search.engine.region.facets import FilteredAnswer
 from search.engine.retrieval import read_plan
 from search.engine.retrieval.coverage import CoverageForm, answer_coverage, answer_headline
 from search.engine.retrieval.facet_election import RoleBulkCandidate
+from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
 from search.engine.retrieval.member_facts import ArcsMemberFacts
 from search.engine.retrieval.read_plan import BulkPlan, PairPlan, PlanSeries, PlanYears, ReadPlan
 from search.engine.retrieval.retrieve import Materialised
@@ -146,7 +147,7 @@ def _pair_plan(
         )
         for r in recipients
     )
-    return PairPlan(members=(_SV,), years=plan_years, series=series)
+    return PairPlan(members=(_SV,), years=plan_years, series=series, declared=NO_DECLARED_POLICIES)
 
 
 def _refusal(plan, *, currency: str, rates) -> RateCoverageGapError | None:
@@ -494,6 +495,7 @@ def _recipient_plan(
             DateRequest(window=None, latest=True) if latest else None, index.horizon
         ),
         coverage_index=index,
+        declared=NO_DECLARED_POLICIES,
     )
     return plan, index
 
@@ -605,6 +607,7 @@ def two_flow_bulk_plan(
         bound_roles={"recipient": frozenset(recipients), "donor": frozenset({_DONOR})},
         years=read_plan.role_years(DateRequest(window=None, latest=True), index.horizon),
         coverage_index=index,
+        declared=NO_DECLARED_POLICIES,
     )
     mat = Materialised(
         sv_dcids=list(years),
@@ -729,6 +732,7 @@ def _bulk_plan_of(
         facet_id="f1",
         selected=lead_selected(candidates, "f1"),
         candidates=candidates,
+        declared=NO_DECLARED_POLICIES,
     )
 
 
@@ -933,7 +937,7 @@ def _flows_plan(pairs: tuple[tuple[str, str], ...]) -> PairPlan:
         )
         for donor, recipient in pairs
     )
-    return PairPlan(members=(_SV,), years=None, series=series)
+    return PairPlan(members=(_SV,), years=None, series=series, declared=NO_DECLARED_POLICIES)
 
 
 def test_a_donor_whose_rows_all_went_to_omitted_recipients_needs_no_deflator():
@@ -1066,7 +1070,7 @@ def _latest_series(*facets: Facet) -> PairPlan:
         candidates=facets,
         group=facets,
     )
-    return PairPlan(members=(_SV,), years="latest", series=(series,))
+    return PairPlan(members=(_SV,), years="latest", series=(series,), declared=NO_DECLARED_POLICIES)
 
 
 def test_a_latest_read_checks_only_the_facets_holding_the_groups_latest_year():
@@ -1159,7 +1163,7 @@ def _sparse_plan() -> PairPlan:
         candidates=(summary,),
         group=(summary,),
     )
-    return PairPlan(members=(_SV,), years=None, series=(series,))
+    return PairPlan(members=(_SV,), years=None, series=(series,), declared=NO_DECLARED_POLICIES)
 
 
 class _DatedFacets:

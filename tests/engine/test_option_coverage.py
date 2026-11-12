@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import time
+from dataclasses import replace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -213,6 +214,7 @@ class TestStandardOptionCoverage:
             entities={"observationAbout": [_RECIPIENT]},
             materialise_graph=materialise_graph,
             date_request=None,
+            graph=FakeGraph(),
         )
 
         assert len(result) == 1
@@ -264,6 +266,7 @@ class TestStandardOptionCoverage:
                 date_request=DateRequest(
                     window=TimeWindow(start_year=2018, end_year=2021), latest=False
                 ),
+                graph=FakeGraph(),
             )
 
         coverage = _by_dcid(result[0].options)["Male"].coverage
@@ -298,6 +301,7 @@ class TestStandardOptionCoverage:
             date_request=DateRequest(
                 window=TimeWindow(start_year=2018, end_year=2026), latest=False
             ),
+            graph=FakeGraph(),
         )
 
         coverage = _by_dcid(result[0].options)["Male"].coverage
@@ -336,6 +340,7 @@ class TestStandardOptionCoverage:
                     ),
                 )
             },
+            graph=FakeGraph(),
         )
 
         by_dcid = _by_dcid(result[0].options)
@@ -356,6 +361,7 @@ class TestStandardOptionCoverage:
             entities={"observationAbout": [_RECIPIENT]},
             materialise_graph=materialise_graph,
             date_request=None,
+            graph=FakeGraph(),
         )
 
         by_dcid = _by_dcid(result[0].options)
@@ -377,6 +383,7 @@ class TestStandardOptionCoverage:
             entities={},
             materialise_graph=materialise_graph,
             date_request=None,
+            graph=FakeGraph(),
         )
 
         assert all(o.coverage is None for so in result for o in so.options)
@@ -389,6 +396,7 @@ class TestStandardOptionCoverage:
             entities={"observationAbout": [_RECIPIENT]},
             materialise_graph=materialise_graph,
             date_request=None,
+            graph=FakeGraph(),
         )
         assert result == []
 
@@ -406,6 +414,7 @@ class TestStandardOptionCoverage:
             entities={"observationAbout": [_RECIPIENT]},
             materialise_graph=materialise_graph,
             date_request=None,
+            graph=FakeGraph(),
         )
 
         by_dcid = _by_dcid(result[0].options)
@@ -425,6 +434,7 @@ class TestStandardOptionCoverage:
             entities={"observationAbout": [_RECIPIENT]},
             materialise_graph=materialise_graph,
             date_request=None,
+            graph=FakeGraph(),
         )
 
         by_dcid = _by_dcid(result[0].options)
@@ -452,6 +462,7 @@ class TestStandardOptionCoverage:
             entities={"observationAbout": [_RECIPIENT]},
             materialise_graph=materialise_graph,
             date_request=None,
+            graph=FakeGraph(),
         )
 
         assert materialise_graph.calls["observation_facets_batch_many"] == 1
@@ -960,6 +971,7 @@ def test_probe_non_infra_error_propagates_instead_of_degrading(monkeypatch):
             include_option_coverage=True,
             facets_pinned=False,
             open_axes=frozenset(),
+            graph=FakeGraph(),
         )
 
 
@@ -987,6 +999,7 @@ def test_real_materialise_transport_failure_degrades_through_the_real_translatio
         include_option_coverage=True,
         facets_pinned=False,
         open_axes=frozenset(),
+        graph=FakeGraph(),
     )
     assert all(o.coverage is None for so in enriched for o in so.options)
     assert warn is not None
@@ -1008,10 +1021,49 @@ def test_an_option_with_no_point_in_the_window_shows_no_data() -> None:
         entities={"observationAbout": [_RECIPIENT]},
         materialise_graph=graph,
         date_request=DateRequest(window=TimeWindow(start_year=2021, end_year=None), latest=False),
+        graph=FakeGraph(),
     )
     by_dcid = _by_dcid(result[0].options)
     assert by_dcid["Male"].coverage.has_data is False
     assert by_dcid["Female"].coverage.window.start_year == 2021
+
+
+@pytest.mark.parametrize(
+    ("default_methods", "observations"),
+    [
+        pytest.param({_FEMALE_SV: "ModelEstimate"}, 5, id="declared"),
+        pytest.param({}, 14, id="undeclared"),
+    ],
+)
+def test_an_options_coverage_counts_the_method_its_member_declares(
+    default_methods: dict[str, str], observations: int
+) -> None:
+    """The Female option's member holds a survey series from 2010 and a model estimate from
+    2019 under one source. Ranked alone its coverage counts the survey's 14 points; with the
+    model estimate declared its default method in the graph, it counts the estimate's 5, as
+    the answer that picking it serves does."""
+    graph = FakeGraphReader(
+        facets={
+            (_FEMALE_SV, _RECIPIENT): [
+                replace(
+                    _facet(obs_count=14, earliest="2010", latest="2023"),
+                    measurement_method="Survey",
+                ),
+                replace(
+                    _facet(obs_count=5, earliest="2019", latest="2023"),
+                    measurement_method="ModelEstimate",
+                ),
+            ],
+        }
+    )
+    result = standard_option_coverage(
+        shape=_gender_shape(),
+        slot_options=[_gender_slot_options("Female")],
+        entities={"observationAbout": [_RECIPIENT]},
+        graph=FakeGraph(default_methods=default_methods),
+        materialise_graph=graph,
+    )
+    assert _by_dcid(result[0].options)["Female"].coverage.observation_count == observations
 
 
 # ---------------------------------------------------------------------------
@@ -1099,6 +1151,7 @@ def test_the_probe_counts_the_series_a_pick_serves_and_drops_a_value_no_member_c
         include_option_coverage=True,
         facets_pinned=False,
         open_axes=frozenset(),
+        graph=FakeGraph(),
     )
 
     assert warn is None

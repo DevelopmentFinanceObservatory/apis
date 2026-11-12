@@ -1,8 +1,8 @@
 """Build the mutable deployment capabilities document linked from `/schema`.
 
 Published caps come from enforced constants. Mint input kinds and formats report dispatch
-liveness. Revision provenance and graph-declared default facet policies are disabled. Unbound facet
-unbound axes use this deployment's fallback policy when candidates exist.
+liveness. Revision provenance is disabled. An unbound facet axis takes the default its StatVar
+declares in the graph, and otherwise this deployment's fallback policy when candidates exist.
 
 Callers supply `capability_version`, `build`, `code_index_stamp`, and `declarations` to avoid a
 self-referential version hash and keep this module independent of the code-index loader.
@@ -151,8 +151,9 @@ class CodeIndexStamp(BaseModel):
 
 class DeploymentFacetPolicy(BaseModel):
     """This deployment's own default-facet policy: what an unbound facet
-    axis falls back to once `default_facet_policies_live` (a graph-declared,
-    per-StatVar policy) is `false`. See `docs/datasets-facet-policy.md`.
+    axis falls back to when the graph declares no default for that StatVar
+    and axis, or declares one no candidate carries (`default_facet_policies_live`).
+    See `docs/datasets-facet-policy.md`.
     """
 
     policy: str = Field(description="the deployment default policy's own id")
@@ -223,9 +224,10 @@ class Capabilities(BaseModel):
     )
     default_facet_policies_live: bool = Field(
         description=(
-            "whether the graph declares its own per-StatVar/per-source default facet "
-            "policy; false does not mean an unbound axis refuses -- see "
-            "default_facet_policy"
+            "whether an unbound axis first takes the default the graph declares on "
+            "the StatVar (its defaultMeasurementMethod arc, for the measurementMethod "
+            "axis) where a candidate carries it, before default_facet_policy ranks the "
+            "candidates"
         )
     )
     default_facet_policy: DeploymentFacetPolicy | None = Field(
@@ -293,7 +295,7 @@ def build_capabilities(
         programmatic_pinning=False,
         enrichment_fields=sorted(ENABLED_ENRICHMENTS),
         decode_code_systems=sorted(code_index_stamp.code_counts),
-        default_facet_policies_live=False,
+        default_facet_policies_live=True,
         default_facet_policy=DeploymentFacetPolicy(
             policy=DEPLOYMENT_FACET_POLICY, version=DEPLOYMENT_FACET_POLICY_VERSION
         ),

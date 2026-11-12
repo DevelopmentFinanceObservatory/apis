@@ -561,8 +561,9 @@ def _select_member_facets(
     and the cadence its dispatch serves: the cadence of the facet the same ranking puts first
     among the candidates matching every selected ref (`facets.dispatch_cadence`).
 
-    The helper performs no graph reads, so a group can plan each member
-    before fetching observations. Declared defaults resolve first, and
+    The helper reads no observations, so a group can plan each member
+    before fetching them. Its one graph read is each axis's declared default
+    (`facets.declared_default_policies`). Declared defaults resolve first, and
     the deployment-fallback pool keeps the facets that carry them before
     `request.window` narrows it to facets overlapping the requested years
     (`facets.fallback_pool`). It evaluates all axes and aggregates

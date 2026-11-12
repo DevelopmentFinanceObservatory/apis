@@ -1,36 +1,50 @@
-"""Refuse a StatVar whose graph declares a default facet, before coverage is built.
+"""Read the default facet each admitted StatVar declares in the graph.
 
-Materialise serves a declared default before it ranks facets, while search coverage, the
-headline and the preview route rank alone (`retrieval.coverage`). Resolve refuses such a
-StatVar so that no sentence, coverage window or headline names a facet the preview would
-not serve.
+A mint serves a StatVar's declared default on an unbound axis ahead of the deployment
+ranking (`materialise.facets.select_facet`, `materialise.group_facets.elect_group`). Search
+reads the same declarations once for every admitted StatVar, and every read plan elects under
+them from its first election (`read_plan.plan_pairs`, `read_plan.role_election`), so a
+preview, the answer's facets, an option's coverage and a download serve one method.
+
+A failed read raises. An answer elected without its members' declarations would name a Spec
+that a mint, reading them once the graph answers, serves under another method, so the
+region fails as on any other graph read its answer needs. The options door, whose coverage
+is optional, returns its options without coverage instead
+(`options.surface._observation_about_options_set`).
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
+from types import MappingProxyType
 from typing import TYPE_CHECKING
 
-from materialise.facets import FACET_AXES
-from search.engine.errors import DeclaredDefaultUnsupportedError
-
 if TYPE_CHECKING:
+    from materialise.graph import FacetDefaultPolicy
     from search.engine.clients.graph import EngineGraphClient
 
-# Materialise asks for policies by the `dcid:`-prefixed ref its requests carry.
-_STAT_VAR_REF_PREFIX = "dcid:"
+type DeclaredPolicies = Mapping[str, Mapping[str, FacetDefaultPolicy]]
+"""The defaults each StatVar declares, by StatVar and then by facet axis. A StatVar or axis
+declaring nothing is absent."""
+
+NO_DECLARED_POLICIES: DeclaredPolicies = MappingProxyType({})
+"""The declarations of StatVars that declare nothing."""
 
 
-def refuse_declared_defaults(graph: EngineGraphClient, stat_vars: Iterable[str]) -> None:
-    """Raise `DeclaredDefaultUnsupportedError` when the graph declares a default facet on
-    any axis of any of `stat_vars`."""
-    for stat_var in stat_vars:
-        for axis in FACET_AXES:
-            policy = graph.default_facet_policy(
-                stat_var=f"{_STAT_VAR_REF_PREFIX}{stat_var}", axis=axis
-            )
-            if policy is not None:
-                raise DeclaredDefaultUnsupportedError(
-                    f"{stat_var!r} declares default {policy.resolved_ref!r} on facet axis "
-                    f"{axis!r}; search coverage elects facets by ranking and models no default"
-                )
+def read_declared_policies(
+    graph: EngineGraphClient, stat_vars: Iterable[str], *, deadline: float | None
+) -> DeclaredPolicies:
+    """The default each of `stat_vars` declares on each facet axis, the declaration a mint of
+    each reads (`GraphReader.default_facet_policy`), in one read
+    (`EngineGraphClient.default_facet_policies`). The origin client answers a variable the
+    catalogue holds from its arc rows and reads the rest in one batch, by `deadline` and the
+    request deadline bound to the context.
+
+    Raises:
+        GraphInfraError: the graph failed the read. No ranking stands in for the
+            declarations, since the answer would then serve a method its Spec's mint does not.
+    """
+    dcids = list(dict.fromkeys(stat_vars))
+    if not dcids:
+        return NO_DECLARED_POLICIES
+    return graph.default_facet_policies(dcids, deadline=deadline)

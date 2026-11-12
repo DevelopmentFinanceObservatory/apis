@@ -158,6 +158,7 @@ from search.engine.retrieval.bound_values import (
     source_binding,
     stated_members,
 )
+from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
 from search.engine.retrieval.member_facts import IndexMemberFacts, MemberFacts
 from search.engine.retrieval.read_plan import PairPlan
 from search.engine.retrieval.retrieve import (
@@ -2038,6 +2039,7 @@ def _option_points(
         include_option_coverage=True,
         facets_pinned=False,
         open_axes=frozenset(),
+        graph=FakeGraph(),
     )
     assert warning is None
     return {
@@ -2284,7 +2286,7 @@ def test_each_pick_counts_the_facets_of_its_own_election_where_picks_share_a_row
         shape,
         [],
         menus={"flow": ["F1"], "sector": ["A"]},
-        plan=PairPlan(members=(), years=None),
+        plan=PairPlan(members=(), years=None, declared=NO_DECLARED_POLICIES),
         member_facts={},
         served_filter=cast(RoleServedFilter, _DatasetRowsFilter()),
         facets_pinned=False,
@@ -2334,7 +2336,7 @@ def test_a_subject_place_menu_is_counted_from_the_plan_only_when_one_dataset_can
         _derived_shape(_PLACE_AMOUNT, index_rows=rows),
         [],
         menus={"sector": ["A", "B", "D"]},
-        plan=PairPlan(members=(), years=None),
+        plan=PairPlan(members=(), years=None, declared=NO_DECLARED_POLICIES),
         member_facts={row.dcid: IndexMemberFacts(row=row, dataset=_BROAD) for row in _PLACE_ROWS},
         served_filter=None,
         facets_pinned=False,

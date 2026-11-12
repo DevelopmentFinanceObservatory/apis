@@ -162,9 +162,42 @@ class GraphCache:
         return self._lookup("node_type", (dcid,), lambda: self._inner.node_type(dcid))
 
     def default_facet_policy(self, *, stat_var: str, axis: str) -> FacetDefaultPolicy | None:
-        # Passed through uncached: the live client answers from no wire read, and captures
-        # recorded before resolve asked hold no rows for it.
-        return self._inner.default_facet_policy(stat_var=stat_var, axis=axis)
+        """The default `stat_var` declares on `axis`, read from the StatVar's cached
+        declarations (`default_facet_policies`). `stat_var` may carry the `dcid:` prefix."""
+        dcid = stat_var.removeprefix("dcid:")
+        return self.default_facet_policies([dcid]).get(dcid, {}).get(axis)
+
+    def default_facet_policies(
+        self, stat_vars: Sequence[str], *, deadline: float | None = None
+    ) -> dict[str, dict[str, FacetDefaultPolicy]]:
+        """Each StatVar's declared defaults by axis, cached per StatVar, a StatVar declaring
+        nothing included, so a replay elects under the declarations of its capture."""
+        unique = list(dict.fromkeys(stat_vars))
+        result: dict[str, dict[str, FacetDefaultPolicy]] = {}
+        misses: list[str] = []
+        for dcid in unique:
+            hit, policies = self._store.get(_key("default_facet_policies", dcid))
+            if not hit:
+                misses.append(dcid)
+            elif policies:
+                result[dcid] = {
+                    axis: FacetDefaultPolicy(**policy) for axis, policy in policies.items()
+                }
+        if misses:
+            if self._read_only:
+                raise CacheMiss(_key("default_facet_policies", *sorted(misses)))
+            with self._semaphore:
+                fetched = self._inner.default_facet_policies(misses, deadline=deadline)
+            for dcid in misses:
+                declared = fetched.get(dcid, {})
+                self._store.put(
+                    _key("default_facet_policies", dcid),
+                    "default_facet_policies",
+                    {axis: dataclasses.asdict(policy) for axis, policy in declared.items()},
+                )
+                if declared:
+                    result[dcid] = declared
+        return result
 
     def node_arcs(self, dcid: str) -> dict | None:
         return self.node_arcs_batch([dcid]).get(dcid)

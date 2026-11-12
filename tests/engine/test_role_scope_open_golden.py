@@ -20,6 +20,7 @@ from search.engine.region.observations.bulk_role_series import (
     _plan_role_bulk_fetch,
 )
 from search.engine.retrieval.facet_election import rank_role_candidates, window_of
+from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
 from search.engine.retrieval.read_plan import BulkPlan
 from search.engine.retrieval.retrieve import Materialised
 from search.engine.retrieval.role_scope import discover_role_scope
@@ -196,6 +197,7 @@ def _discover(snapshot: CoverageSnapshot, date_name: str, axis: RoleAxis) -> Mat
         facet_filters={},
         date_request=_DATE_REQUESTS[date_name],
         coverage_snapshot=snapshot,
+        declared=NO_DECLARED_POLICIES,
     )
     assert isinstance(result, Materialised)
     return result

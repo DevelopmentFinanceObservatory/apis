@@ -54,6 +54,7 @@ from search.engine.retrieval.facet_election import (
     rank_role_candidates,
     role_n_obs,
 )
+from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
 from search.engine.retrieval.read_plan import BulkPlan, PlanRoles
 from search.models import IdentityUnitRequest, TimeWindow
 from search.observations import (
@@ -1188,6 +1189,7 @@ def test_a_pair_serves_no_point_of_a_facet_another_member_selects() -> None:
         facet_id="FM1",
         selected={_SV: ("FM1",), _SV_B: ("FM2",)},
         candidates=merged,
+        declared=NO_DECLARED_POLICIES,
     )
 
     rows = _pair_rows(
@@ -1225,6 +1227,7 @@ def test_a_pair_a_continuation_extends_states_the_selection_s_method() -> None:
         selected={_SV: ("FM1",)},
         continuing=("FM4",),
         candidates=merge_role_candidates({_SV: list(candidates.values())}, [_SV]),
+        declared=NO_DECLARED_POLICIES,
     )
     rows = _pair_rows(
         _SV,
@@ -1284,6 +1287,7 @@ def test_merged_candidates_keep_or_drop_whole_and_preview_pairs_in_sorted_order(
             facet_id="F-A",
             selected=lead_selected(merged, "F-A"),
             candidates=merged,
+            declared=NO_DECLARED_POLICIES,
         ),
         10,
         member_year=lambda _sv: 2020,
@@ -2042,6 +2046,7 @@ def test_preview_pairs_takes_stat_vars_newest_year_first_round_robin_up_to_the_l
             facet_id="F1",
             selected=lead_selected(merged, "F1"),
             candidates=merged,
+            declared=NO_DECLARED_POLICIES,
         ),
         2,
         member_year=member_years.get,

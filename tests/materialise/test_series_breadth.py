@@ -451,7 +451,7 @@ class _Profiles:
 
 
 def _profile_of(stat_var: str, by_place: dict[str, list[Facet]]):
-    profile = _profile(stat_var, subject_probe(by_place, list(by_place)))
+    profile = _profile(stat_var, subject_probe(by_place, list(by_place)), policies={})
     return replace(profile, places_by_facet=_CountingPlaces(profile.places_by_facet))
 
 
@@ -505,7 +505,7 @@ def _kenya_profile(path: str):
             "country/GHA": _KENYA[:1],
             "country/TGO": _KENYA[1:],
         }
-        return _profile(_SV, subject_probe(by_place, list(by_place))), None
+        return _profile(_SV, subject_probe(by_place, list(by_place)), policies={}), None
     coverage = build_coverage_index(
         [
             (_SV, "fRec", "country/NOR", "country/KEN", list(range(2010, 2025))),
@@ -521,7 +521,10 @@ def _kenya_profile(path: str):
             ),
         },
     )
-    return _profile(_SV, coverage_probe(stat_var=_SV, bound={}, coverage=coverage)), coverage
+    return (
+        _profile(_SV, coverage_probe(stat_var=_SV, bound={}, coverage=coverage), policies={}),
+        coverage,
+    )
 
 
 @pytest.mark.parametrize("path", ["subject", "role"])

@@ -19,6 +19,7 @@ from materialise.graph import Facet
 from search.engine.extract import DateRequest
 from search.engine.region.codes import OBSERVATIONS_PROBE_FAILED
 from search.engine.region.observations.fetch import _build_observations
+from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
 from search.engine.retrieval.read_plan import PairPlan, PlanSeries, plan_pairs, plan_standard
 from search.engine.retrieval.retrieve import Materialised
 from search.engine.retrieval.role_scope import discover_role_scope
@@ -77,6 +78,7 @@ def test_the_preview_reads_the_plans_candidates_and_probes_nothing() -> None:
         },
         members=[_SV],
         years=None,
+        declared=NO_DECLARED_POLICIES,
     )
 
     observations, warn = _build_observations(
@@ -126,6 +128,7 @@ def test_a_windowed_discovered_pair_serves_the_planned_facet(search_settings) ->
         facet_filters={},
         date_request=window,
         coverage_snapshot=snapshot,
+        declared=NO_DECLARED_POLICIES,
     )
     assert isinstance(mat, Materialised) and isinstance(mat.read_plan, PairPlan)
     dispatched: list[str | None] = []
@@ -178,6 +181,7 @@ def test_a_result_dispatching_outside_its_planned_group_is_never_served(
         {(_SV, _KEN): [replace(_facet("f-a", "prov1", range(2015, 2021)), unit="CurrencyUSD")]},
         members=[_SV],
         years=None,
+        declared=NO_DECLARED_POLICIES,
     )
     unit = FacetSelection(
         axis="unit",
@@ -260,6 +264,7 @@ def test_an_open_role_read_gives_each_series_its_own_rows_and_conversion_record(
         ],
         members=["V"],
         years=None,
+        declared=NO_DECLARED_POLICIES,
     )
     held = {_NOR: 2, _FRA: 1, "country/DEU": 3}
     stub = stub_preview_result(sv="V", role_key="debtor", entity=_KEN)
