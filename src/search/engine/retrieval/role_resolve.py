@@ -29,7 +29,6 @@ from search.engine.retrieval.coverage import (
     plan_election,
 )
 from search.engine.retrieval.elected_dataset import elected_datasets, published
-from search.engine.retrieval.facet_election import merge_role_candidates
 from search.engine.retrieval.facet_policy import DeclaredPolicies, read_declared_policies
 from search.engine.retrieval.member_facts import (
     IndexMemberFacts,
@@ -49,6 +48,7 @@ from search.engine.retrieval.read_plan import (
 )
 from search.engine.retrieval.role_scope import (
     FACET_AXES,
+    bulk_candidates,
     check_minted_role_members,
     discover_role_scope,
     facet_axis_filters_from_bound_values,
@@ -466,12 +466,14 @@ def _role_plan(
         entity_lists,
         years=years.years,
         read_years=years.listed,
-        candidates=lambda members: merge_role_candidates(
+        candidates=lambda members: bulk_candidates(
             role_index_for_named_entities(
                 members, entities, time_period=time_period, coverage_index=coverage_index
             ),
             members,
-            lifetime=coverage_index.facet_spans(variables=members, bound=bound_roles),
+            bound=bound_roles,
+            coverage_index=coverage_index,
+            declared=declared,
         ),
         series_count=lambda members: pair_series_count(
             coverage_index,

@@ -385,7 +385,8 @@ class _RaiseOnAny:
     def default_facet_policies(
         self, stat_vars: Sequence[str], *, deadline: float | None = None
     ) -> dict[str, dict[str, FacetDefaultPolicy]]:
-        raise GraphInfraError(f"FakeGraph(raise=True): simulated transport error for {stat_vars!r}")
+        # The declarations of StatVars this double holds none of, as `default_facet_policy`.
+        return {}
 
     def node_arcs_many(
         self,

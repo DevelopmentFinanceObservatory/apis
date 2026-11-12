@@ -61,7 +61,11 @@ from search.engine.region.resubmit_request import (
 from search.engine.region.un_system import NO_LABELS, un_unavailable_warning
 from search.engine.retrieval.coverage import CoverageForm, answer_coverage
 from search.engine.retrieval.elected_dataset import published
-from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES, read_declared_policies
+from search.engine.retrieval.facet_policy import (
+    NO_DECLARED_POLICIES,
+    DeclaredPolicies,
+    read_declared_policies,
+)
 from search.engine.retrieval.read_plan import plan_standard, plan_years, reads_dates
 from search.models import (
     GraphRef,
@@ -436,15 +440,19 @@ def _fetch_facets_batch(
                 "options door's observationAbout role; returning uncovered options",
                 exc_info=True,
             )
-            warning = Warning(
-                code=OPTION_COVERAGE_PROBE_FAILED,
-                severity="warn",
-                message=("observation coverage probe failed; options returned without coverage."),
-            )
-            return None, warning
+            return None, _coverage_probe_failed()
         return facets_batch, None
 
     return None, None
+
+
+def _coverage_probe_failed() -> Warning:
+    """The warning on options returned without the coverage a request asked for."""
+    return Warning(
+        code=OPTION_COVERAGE_PROBE_FAILED,
+        severity="warn",
+        message="observation coverage probe failed; options returned without coverage.",
+    )
 
 
 def _filter_present_by_facets(
@@ -498,6 +506,7 @@ def _build_observation_about_options(
     facet_bindings: dict[str, IdentityFacetBinding],
     elected_units: Mapping[str, frozenset[str]] | None,
     date_request: DateRequest | None,
+    declared: DeclaredPolicies,
     deadline: float | None,
 ) -> list[SlotOption]:
     """Label every present candidate and attach its coverage when
@@ -505,15 +514,9 @@ def _build_observation_about_options(
     StatVar the same way membership's own facets_batch reads are (each
     facet stays tagged with its stat_var so elected_units can key the
     lookup correctly), each place's plan electing under the defaults the
-    StatVars declare (`facet_policy.read_declared_policies`). A dcid that fails
-    to resolve a label is omitted.
+    StatVars declare (`declared`). A dcid that fails to resolve a label is omitted.
     """
     labels = graph.node_labels_batch(present)
-    declared = (
-        read_declared_policies(graph, sv_dcids, deadline=deadline)
-        if include_coverage and facets_batch is not None
-        else NO_DECLARED_POLICIES
-    )
     items: list[SlotOption] = []
     for dcid in present:
         label = labels.get(dcid)
@@ -646,6 +649,22 @@ def _observation_about_options_set(
     if not present:
         return OptionsSet(items=[], truncated=truncated), warning
 
+    declared = NO_DECLARED_POLICIES
+    if include_coverage and facets_batch is not None:
+        # Coverage counts each place's rows under the method a mint would serve, so options
+        # whose declarations are unread carry no coverage rather than the ranking's count.
+        try:
+            declared = read_declared_policies(graph, sv_dcids, deadline=deadline)
+        except GraphInfraError:
+            logger.warning(
+                "declared default facets unread for the options door's %d StatVars; "
+                "returning uncovered options",
+                len(sv_dcids),
+                exc_info=True,
+            )
+            facets_batch = None
+            warning = _coverage_probe_failed()
+
     items = _build_observation_about_options(
         graph,
         present,
@@ -655,6 +674,7 @@ def _observation_about_options_set(
         facet_bindings=facet_bindings,
         elected_units=elected_units,
         date_request=date_request,
+        declared=declared,
         deadline=deadline,
     )
     return OptionsSet(items=items, truncated=truncated), warning

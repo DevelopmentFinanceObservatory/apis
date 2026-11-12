@@ -353,18 +353,13 @@ class _NoLiveGraph:
     def node_type(self, dcid: str) -> str | None:
         return self._unreachable("node_type")
 
-    def default_facet_policy(self, *, stat_var: str, axis: str) -> None:
-        """None. A report reads no live graph, so it sees no `defaultMeasurementMethod`
-        arc (`dc_graph.GraphClient.default_facet_policy`), and `GraphCache` passes this read
-        through uncached."""
-        return None
+    def default_facet_policy(self, *, stat_var: str, axis: str) -> FacetDefaultPolicy | None:
+        return self._unreachable("default_facet_policy")
 
     def default_facet_policies(
         self, stat_vars: Sequence[str], *, deadline: float | None = None
     ) -> dict[str, dict[str, FacetDefaultPolicy]]:
-        """No declarations, as `default_facet_policy` answers, passed through `GraphCache`
-        uncached."""
-        return {}
+        return self._unreachable("default_facet_policies")
 
     def node_arcs_many(
         self,

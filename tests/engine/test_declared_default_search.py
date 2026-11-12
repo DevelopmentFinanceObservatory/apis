@@ -15,7 +15,6 @@ from fastapi.testclient import TestClient
 from dc_graph import FacetDefaultPolicy
 from materialise.facets import FACET_AXES
 from promptlab.graphcache import GraphCache
-from promptlab.report import _NoLiveGraph
 from search.engine.clients.graph_client import LiveGraphClient
 from search.engine.errors import GraphInfraError
 from search.engine.region.pipeline import resolve_variable
@@ -136,26 +135,32 @@ def _resolve_declaring(monkeypatch, declared: str | None, *, unread: bool = Fals
 
 
 @pytest.mark.parametrize(
-    ("declared", "unread", "basis", "ref"),
+    ("declared", "basis", "ref"),
     [
-        pytest.param(_ONE_WEIGHTING, False, "declared_default", _ONE_WEIGHTING, id="declared"),
-        pytest.param("NoSuchMethod", False, "fallback", _FULL_VALUE, id="declared-missing"),
-        pytest.param(None, False, "fallback", _FULL_VALUE, id="undeclared"),
-        pytest.param(_ONE_WEIGHTING, True, "fallback", _FULL_VALUE, id="declaration-unread"),
+        pytest.param(_ONE_WEIGHTING, "declared_default", _ONE_WEIGHTING, id="declared"),
+        pytest.param("NoSuchMethod", "fallback", _FULL_VALUE, id="declared-missing"),
+        pytest.param(None, "fallback", _FULL_VALUE, id="undeclared"),
     ],
 )
 def test_a_role_answer_serves_the_method_its_member_declares(
-    monkeypatch, declared: str | None, unread: bool, basis: str, ref: str
+    monkeypatch, declared: str | None, basis: str, ref: str
 ) -> None:
     """Ranking alone serves the full value, which holds more years. Declaring ONE Data's
     weighting, the answer serves it and names the declaration as its basis; declaring a
-    method no facet carries, it serves the ranking's one method. A graph error reading the
-    declaration leaves the answer definite under the ranking's method."""
-    result = _resolve_declaring(monkeypatch, declared, unread=unread)
+    method no facet carries, it serves the ranking's one method."""
+    result = _resolve_declaring(monkeypatch, declared)
 
     assert result.status == "definite"
     method = result.specs[0].resolved.facets["measurementMethod"]
     assert (method.basis, method.ref) == (basis, ref)
+
+
+def test_a_declaration_the_graph_fails_to_read_fails_the_resolve(monkeypatch) -> None:
+    """The graph fails the read of the member's declaration. The resolve raises the graph's
+    error: an answer under the ranking's method would name a Spec whose mint, reading the
+    declaration once the graph answers, serves ONE Data's weighting."""
+    with pytest.raises(GraphInfraError):
+        _resolve_declaring(monkeypatch, _ONE_WEIGHTING, unread=True)
 
 
 # The declared method's facet ends in 2000; another provenance's Estimated projection
@@ -233,13 +238,12 @@ def _stat_vars_and_axes() -> list[tuple[str, str]]:
 def test_a_graph_declaring_no_default_returns_no_policy_and_one_declaring_returns_it(
     tmp_path: Path,
 ) -> None:
-    """Promptlab's graph cache and its read-only placeholder, the recording proxy and every
-    fake built without policies return no policy; the same wrappers over a graph given a
+    """Promptlab's graph cache, the recording proxy and every fake built without policies
+    return no policy; the same wrappers over a graph given a
     policy, and the fakes given one, return it. The live clients read the graph's
     `defaultMeasurementMethod` arc (`tests/origin_catalogue/test_graph.py`,
     `tests/dc_graph/test_client_default_facet_policy.py`)."""
     silent = [
-        _NoLiveGraph(),
         GraphCache(FakeGraph(), path=tmp_path / "silent.sqlite"),
         _RecordingGraph(FakeGraph(), nodes={}, obs={}, detect={}, resolve={}),
         FakeGraph(),

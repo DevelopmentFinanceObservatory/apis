@@ -752,6 +752,27 @@ _EMPTY_SIBLING = "TESTFIXTURE/ElectionAgreement/ReceivedEmpty"
 
 
 @pytest.mark.parametrize(
+    ("max_pairs", "plan_type"),
+    [pytest.param(1, BulkPlan, id="bulk"), pytest.param(1_000, PairPlan, id="pair")],
+)
+@pytest.mark.parametrize(
+    ("years", "window"),
+    [
+        pytest.param(
+            {"fFull": range(2010, 2021), "fWeighting": range(2015, 2021)},
+            (2010, 2020),
+            id="both-methods-in-the-window",
+        ),
+        # The weighting holds only years before the window, so only the full value reaches
+        # it: the declaration still decides the method, and the window the rows served.
+        pytest.param(
+            {"fFull": range(2015, 2021), "fWeighting": range(1990, 2001)},
+            (2015, 2020),
+            id="declared-method-outside-the-window",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
     "sibling",
     [
         pytest.param((), id="declaring-members"),
@@ -765,24 +786,33 @@ _EMPTY_SIBLING = "TESTFIXTURE/ElectionAgreement/ReceivedEmpty"
         pytest.param("NoSuchMethod", _FULL_VALUE, id="declared-missing"),
     ],
 )
-def test_a_member_mint_a_group_mint_and_a_bulk_plan_serve_one_declared_method(
-    search_settings, declared: str, served: str, sibling: tuple[str, ...]
+def test_a_member_mint_a_group_mint_and_a_plan_serve_one_declared_method(
+    search_settings,
+    declared: str,
+    served: str,
+    sibling: tuple[str, ...],
+    years: dict[str, range],
+    window: tuple[int, int],
+    max_pairs: int,
+    plan_type: type[BulkPlan | PairPlan],
 ):
-    """Two members of an index-resolved family hold Kenya and Norway under two methods, and
-    the full-value facet reaches back further. Both declare `declared` their default method
-    in the graph, and `sibling` declares nothing and holds no data. Given the same candidates
-    and declarations, each member's mint, the group's mint and the bulk plan's own election
-    serve one method: the declared one, or the ranking's where no candidate carries it. The
-    sibling holds nothing, so neither the mint nor the plan counts it against the
-    declaration."""
-    search_settings(obs_preview_max_pairs=1)
+    """Two members of an index-resolved family hold Kenya and Norway under two methods over
+    `years`, read over `window`. Both declare `declared` their default method in the graph,
+    and `sibling` declares nothing and holds no data. Given the same candidates and
+    declarations, each member's mint, the group's mint and the plan's own election, bulk or
+    per series by `max_pairs`, serve one method: the declared one, or the ranking's where no
+    candidate carries it. Each elects over the members' candidates in every year, so a
+    declared method holding no point in the window still wins and the window then limits
+    the rows. The sibling holds nothing, so neither the mint nor the plan counts it against
+    the declaration."""
+    search_settings(obs_preview_max_pairs=max_pairs)
     declaring = list(_RECEIVED)
     members = [*declaring, *sibling]
     index = build_coverage_index(
         [
-            (sv, facet_id, ABSENT_ENTITY, recipient, list(range(first, 2021)))
+            (sv, facet_id, ABSENT_ENTITY, recipient, list(held))
             for sv in declaring
-            for facet_id, first in (("fFull", 2010), ("fWeighting", 2015))
+            for facet_id, held in years.items()
             for recipient in (_KEN, _NOR)
         ],
         role_names=dict.fromkeys(members, RoleNames(donor=None, recipient="debtor")),
@@ -814,7 +844,7 @@ def test_a_member_mint_a_group_mint_and_a_bulk_plan_serve_one_declared_method(
             role_bindings={"debtor": [_KEN, _NOR]},
             declared_roles=("debtor",),
             facet_bindings={},
-            window=RequestedWindow(kind="range", start_year=2010, end_year=2020),
+            window=RequestedWindow(kind="range", start_year=window[0], end_year=window[1]),
             index_sourced=True,
         )
         for sv in members
@@ -835,7 +865,7 @@ def test_a_member_mint_a_group_mint_and_a_bulk_plan_serve_one_declared_method(
         origin_dcids=[],
         bound_roles=bound,
         years=role_years(
-            DateRequest(window=TimeWindow(start_year=2010, end_year=2020), latest=False),
+            DateRequest(window=TimeWindow(start_year=window[0], end_year=window[1]), latest=False),
             index.horizon,
         ),
         coverage_index=index,
@@ -843,12 +873,13 @@ def test_a_member_mint_a_group_mint_and_a_bulk_plan_serve_one_declared_method(
             FakeGraph(default_methods=dict.fromkeys(declaring, declared)), members, deadline=None
         ),
     )
-    assert isinstance(plan, BulkPlan) and plan.index_sourced
+    assert isinstance(plan, plan_type) and plan.index_sourced
+    elected = plan.selected if isinstance(plan, BulkPlan) else plan.selections
 
     assert by_member == {served}
     assert group.election.selections["measurementMethod"].ref == served
     assert plan.declared_defaults == {"measurementMethod": policy}
-    assert {_METHODS[facet_id] for ids in plan.selected.values() for facet_id in ids} == {served}
+    assert {_METHODS[facet_id] for ids in elected.values() for facet_id in ids} == {served}
 
 
 @pytest.mark.parametrize(

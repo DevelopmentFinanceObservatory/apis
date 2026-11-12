@@ -30,6 +30,7 @@ from search.engine.options.options_response_cache import (
 )
 from search.engine.options.population import OptionsPopulation
 from search.engine.options.resolve import ResolvedOptionsTarget
+from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
 from search.models import (
     BaseIdentity,
     IdentityWindowAll,
@@ -412,9 +413,6 @@ class TestDegradedResultsAreNeverCached:
             def node_labels_batch(self, dcids):
                 return {dcid: dcid for dcid in dcids}
 
-            def default_facet_policies(self, stat_vars, *, deadline=None):
-                return {}
-
         def compute(deadline: float) -> ComputedOptions:
             calls.append(deadline)
             items = surface._build_observation_about_options(
@@ -426,6 +424,7 @@ class TestDegradedResultsAreNeverCached:
                 facet_bindings={},
                 elected_units=None,
                 date_request=None,
+                declared=NO_DECLARED_POLICIES,
                 deadline=deadline,
             )
             return ComputedOptions(options=OptionsSet(items=items, truncated=False), warnings=())

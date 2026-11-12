@@ -24,7 +24,7 @@ from dfo_platform.roles import GENERIC_ROLE_WORDING
 from materialise.facets import MemberProbe, coverage_probe
 from materialise.roles import RoleAxis, axis_for_role
 from search.engine.clients.graph import Facet
-from search.engine.clients.sdmx import RoleFacetCandidate
+from search.engine.clients.sdmx import RoleFacetCandidate, RoleFacetIndex
 from search.engine.retrieval.coverage import (
     CoverageForm,
     answer_coverage,
@@ -38,7 +38,11 @@ from search.engine.retrieval.elected_dataset import (
     published,
     published_by_stat_var,
 )
-from search.engine.retrieval.facet_election import merge_role_candidates
+from search.engine.retrieval.facet_election import (
+    RoleBulkCandidate,
+    merge_role_candidates,
+    with_declared_lifetime,
+)
 from search.engine.retrieval.facet_policy import DeclaredPolicies
 from search.engine.retrieval.read_plan import (
     NoYearsToRead,
@@ -633,10 +637,8 @@ def _read_scope(
         entity_lists,
         years=years.years,
         read_years=years.listed,
-        candidates=lambda read: merge_role_candidates(
-            role_index_by_sv,
-            read,
-            lifetime=coverage_index.facet_spans(variables=read, bound=bound),
+        candidates=lambda read: bulk_candidates(
+            role_index_by_sv, read, bound=bound, coverage_index=coverage_index, declared=declared
         ),
         series_count=lambda read: pair_series_count(
             coverage_index, variables=read, bound=bound, role_names=role_names, years=years
@@ -651,6 +653,28 @@ def _read_scope(
     )
     plan = in_elected_datasets(plan, member_facts)
     return _ScopeRead(members, confirmed_svs, role_index_by_sv, plan)
+
+
+def bulk_candidates(
+    index: RoleFacetIndex,
+    read: Sequence[str],
+    *,
+    bound: BoundRoles,
+    coverage_index: CoverageIndex,
+    declared: DeclaredPolicies,
+) -> dict[str, RoleBulkCandidate]:
+    """The candidates a bulk read of `read` elects from: `index`, its role index inside the
+    read's years, with each facet carrying a default a member declares that holds no pair
+    there (`facet_election.with_declared_lifetime`), merged with each facet's span over every
+    year (`CoverageIndex.facet_spans`)."""
+    lifetime = coverage_index.facet_spans(variables=read, bound=bound)
+    return merge_role_candidates(
+        with_declared_lifetime(
+            index, lifetime, declared=declared, facet_metadata=coverage_index.facet_metadata
+        ),
+        read,
+        lifetime=lifetime,
+    )
 
 
 def _no_point_in_years(
