@@ -323,6 +323,17 @@ def with_reading_families(
     family of a five-tuple the resolve did not return, and a phrase some family among the
     hits reads brings in none. "Health aid" with CRS rows recalled gains nothing.
 
+    On a five-tuple only basis rows hold (`DetectedSV.basis_of`), the families among the
+    hits on the five-tuples of the recalled families those rows measure another basis of
+    read too, so a phrase one of them reads brings in no family. "Humanitarian aid from the United Kingdom" recalls
+    DAC2a's humanitarian aid line and no grant equivalents, and DAC1's grant equivalents
+    join as a basis row of DAC1's aid amounts. DAC2a reads "humanitarian" on the amounts'
+    five-tuple, so the CRS grant equivalents, which read it where DAC1's do not, stay out.
+    "Adaptation aid from Germany in 2022" recalls CRS grant equivalents, which bring in the
+    CRS's disbursements as a basis row, and climate finance commitments; no family of the
+    grant equivalents' five-tuple reads "adaptation", so the climate finance disbursements
+    join beside the CRS's.
+
     A row added here is the family's broadest admitted row (`_broadest_admitted_row`),
     takes the best score of the five-tuple's hits, and is marked `DetectedSV.rival` as a
     row of `with_rival_families` is, so it displaces only shapes of its own five-tuple, and
@@ -333,6 +344,8 @@ def with_reading_families(
     best: dict[FiveTuple, float] = {}
     pooled: dict[FiveTuple, list[IndexFamily]] = {}
     held: set[int] = set()
+    recalled: set[FiveTuple] = set()
+    bases: dict[FiveTuple, set[FiveTuple]] = {}
     for hit in hits:
         family = index.family_by_dcid.get(hit.dcid)
         if family is None:
@@ -341,13 +354,25 @@ def with_reading_families(
             pooled.setdefault(family.five_tuple, []).append(family)
             held.add(id(family))
         best[family.five_tuple] = max(best.get(family.five_tuple, hit.score), hit.score)
+        if not hit.rival:
+            recalled.add(family.five_tuple)
+        for ref in hit.basis_of:
+            if (source := index.family_by_dcid.get(ref)) is not None:
+                bases.setdefault(family.five_tuple, set()).add(source.five_tuple)
 
     rows: list[DetectedSV] = []
     for five_tuple, score in best.items():
+        compared = [five_tuple]
+        if five_tuple not in recalled:
+            compared += bases.get(five_tuple, ())
         unread = [
             codes
             for codes in readers
-            if not any(family_reads(family, codes, index=index) for family in pooled[five_tuple])
+            if not any(
+                family_reads(family, codes, index=index)
+                for held_tuple in compared
+                for family in pooled.get(held_tuple, ())
+            )
         ]
         if not unread:
             continue

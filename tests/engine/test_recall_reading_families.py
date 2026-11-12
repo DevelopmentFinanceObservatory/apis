@@ -28,7 +28,8 @@ from code_index.types import (
     StatVarRow,
 )
 from search.engine import qualifier_match
-from search.engine.interpret import recall
+from search.engine.clients.graph import DetectedSV, with_reading_families
+from search.engine.interpret import _code_phrases, recall
 from search.engine.quantity_read import QuantityOutput
 from search.engine.region.pipeline import resolve_variable
 from series_coverage.schema import ABSENT_ENTITY, RoleNames
@@ -39,6 +40,7 @@ from tests.engine._harness import door_roles_for_test_query
 from tests.engine._quantity import NO_QUANTITY
 from tests.fixtures import FakeGraph, make_resolver
 from tests.graph_release.support import serving_index
+from tests.origin_catalogue.fake_catalogue import FakeCatalogue
 
 _CRS = "provenance/OECDCreditorReportingSystem"
 _DAC1 = "provenance/OECDDAC1"
@@ -336,6 +338,67 @@ def test_a_family_reading_an_unread_code_of_a_recalled_five_tuple_joins_the_pool
     assert set(added) == joined
     assert all(hit.rival and hit.score == recalled[0][1] for hit in added.values())
     assert {c.dcid for c in result.candidates} == recalled_dcids | joined
+
+
+_DAC1_DISBURSEMENTS = _row(
+    "TESTFIXTURE/Closure/Dac1OdaDisbursements",
+    "FinancialFlow",
+    ("financingProvider",),
+    {
+        "financialFlowType": "Disbursement",
+        "nettingBasis": "Gross",
+        "dac1AidType": "DAC1AidType1010",
+    },
+    _DAC1,
+)
+
+
+@pytest.mark.parametrize(
+    ("recalled", "joined"),
+    [
+        pytest.param(
+            (_DAC1_COMMITMENTS, _CLIMATE_TOTAL_COMMITMENTS),
+            set(),
+            id="read-on-the-recalled-five-tuple",
+        ),
+        pytest.param(
+            (_DAC1_COMMITMENTS,),
+            {_CLIMATE_TOTAL.dcid, _CLIMATE_TOTAL_COMMITMENTS.dcid},
+            id="read-on-neither",
+        ),
+    ],
+)
+def test_a_five_tuple_only_a_basis_row_holds_reads_what_its_recalled_five_tuple_reads(
+    recalled, joined
+):
+    """DAC1's disbursements join as a basis row of its recalled commitments. Where a
+    recalled family of the commitments' five-tuple reads "climate", the disbursements'
+    five-tuple gains no family, as "humanitarian aid" read on DAC2a's amounts keeps the CRS
+    grant equivalents out; where none does, the climate finance families of both five-tuples
+    join, as "adaptation aid" brings in the climate finance disbursements."""
+    hits = [
+        *(
+            DetectedSV(dcid=row.dcid, score=0.8, type_of="StatisticalVariable", sentence=None)
+            for row in recalled
+        ),
+        DetectedSV(
+            dcid=_DAC1_DISBURSEMENTS.dcid,
+            score=0.8,
+            type_of="StatisticalVariable",
+            sentence=None,
+            rival=True,
+            basis_of=frozenset({_DAC1_COMMITMENTS.dcid}),
+        ),
+    ]
+    index = _index(rows=(*_ROWS, _DAC1_DISBURSEMENTS))
+    widened = with_reading_families(
+        hits,
+        phrases=_code_phrases("climate finance", index),
+        catalogue=FakeCatalogue(),
+        index=index,
+    )
+
+    assert {sv.dcid for sv in widened} - {hit.dcid for hit in hits} == joined
 
 
 def _coverage(rows: tuple[StatVarRow, ...] = _ROWS) -> FakeCoverageService:
