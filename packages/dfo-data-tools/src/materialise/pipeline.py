@@ -100,8 +100,9 @@ class MaterialisationRequest:
     # The whole population the definition's identity admits, shared by every request of the
     # definition and stated in the trace. `None` when the resolver could not state it.
     family: MemberFamily | None = None
-    # The `dcid:` refs member resolution left out of that family as stubs, nodes whose complete
-    # read carries no definition arc, shared by every request of the definition and stated in
+    # The `dcid:` refs member resolution left out of that family as stubs, nodes a trusted read
+    # of which carries no definition arc or finds no node and no read showed one
+    # (`MemberGroup.stub_candidates`), shared by every request of the definition and stated in
     # the trace.
     stub_candidates: tuple[str, ...] = ()
     # A caller's facet filter over each probed candidate's provenance, method and unit. The

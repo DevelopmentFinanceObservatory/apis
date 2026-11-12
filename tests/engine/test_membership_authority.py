@@ -421,8 +421,8 @@ def test_a_resubmit_whose_family_is_past_the_ceiling_answers_scope_too_broad():
 
 
 class _WithholdingWalkReader(FakeMintGraphReader):
-    """A walk reader over the debt members whose forward reads never return `withheld`'s
-    arcs, so the walk cannot dismiss it."""
+    """A walk reader over the debt members whose forward reads of `withheld` always drop its
+    `statType`, which the reverse query filtered on, so the walk cannot dismiss it."""
 
     def __init__(self, withheld: str) -> None:
         super().__init__(arcs={dcid: _walk_arcs(node) for dcid, node in _DEBT_NODES.items()})
@@ -435,7 +435,10 @@ class _WithholdingWalkReader(FakeMintGraphReader):
             individual_probe_budget=individual_probe_budget,
             deadline=deadline,
         )
-        return {dcid: None if dcid == self._withheld else value for dcid, value in arcs.items()}
+        return {
+            dcid: {**value, "statType": ()} if dcid == self._withheld and value else value
+            for dcid, value in arcs.items()
+        }
 
 
 def test_a_resubmit_whose_walk_leaves_a_candidate_undismissed_refuses_as_the_mint_does():
