@@ -58,6 +58,7 @@ from materialise.group_facets import elect_probes, is_populated
 from materialise.window import RequestedWindow, latest_period, latest_periods
 from search.engine import extract as _extract
 from search.engine.clients.graph import Facet
+from search.engine.extract import read_window
 from search.engine.reading_coverage import CoverageYears, ReadingCoverage, observed_years
 from search.engine.retrieval.elected_dataset import elected_datasets, publishes
 from search.engine.retrieval.facet_election import (
@@ -153,14 +154,31 @@ def plan_years(
     last_year: int | None = None,
 ) -> PlanYears:
     """The years a preview for `date_request` reads, on every route: a range from
-    `read_range`, whose bounds a role read passes from its coverage horizon. Raise
-    `NoYearsToRead` when the range holds no year."""
+    `read_range` over the years it asks for, whose bounds a role read passes from its
+    coverage horizon. Raise `NoYearsToRead` when the range holds no year."""
     if date_request is None:
         return None
     if date_request.latest:
         return "latest"
     assert date_request.window is not None  # DateRequest's own either/or invariant
-    years = read_range(date_request.window, first_year=first_year, last_year=last_year)
+    return _range_years(date_request.window, first_year=first_year, last_year=last_year)
+
+
+def confirming_years(date_request: DateRequest | None) -> PlanYears:
+    """The years a read confirming an answer's members reads for `date_request`: `plan_years`
+    over `extract.read_window`, which for a trailing span holds every span its answer can
+    settle on. Raise `NoYearsToRead` when the range holds no year."""
+    window = read_window(date_request)
+    if window is None:
+        return plan_years(date_request)
+    return _range_years(window)
+
+
+def _range_years(
+    window: TimeWindow, *, first_year: int | None = None, last_year: int | None = None
+) -> TimeWindow:
+    """`read_range` over `window`, raising `NoYearsToRead` when it holds no year."""
+    years = read_range(window, first_year=first_year, last_year=last_year)
     if years is None:
         raise NoYearsToRead
     return years
@@ -194,11 +212,18 @@ def role_years(date_request: DateRequest | None, horizon: YearHorizon) -> RoleYe
     """The years a role read confirms on, plans and lists for `date_request`, on every
     role route: for a range, `search.scope_window.role_read_years`, the rule the Datasets
     mint admits a window by. Raise `NoYearsToRead` when the range holds no year, and
-    `search.scope_window.WindowTooLong` when it holds more than `scope_max_window_years`."""
-    if date_request is None or date_request.latest:
+    `search.scope_window.WindowTooLong` when it holds more than `scope_max_window_years`,
+    which for a trailing span counts the years it asks for. A trailing span reads every
+    span its answer can settle on (`extract.read_window`)."""
+    window = read_window(date_request)
+    if date_request is None or window is None:
         return RoleYears(years=plan_years(date_request), listed=None)
-    assert date_request.window is not None  # DateRequest's own either/or invariant
-    years = role_read_years(date_request.window, horizon=horizon, clock_year=current_year())
+    years = role_read_years(
+        window,
+        horizon=horizon,
+        clock_year=current_year(),
+        asked_years=None if date_request.trailing is None else date_request.trailing.years,
+    )
     if years is None:
         raise NoYearsToRead
     assert years.start_year is not None and years.end_year is not None  # both bounds set
@@ -374,11 +399,12 @@ def asked_years(date_request: DateRequest | None) -> TimeWindow | None:
     """The years a range request asks for, read as the standard route reads them
     (`read_range` with no coverage floor or cap): an open start stays open, and an open end
     stops at the current year unless the request starts after it. Every window answer names
-    these; a role read's horizon-clamped years (`role_years`) serve its read alone. None
-    for a latest or dateless request, or a range holding no year."""
-    if date_request is None or date_request.window is None:
+    these; a role read's horizon-clamped years (`role_years`) serve its read alone. A
+    trailing span asks for the calendar years its words cover.
+    None for a latest or dateless request, or a range holding no year."""
+    if date_request is None or (window := date_request.window) is None:
         return None
-    return read_range(date_request.window)
+    return read_range(window)
 
 
 def window_gap(plan: ReadPlan | None, years: TimeWindow) -> WindowGap:
@@ -1541,6 +1567,38 @@ def serves_nothing(plan: ReadPlan) -> bool:
     if isinstance(plan, BulkPlan):
         return plan.population == 0
     return not plan.served and not plan.unservable
+
+
+def held_stat_vars(plan: ReadPlan) -> frozenset[str]:
+    """The StatVars `plan` holds a point of in its years: those of its held series
+    (`PairPlan.held`), or in bulk the members its read serves while it serves any pair."""
+    if isinstance(plan, PairPlan):
+        return frozenset(s.stat_var for s in plan.held)
+    if plan.population == 0:
+        return frozenset()
+    return frozenset(plan.served_members)
+
+
+def newest_served_year(plan: ReadPlan) -> int | None:
+    """The newest year any series `plan` serves holds a point in, inside its years
+    (`served_dates`), or None when it serves no dated point."""
+    lasts = (year_of(last) for _first, last in served_dates(plan).values())
+    return max((year for year in lasts if year is not None), default=None)
+
+
+def misses_judged_years(plan: ReadPlan, date_request: DateRequest | None) -> bool:
+    """Whether `plan` holds no data in the years `date_request` judges by
+    (`extract.DateRequest.judged`), so the answer is one for the window: it serves nothing
+    (`serves_nothing`), or for a span counted back from now every point it serves lies
+    before the judged years, though inside the wider years it read to confirm its members."""
+    if serves_nothing(plan):
+        return True
+    if date_request is None or date_request.trailing is None:
+        return False
+    judged = date_request.judged.window
+    assert judged is not None and judged.start_year is not None
+    newest = newest_served_year(plan)
+    return newest is None or newest < judged.start_year
 
 
 def populated_members(plan: ReadPlan) -> frozenset[str]:

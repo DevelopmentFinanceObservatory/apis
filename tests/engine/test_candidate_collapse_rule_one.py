@@ -47,6 +47,7 @@ def _entry(
             mat=mat,
             place=cast(PlaceContext, None),
             walked=None,
+            date_request=None,
             basis=basis,
         ),
         is_elected=False,

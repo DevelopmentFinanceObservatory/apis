@@ -72,6 +72,104 @@
       provenance: {dataset: provenance/ONEOECDHeadlineODA, bound: true}
       entities: [{dcid: GroupOfSeven, role: origin, expands: true}]
 
+- id: dq-dac-042
+  query: Canada total aid since 2010
+  why: '"Total aid" names no aid type, so the declared default, total ODA, binds, and a donor total since 2010 is the OECD headline per year.'
+  tags: {theme: aid, entity: country, direction: origin_only, unit: default, time: range, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: dac1.disbursement_net, bound: {dac1AidType: DAC1AidType1010}}
+      provenance: {dataset: provenance/ONEOECDHeadlineODA, bound: true}
+      entities: [{dcid: country/CAN, role: origin}]
+      window: {kind: range, start: 2010}
+
+- id: dq-dac-043
+  query: the Netherlands total aid since 2010
+  why: '"Total aid" names no aid type, so the declared default, total ODA, binds, and a donor total since 2010 is the OECD headline per year.'
+  tags: {theme: aid, entity: country, direction: origin_only, unit: default, time: range, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: dac1.disbursement_net, bound: {dac1AidType: DAC1AidType1010}}
+      provenance: {dataset: provenance/ONEOECDHeadlineODA, bound: true}
+      entities: [{dcid: country/NLD, role: origin}]
+      window: {kind: range, start: 2010}
+
+- id: dq-dac-044
+  query: the United States total aid since 2010
+  why: '"Total aid" names no aid type, so the declared default, total ODA, binds, and a donor total since 2010 is the OECD headline per year.'
+  tags: {theme: aid, entity: country, direction: origin_only, unit: default, time: range, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: dac1.disbursement_net, bound: {dac1AidType: DAC1AidType1010}}
+      provenance: {dataset: provenance/ONEOECDHeadlineODA, bound: true}
+      entities: [{dcid: country/USA, role: origin}]
+      window: {kind: range, start: 2010}
+
+- id: dq-dac-046
+  query: Sweden total aid since 2010
+  why: '"Total aid" binds the declared default, total ODA. Sweden, named without a direction, holds data only as a donor, so a donor total since 2010 is the OECD headline per year.'
+  tags: {theme: aid, entity: country, direction: origin_only, unit: default, time: range, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: dac1.disbursement_net, bound: {dac1AidType: DAC1AidType1010}}
+      provenance: {dataset: provenance/ONEOECDHeadlineODA, bound: true}
+      entities: [{dcid: country/SWE, role: origin}]
+      window: {kind: range, start: 2010}
+
+- id: dq-dac-047
+  query: Norway total ODA in 2017
+  why: Norway holds data only as a donor, so it is the donor. Before 2018 the headline is net flows, so a 2017 donor total is DAC1 net ODA and binds no source.
+  tags: {theme: aid, entity: country, direction: origin_only, unit: default, time: year, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: dac1.disbursement_net, bound: {dac1AidType: DAC1AidType1010}}
+      provenance: {bound: false}
+      entities: [{dcid: country/NOR, role: origin}]
+      window: {kind: range, start: 2017, end: 2017}
+
+- id: dq-dac-048
+  query: total aid Sweden since 2010
+  why: Another word order of dq-dac-046. Sweden, named without a direction, holds data only as a donor, so the answer is the same donor total since 2010.
+  tags: {theme: aid, entity: country, direction: origin_only, unit: default, time: range, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: dac1.disbursement_net, bound: {dac1AidType: DAC1AidType1010}}
+      provenance: {dataset: provenance/ONEOECDHeadlineODA, bound: true}
+      entities: [{dcid: country/SWE, role: origin}]
+      window: {kind: range, start: 2010}
+
+- id: dq-dac-049
+  query: total ODA Norway in 2017
+  why: Another word order of dq-dac-047. Norway, named without a direction, holds data only as a donor, so the answer is DAC1 net ODA from Norway in 2017.
+  tags: {theme: aid, entity: country, direction: origin_only, unit: default, time: year, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: dac1.disbursement_net, bound: {dac1AidType: DAC1AidType1010}}
+      provenance: {bound: false}
+      entities: [{dcid: country/NOR, role: origin}]
+      window: {kind: range, start: 2017, end: 2017}
+
+- id: dq-dac-050
+  query: Korea total aid in 1980
+  why: Korea gave ODA from 1987 and received it until 1999, so in 1980 it is the recipient, and the official donors' total takes the open donor side.
+  tags: {theme: aid, entity: country, direction: destination_only, unit: default, time: year, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: [dac2a.oda_net_received, dac2a.oda_gross_received]}
+      entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KOR, role: destination}]
+      window: {kind: range, start: 1980, end: 1980}
+
+- id: dq-dac-051
+  query: Korea total aid in 2005
+  why: Korea, named without a direction, received no ODA after 1999, so in 2005 only its giving holds data and it is the donor of DAC1 net ODA.
+  tags: {theme: aid, entity: country, direction: origin_only, unit: default, time: year, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: dac1.disbursement_net, bound: {dac1AidType: DAC1AidType1010}}
+      provenance: {bound: false}
+      entities: [{dcid: country/KOR, role: origin}]
+      window: {kind: range, start: 2005, end: 2005}
+
 - id: dq-dac-008
   query: in-donor refugee costs in Germany
   why: In-donor refugee costs are booked against the donor, so Germany is the origin.
@@ -431,3 +529,15 @@
       provenance: {bound: true}
       entities: [{dcid: country/DNK, role: observationAbout}]
     no_data: {reason: [qualifier_not_bound, variable_not_resolved]}
+
+- id: dq-dac-045
+  query: Korea's top donors
+  why: A rank over the donors takes the donor side, so Korea, named without a direction, is the recipient and the donors to Korea are ranked.
+  tags: {theme: aid, entity: country, direction: destination_only, unit: default, time: none, operation: rank, breakdown: none, door: raw_text, phrasing: casual}
+  # Known failure: the extraction's first sample reads the measure as "donors" with Korea undirected, so recall offers only DAC1 donor totals; dev does the same.
+  known_failure: {issue: 1156, checks: [measure, entities, provenance]}
+  expect:
+    definite:
+      measure: {family: [dac2a.oda_net_received, dac2a.oda_gross_received]}
+      entities: [{dcid: country/KOR, role: destination}]
+      operations: [{verb: rank, over: origin}]

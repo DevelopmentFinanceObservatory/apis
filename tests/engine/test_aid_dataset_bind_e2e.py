@@ -15,6 +15,7 @@ the other tests script the model.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import json
 import logging
@@ -38,7 +39,8 @@ from origin_catalogue import DFO, Catalogue, ProvenanceRow, SourceRef
 from search.engine import degraded_reads as degraded_reads_module
 from search.engine import exclusion_read
 from search.engine.bind import ShapeRating, SlotBindingDraft, _UniversalBindOutput
-from search.engine.binders import Binder, GeminiBinder
+from search.engine.binders import Binder, GeminiBinder, JevBinder, jev_assemble
+from search.engine.clients.llm import AnyAgreement, FixedAgreement
 from search.engine.degraded_reads import DegradedReads, note_unsettled_scope
 from search.engine.entry import raw_text
 from search.engine.errors import (
@@ -88,7 +90,7 @@ from tests.code_index.aid_identity import (
 )
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
 from tests.datasets_api._member_bounds import mint_bounds
-from tests.engine._binders import RatingBinder, ReplyBinder, nominee_ratings
+from tests.engine._binders import FakeAsk, RatingBinder, ReplyBinder, nominee_ratings
 from tests.engine._fake_coverage import patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import make_request, offline_events, offline_resolve
@@ -238,10 +240,10 @@ def _read_recorded_exclusions(monkeypatch: pytest.MonkeyPatch) -> None:
     """Read what each question leaves out from the recorded reads, through this module's
     doubles; any other double reads nothing left out."""
 
-    async def read(query: str, *, llm: object) -> tuple[ExclusionRead, dict | None]:
+    async def read(query: str, *, llm: object) -> tuple[ExclusionRead, dict | None, AnyAgreement]:
         if isinstance(llm, _RecordedLLM | _ScriptedLLM):
             return await exclusion_read.read_exclusions(query, llm=llm)
-        return ExclusionRead(exclusions=[]), None
+        return ExclusionRead(exclusions=[]), None, FixedAgreement(True)
 
     monkeypatch.setattr(raw_text, "read_exclusions", read)
 
@@ -386,8 +388,8 @@ def test_a_question_naming_no_dataset_answers_the_crs(
 
     (spec,) = _specs(response)
     assert llm.calls == {
-        "ExclusionRead": 1,
-        "Extraction": 1,
+        "ExclusionRead": 2,
+        "Extraction": 2,
         "_UniversalBindOutput": 1,
         "QuantityOutput": 1,
     }
@@ -1241,6 +1243,8 @@ class _ScriptedLLM:
 
     async def generate_structured(self, *, prompt, system, schema):
         self.calls[schema.__name__] += 1
+        # A live call waits on I/O, so concurrent calls interleave as they do in production.
+        await asyncio.sleep(0)
         if schema is ExclusionRead:
             return await FakeLLM().generate_structured(prompt=prompt, system=system, schema=schema)
         if schema is Extraction:
@@ -1473,8 +1477,10 @@ def test_a_cue_before_a_list_puts_every_place_of_it_on_its_end(monkeypatch: pyte
     """The model gives each listed place the "to" before the list as its cue, so the part
     answers both on the recipient end. The question leaves nothing out."""
 
-    async def nothing_left_out(query: str, *, llm: object) -> tuple[ExclusionRead, None]:
-        return ExclusionRead(exclusions=[]), None
+    async def nothing_left_out(
+        query: str, *, llm: object
+    ) -> tuple[ExclusionRead, None, AnyAgreement]:
+        return ExclusionRead(exclusions=[]), None, FixedAgreement(True)
 
     monkeypatch.setattr(raw_text, "read_exclusions", nothing_left_out)
     llm = _ScriptedLLM(
@@ -1906,7 +1912,7 @@ def test_raw_text_source_words_that_leave_a_part_no_source_refuse_that_part_alon
     assert [
         [ref.ref for ref in unbound.named] for unbound in second.no_data.unbound_qualifiers
     ] == [[CRS_PROVENANCE]]
-    assert llm.calls["Extraction"] == 1
+    assert llm.calls["Extraction"] == 4
     assert len(llm.bind_prompts) == 1
 
 
@@ -2807,3 +2813,116 @@ def test_the_aid_type_default_binds_a_slot_the_reply_leaves_out(
         "declared_default",
     )
     assert "slot_defaulted" in [warning.code for warning in part.warnings]
+
+
+_ROOT_FLOWS_DRAFT = SlotBindingDraft(
+    axis="how", property_dcid="dac1AidType", kind="value", value_dcids=["DAC1AidType5"]
+)
+
+
+def _dac1_aid_type_siblings(*aid_types: str) -> list[str]:
+    """DAC1's net disbursement members on the nominal aid five-tuple of each of `aid_types`,
+    which differ in their aid type alone."""
+    index = get_index()
+    members = {
+        row.constraint_properties["dac1AidType"]: row.dcid
+        for row in index.statvars
+        if row.provenances == (_DAC1,)
+        and row.measurement_denominator is None
+        and row.constraint_properties.get("nettingBasis") == "Net"
+        and set(row.constraint_properties) == {"dac1AidType", "financialFlowType", "nettingBasis"}
+    }
+    return [members[aid_type] for aid_type in aid_types]
+
+
+class _JevReadingNoQuantity(JevBinder):
+    """The Jev binder over `FakeAsk`, whose quantity read finds no form, so a question
+    for a plain amount reads as one."""
+
+    def __init__(self) -> None:
+        super().__init__(ask=FakeAsk())
+
+    async def read_quantity(self, request: Any, *, llm: Any):
+        return NO_QUANTITY
+
+
+def _reply_binds_the_root(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Jev's answers, assembled, draft ``DAC1AidType5`` on the shape they elect, before the
+    engine's rules apply (`jev_assemble.assemble`)."""
+    assemble = jev_assemble.assemble
+
+    def drafting_the_root(*args: Any, **kwargs: Any):
+        output, conf = assemble(*args, **kwargs)
+        return output.model_copy(update={"bindings": [_ROOT_FLOWS_DRAFT]}), conf
+
+    monkeypatch.setattr(jev_assemble, "assemble", drafting_the_root)
+
+
+@pytest.mark.parametrize("binder", ["gemini", "jev"])
+@pytest.mark.parametrize("variable", ["aid", "total resource flows"])
+def test_the_aid_type_default_binds_where_the_reply_bound_its_unnamed_root(
+    monkeypatch: pytest.MonkeyPatch, binder: str, variable: str
+):
+    """#238, "aid from France": a reply binding ``DAC1AidType5``, official and private flows,
+    the root above DAC1's declared default, names nothing of the question, so the default
+    binds total ODA ``DAC1AidType1010`` in its place (`bind_repair.apply_declared_defaults`)
+    under either binder, and its `slot_defaulted` warning names the value it replaced
+    (`bind_repair.defaulted_slot_notes`). "Total resource flows", the DAC's own term for
+    official and private flows, matches no label or synonym of the code, so the same
+    override applies and the warning shows it. The question leaves nothing out."""
+
+    async def nothing_left_out(
+        query: str, *, llm: object
+    ) -> tuple[ExclusionRead, None, AnyAgreement]:
+        return ExclusionRead(exclusions=[]), None, FixedAgreement(True)
+
+    monkeypatch.setattr(raw_text, "read_exclusions", nothing_left_out)
+    members = _dac1_aid_type_siblings("DAC1AidType1010", "DAC1AidType5", "DAC1AidType1015")
+    patch_coverage(
+        monkeypatch,
+        [(member, "dac1", _FRA, ABSENT_ENTITY, [2021]) for member in members],
+        role_names=dict.fromkeys(members, RoleNames(donor="financingProvider", recipient=None)),
+        facet_metadata={"dac1": FacetMetadata(provenance_id=_DAC1, unit="USD")},
+    )
+    graph = FakeGraph(
+        nodes={
+            _FRA: {"label": "France", "type": "Country"},
+            _DAC1: {"label": "OECD DAC1"},
+            **{m: {"label": m, "type": "StatisticalVariable", "arcs": _arcs(m)} for m in members},
+        },
+        detect={variable: {"svs": members, "cosine_scores": [0.9, 0.89, 0.88]}},
+        resolve={"France": _FRA},
+        obs={},
+    )
+    france = ExtractedEntity(text="France", span="France", role="source", cue="from")
+    llm = _ScriptedLLM(variable, entities=(france,), drafted=(_ROOT_FLOWS_DRAFT,))
+    if binder == "jev":
+        _reply_binds_the_root(monkeypatch)
+
+    response = offline_resolve(
+        ResolveRequest(input=RawTextInput(query=f"{variable} from France")),
+        graph=graph,
+        llm=llm,
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+        binder=_JevReadingNoQuantity() if binder == "jev" else None,
+    )
+
+    (part,) = response.parts
+    assert isinstance(part, DefinitePart), part
+    (aid_type,) = [
+        slot
+        for slot in part.spec.resolved.trace.slot_filters
+        if slot.key.property is not None and slot.key.property.ref == "dac1AidType"
+    ]
+    assert (aid_type.binding_kind, [ref.ref for ref in aid_type.refs], aid_type.provenance) == (
+        "value",
+        ["DAC1AidType1010"],
+        "declared_default",
+    )
+    replaced = get_index().code_by_dcid("DAC1AidType5")
+    assert replaced is not None
+    assert [
+        replaced.label in warning.message
+        for warning in part.warnings
+        if warning.code == "slot_defaulted"
+    ] == [True]

@@ -7,6 +7,7 @@ so adding a check is a new module and one import below.
 """
 
 from search.eval.checks import (
+    agreement,
     assumptions,
     candidates,
     disposition,
@@ -63,6 +64,7 @@ __all__ = [
     "Unverifiable",
     "Verdict",
     "WireSchema",
+    "agreement",
     "answer_result",
     "assumptions",
     "candidates",

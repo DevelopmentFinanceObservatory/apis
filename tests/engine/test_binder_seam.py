@@ -611,7 +611,7 @@ def test_a_lone_nominated_reading_answering_alone_departs_a_typed_value_it_canno
     state.shape_draft, state.bindings = _DEBT_MENU[0], list(state.bind_result.bindings)
     state.elected_has_data = True
     state.quantity_refusal = NoDataDraft(reason="no_observations")
-    monkeypatch.setattr(candidate_collapse, "start_elected_related_read", lambda *_: None)
+    monkeypatch.setattr(candidate_collapse, "start_answer_related_read", lambda *_: None)
     monkeypatch.setattr(
         candidate_collapse, "serves_leg_quantity", lambda _state, shape: shape is _DEBT_MENU[1]
     )

@@ -12,8 +12,9 @@ import asyncio
 import logging
 from collections.abc import AsyncGenerator, Callable, Mapping, Sequence
 from contextlib import aclosing
-from dataclasses import asdict, dataclass
-from typing import TYPE_CHECKING
+from dataclasses import asdict, dataclass, replace
+from functools import cached_property
+from typing import TYPE_CHECKING, Literal
 
 import search.engine.config as config  # module-attribute access for runtime-resolved values
 from code_index.shared import get_index, get_measure_index
@@ -24,6 +25,7 @@ from search.engine.bind_repair import (
     declared_default_words_named,
 )
 from search.engine.binders import Binder, Fallbacks
+from search.engine.clients.llm import LLM, AnyAgreement, SecondSamples, SupportsLLM, settle
 from search.engine.deadline import _await_bounded
 from search.engine.degraded_reads import DegradedReads
 from search.engine.enrichment import stream_place_options
@@ -211,6 +213,26 @@ def compute_layer2_signals(
 _NO_USAGE = {"input_tokens": 0, "output_tokens": 0, "cached_tokens": 0}
 
 
+@dataclass(frozen=True)
+class _Final:
+    """A request's cache entry once its bytes are final, and the verdict both layers publish
+    it under (`CacheScope._finalise`): whether it may be stored before layer 1's agreement,
+    and the timeout and degraded-leg status of this run or the leader it followed."""
+
+    # The response, or a bundle's recorded events from `response` to `done`.
+    entry: ResolveResponse | tuple[Event, ...]
+    storable: bool
+    timed_out: bool
+    degraded_leg: bool
+
+    @cached_property
+    def encoded(self) -> tuple[bytes, int]:
+        """The entry's bytes and size, encoded once for both layers."""
+        if isinstance(self.entry, tuple):
+            return to_bundle(self.entry)
+        return to_entry(self.entry)
+
+
 class CacheScope:
     """One request's access to the two-layer response cache.
 
@@ -218,28 +240,39 @@ class CacheScope:
     parsed request is active when the cache is enabled. A request that streams trailing
     events (`trailing`) stores its event bundle: the `response` event, the slot-options and
     observations events and the `done` event, published when `done` arrives (`observe`).
-    Place options stay out of it: they run on a best-effort budget and the options cache
+    Place options stay out of it. They run on a best-effort budget and the options cache
     keeps them, so a hit runs them again (`hit_events`). Any other request stores its
     response at the `response` event. A hit sends either entry through `hit_events`. A
-    follower of an in-flight streamed leader therefore waits
-    for the leader's `done` before it sends anything. The generation stamp is read once
-    and sets both the key and entry lifetime. New stamps produce new keys, leaving old
-    entries unreachable. `binder` is the binder the request was routed to. Its name and
-    model join the key, so answers two binders give never share one. Layer 2 serves one query's answer to any query with the same
-    extraction, which holds only while the bind reads the extraction alone: a binder that
-    reads the query's own text (`Binder.reads_query_text`) skips the extraction-keyed
-    lookup (`lookup_parsed`), and layer 1, which keys on the query, serves its repeats.
+    follower of an in-flight streamed leader therefore waits for the leader's `done`
+    before it sends anything. The generation stamp is read once and sets both the key
+    and entry lifetime. New stamps produce new keys, leaving old entries unreachable.
+    `binder` is the binder the request was routed to. Its name and model join the key,
+    so answers two binders give never share one. Layer 2 serves one query's answer to
+    any query with the same extraction, which holds only while the bind reads the
+    extraction alone. A binder that reads the query's own text
+    (`Binder.reads_query_text`) skips the extraction-keyed lookup (`lookup_parsed`),
+    and layer 1, which keys on the query, serves its repeats.
     `fallbacks` is the request's record of calls its binder served from a fallback
     (`binders.recording_fallbacks`). A request that holds any stores nothing, since its
-    answer is not the one its key names. `request_reads` is the request's record of the reads
-    it lost or cut (`degraded_reads`). A request whose record holds a read its own fail-open
-    budget cut stores nothing either: the answer stands on less than a later request may
-    read, though nothing it sends says so. The caller's
-    coverage snapshot contributes its stamp to the same scope; this class does
-    not read the coverage service again. The revision of the conversion catalogue and the
+    answer is not the one its key names. `request_reads` is the request's record of the
+    reads it lost or cut (`degraded_reads`). A request whose record holds a read its own
+    fail-open budget cut stores nothing either, because the answer stands on less than a
+    later request may read, though nothing it sends says so. The caller's coverage
+    snapshot contributes its stamp to the same scope, and this class does not read the
+    coverage service again. The revision of the conversion catalogue and the
     build and UN System setting of the origin catalogue the request bound join the scope
     too, so an answer computed under one catalogue is never served once another is live.
-    Cache clearing belongs to app wiring.
+    Layer 1 stores an answer only when two samples of its query's exclusion read and two
+    of its extraction each agreed on the reading (`note_extraction`), so layer 1 holds no
+    reading that rests on one sample. The request's reads serve their first sample at once
+    and leave the second to the scope's holder (`hold_samples`), which ends each second
+    `llm_second_sample_settle_s` after its first is read. Each second is judged as it
+    answers, and an agreed read enters the extraction store then, whatever happens to the
+    request after. A request without trailing events publishes layer 2 at `response`;
+    layer 1 publishes at `done`, once the agreements have ended, and `release` cancels and
+    awaits any second sample still running. The LLM memo replays each sample of a
+    wording for `llm_memo_ttl_s` whether or not they agreed. Cache clearing belongs to
+    app wiring.
     """
 
     def __init__(
@@ -271,8 +304,8 @@ class CacheScope:
         # under this stamp publishes under this stamp's key even if the
         # generation moves on mid-request (see graph_generation.stamp's own
         # docstring). `_stamp.key` folds into `_scope` below, and
-        # `_stamp.max_age_s` becomes every entry this request's `store()`
-        # writes (see that method).
+        # `_stamp.max_age_s` becomes every entry this request publishes
+        # (`_publish`).
         self._stamp = generation.stamp()
         # The catalogues this request's scope bound, which every answer it computes reads.
         conversion = current_conversion_catalogue()
@@ -312,6 +345,13 @@ class CacheScope:
         self._layer1_lease: Lease | None = None
         self._layer2_lease: Lease | None = None
         self._layer2_key: str | None = None
+        # The second samples of this request's reads, closed by `release`.
+        self._samples = SecondSamples()
+        self._agreements: tuple[AnyAgreement, ...] = ()
+        # Whether the request's reads write agreed readings to an extraction store.
+        self._stores_readings = False
+        self._settled = False
+        self._extraction_agreed: bool | None = None
         self._timed_out = False
         self._degraded_leg = False
         self._trailing_incomplete = False
@@ -322,6 +362,9 @@ class CacheScope:
         self._recorded: list[Event] = []
         # The stored bundle a hit replays.
         self._replay: StoredBundle | None = None
+        # The entry both layers publish and its verdict, taken once its bytes are final
+        # (`_finalise`).
+        self._final: _Final | None = None
         self._outcome: str = "inactive" if not self.active else "miss"
 
     @property
@@ -433,7 +476,7 @@ class CacheScope:
         never waits on a layer-1 lease. The first miss owns the layer-2 lease (`_acquire`).
         A binder that reads the query's own text looks up nothing here (`CacheScope`).
 
-        Hits record the leader's health verdict. `store()` can then cache the
+        Hits record the leader's health verdict. `observe` can then cache the
         request's literal query at layer 1 using that verdict; layer-2 hits
         never republish the layer-2 key.
         """
@@ -517,6 +560,55 @@ class CacheScope:
             step="response_cache_layer2",
         )
 
+    def hold_samples(self, llm: SupportsLLM) -> SupportsLLM:
+        """`llm` handing its reads' second samples to this scope (`SecondSamples.bind`), so
+        each read serves its first sample without waiting and no second sample outlives
+        the request (`release`)."""
+        self._stores_readings = isinstance(llm, LLM) and llm.extraction_store is not None
+        return self._samples.bind(llm)
+
+    def note_extraction(self, *agreed: AnyAgreement) -> None:
+        """Record the agreements this request's reading rests on: the two samples of its
+        exclusion read and the two of its extraction (`entry.raw_text._DoorRead.agreed`).
+        The scope settles them when it publishes (`_settle_extraction`). An answer whose
+        samples disagreed still reaches layer-1 followers, and layer 2 stores it as usual,
+        keyed on the reading itself. Layer 1 stores nothing under the query, so the next
+        caller of the wording misses layer 1. Within `llm_memo_ttl_s` its two samples come
+        back from the LLM memo, so it gets the same reading."""
+        self._agreements = agreed
+
+    def second_sample_usage(self) -> dict | None:
+        """What the second samples of this request's served reads cost, which the response's
+        `llm_usage` leaves out (`SecondSamples.usage`); complete once `release` returns."""
+        return self._samples.usage()
+
+    async def _settle_extraction(self) -> None:
+        """Settle the noted agreements once (`clients.llm.settle`), awaiting how each
+        second sample ended; one still running ends by its own deadline,
+        `llm_second_sample_settle_s` after its first was read. Only two things read the
+        verdict, a layer-1 lease this request holds and an extraction store a second sample
+        writes to, so a request holding neither awaits nothing. Each second sample logs its
+        own ending, a defect included (`clients.llm.Agreement`). A fault in settling itself
+        is logged at error with its traceback and leaves the reading unjudged. The answer is
+        already computed, and only its storage depends on the verdict."""
+        if self._settled or not self._agreements:
+            return
+        self._settled = True
+        if self._layer1_lease is None and not self._stores_readings:
+            return
+        try:
+            self._extraction_agreed = await settle(self._agreements)
+        except Exception:
+            logger.exception("settling the second samples failed; the reading is unjudged")
+
+    @property
+    def extraction_agreed(self) -> bool | None:
+        """Whether this request's reading was agreed (`note_extraction`), `None` when
+        it extracted nothing (a parsed request, or one a cache hit answered), ended before
+        it published, settled nothing (no response cache and no extraction store), or left a
+        read unjudged, its second sample cut or failed (`clients.llm.settle`)."""
+        return self._extraction_agreed
+
     def note_health(
         self,
         *,
@@ -536,37 +628,16 @@ class CacheScope:
     async def observe(self, event: Event) -> None:
         """Take one event of the live stream; publish the answer once it is complete.
 
-        A bundle request records events from `response` and publishes at `done`, leaving
-        out place options, which a hit runs again. Any other request publishes its response
-        at `response`.
-        """
-        if not self.active:
-            return
-        if not self._bundle:
-            if isinstance(event, ResponseEvent):
-                await self.store(event.response)
-            return
-        if isinstance(event, PlaceOptionsEvent):
-            return
-        if isinstance(event, ResponseEvent) or self._recorded:
-            self._recorded.append(event)
-        if isinstance(event, DoneEvent):
-            await self._publish(
-                lambda: to_bundle(self._recorded),
-                lambda: is_bundle_storable(
-                    self._recorded,
-                    timed_out=self._timed_out,
-                    degraded_leg=self._degraded_leg,
-                    trailing_incomplete=self._trailing_incomplete,
-                    refused_at_build=self._refused_at_build,
-                ),
-            )
-
-    async def store(self, response: ResolveResponse) -> None:
-        """Publish this request's response to any leases it owns.
-
-        Only a request without trailing events stores a bare response. A streamed one
-        publishes its bundle through `observe`, since its keys name a bundle entry.
+        A request without trailing events publishes its response to layer 2 at `response`,
+        since layer 2 keys on the reading itself and its followers need no agreement, and to
+        layer 1 at `done`, once the reads' second samples have settled
+        (`_settle_extraction`), so settling never holds a streamed response back. A bundle
+        request records events from `response` on, leaving out place options, which a hit
+        runs again. Its bundle is complete only at `done`, where it publishes layer 2, then
+        settles, then publishes layer 1. The entry and its storability verdict are taken
+        once, where the entry's bytes are final, `response` or a bundle's `done`, whether or
+        not the request holds a lease there (`_finalise`), and both layers publish that one
+        value.
 
         Followers always receive the answer, even when `is_storable` rejects it; that
         verdict controls storage, not delivery. Fresh runs use `note_health`; hits carry
@@ -575,65 +646,120 @@ class CacheScope:
         it. Published timeout and degraded-leg status combine this run's and the leader's
         flags.
         """
-        assert not self._bundle, "a streamed request publishes its bundle through observe()"
-        await self._publish(
-            lambda: to_entry(response),
-            lambda: is_storable(
-                response,
+        if not self._bundle:
+            if isinstance(event, ResponseEvent):
+                self._final = self._finalise(event.response)
+                await self._publish(layer=2, final=self._final)
+            elif isinstance(event, DoneEvent) and self._final is not None:
+                await self._settle_extraction()
+                await self._publish(layer=1, final=self._final)
+            return
+        if (
+            self.active
+            and not isinstance(event, PlaceOptionsEvent)
+            and (isinstance(event, ResponseEvent) or self._recorded)
+        ):
+            self._recorded.append(event)
+        if isinstance(event, DoneEvent):
+            self._final = self._finalise(tuple(self._recorded))
+            await self._publish(layer=2, final=self._final)
+            await self._settle_extraction()
+            await self._publish(layer=1, final=self._final)
+
+    def _finalise(self, entry: ResolveResponse | tuple[Event, ...]) -> _Final:
+        """`entry` with the verdict both layers publish it under, taken where its bytes are
+        final (`observe`): storable when it holds no fallback, no read cut, a stored verdict
+        that allows it where it served a hit, and passes the entry's own checks
+        (`is_storable`, `is_bundle_storable`). Layer 1 also needs the reading agreed at
+        `done` (`_reading_agreed`). A check that raises is logged and stores nothing; an
+        inactive scope judges nothing."""
+        final = _Final(
+            entry,
+            storable=False,
+            timed_out=self._timed_out or self._served_timed_out,
+            degraded_leg=self._degraded_leg or self._served_degraded_leg,
+        )
+        if not self.active:
+            return final
+        try:
+            storable = (
+                not self._fallbacks.reasons
+                and not self._request_reads.cut
+                and self._served_storable
+                and self._storable(entry)
+            )
+        except Exception:
+            logger.exception("response cache verdict failed; serving the fresh answer uncached")
+            return final
+        return replace(final, storable=storable)
+
+    def _storable(self, entry: ResolveResponse | tuple[Event, ...]) -> bool:
+        """Whether `entry` may be stored (`is_bundle_storable`, `is_storable`)."""
+        if isinstance(entry, tuple):
+            return is_bundle_storable(
+                entry,
                 timed_out=self._timed_out,
                 degraded_leg=self._degraded_leg,
+                trailing_incomplete=self._trailing_incomplete,
                 refused_at_build=self._refused_at_build,
-            ),
+            )
+        return is_storable(
+            entry,
+            timed_out=self._timed_out,
+            degraded_leg=self._degraded_leg,
+            refused_at_build=self._refused_at_build,
         )
 
-    async def _publish(
-        self,
-        encode: Callable[[], tuple[bytes, int]],
-        storable: Callable[[], bool],
-    ) -> None:
-        """Publish an entry to any leases this request owns.
+    async def _publish(self, *, layer: Literal[1, 2], final: _Final) -> None:
+        """Publish `final` to this request's lease on `layer`, if it holds one.
 
-        Cache errors are logged and never reach the pipeline. Both leases share one
-        encoding and verdict. Entry lifetime comes from the generation stamp captured
+        Cache errors are logged and never reach the pipeline. Both layers publish the one
+        entry and verdict (`_finalise`), and layer 1 also needs an agreed reading
+        (`note_extraction`). Entry lifetime comes from the generation stamp captured
         before lookup.
         """
         if not self.active:
             return
         assert self._cache is not None
-        if self._layer1_lease is None and self._layer2_lease is None:
-            # No lease means this request cannot publish a cache entry.
+        lease = self._layer1_lease if layer == 1 else self._layer2_lease
+        if lease is None:
+            # No lease means this request cannot publish a cache entry on this layer.
             return
         try:
-            verdict = (
-                not self._fallbacks.reasons
-                and not self._request_reads.cut
-                and self._served_storable
-                and storable()
+            entry, size = final.encoded
+            await self._cache.publish(
+                lease,
+                entry,
+                size,
+                storable=final.storable and (layer == 2 or self._reading_agreed()),
+                timed_out=final.timed_out,
+                degraded_leg=final.degraded_leg,
+                max_age_s=self._stamp.max_age_s,
             )
-            timed_out = self._timed_out or self._served_timed_out
-            degraded_leg = self._degraded_leg or self._served_degraded_leg
-            entry, size = encode()
-            for lease in (self._layer1_lease, self._layer2_lease):
-                if lease is not None:
-                    await self._cache.publish(
-                        lease,
-                        entry,
-                        size,
-                        storable=verdict,
-                        timed_out=timed_out,
-                        degraded_leg=degraded_leg,
-                        max_age_s=self._stamp.max_age_s,
-                    )
-            self._layer1_lease = None
-            self._layer2_lease = None
+            if layer == 1:
+                self._layer1_lease = None
+            else:
+                self._layer2_lease = None
         except Exception:
             logger.exception("response cache store failed; serving the fresh answer uncached")
 
-    async def release(self) -> None:
-        """Abandon unpublished leases, usually from `finally`, to wake all waiters.
+    def _reading_agreed(self) -> bool:
+        """Whether layer 1 may store under the query: no agreement was noted, or all
+        settled agreed."""
+        return not self._agreements or self._extraction_agreed is True
 
-        Safe after `store()`, which clears published leases.
+    async def release(self) -> None:
+        """Cancel and await every second sample still running, then abandon unpublished
+        leases to wake all waiters. Called from `finally`, so it runs on every exit.
+
+        Safe after `observe` has published, which clears the published leases.
         """
+        try:
+            await self._samples.aclose()
+        finally:
+            await self._abandon_leases()
+
+    async def _abandon_leases(self) -> None:
         if not self.active or self._cache is None:
             return
         if self._layer1_lease is not None:

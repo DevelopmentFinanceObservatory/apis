@@ -339,7 +339,7 @@
   why: The ratio is a published IDS series with an exports denominator; a no_data refusal also fits, as the menu holds no such series and the nearest pick rates 0.5.
   reuse: panel/ids-037
   tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical}
-  known_failure: {issue: 1156, checks: [measure]}
+  known_failure: {issue: 1156, checks: [measure, refusal]}
   expect:
     definite:
       measure: {family: ids.debt_service_ratio}

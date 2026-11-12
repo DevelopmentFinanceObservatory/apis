@@ -261,10 +261,11 @@ def _year_unavailable(fact: DepartureFact, _family: FlowFamily | None, shows_dat
     (a no-data part, or `shown` is `None`) says only what the data holds. A door that
     holds no words for the years (a resubmit, `asked` is `None`) states only what the data
     holds and shows. An answer a unit request converts over fewer years than the data holds
-    names the table that leaves the rest out (`_conversion_years`). One whose deflators
-    leave out some entities' rows names them (`_omitted_years`). One that lists a side's
-    members because the side's total holds none of the years names where the total's years
-    stop (`_whole_total_years`)."""
+    names the table that leaves the rest out (`_conversion_years`). A span counted back
+    from now that shows fewer years than it counts says an earlier start would read another
+    series (`_passed_over_years`). One whose deflators leave out some entities' rows names
+    them (`_omitted_years`). One that lists a side's members because the side's total holds
+    none of the years names where the total's years stop (`_whole_total_years`)."""
     if fact.omitted_years or fact.omitted_unnamed or fact.omission_undecided:
         return _omitted_years(fact)
     lead = f"You asked for {_asked(fact)}. " if fact.asked is not None else ""
@@ -272,6 +273,8 @@ def _year_unavailable(fact: DepartureFact, _family: FlowFamily | None, shows_dat
         return lead + _scope_years(fact)
     if fact.limited_by == "whole_total":
         return lead + _whole_total_years(fact, shows_data=shows_data)
+    if fact.limited_by == "passed_over":
+        return lead + _passed_over_years(fact)
     if fact.limited_by is not None:
         return lead + _conversion_years(fact)
     if fact.requested_years is None:
@@ -295,6 +298,20 @@ def _year_unavailable(fact: DepartureFact, _family: FlowFamily | None, shows_dat
         return f"{lead}The data covers only {span}."
     bound = f"ends in {last}" if after else f"starts in {first}"
     return f"{lead}The data {bound}, so this shows {shown}."
+
+
+def _passed_over_years(fact: DepartureFact) -> str:
+    """The years a span counted back from now shows where an earlier start would read
+    another series (`DepartureFact.limited_by` `passed_over`), naming the year the data
+    ends in when it is stale (`data_years`)."""
+    if fact.shown is None:
+        raise ValueError("year_unavailable on a shortened span needs the years shown")
+    newest = (
+        "The series shown holds nothing newer"
+        if fact.data_years is None
+        else f"The data ends in {fact.data_years[1]}"
+    )
+    return f"{newest}, and earlier years would read a different series, so this shows {fact.shown}."
 
 
 _CONVERSION_TABLES: Final[Mapping[str, str]] = MappingProxyType(
@@ -598,10 +615,23 @@ def _direction_discarded(fact: DepartureFact, _family: FlowFamily | None, shows_
 def _direction_inferred(fact: DepartureFact, family: FlowFamily | None, _shows_data: bool) -> str:
     if fact.over is None:
         raise ValueError("direction_inferred needs the flow axis the place was read on")
-    noun = role_wording(family).noun(fact.over).singular
+    wording = role_wording(family)
+    noun = wording.noun(fact.over)
+    other = wording.noun("destination" if fact.over == "origin" else "origin")
+    asked = _asked(fact)
+    match fact.read_by:
+        case "complement":
+            reason = f"The question names the {other.singular}"
+        case "operation":
+            reason = f"The question looks across the {other.plural}"
+        case "declaration":
+            if fact.listed_by is None:
+                raise ValueError("a declaration names the dataset that lists the place")
+            reason = f"{fact.listed_by} lists {asked} among its providers"
+        case _:
+            reason = f"Only the data with {asked} as the {noun.singular} holds values"
     return (
-        f"You named {_asked(fact)} without a direction. Only the data with {_asked(fact)} as "
-        f"the {noun} holds values, so this reads it as the {noun}."
+        f"You named {asked} without a direction. {reason}, so this reads it as the {noun.singular}."
     )
 
 

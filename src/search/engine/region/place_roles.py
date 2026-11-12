@@ -45,17 +45,16 @@ from search.engine.function_words import (
     FUNCTION_WORDS,
 )
 from search.engine.interpret import PinnedResolved
+from search.engine.named_group import NamedGroup
 from search.engine.qualifier_match import CONNECTIVES, read_by_vocabulary
 from search.engine.region.coverage_series import holds_series
 from search.engine.region.decisions import PlaceSetNotAdmittedError, PlaceSetTooLargeError
 from search.engine.region.place_set import PlaceNode, PlaceReading, PlaceSet
 from search.engine.region.whole_totals import (
-    WholeReading,
     containing_reading,
     covers_unpublished,
     named_whole_label,
     requested_years,
-    whole_reading,
 )
 from search.engine.retrieval.bound_values import (
     RoleKeys,
@@ -66,6 +65,7 @@ from search.engine.retrieval.bound_values import (
     shape_five_tuple,
     shape_part_datasets,
 )
+from search.engine.retrieval.whole_reading import WholeReading, whole_population, whole_reading
 from search.engine.role_text import asks_members, role_contradicted
 from search.engine.series_declarations import declared_side
 from search.engine.shape import (
@@ -75,7 +75,7 @@ from search.engine.shape import (
     required_role_names,
     role_names_by_axis,
 )
-from search.engine.spec_build import NamedGroup
+from search.heading.departure_fact import UndirectedRule
 from search.models import EntityRoleKey, Entry, RoleAxis
 from search.role_kinds import entity_kind_of, role_takes
 from search.scope.region import (
@@ -215,45 +215,56 @@ def _required_role_axis(shape: ShapeDraft) -> RoleAxis | None:
     return axis_for_role(required[0]) if len(required) == 1 else None
 
 
+# The rules that settle an undirected place's axis from the query's own structure, which
+# outrank a shape's one required role (`_undirected_place_axis`).
+_QUERY_RULES: frozenset[UndirectedRule] = frozenset({"operation", "complement"})
+
+
 def _undirected_place_axis(
     state: ResolveState, shape: ShapeDraft, place_set: PlaceSet
 ) -> RoleAxis | None:
     """Return the flow axis `place_set`, named without a direction, fills on `shape`. A set
     that holds members is a group here: a resolver group, continent or subregion.
 
-    It is the axis of the shape's one required role. On a shape with a role on each axis,
-    an operation running across one of them leaves that axis open, and a single place takes
-    the other axis: "top creditors of external debt of Kenya" reads Kenya as the debtor.
-    This holds for the elected shape and every alternate alike. A group can read either way
-    ("top recipients of aid in Africa" scopes the ranked recipients, "top creditors of
-    external debt of Africa" names the debtors), so it skips this rule. A ratio whose
-    datasets declare the axis whose party's own total it divides by
-    (`bound_values.ratio_base_axis`) reads the place, a group too, as that party: "ODA as a
-    share of GNI for Norway" reads Norway as the provider on DAC1's share of the donor's
-    GNI and as the recipient on DAC2a's share of the recipient's, where Norway holds no
-    data, so the menu shows that reading has none (`availability.series_at_places`) and the
-    answer states the base the question named. This holds for the elected shape and every
-    alternate alike. Otherwise an alternate takes the axis the elected shape
-    (`state.shape_draft`) assigned the place to, when it declares a role on that axis: an alternate reads the variable another way, not
-    the place, so a debt total's recipient stays the recipient of a by-creditor alternate,
-    and a place the elected shape reads on the one direction with data
+    A rule the query's own structure settles comes first (`ResolveState.undirected`, rule
+    `operation` or `complement`, `undirected.settle_undirected_axis`) where `shape`
+    declares a role on its axis: "top creditors of external debt of Kenya" ranks over the
+    creditors and reads Kenya as the debtor, and "Germany budget support to low income
+    countries" reads Germany on the side the group leaves free.
+
+    Next comes the axis of the shape's one required role, the one role every recalled
+    member declares (`required_role_names`). Recalled members are a sample of the family,
+    so a debt shape requires the debtor alone when recall returns a total beside its
+    by-creditor members, and both roles when it returns by-creditor members only. On the
+    first, "Germany external debt stocks" reads Germany as the debtor though coverage
+    settles Germany as a creditor, the side a currency share by creditor holds.
+
+    On a shape that leaves the direction open, the axis a rule read from data settles
+    (rule `coverage` or `declaration`) comes next where `shape` declares a role on it.
+    "ODA as a share of GNI for Norway" settles Norway as the provider, the one side its
+    data holds, so DAC2a's share of the recipient's GNI reads Norway on its donor side, the
+    ratio's base is not Norway's, and DAC1's share of the donor's GNI answers. While the
+    axis stays open, a ratio whose datasets declare the axis whose party's own total it
+    divides by (`bound_values.ratio_base_axis`) reads the place, a group too, as that
+    party. These hold for the elected shape and every alternate alike. Otherwise an
+    alternate takes the axis the elected shape (`state.shape_draft`) assigned the place
+    to, when it declares a role on that axis: an alternate reads the variable another way,
+    not the place, so a debt total's recipient stays the recipient of a by-creditor
+    alternate, and a place the elected shape reads on the one direction with data
     (`phase_place_materialise._settle_direction`) keeps that direction on every alternate
     the status rule weighs. That axis is read from the elected shape's assignment as
     admitted (`state.elected_place_roles`), taken before the role-class election narrowed
     it, since the narrowed shape can require two roles.
     """
+    names = role_names_by_axis(shape)
+    settled = state.undirected
+    if settled is not None and settled.rule in _QUERY_RULES and settled.axis in names:
+        return settled.axis
     axis = _required_role_axis(shape)
     if axis is not None:
         return axis
-    open_axes = {
-        operation.over
-        for operation in state.operations
-        if operation.over == "origin" or operation.over == "destination"
-    }
-    names = role_names_by_axis(shape)
-    if not place_set.members and len(open_axes) == 1 and len(names) == 2:
-        (open_axis,) = open_axes
-        return "destination" if open_axis == "origin" else "origin"
+    if settled is not None and settled.axis in names:
+        return settled.axis
     base = ratio_base_axis(shape, get_index())
     if base is not None and base in names:
         return base
@@ -311,7 +322,7 @@ def undirected_readings(
 def undirected_place_name(state: ResolveState) -> str | None:
     """The request's words for the one place set it names without a direction
     (`ResolveState.words_of`), `None` when it names none or several."""
-    place_set = _undirected_set(state)
+    place_set = undirected_set(state)
     return state.words_of(place_set.name) if place_set is not None else None
 
 
@@ -319,7 +330,7 @@ def undirected_place_axes(state: ResolveState, assignment: PlaceAssignment) -> s
     """The flow axes `assignment` places the one set the request names without a direction
     on, as a rule of the shape places it (one required role, the open axis, the base of a
     ratio). Empty when the request names none or several."""
-    place_set = _undirected_set(state)
+    place_set = undirected_set(state)
     if place_set is None:
         return set()
     key = place_key(place_set)
@@ -330,7 +341,7 @@ def undirected_place_axes(state: ResolveState, assignment: PlaceAssignment) -> s
     }
 
 
-def _undirected_set(state: ResolveState) -> PlaceSet | None:
+def undirected_set(state: ResolveState) -> PlaceSet | None:
     """The one place set the request names without a direction (`part_sets`), `None` when
     it names none or several."""
     named = part_sets(state)
@@ -370,18 +381,7 @@ def query_role_axes(state: ResolveState) -> frozenset[RoleAxis]:
     `named_whole_axes`), and each flow axis an operation runs across ("top recipients" needs
     the destination). An axis the query asks every member of (`state.open_axes`) is a
     preference among the shapes that hold these (`without_open_axis_gaps`)."""
-    directed = {
-        role.axis
-        for name in state.entities
-        if name in state.place_sets
-        for role in state.entity_roles.get(name) or ()
-    } | named_whole_axes(state)
-    over = {
-        operation.over
-        for operation in state.operations
-        if operation.over == "origin" or operation.over == "destination"
-    }
-    return frozenset(directed | over)
+    return directed_axes(state) | named_whole_axes(state) | operation_axes(state)
 
 
 def _declares_axes(shape: ShapeDraft, axes: frozenset[RoleAxis]) -> bool:
@@ -464,9 +464,9 @@ def without_unasked_axes(
     recalled members alone, a sample of its family, as in `without_open_axis_gaps`. Its
     axes are the sample's, and it reads no index code, so its empty reading would lie within
     any other's ("debt from France" would leave a debt series for DAC1 aid). The rule
-    stands down when a named place has no direction that its data settles: "imputed rent
+    stands down when a named place has no direction that a rule settles: "imputed rent
     Kenya" leaves the axis the place fills open, so no axis is unasked. A place whose
-    direction the data settles (`ResolveState.undirected_axis`) asks for that axis, so "ODA
+    direction a rule settles (`ResolveState.undirected_axis`) asks for that axis, so "ODA
     in Germany" leaves DAC2a for DAC1 as "ODA from Germany" does.
     """
     undirected = any(
@@ -501,29 +501,43 @@ def without_unasked_axes(
     return [shape for shape in shapes if not leaves(shape)]
 
 
+def directed_axes(state: ResolveState) -> frozenset[RoleAxis]:
+    """The flow axes the request names a place on with a direction."""
+    return frozenset(
+        role.axis
+        for name in state.entities
+        if name in state.place_sets
+        for role in state.entity_roles.get(name) or ()
+    )
+
+
+def operation_axes(state: ResolveState) -> frozenset[RoleAxis]:
+    """The flow axes the part's operations run over ("top donors" ranks over the origin)."""
+    return frozenset(
+        operation.over
+        for operation in state.operations
+        if operation.over == "origin" or operation.over == "destination"
+    )
+
+
 def on_undirected_axis(state: ResolveState, shapes: Sequence[ShapeDraft]) -> list[ShapeDraft]:
     """`shapes` less each role-bearing shape whose every flow axis holds a place the request
-    names with a direction, once the data settles the axis of the place it names without
+    names with a direction, once a rule settles the axis of the place it names without
     one (`ResolveState.undirected_axis`). Such a shape leaves that place no axis of its own,
     so electing it would merge the place into a named side or refuse its direction.
 
     "Aid from Germany in Kenya" reads Kenya as the recipient. DAC1's donor totals declare
     only the donor axis, which Germany holds, so they could read Kenya only as a second
     donor, "from Germany and Kenya", and they leave the menu for DAC2a. "Germany external
-    debt stocks" names no directed place, so the debt stocks, which read Germany as the
-    debtor, stay though a currency share by creditor holds Germany as a creditor and
-    settles that axis.
+    debt stocks" names no directed place, so the debt stocks stay though a currency share
+    by creditor holds Germany as a creditor and settles that axis, and their one required
+    role reads Germany as the debtor (`_undirected_place_axis`).
 
-    The rule runs only when the data settles the axis, the case where the part reads the
-    place on one side. Every shape stays when none would survive."""
+    It runs only once the axis is settled, the case where the part reads the place on one
+    side. Every shape stays when none would survive."""
     if state.undirected_axis is None:
         return list(shapes)
-    directed = {
-        role.axis
-        for name in state.entities
-        if name in state.place_sets
-        for role in state.entity_roles.get(name) or ()
-    }
+    directed = directed_axes(state)
 
     def merges(shape: ShapeDraft) -> bool:
         axes = role_names_by_axis(shape).keys()
@@ -1094,9 +1108,11 @@ def _named_wholes(
     (`phase_intake._phase_check_entities`).
 
     A side that holds one population alone reads it whole where every dataset the shape
-    answers from (`bound_values.declared_datasets`) marks it whole over the part's period
-    (`whole_totals.whole_reading`), and the assignment carries that reading
-    (`PlaceAssignment.whole`). It is a label: the side binds the same parties either way. A
+    answers from (`bound_values.declared_datasets`) marks it whole
+    (`whole_reading.whole_population`), and the assignment carries that reading
+    (`PlaceAssignment.whole`). It is a label: the side binds the same parties either way. The
+    Spec reads it again over its own window (`spec_build.answer_identity`), as a resubmit of
+    the Spec does, so the label depends only on the identity and its roles. A
     side no place is named on stays unnamed where, for every population named on it, no
     dataset the shape answers from publishes its total and every party they hold there is
     of a class it covers (`whole_totals.covers_unpublished`), as the CRS's recipients do for
@@ -1127,14 +1143,12 @@ def _named_wholes(
         sets[axis] = (*sets.get(axis, ()), *(state.whole_sets[dcid] for dcid in dcids))
     if not named:
         return dataclasses.replace(assignment, unnamed_wholes=unnamed)
-    years = requested_years(state.date_request)
     whole = next(
         (
             reading
             for axis, populations in named.items()
             if axis not in assignment.sets and len(populations) == 1
-            if (reading := whole_reading(populations[0], datasets=datasets, years=years))
-            is not None
+            if (reading := whole_population(populations[0], datasets=datasets)) is not None
         ),
         None,
     )
@@ -1184,7 +1198,7 @@ def whole_total_candidates(
     The candidates read no binding and no coverage, so the role keys each gives are fixed
     before any binding is settled under them. A side offers a total where every dataset the
     shape answers from (`bound_values.declared_datasets`) reads its parties whole over the
-    part's period (`whole_totals.whole_reading`), or serves it as the side's containing
+    part's period (`whole_reading.whole_reading`), or serves it as the side's containing
     total (`whole_totals.containing_reading`: DAC1's DAC countries' total), the shape
     declares a role on that side, and `assignment` leaves it unnamed. Each side the part totals (`totalled_axes`) offers
     the total of every party there, origin first: both sides unnamed offer the donors'
@@ -1198,7 +1212,7 @@ def whole_total_candidates(
         return ()
     datasets = [dataset.provenance for dataset in declared_datasets(shape, get_index())]
     declared = role_names_by_axis(shape)
-    years = requested_years(state.date_request)
+    years = requested_years(state.date_request, horizon=state.coverage.index.horizon)
 
     def offered(dcids: Sequence[str]) -> WholeReading | None:
         reading = whole_reading(dcids, datasets=datasets, years=years)
@@ -1259,8 +1273,8 @@ def assign_named_places(
     ``role_not_resolved`` covers a missing or contradicted axis.
 
     A role-bearing shape has no subject slot: each set takes its door-resolved axis, and
-    origins are kept for nearest-real probes. A set with no axis fills the shape's one
-    required role, a single place beside an operation over one flow axis the other axis, or
+    origins are kept for nearest-real probes. A set with no axis fills the axis the part
+    settles for it (`ResolveState.undirected_axis`), else the shape's one required role, or
     on an alternate that requires two the axis the elected shape assigns it
     (`_undirected_place_axis`). It is ambiguous when no such axis exists, when a second set
     also lacks an axis, or when a directed set already holds that axis. Raw text compares

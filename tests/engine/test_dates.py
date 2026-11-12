@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from search.engine.extract import DateRequest, ExtractedDate, dates_to_request
+from search.engine.extract import DateRequest, ExtractedDate, dates_to_request, read_window
 from search.models import TimeWindow
 
 
@@ -90,3 +90,52 @@ def test_date_request_post_init_rejects_window_and_latest() -> None:
     """Both a window and ``latest=True`` raise ``ValueError``."""
     with pytest.raises(ValueError, match="window or latest"):
         DateRequest(window=TimeWindow(start_year=2010, end_year=2020), latest=True)
+
+
+@pytest.mark.parametrize(
+    ("dates", "read", "trailing"),
+    [
+        # "the last five years" in 2026: its newest year may lie three years before the span,
+        # and its read window holds the five years ending at each such year.
+        (
+            [ExtractedDate(kind="range", start="2022", end="2026", trailing_years=5)],
+            (2015, 2026),
+            5,
+        ),
+        # "the past year" asks for one year.
+        (
+            [ExtractedDate(kind="range", start="2026", end="2026", trailing_years=1)],
+            (2023, 2026),
+            1,
+        ),
+        # The same years named outright trail nothing.
+        ([_range("2022", "2026")], (2022, 2026), None),
+        # A trailing span beside another date combines as named years.
+        (
+            [
+                ExtractedDate(kind="range", start="2022", end="2026", trailing_years=5),
+                _point("2010"),
+            ],
+            (2010, 2026),
+            None,
+        ),
+    ],
+)
+def test_trailing_span_widens_its_read_window(
+    dates: list[ExtractedDate], read: tuple[int, int], trailing: int | None
+) -> None:
+    """A lone span counted back from now asks for the calendar years its words cover and
+    carries its count of newest years. The reads confirming its members read every span
+    ending in its judged years, `trailing_stale_years` before those calendar years
+    (`read_window`), and its judgement reads the judged years alone. Any other request reads
+    the years it asks for."""
+    req = dates_to_request(dates)
+    assert req is not None
+    assert read_window(req) == TimeWindow(start_year=read[0], end_year=read[1])
+    assert (None if req.trailing is None else req.trailing.years) == trailing
+    if trailing is None:
+        assert req.window == read_window(req)
+    else:
+        assert req.window == TimeWindow(start_year=2026 - trailing + 1, end_year=2026)
+        assert req.judged.window == TimeWindow(start_year=2026 - trailing - 2, end_year=2026)
+        assert req.judged.trailing is None

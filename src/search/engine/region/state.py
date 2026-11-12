@@ -119,7 +119,7 @@ from search.engine.shape import Pool, ShapeDraft, is_role_bearing, role_names_by
 from search.engine.source_code import SeriesCodeMembers, not_held
 from search.engine.source_scope import SourceScope
 from search.engine.unit.bind import BoundUnitRequest, RequestBasis
-from search.heading.departure_fact import DepartureFact
+from search.heading.departure_fact import DepartureFact, UndirectedReading
 from search.models import (
     BaseIdentity,
     CandidateBasis,
@@ -1299,11 +1299,11 @@ class ResolveState:
     # one, by capped-shape index of its copy, when both directions hold data: offered beside
     # it as a `direction` candidate (`phase_place_materialise._settle_direction`).
     direction_rivals: dict[int, PlaceAssignment] = field(default_factory=dict)
-    # The axis a place the question names without a direction is read on before the house
-    # policies run (`availability.undirected_axis`), so the policies and the measure basis
-    # read the part as its directed twin. `None` when no place is named without one, or the
-    # eligible shapes hold a series on both axes or on neither.
-    undirected_axis: RoleAxis | None = None
+    # The axis a place the question names without a direction is read on, settled before
+    # the menu seats (`undirected.settle_undirected_axis`), so every shape, the house
+    # policies and the measure basis read the part as its directed twin, with the rule that
+    # settled it. `None` when no place is named without one, or no rule settles it.
+    undirected: UndirectedReading | None = None
     # The elected shape narrowed to another breakdown of a family with no total, by
     # capped-shape index of its copy, with its own bindings: offered beside the elected
     # breakdown as a `breakdown` candidate (`phase_place_materialise._settle_breakdown`).
@@ -1437,6 +1437,11 @@ class ResolveState:
             operations=self.operations,
             open_axes=self.open_axes,
         )
+
+    @property
+    def undirected_axis(self) -> RoleAxis | None:
+        """The axis of `undirected`, `None` while the direction stays open."""
+        return self.undirected.axis if self.undirected is not None else None
 
     @property
     def slot_default_phrases(self) -> frozenset[str]:

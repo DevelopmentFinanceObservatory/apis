@@ -1479,8 +1479,8 @@ def _maybe_build_facet_options(
 
 
 # Probe inputs follow _stream_slot_options_events' positional fields, then its
-# `facets_pinned` and `variable_labels`. A missing facet probe skips facets.
-# `entity_options` carries the raw list for streamed events.
+# `facets_pinned`, `variable_labels` and `date_request`, the probed Spec's own. A missing
+# facet probe skips facets. `entity_options` carries the raw list for streamed events.
 _SlotOptionsProbe = tuple[
     str,
     ShapeDraft,
@@ -1493,13 +1493,13 @@ _SlotOptionsProbe = tuple[
     "FacetProbe | None",
     bool,
     Mapping[str, str],
+    "DateRequest | None",
 ]
 
 
 async def _gather_slot_options_events(
     probes: list[_SlotOptionsProbe],
     *,
-    date_request: DateRequest | None,
     graph: EngineGraphClient,
     sdmx: EngineSdmxClient,
     materialise_graph: GraphReader | None,
@@ -1544,6 +1544,7 @@ async def _gather_slot_options_events(
                 facet_probe,
                 facets_pinned,
                 variable_labels,
+                date_request,
             ) in probes
         ]
     )

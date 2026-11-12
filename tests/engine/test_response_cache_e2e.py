@@ -13,11 +13,14 @@ from graph_generation import UNKNOWN_GENERATION, FakeGeneration, GenerationProvi
 from search.engine import binders, response_cache_flow
 from search.engine.bind import _UniversalBindOutput
 from search.engine.binders import JevBinder, jev_client
-from search.engine.core import resolve_async, resolve_events
+from search.engine.clients.llm import LLM
+from search.engine.core import ResolveRecord, resolve_async, resolve_events
 from search.engine.degraded_reads import fail_open_reads, note_degraded_read
 from search.engine.errors import GraphInfraError, LLMInfraError
 from search.engine.events import DoneEvent, ResponseEvent
+from search.engine.exclusion_read import Exclusion, ExclusionRead
 from search.engine.extract import ExtractedDate, ExtractedEntity, Extraction
+from search.engine.extraction_store import MemoryExtractionStore
 from search.engine.quantity_read import QuantityOutput
 from search.engine.response_cache import ResponseCache
 from search.engine.response_cache_keys import layer2_key
@@ -82,6 +85,7 @@ def _run(
     sdmx=EMPTY_SDMX,
     generation: GenerationProvider = UNKNOWN_GENERATION,
     materialise_graph: FakeMintGraphReader | None = None,
+    record: ResolveRecord | None = None,
 ):
     """Run `resolve_async` with offline fakes and a pinned date. The mint's member walk reads
     `graph` unless `materialise_graph` replaces it."""
@@ -97,6 +101,7 @@ def _run(
                 sdmx=sdmx,
                 response_cache=cache,
                 generation=generation,
+                record=record,
                 materialise_graph=(
                     materialise_graph
                     if materialise_graph is not None
@@ -107,13 +112,13 @@ def _run(
 
 
 def test_identical_requests_share_one_warm_cache():
-    """Two identical requests cost three LLM calls in total, not six: one extract, one
-    quantity read and one bind on the first, none on the second."""
+    """Two identical requests cost four LLM calls in total, not eight: two extraction samples,
+    one quantity read and one bind on the first, none on the second."""
     llm = _CountingLLM(FakeLLM())
     cache = ResponseCache()
     r1 = _run(make_request(_QUERY_A), llm=llm, cache=cache)
     r2 = _run(make_request(_QUERY_A), llm=llm, cache=cache)
-    assert llm.calls == ["Extraction", "QuantityOutput", "_UniversalBindOutput"]
+    assert llm.calls == ["Extraction", "Extraction", "QuantityOutput", "_UniversalBindOutput"]
     assert r1.status == "definite"
     assert r2.status == "definite"
     assert r2.parts == r1.parts
@@ -125,7 +130,7 @@ def test_differently_worded_single_variable_queries_keep_separate_results():
     cache = ResponseCache()
     r1 = _run(make_request(_QUERY_A), llm=llm, cache=cache)
     r2 = _run(make_request(_QUERY_B), llm=llm, cache=cache)
-    assert llm.calls == ["Extraction", "QuantityOutput", "_UniversalBindOutput"] * 2
+    assert llm.calls == ["Extraction", "Extraction", "QuantityOutput", "_UniversalBindOutput"] * 2
 
     # Each response retains its request's wording.
     assert r2.query_echo.raw_query == _QUERY_B
@@ -139,9 +144,132 @@ def test_differently_worded_single_variable_queries_keep_separate_results():
     assert r1.rendered_sentence == r2.rendered_sentence
 
 
+_SECOND_USAGE = {"input_tokens": 7, "output_tokens": 3, "cached_tokens": 0}
+
+
+class _SeededLLM(LLM):
+    """The recorded bank answered under this client's seed. With `disagreeing` set, a sample
+    under any seed but 1 reads the measure as `disagreeing`. The exclusion read finds nothing
+    left out, and with `read_disagreeing` set a sample under any seed but 1 reads a stretch
+    the query does not hold, which is disclosed and so changes the reading. Every sample under
+    a seed but 1 reports `_SECOND_USAGE`. Records each extraction's and each read's seed, in
+    lists its reseeded copies share."""
+
+    def __init__(
+        self,
+        *,
+        disagreeing: str | None,
+        store: MemoryExtractionStore,
+        read_disagreeing: bool = False,
+    ) -> None:
+        super().__init__(seed=1, extraction_store=store)
+        self._bank = FakeLLM()
+        self._disagreeing = disagreeing
+        self._read_disagreeing = read_disagreeing
+        self.extraction_seeds: list[int | None] = []
+        self.read_seeds: list[int | None] = []
+
+    async def generate_structured(self, *, prompt: str, system: str, schema):
+        if schema is ExclusionRead:
+            self.read_seeds.append(self._seed)
+            usage = None if self._seed == 1 else dict(_SECOND_USAGE)
+            if self._read_disagreeing and self._seed != 1:
+                stretch = Exclusion(phrase="excluding grants", left_out=["grants"])
+                return ExclusionRead(exclusions=[stretch]), usage
+            return ExclusionRead(exclusions=[]), usage
+        answer, usage = await self._bank.generate_structured(
+            prompt=prompt, system=system, schema=schema
+        )
+        if schema is Extraction:
+            self.extraction_seeds.append(self._seed)
+            if self._seed != 1:
+                usage = dict(_SECOND_USAGE)
+            if self._disagreeing is not None and self._seed != 1:
+                answer = answer.model_copy(update={"variables": [self._disagreeing]})
+        return answer, usage
+
+
+def _served_from(response) -> str | None:
+    steps = set(response.diagnostics.timing_ms.by_step or {})
+    return next((step for step in steps if step.startswith("response_cache_layer")), None)
+
+
+def test_samples_that_disagree_publish_no_layer1_entry_and_store_no_reading():
+    """Two samples that read the query apart serve the first. Layer 1 and the extraction
+    store keep nothing under the wording, so the repeat extracts again, and layer 2, keyed on
+    the reading itself, answers it."""
+    store = MemoryExtractionStore(max_bytes=1024 * 1024)
+    llm = _SeededLLM(disagreeing="birth rate", store=store)
+    cache = ResponseCache()
+    record = ResolveRecord()
+
+    first = _run(make_request(_QUERY_A), llm=llm, cache=cache, record=record)
+    second = _run(make_request(_QUERY_A), llm=llm, cache=cache)
+
+    assert sorted(llm.extraction_seeds) == [1, 1, 2, 2]
+    assert store._entries == {}
+    # The response leaves the second samples out; the request's record carries them.
+    assert record.second_sample_usage == _SECOND_USAGE
+    assert record.extraction_agreed is False
+    assert _served_from(first) is None
+    assert _served_from(second) == "response_cache_layer2"
+    assert second.parts == first.parts
+
+
+def test_samples_that_agree_publish_both_layers_and_a_stored_reading_publishes_layer1():
+    """Agreeing samples store the reading and both layers. A later request whose cache lost
+    the answer reads the stored reading with no model call, which counts as agreed, so its
+    answer reaches layer 1 again."""
+    store = MemoryExtractionStore(max_bytes=1024 * 1024)
+    llm = _SeededLLM(disagreeing=None, store=store)
+    cache = ResponseCache()
+
+    _run(make_request(_QUERY_A), llm=llm, cache=cache)
+    repeat = _run(make_request(_QUERY_A), llm=llm, cache=cache)
+    assert sorted(llm.extraction_seeds) == [1, 2]
+    assert len(store._entries) == 1
+    assert _served_from(repeat) == "response_cache_layer1"
+
+    fresh_cache = ResponseCache()
+    from_store = _run(make_request(_QUERY_A), llm=llm, cache=fresh_cache)
+    from_layer1 = _run(make_request(_QUERY_A), llm=llm, cache=fresh_cache)
+
+    assert sorted(llm.extraction_seeds) == [1, 2], "the store answered without a model call"
+    assert _served_from(from_store) is None
+    assert _served_from(from_layer1) == "response_cache_layer1"
+    assert from_layer1.parts == from_store.parts
+
+
+@pytest.mark.reads_exclusions
+@pytest.mark.parametrize("read_disagreeing", [True, False], ids=["read-disagrees", "both-agree"])
+def test_an_exclusion_read_whose_samples_disagree_publishes_no_layer1_entry(read_disagreeing):
+    """The exclusion read decides the text extraction reads, so its two samples must agree
+    too. A disagreeing read answers from its first sample and the extraction of that text
+    agrees and is stored, but neither layer 1 nor the store keeps the read, so the repeat
+    reads again and layer 2 answers it. A read that agrees is stored beside the extraction
+    and the repeat is a layer-1 hit."""
+    store = MemoryExtractionStore(max_bytes=1024 * 1024)
+    llm = _SeededLLM(disagreeing=None, store=store, read_disagreeing=read_disagreeing)
+    cache = ResponseCache()
+
+    first = _run(make_request(_QUERY_A), llm=llm, cache=cache)
+    second = _run(make_request(_QUERY_A), llm=llm, cache=cache)
+
+    assert sorted(llm.read_seeds) == ([1, 1, 2, 2] if read_disagreeing else [1, 2])
+    assert sorted(llm.extraction_seeds) == [1, 2]
+    stored_reads = [value for value in store._entries.values() if "exclusions" in value]
+    assert len(stored_reads) == (0 if read_disagreeing else 1)
+    assert first.status == "definite"
+    assert _served_from(first) is None
+    assert _served_from(second) == (
+        "response_cache_layer2" if read_disagreeing else "response_cache_layer1"
+    )
+    assert second.parts == first.parts
+
+
 def test_buffered_include_observations_is_cached():
     """A buffered request carries its observations in the response it stores, so two
-    identical requests cost one extract, one quantity read and one bind, and the hit equals
+    identical requests cost one extraction, one quantity read and one bind, and the hit equals
     the fresh answer except for its timing."""
     llm = _CountingLLM(FakeLLM())
     cache = ResponseCache()
@@ -151,7 +279,7 @@ def test_buffered_include_observations_is_cached():
     )
     r1 = _run(request, llm=llm, cache=cache)
     r2 = _run(request, llm=llm, cache=cache)
-    assert llm.calls == ["Extraction", "QuantityOutput", "_UniversalBindOutput"]
+    assert llm.calls == ["Extraction", "Extraction", "QuantityOutput", "_UniversalBindOutput"]
     assert r1.status == "definite"
     assert r2.parts == r1.parts
     assert set(r2.diagnostics.timing_ms.by_step or {}) == {"coverage", "response_cache_layer1"}
@@ -188,7 +316,7 @@ def test_a_transport_with_trailing_events_replays_its_bundle():
         first = asyncio.run(_drain())
         second = asyncio.run(_drain())
     assert "observations" in first
-    assert llm.calls == ["Extraction", "QuantityOutput", "_UniversalBindOutput"]
+    assert llm.calls == ["Extraction", "Extraction", "QuantityOutput", "_UniversalBindOutput"]
     assert second == first[first.index("response") :]
     assert cache.stats().hits == 1
 
@@ -232,8 +360,10 @@ def test_a_first_answer_that_swallowed_a_read_is_not_stored(monkeypatch, lose):
     assert r1.diagnostics.warnings == r2.diagnostics.warnings == []
     assert llm.calls == [
         "Extraction",
+        "Extraction",
         "QuantityOutput",
         "_UniversalBindOutput",
+        "Extraction",
         "Extraction",
         "QuantityOutput",
         "_UniversalBindOutput",
@@ -347,8 +477,10 @@ def test_cache_disabled_by_config_behaves_as_uncached(search_settings):
     _run(make_request(_QUERY_A), llm=llm, cache=cache)
     assert llm.calls == [
         "Extraction",
+        "Extraction",
         "QuantityOutput",
         "_UniversalBindOutput",
+        "Extraction",
         "Extraction",
         "QuantityOutput",
         "_UniversalBindOutput",
@@ -572,8 +704,10 @@ def test_role_direction_contradiction_is_not_masked_by_a_shared_extraction(monke
     # The role contradiction changes the layer-2 key, so bind runs again.
     assert llm.calls == [
         "Extraction",
+        "Extraction",
         "QuantityOutput",
         "_UniversalBindOutput",
+        "Extraction",
         "Extraction",
         "QuantityOutput",
         "_UniversalBindOutput",
@@ -604,7 +738,7 @@ def test_role_direction_agreement_keeps_distinct_query_sources_separate(monkeypa
         sdmx=FakeSdmxClient(observations={}),
         materialise_graph=_role_bearing_member_graph(),
     )
-    assert llm.calls == ["Extraction", "QuantityOutput", "_UniversalBindOutput"] * 2
+    assert llm.calls == ["Extraction", "Extraction", "QuantityOutput", "_UniversalBindOutput"] * 2
     assert r1.status == "definite", r1
     assert r2.status == "definite", r2
     assert r1.rendered_sentence == r2.rendered_sentence
@@ -788,7 +922,7 @@ def test_an_unparsed_date_warning_keeps_its_own_layer2_entry(monkeypatch, first,
         for query in (first, second)
     ]
 
-    assert llm.calls == ["Extraction", "QuantityOutput", "_UniversalBindOutput"] * 2
+    assert llm.calls == ["Extraction", "Extraction", "QuantityOutput", "_UniversalBindOutput"] * 2
     for query, response in zip((first, second), responses, strict=True):
         assert response.status == "definite", response
         assert (TIME_TEXT_NOT_PARSED in _warning_codes(response)) == ("lately" in query)
@@ -806,7 +940,7 @@ def test_same_query_under_the_same_token_still_hits():
     generation = FakeGeneration(token="gen-a")
     r1 = _run(make_request(_QUERY_A), llm=llm, cache=cache, generation=generation)
     r2 = _run(make_request(_QUERY_A), llm=llm, cache=cache, generation=generation)
-    assert llm.calls == ["Extraction", "QuantityOutput", "_UniversalBindOutput"]
+    assert llm.calls == ["Extraction", "Extraction", "QuantityOutput", "_UniversalBindOutput"]
     assert r1.parts == r2.parts
 
 
@@ -822,8 +956,10 @@ def test_advancing_the_token_between_requests_misses_both_layers():
 
     assert llm.calls == [
         "Extraction",
+        "Extraction",
         "QuantityOutput",
         "_UniversalBindOutput",
+        "Extraction",
         "Extraction",
         "QuantityOutput",
         "_UniversalBindOutput",
@@ -844,8 +980,10 @@ def test_unknown_and_known_stamps_never_share_an_entry():
     )
     assert llm.calls == [
         "Extraction",
+        "Extraction",
         "QuantityOutput",
         "_UniversalBindOutput",
+        "Extraction",
         "Extraction",
         "QuantityOutput",
         "_UniversalBindOutput",
@@ -887,7 +1025,7 @@ def test_a_request_whose_jev_calls_fell_back_is_not_cached(jev_routed):
     cache = ResponseCache()
     r1 = _run(make_request(_QUERY_A), llm=llm, cache=cache)
     r2 = _run(make_request(_QUERY_A), llm=llm, cache=cache)
-    assert llm.calls == ["Extraction", "QuantityOutput", "_UniversalBindOutput"] * 2
+    assert llm.calls == ["Extraction", "Extraction", "QuantityOutput", "_UniversalBindOutput"] * 2
     assert r1.status == r2.status == "definite"
 
 
@@ -910,7 +1048,7 @@ def test_a_repeated_query_under_jev_hits_layer1_and_never_a_gemini_entry(
     jev_requests = len(ask.requests)
     second = _run(make_request(_QUERY_A), llm=llm, cache=cache)
 
-    assert llm.calls[gemini_calls:] == ["Extraction"]
+    assert llm.calls[gemini_calls:] == ["Extraction", "Extraction"]
     assert jev_requests == 2
     assert len(ask.requests) == jev_requests
     assert set(second.diagnostics.timing_ms.by_step or {}) == {"coverage", "response_cache_layer1"}

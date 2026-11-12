@@ -66,7 +66,12 @@ from search.engine.retrieval.facet_policy import (
     DeclaredPolicies,
     read_declared_policies,
 )
-from search.engine.retrieval.read_plan import plan_standard, plan_years, reads_dates
+from search.engine.retrieval.read_plan import (
+    confirming_years,
+    plan_standard,
+    plan_years,
+    reads_dates,
+)
 from search.models import (
     GraphRef,
     IdentityFacetBinding,
@@ -544,7 +549,7 @@ def _build_observation_about_options(
                 plan_standard(
                     series,
                     members=sv_dcids,
-                    years=plan_years(date_request),
+                    years=confirming_years(date_request),
                     places=(dcid,),
                     deadline=deadline,
                     declared=declared,

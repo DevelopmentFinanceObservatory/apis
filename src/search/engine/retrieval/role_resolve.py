@@ -41,9 +41,9 @@ from search.engine.retrieval.read_plan import (
     RoleYears,
     asked_years,
     in_elected_datasets,
+    misses_judged_years,
     plan_role_read,
     role_years,
-    serves_nothing,
     window_gap,
 )
 from search.engine.retrieval.role_scope import (
@@ -649,7 +649,7 @@ def _confirm_role_bearing(
 
     held_outside_years: dict[str, list[Facet]] = {}
     if asked_years(date_request) is not None and (
-        plan is None or not confirmed_svs or serves_nothing(plan)
+        plan is None or not confirmed_svs or misses_judged_years(plan, date_request)
     ):
         held_outside_years = {
             sv: facets
@@ -1114,9 +1114,10 @@ def graph_confirm_resolve(
             variables=surviving_svs, axis="donor", bound={"recipient": frozenset(subject_dcids)}
         )
 
-    # No member confirmed, or none holds a point in the years the plan reads. Data the
-    # members hold at the place in other years makes the answer one for the window.
-    if plan is None or not confirmed_svs or serves_nothing(plan):
+    # No member confirmed, or none holds a point in the years the request judges by
+    # (`read_plan.misses_judged_years`). Data the members hold at the place in other years
+    # makes the answer one for the window.
+    if plan is None or not confirmed_svs or misses_judged_years(plan, date_request):
         return _zero_observation_carrier(
             surviving_svs=surviving_svs,
             member_facts=member_facts,

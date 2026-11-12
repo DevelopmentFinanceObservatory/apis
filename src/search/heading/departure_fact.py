@@ -20,6 +20,25 @@ source of the data (`region.source_choice.choose_reading`): the query names it a
 another source the query names, which lists it as a party; its words resolving to no single
 source; or none of its own data leading the recall of the source reading."""
 
+type UndirectedRule = Literal["complement", "operation", "declaration", "coverage"]
+"""Why a place named without a direction is read on one flow axis
+(`region.undirected.settle_undirected_axis`): the part names its other places on the other
+axis (`complement`), its operation runs over the other axis (`operation`), a dataset
+declares the place a provider (`declaration`), or only that axis holds data there
+(`coverage`)."""
+
+
+@dataclass(frozen=True, slots=True)
+class UndirectedReading:
+    """The flow axis a place named without a direction is read on, and the rule that settled
+    it (`region.undirected.settle_undirected_axis`). `listed_by` is the datasets, by dcid,
+    that each declare every place of the set a provider where `rule` is `declaration`, and
+    empty otherwise."""
+
+    axis: RoleAxis
+    rule: UndirectedRule
+    listed_by: tuple[str, ...] = ()
+
 
 @dataclass(frozen=True)
 class UnservedMembers:
@@ -57,6 +76,10 @@ class DepartureFact:
       `whole_total_read`): the flow axis the request broke the answer down by, named the
       place on, the axis the answer reads a place named without a direction on, or the side
       the answer reads as its whole population.
+    - `read_by` (`direction_inferred`): why the answer reads the place on `over`.
+    - `listed_by` (`direction_inferred`): where `read_by` is `declaration`, the name of the
+      dataset that lists the place among its providers, which the text names and which
+      need not be the dataset the answer reads. The departure's `shown` stays `None`.
     - `entities` (`entity_unavailable`, `whole_total_read`): the names of the entities the
       data holds no values for, in the answer's entity order; or, for a whole population
       read as a union of totals, the names of those totals.
@@ -122,6 +145,11 @@ class DepartureFact:
       that lists the members of a side because the source's total of the side, covering the
       `whole_of` classes, holds no point in the requested years, though the members do.
       `data_years` is then the years the total holds.
+    - `limited_by` `passed_over` (`year_unavailable`): on an answer to a span counted back
+      from now that shows fewer years than the span counts, since a range reaching further
+      back would elect a different member; `shown` is the years it shows, and `data_years`
+      the years the data holds when its newest year lies over `trailing_stale_years` before
+      now, else `None`.
     - `omitted_years` (`year_unavailable`): on an answer a constant-price unit request
       converts, each entity whose rows a missing deflator leaves out, by name, with the
       years it leaves out and the years it keeps, in the order the text names them.
@@ -168,7 +196,12 @@ class DepartureFact:
     converted_years: tuple[int, int] | None = None
     limited_by: (
         Literal[
-            "exchange_rates", "deflators", "imputed_multilateral", "published_total", "whole_total"
+            "exchange_rates",
+            "deflators",
+            "imputed_multilateral",
+            "published_total",
+            "whole_total",
+            "passed_over",
         ]
         | None
     ) = None
@@ -180,6 +213,8 @@ class DepartureFact:
     limits: tuple[str, ...] = ()
     values: tuple[str, ...] = ()
     left_out: bool = False
+    read_by: UndirectedRule | None = None
+    listed_by: str | None = None
 
 
 def ordered_facts(facts: Iterable[DepartureFact]) -> tuple[DepartureFact, ...]:

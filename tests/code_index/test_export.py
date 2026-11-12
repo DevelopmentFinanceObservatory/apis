@@ -3655,7 +3655,7 @@ _REVIEWED_TOTAL_GROUPS = {
         ),
     ),
     "DACCentralAmerica": TotalGroup("CentralAmerica", ("DACCentralAmericaUnallocated",)),
-    "DACCountriesTotal": TotalGroup("groups/OECD.DAC", sums_members=False),
+    "DACCountriesTotal": TotalGroup("groups/OECD.DAC", sums_members=False, declares_providers=True),
     "DACEasternAfrica": TotalGroup(f"{_DAC_REGION}EasternAfrica", ("DACEasternAfricaUnallocated",)),
     "DACEurope": TotalGroup(
         f"{_DAC_REGION}Europe", ("DACEuropeUnallocated", "DACExYugoslaviaUnallocated")

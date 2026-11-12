@@ -52,6 +52,7 @@ from search.engine.retrieval.read_plan import (
     RoleYears,
     asked_years,
     in_elected_datasets,
+    misses_judged_years,
     plan_role_read,
     role_years,
     window_gap,
@@ -848,7 +849,11 @@ def discover_role_scope(
         if years is not None
         else None
     )
-    if read is None or not read.members:
+    if (
+        read is None
+        or not read.members
+        or (read.plan is not None and misses_judged_years(read.plan, date_request))
+    ):
         return _no_point_in_years(
             coverage_index,
             surviving_svs=surviving_svs,

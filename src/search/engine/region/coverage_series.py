@@ -36,8 +36,10 @@ if TYPE_CHECKING:
 
 
 def requested_window(date_request: DateRequest | None) -> TimeWindow | None:
-    """The years a part asks for, `None` when it names none or asks for the latest."""
-    return None if date_request is None or date_request.latest else date_request.window
+    """The years a part judges whether data is held in before its answer settles, `None`
+    when it names none or asks for the latest: for a trailing span, the years its newest
+    year may lie in (`extract.DateRequest.judged`)."""
+    return None if date_request is None or date_request.latest else date_request.judged.window
 
 
 def _held_query(

@@ -38,8 +38,15 @@ class ScopeWindowSettings(BaseSettings):
     # Coverage paths also floor at the artifact's epoch_year, the first year its bitmask holds.
     scope_min_year: int = 1960
 
-    # The most years a role-bearing read lists before they become one SDMX year filter.
+    # The most years a role-bearing read lists before they become one SDMX year filter. A
+    # span counted back from now ("the last five years") counts the years it asks for.
     scope_max_window_years: int = 80
+
+    # How many years before the span it asks for a span counted back from now ("the last
+    # five years") may find its newest year (`search.engine.extract.DateRequest.judged`). An
+    # answer whose newest year lies more than this many years before now departs
+    # `year_unavailable`.
+    trailing_stale_years: int = 3
 
     @model_validator(mode="after")
     def _validate_bounds(self) -> ScopeWindowSettings:
@@ -49,6 +56,10 @@ class ScopeWindowSettings(BaseSettings):
         if self.scope_max_window_years < 1:
             raise ValueError(
                 f"SEARCH_SCOPE_MAX_WINDOW_YEARS must be >= 1; got {self.scope_max_window_years!r}"
+            )
+        if self.trailing_stale_years < 0:
+            raise ValueError(
+                f"SEARCH_TRAILING_STALE_YEARS must be >= 0; got {self.trailing_stale_years!r}"
             )
         return self
 
@@ -115,22 +126,33 @@ class WindowTooLong(Exception):
         super().__init__(f"the requested window spans {years} years, over the {cap}-year cap")
 
 
+def first_read_year(horizon: YearHorizon) -> int:
+    """The first year a role-bearing read lists over `horizon`:
+    `max(scope_min_year, horizon.epoch_year)` (`role_read_years`)."""
+    return max(scope_window_settings().scope_min_year, horizon.epoch_year)
+
+
 def role_read_years(
-    window: TimeWindow, *, horizon: YearHorizon, clock_year: int | None
+    window: TimeWindow,
+    *,
+    horizon: YearHorizon,
+    clock_year: int | None,
+    asked_years: int | None = None,
 ) -> TimeWindow | None:
     """The years a role-bearing read of `window` lists over `horizon`: `read_range` floored at
     `max(scope_min_year, horizon.epoch_year)` and capped at `horizon.max_year`, which carries
     projection years. None when no year is left. Raises `WindowTooLong` when the years number
-    more than `scope_max_window_years`."""
+    more than `scope_max_window_years`; for a span counted back from now, `asked_years`, the
+    count it asks for, is what the cap counts."""
     settings = scope_window_settings()
-    first_year = max(settings.scope_min_year, horizon.epoch_year)
+    first_year = first_read_year(horizon)
     years = read_range(
         window, clock_year=clock_year, first_year=first_year, last_year=horizon.max_year
     )
     if years is None:
         return None
     assert years.start_year is not None and years.end_year is not None  # both bounds set
-    span = years.end_year - years.start_year + 1
+    span = asked_years if asked_years is not None else years.end_year - years.start_year + 1
     if span > settings.scope_max_window_years:
         raise WindowTooLong(
             read=years,

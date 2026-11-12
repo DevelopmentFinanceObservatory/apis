@@ -359,6 +359,35 @@ _CASES: list[tuple[DepartureFact, str | None, str]] = [
         "You asked for 2020 to 2021. The source's total for every official donor holds no "
         "figure for those years, so this covers each donor with data and shows 2020.",
     ),
+    # A span counted back from now that a member passed over in election shortens.
+    (
+        DepartureFact(
+            code="year_unavailable",
+            binding_ref="when:",
+            asked="2022 to 2026",
+            shown="2019 to 2022",
+            requested_years=(2022, 2026),
+            limited_by="passed_over",
+        ),
+        "aid",
+        "You asked for 2022 to 2026. The series shown holds nothing newer, and earlier years "
+        "would read a different series, so this shows 2019 to 2022.",
+    ),
+    # The same, from data whose newest year is stale.
+    (
+        DepartureFact(
+            code="year_unavailable",
+            binding_ref="when:",
+            asked="2022 to 2026",
+            shown="2019 to 2022",
+            requested_years=(2022, 2026),
+            data_years=(2000, 2022),
+            limited_by="passed_over",
+        ),
+        "aid",
+        "You asked for 2022 to 2026. The data ends in 2022, and earlier years would read a "
+        "different series, so this shows 2019 to 2022.",
+    ),
     # Deflators that leave out some donors' rows: before, after and inside the years kept,
     # every year, and a count past the third.
     (
@@ -916,6 +945,73 @@ _CASES: list[tuple[DepartureFact, str | None, str]] = [
         "aid",
         "You named Kenya without a direction. Only the data with Kenya as the recipient "
         "holds values, so this reads it as the recipient.",
+    ),
+    (
+        DepartureFact(
+            code="direction_inferred",
+            binding_ref="where:",
+            asked="Kenya",
+            over="destination",
+            read_by="coverage",
+        ),
+        "aid",
+        "You named Kenya without a direction. Only the data with Kenya as the recipient "
+        "holds values, so this reads it as the recipient.",
+    ),
+    # "Low income countries budget support from Germany": Germany takes the donor side.
+    (
+        DepartureFact(
+            code="direction_inferred",
+            binding_ref="where:",
+            asked="Low income countries",
+            over="destination",
+            read_by="complement",
+        ),
+        "aid",
+        "You named Low income countries without a direction. The question names the "
+        "provider, so this reads it as the recipient.",
+    ),
+    # "Korea's top donors": the rank takes the donor side, and names no donor.
+    (
+        DepartureFact(
+            code="direction_inferred",
+            binding_ref="where:",
+            asked="Korea",
+            over="destination",
+            read_by="operation",
+        ),
+        "aid",
+        "You named Korea without a direction. The question looks across the providers, so "
+        "this reads it as the recipient.",
+    ),
+    # "Korea total aid": DAC2a lists Korea among its providers.
+    (
+        DepartureFact(
+            code="direction_inferred",
+            binding_ref="where:",
+            asked="Korea",
+            over="origin",
+            read_by="declaration",
+            listed_by="OECD DAC2a",
+        ),
+        "aid",
+        "You named Korea without a direction. OECD DAC2a lists Korea among its providers, so "
+        "this reads it as the provider.",
+    ),
+    # A debt table by creditor lists no providers: the sentence names the aid table that
+    # declares Korea one, in that table's own word, and the answer's role in its own.
+    (
+        DepartureFact(
+            code="direction_inferred",
+            binding_ref="where:",
+            asked="Korea",
+            over="origin",
+            read_by="declaration",
+            listed_by="OECD DAC2a",
+        ),
+        "debt_lending",
+        "You named Korea without a direction. OECD DAC2a lists Korea among its providers, so "
+        "this reads it as the creditor.",
     ),
     # crs-010: the check covered only the ODA default the engine chose.
     (

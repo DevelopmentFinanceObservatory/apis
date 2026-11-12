@@ -1,12 +1,17 @@
 """Stores of the model's extraction of a query, so a repeated query reads the same way.
 
-`extract()` consults the store before it calls the model and writes the model's
-`Extraction` JSON to it after a valid parse, before any post-processing. A key
-(`extraction_key`) hashes the query as sent, the extract version (the system
-prompt and the `Extraction` schema) and the model id, seed and thinking level, so
-any edit to the prompt or schema reads afresh. `SEARCH_EXTRACT_STORE` selects the
-store: `off`, `memory` (an in-process LRU bounded in bytes, with no TTL) or
-`file:<path>` (JSON lines, recorded by one run and replayed by others).
+`extract()` consults the store before it calls the model. The model's `Extraction` JSON,
+before any post-processing, is written to it when two samples agree on its reading: the
+second sample's task judges it against the first once it answers and its first is read
+(`clients.llm.Agreement`), whatever happens to the request after. A second sample that
+outlasts the settle bound (`SEARCH_LLM_SECOND_SAMPLE_SETTLE_S`), or that the request's end
+cancels, stores nothing. A key (`extraction_key`) hashes the query as sent, the extract
+version (the system prompt and the `Extraction` schema), the model id, seed and thinking
+level, and the number of samples whose agreement a stored reading passed
+(`AGREEMENT_SAMPLES`), so any edit to the prompt, the schema or the sampling policy reads
+afresh. `SEARCH_EXTRACT_STORE` selects the store: `off`, `memory` (an in-process LRU
+bounded in bytes, with no TTL) or `file:<path>` (JSON lines, recorded by one run and
+replayed by others).
 """
 
 from __future__ import annotations
@@ -21,6 +26,11 @@ from typing import Protocol
 
 logger = logging.getLogger(__name__)
 
+# The samples whose agreement a stored reading passed: `clients.llm.two_samples` draws this
+# many, and `extraction_key` carries it, so a reading stored under another sampling policy
+# is a miss.
+AGREEMENT_SAMPLES = 2
+
 # The in-process store's byte budget. An extraction is under 1 KiB of JSON, so it
 # holds over 16,000 queries.
 MEMORY_STORE_MAX_BYTES = 16 * 1024 * 1024
@@ -28,7 +38,7 @@ MEMORY_STORE_MAX_BYTES = 16 * 1024 * 1024
 
 def extraction_key(query: str, *, version: str, year: int, identity: Mapping[str, object]) -> str:
     """Hash `query` as sent to the model, the extract `version`, the `year` the prompt
-    names and the model's `identity` (its id, seed and thinking level).
+    names, the model's `identity` (its id, seed and thinking level) and `AGREEMENT_SAMPLES`.
 
     The exact text keys the reading because `extract()` checks the reading against it:
     role cues, operation phrases and restored word order all read the query's own text.
@@ -38,6 +48,7 @@ def extraction_key(query: str, *, version: str, year: int, identity: Mapping[str
         "version": version,
         "year": year,
         "identity": identity,
+        "samples": AGREEMENT_SAMPLES,
     }
     canonical = json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return "extract_" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()

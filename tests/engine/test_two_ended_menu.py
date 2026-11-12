@@ -482,14 +482,25 @@ def test_two_open_axes_keep_the_index_shape_declaring_the_destination(
         pytest.param(
             "aid worldwide", [], "aid", (_CRS_SV, _DAC1_SV), [(_DAC1_SV,)], id="worldwide"
         ),
-        # France may be the donor or the recipient, so no axis is unasked.
+        # Kenya may be the donor or the recipient, and no rule settles which, so no axis is
+        # unasked.
+        pytest.param(
+            "Kenya aid",
+            ["Kenya"],
+            "aid",
+            (_CRS_SV, _DAC1_SV),
+            [(_CRS_SV,), (_DAC1_SV,)],
+            id="undirected-place",
+        ),
+        # DAC1 declares France a provider, so France reads as the donor
+        # (`undirected.settle_undirected_axis`) and the query reads as "aid from France".
         pytest.param(
             "France aid",
             ["France"],
             "aid",
             (_CRS_SV, _DAC1_SV),
-            [(_CRS_SV,), (_DAC1_SV,)],
-            id="undirected-place",
+            [(_DAC1_SV,)],
+            id="declared-provider",
         ),
         # DAC1 reads "multilateral ODA" and DAC2a "imputed multilateral ODA", so DAC1 does
         # not read as much of the query and DAC2a's imputed table stays.

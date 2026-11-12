@@ -8,7 +8,7 @@ import hashlib
 from pydantic import BaseModel
 
 from promptlab.llm import CallRecord, LadderLLM
-from search.engine.clients.llm import LLM, for_stage
+from search.engine.clients.llm import LLM, for_stage, reseeded
 from search.engine.extract import Extraction
 
 
@@ -66,6 +66,32 @@ def test_explicit_thinking_override_outranks_the_stage_default():
 
     # An explicit thinking level prevents stage-level pinning.
     assert for_stage(wrapper, "bind") is wrapper
+
+
+class _SeedRecordingLLM(LLM):
+    """An `LLM` that answers at once and records the seed each call ran under."""
+
+    def __init__(self, *, seed: int) -> None:
+        super().__init__(seed=seed)
+        self.seeds: list[int | None] = []
+
+    async def generate_structured(self, *, prompt: str, system: str, schema):
+        self.seeds.append(self._seed)
+        return Extraction(kind="resolution", variables=["gdp"]), None
+
+
+def test_a_reseeded_wrapper_samples_and_records_under_its_own_seed():
+    """Extraction's second sample runs under `reseeded`, so the inner model must see that
+    seed, as production's client does, and the record must name it."""
+    inner = _SeedRecordingLLM(seed=7)
+    sink: list[CallRecord] = []
+    wrapper = LadderLLM(inner, systems={}, sink=sink)
+
+    for llm in (wrapper, reseeded(wrapper)):
+        asyncio.run(llm.generate_structured(prompt="p", system="s", schema=Extraction))
+
+    assert inner.seeds == [7, 8]
+    assert [record.seed for record in sink] == [7, 8]
 
 
 def test_unknown_schema_passes_the_engines_system_text_through_unmodified():

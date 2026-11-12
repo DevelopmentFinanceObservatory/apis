@@ -18,7 +18,7 @@ from search.engine.clients.graph import Facet
 from search.engine.config import settings
 from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.errors import GraphInfraError
-from search.engine.extract import DateRequest
+from search.engine.extract import DateRequest, TrailingSpan
 from search.engine.region.convertibility import _served_keys
 from search.engine.region.facets import FacetAdmission, answer_facets, filter_answer
 from search.engine.region.observations.bulk_role_series import (
@@ -456,6 +456,52 @@ def test_named_family_coverage_dates_the_total_the_preview_reads() -> None:
     )
     assert headline is not None
     assert (headline.year, headline.series) == (2022, 3)
+
+
+@pytest.mark.parametrize(
+    ("newest", "year"),
+    [(2022, 2022), (2019, None)],
+    ids=["inside-the-asked-years", "only-before-them"],
+)
+def test_a_trailing_request_keeping_its_years_heads_its_answer_inside_them(
+    newest: int, year: int | None
+) -> None:
+    """ "The last five years" read in 2025 names 2021 to 2025 and reads every span it may
+    settle on, back to 2014. An answer that keeps that request is headed by the latest year
+    its rows reach inside 2021 to 2025, naming those years; rows that end in 2019 head
+    nothing."""
+    index = build_coverage_index(
+        [(_TOTAL, "f1", ABSENT_ENTITY, r, list(range(2015, newest + 1))) for r in _DEBTORS],
+        role_names=_FAMILY_ROLES,
+    )
+    trailing = DateRequest(
+        window=TimeWindow(start_year=2021, end_year=2025),
+        latest=False,
+        trailing=TrailingSpan(years=5, stale_years=3),
+    )
+    plan = _role_plan(
+        [_TOTAL],
+        member_facts=_FAMILY_FACTS,
+        names={"destination": "debtor"},
+        subject_dcids=_DEBTORS,
+        origin_dcids=[],
+        bound_roles={"recipient": frozenset(_DEBTORS)},
+        years=read_plan.role_years(trailing, index.horizon),
+        coverage_index=index,
+        declared=NO_DECLARED_POLICIES,
+    )
+
+    headline = answer_headline(plan, index, date_request=trailing)
+
+    if year is None:
+        assert headline is None
+    else:
+        assert headline is not None
+        assert (headline.year, headline.series, headline.named_window) == (
+            year,
+            3,
+            TimeWindow(start_year=2021, end_year=2025),
+        )
 
 
 _ELECTION_DEBTORS = [f"country/E{i:02d}" for i in range(11)]

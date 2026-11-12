@@ -133,9 +133,11 @@ def part_shape(
     admitted qualifier matches name codes of `admitted_systems`: a sector or restriction
     part when one of them is a sector system (`sector_systems`, the code systems the code
     index declares sector questions of) or a restriction (`BASIS_RESTRICTIONS`), else None
-    when a place is named without a direction, which settles only after election and gives
-    the part its shape then (`identity_part_shape`), else a recipient part when a place is a
-    recipient, else a donor part when it names places, and None when it names none."""
+    when a place keeps no direction (`Frame.directions` gives a place named without one the
+    axis a rule settles before the menu seats), else a recipient part when a place is a
+    recipient, else a donor part when it names places, and None when it names none. A part
+    whose place keeps no direction takes its shape after election, from
+    `identity_part_shape`."""
     restricting = frozenset(sector_systems) | frozenset(BASIS_RESTRICTIONS)
     if restricting.intersection(admitted_systems):
         return "sector_or_restriction"

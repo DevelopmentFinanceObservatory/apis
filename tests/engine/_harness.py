@@ -37,6 +37,7 @@ from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient, RoleFacetIndex
 from search.engine.core import ResolveRecord, resolve_async, resolve_events
+from search.engine.envelope import _terminal_events, now_ms
 from search.engine.errors import GraphInfraError
 from search.engine.events import Event
 from search.engine.extract import DateRequest
@@ -50,6 +51,7 @@ from search.engine.region.place_options import PlaceOptionsPool
 from search.engine.region.result import FacetAxisFilter
 from search.engine.region.state import EngineOptions
 from search.engine.response_cache import ResponseCache
+from search.engine.response_cache_flow import CacheScope
 from search.engine.response_cache_memo import PartMemo
 from search.engine.retrieval.facet_election import merge_role_candidates
 from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
@@ -97,6 +99,13 @@ from tests.materialise._scope_availability import NO_SCOPE_READ
 from tests.materialise.conftest import FakeGraphReader
 
 _TEST_PREPOSITION_RE = re.compile(r"\b(from|to)\b", re.IGNORECASE)
+
+
+async def observe_answer(scope: CacheScope, response: ResolveResponse) -> None:
+    """Drive `scope` through an answer's `response` and `done` events, as a request
+    without trailing events streams them (`CacheScope.observe`)."""
+    for event in _terminal_events(response, start_ms=now_ms(), degraded_leg=False):
+        await scope.observe(event)
 
 
 def door_roles_for_test_query(query: str, names: Sequence[str]) -> dict[str, list[DoorRole]]:

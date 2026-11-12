@@ -42,7 +42,7 @@ from materialise.graph import SubjectPage
 from search.engine.bind import SlotBindingDraft
 from search.engine.core import resolve_async
 from search.engine.degraded_reads import DegradedReads, recording_degraded_reads
-from search.engine.errors import GraphInfraError
+from search.engine.errors import GraphInfraError, GraphReadFailure
 from search.engine.extract import Extraction
 from search.engine.interpret import Recall
 from search.engine.quantity_read import QuantityOutput
@@ -55,6 +55,7 @@ from search.engine.region import (
     phase_rank_bind,
     pipeline,
     place_roles,
+    undirected,
 )
 from search.engine.region.candidates import _AlternatesRead
 from search.engine.region.decisions import PartyReadingWithdrawn
@@ -67,6 +68,7 @@ from search.engine.region.phase_rank_bind import (
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.place_roles import (
     bind_place_roles,
+    direction_assignments,
     held_party_words,
     lacks_query_axis,
     stated_party_words,
@@ -75,11 +77,13 @@ from search.engine.region.place_roles import (
 )
 from search.engine.region.place_set import PlaceNode, PlaceSet
 from search.engine.region.state import ResolveState
+from search.engine.region.undirected import settle_undirected_axis
 from search.engine.response_cache import ResponseCache
 from search.engine.retrieval.derive import derive_shapes
 from search.engine.retrieval.read_plan import PairPlan, ReadPlan
 from search.engine.role_text import DoorRole
 from search.engine.shape import ShapeDraft
+from search.heading.departure_fact import UndirectedReading
 from search.models import (
     DatasetResubmitInput,
     Operation,
@@ -90,6 +94,7 @@ from search.models import (
     ResolveResponse,
 )
 from series_coverage.schema import RoleNames
+from series_coverage.shared import CoverageSnapshot
 from tests.engine import test_first_answer_place_scenarios as scenarios
 from tests.engine._binders import MenuRecordingBinder, elected_reply
 from tests.engine._builders import place_sets, settled_place_roles
@@ -1891,10 +1896,10 @@ def test_an_operation_over_one_flow_axis_places_an_undirected_place(
     roles, over, place, elected_origin, bound
 ) -> None:
     """A rank over one flow axis of a two-role shape leaves that axis open, and a single
-    place takes the other axis, also on an alternate whose elected shape bound the place on
-    the ranked axis. A group can scope the ranked axis ("top recipients of aid in Africa")
-    or name the other ("top creditors of external debt of Africa"), so the elected shape
-    cannot tell its axis."""
+    place takes the other axis (`settle_undirected_axis`), also on an alternate whose
+    elected shape bound the place on the ranked axis. A group can scope the ranked axis
+    ("top recipients of aid in Africa") or name the other ("top creditors of external debt
+    of Africa"), so the elected shape cannot tell its axis."""
     shape = _shape_for(_economic_activity_arcs("Nominal", {}, roles))
     groups = _GHA_KEN_GROUP if place in _GHA_KEN_GROUP else {}
     places = {place: "country/KEN"} if not groups else {}
@@ -1910,6 +1915,7 @@ def test_an_operation_over_one_flow_axis_places_an_undirected_place(
         assert not isinstance(elected, str)
         assert settled_place_roles(state.shape_draft, elected).origin_dcids == ["country/KEN"]
         state.elected_place_roles = elected
+    state.undirected = settle_undirected_axis(state, [shape])
 
     assigned = bind_place_roles(state, shape)
 
@@ -1937,6 +1943,427 @@ def test_a_region_beside_a_rank_over_one_flow_axis_is_read_as_a_group() -> None:
     state.operations = (Operation(verb="rank", phrase="top", over="destination"),)
 
     assert bind_place_roles(state, shape) == "role_not_resolved"
+
+
+_LOW_INCOME = "Low income countries"
+_DEU = "country/DEU"
+
+
+def _low_income_and_germany(entities: list[str], roles: dict[str, str]) -> ResolveState:
+    """A state naming low income countries, a group of Ghana and Kenya, and Germany, in the
+    order of `entities`, each name of `roles` with that direction."""
+    state = _state(names_and_roles={}, places={})
+    state.entities = entities
+    state.place_sets = place_sets({"Germany": _DEU}, groups={_LOW_INCOME: [_GHA, _KEN]})
+    state.entity_roles = {name: [_door_role(axis, name)] for name, axis in roles.items()}
+    return state
+
+
+def test_a_group_named_first_without_a_direction_takes_the_axis_its_partner_leaves_free() -> None:
+    """ "Low income countries budget support from Germany" names Germany as the donor and the
+    group with no direction. A shape declaring both flow axes leaves the group the recipient
+    side, where Germany's aid to Ghana is held (`undirected.settle_undirected_axis`), so
+    every shape binds the places as "Germany budget support to low income countries"
+    does."""
+    shape = _shape_for(
+        _economic_activity_arcs("Nominal", {}, ("financingProvider", "financingRecipient"))
+    )
+    undirected = _low_income_and_germany([_LOW_INCOME, "Germany"], {"Germany": "origin"})
+    undirected.coverage = _flows_coverage(_DEU, _GHA)
+    twin = _low_income_and_germany(
+        ["Germany", _LOW_INCOME], {"Germany": "origin", _LOW_INCOME: "destination"}
+    )
+
+    assert settle_undirected_axis(undirected, [shape]) == UndirectedReading(
+        "destination", "complement"
+    )
+    undirected.undirected = UndirectedReading("destination", "complement")
+    bound, twin_bound = bind_place_roles(undirected, shape), bind_place_roles(twin, shape)
+
+    assert not isinstance(bound, str), bound
+    assert not isinstance(twin_bound, str), twin_bound
+    assert settled_place_roles(shape, bound) == settled_place_roles(shape, twin_bound)
+    assert settled_place_roles(shape, bound).origin_dcids == [_DEU]
+
+
+_DEBTOR_ONLY_REQUIRED = frozenset({"financingProvider"})
+
+
+def _germany_undirected() -> ResolveState:
+    return _state(names_and_roles={}, places={"Germany": _DEU})
+
+
+def _germany_beside_a_rank_over_debtors() -> ResolveState:
+    state = _germany_undirected()
+    state.operations = (Operation(verb="rank", phrase="top 10 debtors", over="destination"),)
+    return state
+
+
+def _germany_beside_low_income_recipients() -> ResolveState:
+    return _low_income_and_germany(["Germany", _LOW_INCOME], {_LOW_INCOME: "destination"})
+
+
+@pytest.mark.parametrize(
+    ("optional", "rule", "state_for", "axis"),
+    [
+        pytest.param(
+            _DEBTOR_ONLY_REQUIRED,
+            "coverage",
+            _germany_undirected,
+            "destination",
+            id="required-debtor-outranks-coverage",
+        ),
+        pytest.param(
+            _DEBTOR_ONLY_REQUIRED,
+            "declaration",
+            _germany_undirected,
+            "destination",
+            id="required-debtor-outranks-declaration",
+        ),
+        # Recall returned only by-creditor members, so the shape requires both roles.
+        pytest.param(
+            frozenset(),
+            "coverage",
+            _germany_undirected,
+            "origin",
+            id="by-creditor-sample-takes-the-settled-axis",
+        ),
+        pytest.param(
+            _DEBTOR_ONLY_REQUIRED,
+            "operation",
+            _germany_beside_a_rank_over_debtors,
+            "origin",
+            id="operation-outranks-the-required-role",
+        ),
+        pytest.param(
+            _DEBTOR_ONLY_REQUIRED,
+            "complement",
+            _germany_beside_low_income_recipients,
+            "origin",
+            id="complement-outranks-the-required-role",
+        ),
+    ],
+)
+def test_the_settling_rule_and_the_one_required_role_order_an_undirected_place(
+    optional, rule, state_for, axis
+) -> None:
+    """A rule the query's own structure settles, a rank over the other axis ("top 10
+    debtors of China") or a directed partner on the other axis ("Germany budget support to
+    low income countries"), places the place on a shape requiring one role. A rule read from
+    data, coverage or a declaration, comes after that role: "Germany external debt stocks"
+    settles Germany as a creditor by coverage, and a debt total that requires the debtor
+    and declares an optional creditor reads Germany as the debtor. A shape whose recalled
+    members all declare both roles requires both and takes the settled axis."""
+    shape = dataclasses.replace(
+        _shape_for(
+            _economic_activity_arcs("Nominal", {}, ("financingProvider", "financingRecipient"))
+        ),
+        optional_roles=optional,
+    )
+    state = state_for()
+    state.undirected = UndirectedReading("origin", rule)
+
+    bound = bind_place_roles(state, shape)
+
+    assert not isinstance(bound, str), bound
+    roles_bound = settled_place_roles(shape, bound)
+    sides = {"destination": roles_bound.destination_dcids, "origin": roles_bound.origin_dcids}
+    assert [side for side, dcids in sides.items() if _DEU in dcids] == [axis]
+
+
+def test_a_group_beside_a_rank_and_no_directed_place_settles_no_axis() -> None:
+    """ "Top recipients of aid in Africa" names no place with a direction, so no partner
+    leaves Africa a side, no dataset declares the group a provider and the empty coverage
+    holds no series: the direction stays open."""
+    shape = _shape_for(
+        _economic_activity_arcs("Nominal", {}, ("financingProvider", "financingRecipient"))
+    )
+    state = _state(names_and_roles={}, places={})
+    state.entities = ["Africa"]
+    state.place_sets = place_sets(groups=_GHA_KEN_GROUP)
+    state.operations = (Operation(verb="rank", phrase="top", over="destination"),)
+
+    assert settle_undirected_axis(state, [shape]) is None
+    assert bind_place_roles(state, shape) == "role_not_resolved"
+
+
+_KOR = "country/KOR"
+
+
+_TOP_DONORS = (Operation(verb="rank", phrase="top donors", over="origin"),)
+_KOREA_RECEIVES = ((_DEU, _KOR),)
+_KOREA_GIVES_AND_RECEIVES = ((_DEU, _KOR), (_KOR, _GHA))
+
+
+@pytest.mark.parametrize(
+    ("operations", "held", "settled", "korea_on"),
+    [
+        pytest.param(
+            _TOP_DONORS,
+            _KOREA_RECEIVES,
+            UndirectedReading("destination", "operation"),
+            "destination",
+            id="beside-a-rank-over-donors",
+        ),
+        pytest.param(
+            _TOP_DONORS,
+            (),
+            UndirectedReading("destination", "operation"),
+            "destination",
+            id="beside-a-rank-over-donors-without-coverage",
+        ),
+        pytest.param(
+            (),
+            _KOREA_RECEIVES,
+            UndirectedReading("destination", "coverage"),
+            "destination",
+            id="no-operation-coverage-on-one-side",
+        ),
+        pytest.param(
+            (),
+            _KOREA_GIVES_AND_RECEIVES,
+            UndirectedReading("origin", "declaration", listed_by=("provenance/OECDDAC2A",)),
+            "origin",
+            id="no-operation-coverage-on-both-sides",
+        ),
+        pytest.param(
+            (),
+            (),
+            UndirectedReading("origin", "declaration", listed_by=("provenance/OECDDAC2A",)),
+            "origin",
+            id="no-operation-no-coverage",
+        ),
+    ],
+)
+def test_a_declared_provider_takes_the_side_a_rank_over_one_flow_axis_leaves_free(
+    monkeypatch: pytest.MonkeyPatch, operations, held, settled, korea_on
+) -> None:
+    """DAC2a declares Korea a provider (`undirected.declared_providers`). "Korea's top
+    donors" ranks the donors, so the rank takes the donor side and Korea reads as the
+    recipient (the operation rule), as "top donors to Korea" does, whether or not the
+    coverage holds Korea's aid received: the declaration never puts Korea on the axis the
+    rank runs over. With no operation the coverage reads first: where only Korea's aid
+    received holds a series in the part's years, Korea is the recipient ("Korea total aid in
+    1980"). The declaration breaks a coverage tie, and reads
+    Korea as the donor where both sides or neither hold a series."""
+    monkeypatch.setattr(
+        undirected, "shape_part_datasets", lambda shape, index: ("provenance/OECDDAC2A",)
+    )
+    shape = _shape_for(
+        _economic_activity_arcs("Nominal", {}, ("financingProvider", "financingRecipient"))
+    )
+    state = _state(names_and_roles={}, places={"Korea": _KOR})
+    state.entities = ["Korea"]
+    state.place_sets = place_sets({"Korea": _KOR})
+    state.operations = operations
+    if held:
+        state.coverage = _flows_coverage(*held[0], *held[1:])
+
+    assert settle_undirected_axis(state, [shape]) == settled
+    state.undirected = settled
+    bound = bind_place_roles(state, shape)
+
+    assert not isinstance(bound, str), bound
+    roles = settled_place_roles(shape, bound)
+    assert {"destination": roles.destination_dcids, "origin": roles.origin_dcids} == {
+        korea_on: [_KOR],
+        "destination" if korea_on == "origin" else "origin": [],
+    }
+
+
+@pytest.mark.parametrize(
+    ("declared", "settled"),
+    [
+        pytest.param(
+            {_GHA: {"provenance/A"}, "country/KEN": {"provenance/B"}},
+            None,
+            id="each-place-declared-by-another-dataset",
+        ),
+        pytest.param(
+            {_GHA: {"provenance/A", "provenance/B"}, "country/KEN": {"provenance/B"}},
+            UndirectedReading("origin", "declaration", listed_by=("provenance/B",)),
+            id="one-dataset-declares-every-place",
+        ),
+    ],
+)
+def test_a_set_settles_by_declaration_only_where_one_dataset_declares_every_place(
+    monkeypatch: pytest.MonkeyPatch, declared, settled
+) -> None:
+    """A group named without a direction, with no coverage either way, reads as the provider
+    only where one dataset declares each of its places a provider, and the reading carries
+    that dataset alone: the answer's `direction_inferred` text says it lists the group among
+    its providers."""
+    monkeypatch.setattr(
+        undirected, "shape_part_datasets", lambda shape, index: ("provenance/A", "provenance/B")
+    )
+    monkeypatch.setattr(
+        undirected,
+        "declared_providers",
+        lambda index: {place: frozenset(datasets) for place, datasets in declared.items()},
+    )
+    shape = _shape_for(
+        _economic_activity_arcs("Nominal", {}, ("financingProvider", "financingRecipient"))
+    )
+    state = _state(names_and_roles={}, places={})
+    state.entities = ["Africa"]
+    state.place_sets = place_sets(groups=_GHA_KEN_GROUP)
+
+    assert settle_undirected_axis(state, [shape]) == settled
+
+
+class _ProvenanceNameGraph:
+    """Answers the provenance name read, or fails it with `fail`, and records whether each
+    read ran on a thread with a running event loop."""
+
+    def __init__(self, fail: bool) -> None:
+        self.fail = fail
+        self.on_loop: list[bool] = []
+
+    def node_arc_targets_many(self, dcids, *, properties, deadline):
+        try:
+            asyncio.get_running_loop()
+            self.on_loop.append(True)
+        except RuntimeError:
+            self.on_loop.append(False)
+        if self.fail:
+            raise GraphReadFailure("simulated provenance name read failure")
+        return {dcid: {"name": [SimpleNamespace(value="Listing Dataset")]} for dcid in dcids}
+
+
+@pytest.mark.parametrize(
+    ("fail", "listed_by", "lost"),
+    [(False, "Listing Dataset", []), (True, "provenance/Listing", ["provenance names"])],
+    ids=["read", "read_fails"],
+)
+def test_a_declaration_reading_names_its_dataset_off_the_event_loop(
+    monkeypatch: pytest.MonkeyPatch, fail, listed_by, lost
+) -> None:
+    """The dataset a declaration reading cites is named by a graph read that runs off the
+    event loop. A failed read names the dataset by its dcid and bars caching the answer."""
+    monkeypatch.setattr(phase_place_materialise, "shape_part_datasets", lambda shape, index: ())
+    graph = _ProvenanceNameGraph(fail)
+    state = _state(names_and_roles={}, places={})
+    state.graph = cast(Any, graph)
+    reading = UndirectedReading("origin", "declaration", listed_by=("provenance/Listing",))
+
+    with recording_degraded_reads() as degraded:
+        named = asyncio.run(phase_place_materialise._listing_source(state, reading))
+
+    assert (named, graph.on_loop, degraded.reads) == (listed_by, [False], lost)
+
+
+_FRA = "country/FRA"
+_FLOWS_MEMBER = "Test_PlaceRolesShape"
+
+
+def _germany_and_france() -> ResolveState:
+    """ "Aid from Germany and France" read with the list's cue on Germany alone: Germany the
+    donor, France named without a direction."""
+    state = _state(names_and_roles={}, places={})
+    state.entities = ["Germany", "France"]
+    state.place_sets = place_sets({"Germany": _DEU, "France": _FRA})
+    state.entity_roles = {"Germany": [_door_role("origin", "Germany")]}
+    return state
+
+
+def _korea_top_donors() -> ResolveState:
+    state = _state(names_and_roles={}, places={"Korea": _KOR})
+    state.entities = ["Korea"]
+    state.place_sets = place_sets({"Korea": _KOR})
+    state.operations = (Operation(verb="rank", phrase="top donors", over="origin"),)
+    return state
+
+
+_DAC2A_DATASETS = ("provenance/OECDDAC2A",)
+
+
+@pytest.mark.parametrize(
+    ("build", "donor", "recipient", "datasets", "settled"),
+    [
+        pytest.param(
+            _germany_and_france, _DEU, _KEN, (), None, id="france-holding-no-aid-from-germany"
+        ),
+        pytest.param(
+            _germany_and_france,
+            _DEU,
+            _KEN,
+            _DAC2A_DATASETS,
+            None,
+            id="france-a-declared-provider-holding-no-aid-from-germany",
+        ),
+        pytest.param(
+            _germany_and_france,
+            _DEU,
+            _FRA,
+            (),
+            UndirectedReading("destination", "complement"),
+            id="france-holding-aid-from-germany",
+        ),
+        pytest.param(
+            _korea_top_donors,
+            _DEU,
+            _KOR,
+            (),
+            UndirectedReading("destination", "operation"),
+            id="korea-top-donors",
+        ),
+        pytest.param(
+            lambda: _low_income_and_germany([_LOW_INCOME, "Germany"], {"Germany": "origin"}),
+            _DEU,
+            _GHA,
+            (),
+            UndirectedReading("destination", "complement"),
+            id="low-income-countries-budget-support-from-germany",
+        ),
+    ],
+)
+def test_the_complement_rule_settles_a_side_only_where_the_place_holds_data_there(
+    monkeypatch: pytest.MonkeyPatch,
+    build: Callable[[], ResolveState],
+    donor: str,
+    recipient: str,
+    datasets: tuple[str, ...],
+    settled,
+) -> None:
+    """The complement rule places a place named without a direction on the side the part
+    leaves free only where the coverage read finds a series with it there. An extraction
+    that drops a list's cue reads "aid from Germany and France" with France undirected, and
+    France, which receives no aid from Germany here, is not read as a recipient. Nor is it
+    read as a donor where DAC2a declares it a provider, since Germany holds the donor side:
+    the declaration chooses only among the open axes. The direction stays open, and the
+    shape still offers France as the recipient (`direction_assignments`). Where Germany's
+    aid to France is held, and for "Korea's top donors" and "Low income countries budget
+    support from Germany", a rule settles the free side."""
+    monkeypatch.setattr(undirected, "shape_part_datasets", lambda shape, index: datasets)
+    shape = _shape_for(
+        _economic_activity_arcs("Nominal", {}, ("financingProvider", "financingRecipient"))
+    )
+    state = build()
+    state.coverage = _flows_coverage(donor, recipient)
+
+    state.undirected = settle_undirected_axis(state, [shape])
+
+    assert state.undirected == settled
+    if settled is None:
+        assert [axis for axis, _assignment in direction_assignments(state, shape)] == [
+            "destination"
+        ]
+
+
+def _flows_coverage(donor: str, recipient: str, *more: tuple[str, str]) -> CoverageSnapshot:
+    """Coverage holding a flows series from `donor` to `recipient`, and one for each further
+    donor and recipient pair of `more`."""
+    return FakeCoverageService(
+        build_coverage_index(
+            [
+                (_FLOWS_MEMBER, "f_flows", flow_donor, flow_recipient, _YEARS)
+                for flow_donor, flow_recipient in ((donor, recipient), *more)
+            ],
+            role_names={
+                _FLOWS_MEMBER: RoleNames(donor="financingProvider", recipient="financingRecipient")
+            },
+        )
+    ).snapshot()
 
 
 @pytest.mark.parametrize(
@@ -3094,7 +3521,7 @@ def test_each_option_probe_of_a_lone_candidate_binds_its_own_entities(monkeypatc
     )
     grounded = {
         "spec_ppp": SimpleNamespace(
-            candidate=SimpleNamespace(shape=object(), place=place),
+            candidate=SimpleNamespace(shape=object(), place=place, date_request=None),
             probe_inputs=(object(), [], [], [_GHA, _NOR]),
             role_axis_facts=(object(),),
             sv_dcids=[_GNI_PPP],
