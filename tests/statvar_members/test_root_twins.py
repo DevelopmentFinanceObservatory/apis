@@ -16,7 +16,7 @@ from statvar_members.enumerate import (
 )
 from statvar_members.types import FiveTuple
 
-from .conftest import FakeMemberArcReader, FlakyMemberArcReader
+from .conftest import FakeMemberArcReader, FlakyMemberArcReader, SequencedMemberArcReader
 
 _COUNT = FiveTuple(population_type="Person", measured_property="count", stat_type="measuredValue")
 _DESTINATION = ("destination",)
@@ -148,16 +148,17 @@ def test_roots_past_the_reprobe_budget_are_read_alone_and_join_the_members():
     assert reader.calls["node_arcs_many"] == 3 + 8
 
 
-def test_stub_twins_past_the_twin_budget_settle_and_a_defined_twin_joins():
+def test_forty_stub_twins_settle_with_no_read_in_the_twin_pass_and_a_defined_twin_joins():
     """Forty twins read no node every time, as dev's rural age-band splits of
-    `Count_Person_Rural` read, and the catalogue holds none of them complete. The re-probe
-    reads 32 of them alone, and the twin pass settles those from that read and reads the
-    other 8 alone. `Count_Person_Zz` reads empty only on the first batch and sorts past the
-    re-probe budget; its read alone confirms it beside the root."""
-    stubs = [f"Count_Person_Twin{i:02d}" for i in range(_REPROBE_BUDGET + _TWIN_PROBE_BUDGET)]
+    `Count_Person_Rural` read, and the catalogue holds none of them complete. The batch read
+    with no probe budget finds no node for each, so the twin pass settles all forty without a
+    read: the re-probe reads 32 of them alone, the other 8 cost nothing. `Count_Person_Zz`'s
+    batch read drops `statType`, it sorts past the re-probe's 32, and the pass reads it alone
+    and confirms it beside the root."""
+    stubs = [f"Count_Person_Twin{i:02d}" for i in range(40)]
     arcs = {"Count_Person": _root(), "Count_Person_Zz": _root(), **dict.fromkeys(stubs, _root())}
     reader = FlakyMemberArcReader(
-        arcs=arcs, empty_always=stubs, empty_first_batch=["Count_Person_Zz"]
+        arcs=arcs, empty_always=stubs, drop_first_batch={"Count_Person_Zz": "statType"}
     )
 
     group = enumerate_members(five_tuple=_COUNT, slots={}, graph=reader)
@@ -166,10 +167,46 @@ def test_stub_twins_past_the_twin_budget_settle_and_a_defined_twin_joins():
     assert group.stub_candidates == tuple(stubs)
     assert group.inconsistent_candidates == ()
     assert group.undismissed_candidates == ()
-    # The initial batch, the 32-suspect re-probe batch and one single-dcid retry each, the
-    # root's verification, and one read alone per twin past the re-probe: no stub is read
-    # alone twice.
-    assert reader.calls["node_arcs_many"] == 1 + 1 + _REPROBE_BUDGET + 1 + _TWIN_PROBE_BUDGET + 1
+    # The initial batch, the re-probe batch of 32 and one single-dcid retry each, the root's
+    # verification, and one read alone of `Count_Person_Zz`.
+    assert reader.calls["node_arcs_many"] == 36
+
+
+def test_twins_with_no_trusted_read_past_the_budget_stay_undismissed():
+    """No read of the nine twins reached the pass, so it reads eight alone, each finding no
+    node, and leaves the ninth unsettled."""
+    twins = [f"Count_Person_Twin{i}" for i in range(9)]
+    reader = FakeMemberArcReader(arcs={})
+
+    confirmed, unsettled, stubs = _read_root_twins(
+        twins,
+        walked=frozenset(twins),
+        arcs_by_dcid={},
+        arcs_complete=_arcs_unproven,
+        five_tuple=_COUNT,
+        slots={},
+        graph=_SingleReads(reader, properties=tuple(_root())),
+    )
+
+    assert confirmed == ()
+    assert stubs == tuple(twins[:8])
+    assert unsettled == (twins[8],)
+    assert reader.calls["node_arcs_many"] == 8
+
+
+def test_a_member_that_vanishes_on_its_reread_stays_undismissed():
+    """`Count_Person_X` reads as a root on the first batch and as no node on every read after,
+    so the verification of the winners drops it. A read showed it a definition arc, so its
+    empty read alone settles nothing and it stays undismissed."""
+    arcs = {"Count_Person_A": _root(), "Count_Person_X": _root()}
+    reader = SequencedMemberArcReader(arcs=arcs, reads={"Count_Person_X": [_root(), None]})
+
+    group = enumerate_members(five_tuple=_COUNT, slots={}, graph=reader)
+
+    assert [member.stat_var for member in group.members] == ["Count_Person_A"]
+    assert group.root_confirmed is True
+    assert group.stub_candidates == ()
+    assert group.undismissed_candidates == ("Count_Person_X",)
 
 
 def test_the_twin_pass_adds_a_type_read_for_each_unseen_denominator_target():

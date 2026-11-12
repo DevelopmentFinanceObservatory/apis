@@ -81,7 +81,9 @@ class MemberArcReader(Protocol):
         presence signal distinct from an absent arc. Transport errors raise.
 
         `individual_probe_budget` limits follow-up reads for dcids unresolved after
-        a batch retry. `None` probes all of them. Unprobed dcids map to `None`."""
+        a batch retry. Unprobed dcids map to `None`. `None` probes all of them, so every
+        `None` entry is a single-dcid verdict that the node holds none of `properties`, as
+        trusted as a read of that dcid alone."""
         ...
 
 

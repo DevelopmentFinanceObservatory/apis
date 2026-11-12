@@ -211,8 +211,8 @@ class ManifestTrace:
     # resolver could not state the whole of it, and on a trace that describes no one family.
     stub_candidates: tuple[str, ...] = ()
     # The `dcid:` refs the member walk left out of the family under a confirmed root because
-    # its reader holds their arcs complete and they carry no definition arc
-    # (`MemberGroup.stub_candidates`).
+    # a trusted read of each carries no definition arc or finds no node, and no read showed
+    # one (`MemberGroup.stub_candidates`).
     # Omitted from `to_dict()` when empty.
     coverage_gaps: tuple[dict[str, object], ...] = ()
     # The places a national-currency unit binding serves no row at, one entry per role and

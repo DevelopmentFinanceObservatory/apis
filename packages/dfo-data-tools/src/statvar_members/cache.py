@@ -215,6 +215,9 @@ class MemberEnumerator:
                 spec_id=spec_id,
             )
             flight.group = group
+            # A group with stubs is stored like any settled group: each stub rests on a read
+            # the graph client trusts (`MemberGroup.stub_candidates`), so a later walk under
+            # the same generation reads the same.
             if not group.undismissed_candidates:
                 with self._lock:
                     if _weight(group) <= self._groups.maxsize and self._storable(key):
