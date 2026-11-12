@@ -1,8 +1,8 @@
 """Build the mutable deployment capabilities document linked from `/schema`.
 
 Published caps come from enforced constants. Mint input kinds and formats report dispatch
-liveness. Revision provenance and graph-declared default facet policies are disabled. Unbound facet
-unbound axes use this deployment's fallback policy when candidates exist.
+liveness. Revision provenance is disabled. An unbound facet axis takes the default its StatVar
+declares in the graph, and otherwise this deployment's fallback policy when candidates exist.
 
 Callers supply `capability_version`, `build`, `code_index_stamp`, and `declarations` to avoid a
 self-referential version hash and keep this module independent of the code-index loader.

@@ -10,7 +10,8 @@ from dataclasses import dataclass, field, replace
 import pytest
 
 import search.engine.retrieval.read_plan as read_plan
-from materialise.facets import bound_variable_breadth, coverage_probe
+from dc_graph import FacetDefaultPolicy
+from materialise.facets import ElectedDataset, bound_variable_breadth, coverage_probe
 from materialise.group_facets import group_served
 from materialise.series_conversion import series_key
 from search.engine.app import _note_breadth_fallback
@@ -20,7 +21,7 @@ from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.errors import GraphInfraError
 from search.engine.extract import DateRequest
 from search.engine.region.convertibility import _served_keys
-from search.engine.region.facets import FacetAdmission, filter_answer
+from search.engine.region.facets import FacetAdmission, answer_facets, filter_answer
 from search.engine.region.observations.bulk_role_series import (
     _bulk_role_series,
     _plan_role_bulk_fetch,
@@ -29,6 +30,7 @@ from search.engine.region.observations.fetch import _dispatched_series, _dispatc
 from search.engine.region.option_coverage import RoleServedFilter
 from search.engine.retrieval.coverage import CoverageForm, answer_coverage, answer_headline
 from search.engine.retrieval.download import download_facts
+from search.engine.retrieval.facet_policy import read_declared_policies
 from search.engine.retrieval.member_facts import ArcsMemberFacts
 from search.engine.retrieval.read_plan import (
     BulkPlan,
@@ -69,9 +71,10 @@ _CONSTRAINTS = {_TOTAL: {}, _HEALTH: {"sector": "Health"}}
 @dataclass(frozen=True)
 class _Constraints:
     """Member facts that read only what the plan and the role-class election need: resolved
-    constraints, one declared role and no elected dataset."""
+    constraints, one declared role and an elected dataset, none by default."""
 
     constraints: dict[str, str] = field(default_factory=dict)
+    dataset: ElectedDataset | None = None
 
     def constraints_known(self) -> bool:
         return True
@@ -85,8 +88,8 @@ class _Constraints:
     def read_declared_roles(self) -> tuple[str, ...]:
         return ("debtor",)
 
-    def read_dataset(self) -> None:
-        return None
+    def read_dataset(self) -> ElectedDataset | None:
+        return self.dataset
 
 
 _FAMILY_FACTS = {sv: _Constraints(c) for sv, c in _CONSTRAINTS.items()}
@@ -1123,6 +1126,96 @@ def test_a_bulk_plan_serves_every_member_holding_the_group_s_source_and_unit(
         plan.selected[sv][0] for sv in served
     }
     assert read_plan.unserved_members(plan) == unserved
+
+
+_ONE_CLIMATE = "provenance/ONEClimateFinance"
+_ONE_WEIGHTING = "ONEClimateFinanceWeighting"
+_FULL_VALUE = "OECDClimateFinanceFullValue"
+
+# `_FLOW` holds each pair under both methods, and `fFull` reaches back further, so the
+# ranking alone elects it.
+_TWO_METHOD_ROWS = [
+    (_FLOW, facet_id, ABSENT_ENTITY, recipient, list(range(first, 2021)))
+    for facet_id, first in (("fFull", 2010), ("fWeighting", 2015))
+    for recipient in (_AAA, _BBB)
+]
+
+
+@pytest.mark.parametrize("bulk", [True, False], ids=["bulk", "pair"])
+@pytest.mark.parametrize(
+    "facts",
+    [
+        _Constraints(),
+        _Constraints(
+            dataset=ElectedDataset(provenance=_ONE_CLIMATE, member_provenances=(_ONE_CLIMATE,))
+        ),
+    ],
+    ids=["recalled", "indexed"],
+)
+@pytest.mark.parametrize(
+    ("declared", "served", "basis"),
+    [
+        pytest.param(_ONE_WEIGHTING, "fWeighting", "declared_default", id="declared"),
+        pytest.param("NoSuchMethod", "fFull", "fallback", id="declared-missing"),
+    ],
+)
+def test_a_plan_serves_the_method_its_member_declares_in_the_graph(
+    search_settings, bulk: bool, facts: _Constraints, declared: str, served: str, basis: str
+) -> None:
+    """`_FLOW` declares `declared` its default method in the graph. The per-pair and the bulk
+    plan, recalled or index-resolved, serve the declared method alone and the answer's facets
+    say so; a declared method no pair holds serves the ranking's one method, as a mint
+    does."""
+    search_settings(obs_preview_max_pairs=1 if bulk else 1_000)
+    index = build_coverage_index(
+        _TWO_METHOD_ROWS,
+        role_names={_FLOW: RoleNames(donor=None, recipient="debtor")},
+        facet_metadata={
+            facet_id: FacetMetadata(
+                provenance_id=_ONE_CLIMATE,
+                measurement_method=method,
+                unit="USDollar",
+                observation_period="P1Y",
+            )
+            for facet_id, method in (("fFull", _FULL_VALUE), ("fWeighting", _ONE_WEIGHTING))
+        },
+    )
+    graph = FakeGraph(
+        facet_policies={
+            (f"dcid:{_FLOW}", "measurementMethod"): FacetDefaultPolicy(
+                resolved_ref=declared,
+                policy_node="defaultMeasurementMethod",
+                policy_version="1",
+                selection_reason="graph_declared",
+            )
+        }
+    )
+    plan = _role_plan(
+        [_FLOW],
+        member_facts={_FLOW: facts},
+        names={"destination": "debtor"},
+        subject_dcids=[_AAA, _BBB],
+        origin_dcids=[],
+        bound_roles={"recipient": frozenset({_AAA, _BBB})},
+        years=read_plan.role_years(_WINDOW, index.horizon),
+        coverage_index=index,
+        declared=read_declared_policies(graph, [_FLOW]),
+    )
+
+    assert isinstance(plan, BulkPlan) is bulk
+    assert {f.facet_id for f in read_plan.series_facets(plan)} == {served}
+    method = answer_facets(
+        plan,
+        {},
+        bound_axes={},
+        request_basis=None,
+        unit_request=None,
+        currency_of=lambda _ref: None,
+    )["measurementMethod"]
+    assert (method.basis, method.ref) == (
+        basis,
+        _ONE_WEIGHTING if served == "fWeighting" else _FULL_VALUE,
+    )
 
 
 def test_a_latest_bulk_plan_reads_the_member_s_year_under_every_facet_it_selects(

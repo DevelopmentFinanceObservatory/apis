@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, NamedTuple
 
 from code_index.shared import get_index
 from materialise.facets import (
+    FACET_AXES,
     MemberProbe,
     overlaps_window,
     read_variable_breadths,
@@ -73,8 +74,10 @@ from series_coverage.schema import is_sub_annual
 from statvar_members import AbsentReading, antichain_minimal_ids
 
 if TYPE_CHECKING:
+    from materialise.graph import FacetDefaultPolicy
     from search.engine.clients.sdmx import RoleFacetCandidate, RoleTuple
     from search.engine.extract import DateRequest
+    from search.engine.retrieval.facet_policy import DeclaredPolicies
     from search.engine.retrieval.member_facts import MemberFacts
     from series_coverage.index import BoundRoles
     from series_coverage.index import Role as CoverageRole
@@ -96,6 +99,12 @@ a conversion into each entity's own currency leaves out because no single curren
 entity (`region.convertibility.UnitCoverage.omitted`)."""
 
 type Omissions = frozenset[Omission]
+
+type DeclaredDefaults = Mapping[str, FacetDefaultPolicy]
+"""The default each facet axis of a plan's members declares in the graph, by axis: the
+policy every member declares on it (`plan_declared_defaults`, `in_elected_datasets`). Every
+election of the plan serves it where the members hold it, as a mint of its Spec does
+(`materialise.group_facets.elect_group`)."""
 
 type Election = Callable[[ReadPlan], Mapping[str, int]]
 """The year each member of a role-bearing plan elects for a `latest` read, counted over the
@@ -407,14 +416,18 @@ def year_of(date: str | None) -> int | None:
 
 
 def _scope_group(
-    series: Sequence[PlanSeries], *, members: Sequence[str], years: PlanYears
+    series: Sequence[PlanSeries],
+    *,
+    members: Sequence[str],
+    years: PlanYears,
+    declared_defaults: DeclaredDefaults,
 ) -> tuple[tuple[str, ...], frozenset[str]]:
     """The facet ids a scope-defaulted read serves at every place, and the selection a mint
     of the answer's Spec serves (`facet_election.scope_served`). The read serves the one
-    facet elected across every place, led by the places it holds a point at under `years`
-    (`facet_election.rank_scope_candidates`), then the facets continuing the selection past
-    each series' last year, which the mint dispatches too. Empty when no place holds a
-    facet."""
+    facet elected across every place under `declared_defaults`, led by the places it holds
+    a point at under `years` (`facet_election.rank_scope_candidates`), then the facets
+    continuing the selection past each series' last year, which the mint dispatches too.
+    Empty when no place holds a facet."""
     facets_by_entity: dict[str, list[Facet]] = {}
     for s in series:
         facets_by_entity.setdefault(s.role_tuple[0][1], []).extend(s.candidates)
@@ -422,7 +435,9 @@ def _scope_group(
     if not merged:
         return (), frozenset()
     window = plan_window(years)
-    lead = rank_scope_candidates(merged, stat_vars=members, window=window)[0]
+    lead = rank_scope_candidates(
+        merged, stat_vars=members, window=window, policies=declared_defaults
+    )[0]
     selection, continuing = scope_served(lead, merged, window=window)
     return (lead.facet_id, *continuing), frozenset(selection)
 
@@ -451,7 +466,11 @@ def series_probes(
 
 
 def _member_groups(
-    probes: Mapping[str, MemberProbe], *, years: PlanYears, index_sourced: bool
+    probes: Mapping[str, MemberProbe],
+    *,
+    years: PlanYears,
+    index_sourced: bool,
+    declared_defaults: DeclaredDefaults,
 ) -> tuple[dict[str, tuple[Facet, ...]], dict[str, frozenset[str]], tuple[str, ...]]:
     """The facets of the one group every member's preview dispatches at every series, in
     serving order, and each member's selection (`PairPlan.selections`): one election over
@@ -462,8 +481,14 @@ def _member_groups(
     mint of the answer's Spec dispatches too. A member the group does not serve holds no
     facet and no selection, and the populated ones among them are returned last, in member
     order (`GroupElection.unserved`). `index_sourced` lets an index-resolved family's members agree on
-    provenance and unit alone, as its mint does (`MaterialisationRequest.index_sourced`)."""
-    group = elect_probes(probes, window=plan_window(years), index_sourced=index_sourced)
+    provenance and unit alone, as its mint does (`MaterialisationRequest.index_sourced`), and
+    the group serves each of `declared_defaults` it holds."""
+    group = elect_probes(
+        probes,
+        window=plan_window(years),
+        index_sourced=index_sourced,
+        policies=declared_defaults,
+    )
     if group is None:
         return dict.fromkeys(probes, ()), {}, ()
     groups: dict[str, tuple[Facet, ...]] = {}
@@ -484,20 +509,25 @@ def _elect_groups(
     scope: bool,
     probes: Mapping[str, MemberProbe],
     index_sourced: bool,
+    declared_defaults: DeclaredDefaults,
 ) -> tuple[tuple[PlanSeries, ...], str | None, dict[str, frozenset[str]], tuple[str, ...]]:
     """Each series with the group its preview dispatches, a scope read's one facet, each
     member's selection (`PairPlan.selections`), and the members the group leaves out
     (`PairPlan.unserved`), none on a scope read. A series holds its member's group where it
     has those facets, and no group elsewhere."""
     if scope:
-        group, selection = _scope_group(series, members=members, years=years)
+        group, selection = _scope_group(
+            series, members=members, years=years, declared_defaults=declared_defaults
+        )
         return (
             tuple(replace(s, group=_group_of(s.candidates, group)) for s in series),
             group[0] if group else None,
             dict.fromkeys(members, selection),
             (),
         )
-    groups, selections, unserved = _member_groups(probes, years=years, index_sourced=index_sourced)
+    groups, selections, unserved = _member_groups(
+        probes, years=years, index_sourced=index_sourced, declared_defaults=declared_defaults
+    )
     ids = {
         sv: tuple(f.facet_id for f in group if f.facet_id is not None)
         for sv, group in groups.items()
@@ -554,10 +584,11 @@ class PairPlan:
     member order (`GroupElection.unserved`), and `left_out` the members a unit decision
     leaves out (`leaving_out`), whose candidates the filter then removed: both serve nothing,
     and the answer names them (`unserved_members`). `index_sourced` marks an index-resolved
-    family, whose group agrees on provenance and unit alone (`in_elected_datasets`).
-    `roles` is set for a role-bearing read. `probes` holds each member's election input
-    (`plan_pairs`): its candidates merged across every place and role tuple the answer
-    names, and each facet's series count. A unit decision reads the same probes. `places`
+    family, whose group agrees on provenance and unit alone (`in_elected_datasets`), and
+    `declared_defaults` the defaults its members declare in the graph, which every group
+    serves where it holds them. `roles` is set for a role-bearing read. `probes` holds each
+    member's election input (`plan_pairs`): its candidates merged across every place and
+    role tuple the answer names, and each facet's series count. A unit decision reads the same probes. `places`
     are the places a standard read was asked for, with or without a series
     (`unserved_entities`); a role-bearing read was asked for the entities `roles` binds.
     `omitted` are the rows a conversion leaves out (`omitting`), whose series the plan no
@@ -576,6 +607,7 @@ class PairPlan:
     places: tuple[str, ...] = ()
     omitted: Omissions = frozenset()
     index_sourced: bool = False
+    declared_defaults: DeclaredDefaults = field(default_factory=dict)
     probes: Mapping[str, MemberProbe] = field(default_factory=dict, compare=False)
     elect: Election | None = field(default=None, compare=False, repr=False)
 
@@ -700,6 +732,7 @@ class PairPlan:
             }
             or None,
             index_sourced=self.index_sourced,
+            declared_defaults=self.declared_defaults,
             elect=self.elect,
         )
         return replace(narrowed, omitted=self.omitted, left_out=self.left_out)
@@ -722,6 +755,7 @@ class PairPlan:
             places=self.places,
             probes=self.probes or None,
             index_sourced=self.index_sourced,
+            declared_defaults=self.declared_defaults,
             elect=self.elect,
         )
         return replace(dated, omitted=self.omitted, left_out=self.left_out)
@@ -753,7 +787,9 @@ class BulkPlan:
     (`member_year`), as a mint reduces each StatVar to its own period. `elect` is the
     election the plan was built with, which every plan derived from it runs over its own
     rows (`elected_years`). `index_sourced` marks an index-resolved family, whose members
-    agree on provenance and unit alone (`in_elected_datasets`). `left_out` holds the members
+    agree on provenance and unit alone (`in_elected_datasets`), and `declared_defaults` the
+    defaults its members declare in the graph, which the election serves where the members
+    hold them, as `PairPlan.declared_defaults` does. `left_out` holds the members
     a unit decision leaves out (`leaving_out`), as `PairPlan.left_out` does.
     """
 
@@ -769,6 +805,7 @@ class BulkPlan:
     omitted: Omissions = frozenset()
     omitted_served: frozenset[str] = frozenset()
     index_sourced: bool = False
+    declared_defaults: DeclaredDefaults = field(default_factory=dict)
     left_out: frozenset[str] = frozenset()
     elect: Election | None = field(default=None, compare=False, repr=False)
 
@@ -1027,6 +1064,7 @@ class BulkPlan:
             members=self.members,
             read_years=self.read_years,
             index_sourced=self.index_sourced,
+            declared_defaults=self.declared_defaults,
         )
         return replace(self, **election._asdict(), candidates=candidates)
 
@@ -1041,6 +1079,7 @@ class BulkPlan:
             members=self.members,
             read_years=listed,
             index_sourced=self.index_sourced,
+            declared_defaults=self.declared_defaults,
         )
         return replace(self, **election._asdict(), years=years, read_years=listed)
 
@@ -1105,14 +1144,20 @@ def role_election(
     members: Sequence[str],
     read_years: Sequence[str] | None,
     index_sourced: bool = False,
+    declared_defaults: DeclaredDefaults | None = None,
 ) -> RoleElection:
-    """The election a bulk read of `members` serves from `candidates` inside `read_years`:
-    the lead of the members' one group (`facet_election.select_role_candidate`), each
-    member's facet ids its selection serves and the members it leaves out
-    (`facet_election.role_group_selection`), and the facets continuing the lead there
-    (`facet_election.role_continuation`), or None and nothing with no candidate."""
+    """The election a bulk read of `members` serves from `candidates` inside `read_years`
+    under `declared_defaults`: the lead of the members' one group
+    (`facet_election.select_role_candidate`), each member's facet ids its selection serves
+    and the members it leaves out (`facet_election.role_group_selection`), and the facets
+    continuing the lead there (`facet_election.role_continuation`), or None and nothing
+    with no candidate."""
     best = select_role_candidate(
-        candidates, stat_vars=members, time_period=read_years, index_sourced=index_sourced
+        candidates,
+        stat_vars=members,
+        time_period=read_years,
+        index_sourced=index_sourced,
+        policies=declared_defaults,
     )
     if best is None:
         return RoleElection(None, {}, (), ())
@@ -1122,6 +1167,7 @@ def role_election(
         time_period=read_years,
         lead=best.facet_id,
         index_sourced=index_sourced,
+        policies=declared_defaults,
     )
     return RoleElection(
         best.facet_id,
@@ -1568,21 +1614,44 @@ def unserved_entities(plan: ReadPlan | None) -> frozenset[RoleEntity]:
     return frozenset(unserved)
 
 
-def in_elected_datasets(plan: ReadPlan, member_facts: Mapping[str, MemberFacts]) -> ReadPlan:
+def plan_declared_defaults(
+    declared: DeclaredPolicies, members: Iterable[str]
+) -> dict[str, FacetDefaultPolicy]:
+    """The default every one of `members` declares on each facet axis (`declared`), by axis.
+    An axis some member declares nothing on, or on which members declare different defaults,
+    is absent and the deployment ranking chooses it, as for a mint's group
+    (`materialise.group_facets._group_declared_policies`)."""
+    members = list(members)
+    defaults: dict[str, FacetDefaultPolicy] = {}
+    for axis in FACET_AXES:
+        policies = {declared.get(sv, {}).get(axis) for sv in members}
+        if len(policies) == 1 and (policy := policies.pop()) is not None:
+            defaults[axis] = policy
+    return defaults
+
+
+def in_elected_datasets(
+    plan: ReadPlan, member_facts: Mapping[str, MemberFacts], *, declared: DeclaredPolicies
+) -> ReadPlan:
     """`plan` with each member of an index-resolved family keeping only the candidates its
-    elected dataset publishes (`elected_dataset.publishes`), and every group and bulk facet
-    elected again from them (`narrowed`). A mint filters a member's candidates by the same
-    test before it ranks (`materialise.facets.dataset_candidates`), so an answer and a mint
-    of its Spec elect within one dataset, and a member holding data under another dataset
-    alone serves nothing. Every resolver passes its plan through here. A plan every member of
-    which has an elected dataset reads an index-resolved family, so its group agrees on
-    provenance and unit alone (`PairPlan.index_sourced`, `BulkPlan.index_sourced`), as the
-    mint's does (`MaterialisationRequest.index_sourced`). A plan none of whose members has an
-    elected dataset is returned as it is."""
+    elected dataset publishes (`elected_dataset.publishes`), under the defaults its members
+    declare in the graph (`declared`, `plan_declared_defaults`), and every group and bulk
+    facet elected again (`narrowed`). A mint filters a member's candidates by the same test
+    before it ranks (`materialise.facets.dataset_candidates`) and serves the same declared
+    defaults (`materialise.group_facets.elect_group`), so an answer and a mint of its Spec
+    elect within one dataset and under one method, and a member holding data under another
+    dataset alone serves nothing. Every resolver passes its plan through here. A plan every
+    member of which has an elected dataset reads an index-resolved family, so its group
+    agrees on provenance and unit alone (`PairPlan.index_sourced`, `BulkPlan.index_sourced`),
+    as the mint's does (`MaterialisationRequest.index_sourced`). A plan none of whose members
+    has an elected dataset or declares a default is returned as it is."""
     datasets = elected_datasets(member_facts)
-    if not datasets:
+    defaults = plan_declared_defaults(declared, plan.members)
+    if not datasets and not defaults:
         return plan
-    indexed = replace(plan, index_sourced=all(sv in datasets for sv in plan.members))
+    indexed = replace(plan, declared_defaults=defaults)
+    if datasets:
+        indexed = replace(indexed, index_sourced=all(sv in datasets for sv in plan.members))
     return indexed.narrowed(lambda sv, candidate: publishes(datasets, sv, candidate))
 
 
@@ -1610,6 +1679,7 @@ def plan_pairs(
     places: Sequence[str] = (),
     deadline: float | None = None,
     index_sourced: bool = False,
+    declared_defaults: DeclaredDefaults | None = None,
     elect: Election | None = None,
 ) -> PairPlan:
     """A per-series plan over `series`, each member's group elected under `years` from its
@@ -1619,8 +1689,10 @@ def plan_pairs(
     plan passes the coverage probe a mint reads (`materialise.facets.coverage_probe`), since
     its series are only the role tuples holding a point in the years, and `elect`, the
     election of the year its `latest` read serves each member in. `index_sourced` marks an
-    index-resolved family (`PairPlan.index_sourced`)."""
+    index-resolved family (`PairPlan.index_sourced`), and `declared_defaults` the defaults
+    each group serves where it holds them (`PairPlan.declared_defaults`)."""
     series = list(series)
+    declared_defaults = declared_defaults or {}
     if probes is None:
         probes = series_probes(
             series,
@@ -1634,6 +1706,7 @@ def plan_pairs(
         scope=scope,
         probes=probes,
         index_sourced=index_sourced,
+        declared_defaults=declared_defaults,
     )
     return PairPlan(
         members=tuple(members),
@@ -1647,6 +1720,7 @@ def plan_pairs(
         probes=probes,
         places=tuple(places),
         index_sourced=index_sourced,
+        declared_defaults=declared_defaults,
         elect=elect,
     )
 

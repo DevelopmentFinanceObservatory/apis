@@ -249,24 +249,6 @@ class MembershipTooBroadError(Exception):
     """
 
 
-class DeclaredDefaultUnsupportedError(EngineInputError):
-    """The graph declares a default facet policy for a StatVar axis.
-
-    Search coverage, the headline and the preview route elect facets by ranking
-    (`retrieval.coverage`), which models no declared default, while materialise serves a
-    declared default before ranking. `retrieval.facet_policy.refuse_declared_defaults`
-    raises it at resolve time, before the shape's coverage is built and before any sentence
-    of the part is sent (the pipeline holds sentences until the answer stands), as the
-    registered `facet_binding_unsupported` refusal (501, not retryable): a facet axis this
-    deployment recognises but cannot honour. The fan-out re-raises it rather than degrade it
-    to no data. A part whose elected answer leaves terms unmet answers nothing on the
-    series, so it refuses `qualifier_not_bound` instead (`region.pipeline._run_phases`).
-    """
-
-    def __init__(self, message: str) -> None:
-        super().__init__(message, code="facet_binding_unsupported", status=501)
-
-
 class DefaultScopeIndexSourcedError(Exception):
     """A subject-only shape whose population the code index sources would take a default
     place scope.

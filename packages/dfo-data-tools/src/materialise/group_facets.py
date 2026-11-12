@@ -539,16 +539,11 @@ def elect_group(
     pool, holders = _group_pool(electable, bindings=bindings, index_sourced=index_sourced)
     if not pool:
         return None
-    declared = {
-        axis: policy.resolved_ref
-        for axis, policy in policies.items()
-        if policy is not None and _match_policy(policy, pool, axis) is not None
-    }
     ranked_pool = rank_pool(
         pool,
         stat_vars=stat_vars,
         window=window,
-        declared=declared,
+        declared=declared_in_pool(policies, pool),
         breadth=breadth,
         variable_breadth=variable_breadth,
     )
@@ -606,14 +601,16 @@ def rank_group(
     stat_vars: Sequence[str],
     window: RequestedWindow | None,
     index_sourced: bool,
+    policies: Mapping[str, FacetDefaultPolicy | None] | None = None,
     breadth: Mapping[str, int] | None = None,
     variable_breadth: VariableBreadth = None,
 ) -> RankedPool | None:
-    """The ranking `elect_group` runs over `members` when no axis is bound and no default is
-    declared: the merged candidates of the agreement keys held by the most members
-    (`_group_pool`), ranked by `rank_pool`. Its top is the facet such an election leads
-    with. None when no member holds a candidate. A caller serving one facet across every
-    member reads its top without the cadence and continuation an election adds."""
+    """The ranking `elect_group` runs over `members` when no axis is bound, under the
+    declared defaults of `policies`: the merged candidates of the agreement keys held by the
+    most members (`_group_pool`), kept to those carrying each declared default the pool
+    holds and ranked by `rank_pool`. Its top is the facet such an election leads with. None
+    when no member holds a candidate. A caller serving one facet across every member reads
+    its top without the cadence and continuation an election adds."""
     pool, _holders = _group_pool(members, bindings={}, index_sourced=index_sourced)
     if not pool:
         return None
@@ -621,9 +618,23 @@ def rank_group(
         pool,
         stat_vars=stat_vars,
         window=window,
+        declared=declared_in_pool(policies or {}, pool),
         breadth=breadth,
         variable_breadth=variable_breadth,
     )
+
+
+def declared_in_pool(
+    policies: Mapping[str, FacetDefaultPolicy | None], pool: Sequence[Facet]
+) -> dict[str, str | None]:
+    """The ref of each policy in `policies` that some candidate of `pool` carries, by axis:
+    the declared defaults a ranking keeps its pool to (`facets.rank_pool`). A policy no
+    candidate carries is absent, so the deployment ranking chooses that axis."""
+    return {
+        axis: policy.resolved_ref
+        for axis, policy in policies.items()
+        if policy is not None and _match_policy(policy, pool, axis) is not None
+    }
 
 
 def elect_probes(

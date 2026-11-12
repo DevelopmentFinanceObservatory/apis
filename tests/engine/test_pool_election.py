@@ -28,7 +28,7 @@ from origin_catalogue import BASE, note_un_blocked_places
 from search.engine.bind import ShapeRating, SlotBindingDraft, _UniversalBindOutput
 from search.engine.binders import GeminiBinder
 from search.engine.clients.graph import DetectedSV, Detection
-from search.engine.errors import DeclaredDefaultUnsupportedError, GraphInfraError
+from search.engine.errors import GraphInfraError
 from search.engine.events import Event, EventSink, FrameEvent, SentenceEvent, StepEvent
 from search.engine.qualifier_match import CodedQualifier, QualifierMatch
 from search.engine.quantity_read import NONE_OF_THESE, QuantityOutput
@@ -887,10 +887,7 @@ def test_a_failed_un_pass_keeps_our_refusal(monkeypatch, caplog, error, warned) 
 
 @pytest.mark.parametrize(
     "error",
-    [
-        pytest.param(UpstreamVersionChangedError("rate table moved"), id="rate_table_moved"),
-        pytest.param(DeclaredDefaultUnsupportedError("declared default"), id="declared_default"),
-    ],
+    [pytest.param(UpstreamVersionChangedError("rate table moved"), id="rate_table_moved")],
 )
 def test_a_un_pass_refusing_the_request_propagates(monkeypatch, error) -> None:
     """A refusal of the whole request on every door raised in the UN pass reaches the

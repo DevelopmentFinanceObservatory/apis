@@ -39,6 +39,7 @@ from search.engine.retrieval.elected_dataset import (
     published_by_stat_var,
 )
 from search.engine.retrieval.facet_election import merge_role_candidates
+from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES, DeclaredPolicies
 from search.engine.retrieval.read_plan import (
     NoYearsToRead,
     PlanRoles,
@@ -575,6 +576,7 @@ def _read_scope(
     *,
     surviving_svs: list[str],
     member_facts: Mapping[str, MemberFacts],
+    declared: DeclaredPolicies,
     axis: CoverageRole,
     bound: BoundRoles,
     role_name: str,
@@ -587,7 +589,8 @@ def _read_scope(
     cap, one bulk facet elected over the discovered index above it. Each variable elects one
     group across its pairs from its facets over every year, as a named read does, and a pair
     with a point in the years serves the facets of that group it holds. `plan` is None when
-    no member or no variable holds data in the years."""
+    no member or no variable holds data in the years. Every group serves the defaults
+    `declared` names (`read_plan.in_elected_datasets`)."""
     opposite_coverage_role: CoverageRole = "donor" if axis == "recipient" else "recipient"
     # A pair binds, and the headline names, every role the shape places, bound or open.
     role_names: dict[CoverageRole, str] = {axis: role_name}
@@ -645,7 +648,7 @@ def _read_scope(
         roles=PlanRoles(bound=bound, role_names=role_names),
         elect=plan_election(coverage_index),
     )
-    plan = in_elected_datasets(plan, member_facts)
+    plan = in_elected_datasets(plan, member_facts, declared=declared)
     return _ScopeRead(members, confirmed_svs, role_index_by_sv, plan)
 
 
@@ -661,6 +664,7 @@ def _no_point_in_years(
     opposite_dcids: Sequence[str],
     date_request: DateRequest | None,
     member_facts: dict[str, MemberFacts],
+    declared: DeclaredPolicies,
     member_population_exact: bool,
     role_declaration_unverified: bool,
 ) -> Materialised | None:
@@ -700,6 +704,7 @@ def _no_point_in_years(
         coverage_index,
         surviving_svs=surviving_svs,
         member_facts=member_facts,
+        declared=declared,
         axis=axis,
         bound=bound,
         role_name=role_name,
@@ -730,6 +735,7 @@ def discover_role_scope(
     surviving_svs: list[str],
     admitted_dcids: Sequence[str],
     member_facts: dict[str, MemberFacts],
+    declared: DeclaredPolicies = NO_DECLARED_POLICIES,
     member_population_exact: bool,
     role_declaration_unverified: bool = False,
     open_flow_axis: RoleAxis,
@@ -743,7 +749,8 @@ def discover_role_scope(
 ) -> Materialised | NoDataDraft | UnsupportedDraft:
     """Discover members on an open role axis and resolve them from coverage.
 
-    The caller supplies the already-filtered ``member_facts``, population
+    The caller supplies the already-filtered ``member_facts``, the defaults the members
+    declare (``declared``, `facet_policy.read_declared_policies`), population
     exactness, and role-refresh status; this function narrows only by coverage.
     ``surviving_svs`` are the members read: those the role-class election kept.
     ``admitted_dcids`` are the members the bindings admit before that election: the
@@ -805,6 +812,7 @@ def discover_role_scope(
             coverage_index,
             surviving_svs=surviving_svs,
             member_facts=member_facts,
+            declared=declared,
             axis=discover_coverage_role,
             bound=bound,
             role_name=role_name,
@@ -827,6 +835,7 @@ def discover_role_scope(
             opposite_dcids=opposite_dcids,
             date_request=date_request,
             member_facts=member_facts,
+            declared=declared,
             member_population_exact=member_population_exact,
             role_declaration_unverified=role_declaration_unverified,
         ) or NoDataDraft(reason="no_observations", sv_dcids=surviving_svs)

@@ -38,7 +38,6 @@ from search.engine.degraded_reads import (
 from search.engine.envelope import _sum_usage, now_ms
 from search.engine.errors import (
     RATE_TABLE_REFUSALS,
-    DeclaredDefaultUnsupportedError,
     DefaultScopeIndexSourcedError,
     EngineInfraError,
 )
@@ -150,7 +149,6 @@ _UPSTREAM_FAILURES: Final = (
 
 # Refusals of the whole request that a pass raises on purpose (`_fill_gap`).
 _REQUEST_REFUSALS: Final = (
-    DeclaredDefaultUnsupportedError,
     DefaultScopeIndexSourcedError,
     *RATE_TABLE_REFUSALS,
 )
@@ -769,9 +767,9 @@ async def _fill_gap(
     merged shapes that took no seat on our menu (`_unseated_un_shapes`), since the binder
     rated "none" above only the ones it saw. What the leg's reads could not serve
     (`UnPool.unserved`, `UnPool.lost`) joins the part's records only when the pool reaches
-    a menu, so an answer our pass serves without it carries none of it. A declared-default refusal
-    (`DeclaredDefaultUnsupportedError`), an index-sourced shape meeting a default scope
-    (`DefaultScopeIndexSourcedError`) or a conversion-table refusal (`RATE_TABLE_REFUSALS`)
+    a menu, so an answer our pass serves without it carries none of it. An index-sourced shape
+    meeting a default scope (`DefaultScopeIndexSourcedError`) or a conversion-table refusal
+    (`RATE_TABLE_REFUSALS`)
     in the UN pass propagates, since each refuses the request on every door; a UN answer
     leaving terms unmet refuses `qualifier_not_bound` before any of them (`_run_phases`),
     and that refusal meets ours by the rules above. Any other

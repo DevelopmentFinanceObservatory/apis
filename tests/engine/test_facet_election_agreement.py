@@ -23,6 +23,8 @@ from materialise import MaterialisationRequest, materialise_preview
 from materialise.facets import probe_facets
 from materialise.generation import _select_member_facets
 from materialise.graph import Facet as MaterialiseFacet
+from materialise.graph import FacetDefaultPolicy
+from materialise.group_facets import select_group_facets
 from materialise.window import RequestedWindow
 from origin_catalogue import BASE, DFO, Catalogue
 from search.engine.clients.graph import Facet
@@ -32,16 +34,22 @@ from search.engine.region import resolve_variable
 from search.engine.region.codes import OBSERVATIONS_SCOPE_PARTIAL
 from search.engine.region.state import EngineOptions
 from search.engine.retrieval import role_resolve
+from search.engine.retrieval.facet_policy import NO_DECLARED_POLICIES
 from search.engine.retrieval.member_facts import IndexMemberFacts
 from search.engine.retrieval.read_plan import (
+    BulkPlan,
     PairPlan,
     PlanSeries,
     in_elected_datasets,
     plan_pairs,
+    role_election,
+    role_years,
     serves_continuation,
 )
+from search.engine.retrieval.role_scope import member_probes
 from search.heading.departure_fact import DepartureFact
 from search.models import Spec, TimeWindow
+from series_coverage.coverage_types import BoundRoles
 from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from tests.engine import test_latest_projection_facet as latest_projection
 from tests.engine import test_place_scope_default as place_scope
@@ -685,13 +693,18 @@ def test_a_plan_and_a_mint_keep_a_member_by_one_dataset_test_before_they_rank():
         for place in (_KEN, _NOR)
     ]
     members = {sv: _dataset_member(_ELECTED)}
-    pairs = in_elected_datasets(plan_pairs(series, members=[sv], years=None), members)
+    pairs = in_elected_datasets(
+        plan_pairs(series, members=[sv], years=None), members, declared=NO_DECLARED_POLICIES
+    )
     assert isinstance(pairs, PairPlan)
     assert {f.provenance_id for s in pairs.served for f in s.group} == {_ELECTED}
     assert {f.provenance_id for f in pairs.probes[sv].candidates} == {_ELECTED}
 
     unelected = plan_pairs(series, members=[sv], years=None)
-    assert in_elected_datasets(unelected, {sv: _dataset_member(None)}) is unelected
+    assert (
+        in_elected_datasets(unelected, {sv: _dataset_member(None)}, declared=NO_DECLARED_POLICIES)
+        is unelected
+    )
     assert {f.provenance_id for s in unelected.served for f in s.group} == {_OTHER}
 
 
@@ -732,6 +745,107 @@ def test_a_role_answer_serves_an_index_member_from_its_elected_dataset(
 
         ranked = answer(None, max_pairs=max_pairs, discovered=discovered)
         assert ranked.resolved.facets["provenance"].ref == _OTHER
+
+
+_ONE_CLIMATE = "provenance/ONEClimateFinance"
+_ONE_WEIGHTING = "ONEClimateFinanceWeighting"
+_FULL_VALUE = "OECDClimateFinanceFullValue"
+_RECEIVED = ("TESTFIXTURE/ElectionAgreement/ReceivedA", "TESTFIXTURE/ElectionAgreement/ReceivedB")
+_METHODS = {"fFull": _FULL_VALUE, "fWeighting": _ONE_WEIGHTING}
+
+
+@pytest.mark.parametrize(
+    ("declared", "served"),
+    [
+        pytest.param(_ONE_WEIGHTING, _ONE_WEIGHTING, id="declared"),
+        pytest.param("NoSuchMethod", _FULL_VALUE, id="declared-missing"),
+    ],
+)
+def test_a_member_mint_a_group_mint_and_a_bulk_plan_serve_one_declared_method(
+    search_settings, declared: str, served: str
+):
+    """Two members of an index-resolved family hold Kenya and Norway under two methods, and
+    the full-value facet reaches back further. Both declare `declared` their default method.
+    Given the same candidates and declarations, each member's mint, the group's mint and the
+    bulk plan's election serve one method: the declared one, or the ranking's where no
+    candidate carries it."""
+    search_settings(obs_preview_max_pairs=1)
+    members = list(_RECEIVED)
+    index = build_coverage_index(
+        [
+            (sv, facet_id, ABSENT_ENTITY, recipient, list(range(first, 2021)))
+            for sv in members
+            for facet_id, first in (("fFull", 2010), ("fWeighting", 2015))
+            for recipient in (_KEN, _NOR)
+        ],
+        role_names=dict.fromkeys(members, RoleNames(donor=None, recipient="debtor")),
+        facet_metadata={
+            facet_id: FacetMetadata(
+                provenance_id=_ONE_CLIMATE,
+                measurement_method=method,
+                unit="USDollar",
+                observation_period="P1Y",
+            )
+            for facet_id, method in _METHODS.items()
+        },
+    )
+    policy = FacetDefaultPolicy(
+        resolved_ref=declared,
+        policy_node="defaultMeasurementMethod",
+        policy_version="1",
+        selection_reason="graph_declared",
+    )
+    graph = FakeGraphReader(
+        policies={(f"dcid:{sv}", "measurementMethod"): policy for sv in members}
+    )
+    bound: BoundRoles = {"recipient": frozenset({_KEN, _NOR})}
+    probes = member_probes(index, variables=members, bound=bound)
+    requests = [
+        MaterialisationRequest(
+            stat_var=f"dcid:{sv}",
+            role_bindings={"debtor": [_KEN, _NOR]},
+            declared_roles=("debtor",),
+            facet_bindings={},
+            window=RequestedWindow(kind="range", start_year=2010, end_year=2020),
+            index_sourced=True,
+        )
+        for sv in members
+    ]
+
+    by_member = {
+        _select_member_facets(request, probes[sv].candidates, graph=graph)
+        .selections["measurementMethod"]
+        .ref
+        for sv, request in zip(members, requests, strict=True)
+    }
+    group = select_group_facets(requests, [probes[sv].candidates for sv in members], graph=graph)
+    plan = role_resolve._role_plan(
+        members,
+        member_facts=dict.fromkeys(members, _dataset_member(_ONE_CLIMATE)),
+        names={"destination": "debtor"},
+        subject_dcids=[_KEN, _NOR],
+        origin_dcids=[],
+        bound_roles=bound,
+        years=role_years(
+            DateRequest(window=TimeWindow(start_year=2010, end_year=2020), latest=False),
+            index.horizon,
+        ),
+        coverage_index=index,
+    )
+    assert isinstance(plan, BulkPlan) and plan.index_sourced
+    election = role_election(
+        plan.candidates,
+        members=plan.members,
+        read_years=plan.read_years,
+        index_sourced=True,
+        declared_defaults={"measurementMethod": policy},
+    )
+
+    assert by_member == {served}
+    assert group.election.selections["measurementMethod"].ref == served
+    assert {_METHODS[facet_id] for ids in election.selected.values() for facet_id in ids} == {
+        served
+    }
 
 
 @pytest.mark.parametrize(

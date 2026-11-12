@@ -27,11 +27,7 @@ from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.concurrency import bounded_semaphore
 from search.engine.deadline import _await_bounded, _cancel_trailing_tasks
-from search.engine.errors import (
-    RATE_TABLE_REFUSALS,
-    DeclaredDefaultUnsupportedError,
-    EngineInfraError,
-)
+from search.engine.errors import RATE_TABLE_REFUSALS, EngineInfraError
 from search.engine.events import Event
 from search.engine.extract import DateRequest
 from search.engine.leg_phase import LegPhase, enter_phase, track_leg_phase
@@ -459,9 +455,8 @@ async def _stream_one_variable(
     """Run one variable leg, queue its events, then send one terminal marker.
 
     With `degrade_on_error=False`, any error fails the response. With it enabled,
-    non-infrastructure errors become `no_data`; `EngineInfraError`, a declared-default
-    refusal (`DeclaredDefaultUnsupportedError`) and the conversion-table failures in
-    `RATE_TABLE_REFUSALS` always fail the response. The qualifier sidecar is appended to the
+    non-infrastructure errors become `no_data`; `EngineInfraError` and the conversion-table
+    failures in `RATE_TABLE_REFUSALS` always fail the response. The qualifier sidecar is appended to the
     recall/restatement text while `v` stays bare for structured resolution. `source_scope`
     is the leg's compiled source mentions. A scope is what the leg answers under, and its
     source words leave `v` (`_measure_words`). Resolution reads `v`, its recall text, its
@@ -570,14 +565,9 @@ async def _stream_one_variable(
         else:
             region = await _run()
     except Exception as exc:
-        # Infrastructure, declared-default and conversion-table failures refuse the
-        # request. A placeholder no_data would read as real missing data.
-        if (
-            isinstance(
-                exc, (EngineInfraError, DeclaredDefaultUnsupportedError, *RATE_TABLE_REFUSALS)
-            )
-            or not degrade_on_error
-        ):
+        # Infrastructure and conversion-table failures refuse the request. A placeholder
+        # no_data would read as real missing data.
+        if isinstance(exc, (EngineInfraError, *RATE_TABLE_REFUSALS)) or not degrade_on_error:
             await queue.put(_TaskFailed(index=i, exc=exc))
             return
         region = _placeholder_no_data(

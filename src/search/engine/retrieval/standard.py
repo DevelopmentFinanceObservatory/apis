@@ -32,7 +32,7 @@ from search.engine.retrieval.elected_dataset import (
     elected_datasets,
     published,
 )
-from search.engine.retrieval.facet_policy import refuse_declared_defaults
+from search.engine.retrieval.facet_policy import DeclaredPolicies, read_declared_policies
 from search.engine.retrieval.facts import read_constraints
 from search.engine.retrieval.member_facts import (
     IndexMemberFacts,
@@ -1305,14 +1305,15 @@ def _standard_plan(
     facets_by_sv_batch: Mapping[str, Mapping[str, list[Facet]]],
     places_of: Mapping[str, Sequence[str]],
     member_facts: Mapping[str, MemberFacts],
+    declared: DeclaredPolicies,
     years: PlanYears,
     scope: bool,
 ) -> PairPlan:
     """The read plan of an answer serving `svs` under `years`, each at its own places
     (`places_of`). `svs` are members the family election keeps (`_elect_family`, the mint's
     antichain), so the plan reads each of them at each of its places holding facets, a
-    member of an index-resolved family from its elected dataset's facets alone
-    (`read_plan.in_elected_datasets`). A scope-defaulted place set previews one facet
+    member of an index-resolved family from its elected dataset's facets alone, under the
+    defaults `declared` names (`read_plan.in_elected_datasets`). A scope-defaulted place set previews one facet
     across every place (`BulkScope`)."""
     plan = plan_standard(
         {
@@ -1328,7 +1329,7 @@ def _standard_plan(
         # The request deadline bound to the context bounds the breadth read.
         deadline=None,
     )
-    narrowed = in_elected_datasets(plan, member_facts)
+    narrowed = in_elected_datasets(plan, member_facts, declared=declared)
     assert isinstance(narrowed, PairPlan)
     return narrowed
 
@@ -1389,10 +1390,12 @@ def _materialise_collected(
     date_request: DateRequest | None,
     default_scope_probe: bool,
     member_facts: dict[str, MemberFacts],
+    declared: DeclaredPolicies,
     population: MemberPopulation,
     family_total_absent: FamilyTotalAbsent | None,
 ) -> Materialised:
-    """Build a result from the collected members and their facets.
+    """Build a result from the collected members and their facets, the plan electing under
+    the defaults `declared` names.
 
     A plan that serves no point in its years (`read_plan.serves_nothing`) returns the
     carrier for data outside them (`_no_data_in_years`). A scope-defaulted probe lists the
@@ -1413,6 +1416,7 @@ def _materialise_collected(
         facets_by_sv_batch=facets_by_sv_batch,
         places_of=places_of,
         member_facts=member_facts,
+        declared=declared,
         years=plan_years(date_request),
         scope=default_scope_probe and is_plural,
     )
@@ -1516,9 +1520,7 @@ def standard_resolve(
     member_facts = admitted.member_facts
     exact = admitted.exact
     representative_sv = admitted.representative_sv
-    # Refuse a declared default over the admitted population before any return, as
-    # `graph_confirm_resolve` does, so no answer path serves a StatVar coverage cannot date.
-    refuse_declared_defaults(graph, list(member_facts))
+    declared = read_declared_policies(graph, member_facts)
 
     probe_members, multi_collect, family, answering = _answering(admitted, bindings)
     served, serves_every = _serving(family, member_facts)
@@ -1655,6 +1657,7 @@ def standard_resolve(
                     facets_by_sv_batch=facets_by_sv_batch,
                     places_of=places_of,
                     member_facts=member_facts,
+                    declared=declared,
                     years=None,
                     scope=scope_check.active and is_plural,
                 ),
@@ -1687,6 +1690,7 @@ def standard_resolve(
             date_request=date_request,
             default_scope_probe=scope_check.active,
             member_facts=member_facts,
+            declared=declared,
             population=population,
             family_total_absent=family_total_absent,
         )
