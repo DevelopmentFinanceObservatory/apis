@@ -28,7 +28,7 @@ from functools import lru_cache, partial
 from itertools import pairwise
 from typing import Literal, Protocol
 
-from code_index.declarations import MEASURE_VALUE_TEXT
+from code_index.declarations import CODE_SYNONYMS_WITHIN_VOCABULARY, MEASURE_VALUE_TEXT
 from code_index.labels import PRICE_BASIS_AXIS
 from code_index.query import CodeIndex, fold_word
 from code_index.shared import get_index, get_measure_index, per_index
@@ -1337,6 +1337,31 @@ def read_by_vocabulary(
             )
         )
     return tuple(readings)
+
+
+def cross_vocabulary_codes(span: QualifierSpan) -> list[CodeRow]:
+    """The code rows of `span` it names in every code system together: each it reads through
+    its label, a code or a synonym that names it outside its own code system. A row the span
+    reads only through a synonym naming it within that system
+    (`declarations.CODE_SYNONYMS_WITHIN_VOCABULARY`) is left out, so bare "mitigation" names
+    no climate objective beside a CRS question while "climate mitigation" does."""
+    words = tokenize(span.matched_text)
+    forms = (words,) if (less_s := singular(words)) is None else (words, less_s)
+    codes: list[CodeRow] = []
+    for row in span.rows:
+        if not isinstance(row, CodeRow):
+            continue
+        within = CODE_SYNONYMS_WITHIN_VOCABULARY.get(row.dcid, frozenset())
+        names = (row.label, *(s for s in row.synonyms if s not in within))
+        if within and not _names_span(names, forms) and _names_span(within, forms):
+            continue
+        codes.append(row)
+    return codes
+
+
+def _names_span(names: Iterable[str], forms: Sequence[Sequence[Token]]) -> bool:
+    """Whether one of `names` matches one of the token sequences `forms`."""
+    return any(text_matches(name, form) for name in names for form in forms)
 
 
 def match_qualifiers(

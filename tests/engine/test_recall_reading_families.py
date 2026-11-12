@@ -300,10 +300,16 @@ def _series_node(label: str) -> dict:
     ("variable", "recalled", "joined"),
     [
         pytest.param(
-            "adaptation disbursements",
+            "adaptation finance disbursements",
             ((_CRS_HEALTH.dcid, 0.8),),
             {_CLIMATE_TOTAL.dcid},
-            id="adaptation-beside-crs",
+            id="adaptation-finance-beside-crs",
+        ),
+        pytest.param(
+            "adaptation disbursements",
+            ((_CRS_HEALTH.dcid, 0.8),),
+            set(),
+            id="bare-adaptation-beside-crs",
         ),
         pytest.param(
             "climate finance",
@@ -324,8 +330,9 @@ def test_a_family_reading_an_unread_code_of_a_recalled_five_tuple_joins_the_pool
     variable, recalled, joined
 ):
     """The climate row joins as a rival row at the best score of its five-tuple; the
-    controls add nothing, since the CRS reads "health" itself and the World Bank series
-    belongs to no five-tuple of the index."""
+    controls add nothing, since bare "adaptation" names the objective only on a climate
+    shape (`declarations.CODE_SYNONYMS_WITHIN_VOCABULARY`), the CRS reads "health" itself
+    and the World Bank series belongs to no five-tuple of the index."""
     graph = _graph(variable, recalled)
     with serving_index(_index()):
         result = asyncio.run(
@@ -338,6 +345,45 @@ def test_a_family_reading_an_unread_code_of_a_recalled_five_tuple_joins_the_pool
     assert set(added) == joined
     assert all(hit.rival and hit.score == recalled[0][1] for hit in added.values())
     assert {c.dcid for c in result.candidates} == recalled_dcids | joined
+
+
+_DISASTER_RISK_REDUCTION = _code(
+    "CRSPurposeCode43060", "crsPurpose", "disaster risk reduction", code="43060"
+)
+_CRS_DISASTER_RISK = _flow(
+    "TESTFIXTURE/Closure/CrsDisasterRisk", {"crsPurpose": _DISASTER_RISK_REDUCTION.dcid}, _CRS
+)
+
+
+@pytest.mark.parametrize(
+    ("variable", "joined"),
+    [
+        pytest.param("disaster risk mitigation aid", set(), id="bare-mitigation"),
+        pytest.param("aid for disaster risk mitigation", set(), id="bare-mitigation-trailing"),
+        pytest.param(
+            "climate mitigation aid for disaster risk",
+            {_CLIMATE_TOTAL.dcid},
+            id="climate-mitigation",
+        ),
+        pytest.param(
+            "climate finance for disaster risk", {_CLIMATE_TOTAL.dcid}, id="climate-finance"
+        ),
+    ],
+)
+def test_a_bare_climate_word_brings_no_climate_family_beside_another_code_system(variable, joined):
+    """No CRS code reads "disaster risk mitigation", and the CRS disaster risk reduction
+    row recalled for it gains no climate family through bare "mitigation", which names the
+    objective only on a climate shape. "Climate mitigation" and "climate finance" name it
+    in every code system and bring the family in."""
+    rows = (*_ROWS, _CRS_DISASTER_RISK)
+    graph = _graph(variable, ((_CRS_DISASTER_RISK.dcid, 0.8),), rows=rows)
+    with serving_index(_index((*_CODES, _DISASTER_RISK_REDUCTION), rows=rows)):
+        result = asyncio.run(
+            recall(variable, [], graph=graph, resolver=make_resolver(graph), raw_query=variable)
+        )
+
+    assert result.hits is not None
+    assert {hit.dcid for hit in result.hits} - {_CRS_DISASTER_RISK.dcid} == joined
 
 
 _DAC1_DISBURSEMENTS = _row(
@@ -375,7 +421,7 @@ def test_a_five_tuple_only_a_basis_row_holds_reads_what_its_recalled_five_tuple_
     recalled family of the commitments' five-tuple reads "climate", the disbursements'
     five-tuple gains no family, as "humanitarian aid" read on DAC2a's amounts keeps the CRS
     grant equivalents out; where none does, the climate finance families of both five-tuples
-    join, as "adaptation aid" brings in the climate finance disbursements."""
+    join."""
     hits = [
         *(
             DetectedSV(dcid=row.dcid, score=0.8, type_of="StatisticalVariable", sentence=None)
@@ -443,12 +489,12 @@ class _ElectFirst:
     ("query", "variable", "recalled", "climate", "objective"),
     [
         pytest.param(
-            "germany adaptation disbursements 2022",
-            "adaptation disbursements",
+            "germany adaptation finance disbursements 2022",
+            "adaptation finance disbursements",
             ((_CRS_HEALTH.dcid, 0.8),),
             _CLIMATE_TOTAL,
             _ADAPTATION,
-            id="adaptation-disbursements",
+            id="adaptation-finance-disbursements",
         ),
         pytest.param(
             "climate finance from Germany in 2022",
@@ -509,18 +555,18 @@ def test_a_part_scans_its_variable_in_every_system_once(monkeypatch):
     scan = qualifier_match._recognise_raw
 
     def counting(text, lexicon, vocabulary):
-        if vocabulary is None and text == "adaptation disbursements":
+        if vocabulary is None and text == "adaptation finance disbursements":
             scans.append(text)
         return scan(text, lexicon, vocabulary)
 
     monkeypatch.setattr(qualifier_match, "_recognise_raw", counting)
-    query = "germany adaptation disbursements 2022"
+    query = "germany adaptation finance disbursements 2022"
     graph = _graph(query, ((_CRS_HEALTH.dcid, 0.8),))
     with serving_index(_index()):
         coverage = _coverage()
         result = asyncio.run(
             resolve_variable(
-                "adaptation disbursements",
+                "adaptation finance disbursements",
                 entities=["Germany"],
                 date_request=None,
                 detect_query=query,
@@ -538,4 +584,4 @@ def test_a_part_scans_its_variable_in_every_system_once(monkeypatch):
         )
 
     assert result.status == "definite", result
-    assert scans == ["adaptation disbursements"]
+    assert scans == ["adaptation finance disbursements"]

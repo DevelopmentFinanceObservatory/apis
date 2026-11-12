@@ -309,15 +309,20 @@ def with_reading_families(
     reads, in descending score.
 
     `phrases` holds the code rows each phrase of the query names, read in every code system
-    (`qualifier_match.read_by_vocabulary`). A family reads a phrase when its rows read one
-    of the phrase's codes (`family_reads`), by the rule the family election reads a shape's
-    phrases by (`retrieval.code_reads`). The resolve ranks sentences, and a sentence states
-    no code: for "adaptation disbursements" it returns the
-    CRS's disbursements, which hold no climate objective, and not the climate finance
+    (`qualifier_match.read_by_vocabulary`), less those a phrase names only through a synonym
+    that names its code within its own code system (`qualifier_match.cross_vocabulary_codes`).
+    A family reads a phrase when its rows read one of the phrase's codes (`family_reads`), by
+    the rule the family election reads a shape's phrases by (`retrieval.code_reads`). The
+    resolve ranks sentences, and a sentence states no code: it can return the CRS's
+    disbursements, which hold no climate objective, and leave out the climate finance
     disbursements that share the CRS's five-tuple and hold the adaptation objective. Within
     a five-tuple the family reading more of the query's phrases is elected
     (`bound_values.elect_five_tuple_family`), so a family the resolve left out must join the
-    pool to be compared.
+    pool to be compared. "Adaptation finance disbursements" beside the CRS's disbursements
+    brings the climate finance disbursements in. Bare "adaptation", "mitigation" and
+    "climate" name the objectives only on a climate shape, since beside a CRS question they
+    carry other senses ("disaster risk mitigation"), so "disaster risk mitigation aid" with
+    the CRS's disaster risk reduction row recalled gains no family.
 
     The closure stays within the five-tuples among the hits, so a phrase brings in no
     family of a five-tuple the resolve did not return, and a phrase some family among the
@@ -330,9 +335,10 @@ def with_reading_families(
     join as a basis row of DAC1's aid amounts. DAC2a reads "humanitarian" on the amounts'
     five-tuple, so the CRS grant equivalents, which read it where DAC1's do not, stay out.
     "Adaptation aid from Germany in 2022" recalls CRS grant equivalents, which bring in the
-    CRS's disbursements as a basis row, and climate finance commitments; no family of the
-    grant equivalents' five-tuple reads "adaptation", so the climate finance disbursements
-    join beside the CRS's.
+    CRS's disbursements as a basis row, and climate finance commitments. Its bare
+    "adaptation" brings in no family, so the recalled commitments alone carry the objective;
+    a question saying "adaptation finance" brings in the climate finance disbursements beside
+    the CRS's, since no family of the grant equivalents' five-tuple reads it.
 
     A row added here is the family's broadest admitted row (`_broadest_admitted_row`),
     takes the best score of the five-tuple's hits, and is marked `DetectedSV.rival` as a

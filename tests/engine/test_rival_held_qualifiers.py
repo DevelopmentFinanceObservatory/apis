@@ -181,7 +181,7 @@ def test_a_term_only_a_rival_family_records_refuses_naming_its_dataset(query, va
         pytest.param(
             "germany adaptation disbursements 2022",
             "adaptation disbursements",
-            ((_CRS_HEALTH.dcid, 0.8),),
+            ((_CRS_HEALTH.dcid, 0.8), (_CLIMATE_TOTAL.dcid, 0.7)),
             _CLIMATE_TOTAL.dcid,
             ["Germany"],
             None,

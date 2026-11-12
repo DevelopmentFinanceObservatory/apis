@@ -1122,10 +1122,35 @@ CODE_SYNONYMS: Mapping[str, tuple[str, ...]] = {
     # a CRS or DAC shape, and "investment climate" stays the longer CRS purpose span.
     "ClimateChangePolicyObjective": ("climate finance", "climate"),
     # ONE Data counts a project marked for both objectives once, as cross-cutting, so
-    # "adaptation" reads the adaptation-only part and the heading's short name says so.
-    "AdaptationOnlyClimateChangePolicyObjective": ("adaptation",),
-    "MitigationOnlyClimateChangePolicyObjective": ("mitigation",),
+    # "adaptation" reads the adaptation-only part and the heading's short name says so. The
+    # phrases holding "climate" or "finance" name the objective in any code system
+    # (`CODE_SYNONYMS_WITHIN_VOCABULARY`).
+    "AdaptationOnlyClimateChangePolicyObjective": (
+        "adaptation",
+        "climate adaptation",
+        "adaptation finance",
+    ),
+    "MitigationOnlyClimateChangePolicyObjective": (
+        "mitigation",
+        "climate mitigation",
+        "mitigation finance",
+    ),
     "CrossCuttingClimateChangePolicyObjective": ("cross-cutting",),
+}
+
+# Code synonyms that name their code only on a shape of its own code system. Such a shape
+# reads them as it reads any synonym, so "Germany climate commitments" binds the climate total
+# and "climate finance for adaptation" the adaptation-only part. Read in every code system
+# together they name nothing (`qualifier_match.cross_vocabulary_codes`), so recall adds no
+# family of a recalled five-tuple for them (`clients.graph.with_reading_families`): beside a
+# CRS question the bare words carry other senses, as in "disaster risk mitigation" (CRS
+# purpose 43060) and "social mitigation of HIV and AIDS" (a CRS purpose label). The climate
+# phrases among `CODE_SYNONYMS` ("climate finance", "adaptation finance", "climate
+# mitigation") name the objective there and still bring its family in.
+CODE_SYNONYMS_WITHIN_VOCABULARY: Mapping[str, frozenset[str]] = {
+    "ClimateChangePolicyObjective": frozenset({"climate"}),
+    "AdaptationOnlyClimateChangePolicyObjective": frozenset({"adaptation"}),
+    "MitigationOnlyClimateChangePolicyObjective": frozenset({"mitigation"}),
 }
 
 # Names a question uses for a code that no matcher reads, exported as `CodeRow.also_called`.
