@@ -9,8 +9,8 @@ included, use a caller-supplied `CoverageIndex` because `/v2/observation` filter
 entities, and an unbound role covers every entity in the index. Uncovered StatVars return no
 candidates. Each axis resolves from the shared candidate set. Bound refs must match an
 available candidate. A graph-declared default serves where a candidate carries it, and
-otherwise the axis falls back to the deployment ranking. Deployment fallback ranks a whole candidate after
-narrowing by bound axes, currency-native preference and the requested year range. Cross-axis
+otherwise the axis falls back to the deployment ranking. Deployment fallback ranks a whole
+candidate after narrowing by bound axes, currency-native preference and the requested year range. Cross-axis
 compatibility is checked after per-axis selection. Axis failures are raised separately and
 aggregated by the pipeline.
 """
@@ -2331,7 +2331,7 @@ def select_facet(
     `MaterialisationUsageError`.
 
     An unbound axis first tries the graph's declared default among the candidates carrying
-    every bound ref, so a bound axis still governs. A matching ref returns
+    every bound ref, so a bound axis governs. A matching ref returns
     `basis="declared_default"`. A declared ref no such candidate carries is logged
     (`log_declared_miss`) and the axis ranks as it would without one, so the member serves one
     value under `basis="deployment_fallback"`. Without a matching policy, candidates are
@@ -3133,8 +3133,8 @@ def log_declared_miss(policy: FacetDefaultPolicy, *, axis: str, stat_vars: Seque
     selection's `deployment_fallback` basis that the declaration did not serve. Each StatVar is
     logged once per process (`_DECLARED_MISSES_LOGGED`), and the line names the first
     `_DECLARED_MISS_NAMED` of the StatVars not logged before and counts them all. The pipeline
-    that publishes the declaration checks the StatVar holds observations under it; a request
-    narrower than the StatVar can still find none."""
+    that publishes the declaration checks the StatVar holds observations under it, but a
+    request narrower than the StatVar can still find none."""
     unlogged = []
     for stat_var in stat_vars:
         key = (stat_var, axis, policy.resolved_ref)

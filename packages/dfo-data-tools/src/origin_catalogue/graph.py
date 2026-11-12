@@ -731,9 +731,9 @@ class OriginGraphClient:
 
     def default_facet_policy(self, *, stat_var: str, axis: str) -> FacetDefaultPolicy | None:
         """The default `stat_var` declares for `axis` on its `DEFAULT_FACET_ARCS` arc
-        (`dc_graph.declared_facet_policy`), read through `node_arc_values`: a variable the
+        (`dc_graph.declared_facet_policy`), read through `node_arc_values`. A variable the
         catalogue's tables hold answers with no graph request, and any other reads its
-        backend, which every DFO, base and UN variable the catalogue lists avoids."""
+        backend. Every DFO, base and UN variable the catalogue lists is held."""
         arc = DEFAULT_FACET_ARCS.get(axis)
         if arc is None:
             return None
@@ -745,7 +745,7 @@ class OriginGraphClient:
         self, stat_vars: Sequence[str], *, deadline: float | None = None
     ) -> dict[str, dict[str, FacetDefaultPolicy]]:
         """The defaults each of `stat_vars`, bare dcids, declares
-        (`dc_graph.declared_facet_policies`), read through one `node_arcs_batch`: the
+        (`dc_graph.declared_facet_policies`), read through one `node_arcs_batch`. The
         variables the catalogue's tables hold answer with no graph request, and the rest go
         to their backend in one batch by `deadline`."""
         dcids = list(dict.fromkeys(stat_vars))

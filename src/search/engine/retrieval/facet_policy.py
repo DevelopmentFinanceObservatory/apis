@@ -35,10 +35,10 @@ def read_declared_policies(
 ) -> DeclaredPolicies:
     """The default each of `stat_vars` declares on each facet axis, the declaration a mint of
     each reads (`GraphReader.default_facet_policy`), in one read
-    (`EngineGraphClient.default_facet_policies`): the origin client answers a variable the
+    (`EngineGraphClient.default_facet_policies`). The origin client answers a variable the
     catalogue holds from its arc rows and reads the rest in one batch, by `deadline` and the
-    request deadline bound to the context. A graph read error declares nothing for any of them and logs one warning, and
-    the request goes on under the deployment ranking."""
+    request deadline bound to the context. A graph read error declares nothing for any of
+    them and logs one warning, and the request goes on under the deployment ranking."""
     dcids = list(dict.fromkeys(stat_vars))
     if not dcids:
         return NO_DECLARED_POLICIES

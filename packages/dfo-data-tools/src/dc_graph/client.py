@@ -2509,8 +2509,8 @@ def declared_facet_policy(
     `arc` (`DEFAULT_FACET_ARCS`). The policy names `arc` as its `policy_node`, so a trace
     records which declaration chose the facet. `None` when the StatVar carries no target, and
     `None` with an error log, once per process for each StatVar and arc, when it carries
-    several: two defaults decide nothing, and the unbound axis takes the deployment ranking, as
-    it does without a declaration."""
+    several, since two defaults decide nothing and the unbound axis takes the deployment
+    ranking, as it does without a declaration."""
     if not refs:
         return None
     if len(refs) > 1:

@@ -24,7 +24,7 @@ arc to one measurement-method node, which the pipeline that publishes the
 StatVar emits. ONE Data Climate Finance declares
 `ONEClimateFinanceWeighting` on its received StatVars and
 `ONEClimateFinanceWeightingCoreContributions` on its provided ones. The
-`measurementMethod` axis is the only one with an arc; `provenance` and
+`measurementMethod` axis is the only one with an arc. `provenance` and
 `unit` always take the ranking below.
 
 `GraphReader.default_facet_policy` reads the arc
@@ -33,7 +33,7 @@ StatVar emits. ONE Data Climate Finance declares
 catalogue's arc tables hold from its held arc rows, with no graph request,
 so the arc takes effect at the first catalogue build after the graph
 carries it. A variable the tables do not hold is read from the graph. A
-StatVar carrying two values on the arc declares nothing: the read logs an
+StatVar carrying two values on the arc declares nothing. The read logs an
 error naming the StatVar and its values, once per process, and the axis ranks as it would
 without a declaration.
 
@@ -44,7 +44,7 @@ other candidates' coverage or observation count. The selection records `basis: d
 and `selection_reason: graph_declared`. The ranking then runs on the other
 unbound axes over the candidates that carry the declared method
 (`materialise.facets.fallback_pool`). A bound axis overrides the
-declaration, as it overrides the deployment policy: under a bound
+declaration, as it overrides the deployment policy. Under a bound
 provenance whose candidates lack the declared method, the ranking chooses
 the method among that provenance's candidates.
 
@@ -53,7 +53,7 @@ choice, one method, with `basis: deployment_fallback`, and logs one line
 naming the StatVar and the declared method, once per StatVar in a process
 (`materialise.facets.log_declared_miss`). The pipeline checks that every
 StatVar holds observations under its declared method, but a request is
-narrower than the StatVar: one provider and one recipient can hold none.
+narrower than the StatVar, and one provider and one recipient can hold none.
 
 A group follows the same rule over the facets its members share
 (`materialise.group_facets.select_group_facets`), when every populated

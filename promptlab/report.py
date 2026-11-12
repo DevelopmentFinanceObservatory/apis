@@ -354,7 +354,7 @@ class _NoLiveGraph:
         return self._unreachable("node_type")
 
     def default_facet_policy(self, *, stat_var: str, axis: str) -> None:
-        """None: a report reads no live graph, so it sees no `defaultMeasurementMethod`
+        """None. A report reads no live graph, so it sees no `defaultMeasurementMethod`
         arc (`dc_graph.GraphClient.default_facet_policy`), and `GraphCache` passes this read
         through uncached."""
         return None

@@ -506,7 +506,7 @@ def _build_observation_about_options(
     facet stays tagged with its stat_var so elected_units can key the
     lookup correctly), each place's plan electing under the defaults the
     StatVars declare (`facet_policy.read_declared_policies`). A dcid that fails
-    to resolve a label is omitted, never fabricated.
+    to resolve a label is omitted.
     """
     labels = graph.node_labels_batch(present)
     declared = (

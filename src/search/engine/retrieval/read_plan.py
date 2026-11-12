@@ -101,9 +101,9 @@ entity (`region.convertibility.UnitCoverage.omitted`)."""
 type Omissions = frozenset[Omission]
 
 type DeclaredDefaults = Mapping[str, FacetDefaultPolicy]
-"""The default each facet axis of a plan's members declares in the graph, by axis: the
-policy every populated member declares on it (`plan_declared_defaults`). Every election of
-the plan serves it where the members hold it, as a mint of its Spec does
+"""The default each facet axis of a plan's members declares in the graph, by axis. It is the
+policy every populated member declares on the axis (`plan_declared_defaults`), and every
+election of the plan serves it where the members hold it, as a mint of its Spec does
 (`materialise.group_facets.elect_group`)."""
 
 type Election = Callable[[ReadPlan], Mapping[str, int]]

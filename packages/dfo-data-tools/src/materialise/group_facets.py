@@ -295,9 +295,9 @@ def _resolve_group_axis_selections(
 
     Index-sourced groups omit an unbound `measurementMethod` without a declared policy from
     selections so dispatch and row filtering allow members to use different methods. With
-    one, the axis resolves to one method like any other: the declared method where the
-    shared pool holds it, else the top candidate's, and a member holding no facet under it
-    serves nothing (`elect_group`). A bound method remains a hard constraint. Only populated members affect policy
+    one, the axis resolves to one method like any other. That is the declared method where
+    the shared pool holds it, else the top candidate's, and a member holding no facet under
+    it serves nothing (`elect_group`). A bound method remains a hard constraint. Only populated members affect policy
     agreement. A request binding outside `unit` raises
     `MaterialisationUsageError`.
 
@@ -462,7 +462,7 @@ class GroupElection:
     members holding the elected group's agreement key that hold no facet matching its
     selections on the key's axes and the bound ones (`incoherent`), which the mint refuses
     (`select_group_facets`). An index-sourced member holding the key but not the method a
-    declared default resolved is unserved, not incoherent, as Search leaves it out."""
+    declared default resolved is unserved, as Search leaves it out."""
 
     election: FacetElection
     dispatch_ids: tuple[tuple[str, ...], ...]
@@ -719,8 +719,8 @@ def select_group_facets(
     axis (`_check_bound_axes`), when no member holds a candidate carrying the bound refs
     jointly (`_no_group_refusal`), and when a member holding the elected group carries no
     facet matching its selections jointly (`_coherence_refusal`). A member of an index-sourced
-    group lacking only the method a declared default resolved is no refusal: it serves nothing
-    and the group's warning names it (`GroupElection.unserved`)."""
+    group lacking only the method a declared default resolved raises no refusal. It serves
+    nothing and the group's warning names it (`GroupElection.unserved`)."""
     electable = [
         dataset_candidates(request, member_candidates)
         for request, member_candidates in zip(requests, candidates, strict=True)
