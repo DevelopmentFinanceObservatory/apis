@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import functools
 import logging
 import re
 from collections.abc import AsyncGenerator, Collection, Sequence
@@ -154,7 +155,7 @@ from search.engine.source_spans import read_sources, unclaimed_stretches, unclai
 from search.engine.stated_scope import part_scope_intakes, without_scope_phrases
 from search.engine.surface_resolution import corrected_surfaces, is_surface, named_dcids
 from search.engine.unit.bind import names_price_basis, names_unit_request
-from search.heading.departure_fact import DepartureFact
+from search.heading.departure_fact import DepartureFact, DirectionWord
 from search.models import (
     CatalogueAnswer,
     DeclinedAnswer,
@@ -934,10 +935,10 @@ class _ExtractionPrep:
     (`stated_scope.part_scope_intakes`), read from the query when it asks for one variable
     and from each variable's own text when it asks for several.
     `per_variable_party_readings` runs parallel to `unique` too: for a part whose sources
-    hold a contested organisation (`source_scan.SourceHit.contested`), its reading with the
-    organisation as an entity in place of a source (`_party_readings`), which the part runs
-    in place of its own where the data reads the organisation as a party
-    (`source_choice.read_organisation`), and `None` for any other part.
+    hold contested organisations (`source_scan.SourceHit.contested`), its readings with some
+    or all of them as entities in place of sources (`_party_readings`), one of which the part
+    runs in place of its own where the data read one of them as a party
+    (`source_choice.read_organisations`), and `None` for any other part.
     """
 
     date_request: DateRequest | None
@@ -1527,22 +1528,94 @@ def _party_readings(
     catalogue: Catalogue,
     dictionary: SourceDictionary,
 ) -> list[PartyReading | None] | None:
-    """Each part's reading with the `contested` sources it holds as entities, parallel to
-    `unique`, or `None` when no source is contested.
+    """Each part's readings with the `contested` sources it holds as entities, parallel to
+    `unique`, or `None` when no source is contested. A part none of whose measures a
+    contested source qualifies has none.
 
-    The reading adds an entity for each contested organisation the extraction did not
-    return (`_with_organisations`) and scans the query again with the organisations among
-    the scan's `parties`, so the scan reads each as a party; its entities, their roles and
-    its source scope follow from that scan as the source reading's do (`_leg_readings`), and
-    the part's series code, of `source_codes`, compiles within that scope. A part none of
-    whose measures a contested source qualifies has no party reading. The contest names the organisations' words, the
-    dcids the entity pack names them (`entity_resolution.pack.organisations_named`) and the
-    word naming a party to a flow before them (`source_scan.direction_word`), "to" over
-    "from"."""
+    A part's contest names each organisation it holds by its words, with the dcids the entity
+    pack names it (`entity_resolution.pack.organisations_named`) and the word naming a party
+    to a flow before a mention of it (`source_scan.direction_word`), "to" over "from". Its
+    readings read a set of the organisations as parties (`_readings_with`): every one of
+    them (`PartyReading.reading`), or the set the part's data choose
+    (`PartyReading.reading_with`)."""
     if not contested:
         return None
+
+    @functools.cache
+    def legs(parties: frozenset[str]) -> list[LegReading]:
+        return _readings_with(
+            [hit for hit in contested if hit.text in parties],
+            extraction,
+            query=query,
+            unique=unique,
+            left_out=left_out,
+            codes=codes,
+            source_codes=source_codes,
+            catalogue=catalogue,
+            dictionary=dictionary,
+        )
+
+    spans = [entity.span or entity.text for entity in extraction.entities]
+    readings: list[PartyReading | None] = []
+    for i in range(len(unique)):
+        hits = [hit for hit in contested if i in hit.targets]
+        if not hits:
+            readings.append(None)
+            continue
+        organisations = tuple(
+            ContestedOrganisation(
+                words=words,
+                parties=organisations_named(words),
+                direction=_direction(
+                    {
+                        direction_word(query, hit, entity_spans=spans)
+                        for hit in hits
+                        if hit.text == words
+                    }
+                ),
+            )
+            for words in dict.fromkeys(hit.text for hit in hits)
+        )
+        every = frozenset(organisation.words for organisation in organisations)
+        readings.append(
+            PartyReading(
+                contested=organisations,
+                reading=legs(every)[i],
+                reading_with=lambda parties, i=i: legs(parties)[i],
+            )
+        )
+    return readings
+
+
+def _direction(words: AbstractSet[DirectionWord | None]) -> DirectionWord | None:
+    """The word naming a party to a flow among `words`, those before each mention of one
+    organisation: "to" over "from"."""
+    return "to" if "to" in words else "from" if "from" in words else None
+
+
+def _readings_with(
+    parties: Sequence[SourceHit],
+    extraction: Extraction,
+    *,
+    query: str,
+    unique: Sequence[str],
+    left_out: Sequence[LeftOut],
+    codes: Sequence[tuple[int, int]],
+    source_codes: Sequence[str | None],
+    catalogue: Catalogue,
+    dictionary: SourceDictionary,
+) -> list[LegReading]:
+    """Each part's reading with the contested sources `parties` read as parties, parallel to
+    `unique`.
+
+    The reading adds an entity for each of `parties` the extraction did not return
+    (`_with_organisations`) and scans the query again with them among the scan's `parties`,
+    so the scan reads each as a party and every other source as a source; its entities,
+    their roles and its source scope follow from that scan as the source reading's do
+    (`_leg_readings`), and the part's series code, of `source_codes`, compiles within that
+    scope."""
     party = _with_organisations(
-        extraction, [(hit.text, hit.targets) for hit in contested], query=query, unique=unique
+        extraction, [(hit.text, hit.targets) for hit in parties], query=query, unique=unique
     )
     scan = _scan(
         party,
@@ -1551,7 +1624,7 @@ def _party_readings(
         left_out=left_out,
         codes=codes,
         dictionary=dictionary,
-        parties=frozenset(normalise_source_text(hit.text) for hit in contested),
+        parties=frozenset(normalise_source_text(hit.text) for hit in parties),
     )
     extracted, _ = _split_entities(party, scan, query=query)
     legs = _leg_readings(
@@ -1562,23 +1635,10 @@ def _party_readings(
         variables=party.variables,
         catalogue=catalogue,
     )
-    spans = [entity.span or entity.text for entity in extraction.entities]
-    readings: list[PartyReading | None] = []
-    for i, (leg, code) in enumerate(zip(legs, source_codes, strict=True)):
-        hits = [hit for hit in contested if i in hit.targets]
-        if not hits:
-            readings.append(None)
-            continue
-        words = tuple(dict.fromkeys(hit.text for hit in hits))
-        directions = {direction_word(query, hit, entity_spans=spans) for hit in hits}
-        contest = ContestedOrganisation(
-            words=words,
-            parties=frozenset().union(*(organisations_named(hit.text) for hit in hits)),
-            direction="to" if "to" in directions else "from" if "from" in directions else None,
-        )
-        reading = dataclasses.replace(leg, source_code=_compiled_code(code, leg.source_scope))
-        readings.append(PartyReading(contested=contest, reading=reading))
-    return readings
+    return [
+        dataclasses.replace(leg, source_code=_compiled_code(code, leg.source_scope))
+        for leg, code in zip(legs, source_codes, strict=True)
+    ]
 
 
 def _scan(

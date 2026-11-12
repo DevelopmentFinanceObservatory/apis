@@ -41,12 +41,15 @@ from search.engine.region.codes import ORGANISATION_READ_AS_PARTY, ORGANISATION_
 from search.engine.region.result import AmbiguousEntity
 from search.engine.region.source_choice import (
     ContestedOrganisation,
+    OrganisationEvidence,
     OrganisationReading,
+    OrganisationReadings,
     RecalledFamily,
     choose_reading,
+    choose_readings,
     read_as_party,
     read_as_source,
-    read_organisation,
+    read_organisations,
 )
 from search.engine.source_code import SeriesCodeMembers, SourceCodeRefusal
 from search.engine.source_scan import (
@@ -291,7 +294,7 @@ def test_the_party_reading_keeps_an_extracted_organisation_as_its_entity(
     assert prep.per_variable_party_readings is not None
     (party,) = prep.per_variable_party_readings
     assert party is not None
-    assert party.contested.direction == "from"
+    assert [organisation.direction for organisation in party.contested] == ["from"]
     assert party.reading.entities == ["World Bank", "Kenya"]
     assert [role.axis for role in party.reading.entity_roles["World Bank"]] == ["origin"]
     scope = party.reading.source_scope
@@ -480,8 +483,9 @@ def test_the_raw_text_door_contests_an_organisation_closing_a_list_after_to(
     prep = _prep("Ghana debt service to Norway and the World Bank", extraction, catalogue)
 
     (party,) = prep.per_variable_party_readings
-    assert party.contested.words == ("World Bank",)
-    assert party.contested.direction == "to"
+    assert [(organisation.words, organisation.direction) for organisation in party.contested] == [
+        ("World Bank", "to")
+    ]
 
 
 def test_the_raw_text_door_reads_an_uncued_world_bank_both_ways_and_a_cued_one_as_the_source(
@@ -508,15 +512,17 @@ def test_the_raw_text_door_reads_an_uncued_world_bank_both_ways_and_a_cued_one_a
     assert contested.entities == ["Ghana"]
     assert contested.per_variable_sources == [(_in("World Bank"),)]
     (party,) = contested.per_variable_party_readings
-    assert party.contested == ContestedOrganisation(
-        words=("World Bank",),
-        parties=frozenset(
-            {
-                "InternationalBankForReconstructionAndDevelopment",
-                "InternationalDevelopmentAssociation",
-            }
+    assert party.contested == (
+        ContestedOrganisation(
+            words="World Bank",
+            parties=frozenset(
+                {
+                    "InternationalBankForReconstructionAndDevelopment",
+                    "InternationalDevelopmentAssociation",
+                }
+            ),
+            direction="to",
         ),
-        direction="to",
     )
     assert party.reading.entities == ["Ghana", "World Bank"]
     assert party.reading.source_scope is None
@@ -540,7 +546,7 @@ def test_the_raw_text_door_reads_a_publisher_before_the_indicator_as_a_source_me
 
     assert prep.per_variable_sources == [(_in("World Bank"),)]
     (party,) = prep.per_variable_party_readings
-    assert party.contested.direction is None
+    assert [organisation.direction for organisation in party.contested] == [None]
     assert party.reading.entities == ["Denmark", "World Bank"]
 
 
@@ -943,6 +949,82 @@ def test_another_named_source_that_publishes_the_organisation_makes_it_a_party(
     assert reading.listed_by == (("CRS",) if role == "party" else ())
 
 
+# Where the index publishes the IMF as a party: an IDS creditor.
+_IMF_PARTIES: frozenset[tuple[str, RoleAxis]] = frozenset({(_IDS, "origin")})
+
+
+def _world_bank(direction: DirectionWord | None) -> OrganisationEvidence:
+    return OrganisationEvidence(
+        words="World Bank",
+        direction=direction,
+        allowed=_WORLD_BANK_TABLES,
+        published=_WORLD_BANK_PARTIES,
+    )
+
+
+def _imf(
+    direction: DirectionWord | None,
+    published: frozenset[tuple[str, RoleAxis]] = _IMF_PARTIES,
+) -> OrganisationEvidence:
+    return OrganisationEvidence(
+        words="IMF", direction=direction, allowed=frozenset({_WEO}), published=published
+    )
+
+
+@pytest.mark.parametrize(
+    ("organisations", "measure", "scoped", "readings"),
+    [
+        # No word governs the World Bank, and its IDS leads both recalls, so it is the
+        # source. "To" governs the IMF, and the IDS, the World Bank's table, lists it as a
+        # creditor, so it is a party.
+        pytest.param(
+            [_world_bank(None), _imf("to")],
+            [_IDS_DEBT],
+            [_IDS_DEBT],
+            [("source", None, ()), ("party", "named_source", ("World Bank",))],
+            id="World Bank debt service from Kenya to the IMF",
+        ),
+        # "From" governs both, and the CRS publishes each as a donor.
+        pytest.param(
+            [_world_bank("from"), _imf("from", frozenset({(_CRS, "origin")}))],
+            [_CRS_FLOW],
+            [_WDI_SERIES],
+            [("party", "direction", ()), ("party", "no_own_data", ())],
+            id="Kenya grants from the World Bank and the IMF",
+        ),
+        # Both are possible sources with no word, and each one's tables list the other as a
+        # party: neither reading is more the question's, so both stay sources.
+        pytest.param(
+            [
+                dataclasses.replace(
+                    _world_bank(None), published=_WORLD_BANK_PARTIES | {(_WEO, "origin")}
+                ),
+                _imf(None),
+            ],
+            [_IDS_DEBT, RecalledFamily(datasets=frozenset({_WEO}), axes=_FLOW, score=0.9)],
+            [_IDS_DEBT, RecalledFamily(datasets=frozenset({_WEO}), axes=_FLOW, score=0.9)],
+            [("source", None, ()), ("source", None, ())],
+            id="two sources listing each other",
+        ),
+    ],
+)
+def test_each_contested_organisation_takes_its_own_reading(
+    monkeypatch: pytest.MonkeyPatch,
+    organisations: list[OrganisationEvidence],
+    measure: list[RecalledFamily],
+    scoped: list[RecalledFamily],
+    readings: list[tuple[str, PartyReason | None, tuple[str, ...]]],
+):
+    """Each row's readings give each organisation's role, reason and the sources listing
+    it, read against a governance threshold of 0.65."""
+    monkeypatch.setattr(
+        config, "_SETTINGS", config.settings().model_copy(update={"unknown_score_threshold": 0.65})
+    )
+    chosen = choose_readings(organisations, measure=measure, scoped=scoped)
+
+    assert [(r.role, r.reason, r.listed_by) for r in chosen] == readings
+
+
 @pytest.mark.parametrize(
     ("hit", "direction", "role", "source_possible"),
     [
@@ -976,10 +1058,10 @@ def test_an_organisations_reading_reads_the_index_under_and_outside_its_scope(
             text, DetectedSV(dcid=hit, score=0.9, type_of=type_of, sentence=None), variable=variable
         )
 
-    async def read() -> OrganisationReading:
+    async def read() -> OrganisationReadings:
         with bound_catalogue(catalogue), patch.object(source_choice, "detect_measure", detect):
-            return await read_organisation(
-                dataclasses.replace(_WORLD_BANK, direction=direction),
+            return await read_organisations(
+                [dataclasses.replace(_WORLD_BANK, direction=direction)],
                 party_text="World Bank debt buyback",
                 party_variable="World Bank debt buyback",
                 party_scope=None,
@@ -989,12 +1071,13 @@ def test_an_organisations_reading_reads_the_index_under_and_outside_its_scope(
                 graph=cast(Any, FakeGraph()),
             )
 
-    reading = asyncio.run(read())
+    readings = asyncio.run(read())
 
+    (reading,) = readings.readings
     assert (reading.role, reading.source_possible) == (role, source_possible)
-    # The reading carries its own pass's detection, which that pass recalls from.
-    assert reading.detected is not None
-    assert reading.detected.text == (
+    # The readings carry their own pass's detection, which that pass recalls from.
+    assert readings.detected is not None
+    assert readings.detected.text == (
         "World Bank debt buyback" if role == "party" else "debt buyback"
     )
     assert sorted(detected, key=lambda pair: pair[1] is not None) == [
@@ -1084,10 +1167,10 @@ def test_only_the_organisations_own_tables_make_its_source_reading_possible(
             text, DetectedSV(dcid=hit, score=0.8, type_of="StatisticalVariable", sentence=None)
         )
 
-    async def read() -> OrganisationReading:
+    async def read() -> OrganisationReadings:
         with bound_catalogue(catalogue), patch.object(source_choice, "detect_measure", detect):
-            return await read_organisation(
-                dataclasses.replace(_WORLD_BANK, direction=None),
+            return await read_organisations(
+                [dataclasses.replace(_WORLD_BANK, direction=None)],
                 party_text="World Bank disbursements",
                 party_variable="World Bank disbursements",
                 party_scope=party_scope,
@@ -1097,7 +1180,7 @@ def test_only_the_organisations_own_tables_make_its_source_reading_possible(
                 graph=cast(Any, FakeGraph()),
             )
 
-    reading = asyncio.run(read())
+    (reading,) = asyncio.run(read()).readings
 
     assert (reading.role, reading.source_possible) == (role, source_possible)
     assert reading.reason == (
@@ -1148,10 +1231,11 @@ def test_the_raw_text_door_runs_the_one_reading_the_data_choose(
             elected_stat_vars=[GraphRef(ref=_IDS_BY_CREDITOR, label=_IDS_BY_CREDITOR)],
         )
 
-    async def _read(*_args: Any, **_kwargs: Any) -> OrganisationReading:
-        return OrganisationReading(role=cast(Any, role), source_possible=True)
+    async def _read(*_args: Any, **_kwargs: Any) -> OrganisationReadings:
+        reading = OrganisationReading(role=cast(Any, role), source_possible=True)
+        return OrganisationReadings(readings=(reading,), detected=None)
 
-    with patch("search.engine.fanout.read_organisation", _read):
+    with patch("search.engine.fanout.read_organisations", _read):
         (region,) = _stream_door(query, prep, catalogue, _pipeline, degrade_on_error=False)
 
     assert ran == calls
@@ -1160,6 +1244,93 @@ def test_the_raw_text_door_runs_the_one_reading_the_data_choose(
     assert codes == [ORGANISATION_READ_AS_PARTY if role == "party" else ORGANISATION_READ_AS_SOURCE]
     assert region.parsed_form is not None
     assert [entity.text for entity in region.parsed_form.entities or ()] == calls[0][0]
+
+
+@pytest.mark.parametrize(
+    ("query", "place", "entities", "scoped", "handed", "warned"),
+    [
+        # "To" governs the World Bank and an IDS creditor family publishes IBRD and IDA: the
+        # leg reads it as a party and its pass recalls from the probe's party detection.
+        pytest.param(
+            "Ghana debt service to the World Bank",
+            "Ghana",
+            ["Ghana", "World Bank"],
+            None,
+            True,
+            [("World Bank", ORGANISATION_READ_AS_PARTY)],
+            id="Ghana debt service to the World Bank",
+        ),
+        # Each mention is read on its own evidence. No word governs the World Bank, whose
+        # IDS leads the recall, so it is the source. "To" governs the IMF, which the IDS
+        # lists as a creditor, so it is a party. The mixed reading's pass detects its own
+        # text after the probe's two detections.
+        pytest.param(
+            "World Bank debt service from Kenya to the IMF",
+            "Kenya",
+            ["Kenya", "IMF"],
+            "World Bank",
+            False,
+            [("IMF", ORGANISATION_READ_AS_PARTY)],
+            id="World Bank debt service from Kenya to the IMF",
+        ),
+    ],
+)
+def test_the_raw_text_door_reads_each_contested_organisation_on_its_own_evidence(
+    catalogue: CatalogueSnapshot,
+    query: str,
+    place: str,
+    entities: list[str],
+    scoped: str | None,
+    handed: bool,
+    warned: list[tuple[str, str]],
+):
+    """Both probe detections lead with an IDS debt family by creditor. The pipeline is a stub
+    that refuses on every organisation the reading holds as an entity. `scoped` names the
+    source mention whose tables scope the pass, and `handed` whether the pass recalls from a
+    probe detection."""
+    extraction = Extraction(
+        kind="resolution",
+        variables=["debt service"],
+        entities=[ExtractedEntity(text=place, span=place)],
+    )
+    prep = _prep(query, extraction, catalogue)
+    (own_scope,) = prep.per_variable_source_scopes
+    tables = {
+        mention.text: expansion & own_scope.allowed
+        for mention, expansion in zip(own_scope.mentions, own_scope.expansions, strict=True)
+    }
+    detections: list[str] = []
+    ran: list[tuple[list[str], frozenset[str] | None, bool]] = []
+
+    async def detect(_graph: Any, text: str, *, variable: str) -> Detected:
+        detections.append(text)
+        return _detection(
+            text,
+            DetectedSV(
+                dcid=_IDS_BY_CREDITOR, score=0.9, type_of="StatisticalVariable", sentence=None
+            ),
+        )
+
+    async def _pipeline(variable: str, **kwargs: Any) -> RegionResult:
+        scope = kwargs["source_scope"]
+        ran.append(
+            (kwargs["entities"], scope.allowed if scope else None, kwargs["detected"] is not None)
+        )
+        return dataclasses.replace(
+            _refusal(variable, "entity_ambiguous"),
+            ambiguous_entities=tuple(
+                AmbiguousEntity(text=entity, candidates=())
+                for entity in kwargs["entities"]
+                if entity != place
+            ),
+        )
+
+    with patch.object(source_choice, "detect_measure", detect):
+        (region,) = _stream_door(query, prep, catalogue, _pipeline, degrade_on_error=False)
+
+    assert ran == [(entities, tables[scoped] if scoped else None, handed)]
+    assert len(detections) == 2
+    assert [(fact.asked, fact.code) for fact in region.departure_facts.values()] == warned
 
 
 @pytest.mark.parametrize("role", ["party", "source"])
@@ -1183,11 +1354,12 @@ def test_the_probe_detects_the_text_and_scope_the_chosen_pass_recalls(
         ran.append((kwargs["detect_query"], kwargs["source_scope"], kwargs["detected"]))
         return _refusal(variable, "variable_not_resolved")
 
-    async def _read(_contested: Any, **kwargs: Any) -> OrganisationReading:
+    async def _read(_contested: Any, **kwargs: Any) -> OrganisationReadings:
         probed.update(kwargs)
-        return OrganisationReading(role=cast(Any, role), source_possible=True, detected=chosen)
+        reading = OrganisationReading(role=cast(Any, role), source_possible=True)
+        return OrganisationReadings(readings=(reading,), detected=chosen)
 
-    with patch("search.engine.fanout.read_organisation", _read):
+    with patch("search.engine.fanout.read_organisations", _read):
         _stream_door(query, prep, catalogue, _pipeline, degrade_on_error=False)
 
     assert probed["party_text"] == "World Bank core contributions"
@@ -1302,9 +1474,9 @@ def test_a_reading_with_a_series_code_is_judged_on_its_members_with_no_search(
     async def detect(_graph: Any, text: str, *, variable: str) -> Detected:
         raise AssertionError(f"a coded reading searched {text!r}")
 
-    async def read() -> OrganisationReading:
+    async def read() -> OrganisationReadings:
         with bound_catalogue(catalogue), patch.object(source_choice, "detect_measure", detect):
-            return await read_organisation(
+            return await read_organisations(
                 party.contested,
                 party_text="",
                 party_variable="",
@@ -1317,10 +1489,11 @@ def test_a_reading_with_a_series_code_is_judged_on_its_members_with_no_search(
                 graph=cast(Any, FakeGraph()),
             )
 
-    reading = asyncio.run(read())
+    readings = asyncio.run(read())
 
+    (reading,) = readings.readings
     assert (reading.role, reading.source_possible) == (role, source_possible)
-    assert reading.detected is None
+    assert readings.detected is None
 
 
 def test_a_part_with_no_contest_reads_once_with_no_probe(catalogue: CatalogueSnapshot):
@@ -1339,10 +1512,10 @@ def test_a_part_with_no_contest_reads_once_with_no_probe(catalogue: CatalogueSna
         ran.append(kwargs["entities"])
         return _refusal(variable, "variable_not_resolved")
 
-    async def _read(*_args: Any, **_kwargs: Any) -> OrganisationReading:
+    async def _read(*_args: Any, **_kwargs: Any) -> OrganisationReadings:
         raise AssertionError("a part with no contest reads no organisation")
 
-    with patch("search.engine.fanout.read_organisation", _read):
+    with patch("search.engine.fanout.read_organisations", _read):
         (region,) = _stream_door(query, prep, catalogue, _pipeline, degrade_on_error=False)
 
     assert ran == [["Ghana"]]
@@ -1350,7 +1523,7 @@ def test_a_part_with_no_contest_reads_once_with_no_probe(catalogue: CatalogueSna
 
 
 _WORLD_BANK = ContestedOrganisation(
-    words=("World Bank",),
+    words="World Bank",
     parties=frozenset(
         {"InternationalBankForReconstructionAndDevelopment", "InternationalDevelopmentAssociation"}
     ),

@@ -396,8 +396,9 @@ async def recall(
 
     `detected` is a detection already made under the catalogue recall reads through
     (`detect_measure`). Recall takes it in place of searching the graph when it detected the
-    text and variable recall would and recall removes no party word, so a part whose reading was chosen
-    from that detection (`region.source_choice.read_organisation`) searches the graph once.
+    text and variable recall would and recall removes no party word, so a part whose reading
+    was chosen from that detection (`region.source_choice.read_organisations`) searches the
+    graph once.
     """
     detect_query = raw_query or variable
     _pre = pre_resolved or {}

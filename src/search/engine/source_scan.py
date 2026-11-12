@@ -24,7 +24,7 @@ The extraction's entities and measures decide which hits are sources:
   GNI of Denmark", "World Bank core contributions". The scan reads it as a source, and the
   raw-text door also builds the part's reading with the organisation as an entity, which
   scans the query with the organisation among `parties`; before the part's pass the data
-  decide which of the two it runs (`region.source_choice.read_organisation`).
+  decide how it reads each organisation (`region.source_choice.read_organisations`).
 - A hit that names a table (a provenance or Dataset: CRS, WEO, IDS, DAC2a, imputed
   multilateral sectors) is a source wherever it stands. A table gives and receives nothing.
 

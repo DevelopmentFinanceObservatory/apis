@@ -10,7 +10,7 @@ import asyncio
 import dataclasses
 import logging
 import time
-from collections.abc import AsyncGenerator, Collection, Mapping, Sequence
+from collections.abc import AsyncGenerator, Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, get_args
 
@@ -47,7 +47,7 @@ from search.engine.region.source_choice import (
     ContestedOrganisation,
     read_as_party,
     read_as_source,
-    read_organisation,
+    read_organisations,
 )
 from search.engine.region.state import EngineOptions
 from search.engine.role_text import DoorRole, Party, asks_members, role_text_for
@@ -96,12 +96,15 @@ class LegReading:
 
 @dataclass(frozen=True, slots=True)
 class PartyReading:
-    """The reading of a leg with its `contested` organisations as parties to the flow, beside
-    its own, which reads them as its source: `reading` names them as entities and leaves them
-    out of its sources (`raw_text._ExtractionPrep.per_variable_party_readings`)."""
+    """The readings of a leg whose own reading reads its `contested` organisations as its
+    source (`raw_text._ExtractionPrep.per_variable_party_readings`), one per organisation the
+    query names: `reading`, with every one of them as a party to the flow, named as an entity
+    and left out of the leg's sources, and `reading_with`, with those whose words it is given
+    as parties and the rest as sources."""
 
-    contested: ContestedOrganisation
+    contested: tuple[ContestedOrganisation, ...]
     reading: LegReading
+    reading_with: Callable[[frozenset[str]], LegReading]
 
 
 # The directional role axes ParsedPart's role_text-less generic echo cannot
@@ -519,8 +522,9 @@ async def _stream_one_variable(
     (`resolve_variable`). `scope_intake` is the leg's posted scope entries and total
     intent (`resolve_variable`). `party_reading` is the leg's reading with contested
     organisations as parties where its own reads them as its source: before any pass the leg
-    decides which of the two it reads (`source_choice.read_organisation`) and runs that one
-    alone; the answer discloses it and the restatement states it.
+    decides how it reads each organisation (`source_choice.read_organisations`) and runs the
+    one reading that assigns them so; the answer discloses each organisation's reading and
+    the restatement states it.
     """
     track_leg_phase(phase)
     code = _code_text(source_code)
@@ -620,15 +624,16 @@ async def _stream_one_variable(
         )
 
     async def _read() -> tuple[RegionResult, LegReading]:
-        """The leg's answer and the reading it stands on: its own, or, where its own reads
-        contested organisations as its source and the data reads them as parties
-        (`source_choice.read_organisation`), the reading with them as entities. Either
-        answer discloses the reading where its words or data call for it
-        (`source_choice.read_as_source`, `source_choice.read_as_party`)."""
+        """The leg's answer and the reading it stands on: its own, where the data read every
+        contested organisation as its source (`source_choice.read_organisations`), the
+        reading with every one as an entity where they read every one as a party, and else
+        the reading with those they read as parties as entities and the rest as sources.
+        The answer discloses each organisation's reading where its words or data call for
+        it (`source_choice.read_as_source`, `source_choice.read_as_party`)."""
         if party_reading is None:
             return await _run(own), own
         contested = party_reading.contested
-        organisation = await read_organisation(
+        organisations = await read_organisations(
             contested,
             party_text=detect_text(party_reading.reading),
             party_variable=pass_variable(party_reading.reading),
@@ -640,12 +645,26 @@ async def _stream_one_variable(
             source_code=own.source_code,
             graph=graph,
         )
-        # The reading's pass recalls from the detection that chose it, so its text is
-        # searched once (`interpret.recall`).
-        if organisation.role == "source":
-            return read_as_source(await _run(own, organisation.detected), contested), own
-        region = await _run(party_reading.reading, organisation.detected)
-        return read_as_party(region, contested, organisation), party_reading.reading
+        parties = frozenset(
+            organisation.words
+            for organisation, reading in zip(contested, organisations.readings, strict=True)
+            if reading.role == "party"
+        )
+        if not parties:
+            leg = own
+        elif len(parties) == len(contested):
+            leg = party_reading.reading
+        else:
+            leg = party_reading.reading_with(parties)
+        # A uniform reading's pass recalls from the detection that chose it, so its text is
+        # searched once (`interpret.recall`); a mixed one detects its own text.
+        region = await _run(leg, organisations.detected)
+        for organisation, reading in zip(contested, organisations.readings, strict=True):
+            if reading.role == "party":
+                region = read_as_party(region, organisation, reading)
+            else:
+                region = read_as_source(region, organisation)
+        return region, leg
 
     try:
         if sem is not None:
