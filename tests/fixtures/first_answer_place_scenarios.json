@@ -466,7 +466,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -1015,6 +1015,9 @@
         "confidence": null,
         "entity_type": "Country",
         "label": "Norway",
+        "multilateral": false,
+        "party_class": "official",
+        "party_kind": "party",
         "ref": "country/NOR",
         "role": "origin"
        }
@@ -1222,7 +1225,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -1509,7 +1512,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -1919,6 +1922,9 @@
         "confidence": null,
         "entity_type": "Country",
         "label": "Norway",
+        "multilateral": false,
+        "party_class": "official",
+        "party_kind": "party",
         "ref": "country/NOR",
         "role": "origin"
        }
@@ -2134,7 +2140,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -2271,6 +2277,8 @@
         "confidence": null,
         "entity_type": "Country",
         "label": "Ghana",
+        "party_class": "official",
+        "party_kind": "party",
         "ref": "country/GHA",
         "role": "destination"
        },
@@ -2278,6 +2286,9 @@
         "confidence": null,
         "entity_type": "Country",
         "label": "Norway",
+        "multilateral": false,
+        "party_class": "official",
+        "party_kind": "party",
         "ref": "country/NOR",
         "role": "origin"
        }
@@ -2382,7 +2393,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -2806,6 +2817,8 @@
         "confidence": null,
         "entity_type": "Country",
         "label": "Ghana",
+        "party_class": "official",
+        "party_kind": "party",
         "ref": "country/GHA",
         "role": "destination"
        },
@@ -2813,6 +2826,9 @@
         "confidence": null,
         "entity_type": "Country",
         "label": "Norway",
+        "multilateral": false,
+        "party_class": "official",
+        "party_kind": "party",
         "ref": "country/NOR",
         "role": "origin"
        }
@@ -2917,7 +2933,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -3415,6 +3431,8 @@
         "confidence": null,
         "entity_type": "Country",
         "label": "Ghana",
+        "party_class": "official",
+        "party_kind": "party",
         "ref": "country/GHA",
         "role": "destination"
        }
@@ -3519,7 +3537,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -4316,6 +4334,8 @@
         "confidence": null,
         "entity_type": "Country",
         "label": "Ghana",
+        "party_class": "official",
+        "party_kind": "party",
         "ref": "country/GHA",
         "role": "destination"
        }
@@ -4504,7 +4524,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -4796,7 +4816,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -5336,6 +5356,8 @@
         "confidence": null,
         "entity_type": "Country",
         "label": "Ghana",
+        "party_class": "official",
+        "party_kind": "party",
         "ref": "country/GHA",
         "role": "destination"
        },
@@ -5343,6 +5365,9 @@
         "confidence": null,
         "entity_type": "Country",
         "label": "Norway",
+        "multilateral": false,
+        "party_class": "official",
+        "party_kind": "party",
         "ref": "country/NOR",
         "role": "origin"
        }
@@ -5535,7 +5560,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -5851,7 +5876,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -6530,7 +6555,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -6669,6 +6694,8 @@
         "confidence": null,
         "entity_type": "Country",
         "label": "Ghana",
+        "party_class": "official",
+        "party_kind": "party",
         "ref": "country/GHA",
         "role": "destination"
        }
@@ -6857,7 +6884,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -7366,7 +7393,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -7959,7 +7986,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -8605,7 +8632,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -8855,7 +8882,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -9049,7 +9076,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -10005,7 +10032,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -10612,7 +10639,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -11335,7 +11362,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -11585,7 +11612,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -12194,7 +12221,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -12833,7 +12860,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -13585,7 +13612,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -14126,7 +14153,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -14328,7 +14355,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -15034,7 +15061,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -15572,7 +15599,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -16047,7 +16074,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -16509,7 +16536,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -16984,7 +17011,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -17492,7 +17519,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -17954,7 +17981,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -18178,7 +18205,7 @@
       "served_count": 1
      },
      "trace": {
-      "capability_version": "cap_a309a0cb3614eb42",
+      "capability_version": "cap_6b2a98cdba8f7ee0",
       "conversion": null,
       "default_reading": {
        "applied": true,
@@ -19082,7 +19109,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -19312,7 +19339,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -19918,7 +19945,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -20148,7 +20175,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -20687,7 +20714,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -21151,7 +21178,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -21615,7 +21642,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -21788,7 +21815,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -22501,7 +22528,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -23067,7 +23094,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -23680,7 +23707,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -24390,7 +24417,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -24620,7 +24647,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -25350,7 +25377,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -25580,7 +25607,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -26237,7 +26264,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -26965,7 +26992,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -27202,7 +27229,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -27381,7 +27408,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -28303,7 +28330,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -28533,7 +28560,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -29306,7 +29333,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -29536,7 +29563,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -29715,7 +29742,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -30584,7 +30611,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -30787,7 +30814,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -31711,7 +31738,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -32022,7 +32049,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -32743,7 +32770,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -33054,7 +33081,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -33765,7 +33792,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -34507,7 +34534,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -34737,7 +34764,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -35461,7 +35488,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -35691,7 +35718,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -36387,7 +36414,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -36617,7 +36644,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -37092,7 +37119,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -37750,7 +37777,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -38022,7 +38049,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -38684,7 +38711,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -38956,7 +38983,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -40018,7 +40045,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -40290,7 +40317,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -40903,7 +40930,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -41214,7 +41241,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -41838,7 +41865,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
@@ -42068,7 +42095,7 @@
        "served_count": 1
       },
       "trace": {
-       "capability_version": "cap_a309a0cb3614eb42",
+       "capability_version": "cap_6b2a98cdba8f7ee0",
        "conversion": null,
        "default_reading": {
         "applied": true,
