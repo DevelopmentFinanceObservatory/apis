@@ -38,7 +38,7 @@ from statvar_members import (
 from statvar_members.enumerate import _ROLE_PROBE_BUDGET
 from statvar_members.types import FiveTuple
 
-from .conftest import FakeMemberArcReader, FlakyMemberArcReader
+from .conftest import FakeMemberArcReader, FlakyMemberArcReader, SequencedMemberArcReader
 
 _RECIPIENT = ("financingRecipient",)
 _PAIR = ("financingProvider", "financingRecipient")
@@ -693,28 +693,6 @@ def _walk(*role_keys: str, arcs=_DEBT_ARCS, reader=None, open_role_keys: tuple[s
     )
 
 
-class _SequencedReader(FakeMemberArcReader):
-    """Serves `reads[dcid][n]` on the nth forward read of `dcid`, the last one thereafter.
-    Every other dcid, and the reverse query, read `arcs`."""
-
-    def __init__(self, *, arcs, reads: Mapping[str, list[dict[str, tuple[str, ...]] | None]]):
-        super().__init__(arcs=arcs)
-        self._reads = reads
-        self._count: dict[str, int] = {}
-
-    def node_arcs_many(self, dcids, *, properties, individual_probe_budget=None, deadline=None):
-        result = super().node_arcs_many(dcids, properties=properties)
-        for dcid, served in self._reads.items():
-            if dcid in result:
-                position = self._count.get(dcid, 0)
-                self._count[dcid] = position + 1
-                read = served[min(position, len(served) - 1)]
-                result[dcid] = (
-                    None if read is None else {prop: read.get(prop, ()) for prop in properties}
-                )
-        return result
-
-
 def test_the_walk_answers_a_recipient_with_the_plain_total():
     group = _walk("destination")
 
@@ -781,17 +759,31 @@ def test_a_dropped_role_arc_does_not_cost_the_walk_a_covering_member():
 
 
 def test_a_by_creditor_twin_read_only_as_a_root_twin_answers_an_open_creditor():
-    """The twin reads empty on the batch and on the filter re-probe, so the election before
-    the twin pass sees the recipient-only total alone and reads the destination alone. Read
-    as a root twin, the twin covers the open origin and the final election elects it."""
-    arcs = {"Service": _arcs(_RECIPIENT), "Service_ByCreditor": _arcs(_PAIR)}
-    reader = _SequencedReader(
-        arcs=arcs, reads={"Service_ByCreditor": [None, None, arcs["Service_ByCreditor"]]}
+    """The twin's batch read drops `statType`, which the reverse query filtered on, and it
+    sorts past the filter re-probe's budget, behind stubs that read no node, so the election before the twin pass sees the recipient-only
+    total alone and reads the destination alone. Read as a root twin, the twin covers the
+    open origin and the final election elects it."""
+    stubs = [f"Service_A{i:02d}" for i in range(32)]
+    arcs = {
+        "Service": _arcs(_RECIPIENT),
+        "Service_ByCreditor": _arcs(_PAIR),
+        **dict.fromkeys(stubs, _arcs(())),
+    }
+    reader = SequencedMemberArcReader(
+        arcs=arcs,
+        reads={
+            "Service_ByCreditor": [
+                {**arcs["Service_ByCreditor"], "statType": ()},
+                arcs["Service_ByCreditor"],
+            ],
+            **{s: [None] for s in stubs},
+        },
     )
 
     group = _walk("destination", reader=reader, open_role_keys=("origin",))
 
     assert [member.stat_var for member in group.members] == ["Service_ByCreditor"]
+    assert group.stub_candidates == tuple(stubs)
     assert group.undismissed_candidates == ()
 
 
@@ -806,7 +798,7 @@ def test_a_by_creditor_twin_settled_out_leaves_the_total_answering_an_open_credi
         "Service_ByCreditor": _arcs(_PAIR),
     }
     moved = {**arcs["Service_ByCreditor"], "flowType": ("Disbursement",)}
-    reader = _SequencedReader(
+    reader = SequencedMemberArcReader(
         arcs=arcs, reads={"Service_ByCreditor": [arcs["Service_ByCreditor"], moved]}
     )
 
