@@ -129,7 +129,7 @@ curl -fsS "$DFO_API/api/v1/graph/ontology/provenances" \
 
 ## Check StatVar definitions
 
-`POST /api/v1/graph/ontology/check` takes 1 to 2,000 candidate definitions and lists every fault. An empty `findings` list means no row has a fault.
+`POST /api/v1/graph/ontology/check` takes 1 to 2,000 candidate definitions and lists every fault. An empty `findings` list means no row has a fault. The check reads from the graph each id its rows name that the ontology document does not hold, and one request reads at most `caps.max_check_read_ids` (41) of them, from `GET /api/v1/graph/capabilities`. One row always fits. A request past the cap answers `400 request_invalid` with pointer `/rows` before any read: split the rows into smaller requests and send them one after another. Rows naming terms the model already declares read little, so a sheet of known terms fits in large requests.
 
 ```bash
 curl -fsS -X POST "$DFO_API/api/v1/graph/ontology/check" \
@@ -150,6 +150,7 @@ A `resolved` result has an `entity.ref`. `GET /api/v1/graph/node/{ref}` should r
 - `404 not_found` on the node route usually means that the path did not match. Remove any `dcid:` prefix.
 - `400 request_invalid` with `/texts` in the pointer means the request contains an invalid name or exceeds a current request limit. Check `GET /api/v1/graph/capabilities`.
 - `400 request_invalid` on the members route names the fault in its pointer: `/relation` for a list a held node lacks, `/cursor` for a cursor that belongs to another list, `/as_of` for a date asked of a membership that records none.
+- `400 request_invalid` with pointer `/rows` on the check means the rows name more ids to read than `caps.max_check_read_ids`. Send fewer rows per request.
 - `503 service_unavailable` is retryable. Every graph read worker was busy, or the service was still starting.
 
 ## Next

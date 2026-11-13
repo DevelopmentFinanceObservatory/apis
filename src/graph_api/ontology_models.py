@@ -45,17 +45,18 @@ fault `graph_api.ontology_check` finds in it. `OntologyCheckRequest` carries 1 t
 with the generation the rows were checked against, null where its token is unknown, and every
 finding. A row's shape fields, constraint properties and observation properties take the node
 door's dcid syntax (`graph_api.node_models.Dcid`). A constraint value is any string up to the
-same 512-character ceiling, a number, a boolean or null. A row names at most
-`CHECK_MAX_CONSTRAINT_PROPERTIES` constraint properties and `CHECK_MAX_OBSERVATION_PROPERTIES`
-observation properties, and one request reads at most `CHECK_MAX_READ_IDS` distinct ids from
-the graph (`graph_api.ontology_check`).
+same 512-character ceiling, a finite number, a boolean or null, and `ref` takes the same
+ceiling. A row names at most `CHECK_MAX_CONSTRAINT_PROPERTIES` constraint properties and
+`CHECK_MAX_OBSERVATION_PROPERTIES` observation properties, and one request reads at most
+`CHECK_MAX_READ_IDS` distinct ids from the graph (`graph_api.ontology_check`), at least the most
+one row names.
 """
 
 from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, StringConstraints
 
 from dfo_platform.wire import ResponseModel
 from graph_api.node_models import Dcid
@@ -64,18 +65,25 @@ from graph_api.routing import DCID_MAX_LENGTH
 CHECK_MAX_ROWS = 2_000
 """The most rows one `POST /api/graph/ontology/check` request carries."""
 
-CHECK_MAX_CONSTRAINT_PROPERTIES = 32
-"""The most constraint properties one check row names."""
+CHECK_MAX_CONSTRAINT_PROPERTIES = 16
+"""The most constraint properties one check row names: twice the most a StatVar row of the
+served code index carries (7 on the dev graph)."""
 
-CHECK_MAX_OBSERVATION_PROPERTIES = 32
-"""The most observation properties one check row names."""
+CHECK_MAX_OBSERVATION_PROPERTIES = 4
+"""The most observation properties one check row names: twice the most a StatVar row of the
+served code index carries (2 on the dev graph)."""
 
-CHECK_MAX_READ_IDS = 20
-"""The most distinct ids one check request reads from the graph: the ids its rows name that
-the ontology document does not hold and the document cannot decide. An absent id costs about
-0.3 s of reads on the dev graph, so 20 absent ids take about 6 s of the 10 s
-`GRAPH_NODE_TIMEOUT_SECONDS`."""
-
+CHECK_MAX_READ_IDS = 5 + 2 * CHECK_MAX_CONSTRAINT_PROPERTIES + CHECK_MAX_OBSERVATION_PROPERTIES
+"""The most distinct ids one check request may read from the graph, 41: the ids its rows name
+that the ontology document does not hold, counted before any read, each constraint value
+counted unless the value or the document decides it. One row names at most this many (its 5
+shape fields, each constraint property and its value, each observation property), so a single
+row always fits. The check reads them in at most two `node_arcs_batch` calls with
+`confirm_empty`, so the graph sees at most two batches, two group retries of the empty answers
+and one read alone per id the graph does not hold: 4 + 41 requests. On the dev graph, 41 absent ids read in one batch and then alone took 9.2 to 10.2 s, about 0.25 s an id
+after a batch of 0.6 to 1.3 s, and a row naming 41 ids the graph does not hold, read in the
+route's two rounds, took 5.2 to 8.8 s. The worst case, about 10 s, a third of the 30 s
+`GRAPH_ONTOLOGY_CHECK_TIMEOUT_SECONDS`, is too long for the 10 s `GRAPH_NODE_TIMEOUT_SECONDS`."""
 DeclaredBy = Literal["instance", "base"]
 """Who declares a node: `"base"` when every declaring provenance is a base Data Commons one."""
 
@@ -222,10 +230,11 @@ class OntologyProvenances(ResponseModel):
 
 
 type ConstraintValue = (
-    Annotated[str, StringConstraints(max_length=DCID_MAX_LENGTH)] | int | float | bool | None
+    Annotated[str, StringConstraints(max_length=DCID_MAX_LENGTH)] | int | FiniteFloat | bool | None
 )
 """A constraint value as sent: a node dcid, or a literal or null the check refuses. A string
-takes the 512-character dcid ceiling."""
+takes the 512-character dcid ceiling, and a number must be finite: `NaN`, `Infinity` and a
+number past the float range are refused."""
 
 FindingCode = Literal[
     "node_not_held",
@@ -245,11 +254,12 @@ or a string outside dcid syntax.
 `node_provisional`: a constraint value's node has only the type `ProvisionalNode`.
 `node_untyped`: a constraint value's node has no `typeOf`. `value_missing`: a constraint property has a null value. `not_a_property`: a constraint
 property, the measured property or an observation property is not typed `Property`.
-`not_a_class`: the population type is not typed `Class`. `value_outside_range`: no type of the
-value reaches the instance property's `rangeIncludes` by `subClassOf`, or the value is outside
-the document while every `rangeIncludes` class is an enumeration the document lists in full.
-`property_outside_domain`: the population type reaches none of the instance property's
-`domainIncludes` by `subClassOf`. `definition_differs`: the code index serves the row's dcid
+`not_a_class`: the population type is not typed `Class`. `value_outside_range`: every type of
+the value is a document node and none reaches the instance property's `rangeIncludes` by
+`subClassOf`, or the value is outside the document while the document lists every instance of
+every `rangeIncludes` class. `property_outside_domain`: the population type is a document node
+that reaches none of the instance property's `domainIncludes` by `subClassOf`. A constraint
+value whose property is not a held Property gets no finding of its own. `definition_differs`: the code index serves the row's dcid
 with another value in that field; `value` is the served value.
 """
 
@@ -259,7 +269,11 @@ class OntologyCheckRow(BaseModel):
 
     model_config = ConfigDict(extra="forbid", title="GraphOntologyCheckRow")
 
-    ref: str | None = Field(default=None, description="the caller's label, echoed on findings")
+    ref: str | None = Field(
+        default=None,
+        max_length=DCID_MAX_LENGTH,
+        description="the caller's label, echoed on findings; at most 512 characters",
+    )
     dcid: Dcid | None = Field(
         default=None,
         description="the StatVar's dcid; when the code index serves it, the row is compared",

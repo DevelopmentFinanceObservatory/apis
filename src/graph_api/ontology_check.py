@@ -1,27 +1,40 @@
 """Check candidate StatisticalVariable definitions against the instance's ontology.
 
 `OntologyLookup` holds the ontology document's nodes as the check reads them, built once per
-document. `check_rows` answers each node a row names from it and reads the nodes the document
-does not hold. A read is `node_arcs_batch`, every out-arc of each node, one batch per level of
-`subClassOf` ancestry; a node a batch of several answers with no arc is read again alone. A
-node held with any out-arc is held, its types its `typeOf` values, so a held node with no
-`typeOf` is untyped; a node read alone with no out-arc is not held. A read error propagates, so
-no node is reported absent because a read failed.
+document. `check_rows` answers each node a row names from it and reads every other named id
+once, through `node_arcs_batch` with `confirm_empty`, which reads each id a batch answers empty
+again alone, so an empty answer means the graph does not hold it. A node held with any out-arc
+is held, its types its `typeOf` values, so a held node with no `typeOf` is untyped. A read
+error propagates, so no node is reported absent because a read failed. The check reads no
+ancestry.
+
+The reads come in two rounds. The first reads the shape fields, the constraint properties and
+the observation properties the document does not hold, and the values of constraint properties
+the document holds as Properties. The second reads the values of constraint properties the
+first round found held as Properties. A constraint value whose property is not a held Property
+is never read and gets no finding of its own: the property's finding marks the cell. Each
+round is one `node_arcs_batch` call, so a request makes at most two; inside each, the client
+sends one batch, one group retry of the empty answers and one read alone per id still empty.
 
 Some constraint values need no read. A value that is a number, a boolean, or a string outside
 dcid syntax names no node: `node_not_held`. A value outside the document, on an instance
-property whose every `rangeIncludes` class is an instance-declared enumeration the document
-lists in full, is no member of any of them: `value_outside_range`. Every other id outside the
-document is read, and a request whose rows name more than `CHECK_MAX_READ_IDS` distinct such
-ids raises `OntologyCheckTooManyReads` before any read.
+property whose range the document decides (`OntologyLookup.decides`), is no member of the
+range: `value_outside_range`. Every other id outside the document is read. The ids a request
+could read are counted before any read, every value under a property outside the document
+included, and a request naming more than `CHECK_MAX_READ_IDS` raises
+`OntologyCheckTooManyReads`. One row names at most `CHECK_MAX_READ_IDS` ids, so a single row
+always fits.
 
 Every row gets existence and kind checks. A constraint value must name a resolved node, by
 `code_index.constraint_values.constraint_value_fault`, the test the code index export refuses
 a release on. Range and domain rules apply only to a property the document declares
-`declared_by == "instance"`: a value is inside the range when one of its types reaches a
-`rangeIncludes` class by `subClassOf`, and a property is inside its domain when the row's
-population type reaches a `domainIncludes` class the same way. A property with no
-`rangeIncludes` or no `domainIncludes` admits anything. The domain rule covers the measured
+`declared_by == "instance"`, and judge only through the document, which holds every
+`subClassOf` ancestor of each class it holds. A value is outside the range when every one of
+its types is a document node and none reaches a `rangeIncludes` class by `subClassOf`; a value
+with any type outside the document gets no range finding. A property is outside its domain
+when the row's population type is a document node that reaches no `domainIncludes` class by
+`subClassOf`; a population type outside the document gets no domain finding. A property with
+no `rangeIncludes` or no `domainIncludes` admits anything. The domain rule covers the measured
 property and the constraint properties, and is skipped when the row names no population type.
 A row whose `dcid` the code index serves is compared with the served definition field by field.
 """
@@ -29,7 +42,7 @@ A row whose `dcid` the code index serves is compared with the served definition 
 from __future__ import annotations
 
 import re
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Final
@@ -85,11 +98,12 @@ class _Node:
 
 @dataclass(frozen=True)
 class OntologyLookup:
-    """The ontology document's nodes as the check reads them, and the instance-declared
-    enumerations the document lists in full."""
+    """The ontology document's nodes as the check reads them, and the classes whose instances
+    the document lists in full: instance-declared enumerations listed in full whose every
+    enumeration below them in the document by `subClassOf` is one too."""
 
     nodes: Mapping[str, _Node]
-    full_enumerations: frozenset[str]
+    listed_in_full: frozenset[str]
 
     @classmethod
     def of(cls, document: OntologyDocument) -> OntologyLookup:
@@ -103,25 +117,46 @@ class OntologyLookup:
             )
             for node in document.nodes
         }
-        full = frozenset(
+        enumerations = [node for node in document.nodes if node.enumeration is not None]
+        full = {
             node.dcid
-            for node in document.nodes
+            for node in enumerations
             if node.declared_by == "instance"
             and node.enumeration is not None
             and not node.enumeration.truncated
-        )
-        return cls(nodes=MappingProxyType(nodes), full_enumerations=full)
+        }
+        for node in enumerations:
+            if node.dcid not in full:
+                full -= _ancestry(nodes, [node.dcid])
+        return cls(nodes=MappingProxyType(nodes), listed_in_full=frozenset(full))
 
     def decides(self, prop: str) -> bool:
         """Whether a value outside the document is outside `prop`'s range with no read: `prop`
-        is an instance property whose every `rangeIncludes` class is an enumeration the
-        document lists in full."""
+        is an instance property whose every `rangeIncludes` class the document lists in full,
+        with every enumeration below it."""
         node = self.nodes.get(prop)
         return (
             node is not None
             and _ranged(node)
-            and all(target in self.full_enumerations for target in node.range)
+            and all(target in self.listed_in_full for target in node.range)
         )
+
+    def ancestry(self, dcids: Iterable[str]) -> set[str]:
+        """`dcids` and every `subClassOf` ancestor of them the document holds."""
+        return _ancestry(self.nodes, dcids)
+
+
+def _ancestry(nodes: Mapping[str, _Node], dcids: Iterable[str]) -> set[str]:
+    seen: set[str] = set()
+    stack = list(dcids)
+    while stack:
+        dcid = stack.pop()
+        if dcid in seen:
+            continue
+        seen.add(dcid)
+        if (node := nodes.get(dcid)) is not None:
+            stack.extend(node.parents)
+    return seen
 
 
 class _Nodes:
@@ -137,49 +172,19 @@ class _Nodes:
         return dcid in self._lookup.nodes or dcid in self._read
 
     def read(self, dcids: Iterable[str]) -> None:
-        """Read in one batch every one of `dcids` not yet known, and again alone each one a
-        batch of several answers with no arc."""
+        """Read every one of `dcids` not yet known in one `node_arcs_batch` call that confirms
+        each empty answer alone."""
         unknown = sorted({dcid for dcid in dcids if not self.known(dcid)})
         if not unknown:
             return
-        arcs = dict(self._reader.node_arcs_batch(unknown, deadline=self._deadline))
-        if len(unknown) > 1:
-            for dcid in [dcid for dcid in unknown if arcs.get(dcid) is None]:
-                arcs.update(self._reader.node_arcs_batch([dcid], deadline=self._deadline))
+        arcs = self._reader.node_arcs_batch(unknown, confirm_empty=True, deadline=self._deadline)
         for dcid in unknown:
             self._read[dcid] = _held(arcs.get(dcid))
-
-    def read_ancestry(self, roots: Collection[str]) -> None:
-        """Read `roots` and their `subClassOf` ancestors, one batch per level."""
-        seen: set[str] = set()
-        level = set(roots)
-        while level:
-            self.read(level)
-            seen |= level
-            level = {
-                parent
-                for dcid in level
-                if (node := self.get(dcid)) is not None
-                for parent in node.parents
-            } - seen
 
     def get(self, dcid: str) -> _Node | None:
         if (node := self._lookup.nodes.get(dcid)) is not None:
             return node
         return self._read[dcid]
-
-    def ancestry(self, dcids: Iterable[str]) -> set[str]:
-        """`dcids` and every `subClassOf` ancestor of them, over the nodes known."""
-        seen: set[str] = set()
-        stack = list(dcids)
-        while stack:
-            dcid = stack.pop()
-            if dcid in seen:
-                continue
-            seen.add(dcid)
-            if self.known(dcid) and (node := self.get(dcid)) is not None:
-                stack.extend(node.parents)
-        return seen
 
 
 def _held(arcs: Mapping[str, object] | None) -> _Node | None:
@@ -223,19 +228,27 @@ def check_rows(
         GraphReadError: a read failed.
     """
     nodes = _Nodes(lookup, reader=reader, deadline=deadline)
-    to_read = {dcid for row in rows for dcid in _named(row, lookup) if not nodes.known(dcid)}
+    first: set[str] = set()
+    pending: dict[str, set[str]] = {}
+    for row in rows:
+        first.update(_named(row))
+        for prop, value in row.constraint_properties.items():
+            if (read := _read_value(prop, value, lookup)) is None:
+                continue
+            if prop in lookup.nodes:
+                first.add(read)
+            else:
+                pending.setdefault(prop, set()).add(read)
+    to_read = {dcid for dcid in first.union(*pending.values()) if not nodes.known(dcid)}
     if len(to_read) > CHECK_MAX_READ_IDS:
         raise OntologyCheckTooManyReads(len(to_read))
-    nodes.read(to_read)
-    roots: set[str] = set()
-    for row in rows:
-        if row.population_type is not None:
-            roots.add(row.population_type)
-        for prop, value in row.constraint_properties.items():
-            read = _read_value(prop, value, lookup)
-            if read is not None and _ranged(nodes.get(prop)):
-                roots.update(_types(nodes.get(read)))
-    nodes.read_ancestry(roots)
+    nodes.read(first)
+    nodes.read(
+        value
+        for prop, values in pending.items()
+        if _is_property(nodes.get(prop))
+        for value in values
+    )
 
     findings: list[OntologyFinding] = []
     for row in rows:
@@ -251,31 +264,39 @@ def _is_dcid(value: ConstraintValue) -> bool:
 
 
 def _read_value(prop: str, value: ConstraintValue, lookup: OntologyLookup) -> str | None:
-    """`value` when the check answers it from a node, `None` when the value alone decides."""
+    """`value` when the check answers it from a node, `None` when the value or the property
+    alone decides: a literal, a value under a document node that is no Property, or a value
+    outside the document whose range the document decides."""
     if not isinstance(value, str) or not _is_dcid(value):
+        return None
+    if prop in lookup.nodes and not _is_property(lookup.nodes[prop]):
         return None
     if value not in lookup.nodes and lookup.decides(prop):
         return None
     return value
 
 
-def _named(row: OntologyCheckRow, lookup: OntologyLookup) -> list[str]:
-    """Every node id the check answers the row from."""
+def _named(row: OntologyCheckRow) -> list[str]:
+    """Every node id the row names other than its constraint values."""
     named = [value for field in _SHAPE_FIELDS if (value := getattr(row, field)) is not None]
-    for prop, value in row.constraint_properties.items():
-        named.append(prop)
-        if (read := _read_value(prop, value, lookup)) is not None:
-            named.append(read)
+    named.extend(row.constraint_properties)
     named.extend(row.observation_properties)
     return named
 
 
-def _types(node: _Node | None) -> frozenset[str]:
-    return frozenset() if node is None else node.types
+def _is_property(node: _Node | None) -> bool:
+    return node is not None and _PROPERTY in node.types
 
 
 def _ranged(node: _Node | None) -> bool:
-    return node is not None and node.instance and _PROPERTY in node.types and bool(node.range)
+    return node is not None and node.instance and _is_property(node) and bool(node.range)
+
+
+def _outside_range(value: _Node, prop: _Node, lookup: OntologyLookup) -> bool:
+    """Every type of `value` is a document node and none reaches `prop`'s range."""
+    if not value.types or any(dcid not in lookup.nodes for dcid in value.types):
+        return False
+    return lookup.ancestry(value.types).isdisjoint(prop.range)
 
 
 def _check_row(
@@ -296,22 +317,26 @@ def _check_row(
             find("population_type", row.population_type, "node_not_held")
         elif _CLASS not in held.types:
             find("population_type", row.population_type, "not_a_class")
-        else:
-            population = nodes.ancestry([row.population_type])
+        elif row.population_type in lookup.nodes:
+            population = lookup.ancestry([row.population_type])
 
-    def check_property(field: str, prop: str) -> None:
+    def check_property(field: str, prop: str) -> bool:
+        """Find the property's faults; whether it is a held Property."""
         held = nodes.get(prop)
         if held is None:
             find(field, prop, "node_not_held")
-        elif _PROPERTY not in held.types:
+            return False
+        if not _is_property(held):
             find(field, prop, "not_a_property")
-        elif (
+            return False
+        if (
             population is not None
             and held.instance
             and held.domain
             and population.isdisjoint(held.domain)
         ):
             find(field, prop, "property_outside_domain")
+        return True
 
     check_property("measured_property", row.measured_property)
     for field in ("stat_type", "measurement_qualifier", "measurement_denominator"):
@@ -321,7 +346,8 @@ def _check_row(
 
     for prop, value in sorted(row.constraint_properties.items()):
         field = f"{_CONSTRAINT}.{prop}"
-        check_property(field, prop)
+        if not check_property(field, prop):
+            continue
         if value is None:
             find(field, value, "value_missing")
             continue
@@ -341,9 +367,10 @@ def _check_row(
         elif fault == "provisional":
             find(field, value, "node_provisional")
         elif (
-            (prop_node := nodes.get(prop)) is not None
-            and _ranged(prop_node)
-            and nodes.ancestry(_types(held_value)).isdisjoint(prop_node.range)
+            held_value is not None
+            and _ranged(prop_node := nodes.get(prop))
+            and prop_node is not None
+            and _outside_range(held_value, prop_node, lookup)
         ):
             find(field, value, "value_outside_range")
 
@@ -351,7 +378,7 @@ def _check_row(
         held = nodes.get(prop)
         if held is None:
             find(_OBSERVATION, prop, "node_not_held")
-        elif _PROPERTY not in held.types:
+        elif not _is_property(held):
             find(_OBSERVATION, prop, "not_a_property")
     return findings
 

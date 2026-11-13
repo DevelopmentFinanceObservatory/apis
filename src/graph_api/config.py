@@ -30,6 +30,10 @@ class _GraphDefaults(BaseSettings):
     # Bounds the client's wait for one `node_arcs_many` call.
     node_timeout_seconds: int = Field(default=10, ge=1)
 
+    # Deadline of `POST /api/graph/ontology/check`: its wait for the ontology build and its
+    # reads of up to `CHECK_MAX_READ_IDS` ids, each absent one read alone.
+    ontology_check_timeout_seconds: int = Field(default=30, ge=1)
+
     # Most source documents the documentation route keeps in its cache at once.
     provenance_doc_cache_size: int = Field(default=512, ge=1)
 
@@ -48,6 +52,7 @@ except ValidationError as exc:
 GRAPH_NODE_POOL_SIZE: int = _defaults.node_pool_size
 GRAPH_RESOLVE_TIMEOUT_SECONDS: int = _defaults.resolve_timeout_seconds
 GRAPH_NODE_TIMEOUT_SECONDS: int = _defaults.node_timeout_seconds
+GRAPH_ONTOLOGY_CHECK_TIMEOUT_SECONDS: int = _defaults.ontology_check_timeout_seconds
 GRAPH_PROVENANCE_DOC_CACHE_SIZE: int = _defaults.provenance_doc_cache_size
 GRAPH_NODE_ENTRY_CACHE_SIZE: int = _defaults.node_entry_cache_size
 GRAPH_SDMX_TIMEOUT_SECONDS: int = _defaults.sdmx_timeout_seconds

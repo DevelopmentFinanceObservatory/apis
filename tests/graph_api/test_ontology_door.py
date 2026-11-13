@@ -311,10 +311,10 @@ class _FailingCheckReader(FakeGraphNodeReader):
         super().__init__(nodes=_NODES, arc_subjects=_ARC_SUBJECTS, arc_targets=_ARC_TARGETS)
         self._error = error
 
-    def node_arcs_batch(self, dcids, *, deadline=None):
+    def node_arcs_batch(self, dcids, *, confirm_empty=False, deadline=None):
         if "BrokenCode" in dcids:
             raise self._error
-        return super().node_arcs_batch(dcids, deadline=deadline)
+        return super().node_arcs_batch(dcids, confirm_empty=confirm_empty, deadline=deadline)
 
 
 class TestCheck:
@@ -388,13 +388,30 @@ class TestCheck:
                 {"rows": [_check_row("x" * (DCID_MAX_LENGTH + 1))]},
                 id="constraint-value-past-the-dcid-ceiling",
             ),
+            pytest.param(
+                {"rows": [{**_check_row("CRSPurposeCode120"), "ref": "r" * (DCID_MAX_LENGTH + 1)}]},
+                id="ref-past-the-dcid-ceiling",
+            ),
+            *(
+                pytest.param(
+                    '{"rows": [{"measured_property": "crsPurpose", '
+                    f'"constraint_properties": {{"crsPurpose": {literal}}}}}]}}',
+                    id=f"constraint-value-{literal}",
+                )
+                for literal in ("NaN", "Infinity", "-Infinity", "1e400")
+            ),
         ],
     )
     def test_a_body_outside_the_request_model_is_refused_before_any_read(self, generation, body):
         graph = _graph()
 
         with make_client(graph=graph) as client:
-            response = client.post(_CHECK, json=body)
+            if isinstance(body, str):
+                response = client.post(
+                    _CHECK, content=body, headers={"content-type": "application/json"}
+                )
+            else:
+                response = client.post(_CHECK, json=body)
 
         assert response.status_code == 400, response.text
         assert response.json()["code"] == "request_invalid"
@@ -411,10 +428,32 @@ class TestCheck:
 
         assert response.status_code == 400, response.text
         assert response.json()["code"] == "request_invalid"
+        assert response.json()["pointer"] == "/rows"
         assert response.json()["retryable"] is False
-        assert f"{CHECK_MAX_READ_IDS + 1} distinct ids" in response.json()["detail"]
-        assert f"cap of {CHECK_MAX_READ_IDS}" in response.json()["detail"]
         assert graph.calls["node_arcs_batch"] == 0
+
+    def test_a_single_row_naming_the_most_ids_a_row_can_name_is_checked(self, generation):
+        graph = _graph()
+        row = {
+            "population_type": "NoSuchClass",
+            "measured_property": "noSuchMeasured",
+            "stat_type": "noSuchStatType",
+            "measurement_qualifier": "noSuchQualifier",
+            "measurement_denominator": "noSuchDenominator",
+            "constraint_properties": {
+                f"noSuchProperty{i}": f"NoSuchValue{i}"
+                for i in range(CHECK_MAX_CONSTRAINT_PROPERTIES)
+            },
+            "observation_properties": [
+                f"noSuchObservation{i}" for i in range(CHECK_MAX_OBSERVATION_PROPERTIES)
+            ],
+        }
+
+        with make_client(graph=graph) as client:
+            response = client.post(_CHECK, json={"rows": [row]})
+
+        assert response.status_code == 200, response.text
+        assert {finding["code"] for finding in response.json()["findings"]} == {"node_not_held"}
 
     def test_the_check_compares_against_the_code_index_its_build_read(
         self, generation, monkeypatch: pytest.MonkeyPatch
@@ -477,7 +516,7 @@ class TestCheck:
     def test_a_build_slower_than_the_request_answers_503_with_retry_after(
         self, generation, monkeypatch: pytest.MonkeyPatch
     ):
-        monkeypatch.setattr(ontology_door, "GRAPH_NODE_TIMEOUT_SECONDS", 0.2)
+        monkeypatch.setattr(ontology_door, "GRAPH_ONTOLOGY_CHECK_TIMEOUT_SECONDS", 0.2)
         graph = _BlockingReader()
 
         with make_client(graph=graph) as client:

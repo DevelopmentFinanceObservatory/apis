@@ -37,6 +37,7 @@ from graph_api.ontology_models import (
     CHECK_MAX_CONSTRAINT_PROPERTIES,
     CHECK_MAX_OBSERVATION_PROPERTIES,
     CHECK_MAX_READ_IDS,
+    CHECK_MAX_ROWS,
 )
 from graph_api.resolve_models import RESOLVE_KINDS
 from graph_api.routing import DCID_MAX_LENGTH
@@ -66,14 +67,17 @@ class CapabilityCaps(BaseModel):
     max_node_batch_dcids: int = Field(
         description="the most dcids one POST /api/graph/nodes request names; a longer list is refused 400 request_invalid"
     )
+    max_check_rows: int = Field(
+        description="the most rows one POST /api/graph/ontology/check request carries; a request with more is refused 400 request_invalid"
+    )
     max_check_constraint_properties: int = Field(
-        description="the most constraint properties one POST /api/graph/ontology/check row names; a row with more is refused 400 request_invalid"
+        description="the most entries in one POST /api/graph/ontology/check row's constraint_properties; a row with more is refused 400 request_invalid"
     )
     max_check_observation_properties: int = Field(
-        description="the most observation properties one POST /api/graph/ontology/check row names; a row with more is refused 400 request_invalid"
+        description="the most entries in one POST /api/graph/ontology/check row's observation_properties; a row with more is refused 400 request_invalid"
     )
     max_check_read_ids: int = Field(
-        description="the most distinct ids one POST /api/graph/ontology/check request reads from the graph: the ids its rows name that the ontology document neither holds nor decides; a request naming more is refused 400 request_invalid before any read"
+        description="the most distinct ids one POST /api/graph/ontology/check request may read from the graph, counted over all its rows before any read: each shape field, constraint property, observation property and constraint value that the ontology document does not hold, less the constraint values the value or the document decides; at least the most one row can name, so one row always fits; a request counting more is refused 400 request_invalid before any read"
     )
 
 
@@ -183,6 +187,7 @@ def build_capabilities(
             node_timeout_seconds=GRAPH_NODE_TIMEOUT_SECONDS,
             max_dcid_chars=DCID_MAX_LENGTH,
             max_node_batch_dcids=NODES_MAX_DCIDS,
+            max_check_rows=CHECK_MAX_ROWS,
             max_check_constraint_properties=CHECK_MAX_CONSTRAINT_PROPERTIES,
             max_check_observation_properties=CHECK_MAX_OBSERVATION_PROPERTIES,
             max_check_read_ids=CHECK_MAX_READ_IDS,

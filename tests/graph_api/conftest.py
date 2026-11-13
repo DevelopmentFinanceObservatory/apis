@@ -104,7 +104,7 @@ class FakeGraphNodeReader:
         return result
 
     def node_arcs_batch(
-        self, dcids: list[str], *, deadline: float | None = None
+        self, dcids: list[str], *, confirm_empty: bool = False, deadline: float | None = None
     ) -> dict[str, dict | None]:
         self.calls["node_arcs_batch"] += 1
         result: dict[str, dict | None] = {}

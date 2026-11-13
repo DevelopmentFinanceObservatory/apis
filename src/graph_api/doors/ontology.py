@@ -28,15 +28,17 @@ and a gzip representation, honouring `If-None-Match` with 304
 answers every fault `graph_api.ontology_check.check_rows` finds in them, with the generation
 of the build it checked against. The entry keeps, beside its frozen bodies, the build's
 `OntologyLookup`, built once per entry, and the code index the build read, so the check
-compares served definitions against the index the build read. The check waits on the same
-flight as the GET routes and answers their 503 and 504 the same way. The check's own reads, of
-ids the document does not hold, run as one job on the DCP-read executor under the deadline the
-wait used; a saturated executor, a read past the deadline or a failed read answers as the GET
-routes answer it, with no findings. A body outside the request model is refused 400
-`request_invalid`: `rows` empty or longer than `CHECK_MAX_ROWS`, a row past
-`CHECK_MAX_CONSTRAINT_PROPERTIES` or `CHECK_MAX_OBSERVATION_PROPERTIES`, or a constraint value
-string past 512 characters. Rows naming more than `CHECK_MAX_READ_IDS` ids to read are refused
-the same way before any read, with the count and the cap in `detail`.
+compares served definitions against the index the build read. The check's deadline is
+`GRAPH_ONTOLOGY_CHECK_TIMEOUT_SECONDS` from its start. It waits on the same flight as the GET
+routes until that deadline and answers their 503 and 504 the same way. The check's own reads,
+of at most `CHECK_MAX_READ_IDS` ids the document does not hold, run as one job on the DCP-read
+executor under the same deadline; a saturated executor, a read past the deadline or a failed
+read answers as the GET routes answer it, with no findings. A body outside the request model
+is refused 400 `request_invalid`: `rows` empty or longer than `CHECK_MAX_ROWS`, a row past
+`CHECK_MAX_CONSTRAINT_PROPERTIES` or `CHECK_MAX_OBSERVATION_PROPERTIES`, a `ref` or a constraint
+value string past 512 characters, or a constraint value that is no finite number. Rows naming
+more than `CHECK_MAX_READ_IDS` ids to read are refused the same way before any read, with
+pointer `/rows`.
 
 `GET /api/graph/ontology/provenances` serves `OntologyProvenances`, built by
 `graph_api.ontology_provenances.build_provenances` from the bound code index and the served
@@ -64,7 +66,11 @@ from dfo_platform.doors import DoorContribution
 from dfo_platform.refusal import TIMEOUT_DEFAULT
 from dfo_platform.single_flight_cache import SingleFlightCache, WaitTimeout
 from dfo_platform.static_response import FrozenJSON, freeze_public_json
-from graph_api.config import GRAPH_NODE_TIMEOUT_SECONDS, ONTOLOGY_FLIGHT_TIMEOUT_SECONDS
+from graph_api.config import (
+    GRAPH_NODE_TIMEOUT_SECONDS,
+    GRAPH_ONTOLOGY_CHECK_TIMEOUT_SECONDS,
+    ONTOLOGY_FLIGHT_TIMEOUT_SECONDS,
+)
 from graph_api.deps import GraphDeps, GraphDepsDep, log_queue_wait, run_dcp_read
 from graph_api.ontology_check import OntologyCheckTooManyReads, OntologyLookup, check_rows
 from graph_api.ontology_document import (
@@ -164,8 +170,9 @@ def _freeze(model: OntologyDocument | OntologyTerms | OntologyProvenances) -> Fr
     return freeze_public_json(_sorted_keys(model.model_dump(mode="json")), max_age=_MAX_AGE_SECONDS)
 
 
-def _request_deadline() -> float:
-    return time.monotonic() + GRAPH_NODE_TIMEOUT_SECONDS
+def _request_deadline(seconds: float | None = None) -> float:
+    """`seconds` from now, `GRAPH_NODE_TIMEOUT_SECONDS` when `None`."""
+    return time.monotonic() + (GRAPH_NODE_TIMEOUT_SECONDS if seconds is None else seconds)
 
 
 async def _frozen_ontology(deps: GraphDeps, *, deadline: float) -> FrozenOntology:
@@ -316,7 +323,7 @@ async def get_ontology_terms(deps: GraphDepsDep, request: Request) -> Response:
 
 
 async def check_ontology(deps: GraphDepsDep, body: OntologyCheckRequest) -> JSONResponse:
-    deadline = _request_deadline()
+    deadline = _request_deadline(GRAPH_ONTOLOGY_CHECK_TIMEOUT_SECONDS)
     frozen = await _frozen_ontology(deps, deadline=deadline)
     try:
         findings = await run_dcp_read(

@@ -41,10 +41,11 @@ class GraphNodeReader(Protocol):
         ...
 
     def node_arcs_batch(
-        self, dcids: list[str], *, deadline: float | None = None
+        self, dcids: list[str], *, confirm_empty: bool = False, deadline: float | None = None
     ) -> Mapping[str, dict | None]:
         """Each dcid's `->*` arcs as the graph sends them, `None` for a node answered with no
-        out-arc. An empty answer is trusted only for a dcid read alone."""
+        out-arc. An empty answer is trusted only for a dcid read alone; `confirm_empty` reads
+        each empty answer of a batch again alone, so every `None` is trusted."""
         ...
 
     def child_places_batch(

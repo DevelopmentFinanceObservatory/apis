@@ -21,6 +21,7 @@ from graph_api.ontology_models import (
     CHECK_MAX_CONSTRAINT_PROPERTIES,
     CHECK_MAX_OBSERVATION_PROPERTIES,
     CHECK_MAX_READ_IDS,
+    CHECK_MAX_ROWS,
 )
 from graph_api.routing import DCID_MAX_LENGTH
 from graph_api.version import GRAPH_CAPABILITY_VERSION
@@ -96,6 +97,7 @@ class TestEndpoint:
             "node_timeout_seconds": GRAPH_NODE_TIMEOUT_SECONDS,
             "max_dcid_chars": DCID_MAX_LENGTH,
             "max_node_batch_dcids": NODES_MAX_DCIDS,
+            "max_check_rows": CHECK_MAX_ROWS,
             "max_check_constraint_properties": CHECK_MAX_CONSTRAINT_PROPERTIES,
             "max_check_observation_properties": CHECK_MAX_OBSERVATION_PROPERTIES,
             "max_check_read_ids": CHECK_MAX_READ_IDS,
