@@ -631,6 +631,42 @@
   },
   {
     "has_description": false,
+    "method": "GET",
+    "name": "get_ontology",
+    "operation_id": "graph_get_ontology",
+    "path": "/api/graph/ontology",
+    "summary": "Get Ontology",
+    "surface": "graph"
+  },
+  {
+    "has_description": false,
+    "method": "POST",
+    "name": "check_ontology",
+    "operation_id": "graph_check_ontology",
+    "path": "/api/graph/ontology/check",
+    "summary": "Check Ontology",
+    "surface": "graph"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "get_ontology_provenances",
+    "operation_id": "graph_get_ontology_provenances",
+    "path": "/api/graph/ontology/provenances",
+    "summary": "Get Ontology Provenances",
+    "surface": "graph"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "get_ontology_terms",
+    "operation_id": "graph_get_ontology_terms",
+    "path": "/api/graph/ontology/terms",
+    "summary": "Get Ontology Terms",
+    "surface": "graph"
+  },
+  {
+    "has_description": false,
     "method": "POST",
     "name": "resolve",
     "operation_id": "graph_resolve",

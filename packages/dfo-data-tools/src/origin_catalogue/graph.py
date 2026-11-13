@@ -67,6 +67,8 @@ import httpx
 from dc_graph import (
     DEFAULT_FACET_ARCS,
     UNRESOLVED_NODE,
+    ArcSubject,
+    ArcSubjectPage,
     ArcTarget,
     CapErrorFactory,
     Facet,
@@ -414,6 +416,14 @@ class UnAvailabilityClient(Protocol):
     def close(self) -> None: ...
 
 
+def _subject_arcs(
+    dcid: str, property: str, filters: Mapping[str, str] | None
+) -> list[tuple[str, str]]:
+    """Every `(property, value)` arc a reverse read carries: the lead under `property`, then
+    each filter."""
+    return [(property, dcid), *(filters or {}).items()]
+
+
 class OriginGraphClient:
     """Routes reads between our mixer (`ours`) and the UN deployment (`un`)
     and admits every facet against the request's catalogue. Each backend
@@ -629,14 +639,36 @@ class OriginGraphClient:
         that also names a node only our graph holds matches no subject on either graph and
         returns the UN deployment's empty page."""
         catalogue = current_catalogue()
-        arcs = [(property, dcid), *(filters or {}).items()]
+        arcs = _subject_arcs(dcid, property, filters)
         held = _table_subjects(catalogue, arcs, max_results=max_results)
         if not isinstance(held, _Unmirrored):
             return held
-        backend = self._backend(catalogue, *(name for arc in arcs for name in arc))
+        backend = self._subjects_backend(catalogue, arcs)
         if backend is None:
             return SubjectPage(dcids=(), truncated=False)
         return backend.node_subjects(
+            dcid, property=property, filters=filters, max_results=max_results, deadline=deadline
+        )
+
+    def node_arc_subjects(
+        self,
+        dcid: str,
+        *,
+        property: str,
+        filters: Mapping[str, str] | None = None,
+        max_results: int,
+        deadline: float | None = None,
+    ) -> ArcSubjectPage:
+        """`node_subjects` with each subject's name, types and declaring provenances, routed
+        on every name the read carries as `node_subjects` routes a read its tables do not
+        answer. The catalogue's tables carry no subject names or provenances, so every read is
+        live, and one that needs the UN deployment with the UN off returns an empty page."""
+        backend = self._subjects_backend(
+            current_catalogue(), _subject_arcs(dcid, property, filters)
+        )
+        if backend is None:
+            return ArcSubjectPage(subjects=(), truncated=False)
+        return backend.node_arc_subjects(
             dcid, property=property, filters=filters, max_results=max_results, deadline=deadline
         )
 
@@ -671,17 +703,40 @@ class OriginGraphClient:
                 return page
             return (page.dcids, "capped" if page.truncated else "complete")
 
-        if is_un_dcid(property):
-            unique = list(dict.fromkeys(dcids))
-            if not catalogue.un_system_enabled:
-                return {dcid: disabled() for dcid in unique}
-            return read(self._un, unique) if unique else {}
-        return self._route_many(
+        return self._route_subjects_many(
             catalogue,
             dcids,
-            read,
+            property=property,
+            read=read,
             disabled=disabled,
             tables=tables if property == _SERIES_ARC else None,
+        )
+
+    def node_arc_subjects_many(
+        self,
+        dcids: Sequence[str],
+        *,
+        property: str,
+        max_results: int,
+        deadline: float | None = None,
+    ) -> dict[str, tuple[tuple[ArcSubject, ...], SubjectsCoverageFlag]]:
+        """`node_subjects_many` with each subject's name, types and declaring provenances,
+        with leads routed as `node_subjects_many` routes its live reads. The catalogue's tables
+        carry no subject names or provenances, so every lead is read live, and a lead that needs
+        the UN deployment with the UN off answers no subjects, complete."""
+
+        def read(
+            backend: GraphClient, part: list[str]
+        ) -> dict[str, tuple[tuple[ArcSubject, ...], SubjectsCoverageFlag]]:
+            return backend.node_arc_subjects_many(
+                part, property=property, max_results=max_results, deadline=deadline
+            )
+
+        def disabled() -> tuple[tuple[ArcSubject, ...], SubjectsCoverageFlag]:
+            return ((), "complete")
+
+        return self._route_subjects_many(
+            current_catalogue(), dcids, property=property, read=read, disabled=disabled
         )
 
     def node_observation_properties_batch(self, dcids: list[str]) -> dict[str, tuple[str, ...]]:
@@ -1047,6 +1102,33 @@ class OriginGraphClient:
         if not any(is_un_dcid(dcid) for dcid in dcids):
             return self._ours
         return self._un if catalogue.un_system_enabled else None
+
+    def _subjects_backend(
+        self, catalogue: Catalogue, arcs: Sequence[tuple[str, str]]
+    ) -> GraphClient | None:
+        """The backend for a reverse read carrying `arcs`: chosen from every property and value
+        they name, so one UN name anywhere sends the read to the UN deployment."""
+        return self._backend(catalogue, *(name for arc in arcs for name in arc))
+
+    def _route_subjects_many[V](
+        self,
+        catalogue: Catalogue,
+        dcids: Sequence[str],
+        *,
+        property: str,
+        read: Callable[[GraphClient, list[str]], Mapping[str, V]],
+        disabled: Callable[[], V],
+        tables: Callable[[Catalogue, str], V | _Unmirrored] | None = None,
+    ) -> dict[str, V]:
+        """Route a batched reverse read: a UN `property` sends every distinct lead to the UN
+        deployment, or answers each `disabled()` with the UN off. Any other property routes the
+        leads by dcid through `_route_many`, with `tables` answering the leads they hold."""
+        if is_un_dcid(property):
+            unique = list(dict.fromkeys(dcids))
+            if not catalogue.un_system_enabled:
+                return {dcid: disabled() for dcid in unique}
+            return dict(read(self._un, unique)) if unique else {}
+        return self._route_many(catalogue, dcids, read, disabled=disabled, tables=tables)
 
     def _un_observations(self, catalogue: Catalogue) -> GraphClient:
         """The UN backend for an observation read, seeded with the places the catalogue build

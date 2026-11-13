@@ -4,8 +4,12 @@
 nodes. `child_places_batch` expands regions. `resolve_by_arc` and
 `node_names_many` also make the same object satisfy
 `entity_resolution.GraphLookup`. `node_subjects` reads a Dataset's
-Provenance children through the reverse `isPartOf` arc. Each method accepts
-an absolute monotonic deadline.
+Provenance children through the reverse `isPartOf` arc. `node_arc_subjects`,
+`node_arc_subjects_many` and `node_arc_targets_many` read subjects and
+targets with their names, types
+and the provenances that declared each arc, which tell the instance's own
+terms from base Data Commons. Each method accepts an absolute monotonic
+deadline.
 """
 
 from __future__ import annotations
@@ -13,6 +17,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Protocol
 
+from dc_graph import ArcSubject, ArcSubjectPage, ArcTarget, SubjectsCoverageFlag
 from materialise.graph import SubjectPage
 
 type NodeArcsByDcid = dict[str, dict[str, tuple[str, ...]] | None]
@@ -66,4 +71,37 @@ class GraphNodeReader(Protocol):
         deadline: float | None = None,
     ) -> SubjectPage:
         """Read subjects with a matching arc, optionally filtered by their other properties."""
+        ...
+
+    def node_arc_subjects(
+        self,
+        dcid: str,
+        *,
+        property: str,
+        filters: Mapping[str, str] | None = None,
+        max_results: int,
+        deadline: float | None = None,
+    ) -> ArcSubjectPage:
+        """Read subjects as `node_subjects` does, each with its name, types and provenances."""
+        ...
+
+    def node_arc_subjects_many(
+        self,
+        dcids: Sequence[str],
+        *,
+        property: str,
+        max_results: int,
+        deadline: float | None = None,
+    ) -> dict[str, tuple[tuple[ArcSubject, ...], SubjectsCoverageFlag]]:
+        """Read many leads' subjects in one walk, each with a coverage flag."""
+        ...
+
+    def node_arc_targets_many(
+        self,
+        dcids: Sequence[str],
+        *,
+        properties: Sequence[str],
+        deadline: float | None = None,
+    ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
+        """Read selected arcs' targets with names, types and provenances; `None` if absent."""
         ...

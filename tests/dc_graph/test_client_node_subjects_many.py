@@ -3,7 +3,24 @@
 import pytest
 
 import dc_graph.client as client_module
-from dc_graph import GraphClient
+from dc_graph import ArcSubject, GraphClient
+
+
+def _subject_dcids(client: GraphClient, dcids: list[str], **kwargs) -> dict:
+    """`node_subjects_many`'s answer."""
+    return client.node_subjects_many(dcids, **kwargs)
+
+
+def _arc_subject_dcids(client: GraphClient, dcids: list[str], **kwargs) -> dict:
+    """`node_arc_subjects_many`'s answer with each subject reduced to its dcid."""
+    return {
+        lead: (tuple(subject.dcid for subject in subjects), flag)
+        for lead, (subjects, flag) in client.node_arc_subjects_many(dcids, **kwargs).items()
+    }
+
+
+# Both batched reverse reads walk the same pages, so walk-shape tests run against each.
+_BOTH_READS = pytest.mark.parametrize("read", [_subject_dcids, _arc_subject_dcids])
 
 
 def test_node_subjects_many_request_shape(monkeypatch) -> None:
@@ -35,7 +52,8 @@ def test_node_subjects_many_request_shape(monkeypatch) -> None:
     }
 
 
-def test_node_subjects_many_absent_and_empty_dcids_map_to_empty_page(monkeypatch) -> None:
+@_BOTH_READS
+def test_node_subjects_many_absent_and_empty_dcids_map_to_empty_page(monkeypatch, read) -> None:
     """Absent dcids and nodes without the incoming arc return empty complete pages."""
 
     def fake_post(self, path, payload, *, deadline=None):
@@ -48,9 +66,7 @@ def test_node_subjects_many_absent_and_empty_dcids_map_to_empty_page(monkeypatch
 
     client = GraphClient(base_url="http://fake/core/api")
     monkeypatch.setattr(GraphClient, "post", fake_post)
-    result = client.node_subjects_many(
-        ["leaf/NODE", "absent/NODE"], property="typeOf", max_results=10
-    )
+    result = read(client, ["leaf/NODE", "absent/NODE"], property="typeOf", max_results=10)
     assert result == {
         "leaf/NODE": ((), "complete"),
         "absent/NODE": ((), "complete"),
@@ -82,27 +98,40 @@ def test_node_subjects_many_dedups_a_subject_declared_by_two_provenances(monkeyp
 
 
 def test_node_subjects_many_multi_page_response_stitched(monkeypatch) -> None:
-    """Pages concatenate in order and deduplicate subjects across the page boundary."""
+    """Pages concatenate in order and deduplicate subjects across the page boundary. The detail
+    read collects a subject's provenances from both pages, sorted, and keeps its first entry's
+    name and types."""
     calls: list[dict] = []
+    oda = {
+        "dcid": "DAC1AidType1010",
+        "name": "official development assistance (DAC 1 aid type)",
+        "types": ["DAC1AidTypeEnum"],
+    }
 
     def fake_post(self, path, payload, *, deadline=None):
         calls.append(payload)
 
-        if len(calls) == 1:
-            assert "nextToken" not in payload
+        if "nextToken" not in payload:
             return {
                 "data": {
-                    "Enum": {"arcs": {"typeOf": {"nodes": [{"dcid": "MemberA"}]}}},
+                    "DAC1AidTypeEnum": {
+                        "arcs": {
+                            "typeOf": {"nodes": [oda | {"provenanceId": "provenance/DFOOntology"}]}
+                        }
+                    },
                 },
                 "nextToken": "tok1",
             }
         assert payload["nextToken"] == "tok1"
         return {
             "data": {
-                "Enum": {
+                "DAC1AidTypeEnum": {
                     "arcs": {
                         "typeOf": {
-                            "nodes": [{"dcid": "MemberA"}, {"dcid": "MemberB"}],
+                            "nodes": [
+                                {"dcid": "DAC1AidType1010", "provenanceId": "dc/base/Schema"},
+                                {"dcid": "DAC1AidType1015"},
+                            ],
                         }
                     }
                 }
@@ -111,9 +140,24 @@ def test_node_subjects_many_multi_page_response_stitched(monkeypatch) -> None:
 
     client = GraphClient(base_url="http://fake/core/api")
     monkeypatch.setattr(GraphClient, "post", fake_post)
-    result = client.node_subjects_many(["Enum"], property="typeOf", max_results=10)
-    assert result == {"Enum": (("MemberA", "MemberB"), "complete")}
-    assert len(calls) == 2
+    result = client.node_subjects_many(["DAC1AidTypeEnum"], property="typeOf", max_results=10)
+    detail = client.node_arc_subjects_many(["DAC1AidTypeEnum"], property="typeOf", max_results=10)
+    assert result == {"DAC1AidTypeEnum": (("DAC1AidType1010", "DAC1AidType1015"), "complete")}
+    assert detail == {
+        "DAC1AidTypeEnum": (
+            (
+                ArcSubject(
+                    dcid="DAC1AidType1010",
+                    name="official development assistance (DAC 1 aid type)",
+                    types=("DAC1AidTypeEnum",),
+                    provenances=("dc/base/Schema", "provenance/DFOOntology"),
+                ),
+                ArcSubject(dcid="DAC1AidType1015", name=None, types=(), provenances=()),
+            ),
+            "complete",
+        )
+    }
+    assert len(calls) == 4
 
 
 def test_node_subjects_many_caps_at_max_results_and_stops_that_lead(monkeypatch) -> None:
@@ -297,7 +341,8 @@ def test_node_subjects_many_page_budget_exhausted_leaves_capped_lead_capped(monk
     assert len(calls) == 2
 
 
-def test_node_subjects_many_drops_capped_lead_from_later_pages_to_drain(monkeypatch) -> None:
+@_BOTH_READS
+def test_node_subjects_many_drops_capped_lead_from_later_pages_to_drain(monkeypatch, read) -> None:
     """Capped leads leave later requests, so their paging cannot exhaust the shared page budget."""
     calls: list[dict] = []
 
@@ -326,9 +371,7 @@ def test_node_subjects_many_drops_capped_lead_from_later_pages_to_drain(monkeypa
 
     client = GraphClient(base_url="http://fake/core/api")
     monkeypatch.setattr(GraphClient, "post", fake_post)
-    result = client.node_subjects_many(
-        ["capped/LEAD", "wide/LEAD"], property="typeOf", max_results=1
-    )
+    result = read(client, ["capped/LEAD", "wide/LEAD"], property="typeOf", max_results=1)
     assert result["capped/LEAD"] == (("c1",), "capped")
     assert result["wide/LEAD"] == (("w1",), "complete")
     assert len(calls) == 2

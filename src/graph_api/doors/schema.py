@@ -19,6 +19,13 @@ from dfo_platform.doors import DoorContribution
 from dfo_platform.static_response import FrozenJSON, freeze_public_json
 from graph_api.doors.members import MembersPage, Roots
 from graph_api.node_models import NodeResponse, NodesRequest, NodesResponse
+from graph_api.ontology_models import (
+    OntologyCheckRequest,
+    OntologyCheckResponse,
+    OntologyDocument,
+    OntologyProvenances,
+    OntologyTerms,
+)
 from graph_api.resolve_models import ResolveRequest, ResolveResponse
 from graph_api.source_models import SourceCatalogue, SourceDocumentation
 
@@ -42,6 +49,13 @@ def served_wire_schemas() -> dict[str, dict[str, Any]]:
             mode="serialization"
         ),
         "source_catalogue_response": SourceCatalogue.model_json_schema(mode="serialization"),
+        "ontology_response": OntologyDocument.model_json_schema(mode="serialization"),
+        "ontology_terms_response": OntologyTerms.model_json_schema(mode="serialization"),
+        "ontology_provenances_response": OntologyProvenances.model_json_schema(
+            mode="serialization"
+        ),
+        "ontology_check_request": OntologyCheckRequest.model_json_schema(),
+        "ontology_check_response": OntologyCheckResponse.model_json_schema(mode="serialization"),
     }
 
 

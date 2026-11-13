@@ -16,6 +16,8 @@ import httpx
 import pytest
 
 from dc_graph import (
+    ArcSubject,
+    ArcSubjectPage,
     FacetDefaultPolicy,
     GraphCapExceededError,
     GraphClient,
@@ -91,6 +93,9 @@ _UN_TABLES = un_mirror(
     topics={_UN_TOPIC: (_UN_MORTALITY, _UN_MORTALITY_FEMALE)},
     superseded_by=_CRS,
 )
+
+_MEMBER_PROVENANCE = "dc/base/Schema"
+"""The provenance every `<-typeOf` member the fake graph serves is declared by."""
 
 _OUR_TOPIC = "dc/topic/Economy"
 _UNLISTED = "Count_Person_Female"
@@ -243,7 +248,13 @@ class _Graph:
             if prop == "->*":
                 data[dcid] = {"arcs": {"name": name, "rangeIncludes": {"nodes": [{"dcid": "C"}]}}}
             elif prop == "<-typeOf":
-                data[dcid] = {"arcs": {"typeOf": {"nodes": [{"dcid": f"{dcid}/member"}]}}}
+                member = {
+                    "dcid": f"{dcid}/member",
+                    "name": f"{label} member",
+                    "types": [dcid],
+                    "provenanceId": _MEMBER_PROVENANCE,
+                }
+                data[dcid] = {"arcs": {"typeOf": {"nodes": [member]}}}
             else:
                 data[dcid] = {"arcs": {"name": name}}
         return {"data": data}
@@ -420,6 +431,39 @@ def test_node_arcs_many_and_names_keep_every_requested_dcid_in_order(
     assert arcs == {_UN_AGE: {"name": ("Age",)}, "country/KEN": {"name": ("Kenya",)}}
 
 
+@pytest.mark.parametrize("batched", [False, True], ids=["one", "many"])
+@pytest.mark.parametrize(
+    ("lead", "host", "name"),
+    [
+        pytest.param("country/KEN", _OURS_HOST, "Kenya member", id="ours"),
+        pytest.param(_UN_AGE, _UN_HOST, "Age member", id="un_lead"),
+    ],
+)
+def test_arc_subject_reads_go_to_the_backend_their_names_need(
+    graph: _Graph,
+    client: OriginGraphClient,
+    bind_catalogue,
+    batched: bool,
+    lead: str,
+    host: str,
+    name: str,
+) -> None:
+    """The catalogue's tables hold no subject names or provenances, so each read is live."""
+    bind_catalogue(_catalogue())
+    expected = ArcSubject(
+        dcid=f"{lead}/member", name=name, types=(lead,), provenances=(_MEMBER_PROVENANCE,)
+    )
+
+    if batched:
+        read = client.node_arc_subjects_many([lead], property="typeOf", max_results=5)
+        assert read == {lead: ((expected,), "complete")}
+    else:
+        page = client.node_arc_subjects(lead, property="typeOf", max_results=5)
+        assert page == ArcSubjectPage(subjects=(expected,), truncated=False)
+    assert graph.dcids_sent(host) == [lead]
+    assert [request.url.host for request in graph.requests] == [host]
+
+
 def test_enum_members_route_on_the_property(
     graph: _Graph, client: OriginGraphClient, bind_catalogue
 ) -> None:
@@ -511,6 +555,15 @@ def test_un_disabled_answers_un_dcids_empty_and_sends_them_nowhere(
     assert client.node_subjects_many(["country/KEN"], property=_UN_AGE, max_results=5) == {
         "country/KEN": ((), "complete")
     }
+    assert client.node_arc_subjects_many(["country/KEN"], property=_UN_AGE, max_results=5) == {
+        "country/KEN": ((), "complete")
+    }
+    assert client.node_arc_subjects_many([_UN_AGE], property="typeOf", max_results=5) == {
+        _UN_AGE: ((), "complete")
+    }
+    assert client.node_arc_subjects(_UN_AGE, property="typeOf", max_results=5) == ArcSubjectPage(
+        subjects=(), truncated=False
+    )
     facets = client.observation_facets_batch([_UN_MORTALITY], ["country/KEN"])
     assert facets == {_UN_MORTALITY: {"country/KEN": []}}
     assert client.entities_with_data([_UN_MORTALITY], ["country/KEN"]) == []

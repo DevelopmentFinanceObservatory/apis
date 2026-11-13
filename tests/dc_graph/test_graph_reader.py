@@ -13,6 +13,9 @@ import pytest
 import dc_graph.client as graph_module
 from dc_graph import (
     UNRESOLVED_NODE,
+    ArcSubject,
+    ArcSubjectPage,
+    ArcTarget,
     Facet,
     GraphClient,
     GraphDeadlineExceededError,
@@ -1111,6 +1114,57 @@ def test_node_arcs_many_dedups_a_value_declared_by_two_provenances():
     assert result == {"lifeExpectancy": {"measuredProperty": ("lifeExpectancy",)}}
 
 
+def test_node_arc_targets_many_collapses_a_target_and_carries_its_provenances_sorted():
+    # A target repeated per declaring provenance collapses to one, its first entry's name and
+    # types, and every provenance sorted; an entry without `provenanceId` adds none.
+    body = json.dumps(
+        {
+            "data": {
+                "crsPurpose": {
+                    "arcs": {
+                        "typeOf": {
+                            "nodes": [
+                                {
+                                    "dcid": "Property",
+                                    "name": "Property",
+                                    "types": ["Class"],
+                                    "provenanceId": "provenance/DFOOntology",
+                                },
+                                {
+                                    "dcid": "Property",
+                                    "name": "Property",
+                                    "types": ["Class"],
+                                    "provenanceId": "dc/base/Schema",
+                                },
+                                {"dcid": "Property", "provenanceId": "dc/base/Schema"},
+                            ]
+                        },
+                        "name": {"nodes": [{"value": "CRS purpose"}]},
+                    }
+                }
+            }
+        }
+    )
+    transport, _ = _replay(body)
+    reader = _reader(transport)
+
+    result = reader.node_arc_targets_many(["crsPurpose"], properties=("typeOf", "name"))
+
+    assert result == {
+        "crsPurpose": {
+            "typeOf": (
+                ArcTarget(
+                    value="Property",
+                    name="Property",
+                    types=("Class",),
+                    provenances=("dc/base/Schema", "provenance/DFOOntology"),
+                ),
+            ),
+            "name": (ArcTarget(value="CRS purpose"),),
+        }
+    }
+
+
 def test_node_arcs_many_dedups_unresolved_node_marker():
     # Duplicate unresolved targets collapse to one marker.
     body = json.dumps({"data": {"sv": {"arcs": {"measurementDenominator": {"nodes": [{}, {}]}}}}})
@@ -1286,7 +1340,7 @@ def test_node_subjects_truncated_true_when_continuation_page_has_new_distinct_su
     second_body = json.dumps(
         {"data": {"lifeExpectancy": {"arcs": {"measuredProperty": {"nodes": [{"dcid": "c"}]}}}}}
     )
-    responses = [first_body, second_body]
+    responses = [first_body, second_body] * 2
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -1296,9 +1350,12 @@ def test_node_subjects_truncated_true_when_continuation_page_has_new_distinct_su
     reader = _reader(httpx.MockTransport(handler))
 
     page = reader.node_subjects("lifeExpectancy", property="measuredProperty", max_results=2)
+    detail = reader.node_arc_subjects("lifeExpectancy", property="measuredProperty", max_results=2)
 
     assert page == SubjectPage(dcids=("a", "b"), truncated=True)
-    assert len(requests) == 2
+    assert [subject.dcid for subject in detail.subjects] == ["a", "b"]
+    assert detail.truncated is True
+    assert len(requests) == 4
 
 
 def test_node_subjects_not_truncated_when_continuation_page_has_only_duplicates():
@@ -1404,8 +1461,18 @@ def test_node_subjects_dedups_a_subject_declared_by_two_provenances():
                     "arcs": {
                         "measuredProperty": {
                             "nodes": [
-                                {"dcid": "LifeExpectancy_Person_Female"},
-                                {"dcid": "LifeExpectancy_Person_Female"},
+                                {
+                                    "dcid": "LifeExpectancy_Person_Female",
+                                    "name": "Life expectancy, female",
+                                    "types": ["StatisticalVariable"],
+                                    "provenanceId": "dc/base/WHO_GHO",
+                                },
+                                {
+                                    "dcid": "LifeExpectancy_Person_Female",
+                                    "name": "Life expectancy, female",
+                                    "types": ["StatisticalVariable"],
+                                    "provenanceId": "dc/base/Schema",
+                                },
                             ]
                         }
                     }
@@ -1417,14 +1484,36 @@ def test_node_subjects_dedups_a_subject_declared_by_two_provenances():
     reader = _reader(transport)
 
     page = reader.node_subjects("lifeExpectancy", property="measuredProperty", max_results=10)
+    detail = reader.node_arc_subjects("lifeExpectancy", property="measuredProperty", max_results=10)
 
     assert page == SubjectPage(dcids=("LifeExpectancy_Person_Female",), truncated=False)
+    assert detail == ArcSubjectPage(
+        subjects=(
+            ArcSubject(
+                dcid="LifeExpectancy_Person_Female",
+                name="Life expectancy, female",
+                types=("StatisticalVariable",),
+                provenances=("dc/base/Schema", "dc/base/WHO_GHO"),
+            ),
+        ),
+        truncated=False,
+    )
 
 
 def test_node_subjects_dedups_a_subject_repeated_across_pages():
+    # `a`'s second provenance arrives on the second page; `b` carries no name, types or
+    # provenance.
     first_body = json.dumps(
         {
-            "data": {"lifeExpectancy": {"arcs": {"measuredProperty": {"nodes": [{"dcid": "a"}]}}}},
+            "data": {
+                "lifeExpectancy": {
+                    "arcs": {
+                        "measuredProperty": {
+                            "nodes": [{"dcid": "a", "name": "A", "provenanceId": "dc/base/Schema"}]
+                        }
+                    }
+                }
+            },
             "nextToken": "tok1",
         }
     )
@@ -1432,12 +1521,19 @@ def test_node_subjects_dedups_a_subject_repeated_across_pages():
         {
             "data": {
                 "lifeExpectancy": {
-                    "arcs": {"measuredProperty": {"nodes": [{"dcid": "a"}, {"dcid": "b"}]}}
+                    "arcs": {
+                        "measuredProperty": {
+                            "nodes": [
+                                {"dcid": "a", "provenanceId": "dc/base/Mongolia_Education"},
+                                {"dcid": "b"},
+                            ]
+                        }
+                    }
                 }
             }
         }
     )
-    responses = [first_body, second_body]
+    responses = [first_body, second_body] * 2
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -1447,9 +1543,22 @@ def test_node_subjects_dedups_a_subject_repeated_across_pages():
     reader = _reader(httpx.MockTransport(handler))
 
     page = reader.node_subjects("lifeExpectancy", property="measuredProperty", max_results=10)
+    detail = reader.node_arc_subjects("lifeExpectancy", property="measuredProperty", max_results=10)
 
     assert page == SubjectPage(dcids=("a", "b"), truncated=False)
-    assert len(requests) == 2
+    assert detail == ArcSubjectPage(
+        subjects=(
+            ArcSubject(
+                dcid="a",
+                name="A",
+                types=(),
+                provenances=("dc/base/Mongolia_Education", "dc/base/Schema"),
+            ),
+            ArcSubject(dcid="b", name=None, types=(), provenances=()),
+        ),
+        truncated=False,
+    )
+    assert len(requests) == 4
 
 
 def test_node_subjects_max_results_and_truncated_count_distinct_subjects():

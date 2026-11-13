@@ -11,7 +11,8 @@ profile comes from the process's shared `FacetProfileCache` for its source
 runs on. The national currencies and node facts a
 variable's availability reads beside its profile (`CardReadCaches`) run their
 flights on the DCP-read executor. The node routes keep the envelopes they build in
-`node_entries`, which guards every operation with its own lock.
+`node_entries`, which guards every operation with its own lock. The ontology routes keep
+their built bodies in `ontology`, whose one build runs on the DCP-read executor.
 
 This module holds the bundle and the doors' one way onto the executor,
 `run_dcp_read`, to keep door imports separate from the composition root,
@@ -36,7 +37,7 @@ from dfo_platform.executor import SaturationTrackingExecutor, submit_with_contex
 from dfo_platform.single_flight_cache import SingleFlightCache
 from dfo_platform.state import StateSlot
 from entity_resolution import EntityResolver
-from graph_api.config import DCP_QUEUE_WAIT_WARN_SECONDS
+from graph_api.config import DCP_QUEUE_WAIT_WARN_SECONDS, ONTOLOGY_FLIGHT_TIMEOUT_SECONDS
 from graph_api.node_cache import NodeEntryCache
 from graph_api.reader import GraphNodeReader
 from graph_generation import GenerationProvider
@@ -45,6 +46,7 @@ from materialise.facet_profile import FacetProfileCache
 if TYPE_CHECKING:
     # `card_reads` imports this module's executor refusals.
     from graph_api.card_reads import CardReadCaches
+    from graph_api.doors.ontology import FrozenOntology, OntologyKey
     from materialise.provenance_doc import ProvenanceDoc
     from series_coverage.shared import ServedCoverage
 
@@ -77,6 +79,14 @@ class GraphDeps:
     card_reads: CardReadCaches | None = None
     # The envelopes the node routes built, keyed by generation stamp, table builds and dcid.
     node_entries: NodeEntryCache = field(default_factory=NodeEntryCache)
+    # The ontology routes' built bodies, one entry keyed by generation token and code index.
+    # The lifespan's cache builds on `dcp_executor`; this default has no executor, so a build
+    # through it fails.
+    ontology: SingleFlightCache[OntologyKey, FrozenOntology] = field(
+        default_factory=lambda: SingleFlightCache(
+            maxsize=1, flight_timeout_s=ONTOLOGY_FLIGHT_TIMEOUT_SECONDS
+        )
+    )
 
 
 class DcpExecutorShutDown(Exception):

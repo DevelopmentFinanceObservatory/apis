@@ -1,5 +1,5 @@
 ---
-description: Resolve names, inspect graph nodes, list what belongs to them, and read source documentation.
+description: Resolve names, inspect graph nodes, list what belongs to them, read source documentation, and read and check the graph's model.
 ---
 
 # How to look up names and codes
@@ -106,6 +106,39 @@ curl -fsS "$DFO_API/api/v1/graph/documentation/provenance/OECDCreditorReportingS
 ```
 
 The documentation record includes source details, licence, scope and units, methodology, data notes, transformation history, and `gaps`. `gaps` names fields for which the source has no documented value.
+
+## Read the model
+
+`GET /api/v1/graph/ontology` serves every Class and Property the instance declares, with their ranges, domains and enumeration members. `GET /api/v1/graph/ontology/terms` serves the same Classes and Properties as a short list.
+
+```bash
+curl -fsS "$DFO_API/api/v1/graph/ontology" \
+  | jq '.nodes[] | select(.dcid == "crsPurpose")'
+```
+
+A node's `declared_by` is `base` when Data Commons declares it and `instance` when this deployment does. `range_includes` and `domain_includes` name the classes a property accepts. The first request after a graph release builds the document and can take longer than later ones; a `503` with `Retry-After` means to ask again.
+
+## See how a dataset uses the model
+
+`GET /api/v1/graph/ontology/provenances` lists each dataset's Provenance with its StatVar count, the distinct patterns of its StatVars, the values each constraint property takes, and the units, periods and currencies of its series.
+
+```bash
+curl -fsS "$DFO_API/api/v1/graph/ontology/provenances" \
+  | jq '.provenances[0] | {dcid, stat_var_count, patterns: (.patterns | length)}'
+```
+
+## Check StatVar definitions
+
+`POST /api/v1/graph/ontology/check` takes 1 to 2,000 candidate definitions and lists every fault. An empty `findings` list means no row has a fault.
+
+```bash
+curl -fsS -X POST "$DFO_API/api/v1/graph/ontology/check" \
+  -H "Content-Type: application/json" \
+  -d '{"rows": [{"ref": "row-1", "population_type": "FinancialFlow", "measured_property": "amount", "constraint_properties": {"crsPurpose": "CRSPurposeCode99999"}}]}' \
+  | jq '.findings'
+```
+
+Each finding names the `ref` of its row, the `field` at fault, the `value`, a `code` such as `node_not_held` or `value_outside_range`, and a `severity` of `error` or `warning`. A `definition_differs` warning means the row's `dcid` is a StatVar the code index serves with another value in that field; `value` is the served one.
 
 ## Verify it worked
 

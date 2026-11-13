@@ -399,12 +399,14 @@ class NotHeldEntry(ResponseModel):
 
 NodesEntry = NodeResponse | NotHeldEntry
 
-_Dcid = Annotated[
+Dcid = Annotated[
     str,
     StringConstraints(
         pattern=rf"^{routing.DcidConvertor.regex}$", max_length=routing.DCID_MAX_LENGTH
     ),
 ]
+"""A node dcid as a request body names it: the node route's `{dcid}` path syntax and its
+512-character ceiling."""
 
 
 class NodesRequest(BaseModel):
@@ -413,7 +415,7 @@ class NodesRequest(BaseModel):
     ceiling."""
 
     model_config = ConfigDict(extra="forbid", title="GraphNodesRequest")
-    dcids: list[_Dcid] = Field(min_length=1, max_length=NODES_MAX_DCIDS)
+    dcids: list[Dcid] = Field(min_length=1, max_length=NODES_MAX_DCIDS)
 
 
 class NodesResponse(ResponseModel):

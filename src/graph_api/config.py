@@ -55,6 +55,10 @@ GRAPH_SDMX_TIMEOUT_SECONDS: int = _defaults.sdmx_timeout_seconds
 # A DCP read that waits longer than this for a worker logs at WARNING (`log_queue_wait`).
 DCP_QUEUE_WAIT_WARN_SECONDS: float = 1.0
 
+# The ontology build's flight deadline. On the dev graph the build takes about 5 s over 28
+# graph reads; requests wait `GRAPH_NODE_TIMEOUT_SECONDS` each and retry while it runs.
+ONTOLOGY_FLIGHT_TIMEOUT_SECONDS: float = 60.0
+
 
 class GraphSettings(BaseSettings):
     """Live-reader settings validated in the surface lifespan. An empty DCP URL fails there.

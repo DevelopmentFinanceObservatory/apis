@@ -22,7 +22,9 @@ from the bound release's coverage.
 
 Routes: `GET /healthz`, `GET /capabilities`, `GET /schema`, `POST /resolve`,
 `GET /node/{dcid}`, `POST /nodes`, `GET /node/{dcid}/members`, `GET /roots`,
-`GET /documentation/{dcid}`, and `GET /sources`, all under `/api/graph`.
+`GET /documentation/{dcid}`, `GET /sources`, `GET /ontology`, and `GET /ontology/terms`, all
+under `/api/graph`. The ontology routes keep the bodies of their one build per generation in a
+cache the lifespan registers beside the source-document and node-envelope caches.
 
 Door classifiers return `ProblemSpec`. The door whose route raised classifies
 first (`dfo_platform.doors.classify_by_door`), so a graph read failure is logged
@@ -70,6 +72,7 @@ from graph_api.deps import (
 from graph_api.doors.health import build_health_door
 from graph_api.doors.members import build_members_door
 from graph_api.doors.node import NODE_MEMBERSHIP_SLOT, build_node_door
+from graph_api.doors.ontology import build_ontology_door, new_ontology_cache
 from graph_api.doors.resolve import build_resolve_door
 from graph_api.doors.schema import build_schema_door
 from graph_api.doors.sources import build_sources_door, new_provenance_doc_cache
@@ -187,6 +190,7 @@ def graph_surface(
             build_schema_door(),
             build_resolve_door(),
             build_sources_door(),
+            build_ontology_door(),
             build_members_door(),
             build_node_door(),
         )
@@ -204,6 +208,7 @@ def graph_surface(
         generation_registration: RegistrationHandle | None = None
         doc_cache_registration: RegistrationHandle | None = None
         node_entries_registration: RegistrationHandle | None = None
+        ontology_registration: RegistrationHandle | None = None
         dcp_executor: DcpReadExecutor | None = None
         profile_executor: ThreadPoolExecutor | None = None
         profile_reads: ThreadPoolExecutor | None = None
@@ -232,6 +237,8 @@ def graph_surface(
                 doc_cache_registration.close()
             if node_entries_registration is not None:
                 node_entries_registration.close()
+            if ontology_registration is not None:
+                ontology_registration.close()
             if generation_registration is not None:
                 generation_registration.close()
             if shared_resolver is not None:
@@ -329,6 +336,10 @@ def graph_surface(
             node_entries_registration = resolved_generation.register(
                 "graph_api.node_entries", stats=node_entries.stats, clear=node_entries.clear
             )
+            ontology = new_ontology_cache(executor=dcp_executor, generation=resolved_generation)
+            ontology_registration = resolved_generation.register(
+                "graph_api.ontology", stats=ontology.stats, clear=ontology.clear
+            )
 
             profile_cache: FacetProfileCache | None = None
             if shared_profiles is not None:
@@ -374,6 +385,7 @@ def graph_surface(
             generation=resolved_generation,
             provenance_docs=provenance_docs,
             node_entries=node_entries,
+            ontology=ontology,
             coverage=resolved_coverage,
             profile_cache=profile_cache,
             card_reads=card_reads,

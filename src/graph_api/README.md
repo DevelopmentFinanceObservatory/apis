@@ -1,4 +1,4 @@
-The Graph API surface reads Data Commons Platform (DCP) graphs and the tables DFO holds beside them. It resolves free text to graph references, describes any node the graph holds under one envelope per kind, lists what belongs to a node (codes, datasets, variables, facets, group and region members), and assembles a per-source documentation document rolled up from a Dataset's own Provenance children.
+The Graph API surface reads Data Commons Platform (DCP) graphs and the tables DFO holds beside them. It resolves free text to graph references, describes any node the graph holds under one envelope per kind, lists what belongs to a node (codes, datasets, variables, facets, group and region members), assembles a per-source documentation document rolled up from a Dataset's own Provenance children, and serves the instance's ontology with a check for candidate StatVar definitions.
 
 The surface mounts at `/api/graph` and operates as an independent composition root within `dfo-apis`.
 
@@ -7,6 +7,7 @@ The surface mounts at `/api/graph` and operates as an independent composition ro
 ```
  POST /resolve        GET /node/{dcid}      GET /node/{dcid}/members     GET /documentation/{dcid}
                       POST /nodes           GET /roots                   GET /sources
+                      GET /ontology  GET /ontology/terms  GET /ontology/provenances  POST /ontology/check
       |                    |                        |                            |
       v                    v                        v                            |
 +------------------+  +------------------------------------------+               |
@@ -843,9 +844,309 @@ The example is abridged. It shows four entries, cuts each `datasets` list to at 
 
 ---
 
+### GET /api/graph/ontology
+
+The instance's model as one document: every Class and Property it declares, with the nodes they point at, the nodes the code index's StatVar rows name, the members of enumerations, and the ancestors of all of these. The body is `{generation, nodes}`. `generation` is the graph generation token the document was built from, and `nodes` holds one entry per member, sorted by `dcid`.
+
+A node carries `dcid`, `name`, `description`, `types`, `alternate_name`, `sub_class_of`, `sub_property_of`, `specialization_of`, `domain_includes`, `range_includes`, `classification_code`, `provenances`, `declared_by` and `enumeration`. The list members are the values of the Data Commons property of the same name in snake case (`types` is `typeOf`), each sorted. A dcid the graph does not hold, such as the literal range `Number`, is not a node; the arc that names it keeps the dcid.
+
+- `name` follows `dc_graph.display_name`: the greatest `name` value by code point, with a name equal to the dcid counting as none. It is `null` when the graph gives no name.
+- `description` is the smallest `description` value by code point, or `null`.
+- `provenances` lists the Provenances that declare the node's `typeOf` arc, verbatim. `declared_by` is `"base"` when there is at least one and every one starts `dc/base/`, and `"instance"` otherwise.
+- `enumeration` is `{members, truncated}` on a Class whose `subClassOf` chain reaches `Enumeration`, and `null` on every other node. An instance-declared enumeration lists every member the graph holds; a base enumeration lists only the members StatVar rows use. `truncated` is `true` when the member read stopped at its cap.
+
+One build yields this body and the terms body. It runs as a single job on the DCP-read executor, holding one worker, and its result is kept in a single-flight cache of one entry keyed by the graph generation token and the content hash of the code index. A generation change clears it. Concurrent requests share one build. A request waits up to `GRAPH_NODE_TIMEOUT_SECONDS`; the build itself may run for 60 s (`graph_api.config.ONTOLOGY_FLIGHT_TIMEOUT_SECONDS`).
+
+Each body is encoded once with its keys sorted, so two builds of one graph give the same bytes. The route answers `public, max-age=300` with a strong `ETag` and a gzip representation, and honours `If-None-Match` with `304`.
+
+Failures:
+
+- `503 service_unavailable`, retryable with `Retry-After: 5`: the request's own wait passed while the build runs on. The build stores its result for the next request.
+- `504 timeout`: the build outlived its 60 s deadline and stored nothing, or a graph read passed its deadline.
+- `503 service_unavailable`, not retryable: a Class or Property listing reached its cap.
+- `502 upstream_error`: a DCP read answered 4xx.
+- `503 service_unavailable`, retryable: any other read failure, or every DCP-read worker busy.
+
+A failed build is not kept. The example keeps two nodes; a served document lists every member.
+
+```json
+{
+  "generation": "graph_<token>",
+  "nodes": [
+    {
+      "alternate_name": [
+        "PHC",
+        "UHC",
+        "nursing care",
+        "paramedical care",
+        "primary health care",
+        "universal health coverage"
+      ],
+      "classification_code": [
+        "12220"
+      ],
+      "dcid": "CRSPurposeCode12220",
+      "declared_by": "instance",
+      "description": "Basic and primary health care programmes; paramedical and nursing care programmes; supply of drugs, medicines, and vaccines related to basic health care; and activities aimed at achieving universal health coverage.",
+      "domain_includes": [],
+      "enumeration": null,
+      "name": "basic health care (CRS Purpose)",
+      "provenances": [
+        "provenance/DFOOntology"
+      ],
+      "range_includes": [],
+      "specialization_of": [
+        "CRSPurposeCode122"
+      ],
+      "sub_class_of": [],
+      "sub_property_of": [],
+      "types": [
+        "CRSPurposeCodeEnum"
+      ]
+    },
+    {
+      "alternate_name": [],
+      "classification_code": [],
+      "dcid": "crsPurpose",
+      "declared_by": "instance",
+      "description": "The activity's purpose stated as a CRS purpose code. Narrows financing purpose.",
+      "domain_includes": [
+        "FinancingEvent"
+      ],
+      "enumeration": null,
+      "name": "CRS purpose",
+      "provenances": [
+        "provenance/DFOOntology"
+      ],
+      "range_includes": [
+        "CRSPurposeCodeEnum"
+      ],
+      "specialization_of": [],
+      "sub_class_of": [],
+      "sub_property_of": [
+        "financingPurpose"
+      ],
+      "types": [
+        "Property"
+      ]
+    }
+  ]
+}
+```
+
+---
+
+### GET /api/graph/ontology/terms
+
+Every Class and Property on the graph, as `{generation, terms}`. Each term is `{dcid, name, types, provenances, declared_by}`, sorted by `dcid`. `types` is `["Class"]`, `["Property"]` or both. `name`, `provenances` and `declared_by` follow the rules of the ontology document.
+
+The route reads the same cached build as `GET /api/graph/ontology`, so its caching (`public, max-age=300`, a strong `ETag`, gzip, `304`) and its failures are the same as that route's, and a request that follows one for the document makes no graph read.
+
+```json
+{
+  "generation": "graph_<token>",
+  "terms": [
+    {
+      "dcid": "amount",
+      "declared_by": "base",
+      "name": null,
+      "provenances": [
+        "dc/base/Schema"
+      ],
+      "types": [
+        "Property"
+      ]
+    },
+    {
+      "dcid": "crsPurpose",
+      "declared_by": "instance",
+      "name": "CRS purpose",
+      "provenances": [
+        "provenance/DFOOntology"
+      ],
+      "types": [
+        "Property"
+      ]
+    }
+  ]
+}
+```
+
+---
+
+### GET /api/graph/ontology/provenances
+
+How each Provenance of the code index uses the model. The body is `{provenances}`, sorted by `dcid`, with one entry for each Provenance that at least one StatVar row of the index names. The route makes no graph read: it joins the code index with the served coverage index, and has no refusal code of its own.
+
+An entry holds:
+
+- `dcid`, `label` and `description`: the Provenance and the dataset's name and prose from its declaration, each `null` where the declaration has none.
+- `stat_var_count`: how many StatVars the Provenance publishes. A StatVar that two Provenances publish counts under both.
+- `patterns`: the distinct combinations of `population_type`, `measured_property`, `stat_type`, `measurement_qualifier`, `measurement_denominator`, `constraint_properties` and `observation_properties` over its StatVars, each with its `stat_var_count` and the first three of its StatVars' dcids as `examples`. They are sorted by `stat_var_count` descending, then by the fields.
+- `constraint_values`: for each constraint property the StatVars set, sorted by `property`, the `values` it takes, each `{value, stat_var_count}`, sorted by value.
+- `facets`: `units`, `scaling_factors`, `measurement_methods`, `observation_periods` (ISO 8601 durations such as `P1Y`) and `currencies` (ISO 4217 codes) read from the Provenance's coverage series, each list sorted and distinct, and empty where coverage holds nothing.
+
+The body is built once per code index and coverage build and kept; a request that finds another coverage build rebuilds it. It answers `public, max-age=300` with a strong `ETag`, a gzip representation and `304` on `If-None-Match`. The example is abridged: it keeps the first pattern and the first two values of the first constraint property, and `...` marks each cut list.
+
+```json
+{
+  "provenances": [
+    {
+      "constraint_values": [
+        {
+          "property": "dac2bAidType",
+          "values": [
+            {
+              "stat_var_count": 1,
+              "value": "DAC2bAidType201"
+            },
+            {
+              "stat_var_count": 1,
+              "value": "DAC2bAidType204"
+            },
+            ...
+          ]
+        },
+        ...
+      ],
+      "dcid": "provenance/OECDDAC2B",
+      "description": "Other official flows and officially supported export credits that providers report to the OECD, by recipient and type of flow.",
+      "facets": {
+        "currencies": [
+          "USD"
+        ],
+        "measurement_methods": [],
+        "observation_periods": [
+          "P1Y"
+        ],
+        "scaling_factors": [],
+        "units": [
+          "CurrencyUSD"
+        ]
+      },
+      "label": "OECD DAC2b",
+      "patterns": [
+        {
+          "constraint_properties": [
+            "dac2bAidType",
+            "dacTypeOfFinance",
+            "financialFlowType",
+            "nettingBasis"
+          ],
+          "examples": [
+            "Amount_FinancialFlow_Gross_Disbursement_DACTypeOfFinanceGrants_DAC2bAidType201_Nominal",
+            "Amount_FinancialFlow_Gross_Disbursement_DACTypeOfFinanceNonGrants_DAC2bAidType204_Nominal",
+            "Amount_FinancialFlow_Gross_Disbursement_DACTypeOfFinanceNonGrants_DAC2bAidType292_Nominal"
+          ],
+          "measured_property": "amount",
+          "measurement_denominator": null,
+          "measurement_qualifier": "Nominal",
+          "observation_properties": [
+            "financingProvider",
+            "financingRecipient"
+          ],
+          "population_type": "FinancialFlow",
+          "stat_type": "measuredValue",
+          "stat_var_count": 10
+        },
+        ...
+      ],
+      "stat_var_count": 14
+    },
+    ...
+  ]
+}
+```
+
+---
+
+### POST /api/graph/ontology/check
+
+Checks candidate StatVar definitions against the ontology and answers every fault it finds. The request is `{rows}`, 1 to 2,000 rows (`graph_api.ontology_models.CHECK_MAX_ROWS`), checked as one batch. A longer or empty list, an extra key or a malformed dcid is refused `400 request_invalid` with the offending field as the pointer.
+
+A row holds:
+
+- `ref`: the caller's label, echoed on its findings.
+- `dcid`: the StatVar's dcid. When the code index serves it, the row is compared with the served definition.
+- `population_type`, `measured_property` (required), `stat_type`, `measurement_qualifier` and `measurement_denominator`.
+- `constraint_properties`: a map of constraint property to value node. A literal or `null` value is a fault.
+- `observation_properties`: a list of property dcids.
+
+Each dcid takes the node route's dcid syntax. The route answers each node a row names from the cached ontology document and reads the rest from the graph: one batch per level of `subClassOf` ancestry, so a dcid costs at most one read however many rows name it. It waits on the same build as `GET /api/graph/ontology` and refuses with the same `503` and `504` outcomes when the build is not ready or a read fails; a failed read yields no findings. A constraint value must name a held node typed beyond `ProvisionalNode`, the test the code index export applies to a release. Range and domain rules apply only to a property whose `declared_by` is `"instance"`: a value is in range when one of its types reaches a `rangeIncludes` class by `subClassOf`, and the population type is in the domain when it reaches a `domainIncludes` class the same way. A property with no `rangeIncludes` or `domainIncludes` admits anything. The domain rule covers the measured property and the constraint properties, and is skipped when the row names no population type.
+
+The response is `{generation, row_count, findings}`. `generation` is the graph generation the rows were checked against. Findings come in row order and are empty when no row has a fault. A finding is `{ref, field, value, code, severity}`. `field` is `population_type`, `measured_property`, `stat_type`, `measurement_qualifier`, `measurement_denominator`, `observation_properties`, or `constraint_properties.<property>` for a constraint property or its value. `value` is the value at fault; for `definition_differs` it is the value the code index serves (a sorted list for `observation_properties`, `null` where it serves none). The route sets no cache headers.
+
+| Code | Severity | Meaning |
+| :--- | :------- | :------ |
+| `node_not_held` | `error` | The graph holds no node for the value, or a constraint value is a literal. |
+| `node_untyped` | `error` | A constraint value's node has no `typeOf`. |
+| `node_provisional` | `error` | A constraint value's node has only the type `ProvisionalNode`. |
+| `value_missing` | `error` | A constraint property has a `null` value. |
+| `not_a_property` | `error` | A constraint property, the measured property or an observation property is not typed `Property`. |
+| `not_a_class` | `error` | The population type is not typed `Class`. |
+| `value_outside_range` | `error` | No type of the value reaches the instance property's `rangeIncludes` by `subClassOf`. |
+| `property_outside_domain` | `warning` | The population type reaches none of the instance property's `domainIncludes` by `subClassOf`. |
+| `definition_differs` | `warning` | The code index serves the row's `dcid` with another value in that field. |
+
+Within a row, findings follow this order: the shape fields (`population_type`, `measured_property`, `stat_type`, `measurement_qualifier`, `measurement_denominator`); the constraint properties sorted, each property's finding before its value's; the observation properties in row order; then the `definition_differs` findings in the same field order.
+
+Failures beyond `400`: `503 service_unavailable` with `Retry-After: 5` while the build runs on, `504 timeout`, a non-retryable `503` for a listing at its cap, `502 upstream_error` for a DCP 4xx and a retryable `503` for any other read failure or a saturated executor, as for `GET /api/graph/ontology`.
+
+The example sends two rows: `DAC1AidType1010` lies outside the range of `crsPurpose`, and `CRSPurposeCode99999` names no node.
+
+```json
+{
+  "rows": [
+    {
+      "ref": "wrong-list",
+      "population_type": "FinancialFlow",
+      "measured_property": "amount",
+      "constraint_properties": {
+        "crsPurpose": "DAC1AidType1010"
+      },
+      "observation_properties": []
+    },
+    {
+      "ref": "no-such-code",
+      "population_type": "FinancialFlow",
+      "measured_property": "amount",
+      "constraint_properties": {
+        "crsPurpose": "CRSPurposeCode99999"
+      },
+      "observation_properties": []
+    }
+  ]
+}
+```
+
+```json
+{
+  "generation": "graph_<token>",
+  "row_count": 2,
+  "findings": [
+    {
+      "ref": "wrong-list",
+      "field": "constraint_properties.crsPurpose",
+      "value": "DAC1AidType1010",
+      "code": "value_outside_range",
+      "severity": "error"
+    },
+    {
+      "ref": "no-such-code",
+      "field": "constraint_properties.crsPurpose",
+      "value": "CRSPurposeCode99999",
+      "code": "node_not_held",
+      "severity": "error"
+    }
+  ]
+}
+```
+
+---
+
 ### GET /api/graph/schema
 
-Serves the JSON Schema of every request and response body, keyed by name under `schemas`: `health_response`, `resolve_request`, `resolve_response`, `node_response`, `nodes_request`, `nodes_response`, `members_response`, `roots_response`, `source_documentation_response` and `source_catalogue_response`. `capabilities` holds the path of the capability document. The document is encoded once when the door is built, answers `public, max-age=300` with a strong `ETag` and a gzip representation, and honours `If-None-Match` with `304`. It changes only with a deploy, and `capability_version` hashes the schemas with their descriptions removed.
+Serves the JSON Schema of every request and response body, keyed by name under `schemas`: `health_response`, `resolve_request`, `resolve_response`, `node_response`, `nodes_request`, `nodes_response`, `members_response`, `roots_response`, `source_documentation_response`, `source_catalogue_response`, `ontology_response`, `ontology_terms_response`, `ontology_provenances_response`, `ontology_check_request` and `ontology_check_response`. `capabilities` holds the path of the capability document. The document is encoded once when the door is built, answers `public, max-age=300` with a strong `ETag` and a gzip representation, and honours `If-None-Match` with `304`. It changes only with a deploy, and `capability_version` hashes the schemas with their descriptions removed.
 
 ---
 
@@ -878,7 +1179,8 @@ The example comes from the app built with `make_client` and the restrictive test
     { "name": "members", "live": true },
     { "name": "roots", "live": true },
     { "name": "sources", "live": true },
-    { "name": "schema", "live": true }
+    { "name": "schema", "live": true },
+    { "name": "ontology", "live": true }
   ],
   "kinds": ["country", "continent", "subregion", "continental_union", "place_other", "aggregate", "organisation", "group", "stat_var", "code_system", "code", "unit", "source", "dataset", "provenance", "other"],
   "resolve_kinds": ["country", "continent", "subregion", "continental_union", "organisation", "aggregate", "place_other", "group", "code", "other"],
@@ -944,6 +1246,9 @@ Errors use RFC 9457 problem detail envelopes:
 | `400`       | `request_invalid`     | `GET /api/graph/documentation/{dcid}`'s `dcid` is held, but is neither a `Dataset` nor a `Provenance` node, including a `Source` dcid.   | `/dcid`                                                                                     | No        |
 | `503`       | `service_unavailable` | `GET /api/graph/documentation/{dcid}`'s own Dataset children read came back truncated (more than 256 children, or a surviving `nextToken`).            | None                                                                                        | No        |
 | `404`       | `not_found`           | Unmatched route or empty DCID path parameter (`/api/graph/node/`).                                                                                     | None                                                                                        | No        |
+| `400`       | `request_invalid`     | `POST /api/graph/ontology/check` with `rows` empty or over 2,000 entries, a malformed dcid, or extra keys.                                             | The offending body field (e.g. `/rows`, `/rows/0/measured_property`).                       | No        |
+| `503`       | `service_unavailable` | An ontology route's own wait passed while the build runs on (`Retry-After: 5`).                                                                        | None                                                                                        | Yes       |
+| `503`       | `service_unavailable` | An ontology build's Class or Property listing reached its cap.                                                                                         | None                                                                                        | No        |
 | `502`       | `upstream_error`      | DCP read failure with a 4xx upstream response status.                                                                                                  | None                                                                                        | Yes       |
 | `503`       | `service_unavailable` | Upstream 5xx or network errors, every DCP-read worker busy, the surface still starting or shutting down, no membership policy published, or a `facets` request whose node types were not read by the deadline. | None                                                                                        | Yes       |
 | `504`       | `timeout`             | Resolution, node lookup (single or batch), or source documentation read exceeding configured deadline.                                                 | None                                                                                        | Yes       |

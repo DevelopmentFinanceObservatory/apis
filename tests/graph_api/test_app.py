@@ -329,6 +329,7 @@ def test_lifespan_passes_the_shared_generation_provider_to_the_entity_resolver_a
         assert sentinel_generation.registered_names() == (
             "graph_api.entity_resolver",
             "graph_api.node_entries",
+            "graph_api.ontology",
             "graph_api.provenance_docs",
         )
 

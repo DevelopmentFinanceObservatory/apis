@@ -53,6 +53,7 @@ class TestDoorLivenessAndOtherFields:
             "roots": True,
             "sources": True,
             "schema": True,
+            "ontology": True,
         }
 
     def test_node_shape_gaps_are_the_paths_every_carrying_node_gaps(self):
