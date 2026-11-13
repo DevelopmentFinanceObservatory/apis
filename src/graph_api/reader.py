@@ -109,7 +109,9 @@ class GraphNodeReader(Protocol):
         dcids: Sequence[str],
         *,
         properties: Sequence[str],
+        confirm_empty: bool = False,
         deadline: float | None = None,
     ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
-        """Read selected arcs' targets with names, types and provenances; `None` if absent."""
+        """Read selected arcs' targets with names, types and provenances; `None` if absent.
+        `confirm_empty` reads an empty answer again until the dcid is read alone."""
         ...

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from collections.abc import Mapping
@@ -301,3 +302,25 @@ def test_the_body_is_built_once_per_coverage_build(monkeypatch: pytest.MonkeyPat
     assert ["CurrencyUSD"] in _units(first)
     assert ["CurrencyEUR"] in _units(changed)
     assert changed.headers["ETag"] != first.headers["ETag"]
+
+
+def test_a_miss_builds_the_body_off_the_event_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    on_loop: list[bool] = []
+    real = ontology_door.build_provenances
+
+    def recorded(**kwargs):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            on_loop.append(False)
+        else:
+            on_loop.append(True)
+        return real(**kwargs)
+
+    monkeypatch.setattr(ontology_door, "build_provenances", recorded)
+
+    with make_client(coverage=_FakeCoverage(_coverage_of("CurrencyUSD"))) as client:
+        response = client.get(_ROUTE, headers=_IDENTITY)
+
+    assert response.status_code == 200, response.text
+    assert on_loop == [False]

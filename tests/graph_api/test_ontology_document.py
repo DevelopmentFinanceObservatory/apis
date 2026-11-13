@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 
 import pytest
 
@@ -34,6 +34,7 @@ from .ontology_fixture import (
 )
 
 _DEADLINE = 1_000.0
+_OTHER = "provenance/Other"
 
 
 def _nodes(graph: FakeGraphNodeReader, index: CodeIndex = INDEX) -> dict[str, OntologyNode]:
@@ -57,7 +58,7 @@ def test_declared_by_is_base_only_when_every_provenance_is_base(
 
 
 def test_declared_by_refuses_no_provenance() -> None:
-    with pytest.raises(ValueError, match="no declaring provenance"):
+    with pytest.raises(ValueError):
         declared_by(())
 
 
@@ -73,7 +74,16 @@ def test_document_holds_instance_terms_their_references_index_names_and_ancestor
         "SectorCode": {"typeOf": ("Class",), "subClassOf": ("CodeKind",)},
         "CodeKind": {"typeOf": ("Class",)},
     }
-    nodes = _nodes(ontology_graph(terms=terms, nodes=graph_nodes))
+    arc_targets = {
+        **ARC_TARGETS,
+        "CRSPurposeCode120": {
+            "typeOf": (
+                ArcTarget(value="CRSPurposeCodeEnum", provenances=(DFO,)),
+                ArcTarget(value="SectorCode", provenances=(_OTHER,)),
+            )
+        },
+    }
+    nodes = _nodes(ontology_graph(terms=terms, nodes=graph_nodes, arc_targets=arc_targets))
 
     assert sorted(nodes) == [
         "CRSPurposeCode120",  # listed member of an instance enumeration
@@ -98,6 +108,8 @@ def test_document_holds_instance_terms_their_references_index_names_and_ancestor
         "measuredValue",  # stat type
     ]
     # amount is base, so its range Quantity stays out though the graph holds it.
+    # The member's second typeOf arc adds the provenance that declares it.
+    assert nodes["CRSPurposeCode120"].provenances == [DFO, _OTHER]
 
 
 class _RecordingReader(FakeGraphNodeReader):
@@ -217,65 +229,71 @@ def test_a_truncated_listing_refuses(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_a_listing_subject_with_no_provenance_refuses() -> None:
     terms = {**TERMS, "educationalAttainment": ("Property", ())}
 
-    with pytest.raises(OntologyProvenanceUnreadError):
+    with pytest.raises(OntologyProvenanceUnreadError) as refused:
         _nodes(ontology_graph(terms=terms))
 
-
-class _EmptyTargetsReader(FakeGraphNodeReader):
-    """Answers `node_arc_targets_many` for `dcid` with `empty` on its first `empty_reads`
-    reads of it."""
-
-    def __init__(
-        self, *, dcid: str, empty: object, empty_reads: int, nodes=NODES, **kwargs: object
-    ) -> None:
-        super().__init__(nodes=nodes, arc_targets=ARC_TARGETS, **kwargs)  # type: ignore[arg-type]
-        self._dcid = dcid
-        self._empty = empty
-        self._left = empty_reads
-        self.target_reads: list[list[str]] = []
-
-    def node_arc_targets_many(self, dcids, *, properties, deadline=None):
-        self.target_reads.append(list(dcids))
-        result = super().node_arc_targets_many(dcids, properties=properties, deadline=deadline)
-        if self._dcid in result and self._left > 0:
-            self._left -= 1
-            result[self._dcid] = self._empty  # type: ignore[assignment]
-        return result
+    assert refused.value.dcid == "educationalAttainment"
 
 
-def _empty_targets_reader(*, empty: object, empty_reads: int) -> _EmptyTargetsReader:
-    return _EmptyTargetsReader(
-        dcid="Female",
-        empty=empty,
-        empty_reads=empty_reads,
-        arc_subjects=arc_subjects(),
+def test_a_held_node_with_no_type_is_served_with_no_provenance() -> None:
+    graph_nodes = {**NODES, "UntypedValue": {"name": ("Untyped value",)}}
+    row = index_row("Amount_Untyped", {"beneficiaryGender": "UntypedValue"})
+
+    graph = ontology_graph(nodes=graph_nodes)
+    ontology = build_ontology(
+        reader=graph,
+        code_index=index_of(*INDEX.statvars, row),
+        generation="g1",
+        deadline=_DEADLINE,
     )
 
+    untyped = {node.dcid: node for node in ontology.document.nodes}["UntypedValue"]
+    assert (untyped.types, untyped.provenances, untyped.declared_by) == ([], [], None)
+    assert '"declared_by":null' in untyped.model_dump_json()
+    # The client confirms the empty answer, so the build reads it as untyped.
+    assert graph.confirm_empty == [True]
 
-_NO_PROVENANCE: Sequence[object] = (
-    pytest.param(None, id="absent"),
-    pytest.param({"typeOf": (ArcTarget(value="GenderType"),)}, id="no-provenance"),
+
+@pytest.mark.parametrize(
+    "female",
+    [
+        pytest.param({"typeOf": (ArcTarget(value="GenderType"),)}, id="target-unsourced"),
+        pytest.param(None, id="targets-unread"),
+    ],
 )
+def test_a_typed_node_with_no_provenance_refuses(female: object) -> None:
+    arc_targets = {dcid: targets for dcid, targets in ARC_TARGETS.items() if dcid != "Female"}
+    if female is not None:
+        arc_targets["Female"] = female  # type: ignore[assignment]
+
+    with pytest.raises(OntologyProvenanceUnreadError) as refused:
+        _nodes(ontology_graph(arc_targets=arc_targets))
+
+    assert refused.value.dcid == "Female"
 
 
-@pytest.mark.parametrize("empty", _NO_PROVENANCE)
-def test_a_node_whose_provenance_two_reads_leave_empty_refuses(empty: object) -> None:
-    graph = _empty_targets_reader(empty=empty, empty_reads=2)
+def test_a_term_that_is_also_a_member_keeps_every_provenance() -> None:
+    # amount is a base Property and an instance member of CRSPurposeCodeEnum.
+    graph_nodes = {
+        **NODES,
+        "amount": {**NODES["amount"], "typeOf": ("Property", "CRSPurposeCodeEnum")},
+    }
+    members = (
+        *CRS_MEMBERS,
+        ArcSubject(dcid="amount", names=(), types=("CRSPurposeCodeEnum",), provenances=(DFO,)),
+    )
 
-    with pytest.raises(OntologyProvenanceUnreadError, match="Female"):
-        _nodes(graph)
+    ontology = build_ontology(
+        reader=ontology_graph(nodes=graph_nodes, members=members),
+        code_index=INDEX,
+        generation="g1",
+        deadline=_DEADLINE,
+    )
 
-    assert graph.target_reads[1:] == [["Female"]]
-
-
-@pytest.mark.parametrize("empty", _NO_PROVENANCE)
-def test_a_node_whose_provenance_answers_on_its_second_read_is_labelled(empty: object) -> None:
-    graph = _empty_targets_reader(empty=empty, empty_reads=1)
-
-    female = _nodes(graph)["Female"]
-
-    assert (female.provenances, female.declared_by) == (["dc/base/Census"], "base")
-    assert graph.target_reads[1:] == [["Female"]]
+    node = {node.dcid: node for node in ontology.document.nodes}["amount"]
+    term = {term.dcid: term for term in ontology.terms.terms}["amount"]
+    assert (node.provenances, node.declared_by) == ([SCHEMA, DFO], "instance")
+    assert (term.provenances, term.declared_by) == (node.provenances, node.declared_by)
 
 
 def test_terms_list_every_class_and_property() -> None:

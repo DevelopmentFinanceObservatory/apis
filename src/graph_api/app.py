@@ -22,9 +22,12 @@ from the bound release's coverage.
 
 Routes: `GET /healthz`, `GET /capabilities`, `GET /schema`, `POST /resolve`,
 `GET /node/{dcid}`, `POST /nodes`, `GET /node/{dcid}/members`, `GET /roots`,
-`GET /documentation/{dcid}`, `GET /sources`, `GET /ontology`, and `GET /ontology/terms`, all
-under `/api/graph`. The ontology routes keep the bodies of their one build per generation in a
-cache the lifespan registers beside the source-document and node-envelope caches.
+`GET /documentation/{dcid}`, `GET /sources`, `GET /ontology`, `GET /ontology/terms`,
+`GET /ontology/provenances`, and `POST /ontology/check`, all under `/api/graph`.
+`GET /ontology`, `GET /ontology/terms` and `POST /ontology/check` share one build per graph
+generation and code index, held in a cache the lifespan registers beside the source-document
+and node-envelope caches. `GET /ontology/provenances` reads no graph and keeps its body per code
+index for the coverage build it was read with.
 
 Door classifiers return `ProblemSpec`. The door whose route raised classifies
 first (`dfo_platform.doors.classify_by_door`), so a graph read failure is logged

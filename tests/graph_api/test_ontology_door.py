@@ -14,7 +14,10 @@ from dc_graph import ArcSubject, ArcTarget
 from graph_api import app as app_module
 from graph_api.doors import ontology as ontology_door
 from graph_api.ontology_check import OntologyLookup
-from graph_api.ontology_document import OntologyListingTruncatedError
+from graph_api.ontology_document import (
+    OntologyListingTruncatedError,
+    OntologyProvenanceUnreadError,
+)
 from graph_api.ontology_models import (
     CHECK_MAX_CONSTRAINT_PROPERTIES,
     CHECK_MAX_OBSERVATION_PROPERTIES,
@@ -235,6 +238,7 @@ class TestWaits:
     ("error", "status", "code", "retryable"),
     [
         (OntologyListingTruncatedError("Class listing capped"), 503, "service_unavailable", False),
+        (OntologyProvenanceUnreadError("Female"), 503, "service_unavailable", False),
         (GraphDeadlineExceededError("deadline"), 504, "timeout", True),
         (GraphReadError("bad request", upstream_status=400), 502, "upstream_error", True),
         (GraphReadError("unavailable", upstream_status=503), 503, "service_unavailable", True),

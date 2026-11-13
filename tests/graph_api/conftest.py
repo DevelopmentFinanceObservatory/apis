@@ -53,7 +53,8 @@ class FakeGraphNodeReader:
     capped at `max_results` with `truncated` or `"capped"` set past it. `arc_targets` maps dcids to
     `{property: targets}` for `node_arc_targets_many`, with absent dcids and
     properties as in `nodes`. Names combine `name` then `alternateName`,
-    deduplicated. `calls` counts calls by method.
+    deduplicated. `calls` counts calls by method, and `confirm_empty` records the flag of
+    each `node_arc_targets_many` call.
     """
 
     def __init__(
@@ -72,6 +73,7 @@ class FakeGraphNodeReader:
         self._subjects = subjects
         self._arc_subjects = arc_subjects
         self._arc_targets = arc_targets
+        self.confirm_empty: list[bool] = []
         self.calls: dict[str, int] = {
             "node_arcs_many": 0,
             "node_arcs_batch": 0,
@@ -187,9 +189,11 @@ class FakeGraphNodeReader:
         dcids: Sequence[str],
         *,
         properties: Sequence[str],
+        confirm_empty: bool = False,
         deadline: float | None = None,
     ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
         self.calls["node_arc_targets_many"] += 1
+        self.confirm_empty.append(confirm_empty)
         result: dict[str, dict[str, tuple[ArcTarget, ...]] | None] = {}
         for dcid in dict.fromkeys(dcids):
             entry = self._arc_targets.get(dcid)

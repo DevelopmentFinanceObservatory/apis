@@ -19,9 +19,11 @@ with a name equal to the dcid counting as no name, so the Graph surface names a 
 A term's `name` follows the same rule over the names its listing entries carry.
 `description` is the smallest of the node's `description` values by code point.
 
-`provenances` holds the dcids of the Provenances that declare the node's `typeOf` arc,
-verbatim and sorted; every node and term carries at least one. `declared_by` is `"base"` when
-every one starts `dc/base/`, and `"instance"` otherwise.
+`provenances` holds the dcids of the Provenances that declare the node's `typeOf` arcs,
+verbatim and sorted; every term and every typed node carries at least one. `declared_by` is
+`"base"` when every one starts `dc/base/`, and `"instance"` otherwise. A node the graph holds
+with no `typeOf` arc has no declaring Provenance: its `provenances` is empty and its
+`declared_by` null.
 
 `enumeration` is set on a Class whose `subClassOf` chain reaches `Enumeration`, and null on
 every other node. An instance-declared enumeration lists every member the graph holds; a
@@ -104,9 +106,12 @@ class OntologyNode(ResponseModel):
     range_includes: list[str]
     classification_code: list[str]
     provenances: list[str] = Field(
-        description="the Provenances declaring the node's typeOf arc, verbatim"
+        description="the Provenances declaring the node's typeOf arcs, verbatim; empty for a "
+        "node with no typeOf arc"
     )
-    declared_by: DeclaredBy
+    declared_by: DeclaredBy | None = Field(
+        description="null for a node with no typeOf arc, which no Provenance declares"
+    )
     enumeration: OntologyEnumeration | None = Field(
         description="the members when the node is an enumeration Class; null otherwise"
     )

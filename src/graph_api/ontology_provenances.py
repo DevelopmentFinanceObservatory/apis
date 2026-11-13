@@ -18,9 +18,11 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping
+from dataclasses import fields
 from typing import NamedTuple, Protocol
 
 from code_index import CodeIndex, StatVarRow
+from code_index.query import row_five_tuple
 from graph_api.ontology_models import (
     OntologyConstraintValues,
     OntologyFacets,
@@ -30,6 +32,7 @@ from graph_api.ontology_models import (
     OntologyValueCount,
 )
 from series_coverage.schema import FacetMetadata
+from statvar_members import FiveTuple
 
 EXAMPLES_PER_PATTERN = 3
 """How many StatVar dcids a pattern lists as examples."""
@@ -46,23 +49,22 @@ class ProvenanceCoverage(Protocol):
     def provenance_currencies(self) -> Mapping[str, frozenset[str]]: ...
 
 
+SHAPE_FIELDS: tuple[str, ...] = tuple(
+    field.name for field in fields(FiveTuple) if field.name != "denominator_unresolved"
+)
+"""The StatVar shape fields in `FiveTuple`'s order, each a `StatVarRow` field of the same name
+and a field of `OntologyPattern`."""
+
+
 class _PatternKey(NamedTuple):
-    population_type: str | None
-    measured_property: str
-    stat_type: str | None
-    measurement_qualifier: str | None
-    measurement_denominator: str | None
+    shape: FiveTuple
     constraint_properties: tuple[str, ...]
     observation_properties: tuple[str, ...]
 
 
 def _pattern_key(row: StatVarRow) -> _PatternKey:
     return _PatternKey(
-        population_type=row.population_type,
-        measured_property=row.measured_property,
-        stat_type=row.stat_type,
-        measurement_qualifier=row.measurement_qualifier,
-        measurement_denominator=row.measurement_denominator,
+        shape=row_five_tuple(row),
         constraint_properties=tuple(sorted(row.constraint_properties)),
         observation_properties=tuple(sorted(row.observation_properties)),
     )
@@ -73,11 +75,7 @@ def _pattern_order(entry: tuple[_PatternKey, list[str]]) -> tuple[object, ...]:
     key, dcids = entry
     return (
         -len(dcids),
-        key.population_type or "",
-        key.measured_property,
-        key.stat_type or "",
-        key.measurement_qualifier or "",
-        key.measurement_denominator or "",
+        *(getattr(key.shape, name) or "" for name in SHAPE_FIELDS),
         key.constraint_properties,
         key.observation_properties,
     )
@@ -90,11 +88,7 @@ def _patterns(rows: Iterable[StatVarRow]) -> list[OntologyPattern]:
         members[_pattern_key(row)].append(row.dcid)
     return [
         OntologyPattern(
-            population_type=key.population_type,
-            measured_property=key.measured_property,
-            stat_type=key.stat_type,
-            measurement_qualifier=key.measurement_qualifier,
-            measurement_denominator=key.measurement_denominator,
+            **{name: getattr(key.shape, name) for name in SHAPE_FIELDS},
             constraint_properties=list(key.constraint_properties),
             observation_properties=list(key.observation_properties),
             stat_var_count=len(dcids),
@@ -182,4 +176,4 @@ def build_provenances(
     return OntologyProvenances(provenances=provenances)
 
 
-__all__ = ["EXAMPLES_PER_PATTERN", "ProvenanceCoverage", "build_provenances"]
+__all__ = ["EXAMPLES_PER_PATTERN", "SHAPE_FIELDS", "ProvenanceCoverage", "build_provenances"]

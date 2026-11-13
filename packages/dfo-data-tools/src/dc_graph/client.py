@@ -1253,15 +1253,18 @@ class GraphClient:
         dcids: Sequence[str],
         *,
         properties: Sequence[str],
+        confirm_empty: bool = False,
         deadline: float | None = None,
     ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
         """Each distinct dcid's `properties` with their targets (`parse_arc_targets`), so a
         target's name and types need no read of their own, or `None` for a node the graph
-        answers with none of them. The reads are `node_arcs_many`'s initial chunks and pages
-        for the dcids the optional cache (sized `label_cache_size`) does not hold under the
-        generation stamp, bounded by `deadline`, with no retry of an empty answer. A node
-        answered with arcs is cached; an empty answer is not, since a batch can empty an entry
-        depending on which other dcids share it."""
+        answers with none of them. The dcids the optional cache (sized `label_cache_size`) does
+        not hold under the generation stamp are read in `node_arcs_many`'s initial chunks and
+        pages, bounded by `deadline`. An empty answer is returned as read, unless
+        `confirm_empty`, which reads it again as `node_arcs_many` does, in a group and then
+        alone, every one probed, so `None` is the graph's answer for that dcid read alone. A
+        node answered with arcs is cached; an empty answer is not, since a batch can empty an
+        entry depending on which other dcids share it."""
         if not dcids:
             return {}
         stamp = self._generation.stamp()
@@ -1279,9 +1282,15 @@ class GraphClient:
                     misses.append(dcid)
         if not misses:
             return result
-        data = self._post_node_arcs_chunked(misses, properties=properties, deadline=deadline)
+        if confirm_empty:
+            read = self._confirmed_node_arcs(
+                misses, properties=properties, individual_probe_budget=None, deadline=deadline
+            )
+        else:
+            data = self._post_node_arcs_chunked(misses, properties=properties, deadline=deadline)
+            read = {dcid: (data.get(dcid) or {}).get("arcs") for dcid in misses}
         for dcid in misses:
-            arcs = (data.get(dcid) or {}).get("arcs", {})
+            arcs = read[dcid]
             targets = parse_arc_targets(arcs, properties) if arcs else None
             result[dcid] = targets
             if targets is not None and self._arc_targets_cache is not None:
@@ -1319,8 +1328,32 @@ class GraphClient:
         individual_probe_budget: int | None,
         deadline: float | None,
     ) -> dict[str, dict[str, tuple[str, ...]] | None]:
+        confirmed = self._confirmed_node_arcs(
+            dcids,
+            properties=properties,
+            individual_probe_budget=individual_probe_budget,
+            deadline=deadline,
+        )
+        return {
+            dcid: parse_arcs(arcs, properties, mark_unresolved=True) if arcs else None
+            for dcid, arcs in confirmed.items()
+        }
+
+    def _confirmed_node_arcs(
+        self,
+        dcids: Sequence[str],
+        *,
+        properties: Sequence[str],
+        individual_probe_budget: int | None,
+        deadline: float | None,
+    ) -> dict[str, dict | None]:
+        """Each of `dcids`' wire `arcs` for `properties`, `None` for none. An empty answer
+        from a batch of several dcids is read again with the other empties as a group, then
+        each still empty alone, up to `individual_probe_budget` (`None` probes all); only an
+        empty answer for a dcid read alone is kept as `None`, beside the unprobed ones, which
+        one log message counts. A dcid a retry or probe omits raises the read error."""
         data = self._post_node_arcs_chunked(dcids, properties=properties, deadline=deadline)
-        result: dict[str, dict[str, tuple[str, ...]] | None] = {}
+        result: dict[str, dict | None] = {}
         suspects: list[str] = []
         single_dcid = len(dcids) == 1
         for dcid in dcids:
@@ -1332,7 +1365,7 @@ class GraphClient:
                     continue
                 suspects.append(dcid)
                 continue
-            result[dcid] = parse_arcs(arcs, properties, mark_unresolved=True)
+            result[dcid] = arcs
 
         if suspects:
             retry_data = self._post_node_arcs(suspects, properties=properties, deadline=deadline)
@@ -1348,7 +1381,7 @@ class GraphClient:
             for dcid in suspects:
                 retry_arcs = (retry_data.get(dcid) or {}).get("arcs", {})
                 if retry_arcs:
-                    result[dcid] = parse_arcs(retry_arcs, properties, mark_unresolved=True)
+                    result[dcid] = retry_arcs
                 else:
                     still_empty.append(dcid)
 
@@ -1367,10 +1400,7 @@ class GraphClient:
                         dcids=[dcid],
                     )
                     raise self._read_error_cls(str(omitted)) from omitted
-                probe_arcs = (probe_data.get(dcid) or {}).get("arcs", {})
-                result[dcid] = (
-                    parse_arcs(probe_arcs, properties, mark_unresolved=True) if probe_arcs else None
-                )
+                result[dcid] = (probe_data.get(dcid) or {}).get("arcs", {}) or None
 
             for dcid in unprobed:
                 result[dcid] = None

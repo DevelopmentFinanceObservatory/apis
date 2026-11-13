@@ -852,7 +852,7 @@ A node carries `dcid`, `name`, `description`, `types`, `alternate_name`, `sub_cl
 
 - `name` follows `dc_graph.display_name`: the greatest `name` value by code point, with a name equal to the dcid counting as none. It is `null` when the graph gives no name.
 - `description` is the smallest `description` value by code point, or `null`.
-- `provenances` lists the Provenances that declare the node's `typeOf` arc, verbatim. Every node carries at least one: a build that reads none for a node, after a second read of that node alone, refuses with a retryable `503`. `declared_by` is `"base"` when every one starts `dc/base/`, and `"instance"` otherwise.
+- `provenances` lists the Provenances that declare the node's `typeOf` arcs, verbatim: those of a Class or Property listing, of an enumeration member listing, and of any other `typeOf` arc the node has. `declared_by` is `"base"` when every one starts `dc/base/`, and `"instance"` otherwise. A node the graph holds with no `typeOf` arc has no declaring Provenance, so its `provenances` is empty and its `declared_by` is `null`. A build that reads a `typeOf` arc with no declaring Provenance refuses with a non-retryable `503`.
 - `enumeration` is `{members, truncated}` on a Class whose `subClassOf` chain reaches `Enumeration`, and `null` on every other node. An instance-declared enumeration lists every member the graph holds; a base enumeration lists only the members StatVar rows use. `truncated` is `true` when the member read stopped at its cap.
 
 One build yields this body and the terms body. It runs as a single job on the DCP-read executor, holding one worker, and its result is kept in a single-flight cache of one entry keyed by the graph generation token and the content hash of the code index. A generation change clears it. Concurrent requests share one build. A request waits up to `GRAPH_NODE_TIMEOUT_SECONDS`; the build itself may run for 60 s (`graph_api.config.ONTOLOGY_FLIGHT_TIMEOUT_SECONDS`).
@@ -863,7 +863,7 @@ Failures:
 
 - `503 service_unavailable`, retryable with `Retry-After: 5`: the request's own wait passed while the build runs on. The build stores its result for the next request.
 - `504 timeout`: the build outlived its 60 s deadline and stored nothing, or a graph read passed its deadline.
-- `503 service_unavailable`, not retryable: a Class or Property listing reached its cap.
+- `503 service_unavailable`, not retryable: a Class or Property listing reached its cap, or a `typeOf` arc read with no declaring Provenance.
 - `502 upstream_error`: a DCP read answered 4xx.
 - `503 service_unavailable`, retryable: any other read failure, or every DCP-read worker busy.
 
@@ -1090,7 +1090,7 @@ The response is `{generation, row_count, findings}`. `generation` is the graph g
 
 Within a row, findings follow this order: the shape fields (`population_type`, `measured_property`, `stat_type`, `measurement_qualifier`, `measurement_denominator`); the constraint properties sorted, each property's finding before its value's; the observation properties in row order; then the `definition_differs` findings in the same field order.
 
-Failures beyond `400`: `503 service_unavailable` with `Retry-After: 5` while the build runs on, `504 timeout`, a non-retryable `503` for a listing at its cap, `502 upstream_error` for a DCP 4xx and a retryable `503` for any other read failure or a saturated executor, as for `GET /api/graph/ontology`.
+Failures beyond `400`: `503 service_unavailable` with `Retry-After: 5` while the build runs on, `504 timeout`, a non-retryable `503` for a listing at its cap or a `typeOf` arc read with no declaring Provenance, `502 upstream_error` for a DCP 4xx and a retryable `503` for any other read failure or a saturated executor, as for `GET /api/graph/ontology`.
 
 The example sends two rows: `DAC1AidType1010` lies outside the range of `crsPurpose`, and the constraint property `crsPurpos` names no node.
 

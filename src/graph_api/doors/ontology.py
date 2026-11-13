@@ -16,7 +16,7 @@ request whose own deadline passes first answers retryable 503 `service_unavailab
 that outlives its deadline stores nothing, and its waiters answer 504 `timeout`. An executor
 with every worker busy refuses the build with `DcpExecutorSaturated`, which the surface answers
 as retryable 503. A read past its deadline answers 504 `timeout`, a listing that reached its
-cap non-retryable 503 `service_unavailable`, a DCP 4xx 502 `upstream_error` and any other read
+cap or a typed node read with no declaring provenance non-retryable 503 `service_unavailable`, a DCP 4xx 502 `upstream_error` and any other read
 failure retryable 503. A failed build is not kept.
 
 The cached value holds each body encoded once with its keys sorted, so two builds of one graph
@@ -42,11 +42,13 @@ the same way before any read, with the count and the cap in `detail`.
 `graph_api.ontology_provenances.build_provenances` from the bound code index and the served
 coverage index with no graph read. The frozen body is kept per code index (`per_index`) for the
 coverage build it was read with (`CoverageManifest.build_id`): a request with another build
-rebuilds it, and the entry goes with its code index. It answers as the other two routes do.
+rebuilds it in a worker thread, and the entry goes with its code index. It answers as the other
+two routes do.
 """
 
 from __future__ import annotations
 
+import asyncio
 import time
 from concurrent.futures import Executor
 from dataclasses import dataclass
@@ -65,7 +67,11 @@ from dfo_platform.static_response import FrozenJSON, freeze_public_json
 from graph_api.config import GRAPH_NODE_TIMEOUT_SECONDS, ONTOLOGY_FLIGHT_TIMEOUT_SECONDS
 from graph_api.deps import GraphDeps, GraphDepsDep, log_queue_wait, run_dcp_read
 from graph_api.ontology_check import OntologyCheckTooManyReads, OntologyLookup, check_rows
-from graph_api.ontology_document import OntologyListingTruncatedError, build_ontology
+from graph_api.ontology_document import (
+    OntologyListingTruncatedError,
+    OntologyProvenanceUnreadError,
+    build_ontology,
+)
 from graph_api.ontology_models import (
     CHECK_MAX_READ_IDS,
     OntologyCheckRequest,
@@ -74,7 +80,7 @@ from graph_api.ontology_models import (
     OntologyProvenances,
     OntologyTerms,
 )
-from graph_api.ontology_provenances import build_provenances
+from graph_api.ontology_provenances import ProvenanceCoverage, build_provenances
 from graph_generation import GenerationProvider
 from graph_generation.stamp import UNKNOWN_KEY
 from materialise.graph import GraphDeadlineExceededError, GraphReadError
@@ -244,6 +250,14 @@ def classify_ontology_exception(exc: BaseException) -> ProblemSpec | None:
             retryable=False,
             log=f"Graph ontology door refused a truncated term listing: {error}",
         )
+    if isinstance(error, OntologyProvenanceUnreadError):
+        return ProblemSpec(
+            status=503,
+            code="service_unavailable",
+            detail=str(error),
+            retryable=False,
+            log=f"Graph ontology door refused {error.dcid!r}, read with no declaring provenance",
+        )
     if isinstance(error, GraphDeadlineExceededError):
         return ProblemSpec(
             status=TIMEOUT_DEFAULT.status,
@@ -272,16 +286,23 @@ class _ProvenancesMemo:
 _provenances_memo = per_index(lambda _index: _ProvenancesMemo())
 
 
-def _frozen_provenances(deps: GraphDeps) -> FrozenJSON:
-    """The provenances body of the bound code index and the served coverage build."""
+def _freeze_provenances(code_index: CodeIndex, coverage: ProvenanceCoverage) -> FrozenJSON:
+    return _freeze(build_provenances(code_index=code_index, coverage=coverage))
+
+
+async def _frozen_provenances(deps: GraphDeps) -> FrozenJSON:
+    """The provenances body of the bound code index and the served coverage build. A miss
+    builds and encodes the body in a worker thread; two concurrent misses both build, and
+    either stores the same body."""
     code_index = get_index()
     snapshot = deps.coverage.snapshot()
     memo = _provenances_memo(code_index)
     build_id = snapshot.manifest.build_id
-    if memo.body is None or memo.coverage_build != build_id:
-        memo.body = _freeze(build_provenances(code_index=code_index, coverage=snapshot.index))
-        memo.coverage_build = build_id
-    return memo.body
+    if memo.body is not None and memo.coverage_build == build_id:
+        return memo.body
+    body = await asyncio.to_thread(_freeze_provenances, code_index, snapshot.index)
+    memo.body, memo.coverage_build = body, build_id
+    return body
 
 
 async def get_ontology(deps: GraphDepsDep, request: Request) -> Response:
@@ -316,7 +337,7 @@ async def check_ontology(deps: GraphDepsDep, body: OntologyCheckRequest) -> JSON
 
 
 async def get_ontology_provenances(deps: GraphDepsDep, request: Request) -> Response:
-    return _frozen_provenances(deps).respond(request)
+    return (await _frozen_provenances(deps)).respond(request)
 
 
 def build_ontology_door() -> DoorContribution:
@@ -358,6 +379,7 @@ def build_ontology_door() -> DoorContribution:
             OntologyBuildPending(),
             OntologyBuildExpired(),
             OntologyReadFailed(OntologyListingTruncatedError("exemplar")),
+            OntologyReadFailed(OntologyProvenanceUnreadError("exemplar")),
             OntologyReadFailed(GraphDeadlineExceededError("exemplar")),
             OntologyReadFailed(GraphReadError("exemplar", upstream_status=400)),
             OntologyReadFailed(GraphReadError("exemplar", upstream_status=503)),

@@ -589,7 +589,12 @@ class OriginGraphClient:
         )
 
     def node_arc_targets_many(
-        self, dcids: Sequence[str], *, properties: Sequence[str], deadline: float | None = None
+        self,
+        dcids: Sequence[str],
+        *,
+        properties: Sequence[str],
+        confirm_empty: bool = False,
+        deadline: float | None = None,
     ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
         """Each backend's `node_arc_targets_many` of its dcids. The catalogue's tables carry no
         target names, so every dcid is read live."""
@@ -597,7 +602,7 @@ class OriginGraphClient:
             current_catalogue(),
             dcids,
             lambda backend, part: backend.node_arc_targets_many(
-                part, properties=properties, deadline=deadline
+                part, properties=properties, confirm_empty=confirm_empty, deadline=deadline
             ),
             disabled=lambda: None,
         )
@@ -662,12 +667,13 @@ class OriginGraphClient:
         """`node_subjects` with each subject's names, types and declaring provenances, routed
         on every name the read carries as `node_subjects` routes a read its tables do not
         answer. The catalogue's tables carry no subject names or provenances, so every read is
-        live, and one that needs the UN deployment with the UN off returns an empty page."""
+        live, and one that needs the UN deployment with the UN off returns an empty page marked
+        truncated, since nothing read it."""
         backend = self._subjects_backend(
             current_catalogue(), _subject_arcs(dcid, property, filters)
         )
         if backend is None:
-            return ArcSubjectPage(subjects=(), truncated=False)
+            return ArcSubjectPage(subjects=(), truncated=True)
         return backend.node_arc_subjects(
             dcid, property=property, filters=filters, max_results=max_results, deadline=deadline
         )
@@ -723,7 +729,8 @@ class OriginGraphClient:
         """`node_subjects_many` with each subject's names, types and declaring provenances,
         with leads routed as `node_subjects_many` routes its live reads. The catalogue's tables
         carry no subject names or provenances, so every lead is read live, and a lead that needs
-        the UN deployment with the UN off answers no subjects, complete."""
+        the UN deployment with the UN off answers no subjects, `"capped"`, since nothing read
+        it."""
 
         def read(
             backend: GraphClient, part: list[str]
@@ -733,7 +740,7 @@ class OriginGraphClient:
             )
 
         def disabled() -> tuple[tuple[ArcSubject, ...], SubjectsCoverageFlag]:
-            return ((), "complete")
+            return ((), "capped")
 
         return self._route_subjects_many(
             current_catalogue(), dcids, property=property, read=read, disabled=disabled

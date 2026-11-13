@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import threading
 import time
 from collections.abc import Sequence
 
@@ -735,6 +736,77 @@ def test_node_arcs_many_group_retry_false_empty_caught_by_individual_probe():
         "country/ZZZ": {"typeOf": ("Country",)},
         "country/YYY": {"typeOf": ("Country",)},
     }
+
+
+_TYPED = {"typeOf": {"nodes": [{"dcid": "Country", "provenanceId": "dc/base/Schema"}]}}
+_COUNTRY = {"typeOf": (ArcTarget(value="Country", provenances=("dc/base/Schema",)),)}
+_EMPTY_TWICE = [
+    {"data": {"country/KEN": {"arcs": _TYPED}, "country/ZZZ": {}, "country/YYY": {}}},
+    {"data": {"country/ZZZ": {}, "country/YYY": {}}},
+    {"data": {"country/ZZZ": {"arcs": _TYPED}}},
+    {"data": {"country/YYY": {}}},
+]
+"""A batch and its group retry that answer ZZZ and YYY empty, then ZZZ typed read alone and
+YYY empty read alone."""
+
+
+def _sequenced(bodies: list[dict], *, slow: int | None = None, delay: float = 0.0):
+    """A transport answering `bodies` in order, sleeping `delay` before answering request
+    number `slow`, and the requests it served. The wait is an `Event` wait, since the module's
+    `time.sleep` is patched out."""
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if len(requests) == slow:
+            threading.Event().wait(delay)
+        return httpx.Response(200, content=json.dumps(bodies[len(requests) - 1]))
+
+    return httpx.MockTransport(handler), requests
+
+
+def _nodes_sent(requests: list[httpx.Request]) -> list[list[str]]:
+    return [json.loads(request.content)["nodes"] for request in requests]
+
+
+_DCIDS = ["country/KEN", "country/ZZZ", "country/YYY"]
+
+
+def test_node_arc_targets_many_returns_an_empty_answer_as_read_by_default():
+    transport, requests = _sequenced(_EMPTY_TWICE)
+
+    result = _reader(transport).node_arc_targets_many(_DCIDS, properties=("typeOf",))
+
+    assert _nodes_sent(requests) == [_DCIDS]
+    assert result == {"country/KEN": _COUNTRY, "country/ZZZ": None, "country/YYY": None}
+
+
+def test_node_arc_targets_many_confirms_an_empty_answer_alone_on_request():
+    transport, requests = _sequenced(_EMPTY_TWICE)
+
+    result = _reader(transport).node_arc_targets_many(
+        _DCIDS, properties=("typeOf",), confirm_empty=True
+    )
+
+    assert _nodes_sent(requests) == [
+        _DCIDS,
+        ["country/ZZZ", "country/YYY"],
+        ["country/ZZZ"],
+        ["country/YYY"],
+    ]
+    assert result == {"country/KEN": _COUNTRY, "country/ZZZ": _COUNTRY, "country/YYY": None}
+
+
+def test_node_arc_targets_many_stops_confirming_at_the_deadline():
+    # The group retry answers after the deadline, so no probe is sent.
+    transport, requests = _sequenced(_EMPTY_TWICE, slow=2, delay=0.3)
+
+    with pytest.raises(GraphDeadlineExceededError):
+        _reader(transport).node_arc_targets_many(
+            _DCIDS, properties=("typeOf",), confirm_empty=True, deadline=time.monotonic() + 0.2
+        )
+
+    assert _nodes_sent(requests) == [_DCIDS, ["country/ZZZ", "country/YYY"]]
 
 
 def test_node_arcs_many_individual_probe_missing_key_raises():
