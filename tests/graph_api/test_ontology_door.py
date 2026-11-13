@@ -4,13 +4,12 @@ routes, their waits, their refusals and the frozen bodies."""
 from __future__ import annotations
 
 import dataclasses
-import json
 import threading
 
 import httpx
 import pytest
 
-from dc_graph import ArcSubject, ArcTarget
+from dc_graph import ArcSubject
 from graph_api import app as app_module
 from graph_api.doors import ontology as ontology_door
 from graph_api.ontology_check import OntologyLookup
@@ -29,7 +28,7 @@ from graph_generation import FakeGeneration
 from materialise.graph import GraphDeadlineExceededError, GraphReadError
 
 from .conftest import FakeGraphNodeReader, make_client, wait_until
-from .ontology_fixture import STAMP, index_of, index_row
+from .ontology_fixture import STAMP, index_of, index_row, node_targets
 
 _DFO = "provenance/DFOOntology"
 _DOCUMENT = "/api/graph/ontology"
@@ -58,7 +57,7 @@ _NODES = {
     "crsPurpose": {"typeOf": ("Property",), "domainIncludes": ("FinancialFlow",)},
     "CRSPurposeCode120": {"typeOf": ("Thing",)},
 }
-_ARC_TARGETS = {"CRSPurposeCode120": {"typeOf": (ArcTarget(value="Thing", provenances=(_DFO,)),)}}
+_ARC_TARGETS = node_targets(_NODES)
 
 
 def _graph() -> FakeGraphNodeReader:
@@ -91,11 +90,15 @@ class _BlockingReader(FakeGraphNodeReader):
 
 
 class _RaisingReader(FakeGraphNodeReader):
+    """Raises `error` on every build's first read, counting the builds in `raised`."""
+
     def __init__(self, error: Exception) -> None:
         super().__init__()
         self._error = error
+        self.raised = 0
 
     def node_arc_subjects(self, dcid, *, property, filters=None, max_results, deadline=None):
+        self.raised += 1
         raise self._error
 
 
@@ -235,28 +238,58 @@ class TestWaits:
 
 
 @pytest.mark.parametrize(
-    ("error", "status", "code", "retryable"),
+    ("error", "status", "code", "retryable", "builds"),
     [
-        (OntologyListingTruncatedError("Class listing capped"), 503, "service_unavailable", False),
-        (OntologyProvenanceUnreadError("Female"), 503, "service_unavailable", False),
-        (GraphDeadlineExceededError("deadline"), 504, "timeout", True),
-        (GraphReadError("bad request", upstream_status=400), 502, "upstream_error", True),
-        (GraphReadError("unavailable", upstream_status=503), 503, "service_unavailable", True),
+        pytest.param(
+            OntologyListingTruncatedError("Class listing capped"),
+            503,
+            "service_unavailable",
+            False,
+            1,
+            id="truncated-listing-kept",
+        ),
+        pytest.param(
+            OntologyProvenanceUnreadError("Female"),
+            503,
+            "service_unavailable",
+            False,
+            1,
+            id="unread-provenance-kept",
+        ),
+        pytest.param(
+            GraphDeadlineExceededError("deadline"), 504, "timeout", True, 2, id="deadline"
+        ),
+        pytest.param(
+            GraphReadError("bad request", upstream_status=400),
+            502,
+            "upstream_error",
+            True,
+            2,
+            id="upstream-4xx",
+        ),
+        pytest.param(
+            GraphReadError("unavailable", upstream_status=503),
+            503,
+            "service_unavailable",
+            True,
+            2,
+            id="read-error",
+        ),
     ],
 )
-def test_a_failed_read_answers_its_problem_and_is_not_kept(
-    generation, error: Exception, status: int, code: str, retryable: bool
+def test_a_failed_build_answers_its_problem_and_only_a_deterministic_refusal_is_kept(
+    generation, error: Exception, status: int, code: str, retryable: bool, builds: int
 ):
     graph = _RaisingReader(error)
 
     with make_client(graph=graph) as client:
-        response = client.get(_TERMS)
-        entries = _ontology_stats(client)["entries"]
+        responses = [client.get(_TERMS), client.get(_DOCUMENT)]
 
-    assert response.status_code == status, response.text
-    assert response.json()["code"] == code
-    assert response.json()["retryable"] is retryable
-    assert entries == 0
+    for response in responses:
+        assert response.status_code == status, response.text
+        assert response.json()["code"] == code
+        assert response.json()["retryable"] is retryable
+    assert graph.raised == builds
 
 
 class TestFrozenBody:
@@ -275,7 +308,7 @@ class TestFrozenBody:
                 assert gzipped.headers["Content-Encoding"] == "gzip"
                 assert gzipped.json() == first.json()
 
-    def test_two_builds_of_one_graph_give_the_same_sorted_bytes(self, generation):
+    def test_two_builds_of_one_graph_give_the_same_bytes(self, generation):
         bodies: list[tuple[bytes, bytes, str]] = []
         for _ in range(2):
             with make_client(graph=_graph()) as client:
@@ -284,14 +317,6 @@ class TestFrozenBody:
             bodies.append((document.content, terms.content, document.headers["ETag"]))
 
         assert bodies[0] == bodies[1]
-
-        def keys_sorted(pairs: list[tuple[str, object]]) -> dict[str, object]:
-            keys = [key for key, _ in pairs]
-            assert keys == sorted(keys)
-            return dict(pairs)
-
-        for body in bodies[0][:2]:
-            json.loads(body, object_pairs_hook=keys_sorted)
 
 
 def _check_row(value: str) -> dict[str, object]:
@@ -455,12 +480,17 @@ class TestCheck:
         assert response.status_code == 200, response.text
         assert {finding["code"] for finding in response.json()["findings"]} == {"node_not_held"}
 
-    def test_the_check_compares_against_the_code_index_its_build_read(
+    def test_a_swapped_code_index_is_checked_against_its_own_build(
         self, generation, monkeypatch: pytest.MonkeyPatch
     ):
-        # Both indexes share a content hash, so the swap keeps the cached entry.
-        built_with = index_of(index_row("Amount_X", {"crsPurpose": "CRSPurposeCode120"}))
-        swapped_in = index_of(index_row("Amount_X", {"crsPurpose": "OtherCode"}))
+        built_with = index_of(
+            index_row("Amount_X", {"crsPurpose": "CRSPurposeCode120"}),
+            stamp=dataclasses.replace(STAMP, content_hash="index-a"),
+        )
+        swapped_in = index_of(
+            index_row("Amount_X", {"crsPurpose": "OtherCode"}),
+            stamp=dataclasses.replace(STAMP, content_hash="index-b"),
+        )
         bound = [built_with]
         monkeypatch.setattr(ontology_door, "get_index", lambda: bound[0])
         served = built_with.statvars[0]
@@ -474,17 +504,17 @@ class TestCheck:
             "observation_properties": list(served.observation_properties),
         }
 
-        with make_client(graph=_graph()) as client:
+        graph = _graph()
+
+        with make_client(graph=graph) as client:
             client.get(_DOCUMENT)
             bound[0] = swapped_in
             response = client.post(_CHECK, json={"rows": [row]})
 
         assert response.status_code == 200, response.text
-        assert [
-            finding
-            for finding in response.json()["findings"]
-            if finding["code"] == "definition_differs"
-        ] == []
+        # The check builds for the swapped index and compares the row with its definition.
+        assert _builds(graph) == 2
+        assert "definition_differs" in {finding["code"] for finding in response.json()["findings"]}
 
     def test_the_lookup_is_built_once_per_entry(self, generation, monkeypatch: pytest.MonkeyPatch):
         built: list[object] = []

@@ -492,7 +492,7 @@ def _truncated(dcid: str) -> OntologyDocument:
                 node.model_copy(
                     update={
                         "enumeration": OntologyEnumeration(
-                            members=node.enumeration.members, truncated=True
+                            members=node.enumeration.members, complete=False
                         )
                     }
                 )

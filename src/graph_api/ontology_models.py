@@ -26,9 +26,10 @@ with no `typeOf` arc has no declaring Provenance: its `provenances` is empty and
 `declared_by` null.
 
 `enumeration` is set on a Class whose `subClassOf` chain reaches `Enumeration`, and null on
-every other node. An instance-declared enumeration lists every member the graph holds; a
-base enumeration lists only the members StatVar rows use. `truncated` is true when the
-member read stopped at its cap, so `members` holds the members read.
+every other node. An instance-declared enumeration lists the members its `<-typeOf` listing
+read, up to a cap; a base enumeration lists only the members StatVar rows use. `complete` is
+true only when the build listed the class from the graph and the listing read every member,
+so `members` is every member the graph holds; a list it is false on holds some of them.
 
 `OntologyTerms` holds `generation`, null where the token is unknown, and `terms`, every Class and Property on the graph with
 its `name`, `types` (`Class`, `Property` or both), `provenances` and `declared_by`, sorted
@@ -92,8 +93,9 @@ class OntologyEnumeration(ResponseModel):
     """The members of an enumeration Class."""
 
     members: list[str] = Field(description="the dcids of the members listed, sorted")
-    truncated: bool = Field(
-        description="true when the member read stopped at its cap; `members` holds those read"
+    complete: bool = Field(
+        description="true when `members` is every member the graph holds: the class was listed "
+        "from the graph and the listing read all of them; false when it holds some of them"
     )
 
 

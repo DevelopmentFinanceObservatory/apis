@@ -7,7 +7,7 @@ from collections.abc import Callable
 import pytest
 
 from code_index import CodeIndex
-from dc_graph import UNRESOLVED_NODE, ArcSubject, ArcTarget
+from dc_graph import ArcSubject, ArcTarget
 from graph_api import ontology_document
 from graph_api.ontology_document import (
     OntologyListingTruncatedError,
@@ -19,7 +19,6 @@ from graph_api.ontology_models import OntologyNode
 
 from .conftest import FakeGraphNodeReader
 from .ontology_fixture import (
-    ARC_TARGETS,
     CRS_MEMBERS,
     DFO,
     INDEX,
@@ -30,6 +29,7 @@ from .ontology_fixture import (
     index_of,
     index_row,
     listing,
+    node_targets,
     ontology_graph,
 )
 
@@ -75,7 +75,6 @@ def test_document_holds_instance_terms_their_references_index_names_and_ancestor
         "CodeKind": {"typeOf": ("Class",)},
     }
     arc_targets = {
-        **ARC_TARGETS,
         "CRSPurposeCode120": {
             "typeOf": (
                 ArcTarget(value="CRSPurposeCodeEnum", provenances=(DFO,)),
@@ -112,39 +111,6 @@ def test_document_holds_instance_terms_their_references_index_names_and_ancestor
     assert nodes["CRSPurposeCode120"].provenances == [DFO, _OTHER]
 
 
-class _RecordingReader(FakeGraphNodeReader):
-    """Records every dcid `node_arcs_many` is asked for."""
-
-    def __init__(self, **kwargs: object) -> None:
-        super().__init__(**kwargs)  # type: ignore[arg-type]
-        self.requested: set[str] = set()
-
-    def node_arcs_many(self, dcids, *, properties, deadline=None):
-        self.requested.update(dcids)
-        return super().node_arcs_many(dcids, properties=properties, deadline=deadline)
-
-
-def test_an_unresolved_value_is_dropped_where_the_arcs_are_read() -> None:
-    graph_nodes = {
-        **NODES,
-        "crsPurpose": {
-            **NODES["crsPurpose"],
-            "description": (UNRESOLVED_NODE,),
-            "rangeIncludes": (UNRESOLVED_NODE, "CRSPurposeCodeEnum"),
-        },
-    }
-    graph = _RecordingReader(
-        nodes=graph_nodes, arc_subjects=arc_subjects(), arc_targets=ARC_TARGETS
-    )
-
-    nodes = _nodes(graph)
-
-    crs = nodes["crsPurpose"]
-    assert (crs.description, crs.range_includes) == (None, ["CRSPurposeCodeEnum"])
-    assert UNRESOLVED_NODE not in graph.requested
-    assert all(UNRESOLVED_NODE not in node.model_dump_json() for node in nodes.values())
-
-
 def test_a_dcid_the_graph_does_not_hold_stays_in_the_arc_only() -> None:
     nodes = _nodes(ontology_graph())
 
@@ -170,7 +136,7 @@ def test_node_fields_and_declaring_provenances() -> None:
     assert nodes["CRSPurposeCode12220"].classification_code == ["12220"]
     assert (nodes["amount"].provenances, nodes["amount"].declared_by) == ([SCHEMA], "base")
     assert nodes["EconomicActivity"].declared_by == "base"
-    # Nodes outside the listings take their provenances from their typeOf targets.
+    # Every node takes its provenances from the typeOf targets of its own read.
     assert (nodes["Female"].provenances, nodes["Female"].declared_by) == (
         ["dc/base/Census"],
         "base",
@@ -185,7 +151,7 @@ def test_enumerations_are_marked_and_list_members() -> None:
     assert enumerations == {"CRSPurposeCodeEnum", "FinancingPurposeEnum", "GenderType"}
     crs = nodes["CRSPurposeCodeEnum"].enumeration
     assert crs is not None
-    assert (crs.members, crs.truncated) == (["CRSPurposeCode120", "CRSPurposeCode12220"], False)
+    assert (crs.members, crs.complete) == (["CRSPurposeCode120", "CRSPurposeCode12220"], True)
     assert nodes["CRSPurposeCode120"].name == "Education"
     assert nodes["CRSPurposeCode120"].provenances == [DFO]
     # An instance enumeration with no members of its own lists none.
@@ -206,17 +172,20 @@ def test_a_base_enumeration_lists_only_members_the_index_uses() -> None:
     gender = nodes["GenderType"]
     assert (gender.declared_by, gender.sub_class_of) == ("base", ["Enumeration"])
     assert gender.enumeration is not None
-    assert gender.enumeration.members == ["Female"]
+    # The members StatVar rows use are some of the members the graph holds.
+    assert (gender.enumeration.members, gender.enumeration.complete) == (["Female"], False)
     assert "Male" not in nodes
 
 
-def test_an_enumeration_over_the_member_cap_is_truncated(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_an_enumeration_over_the_member_cap_is_not_complete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(ontology_document, "ENUMERATION_MEMBER_CAP", 1)
 
     crs = _nodes(ontology_graph())["CRSPurposeCodeEnum"].enumeration
 
     assert crs is not None
-    assert (crs.members, crs.truncated) == (["CRSPurposeCode12220"], True)
+    assert (crs.members, crs.complete) == (["CRSPurposeCode12220"], False)
 
 
 def test_a_truncated_listing_refuses(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -250,21 +219,12 @@ def test_a_held_node_with_no_type_is_served_with_no_provenance() -> None:
     untyped = {node.dcid: node for node in ontology.document.nodes}["UntypedValue"]
     assert (untyped.types, untyped.provenances, untyped.declared_by) == ([], [], None)
     assert '"declared_by":null' in untyped.model_dump_json()
-    # The client confirms the empty answer, so the build reads it as untyped.
-    assert graph.confirm_empty == [True]
+    # The client confirms every empty answer, so the build reads a node held as held.
+    assert graph.confirm_empty and all(graph.confirm_empty)
 
 
-@pytest.mark.parametrize(
-    "female",
-    [
-        pytest.param({"typeOf": (ArcTarget(value="GenderType"),)}, id="target-unsourced"),
-        pytest.param(None, id="targets-unread"),
-    ],
-)
-def test_a_typed_node_with_no_provenance_refuses(female: object) -> None:
-    arc_targets = {dcid: targets for dcid, targets in ARC_TARGETS.items() if dcid != "Female"}
-    if female is not None:
-        arc_targets["Female"] = female  # type: ignore[assignment]
+def test_a_typed_node_with_no_provenance_refuses() -> None:
+    arc_targets = {"Female": {"typeOf": (ArcTarget(value="GenderType"),)}}
 
     with pytest.raises(OntologyProvenanceUnreadError) as refused:
         _nodes(ontology_graph(arc_targets=arc_targets))
@@ -272,7 +232,7 @@ def test_a_typed_node_with_no_provenance_refuses(female: object) -> None:
     assert refused.value.dcid == "Female"
 
 
-def test_a_term_that_is_also_a_member_keeps_every_provenance() -> None:
+def test_a_term_that_is_also_a_member_is_declared_by_its_node_read_and_its_listing() -> None:
     # amount is a base Property and an instance member of CRSPurposeCodeEnum.
     graph_nodes = {
         **NODES,
@@ -282,9 +242,15 @@ def test_a_term_that_is_also_a_member_keeps_every_provenance() -> None:
         *CRS_MEMBERS,
         ArcSubject(dcid="amount", names=(), types=("CRSPurposeCodeEnum",), provenances=(DFO,)),
     )
+    amount = {
+        "typeOf": (
+            ArcTarget(value="Property", provenances=(SCHEMA,)),
+            ArcTarget(value="CRSPurposeCodeEnum", provenances=(DFO,)),
+        )
+    }
 
     ontology = build_ontology(
-        reader=ontology_graph(nodes=graph_nodes, members=members),
+        reader=ontology_graph(nodes=graph_nodes, members=members, arc_targets={"amount": amount}),
         code_index=INDEX,
         generation="g1",
         deadline=_DEADLINE,
@@ -292,14 +258,15 @@ def test_a_term_that_is_also_a_member_keeps_every_provenance() -> None:
 
     node = {node.dcid: node for node in ontology.document.nodes}["amount"]
     term = {term.dcid: term for term in ontology.terms.terms}["amount"]
+    # The node's provenances come from its own read, the term's from its Property listing.
     assert (node.provenances, node.declared_by) == ([SCHEMA, DFO], "instance")
-    assert (term.provenances, term.declared_by) == (node.provenances, node.declared_by)
+    assert (term.provenances, term.declared_by) == ([SCHEMA], "base")
 
 
 def test_terms_list_every_class_and_property() -> None:
     graph = FakeGraphNodeReader(
         nodes=NODES,
-        arc_targets=ARC_TARGETS,
+        arc_targets=node_targets(NODES),
         arc_subjects={
             **arc_subjects(),
             ("Property", "typeOf"): [
@@ -371,14 +338,7 @@ def test_reads_are_bounded_by_hierarchy_depth_not_node_count() -> None:
         **{dcid: {"typeOf": ("Property",), "domainIncludes": ("FinancialFlow",)} for dcid in extra},
         **{f"extraValue{i}": {"typeOf": ("StatType",)} for i in range(50)},
     }
-    extra_targets = {
-        **ARC_TARGETS,
-        **{
-            f"extraValue{i}": {"typeOf": (ArcTarget(value="StatType", provenances=(DFO,)),)}
-            for i in range(50)
-        },
-    }
-    large = ontology_graph(terms={**TERMS, **extra}, nodes=extra_nodes, arc_targets=extra_targets)
+    large = ontology_graph(terms={**TERMS, **extra}, nodes=extra_nodes)
     rows = [index_row(f"Extra{i}", {f"extraProperty{i}": f"extraValue{i}"}) for i in range(50)]
     large_nodes = _nodes(large, index_of(*INDEX.statvars, *rows))
 
@@ -386,9 +346,9 @@ def test_reads_are_bounded_by_hierarchy_depth_not_node_count() -> None:
     expected = {
         "node_arc_subjects": 2,  # Class and Property listings
         "node_arc_subjects_many": 1,  # members of every instance enumeration
-        # seed, three ancestor levels (EconomicActivity, Intangible, Thing), unread members
-        "node_arcs_many": 5,
-        "node_arc_targets_many": 1,  # provenances of nodes outside the listings
+        # Each node's values and provenances: the seed, three ancestor levels
+        # (EconomicActivity, Intangible, Thing) and the unread members.
+        "node_arc_targets_many": 5,
     }
     assert _read_counts(small) == expected
     assert _read_counts(large) == expected
@@ -417,5 +377,5 @@ def test_every_read_carries_the_deadline() -> None:
 
     build_ontology(reader=graph, code_index=INDEX, generation="g1", deadline=_DEADLINE)  # type: ignore[arg-type]
 
-    assert len(graph.deadlines) == sum(fake.calls.values()) == 9
+    assert len(graph.deadlines) == sum(fake.calls.values()) == 8
     assert set(graph.deadlines) == {_DEADLINE}

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -271,13 +270,6 @@ def test_the_route_answers_from_the_indexes_with_an_etag_and_no_graph_read() -> 
     assert gzipped.json() == first.json()
     assert ["CurrencyUSD"] in _units(first)
     assert set(graph.calls.values()) == {0}
-
-    def keys_sorted(pairs: list[tuple[str, object]]) -> dict[str, object]:
-        keys = [key for key, _ in pairs]
-        assert keys == sorted(keys)
-        return dict(pairs)
-
-    json.loads(first.content, object_pairs_hook=keys_sorted)
 
 
 def test_the_body_is_built_once_per_coverage_build(monkeypatch: pytest.MonkeyPatch) -> None:

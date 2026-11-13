@@ -2,26 +2,28 @@
 
 `build_ontology` reads `Class <-typeOf` and `Property <-typeOf` once each; every subject is a
 term. The document's seed is every term the instance declares plus every node a StatVar row
-of the code index names. One `node_arcs_many` reads the seed's arcs, and each further level
-reads the nodes not yet read that the instance's terms name in `subClassOf`,
+of the code index names. One `node_arc_targets_many` with `confirm_empty` reads the seed's node
+properties with the provenances that declare each value, and each further level reads the
+nodes not yet read that the instance's terms name in `subClassOf`,
 `subPropertyOf`, `domainIncludes` or `rangeIncludes`, the `typeOf` targets of every node
 read that is neither a Class nor a Property, and the `subClassOf` and `subPropertyOf`
 parents, so the class of every value is present and every ancestor is too. One
 `node_arc_subjects_many` lists the members of every instance-declared enumeration, and the
 members not yet read join the document with the same closure over their types and ancestors.
-One `node_arc_targets_many` reads the declaring provenances of every node outside the
-listings and of every node with a `typeOf` arc no listing read, with `confirm_empty`, so it
-confirms an empty answer before returning it: one more read of the empties together, then one
-read of each still empty alone. So the number of reads grows with the depth of the class and
-property hierarchy, plus one group read when any answer is empty and one read per node held
-with no `typeOf` arc.
+`confirm_empty` confirms an empty answer before returning it: one more read of the empties
+together, then one read of each still empty alone, and a dcid still empty is absent from the
+document. So the number of reads grows with the depth of the class and property hierarchy,
+plus a group read per level with an empty answer and one read per dcid the graph does not hold.
 
-A node's provenances are the union of those its listings and that read carry. Every term and
-every typed node carries at least one; a node held with no `typeOf` arc carries none and is
-declared by neither. A listing subject with none, or a `typeOf` arc read with none, refuses
-the build with `OntologyProvenanceUnreadError`. A value `node_arcs_many` marks
-`UNRESOLVED_NODE` is dropped where the arcs are read, so no member, description or followed
-dcid carries it.
+Each node's values and provenances come from that one read of the node. Its provenances are
+those declaring its `typeOf` arcs: every typed node carries at least one, and a node held with
+no `typeOf` arc carries none and is declared by neither. A term's provenances come from its
+listing entries. A listing subject with none, or a `typeOf` arc read with none, refuses the
+build with `OntologyProvenanceUnreadError`.
+
+An instance-declared enumeration's members are its `<-typeOf` listing, `complete` when the
+listing read every subject. A base enumeration lists the members StatVar rows use and is never
+`complete`.
 
 Every node, member and list of values is sorted, so two builds from the same graph serialise
 to the same bytes.
@@ -29,13 +31,12 @@ to the same bytes.
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Final, Literal
 
 from code_index import CodeIndex
-from code_index.query import row_five_tuple
-from dc_graph import UNRESOLVED_NODE, GraphReadError, display_name
+from dc_graph import GraphReadError, display_name
 from graph_api.ontology_models import (
     DeclaredBy,
     OntologyDocument,
@@ -53,7 +54,7 @@ reaches it raises `OntologyListingTruncatedError`."""
 
 ENUMERATION_MEMBER_CAP: Final[int] = 5_000
 """The most members read for one instance-declared enumeration. An enumeration with more is
-served with the members read and `truncated: true`."""
+served with the members read and `complete: false`."""
 
 _BASE_PREFIX: Final[str] = "dc/base/"
 _CLASS: Final = "Class"
@@ -148,25 +149,25 @@ def build_ontology(
     index_named = _index_named(code_index)
 
     arcs: dict[str, _Arcs] = {}
+    # Each node's provenances, read with its arcs.
+    provenances: dict[str, frozenset[str]] = {}
     absent: set[str] = set()
-    _read_nodes(reader, instance_terms | index_named, arcs=arcs, absent=absent, deadline=deadline)
-    _close(
+    read = _NodeReads(
         reader,
-        _named(arcs, instance_terms, _SCHEMA_ARCS) | _next_level(arcs, arcs.keys(), listed),
-        arcs=arcs,
-        absent=absent,
         listed=listed,
+        arcs=arcs,
+        provenances=provenances,
+        absent=absent,
         deadline=deadline,
     )
+    read.nodes(instance_terms | index_named)
+    read.close(_named(arcs, instance_terms, _SCHEMA_ARCS) | _next_level(arcs, arcs.keys(), listed))
 
     instance_enumerations = sorted(
         dcid
         for dcid in instance_terms
         if dcid in arcs and _CLASS in listed[dcid].kinds and _reaches_enumeration(dcid, arcs)
     )
-    # Each dcid's declaring provenances, and the typeOf targets a listing read them for.
-    provenances = {dcid: set(term.provenances) for dcid, term in listed.items()}
-    covered: dict[str, set[str]] = {dcid: set(term.kinds) for dcid, term in listed.items()}
     members: dict[str, OntologyEnumeration] = {}
     listed_members: set[str] = set()
     if instance_enumerations:
@@ -178,25 +179,13 @@ def build_ontology(
         )
         for enumeration in instance_enumerations:
             subjects, coverage = listings[enumeration]
-            for subject in subjects:
-                listed_members.add(subject.dcid)
-                if subject.provenances:
-                    provenances.setdefault(subject.dcid, set()).update(subject.provenances)
-                    covered.setdefault(subject.dcid, set()).add(enumeration)
+            listed_members.update(subject.dcid for subject in subjects)
             members[enumeration] = OntologyEnumeration(
                 members=sorted({subject.dcid for subject in subjects}),
-                truncated=coverage != "complete",
+                complete=coverage == "complete",
             )
     if unread_members := listed_members - arcs.keys() - absent:
-        read = _read_nodes(reader, unread_members, arcs=arcs, absent=absent, deadline=deadline)
-        _close(
-            reader,
-            _next_level(arcs, read, listed),
-            arcs=arcs,
-            absent=absent,
-            listed=listed,
-            deadline=deadline,
-        )
+        read.close(_next_level(arcs, read.nodes(unread_members), listed))
 
     enumerations = (
         dcid
@@ -211,18 +200,8 @@ def build_ontology(
                     for dcid in index_named
                     if dcid in arcs and enumeration in arcs[dcid][_TYPE_OF]
                 ),
-                truncated=False,
+                complete=False,
             )
-
-    unsourced = sorted(
-        dcid
-        for dcid in arcs
-        if not provenances.get(dcid) or not covered[dcid].issuperset(arcs[dcid][_TYPE_OF])
-    )
-    for dcid, found in _read_provenances(reader, unsourced, deadline=deadline).items():
-        if not found and arcs[dcid][_TYPE_OF]:
-            raise OntologyProvenanceUnreadError(dcid)
-        provenances.setdefault(dcid, set()).update(found)
 
     nodes = [_node(dcid, arcs[dcid], provenances[dcid], members.get(dcid)) for dcid in sorted(arcs)]
     terms = [
@@ -230,8 +209,8 @@ def build_ontology(
             dcid=dcid,
             name=display_name(term.names, dcid),
             types=sorted(term.kinds),
-            provenances=sorted(provenances[dcid]),
-            declared_by=declared_by(provenances[dcid]),
+            provenances=sorted(term.provenances),
+            declared_by=declared_by(term.provenances),
         )
         for dcid, term in sorted(listed.items())
     ]
@@ -267,78 +246,59 @@ def _index_named(code_index: CodeIndex) -> set[str]:
     """Every node a StatVar row names in its five fields, constraints or observation roles."""
     named: set[str] = set()
     for row in (*code_index.statvars, *code_index.listed_statvars):
-        shape = row_five_tuple(row)
-        named.update(value for name in SHAPE_FIELDS if (value := getattr(shape, name)))
+        named.update(value for name in SHAPE_FIELDS if (value := getattr(row, name)))
         named.update(row.constraint_properties.keys())
         named.update(row.constraint_properties.values())
         named.update(row.observation_properties)
     return named
 
 
-def _read_nodes(
-    reader: GraphNodeReader,
-    dcids: Collection[str],
-    *,
-    arcs: dict[str, _Arcs],
-    absent: set[str],
-    deadline: float,
-) -> set[str]:
-    """Read `dcids`' node properties in one batch into `arcs`, or `absent` where the graph
-    holds no node, dropping every `UNRESOLVED_NODE` value. Returns the dcids held."""
-    read = reader.node_arcs_many(sorted(dcids), properties=_NODE_PROPERTIES, deadline=deadline)
-    held: set[str] = set()
-    for dcid in dcids:
-        entry = read.get(dcid)
-        if entry is None:
-            absent.add(dcid)
-            continue
-        arcs[dcid] = {
-            prop: tuple(value for value in entry.get(prop, ()) if value != UNRESOLVED_NODE)
-            for prop in _NODE_PROPERTIES
-        }
-        held.add(dcid)
-    return held
+@dataclass(frozen=True, slots=True)
+class _NodeReads:
+    """The build's node reads, each filling `arcs` and `provenances` or `absent`. `listed` is
+    every listed term, whose `typeOf` targets the closure does not follow."""
 
+    reader: GraphNodeReader
+    listed: Collection[str]
+    arcs: dict[str, _Arcs]
+    provenances: dict[str, frozenset[str]]
+    absent: set[str]
+    deadline: float
 
-def _close(
-    reader: GraphNodeReader,
-    frontier: set[str],
-    *,
-    arcs: dict[str, _Arcs],
-    absent: set[str],
-    listed: Collection[str],
-    deadline: float,
-) -> None:
-    """Read `frontier` and each `_next_level` after it into `arcs` until no node is left
-    unread."""
-    while frontier := frontier - arcs.keys() - absent:
-        read = _read_nodes(reader, frontier, arcs=arcs, absent=absent, deadline=deadline)
-        frontier = _next_level(arcs, read, listed)
+    def nodes(self, dcids: Collection[str]) -> set[str]:
+        """Read `dcids`' node properties and the provenances declaring each value in one
+        `node_arc_targets_many` with `confirm_empty`, so an answer of none is the graph's
+        answer for the dcid read alone and the dcid joins `absent`. Returns the dcids held.
 
+        Raises:
+            OntologyProvenanceUnreadError: a `typeOf` target of a dcid carries no provenance.
+        """
+        read = self.reader.node_arc_targets_many(
+            sorted(dcids), properties=_NODE_PROPERTIES, confirm_empty=True, deadline=self.deadline
+        )
+        held: set[str] = set()
+        for dcid in dcids:
+            entry = read.get(dcid)
+            if entry is None:
+                self.absent.add(dcid)
+                continue
+            types = entry.get(_TYPE_OF, ())
+            if any(not target.provenances for target in types):
+                raise OntologyProvenanceUnreadError(dcid)
+            self.arcs[dcid] = {
+                prop: tuple(target.value for target in entry.get(prop, ()))
+                for prop in _NODE_PROPERTIES
+            }
+            self.provenances[dcid] = frozenset(
+                provenance for target in types for provenance in target.provenances
+            )
+            held.add(dcid)
+        return held
 
-def _read_provenances(
-    reader: GraphNodeReader, dcids: Sequence[str], *, deadline: float
-) -> dict[str, set[str]]:
-    """The provenances declaring each of `dcids`' `typeOf` arcs, read in one
-    `node_arc_targets_many` with `confirm_empty`, so an empty answer is the graph's answer for
-    the dcid read alone. A dcid
-    answered with no `typeOf` target, a node held untyped, maps to an empty set.
-
-    Raises:
-        OntologyProvenanceUnreadError: a `typeOf` target of a dcid carries no provenance.
-    """
-    if not dcids:
-        return {}
-    read = reader.node_arc_targets_many(
-        dcids, properties=(_TYPE_OF,), confirm_empty=True, deadline=deadline
-    )
-    found: dict[str, set[str]] = {}
-    for dcid in dcids:
-        targets = (read.get(dcid) or {}).get(_TYPE_OF, ())
-        if any(not target.provenances for target in targets):
-            raise OntologyProvenanceUnreadError(dcid)
-        found[dcid] = {provenance for target in targets for provenance in target.provenances}
-    return found
+    def close(self, frontier: set[str]) -> None:
+        """Read `frontier` and each `_next_level` after it until no node is left unread."""
+        while frontier := frontier - self.arcs.keys() - self.absent:
+            frontier = _next_level(self.arcs, self.nodes(frontier), self.listed)
 
 
 def _named(arcs: Mapping[str, _Arcs], dcids: Iterable[str], properties: Iterable[str]) -> set[str]:

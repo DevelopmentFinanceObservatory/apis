@@ -105,10 +105,13 @@ GENDER_MEMBERS = tuple(
     for dcid in ("Female", "Male")
 )
 
-ARC_TARGETS: dict[str, dict[str, tuple[ArcTarget, ...]]] = {
-    "measuredValue": {"typeOf": (ArcTarget(value="StatType", provenances=(SCHEMA,)),)},
-    "Female": {"typeOf": (ArcTarget(value="GenderType", provenances=("dc/base/Census",)),)},
+TYPE_PROVENANCES: dict[str, tuple[str, ...]] = {
+    "CRSPurposeCode120": (DFO,),
+    "CRSPurposeCode12220": (DFO,),
+    "Female": ("dc/base/Census",),
 }
+"""The provenances declaring a node's `typeOf` arcs where they differ from its term listing's,
+or from `SCHEMA` for a node that is not a term."""
 
 STAMP = IndexStamp(
     graph_endpoint="test",
@@ -168,15 +171,40 @@ def arc_subjects(
     }
 
 
+def node_targets(
+    nodes: Mapping[str, Mapping[str, tuple[str, ...]]],
+    terms: Mapping[str, tuple[str, tuple[str, ...]]] = TERMS,
+) -> dict[str, dict[str, tuple[ArcTarget, ...]]]:
+    """Each node's arcs as `node_arc_targets_many` reads them: every `typeOf` target declared by
+    the node's `TYPE_PROVENANCES`, its term listing's provenances or `SCHEMA`, in that order,
+    and every other value with no provenance. A node holding no value is left out, as the graph
+    answers it."""
+    targets: dict[str, dict[str, tuple[ArcTarget, ...]]] = {}
+    for dcid, arcs in nodes.items():
+        if not any(arcs.values()):
+            continue
+        declared = TYPE_PROVENANCES.get(dcid) or (terms[dcid][1] if dcid in terms else (SCHEMA,))
+        targets[dcid] = {
+            prop: tuple(
+                ArcTarget(value=value, provenances=declared if prop == "typeOf" else ())
+                for value in values
+            )
+            for prop, values in arcs.items()
+        }
+    return targets
+
+
 def ontology_graph(
     *,
     terms: Mapping[str, tuple[str, tuple[str, ...]]] = TERMS,
     nodes: Mapping[str, Mapping[str, tuple[str, ...]]] = NODES,
     members: Sequence[ArcSubject] = CRS_MEMBERS,
-    arc_targets: Mapping[str, Mapping[str, Sequence[ArcTarget]]] = ARC_TARGETS,
+    arc_targets: Mapping[str, Mapping[str, Sequence[ArcTarget]]] = {},
 ) -> FakeGraphNodeReader:
+    """The fake graph over `nodes`, whose node reads `node_targets` answers, with `arc_targets`
+    replacing a node's read where it names the node."""
     return FakeGraphNodeReader(
         nodes=nodes,
         arc_subjects=arc_subjects(terms=terms, members=members),
-        arc_targets=arc_targets,
+        arc_targets={**node_targets(nodes, terms), **arc_targets},
     )

@@ -99,8 +99,9 @@ class _Node:
 @dataclass(frozen=True)
 class OntologyLookup:
     """The ontology document's nodes as the check reads them, and the classes whose instances
-    the document lists in full: instance-declared enumerations listed in full whose every
-    enumeration below them in the document by `subClassOf` is one too."""
+    the document lists in full: enumerations whose `complete` member list is every member the
+    graph holds, and whose every enumeration below them in the document by `subClassOf` is
+    complete too."""
 
     nodes: Mapping[str, _Node]
     listed_in_full: frozenset[str]
@@ -121,9 +122,7 @@ class OntologyLookup:
         full = {
             node.dcid
             for node in enumerations
-            if node.declared_by == "instance"
-            and node.enumeration is not None
-            and not node.enumeration.truncated
+            if node.enumeration is not None and node.enumeration.complete
         }
         for node in enumerations:
             if node.dcid not in full:

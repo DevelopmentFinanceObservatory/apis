@@ -46,7 +46,7 @@ from materialise.facet_profile import FacetProfileCache
 if TYPE_CHECKING:
     # `card_reads` imports this module's executor refusals.
     from graph_api.card_reads import CardReadCaches
-    from graph_api.doors.ontology import FrozenOntology, OntologyKey
+    from graph_api.doors.ontology import OntologyEntry, OntologyKey
     from materialise.provenance_doc import ProvenanceDoc
     from series_coverage.shared import ServedCoverage
 
@@ -79,10 +79,11 @@ class GraphDeps:
     card_reads: CardReadCaches | None = None
     # The envelopes the node routes built, keyed by generation stamp, table builds and dcid.
     node_entries: NodeEntryCache = field(default_factory=NodeEntryCache)
-    # The ontology routes' built bodies, one entry keyed by generation token and code index.
+    # The ontology routes' built bodies or kept refusal, one entry keyed by generation token and
+    # code index.
     # The lifespan's cache builds on `dcp_executor`; this default has no executor, so a build
     # through it fails.
-    ontology: SingleFlightCache[OntologyKey, FrozenOntology] = field(
+    ontology: SingleFlightCache[OntologyKey, OntologyEntry] = field(
         default_factory=lambda: SingleFlightCache(
             maxsize=1, flight_timeout_s=ONTOLOGY_FLIGHT_TIMEOUT_SECONDS
         )

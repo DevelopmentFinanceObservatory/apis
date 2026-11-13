@@ -852,12 +852,12 @@ A node carries `dcid`, `name`, `description`, `types`, `alternate_name`, `sub_cl
 
 - `name` follows `dc_graph.display_name`: the greatest `name` value by code point, with a name equal to the dcid counting as none. It is `null` when the graph gives no name.
 - `description` is the smallest `description` value by code point, or `null`.
-- `provenances` lists the Provenances that declare the node's `typeOf` arcs, verbatim: those of a Class or Property listing, of an enumeration member listing, and of any other `typeOf` arc the node has. `declared_by` is `"base"` when every one starts `dc/base/`, and `"instance"` otherwise. A node the graph holds with no `typeOf` arc has no declaring Provenance, so its `provenances` is empty and its `declared_by` is `null`. A build that reads a `typeOf` arc with no declaring Provenance refuses with a non-retryable `503`.
-- `enumeration` is `{members, truncated}` on a Class whose `subClassOf` chain reaches `Enumeration`, and `null` on every other node. An instance-declared enumeration lists every member the graph holds; a base enumeration lists only the members StatVar rows use. `truncated` is `true` when the member read stopped at its cap.
+- `provenances` lists the Provenances that declare the node's `typeOf` arcs, verbatim, read with the node's values in one live read of the node. `declared_by` is `"base"` when every one starts `dc/base/`, and `"instance"` otherwise. A node the graph holds with no `typeOf` arc has no declaring Provenance, so its `provenances` is empty and its `declared_by` is `null`. A build that reads a `typeOf` arc with no declaring Provenance refuses with a non-retryable `503`.
+- `enumeration` is `{members, complete}` on a Class whose `subClassOf` chain reaches `Enumeration`, and `null` on every other node. An instance-declared enumeration lists the members its `<-typeOf` listing read, up to 5,000. A base enumeration lists only the members StatVar rows use. `complete` is `true` only when the build listed the class from the graph and the listing read every member, so `members` is every member the graph holds. Where it is `false`, `members` holds some of them.
 
-One build yields this body and the terms body. It runs as a single job on the DCP-read executor, holding one worker, and its result is kept in a single-flight cache of one entry keyed by the graph generation token and the content hash of the code index. A generation change clears it. Concurrent requests share one build. A request waits up to `GRAPH_NODE_TIMEOUT_SECONDS`; the build itself may run for 60 s (`graph_api.config.ONTOLOGY_FLIGHT_TIMEOUT_SECONDS`).
+One build yields this body and the terms body. It runs as a single job on the DCP-read executor, holding one worker, and its result is kept in a single-flight cache of one entry keyed by the graph generation token and the content hash of the code index. A generation change clears it. Concurrent requests share one build. A request waits up to `GRAPH_NODE_TIMEOUT_SECONDS`. The build itself may run for 60 s (`graph_api.config.ONTOLOGY_FLIGHT_TIMEOUT_SECONDS`).
 
-Each body is encoded once with its keys sorted, so two builds of one graph give the same bytes. The route answers `public, max-age=300` with a strong `ETag` and a gzip representation, and honours `If-None-Match` with `304`.
+Each body is encoded once with its keys in the models' field order and every list sorted, so two builds of one graph give the same bytes. The route answers `public, max-age=300` with a strong `ETag` and a gzip representation, and honours `If-None-Match` with `304`.
 
 Failures:
 
@@ -867,13 +867,19 @@ Failures:
 - `502 upstream_error`: a DCP read answered 4xx.
 - `503 service_unavailable`, retryable: any other read failure, or every DCP-read worker busy.
 
-A failed build is not kept. The example keeps two nodes; a served document lists every member.
+A refusal that is not retryable cannot change within the graph generation, so the cache keeps it and answers every request with the same `503` until the generation changes. Any other failed build is not kept. The example keeps two nodes. A served document lists every member.
 
 ```json
 {
   "generation": "graph_<token>",
   "nodes": [
     {
+      "dcid": "CRSPurposeCode12220",
+      "name": "basic health care (CRS Purpose)",
+      "description": "Basic and primary health care programmes; paramedical and nursing care programmes; supply of drugs, medicines, and vaccines related to basic health care; and activities aimed at achieving universal health coverage.",
+      "types": [
+        "CRSPurposeCodeEnum"
+      ],
       "alternate_name": [
         "PHC",
         "UHC",
@@ -882,53 +888,47 @@ A failed build is not kept. The example keeps two nodes; a served document lists
         "primary health care",
         "universal health coverage"
       ],
-      "classification_code": [
-        "12220"
-      ],
-      "dcid": "CRSPurposeCode12220",
-      "declared_by": "instance",
-      "description": "Basic and primary health care programmes; paramedical and nursing care programmes; supply of drugs, medicines, and vaccines related to basic health care; and activities aimed at achieving universal health coverage.",
-      "domain_includes": [],
-      "enumeration": null,
-      "name": "basic health care (CRS Purpose)",
-      "provenances": [
-        "provenance/DFOOntology"
-      ],
-      "range_includes": [],
+      "sub_class_of": [],
+      "sub_property_of": [],
       "specialization_of": [
         "CRSPurposeCode122"
       ],
-      "sub_class_of": [],
-      "sub_property_of": [],
-      "types": [
-        "CRSPurposeCodeEnum"
-      ]
-    },
-    {
-      "alternate_name": [],
-      "classification_code": [],
-      "dcid": "crsPurpose",
-      "declared_by": "instance",
-      "description": "The activity's purpose stated as a CRS purpose code. Narrows financing purpose.",
-      "domain_includes": [
-        "FinancingEvent"
+      "domain_includes": [],
+      "range_includes": [],
+      "classification_code": [
+        "12220"
       ],
-      "enumeration": null,
-      "name": "CRS purpose",
       "provenances": [
         "provenance/DFOOntology"
       ],
-      "range_includes": [
-        "CRSPurposeCodeEnum"
+      "declared_by": "instance",
+      "enumeration": null
+    },
+    {
+      "dcid": "crsPurpose",
+      "name": "CRS purpose",
+      "description": "The activity's purpose stated as a CRS purpose code. Narrows financing purpose.",
+      "types": [
+        "Property"
       ],
-      "specialization_of": [],
+      "alternate_name": [],
       "sub_class_of": [],
       "sub_property_of": [
         "financingPurpose"
       ],
-      "types": [
-        "Property"
-      ]
+      "specialization_of": [],
+      "domain_includes": [
+        "FinancingEvent"
+      ],
+      "range_includes": [
+        "CRSPurposeCodeEnum"
+      ],
+      "classification_code": [],
+      "provenances": [
+        "provenance/DFOOntology"
+      ],
+      "declared_by": "instance",
+      "enumeration": null
     }
   ]
 }
@@ -948,25 +948,25 @@ The route reads the same cached build as `GET /api/graph/ontology`, so its cachi
   "terms": [
     {
       "dcid": "amount",
-      "declared_by": "base",
       "name": null,
+      "types": [
+        "Property"
+      ],
       "provenances": [
         "dc/base/Schema"
       ],
-      "types": [
-        "Property"
-      ]
+      "declared_by": "base"
     },
     {
       "dcid": "crsPurpose",
-      "declared_by": "instance",
       "name": "CRS purpose",
+      "types": [
+        "Property"
+      ],
       "provenances": [
         "provenance/DFOOntology"
       ],
-      "types": [
-        "Property"
-      ]
+      "declared_by": "instance"
     }
   ]
 }
@@ -986,72 +986,72 @@ An entry holds:
 - `constraint_values`: for each constraint property the StatVars set, sorted by `property`, the `values` it takes, each `{value, stat_var_count}`, sorted by value.
 - `facets`: `units`, `scaling_factors`, `measurement_methods`, `observation_periods` (ISO 8601 durations such as `P1Y`) and `currencies` (ISO 4217 codes) read from the Provenance's coverage series, each list sorted and distinct, and empty where coverage holds nothing.
 
-The body is built once per code index and coverage build and kept; a request that finds another coverage build rebuilds it. It answers `public, max-age=300` with a strong `ETag`, a gzip representation and `304` on `If-None-Match`. The example is abridged: it keeps the first pattern and the first two values of the first constraint property, and `...` marks each cut list.
+The body is built once per code index and coverage build and kept. A request that finds another coverage build rebuilds it. It answers `public, max-age=300` with a strong `ETag`, a gzip representation and `304` on `If-None-Match`. The example is abridged: it keeps the first pattern and the first two values of the first constraint property, and `...` marks each cut list.
 
 ```json
 {
   "provenances": [
     {
-      "constraint_values": [
-        {
-          "property": "dac2bAidType",
-          "values": [
-            {
-              "stat_var_count": 1,
-              "value": "DAC2bAidType201"
-            },
-            {
-              "stat_var_count": 1,
-              "value": "DAC2bAidType204"
-            },
-            ...
-          ]
-        },
-        ...
-      ],
       "dcid": "provenance/OECDDAC2B",
-      "description": "Other official flows and officially supported export credits that providers report to the OECD, by recipient and type of flow.",
-      "facets": {
-        "currencies": [
-          "USD"
-        ],
-        "measurement_methods": [],
-        "observation_periods": [
-          "P1Y"
-        ],
-        "scaling_factors": [],
-        "units": [
-          "CurrencyUSD"
-        ]
-      },
       "label": "OECD DAC2b",
+      "description": "Other official flows and officially supported export credits that providers report to the OECD, by recipient and type of flow.",
+      "stat_var_count": 14,
       "patterns": [
         {
+          "population_type": "FinancialFlow",
+          "measured_property": "amount",
+          "stat_type": "measuredValue",
+          "measurement_qualifier": "Nominal",
+          "measurement_denominator": null,
           "constraint_properties": [
             "dac2bAidType",
             "dacTypeOfFinance",
             "financialFlowType",
             "nettingBasis"
           ],
-          "examples": [
-            "Amount_FinancialFlow_Gross_Disbursement_DACTypeOfFinanceGrants_DAC2bAidType201_Nominal",
-            "Amount_FinancialFlow_Gross_Disbursement_DACTypeOfFinanceNonGrants_DAC2bAidType204_Nominal",
-            "Amount_FinancialFlow_Gross_Disbursement_DACTypeOfFinanceNonGrants_DAC2bAidType292_Nominal"
-          ],
-          "measured_property": "amount",
-          "measurement_denominator": null,
-          "measurement_qualifier": "Nominal",
           "observation_properties": [
             "financingProvider",
             "financingRecipient"
           ],
-          "population_type": "FinancialFlow",
-          "stat_type": "measuredValue",
-          "stat_var_count": 10
+          "stat_var_count": 10,
+          "examples": [
+            "Amount_FinancialFlow_Gross_Disbursement_DACTypeOfFinanceGrants_DAC2bAidType201_Nominal",
+            "Amount_FinancialFlow_Gross_Disbursement_DACTypeOfFinanceNonGrants_DAC2bAidType204_Nominal",
+            "Amount_FinancialFlow_Gross_Disbursement_DACTypeOfFinanceNonGrants_DAC2bAidType292_Nominal"
+          ]
         },
         ...
       ],
-      "stat_var_count": 14
+      "constraint_values": [
+        {
+          "property": "dac2bAidType",
+          "values": [
+            {
+              "value": "DAC2bAidType201",
+              "stat_var_count": 1
+            },
+            {
+              "value": "DAC2bAidType204",
+              "stat_var_count": 1
+            },
+            ...
+          ]
+        },
+        ...
+      ],
+      "facets": {
+        "units": [
+          "CurrencyUSD"
+        ],
+        "scaling_factors": [],
+        "measurement_methods": [],
+        "observation_periods": [
+          "P1Y"
+        ],
+        "currencies": [
+          "USD"
+        ]
+      }
     },
     ...
   ]
@@ -1072,7 +1072,7 @@ A row holds:
 - `constraint_properties`: a map of constraint property to value node. A number, a boolean, a string outside dcid syntax or `null` is a fault.
 - `observation_properties`: a list of property dcids.
 
-The shape fields, constraint properties and observation properties take the node route's dcid syntax. The route answers each node a row names from the cached ontology document and reads every other named id once from the graph, every out-arc of each node, and reads no ancestry. The reads come in two rounds: the first reads the shape fields, constraint properties and observation properties outside the document, with the values of constraint properties the document holds; the second reads the values of constraint properties the first found held. Each round is one batch; the empty answers of a batch of several are read again as a group, and each still empty alone. A request therefore sends at most two batches, two group retries and one read alone per id the graph does not hold. A node read with any out-arc is held, so a held node with no `typeOf` is `node_untyped` and a node read alone with no out-arc is `node_not_held`. A constraint value whose property is not a held `Property` is not read and gets no finding of its own: the property's finding marks the cell. Two kinds of constraint value need no read. A number, a boolean or a string outside dcid syntax is `node_not_held`. A value outside the document, on an instance property whose every `rangeIncludes` class is an instance-declared enumeration the document lists in full (not `truncated`), with every enumeration below it in the document by `subClassOf` listed in full too, is `value_outside_range`. A value on a property whose range enumeration or one of its sub-enumerations is truncated, whose range holds a class that is not such an enumeration, that has no range, or that the base declares is read. It waits on the same build as `GET /api/graph/ontology` and refuses with the same `503` and `504` outcomes when the build is not ready or a read fails; a failed read yields no findings. A constraint value must name a held node typed beyond `ProvisionalNode`, the test the code index export applies to a release. Range and domain rules apply only to a property whose `declared_by` is `"instance"`, and judge only through the document, which holds every `subClassOf` ancestor of each class it holds. A value is outside the range when every one of its types is a document node and none reaches a `rangeIncludes` class by `subClassOf`; a value with any type outside the document gets no range finding. A property is outside the domain when the population type is a document node that reaches no `domainIncludes` class the same way; a population type outside the document gets no domain finding. A property with no `rangeIncludes` or `domainIncludes` admits anything. The domain rule covers the measured property and the constraint properties, and is skipped when the row names no population type.
+The shape fields, constraint properties and observation properties take the node route's dcid syntax. The route answers each node a row names from the cached ontology document and reads every other named id once from the graph, every out-arc of each node, and reads no ancestry. The reads come in two rounds: the first reads the shape fields, constraint properties and observation properties outside the document, with the values of constraint properties the document holds; the second reads the values of constraint properties the first found held. Each round is one batch; the empty answers of a batch of several are read again as a group, and each still empty alone. A request therefore sends at most two batches, two group retries and one read alone per id the graph does not hold. A node read with any out-arc is held, so a held node with no `typeOf` is `node_untyped` and a node read alone with no out-arc is `node_not_held`. A constraint value whose property is not a held `Property` is not read and gets no finding of its own: the property's finding marks the cell. Two kinds of constraint value need no read. A number, a boolean or a string outside dcid syntax is `node_not_held`. A value outside the document, on an instance property whose every `rangeIncludes` class is an enumeration the document lists in full (`complete`), with every enumeration below it in the document by `subClassOf` listed in full too, is `value_outside_range`. A value on a property whose range enumeration or one of its sub-enumerations is not `complete`, whose range holds a class that is not such an enumeration, that has no range, or that the base declares is read. It waits on the same build as `GET /api/graph/ontology` and refuses with the same `503` and `504` outcomes when the build is not ready or a read fails; a failed read yields no findings. A constraint value must name a held node typed beyond `ProvisionalNode`, the test the code index export applies to a release. Range and domain rules apply only to a property whose `declared_by` is `"instance"`, and judge only through the document, which holds every `subClassOf` ancestor of each class it holds. A value is outside the range when every one of its types is a document node and none reaches a `rangeIncludes` class by `subClassOf`; a value with any type outside the document gets no range finding. A property is outside the domain when the population type is a document node that reaches no `domainIncludes` class the same way; a population type outside the document gets no domain finding. A property with no `rangeIncludes` or `domainIncludes` admits anything. The domain rule covers the measured property and the constraint properties, and is skipped when the row names no population type.
 
 The response is `{generation, row_count, findings}`. `generation` is the graph generation the rows were checked against, `null` when its token is unknown. Findings come in row order and are empty when no row has a fault. A finding is `{ref, field, value, code, severity}`. `field` is `population_type`, `measured_property`, `stat_type`, `measurement_qualifier`, `measurement_denominator`, `observation_properties`, or `constraint_properties.<property>` for a constraint property or its value. `value` is the value at fault; for `definition_differs` it is the value the code index serves (a sorted list for `observation_properties`, `null` where it serves none). The route sets no cache headers.
 
