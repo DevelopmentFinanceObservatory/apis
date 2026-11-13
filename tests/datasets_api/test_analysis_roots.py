@@ -472,6 +472,7 @@ def test_a_cut_that_leaves_nothing_out_names_a_frame_apart_and_replays_with_the_
         ).model_dump()
     )
     assert run(derived, latest=True)["roots"] == cut["roots"]
+    assert run({**root, "rendering": {"columns": [], "party_totals": False}}) == cut
 
 
 def test_a_frame_stored_before_its_root_pair_named_the_cut_answers_a_run_of_its_replay_key(

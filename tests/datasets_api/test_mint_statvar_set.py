@@ -519,6 +519,12 @@ class TestMalformedReshapeOptionsRefuseRequestInvalid:
                 "/options/columns",
                 id="columns-duplicate-entry",
             ),
+            pytest.param(
+                {"party_totals": False, "without_party_totals": False},
+                "/options/party_totals",
+                id="party-totals-contradicts-without-party-totals",
+            ),
+            pytest.param({"party_totals": None}, "/options/party_totals", id="party-totals-null"),
         ],
     )
     def test_malformed_options_refuse_request_invalid(self, options: dict, pointer: str):

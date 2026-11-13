@@ -166,6 +166,8 @@ def test_single_definition_mint_reads_the_cited_source_once():
             "label": "OECD Development Assistance Committee",
             "license": "Creative Commons Attribution License",
             "license_type": _LICENCE,
+            "licence": "Creative Commons Attribution License",
+            "licence_type": _LICENCE,
             "url": "https://data-explorer.oecd.org/",
             "documentation": _UNDOCUMENTED,
         }
@@ -204,6 +206,8 @@ def test_a_failed_documentation_read_mints_with_the_citation_and_no_documentatio
             "label": "OECD Development Assistance Committee",
             "license": "Creative Commons Attribution License",
             "license_type": _LICENCE,
+            "licence": "Creative Commons Attribution License",
+            "licence_type": _LICENCE,
             "url": "https://data-explorer.oecd.org/",
         }
     ]

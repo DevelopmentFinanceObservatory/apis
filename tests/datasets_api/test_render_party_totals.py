@@ -13,12 +13,14 @@ from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
 from code_index.types import PartyRow, RoleAxis, StatVarRow
 from datasets_api import render
 from datasets_api.mint_models import GroupbyOptions, MintOptions
+from datasets_api.operation_store import compute_operation_id
 from datasets_api.render import (
     RenderedDefinition,
     artifact_rendering,
     render_and_store,
     rendering_options,
 )
+from datasets_api.version_store import rendering_key
 from materialise.content_version import mint_version
 from materialise.enrichment import EnrichmentLookup
 from materialise.errors import OverCeilingError
@@ -250,3 +252,47 @@ def test_a_rendering_records_the_option_only_when_it_is_set():
     assert artifact_rendering(cut, site=SITE)["without_party_totals"] is True
     assert rendering_options(artifact_rendering(cut, site=SITE), site=SITE) == cut
     assert rendering_options(artifact_rendering(plain, site=SITE), site=SITE) == plain
+
+
+@pytest.mark.parametrize(
+    ("spellings", "expected"),
+    [
+        pytest.param(
+            [{"without_party_totals": True}, {"party_totals": False}],
+            {"without_party_totals": True},
+            id="cut",
+        ),
+        pytest.param(
+            [{}, {"without_party_totals": False}, {"party_totals": True}],
+            {},
+            id="default",
+        ),
+        pytest.param(
+            [{"party_totals": False, "without_party_totals": True}],
+            {"without_party_totals": True},
+            id="both-agreeing",
+        ),
+    ],
+)
+def test_party_totals_keys_the_rendering_its_without_party_totals_inverse_keys(
+    spellings: list[dict], expected: dict
+):
+    """Every key hashed from a rendering is that of the `without_party_totals` spelling, and
+    no rendering names `party_totals`."""
+    base = {"format": "parquet", "bundle": False}
+    reference = artifact_rendering(MintOptions.model_validate({**base, **expected}), site=SITE)
+
+    for spelling in spellings:
+        rendering = artifact_rendering(MintOptions.model_validate({**base, **spelling}), site=SITE)
+        assert rendering == reference
+        assert "party_totals" not in rendering
+        assert rendering_key(rendering) == rendering_key(reference)
+        assert compute_operation_id(
+            request_identity={"spec_id": _SPEC_ID},
+            origin_catalogue_build_id="build",
+            options=rendering,
+        ) == compute_operation_id(
+            request_identity={"spec_id": _SPEC_ID},
+            origin_catalogue_build_id="build",
+            options=reference,
+        )

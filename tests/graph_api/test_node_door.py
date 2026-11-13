@@ -223,8 +223,8 @@ class TestSourceShape:
         body = resp.json()
         assert body["kind"] == "provenance"
         provenance = body["provenance"]
-        assert provenance["license"] == "CC-BY-4.0"
-        assert provenance["license_type"] == "open"
+        assert provenance["licence"] == provenance["license"] == "CC-BY-4.0"
+        assert provenance["licence_type"] == provenance["license_type"] == "open"
         assert body["description"] == "WHO data provenance"
         assert provenance["url"] == "https://who.int"
         assert provenance["freshness"] == {

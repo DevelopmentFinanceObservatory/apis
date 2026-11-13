@@ -244,6 +244,40 @@ def test_a_cut_read_on_a_head_hit_and_by_query_parameter_serves_the_cut_version(
     assert cut_record.steps == head_record.steps
 
 
+def test_a_cut_asked_for_as_party_totals_false_serves_the_bytes_of_without_party_totals():
+    """`party_totals: false` keys the rendering `without_party_totals: true` keys, so a mint and
+    a query read asking for the cut either way answer the same bytes, which name the cut as
+    `without_party_totals`."""
+    client, _, spec_id, sidecar = _rig()
+    _mint(client, spec_id=spec_id, sidecar=sidecar, options=_CUT)
+
+    def mint(options: dict) -> bytes:
+        body = {
+            "schema_version": 1,
+            "input": {"kind": "spec_id", "spec_id": spec_id, "definition": sidecar},
+            "options": options,
+        }
+        resp = client.post("/api/datasets", json=body)
+        assert resp.status_code == 200, resp.text
+        return resp.content
+
+    def read(params: dict) -> bytes:
+        resp = client.get(f"/api/datasets/{spec_id}", params=params)
+        assert resp.status_code == 200, resp.text
+        return resp.content
+
+    old = mint(_CUT)
+    renamed = {"format": "csv", "bundle": False, "party_totals": False}
+
+    assert mint(renamed) == old
+    assert mint({**renamed, "without_party_totals": True}) == old
+    assert b'"without_party_totals":true' in old
+    assert b'"party_totals"' not in old
+    assert read({"format": "csv", "bundle": "false", "party_totals": "false"}) == read(
+        {"format": "csv", "bundle": "false", "without_party_totals": "true"}
+    )
+
+
 def test_a_cut_read_of_a_head_stored_as_a_frame1_document_cuts_it_as_a_rebuild_would():
     """A head whose stored frame is a frame1 document is cut from that document on a head hit,
     and the cut is the version a fresh cut mint records."""

@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Annotated, Literal, NotRequired
+from typing import Annotated, Any, Literal, NotRequired
 
 from pydantic import (
     AwareDatetime,
@@ -14,12 +14,15 @@ from pydantic import (
     ConfigDict,
     Field,
     PlainSerializer,
+    computed_field,
     model_validator,
     with_config,
 )
+from pydantic_core import PydanticCustomError
 from typing_extensions import TypedDict  # `extra_items` (PEP 728) reaches `typing` in 3.15
 
 from dfo_platform.roles import RoleAxis
+from dfo_platform.wire import optional_in_schema
 from materialise.roles import axis_for_role
 
 
@@ -219,14 +222,25 @@ class CitedDocumentation(BaseModel):
     )
 
 
+LICENCE_SPELLINGS = {
+    "licence": "license",
+    "licence_type": "license_type",
+    "licence_url": "license_url",
+}
+"""Each `CitationSource` licence member a served body carries, mapped to the field of the
+older spelling that holds its value. A stored citation holds the older spelling alone."""
+
+
 class CitationSource(BaseModel):
     """One cited source, named through
     `materialise.provenance_doc.read_source_citations`. `label`, `url`,
     `source`, `data_commons`, the licence fields and `documentation` come
     from the origin catalogue where it lists `ref`, and from the graph
-    otherwise: `license` is the licence's label, `license_type` its
-    `licenseType` dcid and `license_url` its terms page. `license`, `license_type`,
-    `license_url` and `url` are `None` where neither the catalogue nor the graph declares one. `source`
+    otherwise: `licence` is the licence's label, `licence_type` its
+    `licenseType` dcid and `licence_url` its terms page. `licence`, `licence_type`,
+    `licence_url` and `url` are `None` where neither the catalogue nor the graph declares one.
+    The `licence*` members read the `license*` fields, the deprecated spelling a served body
+    carries beside them and a stored citation holds alone (`CitationModel.stored_json`). `source`
     and `data_commons` are `None` for a ref the catalogue does not list.
     `documentation` is the source's documentation at first mint, `None` when
     nothing documents the source or its graph read failed. A mint
@@ -236,23 +250,82 @@ class CitationSource(BaseModel):
     field wins.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(
+        extra="forbid", json_schema_extra=optional_in_schema(*LICENCE_SPELLINGS)
+    )
     ref: str
     label: str
     processing_level: str | None = None
-    license: str | None = None
-    license_type: str | None = None
-    license_url: str | None = None
+    license: str | None = Field(
+        default=None,
+        description="deprecated: the same value as `licence`, kept for clients that read it",
+        json_schema_extra={"deprecated": True},
+    )
+    license_type: str | None = Field(
+        default=None,
+        description="deprecated: the same value as `licence_type`, kept for clients that read it",
+        json_schema_extra={"deprecated": True},
+    )
+    license_url: str | None = Field(
+        default=None,
+        description="deprecated: the same value as `licence_url`, kept for clients that read it",
+        json_schema_extra={"deprecated": True},
+    )
     url: str | None = None
     source: CitedSourceNode | None = None
     data_commons: CitedDataCommons | None = None
     documentation: CitedDocumentation | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _older_spelling(cls, data: Any) -> Any:
+        """A served body's `licence*` members as the `license*` fields that hold them, so a
+        served citation validates. A body carrying both spellings of a member must give them
+        the same value, null included. Differing values refuse `licence_spellings_differ`,
+        naming the `licence*` member."""
+        if not isinstance(data, Mapping) or not LICENCE_SPELLINGS.keys() & data.keys():
+            return data
+        held = dict(data)
+        for served, field in LICENCE_SPELLINGS.items():
+            if served not in held:
+                continue
+            value = held.pop(served)
+            if field in held and held[field] != value:
+                raise PydanticCustomError(
+                    "licence_spellings_differ",
+                    "`{member}` and `{older}` hold different values",
+                    {"member": served, "older": field},
+                )
+            held[field] = value
+        return held
+
+    @computed_field(description="the licence's label")
+    @property
+    def licence(self) -> str | None:
+        return self.license
+
+    @computed_field(description="the licence's `licenseType` dcid")
+    @property
+    def licence_type(self) -> str | None:
+        return self.license_type
+
+    @computed_field(description="the licence's terms page")
+    @property
+    def licence_url(self) -> str | None:
+        return self.license_url
 
 
 class CitationModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
     text: str
     sources: list[CitationSource]
+
+    def stored_json(self) -> dict[str, Any]:
+        """The citation as a version stores it: its JSON without the `licence*` members a
+        served body adds (`LICENCE_SPELLINGS`)."""
+        return self.model_dump(
+            mode="json", exclude={"sources": {"__all__": set(LICENCE_SPELLINGS)}}
+        )
 
     def sources_by_ref(self) -> dict[str, CitationSource]:
         """`sources` keyed by `ref`. There is one entry per `(ref,
