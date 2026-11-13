@@ -3,13 +3,14 @@ routes, their waits, their refusals and the frozen bodies."""
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import threading
 
 import httpx
 import pytest
 
-from dc_graph import ArcSubject
+from dc_graph import ArcSubject, ArcTarget
 from graph_api import app as app_module
 from graph_api.doors import ontology as ontology_door
 from graph_api.ontology_document import OntologyListingTruncatedError
@@ -18,6 +19,7 @@ from graph_generation import FakeGeneration
 from materialise.graph import GraphDeadlineExceededError, GraphReadError
 
 from .conftest import FakeGraphNodeReader, make_client, wait_until
+from .ontology_fixture import STAMP, index_of
 
 _DFO = "provenance/DFOOntology"
 _DOCUMENT = "/api/graph/ontology"
@@ -28,12 +30,16 @@ _IDENTITY = {"Accept-Encoding": "identity"}
 _ARC_SUBJECTS = {
     ("Class", "typeOf"): (
         ArcSubject(
-            dcid="FinancialFlow", name="Financial flow", types=("Class",), provenances=(_DFO,)
+            dcid="FinancialFlow", names=("Financial flow",), types=("Class",), provenances=(_DFO,)
         ),
-        ArcSubject(dcid="Thing", name="Thing", types=("Class",), provenances=("dc/base/Schema",)),
+        ArcSubject(
+            dcid="Thing", names=("Thing",), types=("Class",), provenances=("dc/base/Schema",)
+        ),
     ),
     ("Property", "typeOf"): (
-        ArcSubject(dcid="crsPurpose", name="CRS purpose", types=("Property",), provenances=(_DFO,)),
+        ArcSubject(
+            dcid="crsPurpose", names=("CRS purpose",), types=("Property",), provenances=(_DFO,)
+        ),
     ),
 }
 _NODES = {
@@ -42,10 +48,11 @@ _NODES = {
     "crsPurpose": {"typeOf": ("Property",), "domainIncludes": ("FinancialFlow",)},
     "CRSPurposeCode120": {"typeOf": ("Thing",)},
 }
+_ARC_TARGETS = {"CRSPurposeCode120": {"typeOf": (ArcTarget(value="Thing", provenances=(_DFO,)),)}}
 
 
 def _graph() -> FakeGraphNodeReader:
-    return FakeGraphNodeReader(nodes=_NODES, arc_subjects=_ARC_SUBJECTS)
+    return FakeGraphNodeReader(nodes=_NODES, arc_subjects=_ARC_SUBJECTS, arc_targets=_ARC_TARGETS)
 
 
 def _builds(graph: FakeGraphNodeReader) -> int:
@@ -61,7 +68,7 @@ class _BlockingReader(FakeGraphNodeReader):
     """Blocks the build's first read until `release` is set."""
 
     def __init__(self) -> None:
-        super().__init__(nodes=_NODES, arc_subjects=_ARC_SUBJECTS)
+        super().__init__(nodes=_NODES, arc_subjects=_ARC_SUBJECTS, arc_targets=_ARC_TARGETS)
         self.entered = threading.Event()
         self.release = threading.Event()
 
@@ -141,6 +148,23 @@ class TestCache:
 
         assert "graph_api.ontology" in registered
         assert (before, after) == ("gen-a", "gen-b")
+        assert _builds(graph) == 2
+
+    def test_a_code_index_change_rebuilds(self, generation, monkeypatch: pytest.MonkeyPatch):
+        graph = _graph()
+        indexes = [
+            index_of(stamp=dataclasses.replace(STAMP, content_hash=content_hash))
+            for content_hash in ("index-a", "index-b")
+        ]
+        bound = [indexes[0]]
+        monkeypatch.setattr(ontology_door, "get_index", lambda: bound[0])
+
+        with make_client(graph=graph) as client:
+            first = client.get(_DOCUMENT)
+            bound[0] = indexes[1]
+            second = client.get(_DOCUMENT)
+
+        assert [first.status_code, second.status_code] == [200, 200]
         assert _builds(graph) == 2
 
 
@@ -273,7 +297,7 @@ class _FailingCheckReader(FakeGraphNodeReader):
     """Raises `error` on a read naming `BrokenCode`, which only the check reads."""
 
     def __init__(self, error: Exception) -> None:
-        super().__init__(nodes=_NODES, arc_subjects=_ARC_SUBJECTS)
+        super().__init__(nodes=_NODES, arc_subjects=_ARC_SUBJECTS, arc_targets=_ARC_TARGETS)
         self._error = error
 
     def node_arcs_many(self, dcids, *, properties, deadline=None):

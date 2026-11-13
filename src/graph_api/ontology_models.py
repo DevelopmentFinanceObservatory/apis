@@ -1,7 +1,7 @@
 """Wire models for the instance's ontology: the document and the terms list.
 
 `OntologyDocument` holds `generation`, the graph generation token the document was built
-from, and `nodes`, one `OntologyNode` per member of the document, sorted by dcid. The
+from, null where the token is unknown, and `nodes`, one `OntologyNode` per member of the document, sorted by dcid. The
 document holds every Class and Property the instance declares, every node those name in
 `subClassOf`, `subPropertyOf`, `domainIncludes` or `rangeIncludes`, every node a StatVar row
 of the code index names, every listed member of an enumeration, the `typeOf` targets of
@@ -20,15 +20,15 @@ A term's `name` follows the same rule over the names its listing entries carry.
 `description` is the smallest of the node's `description` values by code point.
 
 `provenances` holds the dcids of the Provenances that declare the node's `typeOf` arc,
-verbatim and sorted. `declared_by` is `"base"` when there is at least one and every one
-starts `dc/base/`, and `"instance"` otherwise.
+verbatim and sorted; every node and term carries at least one. `declared_by` is `"base"` when
+every one starts `dc/base/`, and `"instance"` otherwise.
 
 `enumeration` is set on a Class whose `subClassOf` chain reaches `Enumeration`, and null on
 every other node. An instance-declared enumeration lists every member the graph holds; a
 base enumeration lists only the members StatVar rows use. `truncated` is true when the
 member read stopped at its cap, so `members` holds the members read.
 
-`OntologyTerms` holds `generation` and `terms`, every Class and Property on the graph with
+`OntologyTerms` holds `generation`, null where the token is unknown, and `terms`, every Class and Property on the graph with
 its `name`, `types` (`Class`, `Property` or both), `provenances` and `declared_by`, sorted
 by dcid.
 
@@ -40,7 +40,8 @@ facts of its coverage series.
 `OntologyCheckRow` is a candidate StatisticalVariable definition and `OntologyFinding` one
 fault `graph_api.ontology_check` finds in it. `OntologyCheckRequest` carries 1 to
 `CHECK_MAX_ROWS` rows to `POST /api/graph/ontology/check`, and `OntologyCheckResponse` answers
-with the generation the rows were checked against and every finding. Each dcid a row names
+with the generation the rows were checked against, null where its token is unknown, and every
+finding. Each dcid a row names
 takes the node door's dcid syntax (`graph_api.node_models.Dcid`).
 """
 
@@ -97,7 +98,9 @@ class OntologyNode(ResponseModel):
 class OntologyDocument(ResponseModel):
     """The instance's model as one document."""
 
-    generation: str = Field(description="the graph generation the document was built from")
+    generation: str | None = Field(
+        description="the graph generation the document was built from; null when unknown"
+    )
     nodes: list[OntologyNode]
 
 
@@ -118,7 +121,9 @@ class OntologyTerm(ResponseModel):
 class OntologyTerms(ResponseModel):
     """Every Class and Property on the graph."""
 
-    generation: str = Field(description="the graph generation the list was built from")
+    generation: str | None = Field(
+        description="the graph generation the list was built from; null when unknown"
+    )
     terms: list[OntologyTerm]
 
 
@@ -275,7 +280,9 @@ class OntologyCheckRequest(BaseModel):
 class OntologyCheckResponse(ResponseModel):
     """The findings over every row of one check."""
 
-    generation: str = Field(description="the graph generation the rows were checked against")
+    generation: str | None = Field(
+        description="the graph generation the rows were checked against; null when unknown"
+    )
     row_count: int = Field(description="how many rows were checked")
     findings: list[OntologyFinding] = Field(
         description="one finding per fault, in row order; empty when no row has a fault"

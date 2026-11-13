@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
-import itertools
 import json
 import logging
 import re
@@ -341,13 +340,16 @@ class SubjectPage:
 
 @dataclass(frozen=True)
 class ArcSubject:
-    """One subject of a reverse arc as `/v2/node` answers it: its `dcid`, the `name` and `types`
-    its first entry carries (`None` and `()` when absent), and `provenances`, the distinct
-    `provenanceId`s over every entry for the subject, sorted, `()` where no entry carries one.
+    """One subject of a reverse arc as `/v2/node` answers it: its `dcid`, `names`, the distinct
+    names over every entry for the subject, sorted, the `types` its first entry carries (`()`
+    when absent), and `provenances`, the distinct `provenanceId`s over every entry for the
+    subject, sorted. `names` and `provenances` are `()` where no entry carries one. Each
+    provenance can name a subject its own way, so `display_name` over `names` gives one name
+    whatever order the entries arrive in.
     """
 
     dcid: str
-    name: str | None
+    names: tuple[str, ...]
     types: tuple[str, ...]
     provenances: tuple[str, ...]
 
@@ -1581,12 +1583,17 @@ class GraphClient:
         More than `_NODE_SUBJECTS_MAX_PAGES` pages raises the read error. A repeated token or
         `_NODE_SUBJECTS_STUCK_PAGE_LIMIT` fresh-token pages with no new dcids raises
         `GraphNotAdvancingError`. `filters` narrows subjects by value-bound arcs. One absolute
-        `deadline` bounds every page.
+        `deadline` bounds every page. The walk holds only the subjects' dcids.
         """
-        entries, truncated = self._subject_entries(
-            dcid, property=property, filters=filters, max_results=max_results, deadline=deadline
+        dcids, truncated = self._walk_subjects(
+            dcid,
+            property=property,
+            filters=filters,
+            max_results=max_results,
+            deadline=deadline,
+            fold=None,
         )
-        return SubjectPage(dcids=tuple(entries), truncated=truncated)
+        return SubjectPage(dcids=dcids, truncated=truncated)
 
     def node_arc_subjects(
         self,
@@ -1597,18 +1604,21 @@ class GraphClient:
         max_results: int,
         deadline: float | None = None,
     ) -> ArcSubjectPage:
-        """`node_subjects` with each subject's name, types and declaring provenances
-        (`ArcSubject`), collected over every entry for the subject on the pages read. Paging,
+        """`node_subjects` with each subject's names, types and declaring provenances
+        (`ArcSubject`), folded over every entry for the subject on the pages read. Paging,
         cap, truncation, guards and `deadline` are `node_subjects`'s."""
-        entries, truncated = self._subject_entries(
-            dcid, property=property, filters=filters, max_results=max_results, deadline=deadline
+        facts = _ArcSubjectFold()
+        dcids, truncated = self._walk_subjects(
+            dcid,
+            property=property,
+            filters=filters,
+            max_results=max_results,
+            deadline=deadline,
+            fold=facts,
         )
-        subjects = tuple(
-            _arc_subject(subject, subject_entries) for subject, subject_entries in entries.items()
-        )
-        return ArcSubjectPage(subjects=subjects, truncated=truncated)
+        return ArcSubjectPage(subjects=tuple(map(facts.subject, dcids)), truncated=truncated)
 
-    def _subject_entries(
+    def _walk_subjects(
         self,
         dcid: str,
         *,
@@ -1616,12 +1626,15 @@ class GraphClient:
         filters: Mapping[str, str] | None,
         max_results: int,
         deadline: float | None,
-    ) -> tuple[dict[str, list[dict]], bool]:
-        """The reverse-arc walk `node_subjects` documents: the wire entries of each distinct
-        subject in first-occurrence order, capped at `max_results`, and whether the walk proved
-        truncation."""
+        fold: Callable[[str, dict], None] | None,
+    ) -> tuple[tuple[str, ...], bool]:
+        """The reverse-arc walk `node_subjects` documents: the distinct subject dcids in
+        first-occurrence order, capped at `max_results`, and whether the walk proved
+        truncation. `fold`, where given, receives each subject's dcid and wire entry as the
+        page arrives; the walk itself keeps no entry."""
         spec = _reverse_arc_spec(property, filters)
-        entries: dict[str, list[dict]] = {}
+        dcids: list[str] = []
+        seen: set[str] = set()
         token: str | None = None
         stuck_pages = 0
         for _ in range(_NODE_SUBJECTS_MAX_PAGES):
@@ -1631,11 +1644,16 @@ class GraphClient:
             body = self.post(NODE_PATH, payload, deadline=deadline)
             node_data = body.get("data", {}).get(dcid) or {}
             arcs = node_data.get("arcs", {})
-            distinct_before = len(entries)
+            distinct_before = len(dcids)
             for entry in arcs.get(property, {}).get("nodes", []):
                 entry_dcid = entry.get("dcid")
-                if entry_dcid is not None:
-                    entries.setdefault(entry_dcid, []).append(entry)
+                if entry_dcid is None:
+                    continue
+                if entry_dcid not in seen:
+                    seen.add(entry_dcid)
+                    dcids.append(entry_dcid)
+                if fold is not None:
+                    fold(entry_dcid, entry)
             next_token = body.get("nextToken")
             if next_token is not None and next_token == token:
                 raise GraphNotAdvancingError(
@@ -1644,7 +1662,7 @@ class GraphClient:
                     dcid=dcid,
                     property=property,
                 )
-            if next_token is not None and len(entries) == distinct_before:
+            if next_token is not None and len(dcids) == distinct_before:
                 stuck_pages += 1
                 if stuck_pages >= _NODE_SUBJECTS_STUCK_PAGE_LIMIT:
                     raise GraphNotAdvancingError(
@@ -1657,7 +1675,7 @@ class GraphClient:
             else:
                 stuck_pages = 0
             token = next_token
-            if len(entries) > max_results or token is None:
+            if len(dcids) > max_results or token is None:
                 break
         else:
             capped = GraphNotAdvancingError(
@@ -1667,9 +1685,9 @@ class GraphClient:
                 property=property,
             )
             raise self._read_error_cls(str(capped)) from capped
-        if len(entries) > max_results:
-            return dict(itertools.islice(entries.items(), max_results)), True
-        return entries, token is not None
+        if len(dcids) > max_results:
+            return tuple(dcids[:max_results]), True
+        return tuple(dcids), token is not None
 
     def node_subjects_many(
         self,
@@ -1689,11 +1707,11 @@ class GraphClient:
         uncapped leads return `"budget_exhausted"`. Capped leads retain `"capped"`.
 
         Empty reverse arcs are ordinary leaf results. One absolute `deadline` bounds every page.
+        The walk holds only the subjects' dcids.
         """
-        walked = self._subject_entries_many(
-            dcids, property=property, max_results=max_results, deadline=deadline
+        return self._walk_subjects_many(
+            dcids, property=property, max_results=max_results, deadline=deadline, fold=None
         )
-        return {lead: (tuple(entries), flag) for lead, (entries, flag) in walked.items()}
 
     def node_arc_subjects_many(
         self,
@@ -1703,52 +1721,57 @@ class GraphClient:
         max_results: int,
         deadline: float | None = None,
     ) -> dict[str, tuple[tuple[ArcSubject, ...], SubjectsCoverageFlag]]:
-        """`node_subjects_many` with each subject's name, types and declaring provenances
-        (`ArcSubject`), collected over every entry for the subject on the pages read for its
+        """`node_subjects_many` with each subject's names, types and declaring provenances
+        (`ArcSubject`), folded over every entry for the subject on the pages read for its
         lead. Paging, per-lead cap, coverage flags, guards and `deadline` are
         `node_subjects_many`'s."""
-        walked = self._subject_entries_many(
-            dcids, property=property, max_results=max_results, deadline=deadline
+        facts: dict[str, _ArcSubjectFold] = {}
+
+        def fold(lead: str, subject: str, entry: dict) -> None:
+            lead_facts = facts.get(lead)
+            if lead_facts is None:
+                lead_facts = facts[lead] = _ArcSubjectFold()
+            lead_facts(subject, entry)
+
+        walked = self._walk_subjects_many(
+            dcids, property=property, max_results=max_results, deadline=deadline, fold=fold
         )
         return {
-            lead: (
-                tuple(
-                    _arc_subject(subject, subject_entries)
-                    for subject, subject_entries in entries.items()
-                ),
-                flag,
-            )
-            for lead, (entries, flag) in walked.items()
+            lead: (tuple(map(facts[lead].subject, subjects)) if subjects else (), flag)
+            for lead, (subjects, flag) in walked.items()
         }
 
-    def _subject_entries_many(
+    def _walk_subjects_many(
         self,
         dcids: Sequence[str],
         *,
         property: str,
         max_results: int,
         deadline: float | None,
-    ) -> dict[str, tuple[dict[str, list[dict]], SubjectsCoverageFlag]]:
-        """The shared-token walk `node_subjects_many` documents: for each distinct lead, the wire
-        entries of each distinct subject in first-occurrence order, capped at `max_results`,
-        with the lead's coverage flag."""
+        fold: Callable[[str, str, dict], None] | None,
+    ) -> dict[str, tuple[tuple[str, ...], SubjectsCoverageFlag]]:
+        """The shared-token walk `node_subjects_many` documents: for each distinct lead, its
+        distinct subject dcids in first-occurrence order, capped at `max_results`, with the
+        lead's coverage flag. `fold`, where given, receives the lead, the subject's dcid and
+        its wire entry as the page arrives; the walk itself keeps no entry."""
         if not dcids:
             return {}
         unique_dcids = list(dict.fromkeys(dcids))
         reject_unsafe_property_token(property)
         arc_spec = f"<-{property}"
-        collected: dict[str, dict[str, list[dict]]] = {dcid: {} for dcid in unique_dcids}
+        seen: dict[str, set[str]] = {dcid: set() for dcid in unique_dcids}
+        collected: dict[str, list[str]] = {dcid: [] for dcid in unique_dcids}
         capped: set[str] = set()
         token: str | None = None
 
         def result(
             uncapped: SubjectsCoverageFlag,
-        ) -> dict[str, tuple[dict[str, list[dict]], SubjectsCoverageFlag]]:
+        ) -> dict[str, tuple[tuple[str, ...], SubjectsCoverageFlag]]:
             return {
                 dcid: (
-                    (dict(itertools.islice(collected[dcid].items(), max_results)), "capped")
+                    (tuple(collected[dcid][:max_results]), "capped")
                     if dcid in capped
-                    else (collected[dcid], uncapped)
+                    else (tuple(collected[dcid]), uncapped)
                 )
                 for dcid in unique_dcids
             }
@@ -1761,19 +1784,19 @@ class GraphClient:
             body = self.post(NODE_PATH, payload, deadline=deadline)
             data = body.get("data", {})
             for dcid in pending:
-                subjects = collected[dcid]
                 node_data = data.get(dcid) or {}
                 for entry in node_data.get("arcs", {}).get(property, {}).get("nodes", []):
                     subject_dcid = entry.get("dcid")
                     if subject_dcid is None:
                         continue
-                    if subject_dcid in subjects:
-                        subjects[subject_dcid].append(entry)
-                        continue
-                    subjects[subject_dcid] = [entry]
-                    if len(subjects) > max_results:
-                        capped.add(dcid)
-                        break
+                    if subject_dcid not in seen[dcid]:
+                        seen[dcid].add(subject_dcid)
+                        collected[dcid].append(subject_dcid)
+                        if len(collected[dcid]) > max_results:
+                            capped.add(dcid)
+                            break
+                    if fold is not None:
+                        fold(dcid, subject_dcid, entry)
             next_token = body.get("nextToken")
             if next_token is not None and next_token == token:
                 stuck = GraphNotAdvancingError(
@@ -2712,15 +2735,33 @@ def parse_arc_targets(arcs: dict, properties: Sequence[str]) -> dict[str, tuple[
     return parsed
 
 
-def _arc_subject(dcid: str, entries: Sequence[dict]) -> ArcSubject:
-    """`dcid` as an `ArcSubject`: name and types from its first entry, provenances from all."""
-    first = entries[0]
-    return ArcSubject(
-        dcid=dcid,
-        name=first.get("name"),
-        types=tuple(first.get("types", ())),
-        provenances=_entry_provenances(entries),
-    )
+class _ArcSubjectFold:
+    """Each subject's facts, folded from the wire entries of a reverse-arc walk as they
+    arrive: every distinct name, the types of its first entry, and every `provenanceId`."""
+
+    def __init__(self) -> None:
+        self._names: dict[str, set[str]] = {}
+        self._types: dict[str, tuple[str, ...]] = {}
+        self._provenances: dict[str, set[str]] = {}
+
+    def __call__(self, dcid: str, entry: dict) -> None:
+        if dcid not in self._types:
+            self._types[dcid] = tuple(entry.get("types", ()))
+            self._names[dcid] = set()
+            self._provenances[dcid] = set()
+        if (name := entry.get("name")) is not None:
+            self._names[dcid].add(name)
+        if provenance := entry.get("provenanceId"):
+            self._provenances[dcid].add(provenance)
+
+    def subject(self, dcid: str) -> ArcSubject:
+        """`dcid` as an `ArcSubject` over the entries folded for it."""
+        return ArcSubject(
+            dcid=dcid,
+            names=tuple(sorted(self._names[dcid])),
+            types=self._types[dcid],
+            provenances=tuple(sorted(self._provenances[dcid])),
+        )
 
 
 def _entry_provenances(entries: Iterable[dict]) -> tuple[str, ...]:

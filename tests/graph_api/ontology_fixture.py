@@ -88,20 +88,20 @@ NODES: dict[str, dict[str, tuple[str, ...]]] = {
 CRS_MEMBERS = (
     ArcSubject(
         dcid="CRSPurposeCode12220",
-        name="Basic health care",
+        names=("Basic health care",),
         types=("CRSPurposeCodeEnum",),
         provenances=(DFO,),
     ),
     ArcSubject(
         dcid="CRSPurposeCode120",
-        name="Education",
+        names=("Education",),
         types=("CRSPurposeCodeEnum",),
         provenances=(DFO,),
     ),
 )
 
 GENDER_MEMBERS = tuple(
-    ArcSubject(dcid=dcid, name=dcid, types=("GenderType",), provenances=(SCHEMA,))
+    ArcSubject(dcid=dcid, names=(dcid,), types=("GenderType",), provenances=(SCHEMA,))
     for dcid in ("Female", "Male")
 )
 
@@ -132,8 +132,8 @@ def index_row(dcid: str, constraints: Mapping[str, str]) -> StatVarRow:
     )
 
 
-def index_of(*rows: StatVarRow) -> CodeIndex:
-    return CodeIndex(stamp=STAMP, declarations=(), codes=(), statvars=rows)
+def index_of(*rows: StatVarRow, stamp: IndexStamp = STAMP) -> CodeIndex:
+    return CodeIndex(stamp=stamp, declarations=(), codes=(), statvars=rows)
 
 
 INDEX = index_of(
@@ -146,10 +146,26 @@ INDEX = index_of(
 
 def listing(kind: str, terms: Mapping[str, tuple[str, tuple[str, ...]]]) -> list[ArcSubject]:
     return [
-        ArcSubject(dcid=dcid, name=NAMES.get(dcid, dcid), types=(kind,), provenances=provenances)
+        ArcSubject(
+            dcid=dcid, names=(NAMES.get(dcid, dcid),), types=(kind,), provenances=provenances
+        )
         for dcid, (term_kind, provenances) in terms.items()
         if term_kind == kind
     ]
+
+
+def arc_subjects(
+    *,
+    terms: Mapping[str, tuple[str, tuple[str, ...]]] = TERMS,
+    members: Sequence[ArcSubject] = CRS_MEMBERS,
+) -> dict[tuple[str, str], Sequence[ArcSubject]]:
+    """The reverse `typeOf` subjects of the two listings and the two enumerations."""
+    return {
+        ("Class", "typeOf"): listing("Class", terms),
+        ("Property", "typeOf"): listing("Property", terms),
+        ("CRSPurposeCodeEnum", "typeOf"): members,
+        ("GenderType", "typeOf"): GENDER_MEMBERS,
+    }
 
 
 def ontology_graph(
@@ -157,14 +173,10 @@ def ontology_graph(
     terms: Mapping[str, tuple[str, tuple[str, ...]]] = TERMS,
     nodes: Mapping[str, Mapping[str, tuple[str, ...]]] = NODES,
     members: Sequence[ArcSubject] = CRS_MEMBERS,
+    arc_targets: Mapping[str, Mapping[str, Sequence[ArcTarget]]] = ARC_TARGETS,
 ) -> FakeGraphNodeReader:
     return FakeGraphNodeReader(
         nodes=nodes,
-        arc_subjects={
-            ("Class", "typeOf"): listing("Class", terms),
-            ("Property", "typeOf"): listing("Property", terms),
-            ("CRSPurposeCodeEnum", "typeOf"): members,
-            ("GenderType", "typeOf"): GENDER_MEMBERS,
-        },
-        arc_targets=ARC_TARGETS,
+        arc_subjects=arc_subjects(terms=terms, members=members),
+        arc_targets=arc_targets,
     )

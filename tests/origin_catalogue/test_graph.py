@@ -451,7 +451,7 @@ def test_arc_subject_reads_go_to_the_backend_their_names_need(
     """The catalogue's tables hold no subject names or provenances, so each read is live."""
     bind_catalogue(_catalogue())
     expected = ArcSubject(
-        dcid=f"{lead}/member", name=name, types=(lead,), provenances=(_MEMBER_PROVENANCE,)
+        dcid=f"{lead}/member", names=(name,), types=(lead,), provenances=(_MEMBER_PROVENANCE,)
     )
 
     if batched:

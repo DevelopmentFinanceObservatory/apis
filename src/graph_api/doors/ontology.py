@@ -26,8 +26,9 @@ and a gzip representation, honouring `If-None-Match` with 304
 
 `POST /api/graph/ontology/check` takes 1 to `CHECK_MAX_ROWS` candidate StatVar definitions and
 answers every fault `graph_api.ontology_check.check_rows` finds in them, with the generation
-of the build it checked against. The entry keeps that build beside its frozen bodies, so the
-check waits on the same flight as the GET routes and answers their 503 and 504 the same way.
+of the build it checked against. The entry keeps that build and the code index it read beside
+its frozen bodies, so the check compares served definitions against the index the build read
+and waits on the same flight as the GET routes and answers their 503 and 504 the same way.
 The check's own reads, of ids the document does not hold, run as one job on the DCP-read
 executor under the deadline the wait used; a saturated executor, a read past the deadline or a
 failed read answers as the GET routes answer it, with no findings. A body outside the request
@@ -50,6 +51,7 @@ from typing import NamedTuple
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 
+from code_index import CodeIndex
 from code_index.shared import get_index, per_index
 from dfo_platform import ProblemSpec
 from dfo_platform.doors import DoorContribution
@@ -79,8 +81,8 @@ _MAX_AGE_SECONDS = 300
 
 
 class OntologyKey(NamedTuple):
-    """The graph generation token the build stamps both bodies with, and the content hash of
-    the code index whose StatVar rows it read."""
+    """The graph generation token, `UNKNOWN_KEY` where it is unknown, and the content hash of
+    the code index whose StatVar rows the build read."""
 
     generation: str
     code_index: str
@@ -88,11 +90,14 @@ class OntologyKey(NamedTuple):
 
 @dataclass(frozen=True, slots=True)
 class FrozenOntology:
-    """Both bodies of one build, each encoded once, and the build the check reads."""
+    """Both bodies of one build, each encoded once, the build the check reads, and the code
+    index the build read, which the check compares served definitions against. The entry holds
+    the index only as long as the cache holds the entry."""
 
     document: FrozenJSON
     terms: FrozenJSON
     built: Ontology
+    code_index: CodeIndex
 
 
 class OntologyBuildPending(Exception):
@@ -169,7 +174,7 @@ async def _frozen_ontology(deps: GraphDeps, *, deadline: float) -> FrozenOntolog
         ontology = build_ontology(
             reader=deps.graph,
             code_index=code_index,
-            generation=key.generation,
+            generation=token,
             deadline=flight_deadline,
         )
         return {
@@ -177,6 +182,7 @@ async def _frozen_ontology(deps: GraphDeps, *, deadline: float) -> FrozenOntolog
                 document=_freeze(ontology.document),
                 terms=_freeze(ontology.terms),
                 built=ontology,
+                code_index=code_index,
             )
         }
 
@@ -274,7 +280,8 @@ async def get_ontology_terms(deps: GraphDepsDep, request: Request) -> Response:
 
 async def check_ontology(deps: GraphDepsDep, body: OntologyCheckRequest) -> JSONResponse:
     deadline = _request_deadline()
-    ontology = (await _frozen_ontology(deps, deadline=deadline)).built
+    frozen = await _frozen_ontology(deps, deadline=deadline)
+    ontology = frozen.built
     try:
         findings = await run_dcp_read(
             deps.dcp_executor,
@@ -282,7 +289,7 @@ async def check_ontology(deps: GraphDepsDep, body: OntologyCheckRequest) -> JSON
             body.rows,
             ontology=ontology,
             reader=deps.graph,
-            code_index=get_index(),
+            code_index=frozen.code_index,
             deadline=deadline,
         )
     except GraphReadError as exc:

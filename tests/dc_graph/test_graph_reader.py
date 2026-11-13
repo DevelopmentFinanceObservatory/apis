@@ -1491,7 +1491,7 @@ def test_node_subjects_dedups_a_subject_declared_by_two_provenances():
         subjects=(
             ArcSubject(
                 dcid="LifeExpectancy_Person_Female",
-                name="Life expectancy, female",
+                names=("Life expectancy, female",),
                 types=("StatisticalVariable",),
                 provenances=("dc/base/Schema", "dc/base/WHO_GHO"),
             ),
@@ -1550,11 +1550,11 @@ def test_node_subjects_dedups_a_subject_repeated_across_pages():
         subjects=(
             ArcSubject(
                 dcid="a",
-                name="A",
+                names=("A",),
                 types=(),
                 provenances=("dc/base/Mongolia_Education", "dc/base/Schema"),
             ),
-            ArcSubject(dcid="b", name=None, types=(), provenances=()),
+            ArcSubject(dcid="b", names=(), types=(), provenances=()),
         ),
         truncated=False,
     )

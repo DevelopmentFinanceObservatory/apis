@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 import pytest
 
 from code_index import CodeIndex
-from dc_graph import ArcSubject
+from dc_graph import UNRESOLVED_NODE, ArcSubject, ArcTarget
 from graph_api import ontology_document
 from graph_api.ontology_document import (
     OntologyListingTruncatedError,
+    OntologyProvenanceUnreadError,
     build_ontology,
     declared_by,
 )
@@ -18,12 +19,14 @@ from graph_api.ontology_models import OntologyNode
 
 from .conftest import FakeGraphNodeReader
 from .ontology_fixture import (
+    ARC_TARGETS,
     CRS_MEMBERS,
     DFO,
     INDEX,
     NODES,
     SCHEMA,
     TERMS,
+    arc_subjects,
     index_of,
     index_row,
     listing,
@@ -45,7 +48,6 @@ def _nodes(graph: FakeGraphNodeReader, index: CodeIndex = INDEX) -> dict[str, On
         (("dc/base/Census", SCHEMA), "base"),
         ((SCHEMA, DFO), "instance"),
         ((DFO,), "instance"),
-        ((), "instance"),
     ],
 )
 def test_declared_by_is_base_only_when_every_provenance_is_base(
@@ -54,13 +56,30 @@ def test_declared_by_is_base_only_when_every_provenance_is_base(
     assert declared_by(provenances) == expected
 
 
+def test_declared_by_refuses_no_provenance() -> None:
+    with pytest.raises(ValueError, match="no declaring provenance"):
+        declared_by(())
+
+
 def test_document_holds_instance_terms_their_references_index_names_and_ancestors() -> None:
-    nodes = _nodes(ontology_graph())
+    # The listed member CRSPurposeCode120, read after the closure, carries a second type.
+    terms = {**TERMS, "SectorCode": ("Class", (SCHEMA,)), "CodeKind": ("Class", (SCHEMA,))}
+    graph_nodes = {
+        **NODES,
+        "CRSPurposeCode120": {
+            **NODES["CRSPurposeCode120"],
+            "typeOf": ("CRSPurposeCodeEnum", "SectorCode"),
+        },
+        "SectorCode": {"typeOf": ("Class",), "subClassOf": ("CodeKind",)},
+        "CodeKind": {"typeOf": ("Class",)},
+    }
+    nodes = _nodes(ontology_graph(terms=terms, nodes=graph_nodes))
 
     assert sorted(nodes) == [
         "CRSPurposeCode120",  # listed member of an instance enumeration
         "CRSPurposeCode12220",  # constraint value
         "CRSPurposeCodeEnum",
+        "CodeKind",  # SectorCode's subClassOf
         "EconomicActivity",  # FinancingEvent's subClassOf
         "Enumeration",  # ancestor
         "Female",  # constraint value
@@ -69,6 +88,7 @@ def test_document_holds_instance_terms_their_references_index_names_and_ancestor
         "FinancingPurposeEnum",
         "GenderType",  # Female's typeOf
         "Intangible",  # ancestor
+        "SectorCode",  # CRSPurposeCode120's second typeOf
         "Thing",  # ancestor
         "amount",  # measured property
         "beneficiaryGender",
@@ -78,6 +98,39 @@ def test_document_holds_instance_terms_their_references_index_names_and_ancestor
         "measuredValue",  # stat type
     ]
     # amount is base, so its range Quantity stays out though the graph holds it.
+
+
+class _RecordingReader(FakeGraphNodeReader):
+    """Records every dcid `node_arcs_many` is asked for."""
+
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__(**kwargs)  # type: ignore[arg-type]
+        self.requested: set[str] = set()
+
+    def node_arcs_many(self, dcids, *, properties, deadline=None):
+        self.requested.update(dcids)
+        return super().node_arcs_many(dcids, properties=properties, deadline=deadline)
+
+
+def test_an_unresolved_value_is_dropped_where_the_arcs_are_read() -> None:
+    graph_nodes = {
+        **NODES,
+        "crsPurpose": {
+            **NODES["crsPurpose"],
+            "description": (UNRESOLVED_NODE,),
+            "rangeIncludes": (UNRESOLVED_NODE, "CRSPurposeCodeEnum"),
+        },
+    }
+    graph = _RecordingReader(
+        nodes=graph_nodes, arc_subjects=arc_subjects(), arc_targets=ARC_TARGETS
+    )
+
+    nodes = _nodes(graph)
+
+    crs = nodes["crsPurpose"]
+    assert (crs.description, crs.range_includes) == (None, ["CRSPurposeCodeEnum"])
+    assert UNRESOLVED_NODE not in graph.requested
+    assert all(UNRESOLVED_NODE not in node.model_dump_json() for node in nodes.values())
 
 
 def test_a_dcid_the_graph_does_not_hold_stays_in_the_arc_only() -> None:
@@ -161,15 +214,80 @@ def test_a_truncated_listing_refuses(monkeypatch: pytest.MonkeyPatch) -> None:
         _nodes(ontology_graph())
 
 
+def test_a_listing_subject_with_no_provenance_refuses() -> None:
+    terms = {**TERMS, "educationalAttainment": ("Property", ())}
+
+    with pytest.raises(OntologyProvenanceUnreadError):
+        _nodes(ontology_graph(terms=terms))
+
+
+class _EmptyTargetsReader(FakeGraphNodeReader):
+    """Answers `node_arc_targets_many` for `dcid` with `empty` on its first `empty_reads`
+    reads of it."""
+
+    def __init__(
+        self, *, dcid: str, empty: object, empty_reads: int, nodes=NODES, **kwargs: object
+    ) -> None:
+        super().__init__(nodes=nodes, arc_targets=ARC_TARGETS, **kwargs)  # type: ignore[arg-type]
+        self._dcid = dcid
+        self._empty = empty
+        self._left = empty_reads
+        self.target_reads: list[list[str]] = []
+
+    def node_arc_targets_many(self, dcids, *, properties, deadline=None):
+        self.target_reads.append(list(dcids))
+        result = super().node_arc_targets_many(dcids, properties=properties, deadline=deadline)
+        if self._dcid in result and self._left > 0:
+            self._left -= 1
+            result[self._dcid] = self._empty  # type: ignore[assignment]
+        return result
+
+
+def _empty_targets_reader(*, empty: object, empty_reads: int) -> _EmptyTargetsReader:
+    return _EmptyTargetsReader(
+        dcid="Female",
+        empty=empty,
+        empty_reads=empty_reads,
+        arc_subjects=arc_subjects(),
+    )
+
+
+_NO_PROVENANCE: Sequence[object] = (
+    pytest.param(None, id="absent"),
+    pytest.param({"typeOf": (ArcTarget(value="GenderType"),)}, id="no-provenance"),
+)
+
+
+@pytest.mark.parametrize("empty", _NO_PROVENANCE)
+def test_a_node_whose_provenance_two_reads_leave_empty_refuses(empty: object) -> None:
+    graph = _empty_targets_reader(empty=empty, empty_reads=2)
+
+    with pytest.raises(OntologyProvenanceUnreadError, match="Female"):
+        _nodes(graph)
+
+    assert graph.target_reads[1:] == [["Female"]]
+
+
+@pytest.mark.parametrize("empty", _NO_PROVENANCE)
+def test_a_node_whose_provenance_answers_on_its_second_read_is_labelled(empty: object) -> None:
+    graph = _empty_targets_reader(empty=empty, empty_reads=1)
+
+    female = _nodes(graph)["Female"]
+
+    assert (female.provenances, female.declared_by) == (["dc/base/Census"], "base")
+    assert graph.target_reads[1:] == [["Female"]]
+
+
 def test_terms_list_every_class_and_property() -> None:
     graph = FakeGraphNodeReader(
         nodes=NODES,
+        arc_targets=ARC_TARGETS,
         arc_subjects={
-            ("Class", "typeOf"): listing("Class", TERMS),
+            **arc_subjects(),
             ("Property", "typeOf"): [
                 *listing("Property", TERMS),
                 ArcSubject(
-                    dcid="FinancialFlow", name="Financial flow", types=(), provenances=(SCHEMA,)
+                    dcid="FinancialFlow", names=("Financial flow",), types=(), provenances=(SCHEMA,)
                 ),
             ],
         },
@@ -235,7 +353,14 @@ def test_reads_are_bounded_by_hierarchy_depth_not_node_count() -> None:
         **{dcid: {"typeOf": ("Property",), "domainIncludes": ("FinancialFlow",)} for dcid in extra},
         **{f"extraValue{i}": {"typeOf": ("StatType",)} for i in range(50)},
     }
-    large = ontology_graph(terms={**TERMS, **extra}, nodes=extra_nodes)
+    extra_targets = {
+        **ARC_TARGETS,
+        **{
+            f"extraValue{i}": {"typeOf": (ArcTarget(value="StatType", provenances=(DFO,)),)}
+            for i in range(50)
+        },
+    }
+    large = ontology_graph(terms={**TERMS, **extra}, nodes=extra_nodes, arc_targets=extra_targets)
     rows = [index_row(f"Extra{i}", {f"extraProperty{i}": f"extraValue{i}"}) for i in range(50)]
     large_nodes = _nodes(large, index_of(*INDEX.statvars, *rows))
 

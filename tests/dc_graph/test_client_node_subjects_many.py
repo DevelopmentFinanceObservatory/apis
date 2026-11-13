@@ -148,11 +148,11 @@ def test_node_subjects_many_multi_page_response_stitched(monkeypatch) -> None:
             (
                 ArcSubject(
                     dcid="DAC1AidType1010",
-                    name="official development assistance (DAC 1 aid type)",
+                    names=("official development assistance (DAC 1 aid type)",),
                     types=("DAC1AidTypeEnum",),
                     provenances=("dc/base/Schema", "provenance/DFOOntology"),
                 ),
-                ArcSubject(dcid="DAC1AidType1015", name=None, types=(), provenances=()),
+                ArcSubject(dcid="DAC1AidType1015", names=(), types=(), provenances=()),
             ),
             "complete",
         )
@@ -418,3 +418,71 @@ def test_node_subjects_many_rejects_unsafe_property_without_a_network_call(monke
     monkeypatch.setattr(GraphClient, "post", fake_post)
     with pytest.raises(ValueError, match="typeOf"):
         client.node_subjects_many(["leaf/NODE"], property="typeOf{x:y}", max_results=10)
+
+
+_TWO_NAMES = [
+    {"dcid": "crsPurpose", "name": "CRS purpose", "provenanceId": "provenance/DFOOntology"},
+    {"dcid": "crsPurpose", "name": "Purpose", "provenanceId": "dc/base/Schema"},
+]
+
+
+@pytest.mark.parametrize("entries", [_TWO_NAMES, _TWO_NAMES[::-1]], ids=["dfo-first", "base-first"])
+@pytest.mark.parametrize("batched", [True, False], ids=["many", "single"])
+def test_arc_subjects_carry_every_name_whatever_the_wire_order(
+    monkeypatch, entries: list[dict], batched: bool
+) -> None:
+    """Two provenances name one subject differently; the subject carries both names, sorted."""
+
+    def fake_post(self, path, payload, *, deadline=None):
+        return {"data": {"Property": {"arcs": {"typeOf": {"nodes": entries}}}}}
+
+    client = GraphClient(base_url="http://fake/core/api")
+    monkeypatch.setattr(GraphClient, "post", fake_post)
+    if batched:
+        ((subjects, _flag),) = client.node_arc_subjects_many(
+            ["Property"], property="typeOf", max_results=10
+        ).values()
+    else:
+        subjects = client.node_arc_subjects("Property", property="typeOf", max_results=10).subjects
+
+    assert [(subject.names, subject.provenances) for subject in subjects] == [
+        (("CRS purpose", "Purpose"), ("dc/base/Schema", "provenance/DFOOntology"))
+    ]
+
+
+def test_plain_subject_reads_hand_no_entry_to_any_fold(monkeypatch) -> None:
+    """`node_subjects` and `node_subjects_many` walk with no fold, so the walk keeps only
+    dcids; the arc variants walk the same pages with one."""
+    folds: list[tuple[str, object]] = []
+    walk = GraphClient._walk_subjects
+    walk_many = GraphClient._walk_subjects_many
+
+    def spy(self, *args, fold, **kwargs):
+        folds.append(("single", fold))
+        return walk(self, *args, fold=fold, **kwargs)
+
+    def spy_many(self, *args, fold, **kwargs):
+        folds.append(("many", fold))
+        return walk_many(self, *args, fold=fold, **kwargs)
+
+    def fake_post(self, path, payload, *, deadline=None):
+        return {"data": {"Property": {"arcs": {"typeOf": {"nodes": _TWO_NAMES}}}}}
+
+    monkeypatch.setattr(GraphClient, "post", fake_post)
+    monkeypatch.setattr(GraphClient, "_walk_subjects", spy)
+    monkeypatch.setattr(GraphClient, "_walk_subjects_many", spy_many)
+    client = GraphClient(base_url="http://fake/core/api")
+
+    plain = client.node_subjects("Property", property="typeOf", max_results=10)
+    plain_many = client.node_subjects_many(["Property"], property="typeOf", max_results=10)
+    client.node_arc_subjects("Property", property="typeOf", max_results=10)
+    client.node_arc_subjects_many(["Property"], property="typeOf", max_results=10)
+
+    assert plain.dcids == ("crsPurpose",)
+    assert plain_many == {"Property": (("crsPurpose",), "complete")}
+    assert [(walked, fold is None) for walked, fold in folds] == [
+        ("single", True),
+        ("many", True),
+        ("single", False),
+        ("many", False),
+    ]
