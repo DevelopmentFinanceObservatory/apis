@@ -845,6 +845,25 @@ def test_a_ref_of_one_member_reads_as_that_member() -> None:
     assert from_ref.evaluation.ref == direct.evaluation.ref
 
 
+@pytest.mark.parametrize(
+    "rendering",
+    [{"party_totals": False}, {"party_totals": False, "without_party_totals": True}],
+    ids=["party-totals", "both-agreeing"],
+)
+def test_a_ref_naming_the_cut_as_party_totals_reads_as_without_party_totals(
+    rendering: dict,
+) -> None:
+    def aggregate(rendering: dict) -> object:
+        ref = ref_of((AID, AID_V1))
+        ref["members"][0]["artifact"]["rendering"].update(rendering)
+        tree = step("aggregate", {"ref": ref}, aggregation="sum", group_by=["destination"])
+        return _run(Stores(), tree).body()
+
+    cut = aggregate({"without_party_totals": True})
+
+    assert aggregate(rendering) == cut != aggregate({})
+
+
 def test_every_pending_root_answers_at_once_before_any_frame_is_read() -> None:
     stores = Stores()
     roots = source(stores, pending={AID: "op_aid", POPULATION: "op_population"})

@@ -322,6 +322,15 @@ def test_strict_enum_keeps_every_value(served: _Served, pointer: str, values: li
     assert [value for value in values if not validator.is_valid(value)] == []
 
 
+@pytest.mark.parametrize("model", ["MintOptions", "RootRendering", "_RefRendering"])
+def test_party_totals_declares_no_default(served: _Served, model: str):
+    """A client that fills defaults would otherwise send `party_totals: true` beside a caller's
+    `without_party_totals: true`, a contradiction the server refuses."""
+    member = served.document["components"]["schemas"][model]["properties"]["party_totals"]
+    assert member["type"] == "boolean"
+    assert "default" not in member
+
+
 def test_every_action_names_an_active_registry_code():
     codes = [row["code"] for row in actions()["codes"]]
     assert codes

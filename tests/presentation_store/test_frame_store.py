@@ -3740,6 +3740,23 @@ _OECD_CITATION = {
 }
 
 
+def _served(citation: Mapping[str, Any]) -> dict[str, Any]:
+    """`citation` as a served manifest carries it: each source's `licence`, `licence_type` and
+    `licence_url` beside the stored `license*` members, with the same values."""
+    return {
+        **citation,
+        "sources": [
+            {
+                **source,
+                "licence": source["license"],
+                "licence_type": source["license_type"],
+                "licence_url": source["license_url"],
+            }
+            for source in citation["sources"]
+        ],
+    }
+
+
 _OPS_CITATION = {
     **_OECD_CITATION,
     "text": citation_line(
@@ -3758,7 +3775,7 @@ def test_load_cites_the_distinct_upstream_provenances_of_a_published_ops_frame()
 
     assert resolved.manifest == {
         **version_document(_version(frame_ref)),
-        "citation": _OPS_CITATION,
+        "citation": _served(_OPS_CITATION),
     }
 
 
@@ -3772,7 +3789,7 @@ def test_load_caches_an_ops_frame_s_citation_with_the_frame():
 
     resolved = store.load(frame_ref=frame_ref)
 
-    assert resolved.manifest["citation"] == _OPS_CITATION
+    assert resolved.manifest["citation"] == _served(_OPS_CITATION)
     assert graph.calls == reads_after_first_load
 
 
@@ -3794,7 +3811,7 @@ def test_load_leaves_an_ops_citation_out_when_the_graph_fails_and_reads_it_next_
     assert frame_ref.spec_id in record.getMessage()
     assert frame_ref.content_version in record.getMessage()
     assert "citation" not in first.manifest
-    assert second.manifest["citation"] == _OPS_CITATION
+    assert second.manifest["citation"] == _served(_OPS_CITATION)
 
 
 class _FailingOnceDescriptionReader:
@@ -3911,9 +3928,9 @@ def test_load_caches_an_ops_frame_unless_a_documentation_read_failed(
 
     undocumented = json.loads(json.dumps(_OPS_CITATION))
     undocumented["sources"][0]["documentation"] = None
-    assert first.manifest["citation"] == undocumented
+    assert first.manifest["citation"] == _served(undocumented)
     assert (graph.calls == reads_after_first_load) is cached
-    assert second.manifest["citation"] == (undocumented if cached else _OPS_CITATION)
+    assert second.manifest["citation"] == _served(undocumented if cached else _OPS_CITATION)
 
 
 def _thin_spec_fixture() -> tuple[_FakeSnapshotReader, _FakeArtifactStore, FrameRef, dict]:
@@ -3985,8 +4002,8 @@ def test_load_fills_a_root_frame_s_empty_citation_fields_from_the_graph():
     reads_after_first_load = graph.calls
     second = store.load(frame_ref=frame_ref)
 
-    assert first.manifest["citation"] == _HEALED_THIN_CITATION
-    assert second.manifest["citation"] == _HEALED_THIN_CITATION
+    assert first.manifest["citation"] == _served(_HEALED_THIN_CITATION)
+    assert second.manifest["citation"] == _served(_HEALED_THIN_CITATION)
     assert graph.calls == reads_after_first_load
     stored = snapshots.versions[(frame_ref.spec_id, frame_ref.content_version)]
     assert stored.facts.citation == thin
@@ -4053,8 +4070,8 @@ def test_load_keeps_a_root_frame_s_stored_citation_when_the_read_fails_and_reads
     graph.raise_for = frozenset()
     second = store.load(frame_ref=frame_ref)
 
-    assert first.manifest["citation"] == thin
-    assert second.manifest["citation"] == _HEALED_THIN_CITATION
+    assert first.manifest["citation"] == _served(thin)
+    assert second.manifest["citation"] == _served(_HEALED_THIN_CITATION)
 
 
 def test_a_failed_documentation_read_caches_the_frame_and_retries_only_the_fill(
@@ -4092,8 +4109,9 @@ def test_a_failed_documentation_read_caches_the_frame_and_retries_only_the_fill(
     assert all(load is first for load in within)
     assert graph_calls_within == 0
     assert first.manifest["citation"] == second.manifest["citation"]
-    assert first.manifest["citation"] != _HEALED_THIN_CITATION
-    assert third.manifest["citation"] == fourth.manifest["citation"] == _HEALED_THIN_CITATION
+    assert first.manifest["citation"] != _served(_HEALED_THIN_CITATION)
+    assert third.manifest["citation"] == fourth.manifest["citation"]
+    assert fourth.manifest["citation"] == _served(_HEALED_THIN_CITATION)
     assert failed_attempts == 2
     assert [call for call in artifacts.calls if call[0] == "get"] == artifacts.calls[:1]
     assert graph.calls == graph_calls_after_third
@@ -4143,28 +4161,30 @@ def test_load_reads_citations_for_capped_refs_and_cites_the_rest_by_ref(monkeypa
     requested = {dcid for dcids, _ in _citation_requests(graph) for dcid in dcids}
     assert "src_oecd_dac" in requested
     assert "src_imf" not in requested
-    assert resolved.manifest["citation"] == {
-        "text": citation_line(
-            retrieved=_NOW.date(),
-            sources=["OECD Creditor Reporting System", "src_imf"],
-            processed=True,
-        ),
-        "sources": [
-            *_OECD_CITATION["sources"],
-            {
-                "ref": "src_imf",
-                "label": "src_imf",
-                "processing_level": None,
-                "license": None,
-                "license_type": None,
-                "license_url": None,
-                "url": None,
-                "source": None,
-                "data_commons": None,
-                "documentation": None,
-            },
-        ],
-    }
+    assert resolved.manifest["citation"] == _served(
+        {
+            "text": citation_line(
+                retrieved=_NOW.date(),
+                sources=["OECD Creditor Reporting System", "src_imf"],
+                processed=True,
+            ),
+            "sources": [
+                *_OECD_CITATION["sources"],
+                {
+                    "ref": "src_imf",
+                    "label": "src_imf",
+                    "processing_level": None,
+                    "license": None,
+                    "license_type": None,
+                    "license_url": None,
+                    "url": None,
+                    "source": None,
+                    "data_commons": None,
+                    "documentation": None,
+                },
+            ],
+        }
+    )
 
 
 def test_load_reads_a_root_frame_s_capped_sources_and_keeps_the_rest_as_stored(monkeypatch):
@@ -4196,10 +4216,9 @@ def test_load_reads_a_root_frame_s_capped_sources_and_keeps_the_rest_as_stored(m
     requested = {dcid for dcids, _ in _citation_requests(graph) for dcid in dcids}
     assert requested == {"src_oecd_dac"}
     assert documented == ["src_oecd_dac"]
-    assert resolved.manifest["citation"]["sources"] == [
-        *_HEALED_THIN_CITATION["sources"],
-        imf,
-    ]
+    assert resolved.manifest["citation"] == _served(
+        {**_HEALED_THIN_CITATION, "sources": [*_HEALED_THIN_CITATION["sources"], imf]}
+    )
 
 
 def test_load_bounds_its_label_and_citation_reads_by_its_read_budget_less_grace():

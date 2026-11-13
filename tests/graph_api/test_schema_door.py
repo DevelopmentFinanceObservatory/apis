@@ -35,12 +35,17 @@ def test_a_response_schema_requires_every_field_the_server_emits():
     envelopes = {name: d for name, d in nodes_defs.items() if name.endswith("Node")}
     assert envelopes
     assert all("kind" in d["required"] for d in envelopes.values())
-    # No model of a response is left on a base that makes defaulted fields optional.
+    # No model of a response is left on a base that makes defaulted fields optional. The
+    # `licence*` spellings alone stay optional, so bodies recorded before them still validate.
     for name, schema in schemas.items():
         if name.endswith("_response"):
             for node in [schema, *schema.get("$defs", {}).values()]:
-                properties = node.get("properties", {})
-                assert set(properties) == set(node.get("required", [])), (name, node.get("title"))
+                properties = set(node.get("properties", {}))
+                optional = properties - set(node.get("required", []))
+                assert optional <= {"licence", "licence_type"}, (name, node.get("title"))
+    source_block = nodes_defs["SourceBlock"]
+    assert {"licence", "licence_type"} <= set(source_block["properties"])
+    assert source_block["properties"]["license"]["deprecated"] is True
 
 
 def test_a_request_schema_keeps_a_defaulted_field_optional():

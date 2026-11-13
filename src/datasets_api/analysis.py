@@ -9,10 +9,11 @@ A request (`AnalysisRequest`) holds a `tree` and a `latest` flag. A step node na
 - a ref (`{"ref": <DatasetRef>}`), which must hold one member and reads as that member.
 
 A Spec or dataset root carries a `rendering`, the mint options data-mcp records for a fetched
-frame: `without_party_totals`; `columns`, the enrichment columns its frame is read with; and
-`groupby`, the sum its frame was read with (`mint_models.GroupbyOptions`), such as a breakdown
-or a sum over StatVars. Left out, `columns` is the place-type and party-kind columns the
-dataset's roles take (`default_enrichment`), which the verbs need to keep group
+frame: `without_party_totals`, which a request may spell `party_totals: false` as a mint's
+options may (`mint_models.fold_party_totals`); `columns`, the enrichment columns its frame is
+read with; and `groupby`, the sum its frame was read with (`mint_models.GroupbyOptions`), such
+as a breakdown or a sum over StatVars. Left out, `columns` is the place-type and party-kind
+columns the dataset's roles take (`default_enrichment`), which the verbs need to keep group
 totals out of a sum or rank. The rendering is part of the root's identity: its mint options
 are the root record's `options`, which the recipe's normal form names.
 
@@ -114,6 +115,7 @@ from pydantic import (
     Tag,
     TypeAdapter,
     ValidationError,
+    field_validator,
     model_validator,
 )
 
@@ -125,7 +127,14 @@ from datasets_api.doors.publish import (
     publish_built_frame,
     write_frame_recipe,
 )
-from datasets_api.mint_models import GroupbyOptions
+from datasets_api.mint_models import (
+    PARTY_TOTALS,
+    WITHOUT_PARTY_TOTALS_DESCRIPTION,
+    GroupbyOptions,
+    fold_party_totals,
+    party_totals_field,
+    refuse_unfolded_party_totals,
+)
 from datasets_api.output_digest import minted_variable_names, output_digest, stat_vars
 from datasets_api.publish_models import (
     MAX_RECIPE_BYTES,
@@ -224,7 +233,12 @@ class RootRendering(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    without_party_totals: bool = False
+    without_party_totals: bool = Field(default=False, description=WITHOUT_PARTY_TOTALS_DESCRIPTION)
+    # Input only: folded into `without_party_totals` and left out of every dump, so the root's
+    # identity is the same for either spelling.
+    party_totals: bool | None = party_totals_field()
+    _fold_party_totals = model_validator(mode="before")(fold_party_totals)
+    _refuse_unfolded_party_totals = field_validator(PARTY_TOTALS)(refuse_unfolded_party_totals)
     columns: tuple[Annotated[str, Field(min_length=1, max_length=200)], ...] | None = Field(
         default=None, max_length=32
     )
@@ -278,6 +292,10 @@ class _RefRendering(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     without_party_totals: bool = False
+    # A ref may spell the cut `party_totals: false`.
+    party_totals: bool | None = party_totals_field()
+    _fold_party_totals = model_validator(mode="before")(fold_party_totals)
+    _refuse_unfolded_party_totals = field_validator(PARTY_TOTALS)(refuse_unfolded_party_totals)
     groupby: GroupbyOptions | None = None
 
 

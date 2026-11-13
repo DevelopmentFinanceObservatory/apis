@@ -5,15 +5,18 @@ are `[]`, and `gaps` names each empty member in spec order.
 `document_errors` lists each Markdown document the source carries but this
 door could not serve.
 
-The graph fills `details`, `license` and `scope_and_units.years_covered` from
+`licence` and `license` hold the same block. `licence` is the preferred spelling, and
+`license` stays for clients that read it. `gaps` names the block's paths as `license.*`.
+
+The graph fills `details`, `licence` and `scope_and_units.years_covered` from
 Dataset and Provenance properties (`materialise.provenance_doc`), except
 `details.source` and `details.data_commons`, which come from the origin
 catalogue's provenance table.
 `details.citation` is the `licenseAttribution` text.
 `details.source_data_url` is the `sourceDataUrl` file the pipeline downloads,
-and `license.url` is the `license` page on the publisher's site. Both serve
+and `licence.url` is the `license` page on the publisher's site. Both serve
 the stored string when every Provenance child carries the same one (the
-`license.type` rule) and null otherwise. `transformation_log`,
+`licence.type` rule) and null otherwise. `transformation_log`,
 `version_history`, `methodology.description` and `data_notes` come from
 Markdown documents on a sole child Provenance, parsed against their templates
 by `dfo_provenance_docs`. Their text members carry CommonMark with paragraph
@@ -35,9 +38,9 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field
+from pydantic import ConfigDict, Field, computed_field
 
-from dfo_platform.wire import ResponseModel
+from dfo_platform.wire import ResponseModel, optional_in_schema
 from graph_api.origin_models import DataCommonsRef, SourceNodeRef
 from materialise.provenance_doc import DocumentMember
 
@@ -183,8 +186,13 @@ class DocumentErrorEntry(ResponseModel):
 class SourceDocumentation(ResponseModel):
     """The full `GET /api/graph/documentation/{dcid}` response."""
 
+    model_config = ConfigDict(json_schema_extra=optional_in_schema("licence"))
+
     details: SourceDetails
-    license: SourceLicense
+    license: SourceLicense = Field(
+        description="deprecated: the same block as `licence`, kept for clients that read it",
+        json_schema_extra={"deprecated": True},
+    )
     scope_and_units: ScopeAndUnits = Field(default_factory=ScopeAndUnits)
     methodology: Methodology
     data_notes: list[str] = Field(
@@ -203,6 +211,14 @@ class SourceDocumentation(ResponseModel):
         default_factory=list,
         description="each Markdown document the source carries but this door could not serve",
     )
+
+    @computed_field(
+        description="the source's licence: its label (`type`), terms page (`url`) and release "
+        "dates. The preferred spelling of `license`, which holds the same block"
+    )
+    @property
+    def licence(self) -> SourceLicense:
+        return self.license
 
 
 class ProvenanceEntry(ResponseModel):
@@ -230,10 +246,13 @@ class DatasetEntry(ResponseModel):
     no Dataset forms its own entry, keyed by the provenance, so `ref` and `label`
     are the provenance's and `provenances` holds that one provenance.
 
-    The card facts (`description`, `license_type`, `update_cadence`,
+    The card facts (`description`, `licence_type`, `update_cadence`,
     `years_covered`, `source_url`) equal the same members of
     `GET /api/graph/documentation/{ref}` for the graph the loaded catalogue
-    build read. They are null on UN System Data Commons entries."""
+    build read. They are null on UN System Data Commons entries. `license_type` is the
+    deprecated spelling of `licence_type` and holds the same value."""
+
+    model_config = ConfigDict(json_schema_extra=optional_in_schema("licence_type"))
 
     ref: str
     label: str
@@ -243,8 +262,8 @@ class DatasetEntry(ResponseModel):
         "it has several"
     )
     license_type: str | None = Field(
-        description="licence label every Provenance agrees on, as `license.type`; null when "
-        "they disagree or one has none"
+        description="deprecated: the same value as `licence_type`, kept for clients that read it",
+        json_schema_extra={"deprecated": True},
     )
     update_cadence: str | None = Field(
         description="release cadence label every Provenance agrees on, as "
@@ -258,6 +277,14 @@ class DatasetEntry(ResponseModel):
         description="the publication's page, as `details.source_url`: the Dataset's url, "
         "else its sole Provenance's"
     )
+
+    @computed_field(
+        description="licence label every Provenance agrees on, as `licence.type`; null when "
+        "they disagree or one has none"
+    )
+    @property
+    def licence_type(self) -> str | None:
+        return self.license_type
 
 
 class SourceCatalogueEntry(ResponseModel):

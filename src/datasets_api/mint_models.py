@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import difflib
 from collections.abc import Mapping
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import (
     AfterValidator,
@@ -16,6 +16,8 @@ from pydantic import (
     Discriminator,
     Field,
     Tag,
+    TypeAdapter,
+    ValidationError,
     ValidationInfo,
     field_validator,
     model_validator,
@@ -346,6 +348,79 @@ class PivotOptions(BaseModel):
     columns: str = Field(min_length=1)
 
 
+PARTY_TOTALS = "party_totals"
+"""The request name of the party-totals cut, where `false` leaves group totals out. A request may
+name it beside `WITHOUT_PARTY_TOTALS`, its inverse, which every stored and served rendering
+keeps (`render.artifact_rendering`), so both spellings key one rendering."""
+
+WITHOUT_PARTY_TOTALS = "without_party_totals"
+
+PARTY_TOTALS_DESCRIPTION = (
+    "Whether group totals stay in the frame. This is the preferred name of the party-totals cut. "
+    "Absent, totals stay, unless without_party_totals is true. "
+    "false leaves out the rows whose party, on a flow party role the identity binds no entity "
+    "on, the code index declares a group total. It equals without_party_totals: true. Both may "
+    "be given when they agree. The cut is recorded and served as without_party_totals"
+)
+WITHOUT_PARTY_TOTALS_DESCRIPTION = (
+    "Deprecated: use party_totals. true leaves group totals out, as party_totals: false does"
+)
+
+_BOOLEAN = TypeAdapter(bool)
+
+
+def fold_party_totals(data: Any) -> Any:
+    """`data` with a given `party_totals` folded into `without_party_totals`, its inverse, so a
+    model that takes the cut holds one field whatever spelling the request used.
+
+    `party_totals` stays in `data` when it or a given `without_party_totals` is not a boolean,
+    or when the two disagree, so field validation refuses it at its own pointer
+    (`refuse_unfolded_party_totals`)."""
+    if not isinstance(data, Mapping) or PARTY_TOTALS not in data:
+        return data
+    try:
+        kept = _BOOLEAN.validate_python(data[PARTY_TOTALS])
+        if (
+            WITHOUT_PARTY_TOTALS in data
+            and _BOOLEAN.validate_python(data[WITHOUT_PARTY_TOTALS]) is kept
+        ):
+            return data
+    except ValidationError:
+        return data
+    folded = {key: value for key, value in data.items() if key != PARTY_TOTALS}
+    folded[WITHOUT_PARTY_TOTALS] = not kept
+    return folded
+
+
+def refuse_unfolded_party_totals(value: bool | None, info: ValidationInfo) -> None:
+    """Refuses a `party_totals` that `fold_party_totals` left in place: a null one, or one that
+    disagrees with `without_party_totals`. A `without_party_totals` that failed its own
+    validation carries the refusal alone."""
+    if value is None:
+        raise ValueError("party_totals must be true or false")
+    if WITHOUT_PARTY_TOTALS not in info.data:
+        return None
+    raise ValueError(
+        f"party_totals: {str(value).lower()} contradicts without_party_totals: "
+        f"{str(info.data[WITHOUT_PARTY_TOTALS]).lower()}; give one, or both agreeing"
+    )
+
+
+def _party_totals_schema(schema: dict[str, Any]) -> None:
+    schema.clear()
+    # No `default`, since a client that fills defaults would send `party_totals: true` beside a
+    # caller's `without_party_totals: true`, which refuses as a contradiction.
+    schema.update({"type": "boolean", "description": PARTY_TOTALS_DESCRIPTION})
+
+
+def party_totals_field() -> Any:
+    """The input-only `party_totals` field. It is read on input, folded into
+    `without_party_totals` (`fold_party_totals`), held as `None` and left out of every dump, so
+    a model's dump and every key hashed from it are those of the request that spelled the cut
+    `without_party_totals`. Its schema is a boolean with no default, and absent keeps totals."""
+    return Field(default=None, exclude=True, json_schema_extra=_party_totals_schema)
+
+
 class MintOptions(BaseModel):
     """Rendering-only, never hashed into identity. `format`/`bundle`/`pivot`/
     `columns`/`groupby`/`without_party_totals` are this deployment's live rendering surface. A
@@ -386,7 +461,11 @@ class MintOptions(BaseModel):
     served identity binds no entity on, the code index declares a group total
     (`datasets_api.party_totals`). It runs on the frame before any reshape, so a `groupby`
     sums members alone. A cut that leaves rows out mints a version of its own, as a `groupby`
-    collapse does; one that leaves nothing out serves the frame's own version.
+    collapse does; one that leaves nothing out serves the frame's own version. A request may
+    spell the cut `party_totals: false`, the preferred name, which validation folds into
+    `without_party_totals` (`fold_party_totals`), so the dump, the rendering and every key
+    hashed from them are the same for either spelling. Both given and disagreeing refuses at
+    `party_totals`.
     """
 
     # Disabled enrichment names refuse only when the frame lacks a real column with that name.
@@ -398,7 +477,11 @@ class MintOptions(BaseModel):
     columns: list[Annotated[str, Field(min_length=1)]] | None = Field(
         default=None, json_schema_extra={"uniqueItems": True}
     )
-    without_party_totals: bool = False
+    without_party_totals: bool = Field(default=False, description=WITHOUT_PARTY_TOTALS_DESCRIPTION)
+    # Input only: folded into `without_party_totals` and left out of every dump.
+    party_totals: bool | None = party_totals_field()
+    _fold_party_totals = model_validator(mode="before")(fold_party_totals)
+    _refuse_unfolded_party_totals = field_validator(PARTY_TOTALS)(refuse_unfolded_party_totals)
     # Left out of every dump while unset, so only options that ask for it key on it.
     enrichment: Literal["default"] | None = Field(
         default=None,

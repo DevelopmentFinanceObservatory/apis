@@ -17,10 +17,9 @@ from datasets_api.mint_models import MAX_GROUPBY_LEVEL_DEPTH, MintOptions
 from dfo_platform.problem import Refusal
 from dfo_platform.validation import pointer_segment
 
-# Each closed-namespace query key's equivalent (top-level field, nested
-# key) in the mint body's `options` object. A top-level scalar field
-# (`format`, `bundle`, `columns`, `layout`, `without_party_totals`) carries `None` as its
-# nested key.
+# Each closed-namespace query key's equivalent (top-level field, nested key) in the mint body's
+# `options` object. A top-level scalar field (`format`, `bundle`, `columns`, `layout`,
+# `without_party_totals`, `party_totals`) carries `None` as its nested key.
 # Extending the namespace -- a new option, or a dotted key for a field
 # that gains its own sub-structure -- means adding one row here.
 _NAMESPACE: dict[str, tuple[str, str | None]] = {
@@ -34,6 +33,8 @@ _NAMESPACE: dict[str, tuple[str, str | None]] = {
     "columns": ("columns", None),
     "layout": ("layout", None),
     "without_party_totals": ("without_party_totals", None),
+    # Input only: `MintOptions` folds it into `without_party_totals`, which the encoder writes.
+    "party_totals": ("party_totals", None),
 }
 # `groupby.by` is a comma-separated list like `columns`. The other nested keys are strings.
 _COMMA_JOINED_NESTED_KEYS: frozenset[str] = frozenset({"groupby.by"})
@@ -136,8 +137,9 @@ def _parse_levels(value: str) -> dict[str, int]:
 def encode_query_options(options: MintOptions) -> dict[str, str]:
     """Encodes applied options as the flat query map accepted by `GET /api/datasets/{id}`.
     `format` and `bundle` are always present. Other keys appear only when set, and
-    `without_party_totals` only when true. `columns` and
-    `groupby.by` are comma-joined, and their closed grammars exclude commas from entries.
+    `without_party_totals` only when true, the spelling a `party_totals` request decodes to.
+    `columns` and `groupby.by` are comma-joined, and their closed grammars exclude commas from
+    entries.
     `groupby.levels` joins its `<code_system>:<depth>` pairs in code-system order."""
     encoded: dict[str, str] = {}
     for key, (field, subfield) in _NAMESPACE.items():

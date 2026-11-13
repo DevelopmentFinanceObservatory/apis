@@ -111,7 +111,7 @@ class TestWireMapping:
             "source_data_url": "https://dataset.example.org/data.csv",
             "citation": None,
         }
-        assert body["license"] == {
+        assert body["licence"] == {
             # The wire-mapping layer converts the enum dcid to a display label.
             "type": "Creative Commons Attribution License",
             "url": "https://dataset.example.org/terms",
@@ -119,6 +119,7 @@ class TestWireMapping:
             "last_update": "2024-06-01",
             "next_expected_update": "2024-07-01",
         }
+        assert body["license"] == body["licence"]
         assert body["scope_and_units"] == {
             "countries": [],
             "years_covered": None,
