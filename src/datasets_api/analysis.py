@@ -129,11 +129,11 @@ from datasets_api.doors.publish import (
 )
 from datasets_api.mint_models import (
     PARTY_TOTALS,
-    WITHOUT_PARTY_TOTALS_DESCRIPTION,
     GroupbyOptions,
     fold_party_totals,
     party_totals_field,
     refuse_unfolded_party_totals,
+    without_party_totals_field,
 )
 from datasets_api.output_digest import minted_variable_names, output_digest, stat_vars
 from datasets_api.publish_models import (
@@ -233,7 +233,7 @@ class RootRendering(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    without_party_totals: bool = Field(default=False, description=WITHOUT_PARTY_TOTALS_DESCRIPTION)
+    without_party_totals: bool = without_party_totals_field()
     # Input only: folded into `without_party_totals` and left out of every dump, so the root's
     # identity is the same for either spelling.
     party_totals: bool | None = party_totals_field()
@@ -291,7 +291,7 @@ class _RefSpec(BaseModel):
 class _RefRendering(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    without_party_totals: bool = False
+    without_party_totals: bool = without_party_totals_field()
     # A ref may spell the cut `party_totals: false`.
     party_totals: bool | None = party_totals_field()
     _fold_party_totals = model_validator(mode="before")(fold_party_totals)

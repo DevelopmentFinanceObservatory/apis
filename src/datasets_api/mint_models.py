@@ -413,6 +413,22 @@ def _party_totals_schema(schema: dict[str, Any]) -> None:
     schema.update({"type": "boolean", "description": PARTY_TOTALS_DESCRIPTION})
 
 
+def _without_party_totals_schema(schema: dict[str, Any]) -> None:
+    # No `default`, since a client that fills defaults would send `without_party_totals: false`
+    # beside a caller's `party_totals: false`, which refuses as a contradiction.
+    schema.pop("default", None)
+
+
+def without_party_totals_field() -> Any:
+    """The deprecated `without_party_totals` field, false unless given. Its schema declares no
+    default, for the reason `_party_totals_schema` gives."""
+    return Field(
+        default=False,
+        description=WITHOUT_PARTY_TOTALS_DESCRIPTION,
+        json_schema_extra=_without_party_totals_schema,
+    )
+
+
 def party_totals_field() -> Any:
     """The input-only `party_totals` field. It is read on input, folded into
     `without_party_totals` (`fold_party_totals`), held as `None` and left out of every dump, so
@@ -477,7 +493,7 @@ class MintOptions(BaseModel):
     columns: list[Annotated[str, Field(min_length=1)]] | None = Field(
         default=None, json_schema_extra={"uniqueItems": True}
     )
-    without_party_totals: bool = Field(default=False, description=WITHOUT_PARTY_TOTALS_DESCRIPTION)
+    without_party_totals: bool = without_party_totals_field()
     # Input only: folded into `without_party_totals` and left out of every dump.
     party_totals: bool | None = party_totals_field()
     _fold_party_totals = model_validator(mode="before")(fold_party_totals)
