@@ -13,13 +13,20 @@ import pytest
 from dc_graph import ArcSubject, ArcTarget
 from graph_api import app as app_module
 from graph_api.doors import ontology as ontology_door
+from graph_api.ontology_check import OntologyLookup
 from graph_api.ontology_document import OntologyListingTruncatedError
-from graph_api.ontology_models import CHECK_MAX_ROWS
+from graph_api.ontology_models import (
+    CHECK_MAX_CONSTRAINT_PROPERTIES,
+    CHECK_MAX_OBSERVATION_PROPERTIES,
+    CHECK_MAX_READ_IDS,
+    CHECK_MAX_ROWS,
+)
+from graph_api.routing import DCID_MAX_LENGTH
 from graph_generation import FakeGeneration
 from materialise.graph import GraphDeadlineExceededError, GraphReadError
 
 from .conftest import FakeGraphNodeReader, make_client, wait_until
-from .ontology_fixture import STAMP, index_of
+from .ontology_fixture import STAMP, index_of, index_row
 
 _DFO = "provenance/DFOOntology"
 _DOCUMENT = "/api/graph/ontology"
@@ -300,10 +307,10 @@ class _FailingCheckReader(FakeGraphNodeReader):
         super().__init__(nodes=_NODES, arc_subjects=_ARC_SUBJECTS, arc_targets=_ARC_TARGETS)
         self._error = error
 
-    def node_arcs_many(self, dcids, *, properties, deadline=None):
+    def node_arcs_batch(self, dcids, *, deadline=None):
         if "BrokenCode" in dcids:
             raise self._error
-        return super().node_arcs_many(dcids, properties=properties, deadline=deadline)
+        return super().node_arcs_batch(dcids, deadline=deadline)
 
 
 class TestCheck:
@@ -347,6 +354,36 @@ class TestCheck:
                 {"rows": [{**_check_row("CRSPurposeCode120"), "measured_property": "bad code"}]},
                 id="malformed-dcid",
             ),
+            pytest.param(
+                {
+                    "rows": [
+                        {
+                            **_check_row("CRSPurposeCode120"),
+                            "constraint_properties": {
+                                f"p{i}": "CRSPurposeCode120"
+                                for i in range(CHECK_MAX_CONSTRAINT_PROPERTIES + 1)
+                            },
+                        }
+                    ]
+                },
+                id="too-many-constraint-properties",
+            ),
+            pytest.param(
+                {
+                    "rows": [
+                        {
+                            **_check_row("CRSPurposeCode120"),
+                            "observation_properties": ["crsPurpose"]
+                            * (CHECK_MAX_OBSERVATION_PROPERTIES + 1),
+                        }
+                    ]
+                },
+                id="too-many-observation-properties",
+            ),
+            pytest.param(
+                {"rows": [_check_row("x" * (DCID_MAX_LENGTH + 1))]},
+                id="constraint-value-past-the-dcid-ceiling",
+            ),
         ],
     )
     def test_a_body_outside_the_request_model_is_refused_before_any_read(self, generation, body):
@@ -358,6 +395,70 @@ class TestCheck:
         assert response.status_code == 400, response.text
         assert response.json()["code"] == "request_invalid"
         assert _reads(graph) == 0
+
+    def test_rows_naming_more_ids_to_read_than_the_cap_are_refused_before_any_check_read(
+        self, generation
+    ):
+        graph = _graph()
+        rows = [_check_row(f"NoSuchCode{i}") for i in range(CHECK_MAX_READ_IDS + 1)]
+
+        with make_client(graph=graph) as client:
+            response = client.post(_CHECK, json={"rows": rows})
+
+        assert response.status_code == 400, response.text
+        assert response.json()["code"] == "request_invalid"
+        assert response.json()["retryable"] is False
+        assert f"{CHECK_MAX_READ_IDS + 1} distinct ids" in response.json()["detail"]
+        assert f"cap of {CHECK_MAX_READ_IDS}" in response.json()["detail"]
+        assert graph.calls["node_arcs_batch"] == 0
+
+    def test_the_check_compares_against_the_code_index_its_build_read(
+        self, generation, monkeypatch: pytest.MonkeyPatch
+    ):
+        # Both indexes share a content hash, so the swap keeps the cached entry.
+        built_with = index_of(index_row("Amount_X", {"crsPurpose": "CRSPurposeCode120"}))
+        swapped_in = index_of(index_row("Amount_X", {"crsPurpose": "OtherCode"}))
+        bound = [built_with]
+        monkeypatch.setattr(ontology_door, "get_index", lambda: bound[0])
+        served = built_with.statvars[0]
+        row = {
+            "ref": "x",
+            "dcid": served.dcid,
+            "population_type": served.population_type,
+            "measured_property": served.measured_property,
+            "stat_type": served.stat_type,
+            "constraint_properties": dict(served.constraint_properties),
+            "observation_properties": list(served.observation_properties),
+        }
+
+        with make_client(graph=_graph()) as client:
+            client.get(_DOCUMENT)
+            bound[0] = swapped_in
+            response = client.post(_CHECK, json={"rows": [row]})
+
+        assert response.status_code == 200, response.text
+        assert [
+            finding
+            for finding in response.json()["findings"]
+            if finding["code"] == "definition_differs"
+        ] == []
+
+    def test_the_lookup_is_built_once_per_entry(self, generation, monkeypatch: pytest.MonkeyPatch):
+        built: list[object] = []
+        build = OntologyLookup.of
+
+        def counting(document):
+            built.append(document)
+            return build(document)
+
+        monkeypatch.setattr(ontology_door.OntologyLookup, "of", counting)
+
+        with make_client(graph=_graph()) as client:
+            for _ in range(2):
+                response = client.post(_CHECK, json={"rows": [_check_row("CRSPurposeCode120")]})
+                assert response.status_code == 200, response.text
+
+        assert len(built) == 1
 
     def test_the_check_and_a_get_share_one_build(self, generation):
         graph = _graph()

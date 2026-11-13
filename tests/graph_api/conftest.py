@@ -45,7 +45,9 @@ class FakeGraphNodeReader:
     """Fake graph reads shared by the graph API and entity resolver tests.
 
     `nodes` maps dcids to arcs; absent dcids return `None`, absent properties
-    return `()`. `arcs`, `contained`, and `subjects` map lookup keys to results,
+    return `()`, and `node_arcs_many` answers `None` for a node holding none of the properties
+    it names, as the graph does. `node_arcs_batch` serves a node's arcs in the wire's `->*` shape, and `None`
+    for a dcid with no arc, as the graph answers a node with no out-arc. `arcs`, `contained`, and `subjects` map lookup keys to results,
     with empty results for missing keys. `arc_subjects` maps `(dcid, property)`
     to every subject `node_arc_subjects` and `node_arc_subjects_many` serve,
     capped at `max_results` with `truncated` or `"capped"` set past it. `arc_targets` maps dcids to
@@ -72,6 +74,7 @@ class FakeGraphNodeReader:
         self._arc_targets = arc_targets
         self.calls: dict[str, int] = {
             "node_arcs_many": 0,
+            "node_arcs_batch": 0,
             "node_names_many": 0,
             "resolve_by_arc": 0,
             "child_places_batch": 0,
@@ -92,10 +95,25 @@ class FakeGraphNodeReader:
         result: NodeArcsByDcid = {}
         for dcid in dcids:
             entry = self._nodes.get(dcid)
-            if entry is None:
+            if entry is None or not any(entry.get(prop) for prop in properties):
                 result[dcid] = None
                 continue
             result[dcid] = {prop: tuple(dict.fromkeys(entry.get(prop, ()))) for prop in properties}
+        return result
+
+    def node_arcs_batch(
+        self, dcids: list[str], *, deadline: float | None = None
+    ) -> dict[str, dict | None]:
+        self.calls["node_arcs_batch"] += 1
+        result: dict[str, dict | None] = {}
+        for dcid in dict.fromkeys(dcids):
+            entry = self._nodes.get(dcid) or {}
+            arcs = {
+                prop: {"nodes": [{"dcid": value} for value in dict.fromkeys(values)]}
+                for prop, values in entry.items()
+                if values
+            }
+            result[dcid] = arcs or None
         return result
 
     def resolve_by_arc(

@@ -10,10 +10,9 @@ import pytest
 
 from code_index import StatVarRow
 from dc_graph import GraphReadError
-from graph_api.ontology_check import check_rows
+from graph_api.ontology_check import OntologyCheckTooManyReads, OntologyLookup, check_rows
 from graph_api.ontology_document import Ontology, build_ontology
-from graph_api.ontology_models import OntologyCheckRow
-from graph_api.reader import NodeArcsByDcid
+from graph_api.ontology_models import CHECK_MAX_READ_IDS, OntologyCheckRow, OntologyEnumeration
 
 from .conftest import FakeGraphNodeReader
 from .ontology_fixture import DFO, INDEX, NODES, SCHEMA, TERMS, ontology_graph
@@ -63,23 +62,28 @@ _CHECK_NODES = {
 
 
 class _RecordingReader(FakeGraphNodeReader):
-    """The check graph, recording the dcids of every `node_arcs_many` call."""
+    """The check graph, recording the dcids of every `node_arcs_batch` call."""
 
     def __init__(self) -> None:
         super().__init__(nodes=_CHECK_NODES)
         self.batches: list[list[str]] = []
 
-    def node_arcs_many(
-        self, dcids: Sequence[str], *, properties: Sequence[str], deadline: float | None = None
-    ) -> NodeArcsByDcid:
+    def node_arcs_batch(
+        self, dcids: list[str], *, deadline: float | None = None
+    ) -> dict[str, dict | None]:
         self.batches.append(list(dcids))
-        return super().node_arcs_many(dcids, properties=properties, deadline=deadline)
+        return super().node_arcs_batch(dcids, deadline=deadline)
 
 
 @cache
 def _ontology() -> Ontology:
     graph = ontology_graph(terms=_CHECK_TERMS, nodes=_CHECK_NODES)
     return build_ontology(reader=graph, code_index=INDEX, generation="g1", deadline=_DEADLINE)
+
+
+@cache
+def _lookup() -> OntologyLookup:
+    return OntologyLookup.of(_ontology().document)
 
 
 def _row(**fields: Any) -> OntologyCheckRow:
@@ -112,11 +116,13 @@ def _as_row(served: StatVarRow, **fields: Any) -> OntologyCheckRow:
 
 
 def _check(
-    rows: Sequence[OntologyCheckRow], reader: FakeGraphNodeReader | None = None
+    rows: Sequence[OntologyCheckRow],
+    reader: FakeGraphNodeReader | None = None,
+    lookup: OntologyLookup | None = None,
 ) -> list[tuple[str, object, str, str]]:
     findings = check_rows(
         rows,
-        ontology=_ontology(),
+        lookup=lookup or _lookup(),
         reader=reader or _RecordingReader(),
         code_index=INDEX,
         deadline=_DEADLINE,
@@ -126,13 +132,16 @@ def _check(
 
 _SERVED = INDEX.statvars[0]
 _CRS = "constraint_properties.crsPurpose"
+_GENDER = "constraint_properties.beneficiaryGender"
 
 
 @pytest.mark.parametrize(
     ("row", "expected"),
     [
         pytest.param(
-            _row(constraint_properties={"crsPurpose": "CRSPurposeCode12220"}), [], id="held-value"
+            _row(constraint_properties={"crsPurpose": "CRSPurposeCode12220"}),
+            [],
+            id="held-value-domain-holds-an-ancestor",
         ),
         pytest.param(
             _row(constraint_properties={"crsPurpos": "CRSPurposeCode12220"}),
@@ -141,29 +150,51 @@ _CRS = "constraint_properties.crsPurpose"
         ),
         pytest.param(
             _row(constraint_properties={"crsPurpose": "CRSPurposeCode99999"}),
-            [(_CRS, "CRSPurposeCode99999", "node_not_held", "error")],
-            id="value-not-held",
+            [(_CRS, "CRSPurposeCode99999", "value_outside_range", "error")],
+            id="value-outside-a-fully-listed-enumeration",
         ),
         pytest.param(
-            _row(constraint_properties={"crsPurpose": "health", "amount": 5}),
+            _row(constraint_properties={"recipientPlace": "country/XYZ"}),
+            [("constraint_properties.recipientPlace", "country/XYZ", "node_not_held", "error")],
+            id="value-not-held-on-a-range-that-is-no-enumeration",
+        ),
+        pytest.param(
+            _row(constraint_properties={"beneficiaryGender": "NoSuchGender"}),
+            [(_GENDER, "NoSuchGender", "node_not_held", "error")],
+            id="value-not-held-on-an-instance-property-with-no-range",
+        ),
+        pytest.param(
+            _row(population_type="Person", constraint_properties={"gender": "NoSuchGender"}),
+            [("constraint_properties.gender", "NoSuchGender", "node_not_held", "error")],
+            id="value-not-held-on-a-base-property",
+        ),
+        pytest.param(
+            _row(
+                constraint_properties={
+                    "beneficiaryGender": "two words",
+                    "amount": 5,
+                    "gender": True,
+                }
+            ),
             [
                 ("constraint_properties.amount", 5, "node_not_held", "error"),
-                (_CRS, "health", "node_not_held", "error"),
+                (_GENDER, "two words", "node_not_held", "error"),
+                ("constraint_properties.gender", True, "node_not_held", "error"),
             ],
             id="literal-value",
         ),
         pytest.param(
-            _row(constraint_properties={"crsPurpose": "PlaceholderCode"}),
-            [(_CRS, "PlaceholderCode", "node_provisional", "error")],
+            _row(constraint_properties={"beneficiaryGender": "PlaceholderCode"}),
+            [(_GENDER, "PlaceholderCode", "node_provisional", "error")],
             id="provisional-only",
         ),
         pytest.param(
-            _row(constraint_properties={"crsPurpose": "UntypedCode"}),
-            [(_CRS, "UntypedCode", "node_untyped", "error")],
-            id="untyped-value",
+            _row(constraint_properties={"beneficiaryGender": "UntypedCode"}),
+            [(_GENDER, "UntypedCode", "node_untyped", "error")],
+            id="untyped-value-outside-the-document",
         ),
         pytest.param(
-            _row(constraint_properties={"crsPurpose": "RealizedCode"}),
+            _row(constraint_properties={"beneficiaryGender": "RealizedCode"}),
             [],
             id="provisional-and-real-type",
         ),
@@ -242,9 +273,9 @@ _CRS = "constraint_properties.crsPurpose"
             id="instance-measured-property-outside-domain",
         ),
         pytest.param(
-            _row(constraint_properties={"crsPurpose": "CRSPurposeCode12220"}),
+            _row(population_type="Person", observation_properties=["crsPurpose"]),
             [],
-            id="domain-holds-an-ancestor",
+            id="instance-observation-property-outside-domain",
         ),
         pytest.param(
             _row(population_type="Person", constraint_properties={"gender": "Female"}),
@@ -291,7 +322,7 @@ def test_findings_come_in_row_then_field_order_with_the_row_ref() -> None:
     ]
 
     findings = check_rows(
-        rows, ontology=_ontology(), reader=_RecordingReader(), code_index=INDEX, deadline=_DEADLINE
+        rows, lookup=_lookup(), reader=_RecordingReader(), code_index=INDEX, deadline=_DEADLINE
     )
 
     assert [(finding.ref, finding.field) for finding in findings] == [
@@ -326,22 +357,135 @@ def test_ancestors_outside_the_document_are_read_one_level_per_batch() -> None:
     assert reader.batches == [["country/UGA"], ["Country"], ["AdministrativeArea"]]
 
 
-def test_no_read_when_the_document_holds_every_id() -> None:
+@pytest.mark.parametrize(
+    "constraints",
+    [
+        pytest.param({"crsPurpose": "CRSPurposeCode12220"}, id="document-holds-every-id"),
+        pytest.param({"crsPurpose": "CRSPurposeCode99999"}, id="fully-listed-enumeration"),
+        pytest.param({"crsPurpose": "DAC1AidType1010"}, id="member-of-another-enumeration"),
+        pytest.param(
+            {
+                "beneficiaryGender": "two words",
+                "amount": 5,
+                "crsPurpose": False,
+                "recipientPlace": 1.5,
+            },
+            id="literals",
+        ),
+    ],
+)
+def test_no_read_where_the_document_or_the_value_decides(constraints: dict[str, object]) -> None:
     reader = _RecordingReader()
 
-    assert _check([_row(constraint_properties={"crsPurpose": "CRSPurposeCode12220"})], reader) == []
-    assert reader.calls["node_arcs_many"] == 0
+    _check([_row(constraint_properties=constraints)], reader)
+
+    assert reader.batches == []
+    assert sum(reader.calls.values()) == 0
+
+
+def test_a_truncated_range_enumeration_reads_the_value() -> None:
+    document = _ontology().document
+    truncated = document.model_copy(
+        update={
+            "nodes": [
+                node.model_copy(
+                    update={
+                        "enumeration": OntologyEnumeration(
+                            members=node.enumeration.members, truncated=True
+                        )
+                    }
+                )
+                if node.dcid == "CRSPurposeCodeEnum" and node.enumeration is not None
+                else node
+                for node in document.nodes
+            ]
+        }
+    )
+    reader = _RecordingReader()
+
+    findings = _check(
+        [_row(constraint_properties={"crsPurpose": "CRSPurposeCode99999"})],
+        reader,
+        OntologyLookup.of(truncated),
+    )
+
+    assert findings == [(_CRS, "CRSPurposeCode99999", "node_not_held", "error")]
+    assert reader.batches == [["CRSPurposeCode99999"]]
+
+
+def _absent_rows(count: int) -> list[OntologyCheckRow]:
+    return [
+        _row(ref=str(i), constraint_properties={"beneficiaryGender": f"NoSuchGender{i}"})
+        for i in range(count)
+    ]
+
+
+def test_rows_naming_more_ids_to_read_than_the_cap_are_refused_before_any_read() -> None:
+    reader = _RecordingReader()
+
+    with pytest.raises(OntologyCheckTooManyReads) as raised:
+        _check(_absent_rows(CHECK_MAX_READ_IDS + 1), reader)
+
+    assert raised.value.count == CHECK_MAX_READ_IDS + 1
+    assert sum(reader.calls.values()) == 0
+
+
+def test_rows_naming_the_cap_of_ids_to_read_are_read() -> None:
+    reader = _RecordingReader()
+
+    findings = _check(_absent_rows(CHECK_MAX_READ_IDS), reader)
+
+    assert [code for _, _, code, _ in findings] == ["node_not_held"] * CHECK_MAX_READ_IDS
+    assert len(reader.batches[0]) == CHECK_MAX_READ_IDS
+
+
+def test_values_the_document_decides_count_against_no_cap() -> None:
+    reader = _RecordingReader()
+    rows = [
+        _row(ref=str(i), constraint_properties={"crsPurpose": f"CRSPurposeCode9{i:04d}"})
+        for i in range(CHECK_MAX_READ_IDS + 1)
+    ]
+
+    findings = _check(rows, reader)
+
+    assert {code for _, _, code, _ in findings} == {"value_outside_range"}
+    assert reader.batches == []
+
+
+class _CompositionReader(_RecordingReader):
+    """Answers `Male` with no arc in a batch of several, as the graph can."""
+
+    def node_arcs_batch(
+        self, dcids: list[str], *, deadline: float | None = None
+    ) -> dict[str, dict | None]:
+        result = super().node_arcs_batch(dcids, deadline=deadline)
+        if len(dcids) > 1:
+            result["Male"] = None
+        return result
+
+
+def test_a_node_a_batch_answers_with_no_arc_is_read_alone() -> None:
+    reader = _CompositionReader()
+    rows = [
+        _row(ref="a", constraint_properties={"beneficiaryGender": "Male"}),
+        _row(ref="b", constraint_properties={"beneficiaryGender": "NoSuchGender"}),
+    ]
+
+    findings = _check(rows, reader)
+
+    assert findings == [(_GENDER, "NoSuchGender", "node_not_held", "error")]
+    assert reader.batches == [["Male", "NoSuchGender"], ["Male"], ["NoSuchGender"]]
 
 
 class _FailingReader(_RecordingReader):
-    def node_arcs_many(
-        self, dcids: Sequence[str], *, properties: Sequence[str], deadline: float | None = None
-    ) -> NodeArcsByDcid:
+    def node_arcs_batch(
+        self, dcids: list[str], *, deadline: float | None = None
+    ) -> dict[str, dict | None]:
         raise GraphReadError("graph unavailable")
 
 
 def test_a_read_error_propagates() -> None:
     with pytest.raises(GraphReadError):
         _check(
-            [_row(constraint_properties={"crsPurpose": "CRSPurposeCode99999"})], _FailingReader()
+            [_row(constraint_properties={"beneficiaryGender": "NoSuchGender"})], _FailingReader()
         )

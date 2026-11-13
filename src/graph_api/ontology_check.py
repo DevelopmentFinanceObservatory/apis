@@ -1,10 +1,19 @@
 """Check candidate StatisticalVariable definitions against the instance's ontology.
 
-`check_rows` answers each node a row names from the ontology document, and reads the nodes
-the document does not hold in one batched `node_arcs_many` per level of `subClassOf`
-ancestry, so an id costs at most one read however many rows name it. A node the read answers
-`None` for is not held; a read error propagates, so no node is reported absent because a read
-failed.
+`OntologyLookup` holds the ontology document's nodes as the check reads them, built once per
+document. `check_rows` answers each node a row names from it and reads the nodes the document
+does not hold. A read is `node_arcs_batch`, every out-arc of each node, one batch per level of
+`subClassOf` ancestry; a node a batch of several answers with no arc is read again alone. A
+node held with any out-arc is held, its types its `typeOf` values, so a held node with no
+`typeOf` is untyped; a node read alone with no out-arc is not held. A read error propagates, so
+no node is reported absent because a read failed.
+
+Some constraint values need no read. A value that is a number, a boolean, or a string outside
+dcid syntax names no node: `node_not_held`. A value outside the document, on an instance
+property whose every `rangeIncludes` class is an instance-declared enumeration the document
+lists in full, is no member of any of them: `value_outside_range`. Every other id outside the
+document is read, and a request whose rows name more than `CHECK_MAX_READ_IDS` distinct such
+ids raises `OntologyCheckTooManyReads` before any read.
 
 Every row gets existence and kind checks. A constraint value must name a resolved node, by
 `code_index.constraint_values.constraint_value_fault`, the test the code index export refuses
@@ -19,25 +28,30 @@ A row whose `dcid` the code index serves is compared with the served definition 
 
 from __future__ import annotations
 
+import re
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Final
 
 from code_index import CodeIndex, StatVarRow
 from code_index.constraint_values import constraint_value_fault
-from graph_api.ontology_document import Ontology
+from dc_graph import UNRESOLVED_NODE, parse_arcs
 from graph_api.ontology_models import (
+    CHECK_MAX_READ_IDS,
     ConstraintValue,
     FindingCode,
     OntologyCheckRow,
+    OntologyDocument,
     OntologyFinding,
-    OntologyNode,
 )
 from graph_api.reader import GraphNodeReader
+from graph_api.routing import DcidConvertor
 
 _CLASS: Final[str] = "Class"
 _PROPERTY: Final[str] = "Property"
 _READ_PROPERTIES: Final[tuple[str, ...]] = ("typeOf", "subClassOf")
+_DCID: Final[re.Pattern[str]] = re.compile(rf"{DcidConvertor.regex}")
 _SHAPE_FIELDS: Final[tuple[str, ...]] = (
     "population_type",
     "measured_property",
@@ -49,6 +63,17 @@ _CONSTRAINT: Final[str] = "constraint_properties"
 _OBSERVATION: Final[str] = "observation_properties"
 
 
+class OntologyCheckTooManyReads(Exception):
+    """The rows name more ids to read from the graph than `CHECK_MAX_READ_IDS`."""
+
+    def __init__(self, count: int) -> None:
+        super().__init__(
+            f"the rows name {count} distinct ids the ontology document does not hold, past "
+            f"the cap of {CHECK_MAX_READ_IDS} one check reads from the graph; send fewer rows"
+        )
+        self.count = count
+
+
 @dataclass(frozen=True)
 class _Node:
     types: frozenset[str]
@@ -58,13 +83,17 @@ class _Node:
     range: tuple[str, ...] = ()
 
 
-class _Nodes:
-    """The nodes the rows name: document nodes free, the rest read once each."""
+@dataclass(frozen=True)
+class OntologyLookup:
+    """The ontology document's nodes as the check reads them, and the instance-declared
+    enumerations the document lists in full."""
 
-    def __init__(
-        self, document: Iterable[OntologyNode], *, reader: GraphNodeReader, deadline: float
-    ) -> None:
-        self._known: dict[str, _Node | None] = {
+    nodes: Mapping[str, _Node]
+    full_enumerations: frozenset[str]
+
+    @classmethod
+    def of(cls, document: OntologyDocument) -> OntologyLookup:
+        nodes = {
             node.dcid: _Node(
                 types=frozenset(node.types),
                 parents=tuple(node.sub_class_of),
@@ -72,34 +101,53 @@ class _Nodes:
                 domain=tuple(node.domain_includes),
                 range=tuple(node.range_includes),
             )
-            for node in document
+            for node in document.nodes
         }
+        full = frozenset(
+            node.dcid
+            for node in document.nodes
+            if node.declared_by == "instance"
+            and node.enumeration is not None
+            and not node.enumeration.truncated
+        )
+        return cls(nodes=MappingProxyType(nodes), full_enumerations=full)
+
+    def decides(self, prop: str) -> bool:
+        """Whether a value outside the document is outside `prop`'s range with no read: `prop`
+        is an instance property whose every `rangeIncludes` class is an enumeration the
+        document lists in full."""
+        node = self.nodes.get(prop)
+        return (
+            node is not None
+            and _ranged(node)
+            and all(target in self.full_enumerations for target in node.range)
+        )
+
+
+class _Nodes:
+    """The nodes the rows name: document nodes free, the rest read once each."""
+
+    def __init__(self, lookup: OntologyLookup, *, reader: GraphNodeReader, deadline: float) -> None:
+        self._lookup = lookup
+        self._read: dict[str, _Node | None] = {}
         self._reader = reader
         self._deadline = deadline
 
+    def known(self, dcid: str) -> bool:
+        return dcid in self._lookup.nodes or dcid in self._read
+
     def read(self, dcids: Iterable[str]) -> None:
-        """Read in one batch every one of `dcids` not yet known."""
-        unknown = sorted({dcid for dcid in dcids if dcid not in self._known})
+        """Read in one batch every one of `dcids` not yet known, and again alone each one a
+        batch of several answers with no arc."""
+        unknown = sorted({dcid for dcid in dcids if not self.known(dcid)})
         if not unknown:
             return
-        if "" in unknown:
-            self._known[""] = None
-            unknown.remove("")
-            if not unknown:
-                return
-        arcs = self._reader.node_arcs_many(
-            unknown, properties=_READ_PROPERTIES, deadline=self._deadline
-        )
+        arcs = dict(self._reader.node_arcs_batch(unknown, deadline=self._deadline))
+        if len(unknown) > 1:
+            for dcid in [dcid for dcid in unknown if arcs.get(dcid) is None]:
+                arcs.update(self._reader.node_arcs_batch([dcid], deadline=self._deadline))
         for dcid in unknown:
-            entry = arcs.get(dcid)
-            self._known[dcid] = (
-                None
-                if entry is None
-                else _Node(
-                    types=frozenset(entry.get("typeOf", ())),
-                    parents=tuple(entry.get("subClassOf", ())),
-                )
-            )
+            self._read[dcid] = _held(arcs.get(dcid))
 
     def read_ancestry(self, roots: Collection[str]) -> None:
         """Read `roots` and their `subClassOf` ancestors, one batch per level."""
@@ -111,15 +159,17 @@ class _Nodes:
             level = {
                 parent
                 for dcid in level
-                if (node := self._known[dcid]) is not None
+                if (node := self.get(dcid)) is not None
                 for parent in node.parents
             } - seen
 
     def get(self, dcid: str) -> _Node | None:
-        return self._known[dcid]
+        if (node := self._lookup.nodes.get(dcid)) is not None:
+            return node
+        return self._read[dcid]
 
     def ancestry(self, dcids: Iterable[str]) -> set[str]:
-        """`dcids` and every `subClassOf` ancestor of them, over the nodes read."""
+        """`dcids` and every `subClassOf` ancestor of them, over the nodes known."""
         seen: set[str] = set()
         stack = list(dcids)
         while stack:
@@ -127,15 +177,26 @@ class _Nodes:
             if dcid in seen:
                 continue
             seen.add(dcid)
-            if (node := self._known.get(dcid)) is not None:
+            if self.known(dcid) and (node := self.get(dcid)) is not None:
                 stack.extend(node.parents)
         return seen
+
+
+def _held(arcs: Mapping[str, object] | None) -> _Node | None:
+    """The node `node_arcs_batch` answered with `arcs`, or `None` for no out-arc."""
+    if not arcs:
+        return None
+    values = parse_arcs(dict(arcs), _READ_PROPERTIES, mark_unresolved=True)
+    return _Node(
+        types=frozenset(value for value in values["typeOf"] if value != UNRESOLVED_NODE),
+        parents=tuple(value for value in values["subClassOf"] if value != UNRESOLVED_NODE),
+    )
 
 
 def check_rows(
     rows: Sequence[OntologyCheckRow],
     *,
-    ontology: Ontology,
+    lookup: OntologyLookup,
     reader: GraphNodeReader,
     code_index: CodeIndex,
     deadline: float,
@@ -144,9 +205,9 @@ def check_rows(
 
     Args:
         rows: the candidate definitions.
-        ontology: the built ontology, whose document answers most lookups with no read.
+        lookup: the ontology document's lookup, which answers most ids with no read.
         reader: the graph reads for nodes the document does not hold.
-        code_index: the bound code index, whose StatVar rows the rows' dcids are compared with.
+        code_index: the code index whose StatVar rows the rows' dcids are compared with.
         deadline: the absolute monotonic deadline passed to every read.
 
     Returns:
@@ -157,35 +218,54 @@ def check_rows(
         findings in the same field order.
 
     Raises:
+        OntologyCheckTooManyReads: the rows name more than `CHECK_MAX_READ_IDS` ids to read,
+            raised before any read.
         GraphReadError: a read failed.
     """
-    nodes = _Nodes(ontology.document.nodes, reader=reader, deadline=deadline)
-    nodes.read(dcid for row in rows for dcid in _named(row))
+    nodes = _Nodes(lookup, reader=reader, deadline=deadline)
+    to_read = {dcid for row in rows for dcid in _named(row, lookup) if not nodes.known(dcid)}
+    if len(to_read) > CHECK_MAX_READ_IDS:
+        raise OntologyCheckTooManyReads(len(to_read))
+    nodes.read(to_read)
     roots: set[str] = set()
     for row in rows:
         if row.population_type is not None:
             roots.add(row.population_type)
         for prop, value in row.constraint_properties.items():
-            if isinstance(value, str) and _ranged(nodes.get(prop)):
-                roots.update(_types(nodes.get(value)))
+            read = _read_value(prop, value, lookup)
+            if read is not None and _ranged(nodes.get(prop)):
+                roots.update(_types(nodes.get(read)))
     nodes.read_ancestry(roots)
 
     findings: list[OntologyFinding] = []
     for row in rows:
-        findings.extend(_check_row(row, nodes))
+        findings.extend(_check_row(row, nodes, lookup))
         served = code_index.statvar_by_dcid(row.dcid) if row.dcid is not None else None
         if served is not None:
             findings.extend(_differences(row, served))
     return findings
 
 
-def _named(row: OntologyCheckRow) -> list[str]:
-    """Every node id the row names."""
+def _is_dcid(value: ConstraintValue) -> bool:
+    return isinstance(value, str) and _DCID.fullmatch(value) is not None
+
+
+def _read_value(prop: str, value: ConstraintValue, lookup: OntologyLookup) -> str | None:
+    """`value` when the check answers it from a node, `None` when the value alone decides."""
+    if not isinstance(value, str) or not _is_dcid(value):
+        return None
+    if value not in lookup.nodes and lookup.decides(prop):
+        return None
+    return value
+
+
+def _named(row: OntologyCheckRow, lookup: OntologyLookup) -> list[str]:
+    """Every node id the check answers the row from."""
     named = [value for field in _SHAPE_FIELDS if (value := getattr(row, field)) is not None]
     for prop, value in row.constraint_properties.items():
         named.append(prop)
-        if isinstance(value, str):
-            named.append(value)
+        if (read := _read_value(prop, value, lookup)) is not None:
+            named.append(read)
     named.extend(row.observation_properties)
     return named
 
@@ -198,7 +278,9 @@ def _ranged(node: _Node | None) -> bool:
     return node is not None and node.instance and _PROPERTY in node.types and bool(node.range)
 
 
-def _check_row(row: OntologyCheckRow, nodes: _Nodes) -> list[OntologyFinding]:
+def _check_row(
+    row: OntologyCheckRow, nodes: _Nodes, lookup: OntologyLookup
+) -> list[OntologyFinding]:
     findings: list[OntologyFinding] = []
 
     def find(field: str, value: ConstraintValue, code: FindingCode) -> None:
@@ -243,10 +325,14 @@ def _check_row(row: OntologyCheckRow, nodes: _Nodes) -> list[OntologyFinding]:
         if value is None:
             find(field, value, "value_missing")
             continue
-        if not isinstance(value, str):
+        if not _is_dcid(value):
             find(field, value, "node_not_held")
             continue
-        held_value = nodes.get(value)
+        read = _read_value(prop, value, lookup)
+        if read is None:
+            find(field, value, "value_outside_range")
+            continue
+        held_value = nodes.get(read)
         fault = constraint_value_fault(None if held_value is None else held_value.types)
         if fault == "not_held":
             find(field, value, "node_not_held")

@@ -1062,29 +1062,29 @@ The body is built once per code index and coverage build and kept; a request tha
 
 ### POST /api/graph/ontology/check
 
-Checks candidate StatVar definitions against the ontology and answers every fault it finds. The request is `{rows}`, 1 to 2,000 rows (`graph_api.ontology_models.CHECK_MAX_ROWS`), checked as one batch. A longer or empty list, an extra key or a malformed dcid is refused `400 request_invalid` with the offending field as the pointer.
+Checks candidate StatVar definitions against the ontology and answers every fault it finds. The request is `{rows}`, 1 to 2,000 rows (`graph_api.ontology_models.CHECK_MAX_ROWS`), checked as one batch. A longer or empty list, an extra key, a malformed dcid, a row naming more than 32 constraint properties (`caps.max_check_constraint_properties`) or 32 observation properties (`caps.max_check_observation_properties`), or a constraint value string longer than 512 characters is refused `400 request_invalid` with the offending field as the pointer. Rows naming more than 20 distinct ids to read from the graph (`caps.max_check_read_ids`) are refused `400 request_invalid` before any read, with pointer `/rows` and the count and the cap in `detail`; send the rows in smaller chunks. The ids counted are those the rows name that the ontology document does not hold, less the constraint values decided without a read.
 
 A row holds:
 
 - `ref`: the caller's label, echoed on its findings.
 - `dcid`: the StatVar's dcid. When the code index serves it, the row is compared with the served definition.
 - `population_type`, `measured_property` (required), `stat_type`, `measurement_qualifier` and `measurement_denominator`.
-- `constraint_properties`: a map of constraint property to value node. A literal or `null` value is a fault.
+- `constraint_properties`: a map of constraint property to value node. A number, a boolean, a string outside dcid syntax or `null` is a fault.
 - `observation_properties`: a list of property dcids.
 
-Each dcid takes the node route's dcid syntax. The route answers each node a row names from the cached ontology document and reads the rest from the graph: one batch per level of `subClassOf` ancestry, so a dcid costs at most one read however many rows name it. It waits on the same build as `GET /api/graph/ontology` and refuses with the same `503` and `504` outcomes when the build is not ready or a read fails; a failed read yields no findings. A constraint value must name a held node typed beyond `ProvisionalNode`, the test the code index export applies to a release. Range and domain rules apply only to a property whose `declared_by` is `"instance"`: a value is in range when one of its types reaches a `rangeIncludes` class by `subClassOf`, and the population type is in the domain when it reaches a `domainIncludes` class the same way. A property with no `rangeIncludes` or `domainIncludes` admits anything. The domain rule covers the measured property and the constraint properties, and is skipped when the row names no population type.
+The shape fields, constraint properties and observation properties take the node route's dcid syntax. The route answers each node a row names from the cached ontology document and reads the rest from the graph, every out-arc of each node, one batch per level of `subClassOf` ancestry; a node a batch of several answers with no arc is read again alone. A node read with any out-arc is held, so a held node with no `typeOf` is `node_untyped` and a node read alone with no out-arc is `node_not_held`. Two kinds of constraint value need no read. A number, a boolean or a string outside dcid syntax is `node_not_held`. A value outside the document, on an instance property whose every `rangeIncludes` class is an instance-declared enumeration the document lists in full (not `truncated`), is `value_outside_range`. A value on a property whose range enumeration is truncated, whose range is not an enumeration, that has no range, or that the base declares is read. It waits on the same build as `GET /api/graph/ontology` and refuses with the same `503` and `504` outcomes when the build is not ready or a read fails; a failed read yields no findings. A constraint value must name a held node typed beyond `ProvisionalNode`, the test the code index export applies to a release. Range and domain rules apply only to a property whose `declared_by` is `"instance"`: a value is in range when one of its types reaches a `rangeIncludes` class by `subClassOf`, and the population type is in the domain when it reaches a `domainIncludes` class the same way. A property with no `rangeIncludes` or `domainIncludes` admits anything. The domain rule covers the measured property and the constraint properties, and is skipped when the row names no population type.
 
 The response is `{generation, row_count, findings}`. `generation` is the graph generation the rows were checked against, `null` when its token is unknown. Findings come in row order and are empty when no row has a fault. A finding is `{ref, field, value, code, severity}`. `field` is `population_type`, `measured_property`, `stat_type`, `measurement_qualifier`, `measurement_denominator`, `observation_properties`, or `constraint_properties.<property>` for a constraint property or its value. `value` is the value at fault; for `definition_differs` it is the value the code index serves (a sorted list for `observation_properties`, `null` where it serves none). The route sets no cache headers.
 
 | Code | Severity | Meaning |
 | :--- | :------- | :------ |
-| `node_not_held` | `error` | The graph holds no node for the value, or a constraint value is a literal. |
+| `node_not_held` | `error` | The graph holds no node for the value, or a constraint value is a number, a boolean or a string outside dcid syntax. |
 | `node_untyped` | `error` | A constraint value's node has no `typeOf`. |
 | `node_provisional` | `error` | A constraint value's node has only the type `ProvisionalNode`. |
 | `value_missing` | `error` | A constraint property has a `null` value. |
 | `not_a_property` | `error` | A constraint property, the measured property or an observation property is not typed `Property`. |
 | `not_a_class` | `error` | The population type is not typed `Class`. |
-| `value_outside_range` | `error` | No type of the value reaches the instance property's `rangeIncludes` by `subClassOf`. |
+| `value_outside_range` | `error` | No type of the value reaches the instance property's `rangeIncludes` by `subClassOf`, or the value lies outside the document while every `rangeIncludes` class is an enumeration the document lists in full. |
 | `property_outside_domain` | `warning` | The population type reaches none of the instance property's `domainIncludes` by `subClassOf`. |
 | `definition_differs` | `warning` | The code index serves the row's `dcid` with another value in that field. |
 
@@ -1092,7 +1092,7 @@ Within a row, findings follow this order: the shape fields (`population_type`, `
 
 Failures beyond `400`: `503 service_unavailable` with `Retry-After: 5` while the build runs on, `504 timeout`, a non-retryable `503` for a listing at its cap, `502 upstream_error` for a DCP 4xx and a retryable `503` for any other read failure or a saturated executor, as for `GET /api/graph/ontology`.
 
-The example sends two rows: `DAC1AidType1010` lies outside the range of `crsPurpose`, and `CRSPurposeCode99999` names no node.
+The example sends two rows: `DAC1AidType1010` lies outside the range of `crsPurpose`, and the constraint property `crsPurpos` names no node.
 
 ```json
 {
@@ -1107,11 +1107,11 @@ The example sends two rows: `DAC1AidType1010` lies outside the range of `crsPurp
       "observation_properties": []
     },
     {
-      "ref": "no-such-code",
+      "ref": "no-such-property",
       "population_type": "FinancialFlow",
       "measured_property": "amount",
       "constraint_properties": {
-        "crsPurpose": "CRSPurposeCode99999"
+        "crsPurpos": "CRSPurposeCode12220"
       },
       "observation_properties": []
     }
@@ -1132,9 +1132,9 @@ The example sends two rows: `DAC1AidType1010` lies outside the range of `crsPurp
       "severity": "error"
     },
     {
-      "ref": "no-such-code",
-      "field": "constraint_properties.crsPurpose",
-      "value": "CRSPurposeCode99999",
+      "ref": "no-such-property",
+      "field": "constraint_properties.crsPurpos",
+      "value": "crsPurpos",
       "code": "node_not_held",
       "severity": "error"
     }
@@ -1193,7 +1193,10 @@ The example comes from the app built with `make_client` and the restrictive test
     "resolve_timeout_seconds": 30,
     "node_timeout_seconds": 10,
     "max_dcid_chars": 512,
-    "max_node_batch_dcids": 50
+    "max_node_batch_dcids": 50,
+    "max_check_constraint_properties": 32,
+    "max_check_observation_properties": 32,
+    "max_check_read_ids": 20
   }
 }
 ```

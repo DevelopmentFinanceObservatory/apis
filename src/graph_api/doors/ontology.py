@@ -26,13 +26,17 @@ and a gzip representation, honouring `If-None-Match` with 304
 
 `POST /api/graph/ontology/check` takes 1 to `CHECK_MAX_ROWS` candidate StatVar definitions and
 answers every fault `graph_api.ontology_check.check_rows` finds in them, with the generation
-of the build it checked against. The entry keeps that build and the code index it read beside
-its frozen bodies, so the check compares served definitions against the index the build read
-and waits on the same flight as the GET routes and answers their 503 and 504 the same way.
-The check's own reads, of ids the document does not hold, run as one job on the DCP-read
-executor under the deadline the wait used; a saturated executor, a read past the deadline or a
-failed read answers as the GET routes answer it, with no findings. A body outside the request
-model, `rows` empty or longer than `CHECK_MAX_ROWS` included, is refused 400 `request_invalid`.
+of the build it checked against. The entry keeps, beside its frozen bodies, the build's
+`OntologyLookup`, built once per entry, and the code index the build read, so the check
+compares served definitions against the index the build read. The check waits on the same
+flight as the GET routes and answers their 503 and 504 the same way. The check's own reads, of
+ids the document does not hold, run as one job on the DCP-read executor under the deadline the
+wait used; a saturated executor, a read past the deadline or a failed read answers as the GET
+routes answer it, with no findings. A body outside the request model is refused 400
+`request_invalid`: `rows` empty or longer than `CHECK_MAX_ROWS`, a row past
+`CHECK_MAX_CONSTRAINT_PROPERTIES` or `CHECK_MAX_OBSERVATION_PROPERTIES`, or a constraint value
+string past 512 characters. Rows naming more than `CHECK_MAX_READ_IDS` ids to read are refused
+the same way before any read, with the count and the cap in `detail`.
 
 `GET /api/graph/ontology/provenances` serves `OntologyProvenances`, built by
 `graph_api.ontology_provenances.build_provenances` from the bound code index and the served
@@ -60,9 +64,10 @@ from dfo_platform.single_flight_cache import SingleFlightCache, WaitTimeout
 from dfo_platform.static_response import FrozenJSON, freeze_public_json
 from graph_api.config import GRAPH_NODE_TIMEOUT_SECONDS, ONTOLOGY_FLIGHT_TIMEOUT_SECONDS
 from graph_api.deps import GraphDeps, GraphDepsDep, log_queue_wait, run_dcp_read
-from graph_api.ontology_check import check_rows
-from graph_api.ontology_document import Ontology, OntologyListingTruncatedError, build_ontology
+from graph_api.ontology_check import OntologyCheckTooManyReads, OntologyLookup, check_rows
+from graph_api.ontology_document import OntologyListingTruncatedError, build_ontology
 from graph_api.ontology_models import (
+    CHECK_MAX_READ_IDS,
     OntologyCheckRequest,
     OntologyCheckResponse,
     OntologyDocument,
@@ -90,13 +95,14 @@ class OntologyKey(NamedTuple):
 
 @dataclass(frozen=True, slots=True)
 class FrozenOntology:
-    """Both bodies of one build, each encoded once, the build the check reads, and the code
-    index the build read, which the check compares served definitions against. The entry holds
-    the index only as long as the cache holds the entry."""
+    """Both bodies of one build, each encoded once, the build's generation and the lookup the
+    check reads, and the code index the build read, which the check compares served definitions
+    against. The entry holds the index only as long as the cache holds the entry."""
 
     document: FrozenJSON
     terms: FrozenJSON
-    built: Ontology
+    generation: str | None
+    lookup: OntologyLookup
     code_index: CodeIndex
 
 
@@ -181,7 +187,8 @@ async def _frozen_ontology(deps: GraphDeps, *, deadline: float) -> FrozenOntolog
             key: FrozenOntology(
                 document=_freeze(ontology.document),
                 terms=_freeze(ontology.terms),
-                built=ontology,
+                generation=ontology.document.generation,
+                lookup=OntologyLookup.of(ontology.document),
                 code_index=code_index,
             )
         }
@@ -200,7 +207,16 @@ async def _frozen_ontology(deps: GraphDeps, *, deadline: float) -> FrozenOntolog
 
 
 def classify_ontology_exception(exc: BaseException) -> ProblemSpec | None:
-    """Classify the build's waits and read failures, which this door raises as its own types."""
+    """Classify the build's waits and read failures, which this door raises as its own types,
+    and the check's read cap."""
+    if isinstance(exc, OntologyCheckTooManyReads):
+        return ProblemSpec(
+            status=400,
+            code="request_invalid",
+            detail=str(exc),
+            pointer="/rows",
+            retryable=False,
+        )
     if isinstance(exc, OntologyBuildPending):
         return ProblemSpec(
             status=503,
@@ -281,13 +297,12 @@ async def get_ontology_terms(deps: GraphDepsDep, request: Request) -> Response:
 async def check_ontology(deps: GraphDepsDep, body: OntologyCheckRequest) -> JSONResponse:
     deadline = _request_deadline()
     frozen = await _frozen_ontology(deps, deadline=deadline)
-    ontology = frozen.built
     try:
         findings = await run_dcp_read(
             deps.dcp_executor,
             check_rows,
             body.rows,
-            ontology=ontology,
+            lookup=frozen.lookup,
             reader=deps.graph,
             code_index=frozen.code_index,
             deadline=deadline,
@@ -295,7 +310,7 @@ async def check_ontology(deps: GraphDepsDep, body: OntologyCheckRequest) -> JSON
     except GraphReadError as exc:
         raise OntologyReadFailed(exc) from exc
     response = OntologyCheckResponse(
-        generation=ontology.document.generation, row_count=len(body.rows), findings=findings
+        generation=frozen.generation, row_count=len(body.rows), findings=findings
     )
     return JSONResponse(response.model_dump(mode="json"))
 
@@ -332,8 +347,14 @@ def build_ontology_door() -> DoorContribution:
     return DoorContribution(
         router=router,
         classify=classify_ontology_exception,
-        exception_types=(OntologyBuildPending, OntologyBuildExpired, OntologyReadFailed),
+        exception_types=(
+            OntologyBuildPending,
+            OntologyBuildExpired,
+            OntologyReadFailed,
+            OntologyCheckTooManyReads,
+        ),
         exception_exemplars=(
+            OntologyCheckTooManyReads(CHECK_MAX_READ_IDS + 1),
             OntologyBuildPending(),
             OntologyBuildExpired(),
             OntologyReadFailed(OntologyListingTruncatedError("exemplar")),

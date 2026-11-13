@@ -41,21 +41,38 @@ facts of its coverage series.
 fault `graph_api.ontology_check` finds in it. `OntologyCheckRequest` carries 1 to
 `CHECK_MAX_ROWS` rows to `POST /api/graph/ontology/check`, and `OntologyCheckResponse` answers
 with the generation the rows were checked against, null where its token is unknown, and every
-finding. Each dcid a row names
-takes the node door's dcid syntax (`graph_api.node_models.Dcid`).
+finding. A row's shape fields, constraint properties and observation properties take the node
+door's dcid syntax (`graph_api.node_models.Dcid`). A constraint value is any string up to the
+same 512-character ceiling, a number, a boolean or null. A row names at most
+`CHECK_MAX_CONSTRAINT_PROPERTIES` constraint properties and `CHECK_MAX_OBSERVATION_PROPERTIES`
+observation properties, and one request reads at most `CHECK_MAX_READ_IDS` distinct ids from
+the graph (`graph_api.ontology_check`).
 """
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from dfo_platform.wire import ResponseModel
 from graph_api.node_models import Dcid
+from graph_api.routing import DCID_MAX_LENGTH
 
 CHECK_MAX_ROWS = 2_000
 """The most rows one `POST /api/graph/ontology/check` request carries."""
+
+CHECK_MAX_CONSTRAINT_PROPERTIES = 32
+"""The most constraint properties one check row names."""
+
+CHECK_MAX_OBSERVATION_PROPERTIES = 32
+"""The most observation properties one check row names."""
+
+CHECK_MAX_READ_IDS = 20
+"""The most distinct ids one check request reads from the graph: the ids its rows name that
+the ontology document does not hold and the document cannot decide. An absent id costs about
+0.3 s of reads on the dev graph, so 20 absent ids take about 6 s of the 10 s
+`GRAPH_NODE_TIMEOUT_SECONDS`."""
 
 DeclaredBy = Literal["instance", "base"]
 """Who declares a node: `"base"` when every declaring provenance is a base Data Commons one."""
@@ -199,8 +216,11 @@ class OntologyProvenances(ResponseModel):
     provenances: list[OntologyProvenance] = Field(description="sorted by dcid")
 
 
-type ConstraintValue = str | int | float | bool | None
-"""A constraint value as sent: a node dcid, or a literal or null the check refuses."""
+type ConstraintValue = (
+    Annotated[str, StringConstraints(max_length=DCID_MAX_LENGTH)] | int | float | bool | None
+)
+"""A constraint value as sent: a node dcid, or a literal or null the check refuses. A string
+takes the 512-character dcid ceiling."""
 
 FindingCode = Literal[
     "node_not_held",
@@ -215,12 +235,14 @@ FindingCode = Literal[
 ]
 """What a finding says about the value it names.
 
-`node_not_held`: the graph holds no node for it, or a constraint value is a literal.
+`node_not_held`: the graph holds no node for it, or a constraint value is a number, a boolean
+or a string outside dcid syntax.
 `node_provisional`: a constraint value's node has only the type `ProvisionalNode`.
 `node_untyped`: a constraint value's node has no `typeOf`. `value_missing`: a constraint property has a null value. `not_a_property`: a constraint
 property, the measured property or an observation property is not typed `Property`.
 `not_a_class`: the population type is not typed `Class`. `value_outside_range`: no type of the
-value reaches the instance property's `rangeIncludes` by `subClassOf`.
+value reaches the instance property's `rangeIncludes` by `subClassOf`, or the value is outside
+the document while every `rangeIncludes` class is an enumeration the document lists in full.
 `property_outside_domain`: the population type reaches none of the instance property's
 `domainIncludes` by `subClassOf`. `definition_differs`: the code index serves the row's dcid
 with another value in that field; `value` is the served value.
@@ -243,9 +265,13 @@ class OntologyCheckRow(BaseModel):
     measurement_qualifier: Dcid | None = None
     measurement_denominator: Dcid | None = None
     constraint_properties: dict[Dcid, ConstraintValue] = Field(
-        default_factory=dict, description="each constraint property and its value node"
+        default_factory=dict,
+        max_length=CHECK_MAX_CONSTRAINT_PROPERTIES,
+        description="each constraint property and its value node",
     )
-    observation_properties: list[Dcid] = Field(default_factory=list)
+    observation_properties: list[Dcid] = Field(
+        default_factory=list, max_length=CHECK_MAX_OBSERVATION_PROPERTIES
+    )
 
 
 class OntologyFinding(ResponseModel):
