@@ -1,19 +1,19 @@
-"""Serve the instance's ontology document and the list of the DFO graph's Classes and
+"""Serve the instance's schema document and the list of the DFO graph's Classes and
 Properties.
 
-`GET /api/graph/ontology` serves `OntologyDocument` and `GET /api/graph/ontology/terms`
-serves `OntologyTerms`, every Class and Property the mixer lists by `typeOf` and none of the UN
-deployment's. One build (`graph_api.ontology_document.build_ontology`) yields both,
-and `GraphDeps.ontology` holds its result in a single-flight cache of two entries, keyed by
+`GET /api/graph/schema` serves `SchemaDocument` and `GET /api/graph/schema/terms`
+serves `SchemaTerms`, every Class and Property the mixer lists by `typeOf` and none of the UN
+deployment's. One build (`graph_api.schema_document.build_schema`) yields both,
+and `GraphDeps.schema` holds its result in a single-flight cache of two entries, keyed by
 the graph generation token and the content hash of the code index the build read, beside the
 cache's own generation stamp. Two entries let a request stamped with an unknown generation
-keep the entry of the known one. The lifespan registers it as `graph_api.ontology`, so a
+keep the entry of the known one. The lifespan registers it as `graph_api.schema`, so a
 generation change clears it.
 
 A request refreshes a stale generation stamp, then waits for the entry until
 `GRAPH_NODE_TIMEOUT_SECONDS` from its start. A miss runs the whole build as one job on the
 DCP-read executor, holding one worker, under a flight deadline of
-`ONTOLOGY_FLIGHT_TIMEOUT_SECONDS` from submission. Concurrent requests share the flight, and a
+`SCHEMA_FLIGHT_TIMEOUT_SECONDS` from submission. Concurrent requests share the flight, and a
 request whose own deadline passes first answers retryable 503 `service_unavailable` with
 `Retry-After: 5` while the flight runs on and stores its result for the next request. A flight
 that outlives its deadline stores nothing, and its waiters answer 504 `timeout`. An executor
@@ -22,7 +22,7 @@ as retryable 503. A read past its deadline answers 504 `timeout`. A listing that
 cap, or a document with no node the instance declares, answers 503 `service_unavailable`. A
 DCP 4xx answers 502 `upstream_error` and any other read failure retryable 503. Under a known
 generation the two refusals cannot change while the generation holds, so the entry keeps them
-as `RefusedOntology` and every request for the key answers the same non-retryable 503 with no
+as `RefusedSchema` and every request for the key answers the same non-retryable 503 with no
 build. Under an unknown generation nothing would clear a kept refusal, so the build raises it
 unkept and the request answers it retryable. Any other failed build is not kept.
 
@@ -31,13 +31,13 @@ graph give the same bytes. Each answers `public, max-age=300` with a strong `ETa
 bytes and a gzip representation, and answers `If-None-Match` with 304
 (`dfo_platform.static_response.FrozenJSON`).
 
-`POST /api/graph/ontology/check` takes 1 to `CHECK_MAX_ROWS` candidate StatVar definitions,
-checks them in order from the first, and answers the faults `graph_api.ontology_check.check_rows`
+`POST /api/graph/schema/check` takes 1 to `CHECK_MAX_ROWS` candidate StatVar definitions,
+checks them in order from the first, and answers the faults `graph_api.schema_check.check_rows`
 finds in the rows it checked, how many rows that is, the index of the first row left, and the
 generation of the build it checked against. The entry keeps, beside its frozen bodies, the build's
-`OntologyLookup`, built once per entry. The check compares served definitions against the code
+`SchemaLookup`, built once per entry. The check compares served definitions against the code
 index the request computed the entry's key from, which is the index the build read. The
-check's deadline is `GRAPH_ONTOLOGY_CHECK_TIMEOUT_SECONDS` from its start. It waits on the same
+check's deadline is `GRAPH_SCHEMA_CHECK_TIMEOUT_SECONDS` from its start. It waits on the same
 flight as the GET routes until that deadline and answers their 503 and 504 the same way, so the
 first check after a graph change builds the document before it plans its reads.
 
@@ -53,18 +53,18 @@ takes and which ids they read: rows from the first while their ids stay within
 is read or gets `origin_not_served`.
 
 Every check runs as one job on `GraphDeps.check_executor`, whose
-`GRAPH_ONTOLOGY_CHECK_CONCURRENCY` (2) workers are its own, so a check takes none of the
+`GRAPH_SCHEMA_CHECK_CONCURRENCY` (2) workers are its own, so a check takes none of the
 shared DCP-read workers. The job reads, checks and encodes the response, and the event loop
 only wraps its bytes. A worker stays held until its job returns, even after its request is
 cancelled or times out, so at most two checks run at once in the process. One more is refused at
 submit and answers retryable 503 `service_unavailable` with `Retry-After: 5`
-(`OntologyCheckBusy`). A read past the check's deadline or a failed read answers as the GET
+(`SchemaCheckBusy`). A read past the check's deadline or a failed read answers as the GET
 routes answer it, with no findings. The request stops waiting at the check's deadline and
 answers 504 `timeout` while its job runs on, so a read that answers late yields no 200. The job
 stops before the row whose findings would pass `CHECK_MAX_FINDINGS`. A response that checked
 fewer rows than were sent names the first row left in `next_row`.
 
-`GET /api/graph/ontology/usage` serves `DatasetUsage`, built by
+`GET /api/graph/schema/usage` serves `DatasetUsage`, built by
 `graph_api.dataset_usage.build_usage` from the bound code index and the served coverage index
 with no graph read. `GraphDeps.dataset_usage`, a single-flight cache of one entry keyed by the
 code index's content hash and the coverage build (`CoverageManifest.build_id`), holds the
@@ -96,9 +96,9 @@ from dfo_platform.single_flight_cache import SingleFlightCache, WaitTimeout
 from dfo_platform.static_response import FrozenJSON, freeze_public_json
 from graph_api.config import (
     GRAPH_NODE_TIMEOUT_SECONDS,
-    GRAPH_ONTOLOGY_CHECK_CONCURRENCY,
-    GRAPH_ONTOLOGY_CHECK_TIMEOUT_SECONDS,
-    ONTOLOGY_FLIGHT_TIMEOUT_SECONDS,
+    GRAPH_SCHEMA_CHECK_CONCURRENCY,
+    GRAPH_SCHEMA_CHECK_TIMEOUT_SECONDS,
+    SCHEMA_FLIGHT_TIMEOUT_SECONDS,
 )
 from graph_api.dataset_usage import ProvenanceCoverage, build_usage
 from graph_api.deps import (
@@ -109,33 +109,33 @@ from graph_api.deps import (
     run_dcp_read,
 )
 from graph_api.doors.node import graph_read_problem
-from graph_api.ontology_check import OntologyLookup, check_rows, plan_reads
-from graph_api.ontology_document import (
-    OntologyListingTruncatedError,
-    OntologyNoInstanceDeclarationError,
-    build_ontology,
-)
-from graph_api.ontology_models import (
-    DatasetUsage,
-    OntologyCheckRequest,
-    OntologyCheckResponse,
-    OntologyCheckRow,
-    OntologyDocument,
-    OntologyTerms,
-)
 from graph_api.reader import GraphNodeReader
+from graph_api.schema_check import SchemaLookup, check_rows, plan_reads
+from graph_api.schema_document import (
+    SchemaListingTruncatedError,
+    SchemaNoInstanceDeclarationError,
+    build_schema,
+)
+from graph_api.schema_models import (
+    DatasetUsage,
+    SchemaCheckRequest,
+    SchemaCheckResponse,
+    SchemaCheckRow,
+    SchemaDocument,
+    SchemaTerms,
+)
 from graph_generation import GenerationProvider
 from graph_generation.stamp import UNKNOWN_KEY
 from materialise.graph import GraphDeadlineExceededError, GraphReadError
 from origin_catalogue import current_catalogue
 
-ONTOLOGY_RETRY_AFTER_SECONDS = 5
+SCHEMA_RETRY_AFTER_SECONDS = 5
 """The `Retry-After` a request sends when its deadline passes while the build runs on."""
 
 _MAX_AGE_SECONDS = 300
 
 
-class OntologyKey(NamedTuple):
+class SchemaKey(NamedTuple):
     """The graph generation token, `UNKNOWN_KEY` where it is unknown, and the content hash of
     the code index whose StatVar rows the build read."""
 
@@ -144,18 +144,18 @@ class OntologyKey(NamedTuple):
 
 
 @dataclass(frozen=True, slots=True)
-class FrozenOntology:
+class FrozenSchema:
     """Both bodies of one build, each encoded once, the build's generation and the lookup the
     check reads."""
 
     document: FrozenJSON
     terms: FrozenJSON
     generation: str | None
-    lookup: OntologyLookup
+    lookup: SchemaLookup
 
 
 @dataclass(frozen=True, slots=True)
-class RefusedOntology:
+class RefusedSchema:
     """A build refusal that cannot change while the generation holds: a truncated term listing,
     or a document with no node the instance declares. `error` makes a fresh exception for each
     request it answers."""
@@ -163,38 +163,38 @@ class RefusedOntology:
     error: Callable[[], GraphReadError]
 
 
-type OntologyEntry = FrozenOntology | RefusedOntology
+type SchemaEntry = FrozenSchema | RefusedSchema
 
 
-class OntologyBuildPending(Exception):
+class SchemaBuildPending(Exception):
     """A request's deadline passed while the build it waits on runs on."""
 
     def __init__(self) -> None:
-        super().__init__("the ontology is still being built; retry")
+        super().__init__("the schema is still being built; retry")
 
 
-class OntologyBuildExpired(Exception):
+class SchemaBuildExpired(Exception):
     """The build outlived its flight deadline, so it stored nothing."""
 
     def __init__(self) -> None:
-        super().__init__("the ontology build passed its deadline")
+        super().__init__("the schema build passed its deadline")
 
 
-class OntologyCheckBusy(Exception):
+class SchemaCheckBusy(Exception):
     """Every worker of `GraphDeps.check_executor` holds a check job."""
 
     def __init__(self) -> None:
         super().__init__(
-            f"{GRAPH_ONTOLOGY_CHECK_CONCURRENCY} ontology checks are already running; retry"
+            f"{GRAPH_SCHEMA_CHECK_CONCURRENCY} schema checks are already running; retry"
         )
 
 
-class OntologyReadFailed(Exception):
+class SchemaReadFailed(Exception):
     """A graph read of the build or of the check failed with `error`. `kept` is true when the
-    cache holds `error` as the generation's `RefusedOntology`."""
+    cache holds `error` as the generation's `RefusedSchema`."""
 
     def __init__(self, error: GraphReadError, *, kept: bool = False) -> None:
-        super().__init__(f"an ontology graph read failed: {error}")
+        super().__init__(f"a schema graph read failed: {error}")
         self.error = error
         self.kept = kept
 
@@ -206,22 +206,22 @@ class UsageKey(NamedTuple):
     coverage_build: str
 
 
-def new_ontology_cache[K, V](
+def new_schema_cache[K, V](
     *, entries: int, executor: Executor, generation: GenerationProvider
 ) -> SingleFlightCache[K, V]:
     """A cache of this door's bodies holding `entries` entries, each built on `executor` within
-    `ONTOLOGY_FLIGHT_TIMEOUT_SECONDS`, with a key that carries `generation`'s stamp.
-    `GraphDeps.ontology` holds two, so a request stamped with an unknown generation keeps the
+    `SCHEMA_FLIGHT_TIMEOUT_SECONDS`, with a key that carries `generation`'s stamp.
+    `GraphDeps.schema` holds two, so a request stamped with an unknown generation keeps the
     entry of the known one, and `GraphDeps.dataset_usage` holds one."""
     return SingleFlightCache(
         maxsize=entries,
-        flight_timeout_s=ONTOLOGY_FLIGHT_TIMEOUT_SECONDS,
+        flight_timeout_s=SCHEMA_FLIGHT_TIMEOUT_SECONDS,
         executor=executor,
         generation=generation,
     )
 
 
-def _freeze(model: OntologyDocument | OntologyTerms | DatasetUsage) -> FrozenJSON:
+def _freeze(model: SchemaDocument | SchemaTerms | DatasetUsage) -> FrozenJSON:
     return freeze_public_json(model.model_dump(mode="json"), max_age=_MAX_AGE_SECONDS)
 
 
@@ -232,116 +232,116 @@ def _request_deadline(seconds: float | None = None) -> float:
 
 def _build_entry(
     deps: GraphDeps, *, code_index: CodeIndex, generation: str | None, deadline: float
-) -> OntologyEntry:
+) -> SchemaEntry:
     """Build and freeze the bodies, or keep a refusal that cannot change within the
     generation. Under an unknown generation, `generation` `None`, nothing would clear a kept
     refusal before the stamp's age runs out, so the refusal is raised and not kept."""
     try:
-        ontology = build_ontology(
+        schema = build_schema(
             reader=deps.graph, code_index=code_index, generation=generation, deadline=deadline
         )
-    except OntologyListingTruncatedError as exc:
+    except SchemaListingTruncatedError as exc:
         if generation is None:
             raise
-        return RefusedOntology(error=partial(OntologyListingTruncatedError, str(exc)))
-    except OntologyNoInstanceDeclarationError as exc:
+        return RefusedSchema(error=partial(SchemaListingTruncatedError, str(exc)))
+    except SchemaNoInstanceDeclarationError as exc:
         if generation is None:
             raise
-        return RefusedOntology(error=partial(OntologyNoInstanceDeclarationError, exc.node_count))
-    return FrozenOntology(
-        document=_freeze(ontology.document),
-        terms=_freeze(ontology.terms),
-        generation=ontology.document.generation,
-        lookup=OntologyLookup.of(ontology.document),
+        return RefusedSchema(error=partial(SchemaNoInstanceDeclarationError, exc.node_count))
+    return FrozenSchema(
+        document=_freeze(schema.document),
+        terms=_freeze(schema.terms),
+        generation=schema.document.generation,
+        lookup=SchemaLookup.of(schema.document),
     )
 
 
-async def _frozen_ontology(
+async def _frozen_schema(
     deps: GraphDeps, *, code_index: CodeIndex, deadline: float
-) -> FrozenOntology:
-    """The built bodies for `code_index` from `deps.ontology`, building them on a miss and
+) -> FrozenSchema:
+    """The built bodies for `code_index` from `deps.schema`, building them on a miss and
     waiting until `deadline`. Refresh the generation first, as the documentation route does, so
     the stamp is fresh after an idle gap.
 
     Raises:
-        OntologyReadFailed: the build failed, or the entry keeps its refusal.
+        SchemaReadFailed: the build failed, or the entry keeps its refusal.
     """
     await deps.generation.refresh_if_stale()
     token = deps.generation.stamp().token
-    key = OntologyKey(
+    key = SchemaKey(
         generation=token if token is not None else UNKNOWN_KEY,
         code_index=code_index.stamp.content_hash,
     )
 
-    def build(_keys: list[OntologyKey], flight_deadline: float) -> dict[OntologyKey, OntologyEntry]:
+    def build(_keys: list[SchemaKey], flight_deadline: float) -> dict[SchemaKey, SchemaEntry]:
         entry = _build_entry(
             deps, code_index=code_index, generation=token, deadline=flight_deadline
         )
         return {key: entry}
 
     try:
-        found = await deps.ontology.aget_or_fetch_many(
+        found = await deps.schema.aget_or_fetch_many(
             [key], log_queue_wait(build), deadline=deadline
         )
     except WaitTimeout:
-        raise OntologyBuildPending() from None
+        raise SchemaBuildPending() from None
     except TimeoutError as exc:
-        raise OntologyBuildExpired() from exc
+        raise SchemaBuildExpired() from exc
     except GraphReadError as exc:
-        raise OntologyReadFailed(exc) from exc
+        raise SchemaReadFailed(exc) from exc
     entry = found[key]
-    if isinstance(entry, RefusedOntology):
-        raise OntologyReadFailed(entry.error(), kept=True)
+    if isinstance(entry, RefusedSchema):
+        raise SchemaReadFailed(entry.error(), kept=True)
     return entry
 
 
-def classify_ontology_exception(exc: BaseException) -> ProblemSpec | None:
+def classify_schema_exception(exc: BaseException) -> ProblemSpec | None:
     """Classify the build's waits and read failures, which this door raises as its own types,
     and the check's concurrency limit."""
-    if isinstance(exc, OntologyBuildPending | OntologyCheckBusy):
+    if isinstance(exc, SchemaBuildPending | SchemaCheckBusy):
         return ProblemSpec(
             status=503,
             code="service_unavailable",
             detail=str(exc),
             retryable=True,
-            headers={"Retry-After": str(ONTOLOGY_RETRY_AFTER_SECONDS)},
+            headers={"Retry-After": str(SCHEMA_RETRY_AFTER_SECONDS)},
         )
-    if isinstance(exc, OntologyBuildExpired):
+    if isinstance(exc, SchemaBuildExpired):
         return ProblemSpec(
             status=TIMEOUT_DEFAULT.status,
             code=TIMEOUT_DEFAULT.code,
-            detail="the ontology build passed its deadline; retry",
+            detail="the schema build passed its deadline; retry",
             retryable=TIMEOUT_DEFAULT.retryable,
-            log="Graph ontology door's build passed its flight deadline",
+            log="Graph schema door's build passed its flight deadline",
         )
-    if not isinstance(exc, OntologyReadFailed):
+    if not isinstance(exc, SchemaReadFailed):
         return None
     error = exc.error
-    if isinstance(error, OntologyListingTruncatedError):
+    if isinstance(error, SchemaListingTruncatedError):
         return ProblemSpec(
             status=503,
             code="service_unavailable",
             detail=str(error),
             retryable=not exc.kept,
-            log=f"Graph ontology door refused a truncated term listing: {error}",
+            log=f"Graph schema door refused a truncated term listing: {error}",
         )
-    if isinstance(error, OntologyNoInstanceDeclarationError):
+    if isinstance(error, SchemaNoInstanceDeclarationError):
         return ProblemSpec(
             status=503,
             code="service_unavailable",
             detail=str(error),
             retryable=not exc.kept,
-            log=f"Graph ontology door refused a document no instance provenance declares: {error}",
+            log=f"Graph schema door refused a document no instance provenance declares: {error}",
         )
     if isinstance(error, GraphDeadlineExceededError):
         return ProblemSpec(
             status=TIMEOUT_DEFAULT.status,
             code=TIMEOUT_DEFAULT.code,
-            detail="the deadline expired during the ontology door's graph reads; retry",
+            detail="the deadline expired during the schema door's graph reads; retry",
             retryable=TIMEOUT_DEFAULT.retryable,
         )
     return graph_read_problem(error)._replace(
-        log=f"Graph ontology door's DCP read failed: {error}", log_traceback=True
+        log=f"Graph schema door's DCP read failed: {error}", log_traceback=True
     )
 
 
@@ -351,14 +351,14 @@ def _freeze_usage(code_index: CodeIndex, coverage: ProvenanceCoverage) -> Frozen
 
 async def _frozen_usage(deps: GraphDeps) -> FrozenJSON:
     """The usage body of the bound code index and the served coverage build, from
-    `deps.dataset_usage`. Refresh the generation first, as `_frozen_ontology` does, so
+    `deps.dataset_usage`. Refresh the generation first, as `_frozen_schema` does, so
     the cache's stamp is fresh after an idle gap. A miss builds and encodes the body on the cache's executor,
     and concurrent misses share that one build. A request waits until `GRAPH_NODE_TIMEOUT_SECONDS`
     from its start.
 
     Raises:
-        OntologyBuildPending: the request's wait passed while the build runs on.
-        OntologyBuildExpired: the build outlived its flight deadline.
+        SchemaBuildPending: the request's wait passed while the build runs on.
+        SchemaBuildExpired: the build outlived its flight deadline.
     """
     await deps.generation.refresh_if_stale()
     code_index = get_index()
@@ -375,28 +375,28 @@ async def _frozen_usage(deps: GraphDeps) -> FrozenJSON:
             [key], build, deadline=_request_deadline()
         )
     except WaitTimeout:
-        raise OntologyBuildPending() from None
+        raise SchemaBuildPending() from None
     except TimeoutError as exc:
-        raise OntologyBuildExpired() from exc
+        raise SchemaBuildExpired() from exc
     return found[key]
 
 
-async def get_ontology(deps: GraphDepsDep, request: Request) -> Response:
-    frozen = await _frozen_ontology(deps, code_index=get_index(), deadline=_request_deadline())
+async def get_schema(deps: GraphDepsDep, request: Request) -> Response:
+    frozen = await _frozen_schema(deps, code_index=get_index(), deadline=_request_deadline())
     return frozen.document.respond(request)
 
 
-async def get_ontology_terms(deps: GraphDepsDep, request: Request) -> Response:
-    frozen = await _frozen_ontology(deps, code_index=get_index(), deadline=_request_deadline())
+async def get_schema_terms(deps: GraphDepsDep, request: Request) -> Response:
+    frozen = await _frozen_schema(deps, code_index=get_index(), deadline=_request_deadline())
     return frozen.terms.respond(request)
 
 
 def _check_body(
-    rows: Sequence[OntologyCheckRow],
+    rows: Sequence[SchemaCheckRow],
     *,
     sent: int,
     reads: frozenset[str],
-    lookup: OntologyLookup,
+    lookup: SchemaLookup,
     reader: GraphNodeReader,
     code_index: CodeIndex,
     un_served: bool,
@@ -404,7 +404,7 @@ def _check_body(
     deadline: float,
 ) -> bytes:
     """The encoded response of one check of `rows`, the first of the `sent` rows of the
-    request, from `check_rows` and `OntologyCheckResponse`'s JSON."""
+    request, from `check_rows` and `SchemaCheckResponse`'s JSON."""
     checked = check_rows(
         rows,
         reads=reads,
@@ -414,7 +414,7 @@ def _check_body(
         un_served=un_served,
         deadline=deadline,
     )
-    response = OntologyCheckResponse(
+    response = SchemaCheckResponse(
         generation=generation,
         row_count=checked.row_count,
         next_row=checked.row_count if checked.row_count < sent else None,
@@ -423,10 +423,10 @@ def _check_body(
     return response.model_dump_json().encode()
 
 
-async def post_ontology_check(deps: GraphDepsDep, body: OntologyCheckRequest) -> Response:
-    deadline = _request_deadline(GRAPH_ONTOLOGY_CHECK_TIMEOUT_SECONDS)
+async def post_schema_check(deps: GraphDepsDep, body: SchemaCheckRequest) -> Response:
+    deadline = _request_deadline(GRAPH_SCHEMA_CHECK_TIMEOUT_SECONDS)
     code_index = get_index()
-    frozen = await _frozen_ontology(deps, code_index=code_index, deadline=deadline)
+    frozen = await _frozen_schema(deps, code_index=code_index, deadline=deadline)
     un_served = current_catalogue().un_system_enabled
     plan = plan_reads(body.rows, lookup=frozen.lookup, un_served=un_served)
     try:
@@ -445,61 +445,61 @@ async def post_ontology_check(deps: GraphDepsDep, body: OntologyCheckRequest) ->
                 deadline=deadline,
             )
     except DcpExecutorSaturated:
-        raise OntologyCheckBusy() from None
+        raise SchemaCheckBusy() from None
     except GraphReadError as exc:
-        raise OntologyReadFailed(exc) from exc
+        raise SchemaReadFailed(exc) from exc
     except TimeoutError:
-        error = GraphDeadlineExceededError("the ontology check passed its deadline")
-        raise OntologyReadFailed(error) from None
+        error = GraphDeadlineExceededError("the schema check passed its deadline")
+        raise SchemaReadFailed(error) from None
     return Response(content=encoded, media_type="application/json")
 
 
-async def get_ontology_usage(deps: GraphDepsDep, request: Request) -> Response:
+async def get_schema_usage(deps: GraphDepsDep, request: Request) -> Response:
     return (await _frozen_usage(deps)).respond(request)
 
 
-def build_ontology_door() -> DoorContribution:
+def build_schema_door() -> DoorContribution:
     router = APIRouter()
     # `response_model` documents the response body in OpenAPI. The handlers' responses pass
     # through.
     router.add_api_route(
-        "/api/graph/ontology", get_ontology, methods=["GET"], response_model=OntologyDocument
+        "/api/graph/schema", get_schema, methods=["GET"], response_model=SchemaDocument
     )
     router.add_api_route(
-        "/api/graph/ontology/terms",
-        get_ontology_terms,
+        "/api/graph/schema/terms",
+        get_schema_terms,
         methods=["GET"],
-        response_model=OntologyTerms,
+        response_model=SchemaTerms,
     )
     router.add_api_route(
-        "/api/graph/ontology/usage",
-        get_ontology_usage,
+        "/api/graph/schema/usage",
+        get_schema_usage,
         methods=["GET"],
         response_model=DatasetUsage,
     )
     router.add_api_route(
-        "/api/graph/ontology/check",
-        post_ontology_check,
+        "/api/graph/schema/check",
+        post_schema_check,
         methods=["POST"],
-        response_model=OntologyCheckResponse,
+        response_model=SchemaCheckResponse,
     )
     return DoorContribution(
         router=router,
-        classify=classify_ontology_exception,
+        classify=classify_schema_exception,
         exception_types=(
-            OntologyBuildPending,
-            OntologyBuildExpired,
-            OntologyReadFailed,
-            OntologyCheckBusy,
+            SchemaBuildPending,
+            SchemaBuildExpired,
+            SchemaReadFailed,
+            SchemaCheckBusy,
         ),
         exception_exemplars=(
-            OntologyCheckBusy(),
-            OntologyBuildPending(),
-            OntologyBuildExpired(),
-            OntologyReadFailed(OntologyListingTruncatedError("exemplar")),
-            OntologyReadFailed(OntologyNoInstanceDeclarationError(0)),
-            OntologyReadFailed(GraphDeadlineExceededError("exemplar")),
-            OntologyReadFailed(GraphReadError("exemplar", upstream_status=400)),
-            OntologyReadFailed(GraphReadError("exemplar", upstream_status=503)),
+            SchemaCheckBusy(),
+            SchemaBuildPending(),
+            SchemaBuildExpired(),
+            SchemaReadFailed(SchemaListingTruncatedError("exemplar")),
+            SchemaReadFailed(SchemaNoInstanceDeclarationError(0)),
+            SchemaReadFailed(GraphDeadlineExceededError("exemplar")),
+            SchemaReadFailed(GraphReadError("exemplar", upstream_status=400)),
+            SchemaReadFailed(GraphReadError("exemplar", upstream_status=503)),
         ),
     )

@@ -1,4 +1,4 @@
-"""`build_ontology` against a small fake graph shaped like the dev graph's ontology."""
+"""`build_schema` against a small fake graph shaped like the dev graph's schema."""
 
 from __future__ import annotations
 
@@ -8,17 +8,17 @@ import pytest
 
 from code_index import CodeIndex
 from dc_graph import ArcSubject, ArcSubjectPage, ArcTarget
-from graph_api import ontology_document
-from graph_api.ontology_document import (
-    OntologyListingTruncatedError,
-    OntologyNoInstanceDeclarationError,
-    build_ontology,
+from graph_api import schema_document
+from graph_api.schema_document import (
+    SchemaListingTruncatedError,
+    SchemaNoInstanceDeclarationError,
+    build_schema,
     declared_by,
 )
-from graph_api.ontology_models import OntologyNode
+from graph_api.schema_models import SchemaNode
 
 from .conftest import FakeGraphNodeReader
-from .ontology_fixture import (
+from .schema_fixture import (
     CRS_MEMBERS,
     DFO,
     INDEX,
@@ -30,16 +30,16 @@ from .ontology_fixture import (
     index_row,
     listing,
     node_targets,
-    ontology_graph,
+    schema_graph,
 )
 
 _DEADLINE = 1_000.0
 _OTHER = "provenance/Other"
 
 
-def _nodes(graph: FakeGraphNodeReader, index: CodeIndex = INDEX) -> dict[str, OntologyNode]:
-    ontology = build_ontology(reader=graph, code_index=index, generation="g1", deadline=_DEADLINE)
-    return {node.dcid: node for node in ontology.document.nodes}
+def _nodes(graph: FakeGraphNodeReader, index: CodeIndex = INDEX) -> dict[str, SchemaNode]:
+    schema = build_schema(reader=graph, code_index=index, generation="g1", deadline=_DEADLINE)
+    return {node.dcid: node for node in schema.document.nodes}
 
 
 @pytest.mark.parametrize(
@@ -82,7 +82,7 @@ def test_document_holds_instance_terms_their_references_index_names_and_ancestor
             )
         },
     }
-    nodes = _nodes(ontology_graph(terms=terms, nodes=graph_nodes, arc_targets=arc_targets))
+    nodes = _nodes(schema_graph(terms=terms, nodes=graph_nodes, arc_targets=arc_targets))
 
     assert sorted(nodes) == [
         "CRSPurposeCode120",  # listed member of an instance enumeration
@@ -112,14 +112,14 @@ def test_document_holds_instance_terms_their_references_index_names_and_ancestor
 
 
 def test_a_dcid_the_graph_does_not_hold_stays_in_the_arc_only() -> None:
-    nodes = _nodes(ontology_graph())
+    nodes = _nodes(schema_graph())
 
     assert "Number" not in nodes
     assert nodes["grantEquivalent"].range_includes == ["Number"]
 
 
 def test_node_fields_and_declaring_provenances() -> None:
-    nodes = _nodes(ontology_graph())
+    nodes = _nodes(schema_graph())
 
     crs = nodes["crsPurpose"]
     # The greatest name by code point; the name equal to the dcid is no name.
@@ -145,7 +145,7 @@ def test_node_fields_and_declaring_provenances() -> None:
 
 
 def test_enumerations_are_marked_and_list_members() -> None:
-    nodes = _nodes(ontology_graph())
+    nodes = _nodes(schema_graph())
 
     enumerations = {dcid for dcid, node in nodes.items() if node.enumeration is not None}
     assert enumerations == {"CRSPurposeCodeEnum", "FinancingPurposeEnum", "GenderType"}
@@ -160,7 +160,7 @@ def test_enumerations_are_marked_and_list_members() -> None:
 
 
 def test_a_base_enumeration_lists_only_members_the_index_uses() -> None:
-    nodes = _nodes(ontology_graph())
+    nodes = _nodes(schema_graph())
 
     # No instance term names GenderType; it joins as the typeOf of the used value Female.
     assert not any(
@@ -180,19 +180,19 @@ def test_a_base_enumeration_lists_only_members_the_index_uses() -> None:
 def test_an_enumeration_over_the_member_cap_is_not_complete(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(ontology_document, "ENUMERATION_MEMBER_CAP", 1)
+    monkeypatch.setattr(schema_document, "ENUMERATION_MEMBER_CAP", 1)
 
-    crs = _nodes(ontology_graph())["CRSPurposeCodeEnum"].enumeration
+    crs = _nodes(schema_graph())["CRSPurposeCodeEnum"].enumeration
 
     assert crs is not None
     assert (crs.members, crs.complete) == (["CRSPurposeCode12220"], False)
 
 
 def test_a_truncated_listing_refuses(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(ontology_document, "TERM_LISTING_CAP", 3)
+    monkeypatch.setattr(schema_document, "TERM_LISTING_CAP", 3)
 
-    with pytest.raises(OntologyListingTruncatedError):
-        _nodes(ontology_graph())
+    with pytest.raises(SchemaListingTruncatedError):
+        _nodes(schema_graph())
 
 
 def test_a_listing_subject_with_no_provenance_is_served_undeclared(
@@ -200,15 +200,15 @@ def test_a_listing_subject_with_no_provenance_is_served_undeclared(
 ) -> None:
     terms = {**TERMS, "educationalAttainment": ("Property", ())}
 
-    with caplog.at_level("WARNING", logger=ontology_document.__name__):
-        ontology = build_ontology(
-            reader=ontology_graph(terms=terms),
+    with caplog.at_level("WARNING", logger=schema_document.__name__):
+        schema = build_schema(
+            reader=schema_graph(terms=terms),
             code_index=INDEX,
             generation="g1",
             deadline=_DEADLINE,
         )
 
-    term = {term.dcid: term for term in ontology.terms.terms}["educationalAttainment"]
+    term = {term.dcid: term for term in schema.terms.terms}["educationalAttainment"]
     assert (term.provenances, term.declared_by) == ([], None)
     assert '"declared_by":null' in term.model_dump_json()
     assert [record.args for record in caplog.records] == [(1, ["educationalAttainment"], 0, [])]
@@ -218,15 +218,15 @@ def test_a_held_node_with_no_type_is_served_with_no_provenance() -> None:
     graph_nodes = {**NODES, "UntypedValue": {"name": ("Untyped value",)}}
     row = index_row("Amount_Untyped", {"beneficiaryGender": "UntypedValue"})
 
-    graph = ontology_graph(nodes=graph_nodes)
-    ontology = build_ontology(
+    graph = schema_graph(nodes=graph_nodes)
+    schema = build_schema(
         reader=graph,
         code_index=index_of(*INDEX.statvars, row),
         generation="g1",
         deadline=_DEADLINE,
     )
 
-    untyped = {node.dcid: node for node in ontology.document.nodes}["UntypedValue"]
+    untyped = {node.dcid: node for node in schema.document.nodes}["UntypedValue"]
     assert (untyped.types, untyped.provenances, untyped.declared_by) == ([], [], None)
     assert '"declared_by":null' in untyped.model_dump_json()
     # Every node read probes each empty answer, so the build reads a node held as held, and
@@ -245,8 +245,8 @@ def test_a_node_with_one_unsourced_type_is_declared_by_its_sourced_types(
         }
     }
 
-    with caplog.at_level("WARNING", logger=ontology_document.__name__):
-        nodes = _nodes(ontology_graph(arc_targets=arc_targets))
+    with caplog.at_level("WARNING", logger=schema_document.__name__):
+        nodes = _nodes(schema_graph(arc_targets=arc_targets))
 
     crs = nodes["crsPurpose"]
     assert (crs.provenances, crs.declared_by) == ([DFO], "instance")
@@ -266,8 +266,8 @@ def test_a_document_no_instance_provenance_declares_refuses() -> None:
         for dcid, arcs in node_targets(NODES, base_terms).items()
     }
 
-    with pytest.raises(OntologyNoInstanceDeclarationError):
-        _nodes(ontology_graph(terms=base_terms, arc_targets=base_targets))
+    with pytest.raises(SchemaNoInstanceDeclarationError):
+        _nodes(schema_graph(terms=base_terms, arc_targets=base_targets))
 
 
 def test_a_typed_node_whose_type_carries_no_provenance_is_served_undeclared(
@@ -275,8 +275,8 @@ def test_a_typed_node_whose_type_carries_no_provenance_is_served_undeclared(
 ) -> None:
     arc_targets = {"Female": {"typeOf": (ArcTarget(value="GenderType"),)}}
 
-    with caplog.at_level("WARNING", logger=ontology_document.__name__):
-        nodes = _nodes(ontology_graph(arc_targets=arc_targets))
+    with caplog.at_level("WARNING", logger=schema_document.__name__):
+        nodes = _nodes(schema_graph(arc_targets=arc_targets))
 
     female = nodes["Female"]
     assert (female.types, female.provenances, female.declared_by) == (["GenderType"], [], None)
@@ -350,15 +350,15 @@ def test_a_term_that_is_also_a_member_is_declared_by_its_node_read_and_its_listi
         )
     }
 
-    ontology = build_ontology(
-        reader=ontology_graph(nodes=graph_nodes, members=members, arc_targets={"amount": amount}),
+    schema = build_schema(
+        reader=schema_graph(nodes=graph_nodes, members=members, arc_targets={"amount": amount}),
         code_index=INDEX,
         generation="g1",
         deadline=_DEADLINE,
     )
 
-    node = {node.dcid: node for node in ontology.document.nodes}["amount"]
-    term = {term.dcid: term for term in ontology.terms.terms}["amount"]
+    node = {node.dcid: node for node in schema.document.nodes}["amount"]
+    term = {term.dcid: term for term in schema.terms.terms}["amount"]
     # The node's provenances come from its own read, the term's from its Property listing.
     assert (node.provenances, node.declared_by) == ([SCHEMA, DFO], "instance")
     assert (term.provenances, term.declared_by) == ([SCHEMA], "base")
@@ -377,9 +377,7 @@ def test_terms_list_every_class_and_property() -> None:
         },
     )
 
-    terms = build_ontology(
-        reader=graph, code_index=INDEX, generation="g1", deadline=_DEADLINE
-    ).terms
+    terms = build_schema(reader=graph, code_index=INDEX, generation="g1", deadline=_DEADLINE).terms
 
     assert terms.generation == "g1"
     by_dcid = {term.dcid: term for term in terms.terms}
@@ -408,10 +406,10 @@ def test_two_builds_from_reordered_graphs_serialise_to_the_same_bytes() -> None:
         for dcid, arcs in reversed(NODES.items())
     }
     builds = [
-        build_ontology(reader=graph, code_index=INDEX, generation="g1", deadline=_DEADLINE)
+        build_schema(reader=graph, code_index=INDEX, generation="g1", deadline=_DEADLINE)
         for graph in (
-            ontology_graph(),
-            ontology_graph(terms=reordered_terms, nodes=reordered_nodes, members=CRS_MEMBERS[::-1]),
+            schema_graph(),
+            schema_graph(terms=reordered_terms, nodes=reordered_nodes, members=CRS_MEMBERS[::-1]),
         )
     ]
 
@@ -427,7 +425,7 @@ def _read_counts(graph: FakeGraphNodeReader) -> dict[str, int]:
 
 
 def test_reads_are_bounded_by_hierarchy_depth_not_node_count() -> None:
-    small = ontology_graph()
+    small = schema_graph()
     _nodes(small)
 
     # Fifty more instance properties, each used by an index row with its own value.
@@ -437,7 +435,7 @@ def test_reads_are_bounded_by_hierarchy_depth_not_node_count() -> None:
         **{dcid: {"typeOf": ("Property",), "domainIncludes": ("FinancialFlow",)} for dcid in extra},
         **{f"extraValue{i}": {"typeOf": ("StatType",)} for i in range(50)},
     }
-    large = ontology_graph(terms={**TERMS, **extra}, nodes=extra_nodes)
+    large = schema_graph(terms={**TERMS, **extra}, nodes=extra_nodes)
     rows = [index_row(f"Extra{i}", {f"extraProperty{i}": f"extraValue{i}"}) for i in range(50)]
     large_nodes = _nodes(large, index_of(*INDEX.statvars, *rows))
 
@@ -472,10 +470,10 @@ class _DeadlineRecorder:
 
 
 def test_every_read_carries_the_deadline() -> None:
-    fake = ontology_graph()
+    fake = schema_graph()
     graph = _DeadlineRecorder(fake)
 
-    build_ontology(reader=graph, code_index=INDEX, generation="g1", deadline=_DEADLINE)  # type: ignore[arg-type]
+    build_schema(reader=graph, code_index=INDEX, generation="g1", deadline=_DEADLINE)  # type: ignore[arg-type]
 
     assert len(graph.deadlines) == sum(fake.calls.values()) == 9
     assert set(graph.deadlines) == {_DEADLINE}

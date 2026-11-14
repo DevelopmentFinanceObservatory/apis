@@ -109,10 +109,10 @@ The documentation record includes source details, licence, scope and units, meth
 
 ## Read the model
 
-`GET /api/v1/graph/ontology` serves every Class and Property the instance declares, with their ranges, domains and enumeration members. `GET /api/v1/graph/ontology/terms` lists every Class and Property of the DFO graph, base Data Commons included and the UN origin's terms excluded, with name, types and declaring Provenances.
+`GET /api/v1/graph/schema` serves every Class and Property the instance declares, with their ranges, domains and enumeration members. `GET /api/v1/graph/schema/terms` lists every Class and Property of the DFO graph, base Data Commons included and the UN origin's terms excluded, with name, types and declaring Provenances.
 
 ```bash
-curl -fsS "$DFO_API/api/v1/graph/ontology" \
+curl -fsS "$DFO_API/api/v1/graph/schema" \
   | jq '.nodes[] | select(.dcid == "crsPurpose")'
 ```
 
@@ -120,16 +120,16 @@ A node's `declared_by` is `base` when Data Commons declares it and `instance` wh
 
 ## See how a dataset uses the model
 
-`GET /api/v1/graph/ontology/usage` lists each dataset's Provenance with its StatVar count, the distinct patterns of its StatVars, the values each constraint property takes, and the units, periods and currencies of its series.
+`GET /api/v1/graph/schema/usage` lists each dataset's Provenance with its StatVar count, the distinct patterns of its StatVars, the values each constraint property takes, and the units, periods and currencies of its series.
 
 ```bash
-curl -fsS "$DFO_API/api/v1/graph/ontology/usage" \
+curl -fsS "$DFO_API/api/v1/graph/schema/usage" \
   | jq '.provenances[0] | {dcid, stat_var_count, patterns: (.patterns | length)}'
 ```
 
 ## Check StatVar definitions
 
-`POST /api/v1/graph/ontology/check` takes 1 to 2,000 candidate definitions (`caps.max_check_rows`) and lists the faults in the rows it checked. It checks rows in order from the first and may stop before the end: `row_count` says how many it checked and `next_row` names the first row left, or is `null` when it checked every row. Send the rest from `next_row` until `next_row` is `null`. Every response checks at least one row. Rows naming terms the model already declares read little from the graph, so a sheet of known terms is checked in few requests. Each instance runs two checks at once, and a third answers a retryable `503` with `Retry-After`.
+`POST /api/v1/graph/schema/check` takes 1 to 2,000 candidate definitions (`caps.max_check_rows`) and lists the faults in the rows it checked. It checks rows in order from the first and may stop before the end: `row_count` says how many it checked and `next_row` names the first row left, or is `null` when it checked every row. Send the rest from `next_row` until `next_row` is `null`. Every response checks at least one row. Rows naming terms the model already declares read little from the graph, so a sheet of known terms is checked in few requests. Each instance runs two checks at once, and a third answers a retryable `503` with `Retry-After`.
 
 This loop checks the rows in `rows.json`, a file holding `{"rows": [...]}`, and prints each finding with `row` counted from the start of the file:
 
@@ -137,7 +137,7 @@ This loop checks the rows in `rows.json`, a file holding `{"rows": [...]}`, and 
 start=0
 while [ -n "$start" ]; do
   page=$(jq -c --argjson start "$start" '{rows: .rows[$start:$start + 2000]}' rows.json \
-    | curl -fsS -X POST "$DFO_API/api/v1/graph/ontology/check" \
+    | curl -fsS -X POST "$DFO_API/api/v1/graph/schema/check" \
         -H "Content-Type: application/json" -d @-)
   echo "$page" | jq -c --argjson start "$start" '.findings[] | .row += $start'
   start=$(echo "$page" \

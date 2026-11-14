@@ -34,7 +34,7 @@ from graph_api.codes import GRAPH_CODE_CATALOGUE
 from graph_api.deps import GRAPH_DEPS_SLOT, DcpReadExecutor, GraphDeps, new_check_executor
 from graph_api.doors.members import build_members_door
 from graph_api.doors.node import NODE_MEMBERSHIP_SLOT, build_node_door
-from graph_api.doors.ontology import new_ontology_cache
+from graph_api.doors.schema import new_schema_cache
 from graph_api.doors.sources import new_provenance_doc_cache
 from graph_api.version import GRAPH_CAPABILITY_VERSION
 from graph_generation import UNKNOWN_GENERATION
@@ -147,10 +147,8 @@ def _surface_app(
                         executor=dcp, generation=UNKNOWN_GENERATION
                     ),
                     coverage=get_coverage_service(),
-                    ontology=new_ontology_cache(
-                        entries=2, executor=dcp, generation=UNKNOWN_GENERATION
-                    ),
-                    dataset_usage=new_ontology_cache(
+                    schema=new_schema_cache(entries=2, executor=dcp, generation=UNKNOWN_GENERATION),
+                    dataset_usage=new_schema_cache(
                         entries=1, executor=dcp, generation=UNKNOWN_GENERATION
                     ),
                     check_executor=new_check_executor(),

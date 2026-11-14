@@ -1,7 +1,7 @@
-"""Wire models for the instance's ontology: the document and the terms list.
+"""Wire models for the instance's schema: the document and the terms list.
 
-`OntologyDocument` holds `generation`, the graph generation token the document was built
-from, null where the token is unknown, and `nodes`, one `OntologyNode` per member of the
+`SchemaDocument` holds `generation`, the graph generation token the document was built
+from, null where the token is unknown, and `nodes`, one `SchemaNode` per member of the
 document, sorted by dcid. The document holds every Class and Property the instance declares, every node those name in
 `subClassOf`, `subPropertyOf`, `domainIncludes` or `rangeIncludes`, every node a StatVar row
 of the code index names, every listed member of an enumeration, the `typeOf` targets of
@@ -31,7 +31,7 @@ read, up to a cap; a base enumeration lists only the members StatVar rows use. `
 true only when the build listed the class from the graph and the listing read every member,
 so `members` is every member the graph holds. A list where it is false holds some of them.
 
-`OntologyTerms` holds `generation`, null where the token is unknown, and `terms`, every Class
+`SchemaTerms` holds `generation`, null where the token is unknown, and `terms`, every Class
 and Property on the graph with its `name`, `types` (`Class`, `Property` or both),
 `provenances` and `declared_by`, sorted by dcid.
 
@@ -40,16 +40,16 @@ and Property on the graph with its `name`, `types` (`Class`, `Property` or both)
 patterns of its StatVar rows, the values each constraint property takes, and the facet facts of
 its coverage series.
 
-`OntologyCheckRow` is a candidate StatisticalVariable definition and `OntologyFinding` one
-fault `graph_api.ontology_check` finds in it. `OntologyCheckRequest` carries 1 to
-`CHECK_MAX_ROWS` rows to `POST /api/graph/ontology/check`. Every string of a row is bounded at
+`SchemaCheckRow` is a candidate StatisticalVariable definition and `SchemaFinding` one
+fault `graph_api.schema_check` finds in it. `SchemaCheckRequest` carries 1 to
+`CHECK_MAX_ROWS` rows to `POST /api/graph/schema/check`. Every string of a row is bounded at
 512 characters, and an empty string counts as absent. A row names at most
 `CHECK_MAX_CONSTRAINT_PROPERTIES` constraint properties and `CHECK_MAX_OBSERVATION_PROPERTIES`
 observation properties. A constraint value is a string, a finite number within plus or minus
 2**53, a boolean or null. The request model checks only these bounds; the check reports
 everything else about a row's content as a finding.
 
-`OntologyCheckResponse` answers with the generation the rows were checked against, null where
+`SchemaCheckResponse` answers with the generation the rows were checked against, null where
 its token is unknown, the count of rows checked from the first, the index of the first row not
 checked, and every finding in the rows checked. The check stops before the row that would take
 its reads from the graph past `CHECK_MAX_READ_IDS` distinct ids or its findings past
@@ -73,7 +73,7 @@ from dfo_platform.wire import ResponseModel
 from graph_api.routing import DCID_MAX_LENGTH
 
 CHECK_MAX_ROWS = 2_000
-"""The most rows one `POST /api/graph/ontology/check` request carries."""
+"""The most rows one `POST /api/graph/schema/check` request carries."""
 
 CHECK_MAX_CONSTRAINT_PROPERTIES = 16
 """The most constraint properties one check row names, twice the most a StatVar row of the
@@ -85,16 +85,16 @@ served code index carries (2 on the dev graph)."""
 
 CHECK_MAX_READ_IDS = 5 + 2 * CHECK_MAX_CONSTRAINT_PROPERTIES + CHECK_MAX_OBSERVATION_PROPERTIES
 """The most distinct ids one check reads from the graph, 41, an internal budget the wire does
-not publish. They are the ids its rows name that the ontology document does not hold, counted
+not publish. They are the ids its rows name that the schema document does not hold, counted
 before any read, each constraint value counted unless it is a literal or its property a
-document node that is no Property (`graph_api.ontology_check.plan_reads`). The check takes rows
+document node that is no Property (`graph_api.schema_check.plan_reads`). The check takes rows
 from the first while their ids stay within the budget and answers where to resume. One row
 names at most this many (its 5 shape fields, each constraint property and its value, each
 observation property), so every check takes at least one row. The check reads each once, in one
 `node_arcs_many` call: at most 43 POSTs to `/v2/node` when the graph answers every POST, 45
 where the deployment serves the UN origin, and at most 203 when the front door refuses every
 POST naming more than one id, each tried up to 3 times, all within the 30 s
-`GRAPH_ONTOLOGY_CHECK_TIMEOUT_SECONDS` (`graph_api.ontology_check` counts them). On the dev
+`GRAPH_SCHEMA_CHECK_TIMEOUT_SECONDS` (`graph_api.schema_check` counts them). On the dev
 graph, 41 absent ids took 43 POSTs and 7.4 to 8.5 s, under a third of that deadline."""
 
 CHECK_MAX_FINDINGS = 2_000
@@ -110,7 +110,7 @@ DeclaredBy = Literal["instance", "base"]
 """Who declares a node: `"base"` when every declaring provenance is a base Data Commons one."""
 
 
-class OntologyEnumeration(ResponseModel):
+class SchemaEnumeration(ResponseModel):
     """The members of an enumeration Class."""
 
     members: list[str] = Field(description="the dcids of the members listed, sorted")
@@ -120,8 +120,8 @@ class OntologyEnumeration(ResponseModel):
     )
 
 
-class OntologyNode(ResponseModel):
-    """One node of the ontology document."""
+class SchemaNode(ResponseModel):
+    """One node of the schema document."""
 
     dcid: str
     name: str | None = Field(description="the node's name; null when the graph gives none")
@@ -144,21 +144,21 @@ class OntologyNode(ResponseModel):
         description="null when the graph names no declaring Provenance for the node: it has no "
         "typeOf arc, or none of its typeOf targets carries one"
     )
-    enumeration: OntologyEnumeration | None = Field(
+    enumeration: SchemaEnumeration | None = Field(
         description="the members when the node is an enumeration Class; null otherwise"
     )
 
 
-class OntologyDocument(ResponseModel):
+class SchemaDocument(ResponseModel):
     """The instance's model as one document."""
 
     generation: str | None = Field(
         description="the graph generation the document was built from; null when unknown"
     )
-    nodes: list[OntologyNode]
+    nodes: list[SchemaNode]
 
 
-class OntologyTerm(ResponseModel):
+class SchemaTerm(ResponseModel):
     """One Class or Property on the graph."""
 
     dcid: str
@@ -176,17 +176,17 @@ class OntologyTerm(ResponseModel):
     )
 
 
-class OntologyTerms(ResponseModel):
+class SchemaTerms(ResponseModel):
     """Every Class and Property the DFO graph lists by `typeOf`, base Data Commons terms
     included. The UN origin's terms are not listed, even where the deployment serves it."""
 
     generation: str | None = Field(
         description="the graph generation the list was built from; null when unknown"
     )
-    terms: list[OntologyTerm]
+    terms: list[SchemaTerm]
 
 
-class OntologyPattern(ResponseModel):
+class SchemaPattern(ResponseModel):
     """One distinct way a Provenance's StatVars use the model."""
 
     population_type: str | None
@@ -206,21 +206,21 @@ class OntologyPattern(ResponseModel):
     )
 
 
-class OntologyValueCount(ResponseModel):
+class SchemaValueCount(ResponseModel):
     """One value a constraint property takes, and how many StatVars take it."""
 
     value: str
     stat_var_count: int
 
 
-class OntologyConstraintValues(ResponseModel):
+class SchemaConstraintValues(ResponseModel):
     """The values one constraint property takes over a Provenance's StatVars."""
 
     property: str
-    values: list[OntologyValueCount] = Field(description="sorted by value")
+    values: list[SchemaValueCount] = Field(description="sorted by value")
 
 
-class OntologyFacets(ResponseModel):
+class SchemaFacets(ResponseModel):
     """The facet facts of a Provenance's coverage series, each list sorted and distinct."""
 
     units: list[str]
@@ -241,13 +241,13 @@ class ProvenanceUsage(ResponseModel):
         description="what the dataset measures, from its declaration; null when it has none"
     )
     stat_var_count: int
-    patterns: list[OntologyPattern] = Field(
+    patterns: list[SchemaPattern] = Field(
         description="sorted by StatVar count descending, then by the pattern's fields"
     )
-    constraint_values: list[OntologyConstraintValues] = Field(
+    constraint_values: list[SchemaConstraintValues] = Field(
         description="one entry per constraint property the StatVars set, sorted by property"
     )
-    facets: OntologyFacets = Field(
+    facets: SchemaFacets = Field(
         description="facts of the coverage facets; empty lists when coverage holds none"
     )
 
@@ -352,11 +352,11 @@ def _drop_blank(values: list[str]) -> list[str]:
     return [value for value in values if value]
 
 
-class OntologyCheckRow(BaseModel):
+class SchemaCheckRow(BaseModel):
     """A candidate StatisticalVariable definition. Each string is at most 512 characters, and
     an empty string counts as absent."""
 
-    model_config = ConfigDict(extra="forbid", title="GraphOntologyCheckRow")
+    model_config = ConfigDict(extra="forbid", title="GraphSchemaCheckRow")
 
     ref: _OptionalText = Field(
         default=None, description="the caller's label, echoed on findings; at most 512 characters"
@@ -384,7 +384,7 @@ class OntologyCheckRow(BaseModel):
     )
 
 
-class OntologyFinding(ResponseModel):
+class SchemaFinding(ResponseModel):
     """One fault in one checked row."""
 
     row: int = Field(description="the row's index in the request's `rows`")
@@ -411,16 +411,16 @@ class OntologyFinding(ResponseModel):
     severity: Literal["error", "warning"]
 
 
-class OntologyCheckRequest(BaseModel):
+class SchemaCheckRequest(BaseModel):
     """`rows`: 1 to `CHECK_MAX_ROWS` candidate StatVar definitions, checked in order from the
     first."""
 
-    model_config = ConfigDict(extra="forbid", title="GraphOntologyCheckRequest")
+    model_config = ConfigDict(extra="forbid", title="GraphSchemaCheckRequest")
 
-    rows: list[OntologyCheckRow] = Field(min_length=1, max_length=CHECK_MAX_ROWS)
+    rows: list[SchemaCheckRow] = Field(min_length=1, max_length=CHECK_MAX_ROWS)
 
 
-class OntologyCheckResponse(ResponseModel):
+class SchemaCheckResponse(ResponseModel):
     """The findings over the rows one check took, from the first."""
 
     generation: str | None = Field(
@@ -434,7 +434,7 @@ class OntologyCheckResponse(ResponseModel):
         description="the index of the first row not checked, equal to `row_count`; null when "
         "every row was checked"
     )
-    findings: list[OntologyFinding] = Field(
+    findings: list[SchemaFinding] = Field(
         description="one finding per fault in the rows checked, in row order; empty when none of "
         "them has a fault"
     )

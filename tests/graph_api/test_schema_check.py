@@ -1,4 +1,4 @@
-"""`check_rows` against the ontology fixture graph, extended with the nodes the rules need."""
+"""`check_rows` against the schema fixture graph, extended with the nodes the rules need."""
 
 from __future__ import annotations
 
@@ -10,19 +10,19 @@ import pytest
 
 from code_index import StatVarRow
 from dc_graph import ArcTarget, GraphReadError
-from graph_api.ontology_check import CheckedRows, OntologyLookup, check_rows, plan_reads
-from graph_api.ontology_document import Ontology, build_ontology
-from graph_api.ontology_models import (
+from graph_api.reader import NodeArcsByDcid
+from graph_api.schema_check import CheckedRows, SchemaLookup, check_rows, plan_reads
+from graph_api.schema_document import Schema, build_schema
+from graph_api.schema_models import (
     CHECK_MAX_CONSTRAINT_PROPERTIES,
     CHECK_MAX_FINDINGS,
     CHECK_MAX_OBSERVATION_PROPERTIES,
     CHECK_MAX_READ_IDS,
-    OntologyCheckRow,
+    SchemaCheckRow,
 )
-from graph_api.reader import NodeArcsByDcid
 
 from .conftest import FakeGraphNodeReader
-from .ontology_fixture import (
+from .schema_fixture import (
     DFO,
     INDEX,
     NODES,
@@ -31,7 +31,7 @@ from .ontology_fixture import (
     index_of,
     index_row,
     node_targets,
-    ontology_graph,
+    schema_graph,
 )
 
 _DEADLINE = 1_000.0
@@ -140,18 +140,18 @@ class _RecordingReader(FakeGraphNodeReader):
 
 
 @cache
-def _ontology() -> Ontology:
-    graph = ontology_graph(terms=_CHECK_TERMS, nodes=_CHECK_NODES)
-    return build_ontology(reader=graph, code_index=INDEX, generation="g1", deadline=_DEADLINE)
+def _schema() -> Schema:
+    graph = schema_graph(terms=_CHECK_TERMS, nodes=_CHECK_NODES)
+    return build_schema(reader=graph, code_index=INDEX, generation="g1", deadline=_DEADLINE)
 
 
 @cache
-def _lookup() -> OntologyLookup:
-    return OntologyLookup.of(_ontology().document)
+def _lookup() -> SchemaLookup:
+    return SchemaLookup.of(_schema().document)
 
 
-def _row(**fields: Any) -> OntologyCheckRow:
-    return OntologyCheckRow.model_validate(
+def _row(**fields: Any) -> SchemaCheckRow:
+    return SchemaCheckRow.model_validate(
         {
             "ref": "r1",
             "population_type": "FinancialFlow",
@@ -162,8 +162,8 @@ def _row(**fields: Any) -> OntologyCheckRow:
     )
 
 
-def _as_row(served: StatVarRow, **fields: Any) -> OntologyCheckRow:
-    return OntologyCheckRow.model_validate(
+def _as_row(served: StatVarRow, **fields: Any) -> SchemaCheckRow:
+    return SchemaCheckRow.model_validate(
         {
             "ref": served.dcid,
             "dcid": served.dcid,
@@ -180,9 +180,9 @@ def _as_row(served: StatVarRow, **fields: Any) -> OntologyCheckRow:
 
 
 def _checked(
-    rows: Sequence[OntologyCheckRow],
+    rows: Sequence[SchemaCheckRow],
     reader: FakeGraphNodeReader | None = None,
-    lookup: OntologyLookup | None = None,
+    lookup: SchemaLookup | None = None,
     *,
     un_served: bool = True,
 ) -> CheckedRows:
@@ -204,9 +204,9 @@ type _Finding = tuple[str, str | None, str, object, object, str]
 
 
 def _check(
-    rows: Sequence[OntologyCheckRow],
+    rows: Sequence[SchemaCheckRow],
     reader: FakeGraphNodeReader | None = None,
-    lookup: OntologyLookup | None = None,
+    lookup: SchemaLookup | None = None,
     *,
     un_served: bool = True,
 ) -> list[_Finding]:
@@ -552,7 +552,7 @@ _SERVED = INDEX.statvars[0]
         ),
     ],
 )
-def test_check_rules(row: OntologyCheckRow, expected: list[_Finding]) -> None:
+def test_check_rules(row: SchemaCheckRow, expected: list[_Finding]) -> None:
     assert _check([row]) == expected
 
 
@@ -707,15 +707,15 @@ def test_a_property_is_judged_by_the_provenances_its_types_carry(
     an instance property, and both rules apply."""
     targets = {"crsPurpose": {**node_targets(_CHECK_NODES, _CHECK_TERMS)["crsPurpose"]}}
     targets["crsPurpose"]["typeOf"] = types
-    graph = ontology_graph(terms=_CHECK_TERMS, nodes=_CHECK_NODES, arc_targets=targets)
-    document = build_ontology(reader=graph, code_index=INDEX, generation="g1", deadline=_DEADLINE)
+    graph = schema_graph(terms=_CHECK_TERMS, nodes=_CHECK_NODES, arc_targets=targets)
+    document = build_schema(reader=graph, code_index=INDEX, generation="g1", deadline=_DEADLINE)
     reader = _RecordingReader()
     row = _row(
         population_type="EconomicActivity",
         constraint_properties={"crsPurpose": "CRSPurposeCode99999"},
     )
 
-    findings = _check([row], reader, OntologyLookup.of(document.document))
+    findings = _check([row], reader, SchemaLookup.of(document.document))
 
     assert findings == expected
     assert reader.batches == batches
@@ -728,9 +728,9 @@ def test_a_value_typed_below_a_complete_enumeration_outside_the_document_is_read
     terms = {k: v for k, v in _CHECK_TERMS.items() if k not in ("gender", "recipientGender")}
     nodes = {k: v for k, v in _CHECK_NODES.items() if k not in ("gender", "recipientGender")}
     index = index_of(index_row("Amount_CRS12220", {"crsPurpose": "CRSPurposeCode12220"}))
-    graph = ontology_graph(terms=terms, nodes=nodes)
-    document = build_ontology(reader=graph, code_index=index, generation="g1", deadline=_DEADLINE)
-    lookup = OntologyLookup.of(document.document)
+    graph = schema_graph(terms=terms, nodes=nodes)
+    document = build_schema(reader=graph, code_index=index, generation="g1", deadline=_DEADLINE)
+    lookup = SchemaLookup.of(document.document)
     reader = _RecordingReader()
 
     findings = _check([_row(constraint_properties={"beneficiaryGroup": "Male"})], reader, lookup)
@@ -740,7 +740,7 @@ def test_a_value_typed_below_a_complete_enumeration_outside_the_document_is_read
     assert reader.batches == [["Male"]]
 
 
-def _absent_rows(count: int) -> list[OntologyCheckRow]:
+def _absent_rows(count: int) -> list[SchemaCheckRow]:
     return [
         _row(ref=str(i), constraint_properties={"beneficiaryGender": f"NoSuchGender{i}"})
         for i in range(count)
@@ -756,7 +756,7 @@ def test_rows_naming_the_budget_of_ids_to_read_are_read() -> None:
     assert len(reader.batches[0]) == CHECK_MAX_READ_IDS
 
 
-def _maximal_row() -> OntologyCheckRow:
+def _maximal_row() -> SchemaCheckRow:
     """A row naming the most ids a row can, none of them in the document, every constraint
     property a held base property so its value is read too."""
     return _row(
@@ -811,7 +811,7 @@ def test_a_single_row_naming_the_most_ids_a_row_can_is_read_within_the_budget() 
     ],
 )
 def test_rows_past_the_read_budget_stop_before_the_row_that_passes_it(
-    rows: Callable[[], list[OntologyCheckRow]], taken: int
+    rows: Callable[[], list[SchemaCheckRow]], taken: int
 ) -> None:
     reader = _RecordingReader()
     sent = rows()
@@ -861,7 +861,7 @@ def test_rows_past_the_read_budget_stop_before_the_row_that_passes_it(
     ],
 )
 def test_a_un_id_gets_origin_not_served_with_no_read_while_the_un_origin_is_off(
-    row: OntologyCheckRow, expected: list[_Finding]
+    row: SchemaCheckRow, expected: list[_Finding]
 ) -> None:
     off = _RecordingReader()
     on = _RecordingReader()
@@ -899,7 +899,7 @@ def test_a_held_node_with_neither_a_type_nor_a_name_reads_as_absent() -> None:
     assert findings == [_value("beneficiaryGender", "DescribedCode", "node_not_held")]
 
 
-def _many_findings_row(ref: str) -> OntologyCheckRow:
+def _many_findings_row(ref: str) -> SchemaCheckRow:
     """A row with one `node_not_held` finding on each constraint property."""
     return _row(
         ref=ref,

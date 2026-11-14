@@ -1083,7 +1083,7 @@ def test_provisional_node_check_runs_once_batched_across_every_row():
 )
 def test_an_unresolved_type_target_counts_as_no_type(types, refusal):
     # The batched read marks an unresolvable `typeOf` target `UNRESOLVED_NODE`; the rule
-    # judges the resolved types alone, as `graph_api.ontology_check` does.
+    # judges the resolved types alone, as `graph_api.schema_check` does.
     graph = _two_system_graph()
     graph.forward_arcs["SV_Disbursement_Gross"]["nettingBasis"] = ("MarkedStub",)
     graph.forward_arcs["MarkedStub"] = {"typeOf": types}

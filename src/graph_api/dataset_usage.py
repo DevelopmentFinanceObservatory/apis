@@ -22,13 +22,13 @@ from typing import NamedTuple, Protocol
 
 from code_index import CodeIndex, StatVarRow
 from code_index.query import row_five_tuple
-from graph_api.ontology_models import (
+from graph_api.schema_models import (
     DatasetUsage,
-    OntologyConstraintValues,
-    OntologyFacets,
-    OntologyPattern,
-    OntologyValueCount,
     ProvenanceUsage,
+    SchemaConstraintValues,
+    SchemaFacets,
+    SchemaPattern,
+    SchemaValueCount,
     ShapeField,
 )
 from series_coverage.schema import FacetMetadata
@@ -57,7 +57,7 @@ SHAPE_FIELDS: tuple[ShapeField, ...] = (
     "measurement_denominator",
 )
 """The StatVar shape fields in `FiveTuple`'s order, each a `FiveTuple` field, a `StatVarRow`
-field of the same name and a field of `OntologyPattern`."""
+field of the same name and a field of `SchemaPattern`."""
 
 
 class _PatternKey(NamedTuple):
@@ -85,13 +85,13 @@ def _pattern_order(entry: tuple[_PatternKey, list[str]]) -> tuple[object, ...]:
     )
 
 
-def _patterns(rows: Iterable[StatVarRow]) -> list[OntologyPattern]:
+def _patterns(rows: Iterable[StatVarRow]) -> list[SchemaPattern]:
     """The patterns of `rows`, which arrive sorted by dcid, so each pattern's dcids are too."""
     members: dict[_PatternKey, list[str]] = defaultdict(list)
     for row in rows:
         members[_pattern_key(row)].append(row.dcid)
     return [
-        OntologyPattern(
+        SchemaPattern(
             **{name: getattr(key.shape, name) for name in SHAPE_FIELDS},
             constraint_properties=list(key.constraint_properties),
             observation_properties=list(key.observation_properties),
@@ -102,16 +102,16 @@ def _patterns(rows: Iterable[StatVarRow]) -> list[OntologyPattern]:
     ]
 
 
-def _constraint_values(rows: Iterable[StatVarRow]) -> list[OntologyConstraintValues]:
+def _constraint_values(rows: Iterable[StatVarRow]) -> list[SchemaConstraintValues]:
     counts: dict[str, Counter[str]] = defaultdict(Counter)
     for row in rows:
         for prop, value in row.constraint_properties.items():
             counts[prop][value] += 1
     return [
-        OntologyConstraintValues(
+        SchemaConstraintValues(
             property=prop,
             values=[
-                OntologyValueCount(value=value, stat_var_count=count)
+                SchemaValueCount(value=value, stat_var_count=count)
                 for value, count in sorted(counts[prop].items())
             ],
         )
@@ -119,7 +119,7 @@ def _constraint_values(rows: Iterable[StatVarRow]) -> list[OntologyConstraintVal
     ]
 
 
-def _facets_by_provenance(coverage: ProvenanceCoverage) -> dict[str, OntologyFacets]:
+def _facets_by_provenance(coverage: ProvenanceCoverage) -> dict[str, SchemaFacets]:
     units: dict[str, set[str]] = defaultdict(set)
     scaling: dict[str, set[str]] = defaultdict(set)
     methods: dict[str, set[str]] = defaultdict(set)
@@ -140,7 +140,7 @@ def _facets_by_provenance(coverage: ProvenanceCoverage) -> dict[str, OntologyFac
                 values[provenance].add(field)
     currencies = coverage.provenance_currencies
     return {
-        provenance: OntologyFacets(
+        provenance: SchemaFacets(
             units=sorted(units[provenance]),
             scaling_factors=sorted(scaling[provenance]),
             measurement_methods=sorted(methods[provenance]),
@@ -151,8 +151,8 @@ def _facets_by_provenance(coverage: ProvenanceCoverage) -> dict[str, OntologyFac
     }
 
 
-def _no_facets() -> OntologyFacets:
-    return OntologyFacets(
+def _no_facets() -> SchemaFacets:
+    return SchemaFacets(
         units=[], scaling_factors=[], measurement_methods=[], observation_periods=[], currencies=[]
     )
 

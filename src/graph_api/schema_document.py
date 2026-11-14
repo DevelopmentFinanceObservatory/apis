@@ -1,6 +1,6 @@
-"""Build the instance's ontology document and the terms list from live graph reads.
+"""Build the instance's schema document and the terms list from live graph reads.
 
-`build_ontology` reads `Class <-typeOf` and `Property <-typeOf` once each, and every subject is a
+`build_schema` reads `Class <-typeOf` and `Property <-typeOf` once each, and every subject is a
 term. The document's seed is every term the instance declares plus every node a StatVar row of the
 code index names. One `node_arc_targets_many` reads the seed's node properties with the provenances
 that declare each value, and each further level reads the nodes not yet read that the instance's
@@ -23,7 +23,7 @@ arc, or whose `typeOf` targets carry no provenance, is served with none and decl
 neither. A term's provenances come from its listing entries by the same rule. One warning per
 build counts the terms served with none and the nodes with a `typeOf` target that carries none,
 and names the first ten of each. A build whose document holds no node the instance declares
-refuses with `OntologyNoInstanceDeclarationError`.
+refuses with `SchemaNoInstanceDeclarationError`.
 
 An instance-declared enumeration's members are its `<-typeOf` listing, `complete` when the
 listing read every subject. A base enumeration lists the members StatVar rows use and is
@@ -44,21 +44,21 @@ from typing import Final, Literal
 from code_index import CodeIndex
 from dc_graph import ArcSubject, GraphReadError, display_name
 from graph_api.dataset_usage import SHAPE_FIELDS
-from graph_api.ontology_models import (
-    DeclaredBy,
-    OntologyDocument,
-    OntologyEnumeration,
-    OntologyNode,
-    OntologyTerm,
-    OntologyTerms,
-)
 from graph_api.reader import GraphNodeReader
+from graph_api.schema_models import (
+    DeclaredBy,
+    SchemaDocument,
+    SchemaEnumeration,
+    SchemaNode,
+    SchemaTerm,
+    SchemaTerms,
+)
 
 logger = logging.getLogger(__name__)
 
 TERM_LISTING_CAP: Final[int] = 20_000
 """The most subjects one `<-typeOf` listing of `Class` or `Property` reads. A listing that
-reaches it raises `OntologyListingTruncatedError`."""
+reaches it raises `SchemaListingTruncatedError`."""
 
 ENUMERATION_MEMBER_CAP: Final[int] = 5_000
 """The most members read for one instance-declared enumeration. An enumeration with more is
@@ -90,27 +90,27 @@ type _Arcs = dict[str, tuple[str, ...]]
 type _TermKind = Literal["Class", "Property"]
 
 
-class OntologyListingTruncatedError(GraphReadError):
+class SchemaListingTruncatedError(GraphReadError):
     """A `Class` or `Property` listing reached `TERM_LISTING_CAP`, so the terms are incomplete."""
 
 
-class OntologyNoInstanceDeclarationError(GraphReadError):
+class SchemaNoInstanceDeclarationError(GraphReadError):
     """No node of the built document is declared by the instance, so the graph named no
     instance provenance for any of them and the check would judge no range or domain."""
 
     def __init__(self, node_count: int) -> None:
         super().__init__(
-            f"none of the {node_count} nodes of the ontology document is declared by the instance"
+            f"none of the {node_count} nodes of the schema document is declared by the instance"
         )
         self.node_count = node_count
 
 
 @dataclass(frozen=True)
-class Ontology:
-    """The ontology document and the terms list from one build."""
+class Schema:
+    """The schema document and the terms list from one build."""
 
-    document: OntologyDocument
-    terms: OntologyTerms
+    document: SchemaDocument
+    terms: SchemaTerms
 
 
 @dataclass
@@ -133,14 +133,14 @@ def declared_by(provenances: Collection[str]) -> DeclaredBy:
     return "instance"
 
 
-def build_ontology(
+def build_schema(
     *,
     reader: GraphNodeReader,
     code_index: CodeIndex,
     generation: str | None,
     deadline: float,
-) -> Ontology:
-    """Build the ontology document and the terms list.
+) -> Schema:
+    """Build the schema document and the terms list.
 
     Args:
         reader: the graph reads.
@@ -149,8 +149,8 @@ def build_ontology(
         deadline: the absolute monotonic deadline passed to every read.
 
     Raises:
-        OntologyListingTruncatedError: a `Class` or `Property` listing reached its cap.
-        OntologyNoInstanceDeclarationError: no node of the document is declared by the
+        SchemaListingTruncatedError: a `Class` or `Property` listing reached its cap.
+        SchemaNoInstanceDeclarationError: no node of the document is declared by the
             instance.
         GraphReadError: a read failed.
     """
@@ -184,13 +184,13 @@ def build_ontology(
         for dcid in instance_terms
         if dcid in arcs and _CLASS in listed[dcid].kinds and _reaches_enumeration(dcid, arcs)
     )
-    members: dict[str, OntologyEnumeration] = {}
+    members: dict[str, SchemaEnumeration] = {}
     listed_members: set[str] = set()
     for enumeration, (subjects, complete) in _list_members(
         reader, instance_enumerations, deadline=deadline
     ).items():
         listed_members.update(subject.dcid for subject in subjects)
-        members[enumeration] = OntologyEnumeration(
+        members[enumeration] = SchemaEnumeration(
             members=sorted({subject.dcid for subject in subjects}), complete=complete
         )
     if unread_members := listed_members - arcs.keys() - absent:
@@ -207,14 +207,14 @@ def build_ontology(
     )
     for enumeration in enumerations:
         if enumeration not in members:
-            members[enumeration] = OntologyEnumeration(
+            members[enumeration] = SchemaEnumeration(
                 members=sorted(index_named_by_type.get(enumeration, ())), complete=False
             )
 
     unsourced_terms = sorted(dcid for dcid, term in listed.items() if not term.provenances)
     if unsourced_terms or unsourced:
         logger.warning(
-            "ontology build read %d terms with no listed provenance, served with declared_by null, "
+            "schema build read %d terms with no listed provenance, served with declared_by null, "
             "among them %s, and %d nodes with a typeOf target that carries no provenance, among "
             "them %s",
             len(unsourced_terms),
@@ -224,9 +224,9 @@ def build_ontology(
         )
     nodes = [_node(dcid, arcs[dcid], provenances[dcid], members.get(dcid)) for dcid in sorted(arcs)]
     if not any(node.declared_by == "instance" for node in nodes):
-        raise OntologyNoInstanceDeclarationError(len(nodes))
+        raise SchemaNoInstanceDeclarationError(len(nodes))
     terms = [
-        OntologyTerm(
+        SchemaTerm(
             dcid=dcid,
             name=display_name(term.names, dcid),
             types=sorted(term.kinds),
@@ -235,9 +235,9 @@ def build_ontology(
         )
         for dcid, term in sorted(listed.items())
     ]
-    return Ontology(
-        document=OntologyDocument(generation=generation, nodes=nodes),
-        terms=OntologyTerms(generation=generation, terms=terms),
+    return Schema(
+        document=SchemaDocument(generation=generation, nodes=nodes),
+        terms=SchemaTerms(generation=generation, terms=terms),
     )
 
 
@@ -274,7 +274,7 @@ def _read_terms(reader: GraphNodeReader, *, deadline: float) -> dict[str, _Liste
             kind, property=_TYPE_OF, max_results=TERM_LISTING_CAP, deadline=deadline
         )
         if page.truncated:
-            raise OntologyListingTruncatedError(
+            raise SchemaListingTruncatedError(
                 f"{kind} <-typeOf lists more than {TERM_LISTING_CAP} subjects"
             )
         for subject in page.subjects:
@@ -386,9 +386,9 @@ def _node(
     dcid: str,
     arcs: _Arcs,
     provenances: Collection[str],
-    enumeration: OntologyEnumeration | None,
-) -> OntologyNode:
-    return OntologyNode(
+    enumeration: SchemaEnumeration | None,
+) -> SchemaNode:
+    return SchemaNode(
         dcid=dcid,
         name=display_name(arcs["name"], dcid),
         description=min(arcs["description"], default=None),

@@ -1,7 +1,7 @@
 """Whether a StatVar's constraint value names a resolved graph node.
 
 `code_index.export.export_statvars` refuses a release whose StatVar binds a constraint
-property to a value that fails this test, and `graph_api.ontology_check` reports a candidate
+property to a value that fails this test, and `graph_api.schema_check` reports a candidate
 row that would meet the same refusal.
 """
 

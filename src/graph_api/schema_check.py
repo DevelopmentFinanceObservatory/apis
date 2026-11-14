@@ -1,6 +1,6 @@
-"""Check candidate StatisticalVariable definitions against the instance's ontology.
+"""Check candidate StatisticalVariable definitions against the instance's schema.
 
-`OntologyLookup` holds the ontology document's nodes as the check reads them, built once per
+`SchemaLookup` holds the schema document's nodes as the check reads them, built once per
 document. `plan_reads` decides, before any read, how many rows from the first the check takes
 and which ids outside the document they read: it adds rows while their distinct ids stay within
 `CHECK_MAX_READ_IDS`. `check_rows` answers each node a row names from the document and asks
@@ -29,7 +29,7 @@ id still empty. A check of k ids therefore sends at most k + 2 POSTs with one ba
 halves, so a batch or group retry of j ids costs at most 2j - 1 POSTs, and a check at most
 5k - 2, 203 for 41 ids, on either kind of deployment. A continuation page adds one POST. Each
 POST is tried up to 3 times on a 5xx answer or a transport error. Every read carries the
-check's deadline, `GRAPH_ONTOLOGY_CHECK_TIMEOUT_SECONDS` (30 s) from the request's start.
+check's deadline, `GRAPH_SCHEMA_CHECK_TIMEOUT_SECONDS` (30 s) from the request's start.
 
 No read can decide three kinds of cell, so each gets its finding with no read: a string outside
 dcid syntax, a number or a boolean gets `node_not_held`, and an id of the UN origin on a
@@ -72,18 +72,18 @@ from code_index import CodeIndex, StatVarRow
 from code_index.constraint_values import ConstraintValueFault, constraint_value_fault
 from dc_graph import UNRESOLVED_NODE
 from graph_api.dataset_usage import SHAPE_FIELDS
-from graph_api.ontology_models import (
+from graph_api.reader import GraphNodeReader
+from graph_api.routing import DcidConvertor
+from graph_api.schema_models import (
     CHECK_MAX_FINDINGS,
     CHECK_MAX_READ_IDS,
     ConstraintValue,
     FindingCode,
     FindingField,
-    OntologyCheckRow,
-    OntologyDocument,
-    OntologyFinding,
+    SchemaCheckRow,
+    SchemaDocument,
+    SchemaFinding,
 )
-from graph_api.reader import GraphNodeReader
-from graph_api.routing import DcidConvertor
 from origin_catalogue.graph import is_un_dcid
 
 _CLASS: Final[str] = "Class"
@@ -104,13 +104,13 @@ class _Node:
 
 
 @dataclass(frozen=True)
-class OntologyLookup:
-    """The ontology document's nodes as the check reads them."""
+class SchemaLookup:
+    """The schema document's nodes as the check reads them."""
 
     nodes: Mapping[str, _Node]
 
     @classmethod
-    def of(cls, document: OntologyDocument) -> OntologyLookup:
+    def of(cls, document: SchemaDocument) -> SchemaLookup:
         nodes = {
             node.dcid: _Node(
                 types=frozenset(node.types),
@@ -145,7 +145,7 @@ def _ancestry(nodes: Mapping[str, _Node], dcids: Iterable[str]) -> set[str]:
 class _Unread:
     """Decides, with no read, the cells no read can answer."""
 
-    lookup: OntologyLookup
+    lookup: SchemaLookup
     un_served: bool
 
     def fault(self, dcid: str) -> FindingCode | None:
@@ -168,7 +168,7 @@ class ReadPlan:
 
 
 def plan_reads(
-    rows: Sequence[OntologyCheckRow], *, lookup: OntologyLookup, un_served: bool
+    rows: Sequence[SchemaCheckRow], *, lookup: SchemaLookup, un_served: bool
 ) -> ReadPlan:
     """Take rows from the first while the distinct ids they read stay within
     `CHECK_MAX_READ_IDS`, decided with no read. A row reads every shape field, constraint
@@ -178,7 +178,7 @@ def plan_reads(
 
     Args:
         rows: the candidate definitions, at least one.
-        lookup: the ontology document's lookup.
+        lookup: the schema document's lookup.
         un_served: whether the deployment serves the UN origin, whose ids
             `origin_catalogue.graph.is_un_dcid` names.
     """
@@ -192,7 +192,7 @@ def plan_reads(
     return ReadPlan(row_count=len(rows), ids=frozenset(ids))
 
 
-def _row_reads(row: OntologyCheckRow, unread: _Unread) -> set[str]:
+def _row_reads(row: SchemaCheckRow, unread: _Unread) -> set[str]:
     named = [value for field in SHAPE_FIELDS if (value := getattr(row, field)) is not None]
     named.extend(row.observation_properties)
     for prop, value in row.constraint_properties.items():
@@ -207,7 +207,7 @@ def _row_reads(row: OntologyCheckRow, unread: _Unread) -> set[str]:
 class _Nodes:
     """The nodes the rows name: document nodes free, the rest read once each."""
 
-    def __init__(self, lookup: OntologyLookup, *, reader: GraphNodeReader, deadline: float) -> None:
+    def __init__(self, lookup: SchemaLookup, *, reader: GraphNodeReader, deadline: float) -> None:
         self._lookup = lookup
         self._read: dict[str, _Node | None] = {}
         self._reader = reader
@@ -249,14 +249,14 @@ class CheckedRows:
     """The rows one check took, from the first, and their findings."""
 
     row_count: int
-    findings: list[OntologyFinding]
+    findings: list[SchemaFinding]
 
 
 def check_rows(
-    rows: Sequence[OntologyCheckRow],
+    rows: Sequence[SchemaCheckRow],
     *,
     reads: frozenset[str],
-    lookup: OntologyLookup,
+    lookup: SchemaLookup,
     reader: GraphNodeReader,
     code_index: CodeIndex,
     un_served: bool,
@@ -268,7 +268,7 @@ def check_rows(
     Args:
         rows: the rows `plan_reads` took.
         reads: the ids `plan_reads` planned for `rows`.
-        lookup: the ontology document's lookup, which answers most ids with no read.
+        lookup: the schema document's lookup, which answers most ids with no read.
         reader: the graph reads for nodes the document does not hold, called only when
             `reads` names an id.
         code_index: the code index whose StatVar rows the rows' dcids are compared with.
@@ -290,7 +290,7 @@ def check_rows(
     nodes.read(reads)
     unread = _Unread(lookup, un_served)
 
-    findings: list[OntologyFinding] = []
+    findings: list[SchemaFinding] = []
     for index, row in enumerate(rows):
         found = _check_row(index, row, nodes, unread)
         if row.dcid is not None and (served := code_index.statvar_by_dcid(row.dcid)) is not None:
@@ -324,7 +324,7 @@ def _ranged(node: _Node | None) -> bool:
     return node is not None and node.instance and _is_property(node) and bool(node.range)
 
 
-def _outside_range(value: _Node, prop: _Node, lookup: OntologyLookup) -> bool:
+def _outside_range(value: _Node, prop: _Node, lookup: SchemaLookup) -> bool:
     """Every type of `value` is a document node and none reaches `prop`'s range."""
     if not value.types or any(dcid not in lookup.nodes for dcid in value.types):
         return False
@@ -349,7 +349,7 @@ _WARNINGS: Final[frozenset[FindingCode]] = frozenset(
 
 def _finding(
     index: int,
-    row: OntologyCheckRow,
+    row: SchemaCheckRow,
     field: FindingField,
     value: ConstraintValue | list[str],
     code: FindingCode,
@@ -357,8 +357,8 @@ def _finding(
     prop: str | None = None,
     subject: Literal["property", "value"] = "value",
     served: ConstraintValue | list[str] = None,
-) -> OntologyFinding:
-    return OntologyFinding(
+) -> SchemaFinding:
+    return SchemaFinding(
         row=index,
         ref=row.ref,
         field=field,
@@ -372,9 +372,9 @@ def _finding(
 
 
 def _check_row(
-    index: int, row: OntologyCheckRow, nodes: _Nodes, unread: _Unread
-) -> list[OntologyFinding]:
-    findings: list[OntologyFinding] = []
+    index: int, row: SchemaCheckRow, nodes: _Nodes, unread: _Unread
+) -> list[SchemaFinding]:
+    findings: list[SchemaFinding] = []
     lookup = unread.lookup
 
     def find(
@@ -476,7 +476,7 @@ def _check_row(
     return findings
 
 
-def _differences(index: int, row: OntologyCheckRow, served: StatVarRow) -> list[OntologyFinding]:
+def _differences(index: int, row: SchemaCheckRow, served: StatVarRow) -> list[SchemaFinding]:
     """One `definition_differs` warning per cell where the row departs from `served`, carrying
     what the row sent and what the code index serves."""
     differs = [

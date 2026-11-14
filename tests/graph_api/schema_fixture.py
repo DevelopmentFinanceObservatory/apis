@@ -1,4 +1,4 @@
-"""A small fake graph shaped like the dev graph's ontology, and a code index naming it."""
+"""A small fake graph shaped like the dev graph's schema, and a code index naming it."""
 
 from __future__ import annotations
 
@@ -189,7 +189,7 @@ def node_targets(
     return targets
 
 
-def ontology_graph(
+def schema_graph(
     *,
     terms: Mapping[str, tuple[str, tuple[str, ...]]] = TERMS,
     nodes: Mapping[str, Mapping[str, tuple[str, ...]]] = NODES,

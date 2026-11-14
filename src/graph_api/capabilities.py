@@ -1,7 +1,7 @@
 """Build `GET /api/graph/capabilities` from enforced limits and live deployment facts.
 
 The published limits use the same constants as their guards. The `resolve`, `node`,
-`members`, `roots`, `sources`, `json_schema`, and `ontology` doors are live. `node_shape_gaps` and
+`members`, `roots`, `sources`, `json_schema`, and `schema` doors are live. `node_shape_gaps` and
 `source_document_gaps` publish the member paths each door always gaps: on the node route, the
 measure's definition of every variable with a measure
 (`graph_api.card_definition.MEASURE_DEFINITION_GAP`). Every other source-document member is
@@ -33,17 +33,25 @@ from graph_api.config import (
 )
 from graph_api.kinds import KINDS, Kind
 from graph_api.node_models import NODES_MAX_DCIDS
-from graph_api.ontology_models import (
+from graph_api.resolve_models import RESOLVE_KINDS
+from graph_api.routing import DCID_MAX_LENGTH
+from graph_api.schema_models import (
     CHECK_MAX_CONSTRAINT_PROPERTIES,
     CHECK_MAX_OBSERVATION_PROPERTIES,
     CHECK_MAX_ROWS,
 )
-from graph_api.resolve_models import RESOLVE_KINDS
-from graph_api.routing import DCID_MAX_LENGTH
 from materialise.provenance_doc import UNCONDITIONAL_GAPS
 
 # The non-health doors this surface serves, and their liveness.
-_DOORS: tuple[str, ...] = ("resolve", "node", "members", "roots", "sources", "json_schema", "ontology")
+_DOORS: tuple[str, ...] = (
+    "resolve",
+    "node",
+    "members",
+    "roots",
+    "sources",
+    "json_schema",
+    "schema",
+)
 
 
 class CapabilityCaps(BaseModel):
@@ -67,20 +75,20 @@ class CapabilityCaps(BaseModel):
         description="the most dcids one POST /api/graph/nodes request names; a longer list is refused 400 request_invalid"
     )
     max_check_rows: int = Field(
-        description="the most rows one POST /api/graph/ontology/check request carries; a request with more is refused 400 request_invalid. A request within it may be answered for its first rows only, with next_row naming the first row left"
+        description="the most rows one POST /api/graph/schema/check request carries; a request with more is refused 400 request_invalid. A request within it may be answered for its first rows only, with next_row naming the first row left"
     )
     max_check_constraint_properties: int = Field(
-        description="the most entries in one POST /api/graph/ontology/check row's constraint_properties; a row with more is refused 400 request_invalid"
+        description="the most entries in one POST /api/graph/schema/check row's constraint_properties; a row with more is refused 400 request_invalid"
     )
     max_check_observation_properties: int = Field(
-        description="the most entries in one POST /api/graph/ontology/check row's observation_properties; a row with more is refused 400 request_invalid"
+        description="the most entries in one POST /api/graph/schema/check row's observation_properties; a row with more is refused 400 request_invalid"
     )
 
 
 class CapabilityDoor(BaseModel):
     """One door's liveness in this deployment."""
 
-    name: str = Field(description="resolve, node, members, roots, sources, json_schema, or ontology")
+    name: str = Field(description="resolve, node, members, roots, sources, json_schema, or schema")
     live: bool = Field(description="whether this deployment serves this door")
 
 

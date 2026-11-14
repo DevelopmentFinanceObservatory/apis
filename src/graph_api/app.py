@@ -22,11 +22,11 @@ from the bound release's coverage.
 
 Routes: `GET /healthz`, `GET /capabilities`, `GET /json-schema`, `POST /resolve`,
 `GET /node/{dcid}`, `POST /nodes`, `GET /node/{dcid}/members`, `GET /roots`,
-`GET /documentation/{dcid}`, `GET /sources`, `GET /ontology`, `GET /ontology/terms`,
-`GET /ontology/usage`, and `POST /ontology/check`, all under `/api/graph`.
-`GET /ontology`, `GET /ontology/terms` and `POST /ontology/check` share one build per graph
+`GET /documentation/{dcid}`, `GET /sources`, `GET /schema`, `GET /schema/terms`,
+`GET /schema/usage`, and `POST /schema/check`, all under `/api/graph`.
+`GET /schema`, `GET /schema/terms` and `POST /schema/check` share one build per graph
 generation and code index, held in a cache the lifespan registers beside the source-document
-and node-envelope caches. `GET /ontology/usage` reads no graph and keeps its body per code
+and node-envelope caches. `GET /schema/usage` reads no graph and keeps its body per code
 index and coverage build in a cache registered the same way.
 
 Door classifiers return `ProblemSpec`. The door whose route raised classifies
@@ -77,11 +77,11 @@ from graph_api.doors.health import build_health_door
 from graph_api.doors.json_schema import build_json_schema_door
 from graph_api.doors.members import build_members_door
 from graph_api.doors.node import NODE_MEMBERSHIP_SLOT, build_node_door
-from graph_api.doors.ontology import (
-    build_ontology_door,
-    new_ontology_cache,
-)
 from graph_api.doors.resolve import build_resolve_door
+from graph_api.doors.schema import (
+    build_schema_door,
+    new_schema_cache,
+)
 from graph_api.doors.sources import build_sources_door, new_provenance_doc_cache
 from graph_api.node_cache import NodeEntryCache
 from graph_api.reader import GraphNodeReader
@@ -197,7 +197,7 @@ def graph_surface(
             build_json_schema_door(),
             build_resolve_door(),
             build_sources_door(),
-            build_ontology_door(),
+            build_schema_door(),
             build_members_door(),
             build_node_door(),
         )
@@ -215,7 +215,7 @@ def graph_surface(
         generation_registration: RegistrationHandle | None = None
         doc_cache_registration: RegistrationHandle | None = None
         node_entries_registration: RegistrationHandle | None = None
-        ontology_registration: RegistrationHandle | None = None
+        schema_registration: RegistrationHandle | None = None
         usage_registration: RegistrationHandle | None = None
         dcp_executor: DcpReadExecutor | None = None
         check_executor: DcpReadExecutor | None = None
@@ -226,7 +226,7 @@ def graph_surface(
         graph_dcp_base_url: str | None = None
 
         async def _release_owned() -> None:
-            """Drain queued and running DCP reads and ontology check jobs off-loop, then wait for
+            """Drain queued and running DCP reads and schema check jobs off-loop, then wait for
             running card-read drivers, whose next read the shut DCP executor refuses. Release the
             shared profile
             cache, or cancel the injected surface's queued profile flights and facet reads and
@@ -252,8 +252,8 @@ def graph_surface(
                 doc_cache_registration.close()
             if node_entries_registration is not None:
                 node_entries_registration.close()
-            if ontology_registration is not None:
-                ontology_registration.close()
+            if schema_registration is not None:
+                schema_registration.close()
             if usage_registration is not None:
                 usage_registration.close()
             if generation_registration is not None:
@@ -354,17 +354,17 @@ def graph_surface(
             node_entries_registration = resolved_generation.register(
                 "graph_api.node_entries", stats=node_entries.stats, clear=node_entries.clear
             )
-            ontology = new_ontology_cache(
+            schema = new_schema_cache(
                 entries=2, executor=dcp_executor, generation=resolved_generation
             )
-            ontology_registration = resolved_generation.register(
-                "graph_api.ontology", stats=ontology.stats, clear=ontology.clear
+            schema_registration = resolved_generation.register(
+                "graph_api.schema", stats=schema.stats, clear=schema.clear
             )
             # A single-flight cache needs a pool no caller runs on.
             usage_executor = ThreadPoolExecutor(
                 max_workers=1, thread_name_prefix="graph-dataset-usage"
             )
-            dataset_usage = new_ontology_cache(
+            dataset_usage = new_schema_cache(
                 entries=1, executor=usage_executor, generation=resolved_generation
             )
             usage_registration = resolved_generation.register(
@@ -416,7 +416,7 @@ def graph_surface(
             generation=resolved_generation,
             provenance_docs=provenance_docs,
             node_entries=node_entries,
-            ontology=ontology,
+            schema=schema,
             dataset_usage=dataset_usage,
             coverage=resolved_coverage,
             profile_cache=profile_cache,

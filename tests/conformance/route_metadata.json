@@ -641,37 +641,37 @@
   {
     "has_description": false,
     "method": "GET",
-    "name": "get_ontology",
-    "operation_id": "graph_get_ontology",
-    "path": "/api/graph/ontology",
-    "summary": "Get Ontology",
+    "name": "get_schema",
+    "operation_id": "graph_get_schema",
+    "path": "/api/graph/schema",
+    "summary": "Get Schema",
     "surface": "graph"
   },
   {
     "has_description": false,
     "method": "POST",
-    "name": "post_ontology_check",
-    "operation_id": "graph_post_ontology_check",
-    "path": "/api/graph/ontology/check",
-    "summary": "Post Ontology Check",
+    "name": "post_schema_check",
+    "operation_id": "graph_post_schema_check",
+    "path": "/api/graph/schema/check",
+    "summary": "Post Schema Check",
     "surface": "graph"
   },
   {
     "has_description": false,
     "method": "GET",
-    "name": "get_ontology_terms",
-    "operation_id": "graph_get_ontology_terms",
-    "path": "/api/graph/ontology/terms",
-    "summary": "Get Ontology Terms",
+    "name": "get_schema_terms",
+    "operation_id": "graph_get_schema_terms",
+    "path": "/api/graph/schema/terms",
+    "summary": "Get Schema Terms",
     "surface": "graph"
   },
   {
     "has_description": false,
     "method": "GET",
-    "name": "get_ontology_usage",
-    "operation_id": "graph_get_ontology_usage",
-    "path": "/api/graph/ontology/usage",
-    "summary": "Get Ontology Usage",
+    "name": "get_schema_usage",
+    "operation_id": "graph_get_schema_usage",
+    "path": "/api/graph/schema/usage",
+    "summary": "Get Schema Usage",
     "surface": "graph"
   },
   {

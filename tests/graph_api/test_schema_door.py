@@ -1,4 +1,4 @@
-"""The ontology door: one cached build per generation behind the document, terms and check
+"""The schema door: one cached build per generation behind the document, terms and check
 routes, their waits, their refusals and the frozen bodies."""
 
 from __future__ import annotations
@@ -12,32 +12,32 @@ import pytest
 
 from dc_graph import ArcSubject
 from graph_api import app as app_module
-from graph_api.config import GRAPH_ONTOLOGY_CHECK_CONCURRENCY
-from graph_api.doors import ontology as ontology_door
-from graph_api.ontology_check import OntologyLookup
-from graph_api.ontology_document import (
-    OntologyListingTruncatedError,
-    OntologyNoInstanceDeclarationError,
+from graph_api.config import GRAPH_SCHEMA_CHECK_CONCURRENCY
+from graph_api.doors import schema as schema_door
+from graph_api.routing import DCID_MAX_LENGTH
+from graph_api.schema_check import SchemaLookup
+from graph_api.schema_document import (
+    SchemaListingTruncatedError,
+    SchemaNoInstanceDeclarationError,
 )
-from graph_api.ontology_models import (
+from graph_api.schema_models import (
     CHECK_MAX_CONSTRAINT_PROPERTIES,
     CHECK_MAX_FINDINGS,
     CHECK_MAX_OBSERVATION_PROPERTIES,
     CHECK_MAX_READ_IDS,
     CHECK_MAX_ROWS,
 )
-from graph_api.routing import DCID_MAX_LENGTH
 from graph_generation import FakeGeneration
 from materialise.graph import GraphDeadlineExceededError, GraphReadError
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue
 
 from .conftest import FakeGraphNodeReader, make_client, wait_until
-from .ontology_fixture import STAMP, index_of, index_row, node_targets
+from .schema_fixture import STAMP, index_of, index_row, node_targets
 
 _DFO = "provenance/DFOOntology"
-_DOCUMENT = "/api/graph/ontology"
-_TERMS = "/api/graph/ontology/terms"
-_CHECK = "/api/graph/ontology/check"
+_DOCUMENT = "/api/graph/schema"
+_TERMS = "/api/graph/schema/terms"
+_CHECK = "/api/graph/schema/check"
 _IDENTITY = {"Accept-Encoding": "identity"}
 
 _ARC_SUBJECTS = {
@@ -108,8 +108,8 @@ def generation(monkeypatch: pytest.MonkeyPatch) -> FakeGeneration:
     return fake
 
 
-def _ontology_stats(client) -> dict[str, int]:
-    return dict(client.app.state.graph_deps.ontology.stats())
+def _schema_stats(client) -> dict[str, int]:
+    return dict(client.app.state.graph_deps.schema.stats())
 
 
 class TestCache:
@@ -139,7 +139,7 @@ class TestCache:
             second = threading.Thread(target=lambda: responses.append(client.get(_TERMS)))
             second.start()
             # The second request has looked the entry up once it counts a miss.
-            wait_until(lambda: _ontology_stats(client)["misses"] == 2)
+            wait_until(lambda: _schema_stats(client)["misses"] == 2)
             graph.release.set()
             first.join(timeout=5.0)
             second.join(timeout=5.0)
@@ -154,10 +154,10 @@ class TestCache:
             registered = generation.registered_names()
             before = client.get(_DOCUMENT).json()["generation"]
             generation.advance("gen-b")
-            assert _ontology_stats(client)["entries"] == 0
+            assert _schema_stats(client)["entries"] == 0
             after = client.get(_TERMS).json()["generation"]
 
-        assert "graph_api.ontology" in registered
+        assert "graph_api.schema" in registered
         assert (before, after) == ("gen-a", "gen-b")
         assert _builds(graph) == 2
 
@@ -182,7 +182,7 @@ class TestCache:
             for content_hash in ("index-a", "index-b")
         ]
         bound = [indexes[0]]
-        monkeypatch.setattr(ontology_door, "get_index", lambda: bound[0])
+        monkeypatch.setattr(schema_door, "get_index", lambda: bound[0])
 
         with make_client(graph=graph) as client:
             first = client.get(_DOCUMENT)
@@ -197,13 +197,13 @@ class TestWaits:
     def test_a_build_slower_than_the_request_answers_503_and_lands_for_the_next(
         self, generation, monkeypatch: pytest.MonkeyPatch
     ):
-        monkeypatch.setattr(ontology_door, "GRAPH_NODE_TIMEOUT_SECONDS", 0.2)
+        monkeypatch.setattr(schema_door, "GRAPH_NODE_TIMEOUT_SECONDS", 0.2)
         graph = _BlockingReader()
 
         with make_client(graph=graph) as client:
             pending = client.get(_DOCUMENT)
             graph.release.set()
-            wait_until(lambda: _ontology_stats(client)["entries"] == 1)
+            wait_until(lambda: _schema_stats(client)["entries"] == 1)
             landed = client.get(_DOCUMENT)
 
         assert pending.status_code == 503, pending.text
@@ -216,14 +216,14 @@ class TestWaits:
     def test_a_build_that_outlives_its_flight_answers_504_and_stores_nothing(
         self, generation, monkeypatch: pytest.MonkeyPatch
     ):
-        monkeypatch.setattr(ontology_door, "ONTOLOGY_FLIGHT_TIMEOUT_SECONDS", 0.2)
+        monkeypatch.setattr(schema_door, "SCHEMA_FLIGHT_TIMEOUT_SECONDS", 0.2)
         graph = _BlockingReader()
 
         with make_client(graph=graph) as client:
             expired = client.get(_DOCUMENT)
             graph.release.set()
             wait_until(lambda: client.app.state.graph_deps.dcp_executor._in_flight == 0)
-            entries = _ontology_stats(client)["entries"]
+            entries = _schema_stats(client)["entries"]
 
         assert expired.status_code == 504, expired.text
         assert expired.json()["code"] == "timeout"
@@ -291,8 +291,8 @@ def test_a_failed_build_answers_its_problem_and_is_not_kept(
 @pytest.mark.parametrize(
     "error",
     [
-        pytest.param(OntologyListingTruncatedError("Class listing capped"), id="truncated"),
-        pytest.param(OntologyNoInstanceDeclarationError(3), id="no-instance-declaration"),
+        pytest.param(SchemaListingTruncatedError("Class listing capped"), id="truncated"),
+        pytest.param(SchemaNoInstanceDeclarationError(3), id="no-instance-declaration"),
     ],
 )
 @pytest.mark.parametrize(
@@ -645,7 +645,7 @@ class TestCheck:
             stamp=dataclasses.replace(STAMP, content_hash="index-b"),
         )
         bound = [built_with]
-        monkeypatch.setattr(ontology_door, "get_index", lambda: bound[0])
+        monkeypatch.setattr(schema_door, "get_index", lambda: bound[0])
         served = built_with.statvars[0]
         row = {
             "ref": "x",
@@ -671,13 +671,13 @@ class TestCheck:
 
     def test_the_lookup_is_built_once_per_entry(self, generation, monkeypatch: pytest.MonkeyPatch):
         built: list[object] = []
-        build = OntologyLookup.of
+        build = SchemaLookup.of
 
         def counting(document):
             built.append(document)
             return build(document)
 
-        monkeypatch.setattr(ontology_door.OntologyLookup, "of", counting)
+        monkeypatch.setattr(schema_door.SchemaLookup, "of", counting)
 
         with make_client(graph=_graph()) as client:
             for _ in range(2):
@@ -699,7 +699,7 @@ class TestCheck:
     def test_a_build_slower_than_the_request_answers_503_with_retry_after(
         self, generation, monkeypatch: pytest.MonkeyPatch
     ):
-        monkeypatch.setattr(ontology_door, "GRAPH_ONTOLOGY_CHECK_TIMEOUT_SECONDS", 0.2)
+        monkeypatch.setattr(schema_door, "GRAPH_SCHEMA_CHECK_TIMEOUT_SECONDS", 0.2)
         graph = _BlockingReader()
 
         with make_client(graph=graph) as client:
@@ -749,7 +749,7 @@ class TestCheck:
 
         with make_client(graph=_graph()) as client:
             checks = client.app.state.graph_deps.check_executor
-            for _ in range(GRAPH_ONTOLOGY_CHECK_CONCURRENCY):
+            for _ in range(GRAPH_SCHEMA_CHECK_CONCURRENCY):
                 checks.submit(hold.wait, 5.0)
             refused = client.post(_CHECK, json={"rows": [_check_row("CRSPurposeCode120")]})
             node = client.get("/api/graph/node/FinancialFlow")
@@ -766,7 +766,7 @@ class TestCheck:
         with make_client(graph=graph) as client:
             checks = client.app.state.graph_deps.check_executor
             assert client.get(_DOCUMENT).status_code == 200
-            monkeypatch.setattr(ontology_door, "GRAPH_ONTOLOGY_CHECK_TIMEOUT_SECONDS", 0.05)
+            monkeypatch.setattr(schema_door, "GRAPH_SCHEMA_CHECK_TIMEOUT_SECONDS", 0.05)
             late = client.post(_CHECK, json={"rows": [_check_row("NoSuchCode")]})
             held = checks._in_flight
             graph.release.release()
@@ -790,15 +790,15 @@ class TestCheck:
             assert client.get(_DOCUMENT).status_code == 200
             sent = [
                 client.portal.start_task_soon(send, slot)
-                for slot in range(GRAPH_ONTOLOGY_CHECK_CONCURRENCY)
+                for slot in range(GRAPH_SCHEMA_CHECK_CONCURRENCY)
             ]
-            wait_until(lambda: graph.waiting == GRAPH_ONTOLOGY_CHECK_CONCURRENCY)
+            wait_until(lambda: graph.waiting == GRAPH_SCHEMA_CHECK_CONCURRENCY)
             for request in sent:
                 request.cancel()
             wait_until(lambda: all(request.done() for request in sent))
             refused = client.post(_CHECK, json={"rows": [_check_row("CRSPurposeCode120")]})
             graph.release.release()
-            wait_until(lambda: checks._in_flight == GRAPH_ONTOLOGY_CHECK_CONCURRENCY - 1)
+            wait_until(lambda: checks._in_flight == GRAPH_SCHEMA_CHECK_CONCURRENCY - 1)
             admitted = client.post(_CHECK, json={"rows": [_check_row("CRSPurposeCode120")]})
             graph.release.release()
             wait_until(lambda: checks._in_flight == 0)
