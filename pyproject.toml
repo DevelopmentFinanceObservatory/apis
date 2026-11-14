@@ -254,7 +254,7 @@ dfo-analysis-engine = { workspace = true }
 # The registry refuses a part's `source_code` on search.resolve with
 # `source_code_not_held`, `source_code_ambiguous`, and
 # `source_code_shares_variable`.
-# The pin is spec-kit 5589a72, which registers the organisation reading codes,
+# The pin is spec-kit 7ef7f71, which registers the organisation reading codes,
 # defining the tie between them by the role the query's reading states,
 # and the Presentation limit names
 # (`LIMIT_NAMES`), publishes `resource_exhausted` as `correct_and_retry`,
@@ -316,10 +316,15 @@ dfo-analysis-engine = { workspace = true }
 # datasets.definition.
 # It registers the `organisation_read_as_source` and `organisation_read_as_party`
 # warnings on search.resolve's raw_text door.
+# Its client contract adds the timeout-and-retries rule, roots the cache at `dfo`
+# with the legacy readerkit directory read, adds the `fetched/` cache entry,
+# the FormatError and BundleError client codes, the `party_totals_left_out`
+# outcome and the saved-file schema, takes `party_totals: false` as the
+# request spelling of the cut, and is recorded at dfo-apis 133262c5e.
 # Follow-up: move all nine to a real spec-kit tag once one is cut, so a future
 # force-push or GC on spec-kit's dev can't silently break this lock.
-dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "5589a728308902adf9a32ef8f3ed2c3d2b1e92de", subdirectory = "python/spec-kit" }
-dfo-spec-kit-client-contract = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "5589a728308902adf9a32ef8f3ed2c3d2b1e92de", subdirectory = "python/client-contract" }
+dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "7ef7f71329e119ada0c98200068fb82eb6248ab1", subdirectory = "python/spec-kit" }
+dfo-spec-kit-client-contract = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "7ef7f71329e119ada0c98200068fb82eb6248ab1", subdirectory = "python/client-contract" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "packages/dfo-analysis-engine/tests"]
