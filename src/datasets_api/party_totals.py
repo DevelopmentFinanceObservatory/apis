@@ -17,41 +17,57 @@ and keeps a party whose kind differs between datasets. Parties of kind `party` o
 and parties the index declares no kind for, stay. A bound role is left alone whatever its
 parties' kinds.
 
-A role decides each cell of one full `time_period` value and one provenance on its own. A cell
-in which the role holds another party loses its totals. A cell in which it holds only totals
-keeps the totals whose row reads as a whole total (`materialise.enrichment.row_party_cell` gives
-`party_whole` `true`, the cell the analysis engine reads as `{role}_party_whole`), since whole
-totals hold disjoint populations, and loses the rest. A totals-only cell with no whole total
-loses its totals when the role holds another party anywhere in the frame, and keeps them all
-when it holds none, since the totals are then the only parties there are (the G7's flows to
-Kenya). DAC2B publishes India's 1968 receipts only as totals (DAC countries, the G7 and official
-donors), so the cut keeps official donors, the one whole total, for that year, whether or not
-later years list members.
+A role decides each cell on its own. A cell is one series of the role, one full `time_period`
+value and one provenance. A series is the value of every other column of the frame's grain, which
+no two rows share (every column but `value` and `status`, `dfo_frame_grammar.columnar`): the
+StatVar, the frame's other role columns, bound or open, `unit` and `measurementMethod`. So Kenya's
+receipts and Ghana's form two series of the provider role, and each keeps its own totals.
 
-The cell is the time period and the provenance alone, so in a frame with another open role a
-totals-only series is cut like the rest in a period where another series of the frame holds
-members.
+A cell in which the role holds another party loses its totals. A cell in which it holds only
+totals keeps the totals whose row reads as a whole total (`materialise.enrichment.row_party_cell`
+gives `party_whole` `true`, the cell the analysis engine reads as `{role}_party_whole`), since
+whole totals hold disjoint populations, and loses the rest. A totals-only cell with no whole total
+loses its totals when the role holds another party in that series in any period or provenance,
+and keeps them all when it holds none, since the totals are then the only parties the series has
+(the G7's flows to Kenya). DAC2B publishes India's 1968 receipts only as totals (DAC countries,
+the G7 and official donors), so the cut keeps official donors, the one whole total, for that
+year, whether or not later years list members.
 
 The cut reads the frame before any reshape, so a `groupby` over it sums members alone. Each pass
-holds one chunk at a time.
+holds one chunk at a time. A role's decision holds the cells of its total rows and the cells in
+which it holds another party.
 """
 
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import cast
 
 import pyarrow as pa
 import pyarrow.compute as pc
-from dfo_frame_grammar import TIME_PERIOD_COLUMN, Frame
+import rfc8785
+from dfo_frame_grammar import (
+    STATUS_COLUMN,
+    TIME_PERIOD_COLUMN,
+    UNIT_COLUMN,
+    VALUE_COLUMN,
+    Frame,
+    UnitCell,
+    unit_cell_from_json,
+    unit_cell_to_json,
+    unit_cells,
+    unit_codes,
+)
+from pydantic import JsonValue
 
 from code_index.types import PartyRow
-from datasets_api.manifest_models import PartyTotalsLeftOutModel
+from datasets_api.manifest_models import PartyTotalsKeptCellModel, PartyTotalsLeftOutModel
 from dfo_platform.columns import PROVENANCE_COLUMN
-from dfo_platform.roles import role_key_axis
+from dfo_platform.roles import RoleAxis, role_key_axis
 from materialise.content_version import stream_frame_sha256
 from materialise.enrichment import (
     PARTY_WHOLE_FIELD,
@@ -68,6 +84,10 @@ YEARS_DIMENSION = "years"
 
 TRACE_KEY = "party_totals_left_out"
 """The trace key of the totals a version left out (`PartyTotalsCut.trace_entries`)."""
+
+_NOT_SERIES = frozenset({TIME_PERIOD_COLUMN, PROVENANCE_COLUMN, VALUE_COLUMN, STATUS_COLUMN})
+"""The columns of a frame that name no series: `value` and `status`, which the frame's grain
+leaves out, and the `time_period` and provenance of a cell."""
 
 
 def open_party_roles(identity: object, entity_columns: Sequence[str]) -> tuple[str, ...]:
@@ -103,11 +123,17 @@ EVERY_PROVENANCE = _EveryProvenance.EVERY
 
 type _Provenance = str | None | _EveryProvenance
 
+type _Series = tuple[tuple[str, str | None], ...]
+"""A series of a role: each column of the frame's grain but the role, `time_period` and
+`provenance`, with its cell as text (`_cell_text`), in column-name order."""
 
-type _LeftOut = Mapping[str, Mapping[_Provenance, Mapping[str, tuple[str, ...]]]]
+type _Cell = tuple[str, _Series]
+"""A cell of a role: a `time_period` value and a series."""
+
+type _LeftOut = Mapping[str, Mapping[_Provenance, Mapping[str, frozenset[_Cell]]]]
 """Each open party role that lost rows, mapped to each provenance it lost rows in, mapped to
-each ref it lost there and the sorted `time_period` values in which that ref's rows stayed,
-empty when they left every period."""
+each ref it lost there and the cells in which that ref's rows stayed, empty when they left
+every cell."""
 
 
 @dataclass(frozen=True)
@@ -125,16 +151,17 @@ class PartyTotalsCut:
         whatever the code index now declares of their parties. An entry without a `provenance`,
         as versions recorded before the cut keyed totals on the dataset, leaves its refs out of
         the rows of every provenance, as the cut that minted them did. An entry without
-        `kept_periods`, as every version recorded before the cut kept whole totals, leaves its
-        refs out of every period."""
-        left_out: dict[str, dict[_Provenance, dict[str, tuple[str, ...]]]] = {}
+        `kept_in`, as every version recorded before the cut kept whole totals, leaves its refs
+        out of every cell."""
+        left_out: dict[str, dict[_Provenance, dict[str, frozenset[_Cell]]]] = {}
         for entry in entries:
             recorded = entry.get("provenance", EVERY_PROVENANCE)
             provenance = (
                 recorded if recorded is None or recorded is EVERY_PROVENANCE else str(recorded)
             )
-            kept = tuple(
-                str(period) for period in cast("list[object]", entry.get("kept_periods", []))
+            kept = frozenset(
+                _recorded_cell(cast("Mapping[str, object]", cell))
+                for cell in cast("list[object]", entry.get("kept_in", []))
             )
             refs = left_out.setdefault(str(entry["role"]), {}).setdefault(provenance, {})
             for ref in cast("list[object]", entry["entities"]):
@@ -155,25 +182,29 @@ class PartyTotalsCut:
 
     def trace_entries(self) -> list[PartyTotalsLeftOutModel]:
         """The trace's `party_totals_left_out` entries: one `{role, provenance, entities}` per
-        role, provenance and set of kept periods, in role order, then provenance order (`None`
-        first), then kept periods (the refs left out of every period first, without
-        `kept_periods`), its entities in ref order. A party left out of one dataset's rows is
-        named for that dataset alone, so a frame that keeps its rows from another dataset says
-        so. An entry's `kept_periods` lists the `time_period` values in which its refs stayed,
-        so refs that stayed in different periods take an entry each. Refs left out of every
-        provenance keep the `{role, entities}` entry they were rebuilt from, after the role's
-        other entries."""
+        role, provenance and set of kept cells, in role order, then provenance order (`None`
+        first), then kept cells (the refs left out of every cell first, without `kept_in`, then
+        by their sorted `kept_in` lists, compared cell by cell in `kept_in` order), its entities
+        in ref order. A party left out of one dataset's rows is named for that dataset alone, so
+        a frame that keeps its rows from another dataset says so. An entry's `kept_in` lists
+        the cells in which its refs stayed (`_kept_cell`), so refs that stayed in different
+        cells take an entry each. Refs left out of every provenance keep the `{role, entities}`
+        entry they were rebuilt from, after the role's other entries."""
         entries: list[PartyTotalsLeftOutModel] = []
         for role, by_dataset in sorted(self.left_out.items()):
             for dataset, by_ref in sorted(by_dataset.items(), key=lambda item: _order(item[0])):
-                for kept, refs in sorted(_refs_by_kept(by_ref).items()):
+                for kept, refs in sorted(
+                    _refs_by_kept(by_ref).items(), key=lambda item: _kept_order(item[0])
+                ):
                     entry: PartyTotalsLeftOutModel = (
                         {"role": role, "entities": refs}
                         if dataset is EVERY_PROVENANCE
                         else {"role": role, "provenance": dataset, "entities": refs}
                     )
                     if kept:
-                        entry["kept_periods"] = list(kept)
+                        entry["kept_in"] = [
+                            _kept_cell(cell) for cell in sorted(kept, key=_cell_order)
+                        ]
                     entries.append(entry)
         return entries
 
@@ -235,115 +266,265 @@ def cut_party_totals(
     """The cut of the frame `frame_chunks` passes over, on its open party `roles`, with kinds from
     the code index's `parties` on each role's axis for each row's dataset. Reads the frame once per
     role, each pass after the cuts of the roles before it."""
-    left_out: dict[str, dict[_Provenance, dict[str, tuple[str, ...]]]] = {}
+    left_out: dict[str, dict[_Provenance, dict[str, frozenset[_Cell]]]] = {}
     for role in roles:
         if (axis := role_key_axis(role)) is None:
             continue  # A role on no flow axis holds no party kinds, so no totals to cut.
-        totals: defaultdict[tuple[object, str | None], set[str]] = defaultdict(set)
-        mixed: set[tuple[object, str | None]] = set()
+        cells = _RoleCells()
         is_total: dict[tuple[str, str | None], bool] = {}
         for chunk in frame_chunks():
             if role not in chunk.columns:
                 break
             kept = _without(chunk, left_out)
-            for ref, period, dataset in _parties_by_cell(kept, role):
-                if not isinstance(ref, str):
-                    mixed.add((period, dataset))
-                    continue
-                if (key := (ref, dataset)) not in is_total:
-                    datasets = () if dataset is None else (dataset,)
-                    is_total[key] = (
-                        party_kind_of(ref, axis=axis, parties=parties, datasets=datasets)
-                        == _TOTAL_KIND
-                    )
-                if is_total[key]:
-                    totals[period, dataset].add(ref)
-                else:
-                    mixed.add((period, dataset))
-        if cell_cut := _cell_cut(totals, mixed, role=role, parties=parties):
+            total = _total_rows(kept.table, role, axis=axis, parties=parties, is_total=is_total)
+            cells.read(kept, role, total=total)
+        if cell_cut := _cell_cut(cells, role=role, parties=parties):
             left_out[role] = cell_cut
     return PartyTotalsCut(left_out=left_out)
 
 
+type _CellKey = tuple[object, str | None, int]
+"""A cell of one provenance as `_RoleCells` holds it: its `time_period`, its provenance and the
+index of its series in `_RoleCells.series`."""
+
+
+@dataclass
+class _RoleCells:
+    """What one role's pass read of a frame: `totals`, the total refs of each cell that holds
+    any, and `others`, each cell in which the role holds another party, a null cell included.
+    `series` lists each series a cell names, which `series_index` indexes."""
+
+    totals: defaultdict[_CellKey, set[str]] = field(default_factory=lambda: defaultdict(set))
+    others: set[_CellKey] = field(default_factory=set)
+    series: list[_Series] = field(default_factory=list)
+    series_index: dict[tuple[str | None, ...], int] = field(default_factory=dict)
+
+    def read(self, chunk: Frame, role: str, *, total: pa.ChunkedArray | None) -> None:
+        """Add `chunk`'s cells of `role`, whose rows `total` marks as total rows (`None`
+        marking none)."""
+        table = chunk.table
+        columns = _series_columns(chunk.columns, role)
+        keys = pa.table(
+            {
+                "ref": table.column(role),
+                "period": table.column(TIME_PERIOD_COLUMN),
+                "provenance": (
+                    table.column(PROVENANCE_COLUMN)
+                    if PROVENANCE_COLUMN in table.column_names
+                    else pa.nulls(table.num_rows, pa.string())
+                ),
+                **{f"series_{at}": _text_column(table, name) for at, name in enumerate(columns)},
+            }
+        )
+        cell_names = keys.column_names[1:]
+        others = keys if total is None else keys.filter(pc.invert(total))
+        found = others.select(cell_names).group_by(cell_names).aggregate([])
+        for period, provenance, *values in _rows(found):
+            self.others.add(self._key(period, provenance, values, columns))
+        if total is None:
+            return
+        for ref, period, provenance, *values in _rows(keys.filter(total)):
+            self.totals[self._key(period, provenance, values, columns)].add(cast("str", ref))
+
+    def _key(
+        self,
+        period: object,
+        provenance: object,
+        values: Sequence[object],
+        columns: Sequence[str],
+    ) -> _CellKey:
+        series = tuple(cast("str | None", value) for value in values)
+        if (index := self.series_index.get(series)) is None:
+            index = self.series_index[series] = len(self.series)
+            self.series.append(tuple(sorted(zip(columns, series, strict=True))))
+        return period, cast("str | None", provenance), index
+
+
 def _cell_cut(
-    totals: Mapping[tuple[object, str | None], set[str]],
-    mixed: set[tuple[object, str | None]],
+    cells: _RoleCells,
     *,
     role: str,
     parties: Mapping[str, PartyRow],
-) -> dict[_Provenance, dict[str, tuple[str, ...]]]:
-    """The refs `role` loses in each provenance and the periods each keeps there, from the
-    `totals` of each `(time_period, provenance)` cell. A cell in `mixed`, which holds another
-    party, loses every total. Any other cell keeps its whole totals and loses the rest; when it
-    holds no whole total, it loses every total if `mixed` names any cell, the role then holding
-    another party somewhere, and keeps them all if not. A ref no cell loses is not named, so a
-    cut that loses nothing is empty."""
-    holds_members = bool(mixed)
+) -> dict[_Provenance, dict[str, frozenset[_Cell]]]:
+    """The refs `role` loses in each provenance and the cells each keeps there, from `cells`.
+    A cell holding another party loses every total. Any other cell keeps its whole totals and
+    loses the rest; when it holds no whole total, it loses every total if the role holds
+    another party in its series in some cell, and keeps them all if not. A ref no cell loses
+    is not named, so a cut that loses nothing is empty."""
+    with_others = {series for _, _, series in cells.others}
+    whole: dict[tuple[str, str, str | None], bool] = {}
     dropped: defaultdict[str | None, set[str]] = defaultdict(set)
-    kept: defaultdict[tuple[str | None, str], set[str]] = defaultdict(set)
-    for (period, dataset), refs in totals.items():
-        whole = (
-            set()
-            if (period, dataset) in mixed or not isinstance(period, str)
-            else {
-                ref
-                for ref in refs
-                if row_party_cell(
-                    PARTY_WHOLE_FIELD,
-                    ref,
-                    role=role,
-                    parties=parties,
-                    period=period,
-                    provenance=dataset,
-                )
-                == "true"
-            }
-        )
-        stays = whole if whole or holds_members else refs
+    kept: defaultdict[tuple[str | None, str], set[_Cell]] = defaultdict(set)
+    for key, refs in cells.totals.items():
+        period, dataset, series = key
+        stays: set[str] = set()
+        if key not in cells.others and isinstance(period, str):
+            for ref in refs:
+                if (whole_key := (ref, period, dataset)) not in whole:
+                    whole[whole_key] = (
+                        row_party_cell(
+                            PARTY_WHOLE_FIELD,
+                            ref,
+                            role=role,
+                            parties=parties,
+                            period=period,
+                            provenance=dataset,
+                        )
+                        == "true"
+                    )
+                if whole[whole_key]:
+                    stays.add(ref)
+        if not stays and series not in with_others:
+            stays = refs
         for ref in refs:
             if ref not in stays:
                 dropped[dataset].add(ref)
             elif isinstance(period, str):
-                # A period that is not text names no kept period, so the ref's rows there
-                # leave with its rows of any cell that loses it.
-                kept[dataset, ref].add(period)
+                # A period that is not text names no kept cell, so the ref's rows there leave
+                # with its rows of any cell that loses it.
+                kept[dataset, ref].add((period, cells.series[series]))
     return {
-        dataset: {ref: tuple(sorted(kept[dataset, ref])) for ref in sorted(refs)}
+        dataset: {ref: frozenset(kept[dataset, ref]) for ref in sorted(refs)}
         for dataset, refs in dropped.items()
     }
 
 
-def _parties_by_cell(chunk: Frame, role: str) -> list[tuple[object, object, str | None]]:
-    """The distinct `(ref, time_period, provenance)` triples of `chunk`'s rows, the provenance
-    `None` for a frame without a `provenance` column and for a null cell."""
-    table = chunk.table
-    if PROVENANCE_COLUMN not in table.column_names:
-        pairs = table.select([role, TIME_PERIOD_COLUMN]).group_by([role, TIME_PERIOD_COLUMN])
-        found = pairs.aggregate([])
-        return [
-            (ref, period, None)
-            for ref, period in zip(
-                found.column(role).to_pylist(),
-                found.column(TIME_PERIOD_COLUMN).to_pylist(),
-                strict=True,
-            )
-        ]
-    keys = [role, TIME_PERIOD_COLUMN, PROVENANCE_COLUMN]
+def _series_columns(columns: Sequence[str], role: str) -> tuple[str, ...]:
+    """The columns of a frame of `columns` that name a series of `role`: its grain less `role`,
+    `time_period` and `provenance`."""
+    return tuple(name for name in columns if name != role and name not in _NOT_SERIES)
+
+
+def _total_rows(
+    table: pa.Table,
+    role: str,
+    *,
+    axis: RoleAxis,
+    parties: Mapping[str, PartyRow],
+    is_total: dict[tuple[str, str | None], bool],
+) -> pa.ChunkedArray | None:
+    """The mask of `table`'s rows whose `role` party the code index's `parties` declares a
+    total on `axis` in the row's dataset, `None` when no row's is. `is_total` caches each
+    `(ref, provenance)` kind across chunks."""
+    with_provenance = PROVENANCE_COLUMN in table.column_names
+    keys = [role, PROVENANCE_COLUMN] if with_provenance else [role]
     found = table.select(keys).group_by(keys).aggregate([])
-    return list(
-        zip(
-            found.column(role).to_pylist(),
-            found.column(TIME_PERIOD_COLUMN).to_pylist(),
-            found.column(PROVENANCE_COLUMN).to_pylist(),
-            strict=True,
-        )
+    refs = found.column(role).to_pylist()
+    datasets = (
+        found.column(PROVENANCE_COLUMN).to_pylist() if with_provenance else [None] * len(refs)
+    )
+    totals: defaultdict[str | None, list[str]] = defaultdict(list)
+    for ref, dataset in zip(refs, datasets, strict=True):
+        if not isinstance(ref, str):
+            continue  # A null cell holds no total, so it counts as another party.
+        if (key := (ref, dataset)) not in is_total:
+            is_total[key] = (
+                party_kind_of(
+                    ref, axis=axis, parties=parties, datasets=() if dataset is None else (dataset,)
+                )
+                == _TOTAL_KIND
+            )
+        if is_total[key]:
+            totals[dataset].append(ref)
+    mask: pa.ChunkedArray | None = None
+    for dataset, total_refs in totals.items():
+        if (match := _party_rows(table, role, dataset, total_refs)) is not None:
+            mask = match if mask is None else cast("pa.ChunkedArray", pc.or_(mask, match))
+    return mask
+
+
+def _rows(table: pa.Table) -> Iterator[tuple[object, ...]]:
+    """`table`'s rows as tuples, in column order."""
+    return zip(*(column.to_pylist() for column in table.columns), strict=True)
+
+
+def _text_column(table: pa.Table, name: str) -> pa.ChunkedArray | pa.Array:
+    """`table`'s column `name` as text: a `unit` cell as the JCS text of its JSON form
+    (`_unit_text`), any other column as it is, every one a string column."""
+    column = table.column(name)
+    if name != UNIT_COLUMN:
+        return column
+    codes = unit_codes(column)
+    texts = pa.array([_unit_text(cell) for cell in unit_cells(column, codes)], pa.string())
+    return texts.take(codes.codes)
+
+
+def _unit_text(cell: UnitCell | None) -> str | None:
+    """The JCS text of the JSON form of the `unit` cell `cell` (`unit_cell_to_json`)."""
+    if cell is None:
+        return None
+    return rfc8785.dumps(unit_cell_to_json(cell)).decode()
+
+
+def _recorded_cell(recorded: Mapping[str, object]) -> _Cell:
+    """The cell a trace entry's `kept_in` item records (`_kept_cell`)."""
+    series = cast("Mapping[str, object]", recorded["series"])
+    return (
+        str(recorded["time_period"]),
+        tuple(
+            sorted(
+                (
+                    str(name),
+                    (
+                        None
+                        if value is None
+                        else _unit_text(unit_cell_from_json(value))
+                        if name == UNIT_COLUMN
+                        else str(value)
+                    ),
+                )
+                for name, value in series.items()
+            )
+        ),
     )
 
 
-def _refs_by_kept(by_ref: Mapping[str, tuple[str, ...]]) -> dict[tuple[str, ...], list[str]]:
-    """`by_ref`'s refs grouped by the periods they kept, each group in `by_ref`'s order, which
+def _kept_cell(cell: _Cell) -> PartyTotalsKeptCellModel:
+    """`cell` as a `kept_in` item: its `time_period` and its `series`, each column mapped to
+    its cell, a `unit` cell in its JSON form and a null cell as null."""
+    period, series = cell
+    return {
+        "time_period": period,
+        "series": {name: _series_value(name, text) for name, text in series},
+    }
+
+
+def _series_value(name: str, text: str | None) -> str | dict[str, JsonValue] | None:
+    """The JSON value of a series cell held as text (`_text_column`): a unit cell's JSON form,
+    a ref or an object, and any other cell as it is."""
+    if text is None or name != UNIT_COLUMN:
+        return text
+    return cast("str | dict[str, JsonValue]", json.loads(text))
+
+
+def _cell_order(cell: _Cell) -> tuple[object, ...]:
+    """The order of `cell` among an entry's `kept_in` items: by `time_period`, then by its
+    series cells in column-name order, each null first, then a string by its code points, then
+    an object by the code points of its JCS text."""
+    period, series = cell
+    return period, tuple((name, _value_order(name, text)) for name, text in series)
+
+
+def _value_order(name: str, text: str | None) -> tuple[int, str]:
+    """The order of one series cell (`_cell_order`)."""
+    value = _series_value(name, text)
+    if value is None:
+        return 0, ""
+    if isinstance(value, str):
+        return 1, value
+    return 2, cast("str", text)
+
+
+def _kept_order(kept: frozenset[_Cell]) -> tuple[object, ...]:
+    """The order of a group of refs kept in `kept` among a role's entries of one provenance:
+    the refs kept in no cell first, then by the sorted cells, cell by cell."""
+    return tuple(_cell_order(cell) for cell in sorted(kept, key=_cell_order))
+
+
+def _refs_by_kept(by_ref: Mapping[str, frozenset[_Cell]]) -> dict[frozenset[_Cell], list[str]]:
+    """`by_ref`'s refs grouped by the cells they kept, each group in `by_ref`'s order, which
     is ref order for a cut and the recorded order for one rebuilt from a trace."""
-    grouped: defaultdict[tuple[str, ...], list[str]] = defaultdict(list)
+    grouped: defaultdict[frozenset[_Cell], list[str]] = defaultdict(list)
     for ref, kept in by_ref.items():
         grouped[kept].append(ref)
     return grouped
@@ -366,18 +547,25 @@ def _order(provenance: _Provenance) -> tuple[int, str]:
 
 def _without(chunk: Frame, left_out: _LeftOut) -> Frame:
     """`chunk` less each row whose party on a role of `left_out` is one of that role's refs,
-    unless the row's `time_period` is one the ref kept. A null cell matches no ref. A ref left
-    out in a provenance leaves out its rows of that provenance alone, one left out for `None`
-    its rows with no provenance, and one left out for `EVERY_PROVENANCE` its rows of any
-    provenance."""
+    unless the row lies in a cell the ref kept (`_in_cells`). A null cell matches no ref. A
+    ref left out in a provenance leaves out its rows of that provenance alone, one left out for
+    `None` its rows with no provenance, and one left out for `EVERY_PROVENANCE` its rows of any
+    provenance. The rows leave in one filter."""
     table = chunk.table
+    keyed: dict[tuple[str, ...], pa.Table] = {}
     left: pa.ChunkedArray | None = None
     for role, by_dataset in left_out.items():
         for dataset, by_ref in by_dataset.items():
             for kept, refs in _refs_by_kept(by_ref).items():
-                match = _left_out_rows(table, role, dataset, refs, kept)
-                if match is not None:
-                    left = match if left is None else cast("pa.ChunkedArray", pc.or_(left, match))
+                match = _party_rows(table, role, dataset, refs)
+                if match is None:
+                    continue
+                if kept:
+                    match = cast(
+                        "pa.ChunkedArray",
+                        pc.and_(match, pc.invert(_in_cells(table, kept, keyed=keyed))),
+                    )
+                left = match if left is None else cast("pa.ChunkedArray", pc.or_(left, match))
     if left is None:
         return chunk
     # Two column operands give a column. The stubs widen it to a scalar too, here and above.
@@ -386,19 +574,13 @@ def _without(chunk: Frame, left_out: _LeftOut) -> Frame:
     )
 
 
-def _left_out_rows(
-    table: pa.Table, role: str, dataset: _Provenance, refs: Sequence[str], kept: Sequence[str]
+def _party_rows(
+    table: pa.Table, role: str, dataset: _Provenance, refs: Sequence[str]
 ) -> pa.ChunkedArray | None:
-    """The mask of `table`'s rows of `dataset` whose `role` party is one of `refs` and whose
-    `time_period` is not one of `kept` (`_without`), or `None` when `table` holds no row of
-    `dataset`."""
+    """The mask of `table`'s rows of `dataset` whose `role` party is one of `refs`, or `None`
+    when `table` holds no row of `dataset`."""
     column = table.column(role)
     match = pc.is_in(column, value_set=pa.array(refs, type=column.type))
-    if kept:
-        period = table.column(TIME_PERIOD_COLUMN)
-        match = pc.and_(
-            match, pc.invert(pc.is_in(period, value_set=pa.array(kept, type=period.type)))
-        )
     if dataset is not EVERY_PROVENANCE and PROVENANCE_COLUMN in table.column_names:
         # A `None` dataset matches the null cells, and a named one no null cell.
         provenance = table.column(PROVENANCE_COLUMN)
@@ -408,6 +590,53 @@ def _left_out_rows(
         return None
     # Two column operands give a column; the stubs widen it to a scalar too.
     return cast("pa.ChunkedArray", match)
+
+
+def _in_cells(
+    table: pa.Table, cells: Iterable[_Cell], *, keyed: dict[tuple[str, ...], pa.Table]
+) -> pa.Array:
+    """The mask of `table`'s rows that lie in one of `cells`: whose `time_period` and each
+    column a cell's series names hold that cell's values, a null cell matching null. A cell
+    naming a column `table` lacks holds no row. `keyed` holds `table`'s join keys over each
+    set of columns read so far, with each row's index as `row`."""
+    by_columns: defaultdict[tuple[str, ...], list[_Cell]] = defaultdict(list)
+    for cell in cells:
+        by_columns[tuple(name for name, _ in cell[1])].append(cell)
+    rows = pa.array(range(table.num_rows), pa.int64())
+    found: list[pa.Array] = []
+    for columns, group in by_columns.items():
+        if not set(columns) <= set(table.column_names):
+            continue
+        if (frame_keys := keyed.get(columns)) is None:
+            frame_keys = keyed[columns] = _join_keys(
+                [
+                    table.column(TIME_PERIOD_COLUMN),
+                    *(_text_column(table, name) for name in columns),
+                ]
+            ).append_column("row", rows)
+        cell_keys = _join_keys(
+            [
+                pa.array([period for period, _ in group], pa.string()),
+                *(
+                    pa.array([series[at][1] for _, series in group], pa.string())
+                    for at in range(len(columns))
+                ),
+            ]
+        )
+        matched = frame_keys.join(cell_keys, keys=cell_keys.column_names, join_type="left semi")
+        found.extend(matched.column("row").chunks)
+    hits = pa.chunked_array(found, pa.int64()).combine_chunks()
+    return cast("pa.Array", pc.is_in(rows, value_set=hits))
+
+
+def _join_keys(columns: Sequence[pa.Array | pa.ChunkedArray]) -> pa.Table:
+    """Join keys over `columns`: each a column marking its nulls and the column with its nulls
+    as `""`, since a join matches no null key."""
+    keys: dict[str, object] = {}
+    for at, column in enumerate(columns):
+        keys[f"null_{at}"] = pc.is_null(column)
+        keys[f"text_{at}"] = pc.fill_null(column, pa.scalar(""))
+    return pa.table(keys)
 
 
 __all__ = [

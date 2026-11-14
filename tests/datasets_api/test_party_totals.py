@@ -147,28 +147,52 @@ def test_a_cut_leaves_out_the_totals_of_each_open_party_role(
     assert trace == entries
 
 
-def test_a_role_whose_every_row_is_a_total_keeps_them():
-    """The totals are then the only parties the role holds."""
+def test_a_series_whose_every_row_is_a_total_keeps_them():
+    """Each recipient's series of providers holds only totals, and so does the G7's series of
+    recipients, though the DAC total's holds Kenya and Ghana: the totals are then the only
+    parties their series holds."""
     pairs = [(_DAC_TOTAL, _KENYA), (_G7, _DEVELOPING), (_DAC_TOTAL, _GHANA)]
 
     kept, trace = _kept(_frame(pairs), identity={"entities": {}})
 
-    assert kept == {(_DAC_TOTAL, _KENYA), (_DAC_TOTAL, _GHANA)}
-    assert trace == [{"role": _RECIPIENT, "provenance": None, "entities": [_DEVELOPING]}]
+    assert kept == set(pairs)
+    assert trace == []
 
 
 def test_each_role_reads_the_rows_the_roles_before_it_kept():
-    """Once the provider totals leave, every row left on the recipient is a total, so the
-    recipient keeps them."""
-    pairs = [(_DAC_TOTAL, _KENYA), (_FRANCE, _DEVELOPING)]
+    """Once the DAC total leaves Kenya's providers, the DAC total's series of recipients holds
+    only developing countries, so the recipient keeps them."""
+    pairs = [(_DAC_TOTAL, _KENYA), (_FRANCE, _KENYA), (_DAC_TOTAL, _DEVELOPING)]
 
     kept, trace = _kept(_frame(pairs), identity={"entities": {}})
 
-    assert kept == {(_FRANCE, _DEVELOPING)}
-    assert trace == [{"role": _PROVIDER, "provenance": None, "entities": [_DAC_TOTAL]}]
+    assert kept == {(_FRANCE, _KENYA), (_DAC_TOTAL, _DEVELOPING)}
+    assert trace == [
+        {
+            "role": _PROVIDER,
+            "provenance": None,
+            "entities": [_DAC_TOTAL],
+            "kept_in": [_kept_in("2022", recipient=_DEVELOPING)],
+        }
+    ]
 
 
 _P = "provenance/P"
+
+
+def _kept_in(
+    period: str, *, recipient: str, unit: object = None, stat_var: str = "dcid:SV"
+) -> dict[str, object]:
+    """A `kept_in` cell of the provider role: `period` of the series of `recipient`."""
+    return {
+        "time_period": period,
+        "series": {
+            _RECIPIENT: recipient,
+            "measurementMethod": None,
+            "stat_var": stat_var,
+            "unit": unit,
+        },
+    }
 
 
 @pytest.mark.parametrize(
@@ -182,7 +206,7 @@ _P = "provenance/P"
                     "role": _PROVIDER,
                     "provenance": _P,
                     "entities": [_OFFICIAL],
-                    "kept_periods": ["2022"],
+                    "kept_in": [_kept_in("2022", recipient=_KENYA)],
                 }
             ],
             id="whole-total-alone-in-a-year-stays-there",
@@ -210,7 +234,7 @@ _P = "provenance/P"
                     "role": _PROVIDER,
                     "provenance": _P,
                     "entities": [_OFFICIAL],
-                    "kept_periods": ["1968"],
+                    "kept_in": [_kept_in("1968", recipient=_KENYA)],
                 },
             ],
             id="totals-only-year-keeps-its-whole-total",
@@ -235,7 +259,7 @@ _P = "provenance/P"
                     "role": _PROVIDER,
                     "provenance": _P,
                     "entities": [_DAC_TOTAL],
-                    "kept_periods": ["1969"],
+                    "kept_in": [_kept_in("1969", recipient=_KENYA)],
                 }
             ],
             id="all-totals-role-keeps-a-year-without-a-whole-total",
@@ -282,6 +306,103 @@ def test_a_year_holding_only_totals_keeps_its_whole_totals(
     assert cut.trace_entries() == entries == rebuilt.trace_entries()
     assert rebuilt == cut
     assert bool(cut.left_out) == bool(entries)
+    trace = {TRACE_KEY: cut.trace_entries()}
+    assert TypeAdapter(TraceModel).validate_python(trace, strict=True) == trace
+
+
+_USD_2021 = {"base_year": 2021, "currency": "USD", "prices": "constant"}
+
+
+@pytest.mark.parametrize(
+    ("identity", "rows", "kept", "entries"),
+    [
+        pytest.param(
+            {},
+            [("2022", _OFFICIAL, _GHANA), ("2022", _G7, _KENYA)],
+            [("2022", _OFFICIAL, _GHANA), ("2022", _G7, _KENYA)],
+            [],
+            id="ghana-whole-total-leaves-kenya-g7-alone",
+        ),
+        pytest.param(
+            {"entities": {"destination": [_GHANA, _KENYA]}},
+            [("2022", _OFFICIAL, _GHANA), ("2022", _G7, _KENYA)],
+            [("2022", _OFFICIAL, _GHANA), ("2022", _G7, _KENYA)],
+            [],
+            id="ghana-whole-total-leaves-kenya-g7-alone-recipients-bound",
+        ),
+        pytest.param(
+            {},
+            [("2021", _FRANCE, _KENYA), ("2022", _G7, _KENYA), ("2022", _DAC_TOTAL, _GHANA)],
+            [("2021", _FRANCE, _KENYA), ("2022", _DAC_TOTAL, _GHANA)],
+            [{"role": _PROVIDER, "provenance": _P, "entities": [_G7]}],
+            id="series-with-members-loses-its-total-series-of-totals-keeps-its-own",
+        ),
+        pytest.param(
+            {},
+            [
+                ("2021", _FRANCE, _KENYA),
+                ("2021", _DAC_TOTAL, _KENYA),
+                ("2022", _DAC_TOTAL, _GHANA),
+                ("2021", _DAC_TOTAL, _GHANA),
+            ],
+            [("2021", _FRANCE, _KENYA), ("2021", _DAC_TOTAL, _GHANA), ("2022", _DAC_TOTAL, _GHANA)],
+            [
+                {
+                    "role": _PROVIDER,
+                    "provenance": _P,
+                    "entities": [_DAC_TOTAL],
+                    "kept_in": [
+                        _kept_in("2021", recipient=_GHANA, unit=_USD_2021),
+                        _kept_in("2022", recipient=_GHANA, unit=_USD_2021),
+                    ],
+                }
+            ],
+            id="trace-names-each-series-cell-a-total-stayed-in",
+        ),
+    ],
+)
+def test_each_series_of_a_role_keeps_its_own_totals(
+    identity: dict[str, object],
+    rows: list[tuple[str, str, str]],
+    kept: list[tuple[str, str, str]],
+    entries: list[dict[str, object]],
+):
+    """A series is every column of the frame's grain but the role, `time_period` and
+    `provenance`, so another recipient, open or bound, is another series: Ghana's whole
+    official-donor total in a year leaves Kenya's lone G7 row of that year alone, and a series
+    holding members in some year loses its totals in a year of only totals while a series of
+    only totals keeps them. The trace names each cell a total stayed in, its unit in the
+    unit's JSON form, and a cut rebuilt from it keeps the same rows."""
+    frame = Frame.build(
+        role_keys=_ROLES,
+        rows=[
+            {
+                "stat_var": "dcid:SV",
+                _PROVIDER: provider,
+                _RECIPIENT: recipient,
+                "provenance": _P,
+                "time_period": period,
+                "unit": _USD_2021,
+                "value": 1.0,
+            }
+            for period, provider, recipient in rows
+        ],
+    )
+    cut = cut_party_totals(
+        lambda: iter((frame,)), roles=open_party_roles(identity, _ROLES), parties=_PARTIES
+    )
+    rebuilt = PartyTotalsCut.of_trace_entries(cut.trace_entries())
+
+    at = [frame.columns.index(name) for name in ("time_period", _PROVIDER, _RECIPIENT)]
+    for one in (cut, rebuilt):
+        kept_rows = [
+            tuple(row[index] for index in at)
+            for chunk in one.chunks(lambda: iter((frame,)))()
+            for row in chunk.rows
+        ]
+        assert sorted(kept_rows) == sorted(kept)
+    assert cut.trace_entries() == entries == rebuilt.trace_entries()
+    assert rebuilt == cut
     trace = {TRACE_KEY: cut.trace_entries()}
     assert TypeAdapter(TraceModel).validate_python(trace, strict=True) == trace
 
@@ -454,11 +575,11 @@ def test_a_party_that_is_a_total_in_one_dataset_leaves_that_datasets_rows_alone(
                     "role": _PROVIDER,
                     "provenance": _DAC2A,
                     "entities": [_TRUST_FUNDS],
-                    "kept_periods": ["2020"],
+                    "kept_in": [_kept_in("2020", recipient=_KENYA)],
                 }
             ],
             [0, 1, 2, 3],
-            id="recorded-kept-periods-keep-those-rows",
+            id="recorded-kept-cell-keeps-those-rows",
         ),
         pytest.param(
             [
@@ -466,11 +587,15 @@ def test_a_party_that_is_a_total_in_one_dataset_leaves_that_datasets_rows_alone(
                     "role": _PROVIDER,
                     "provenance": _DAC2A,
                     "entities": [_IMF, _TRUST_FUNDS],
-                    "kept_periods": ["2019"],
+                    "kept_in": [
+                        _kept_in("2019", recipient=_KENYA),
+                        _kept_in("2020", recipient=_GHANA),
+                        _kept_in("2020", recipient=_KENYA, stat_var="dcid:Other"),
+                    ],
                 }
             ],
             [2, 3],
-            id="recorded-kept-periods-cut-every-other-period",
+            id="recorded-kept-cells-cut-every-other-cell",
         ),
     ],
 )
@@ -478,9 +603,9 @@ def test_a_cut_rebuilt_from_a_trace_leaves_out_the_rows_it_recorded(
     entries: list[dict[str, object]], kept: list[int]
 ):
     """A version recorded before its trace named the provenance left those parties out of
-    every dataset's rows, one whose entry names `kept_periods` kept their rows in those periods
-    alone, and a rebuilt cut writes back the entries it was rebuilt from, in the
-    shape the served manifest's trace types."""
+    every dataset's rows, one whose entry names `kept_in` kept their rows in those cells alone,
+    and a rebuilt cut writes back the entries it was rebuilt from, in the shape the served
+    manifest's trace types."""
     cut = PartyTotalsCut.of_trace_entries(entries)
 
     assert _kept_rows(cut, _kenya_2020_frame()) == sorted(_KENYA_2020[index] for index in kept)

@@ -187,11 +187,11 @@ def party_count(
 ) -> int:
     """How many of `dcids`, members of a role on `axis`, are parties: those the code index's
     `parties` declares no `total` on `axis` in `datasets` (`party_kind_of`), the members the
-    Datasets cut of party totals keeps in every year (`datasets_api.party_totals`). When every
-    member is a total the count is all of them. The count reads no year or dataset of a row. It
-    leaves out the whole totals the cut keeps in a year that holds only totals, and counts every
-    total of a role of only totals, where the cut keeps only the whole ones of a year that has
-    one."""
+    Datasets cut of party totals keeps in every cell (`datasets_api.party_totals`). When every
+    member is a total the count is all of them. The count reads no year, series or dataset of a
+    row. It leaves out the totals the cut keeps in a cell that holds only totals: the whole ones,
+    or all of them in a series that holds no other party. It counts every total of a role of
+    only totals, where the cut keeps only the whole ones of a cell that has one."""
     kept = sum(
         party_kind_of(dcid, axis=axis, parties=parties, datasets=datasets) != "total"
         for dcid in dcids

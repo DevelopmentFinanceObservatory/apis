@@ -13,6 +13,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    JsonValue,
     PlainSerializer,
     computed_field,
     model_validator,
@@ -761,12 +762,30 @@ class RetentionModel(BaseModel):
 
 
 @with_config(ConfigDict(extra="forbid"))
+class PartyTotalsKeptCellModel(TypedDict):
+    """One cell in which a `without_party_totals` cut kept a trace entry's totals
+    (`PartyTotalsLeftOutModel.kept_in`): one `time_period` value of one series of the entry's
+    role in the entry's provenance."""
+
+    time_period: Annotated[str, Field(description="the time_period value of the cell")]
+    series: Annotated[
+        dict[str, str | dict[str, JsonValue] | None],
+        Field(
+            description="the series of the cell: each column of the frame's grain other than "
+            "the entry's role, time_period and provenance (stat_var, the frame's other role "
+            "columns, unit and measurementMethod), mapped to the cell the series holds there, "
+            "null for a null cell and a unit by its JSON form"
+        ),
+    ]
+
+
+@with_config(ConfigDict(extra="forbid"))
 class PartyTotalsLeftOutModel(TypedDict):
     """One role's group totals a `without_party_totals` cut left out of one provenance's rows
     (`datasets_api.party_totals.PartyTotalsCut.trace_entries`). An entry without a
     `provenance`, which a version recorded before the trace named the provenance holds, left its
-    parties out of the rows of every dataset. An entry with `kept_periods` left its parties out
-    of every other period's rows; one without left them out of every period."""
+    parties out of the rows of every dataset. An entry with `kept_in` left its parties out of
+    the rows of every other cell; one without left them out of every cell."""
 
     role: Annotated[str, Field(description="the party role whose rows lost the totals")]
     provenance: NotRequired[
@@ -783,14 +802,17 @@ class PartyTotalsLeftOutModel(TypedDict):
         list[str],
         Field(description="the dcid refs of the totals left out, in ref order"),
     ]
-    kept_periods: NotRequired[
+    kept_in: NotRequired[
         Annotated[
-            list[str],
+            list[PartyTotalsKeptCellModel],
             Field(
-                description="the time_period values, sorted, in which the entry's totals stayed "
-                "in this provenance's rows. A period that holds only totals keeps its whole "
-                "totals, and keeps every total when none is whole and the role holds no other "
-                "party in the frame. Absent when the totals left every period"
+                description="the cells, each one time_period of one series, in which the "
+                "entry's totals stayed in this provenance's rows. A cell that holds only totals "
+                "keeps its whole totals, and keeps every total when none is whole and the role "
+                "holds no other party in that series. Sorted by time_period, then by the "
+                "series' cells in column-name order, each null first, then a string by code "
+                "point, then an object by the code points of its JCS text. Absent when the "
+                "totals left every cell"
             ),
         ]
     ]
@@ -808,9 +830,10 @@ class TraceModel(TypedDict, extra_items=object):
             Field(
                 description="the parties whose total rows a without_party_totals rendering "
                 "left out of this version's frame: one entry per open party role, "
-                "provenance that lost rows and set of kept periods, in role order, then "
-                "provenance order (null first), then kept periods (entries without "
-                "kept_periods first). Absent when the rendering left nothing out or was not asked to"
+                "provenance that lost rows and set of kept cells, in role order, then "
+                "provenance order (null first), then kept cells (entries without kept_in "
+                "first, then by kept_in compared item by item in its own order). Absent when "
+                "the rendering left nothing out or was not asked to"
             ),
         ]
     ]

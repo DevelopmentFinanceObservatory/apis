@@ -187,7 +187,10 @@ def test_a_trace_types_the_party_totals_left_out_and_keeps_other_keys_open(
     entry = components[entry_ref.rsplit("/", 1)[-1]]
     assert entry["additionalProperties"] is False
     assert set(entry["required"]) == {"role", "entities"}
-    assert set(entry["properties"]) == {"role", "provenance", "entities", "kept_periods"}
+    assert set(entry["properties"]) == {"role", "provenance", "entities", "kept_in"}
+    cell = components[entry["properties"]["kept_in"]["items"]["$ref"].rsplit("/", 1)[-1]]
+    assert cell["additionalProperties"] is False
+    assert set(cell["required"]) == set(cell["properties"]) == {"time_period", "series"}
 
 
 def test_a_derived_manifest_root_alone_names_the_party_totals_its_read_left_out(

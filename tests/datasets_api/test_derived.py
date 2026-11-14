@@ -398,7 +398,17 @@ _CUT_ENTRIES = [
         "role": "financingRecipient",
         "provenance": None,
         "entities": ["dcid:GroupOfSeven"],
-        "kept_periods": ["1968"],
+        "kept_in": [
+            {
+                "time_period": "1968",
+                "series": {
+                    "financingProvider": "dcid:DACCountriesTotal",
+                    "measurementMethod": None,
+                    "stat_var": "dcid:SV",
+                    "unit": {"currency": "USD", "prices": "current"},
+                },
+            }
+        ],
     },
 ]
 

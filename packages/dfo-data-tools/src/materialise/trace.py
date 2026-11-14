@@ -226,8 +226,8 @@ class ManifestTrace:
     # The group totals `options.without_party_totals` left out of a version's frame, attached by
     # `datasets_api.serve` (`datasets_api.party_totals.PartyTotalsCut.trace_entries`): one
     # `role`, `provenance` (null for rows with none), its `entities` in dcid order and, where
-    # they stayed in some periods, `kept_periods`, per open party role, provenance that lost
-    # rows and set of kept periods. Omitted from `to_dict()` when empty.
+    # they stayed in some cells, `kept_in`, each a `time_period` and a `series`, per open party
+    # role, provenance that lost rows and set of kept cells. Omitted from `to_dict()` when empty.
     components: tuple[dict[str, object], ...] = ()
     # Each component a composite's frame was composed from
     # (`materialise.composite.ComponentSummary.as_trace_entry`), in declaration order. Empty
