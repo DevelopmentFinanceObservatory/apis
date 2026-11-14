@@ -10,7 +10,7 @@ import pytest
 from dfo_frame_grammar import Frame
 
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
-from code_index.types import PartyRow, RoleAxis, StatVarRow
+from code_index.types import PartyRow, RoleAxis, StatVarRow, WholeMarker
 from datasets_api import render
 from datasets_api.mint_models import GroupbyOptions, MintOptions
 from datasets_api.operation_store import compute_operation_id
@@ -33,6 +33,7 @@ _SPEC_ID = "spec_party_totals"
 _KENYA = "country/KEN"
 _GHANA = "country/GHA"
 _DEVELOPING = "DevelopingCountries"
+_ALL_RECIPIENTS = "AllRecipients"
 
 _PURPOSE_HEALTH = CodeRow(
     dcid="dcid:CRSPurposeCode122",
@@ -74,6 +75,12 @@ _PARTIES = {
         PartyRow(dcid=_KENYA, kind="party", published=_BOTH_SIDES),
         PartyRow(dcid=_GHANA, kind="party", published=_BOTH_SIDES),
         PartyRow(dcid=_DEVELOPING, kind="total", published=_BOTH_SIDES),
+        PartyRow(
+            dcid=_ALL_RECIPIENTS,
+            kind="total",
+            published=(("p1", "destination"),),
+            whole=(WholeMarker(dataset="p1", covers=("official",)),),
+        ),
     )
 }
 _INDEX = CodeIndex(
@@ -114,18 +121,24 @@ _IDENTITY = {
 }
 
 
-def _frame(recipients: tuple[str, ...]) -> Frame:
+def _frame(recipients: tuple[str, ...], *, period: str = "2022") -> Frame:
+    return _periods_frame({period: recipients})
+
+
+def _periods_frame(recipients: dict[str, tuple[str, ...]]) -> Frame:
+    """A frame holding each period's `recipients`, in period order."""
     return Frame.build(
         role_keys=("recipient",),
         rows=[
             {
                 "stat_var": stat_var,
                 "recipient": recipient,
-                "time_period": "2022",
+                "time_period": period,
                 "value": value,
                 "provenance": "p1",
             }
-            for recipient in recipients
+            for period, in_period in recipients.items()
+            for recipient in in_period
             for stat_var, value in (("dcid:SV_A", 10.0), ("dcid:SV_B", 5.0))
         ],
     )
@@ -193,6 +206,56 @@ def test_a_cut_that_leaves_nothing_out_renders_under_the_frame_s_own_version():
     assert rendered.derived is None
     assert rendered.artifact.rendering["without_party_totals"] is True
     assert _GHANA in body
+
+
+def test_a_cut_keeps_the_whole_totals_of_a_period_holding_only_totals():
+    """A period with members loses every total, and a totals-only period keeps its whole
+    total, which the trace names with each StatVar's series it stayed in and the period it
+    stayed there."""
+    frame = _periods_frame(
+        {
+            "2021": (_KENYA, _DEVELOPING, _ALL_RECIPIENTS),
+            "2022": (_DEVELOPING, _ALL_RECIPIENTS),
+        }
+    )
+    kept = _periods_frame({"2021": (_KENYA,), "2022": (_ALL_RECIPIENTS,)})
+
+    rendered, body = _render(frame, _CUT)
+
+    derived = rendered.derived
+    assert derived is not None
+    assert derived.content_version == mint_version(kept)
+    assert derived.party_totals_left_out == (
+        {"role": "recipient", "provenance": "p1", "entities": [_DEVELOPING]},
+        {
+            "role": "recipient",
+            "provenance": "p1",
+            "entities": [_ALL_RECIPIENTS],
+            "kept_in": [
+                {
+                    "series": {
+                        "measurementMethod": None,
+                        "stat_var": stat_var,
+                        "unit": None,
+                    },
+                    "time_periods": ["2022"],
+                }
+                for stat_var in ("dcid:SV_A", "dcid:SV_B")
+            ],
+        },
+    )
+    assert [chunk.table for chunk in derived.frame_chunks()] == [kept.table]
+    assert _KENYA in body
+
+
+def test_a_cut_that_keeps_every_total_renders_under_the_frame_s_own_version():
+    """A totals-only period whose one total is whole keeps it, so the cut leaves nothing out."""
+    frame = _periods_frame({"2021": (_KENYA,), "2022": (_ALL_RECIPIENTS,)})
+
+    rendered, body = _render(frame, _CUT)
+
+    assert rendered.derived is None
+    assert _KENYA in body
 
 
 def test_a_groupby_with_a_cut_sums_the_kept_members_under_one_version():

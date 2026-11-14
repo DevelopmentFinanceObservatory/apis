@@ -820,6 +820,7 @@ def test_two_merged_composites_answer_the_composite_over_both_members(monkeypatc
     (expected,), _ = _answer(_entries(_purpose(identity, *_PURPOSES)), mode)
 
     assert [_composite_facts(spec) for spec in specs] == [_composite_facts(expected)] * 2
+    assert [spec.resolved.stat_vars.sums_components for spec in specs] == [True, True]
     assert _dates(observations) == _BOTH
     assert {("bilateral", _PURPOSES), ("imputed", _PURPOSES)} <= read
 

@@ -709,3 +709,77 @@ def test_a_time_sum_of_the_dac2a_inclusive_composite_adds_total_oda_and_imputed_
         "2020": 100 + 7,
         "2021": 100 + 7,
     }
+
+
+_UGANDA = "country/UGA"
+
+
+def test_a_dac2a_inclusive_sum_serves_the_line_a_cell_holds_where_it_lacks_the_other():
+    """DAC2a reads a missing row as unknown and the imputed component writes no zero rows, so
+    where a recipient holds total ODA and no imputed line in a year, the composite's sum over
+    the aid types serves total ODA for that cell, beside a cell holding both lines."""
+    bilateral = "Amount_FinancialFlow_Net_Disbursement_DAC2aAidType206_Nominal"
+    held = {
+        (bilateral, _RECIPIENT): 100,
+        (_DAC2A_IMPUTED, _RECIPIENT): 7,
+        (bilateral, _UGANDA): 40,
+    }
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        named = str(request.url.params.get("c[variableMeasured]", "")).split(",")
+        body = _CSV_HEADER + "".join(
+            f"dataflow,DC:DF_OBS(1.0.0),I,{dcid},{_PROVIDER},{recipient},USD,GrantEquivalent,"
+            f"NotApplicable,{_DAC2A},{year},{value},,{_DAC2A_FACET}\r\n"
+            for (dcid, recipient), value in held.items()
+            if dcid in named
+            for year in _IMPUTED_YEARS
+        )
+        return httpx.Response(
+            200, text=body, headers={"content-type": "application/vnd.sdmx.data+csv;version=2.0.0"}
+        )
+
+    coverage = FakeCoverageService(
+        build_coverage_index(
+            [
+                (dcid, _DAC2A_FACET, _PROVIDER, recipient, list(_IMPUTED_YEARS))
+                for dcid, recipient in held
+            ],
+            role_names={
+                dcid: RoleNames(donor="financingProvider", recipient="financingRecipient")
+                for dcid, _recipient in held
+            },
+            facet_metadata={
+                _DAC2A_FACET: FacetMetadata(
+                    provenance_id=_DAC2A, measurement_method="GrantEquivalent", unit="USD"
+                )
+            },
+        )
+    )
+    artifacts = FakeArtifactStore()
+    client = _client(
+        graph=FakeMintGraphReader(
+            labels={_PROVIDER: "France", _RECIPIENT: "Kenya", _UGANDA: "Uganda"}
+        ),
+        sdmx_transport=httpx.MockTransport(respond),
+        coverage=coverage,
+        artifact_store=artifacts,
+    )
+    identity = {
+        **_dac2a_oda_identity("Net"),
+        "entities": {"origin": [_PROVIDER], "destination": [_RECIPIENT, _UGANDA]},
+    }
+
+    minted = _mint(
+        client, identity=identity, options={"groupby": {"by": ["time_period"], "op": "sum"}}
+    )
+
+    assert minted.status_code == 200, minted.text
+    rows = _csv_rows(artifacts, minted.json())
+    assert {
+        (row["financingRecipient"], row["time_period"]): float(row["value"]) for row in rows
+    } == {
+        (_RECIPIENT, "2020"): 100 + 7,
+        (_RECIPIENT, "2021"): 100 + 7,
+        (_UGANDA, "2020"): 40,
+        (_UGANDA, "2021"): 40,
+    }

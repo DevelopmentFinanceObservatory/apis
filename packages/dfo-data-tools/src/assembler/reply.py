@@ -22,8 +22,9 @@ from dfo_frame_grammar import STAT_VAR_COLUMN, UNIT_COLUMN
 from assembler.errors import ReleaseMismatch, escape_pointer_segment
 from assembler.frame_view import facet_dimension_names
 from assembler.limits import FACT_SUMMARY_SERIES_CAP, FACT_SUMMARY_TOKEN_CAP
+from assembler.order import order_period, units_differ
 from assembler.select import has_arrayed_dimension
-from materialise.unit_cells import unit_identity
+from materialise.unit_cells import units_by_identity
 
 logger = logging.getLogger(__name__)
 
@@ -317,10 +318,13 @@ def build_fact_summary(
         component_id=component_id,
         revision=revision,
     )
+    mixed_units = False
     if member == "table":
-        unit = _table_unit(
+        unit_entries, frame_unit_keys = _table_unit_entries(
             component=component, series_list=series_list, coordinates=coordinates_by_index
         )
+        unit = _table_unit(entries=unit_entries, frame_unit_keys=frame_unit_keys)
+        mixed_units = units_differ(entries=unit_entries, frame_unit_keys=frame_unit_keys)
     per_series = [
         series_entry(
             id=one.get("id"),
@@ -340,6 +344,9 @@ def build_fact_summary(
         "unit": unit,
         "change": component.get("change"),
         "source_refs": source_refs,
+        "order": _order_entry(
+            stored_intent=stored_intent, series_list=series_list, mixed_units=mixed_units
+        ),
         "defaults": applied_defaults(
             component=component, member=member, stored_intent=stored_intent
         ),
@@ -354,9 +361,10 @@ def applied_defaults(
     pointer it fills and a sentence saying how to narrow it.
 
     An entity-mode bar chart whose select lists no values compared every value of its
-    category dimension, largest first (`assembler.mint.builders`). The stored intent and
-    payload both carry what this reads, so a write and a later read agree, and
-    `assembler.pipeline.write` mints a new revision when a revise changes them."""
+    category dimension, largest first unless the intent has an `order`, which
+    `fact_summary.order` reports (`assembler.order`). The stored intent and payload both
+    carry what this reads, so a write and a later read agree, and `assembler.pipeline.write`
+    mints a new revision when a revise changes them."""
     if member != "bar_chart":
         return []
     axis = cast("Mapping[str, object]", component["category_axis"])
@@ -365,44 +373,93 @@ def applied_defaults(
         return []
     dimension = cast(str, axis["category_dimension"])
     count = len(cast("Sequence[object]", component["series"]))
+    drawn = f"all {count} of its values at {axis['period']}"
+    if "order" not in stored_intent:
+        drawn += ", largest first"
     return [
         {
             "pointer": f"/select/{escape_pointer_segment(dimension)}",
             "detail": (
-                f"select leaves {dimension!r} unbound, so this bar_chart draws all {count} of "
-                f"its values at {axis['period']}, largest first; list the {dimension!r} "
-                "values to keep in select to narrow it"
+                f"select leaves {dimension!r} unbound, so this bar_chart draws {drawn}; list "
+                f"the {dimension!r} values to keep in select to narrow it"
             ),
         }
     ]
 
 
-def _table_unit(
+def _order_entry(
+    *,
+    stored_intent: Mapping[str, object],
+    series_list: Sequence[Mapping[str, object]],
+    mixed_units: bool,
+) -> dict[str, object] | None:
+    """The order the series were drawn in, `{direction, period, detail}`, or `None` when the
+    intent has no `order` or fewer than two series were drawn, since one series ranks nothing.
+
+    `period` is the period the draw ranked at, `assembler.order.order_period` over the
+    payload's points, and `detail` is null when the draw ranked as the intent asked. Otherwise
+    `detail` says what the draw did instead: a render whose stated period no drawn series
+    holds ranks at the fallback period; a table whose series are in more than one unit
+    (`mixed_units`, `assembler.order.units_differ`) or whose series hold no value is drawn
+    unranked, with `period` null. The payload holds exactly the drawn series, so a write and
+    a readback agree."""
+    order = cast("Mapping[str, object] | None", stored_intent.get("order"))
+    if order is None or len(series_list) < 2:
+        return None
+    entry: dict[str, object] = {"direction": order["direction"], "period": None}
+    if mixed_units:
+        entry["detail"] = (
+            "the table's series are in more than one unit, so they are drawn unranked in the "
+            "order the select resolves to"
+        )
+        return entry
+    stated = cast("str | None", order.get("period"))
+    points_by_series = [
+        cast("Sequence[Mapping[str, object]]", one.get("points") or ()) for one in series_list
+    ]
+    period = order_period(stated=stated, points_by_series=points_by_series)
+    entry["period"] = period
+    if period is None:
+        entry["detail"] = (
+            "no drawn series holds a value, so the series are drawn in the order the select "
+            "resolves to"
+        )
+    elif stated is not None and period != stated:
+        entry["detail"] = (
+            f"no drawn series holds a value at {stated}, so the series are ranked at {period}"
+        )
+    else:
+        entry["detail"] = None
+    return entry
+
+
+def _table_unit_entries(
     *,
     component: Mapping[str, object],
     series_list: Sequence[Mapping[str, object]],
     coordinates: Sequence[Mapping[str, object]],
-) -> object | None:
-    """Returns a table-level unit when every row agrees. Mixed or empty tables return
-    `None`, leaving each row's unit as the reference. Rows compare by `unit_identity`: by
-    their series' frame `unit` coordinate, so two units whose labels read alike differ, and
-    by the canonical JSON of the row's unit for a series stored without coordinates, which
-    makes structured-unit equality independent of key order."""
+) -> tuple[list[tuple[object, object]], dict[str, object]]:
+    """A table's `(series_id, unit)` pair per row and the frame `unit` coordinate of each
+    series stored with coordinates, the inputs `unit_identity` compares rows by."""
     rows = cast("Sequence[Mapping[str, object]]", component.get("rows") or ())
     frame_unit_keys = {
         cast("str", one["id"]): held.get(UNIT_COLUMN)
         for one, held in zip(series_list, coordinates, strict=True)
         if one.get("id") is not None and held
     }
-    units_by_identity = {
-        unit_identity(
-            series_id=row.get("series_id"),
-            payload_unit=row.get("unit"),
-            frame_unit_keys=frame_unit_keys,
-        ): row.get("unit")
-        for row in rows
-    }
-    return next(iter(units_by_identity.values())) if len(units_by_identity) == 1 else None
+    return [(row.get("series_id"), row.get("unit")) for row in rows], frame_unit_keys
+
+
+def _table_unit(
+    *, entries: Sequence[tuple[object, object]], frame_unit_keys: Mapping[str, object]
+) -> object | None:
+    """Returns a table-level unit when every row agrees. Mixed or empty tables return
+    `None`, leaving each row's unit as the reference. Rows compare by `unit_identity`: by
+    their series' frame `unit` coordinate, so two units whose labels read alike differ, and
+    by the canonical JSON of the row's unit for a series stored without coordinates, which
+    makes structured-unit equality independent of key order."""
+    distinct_units = units_by_identity(entries=entries, frame_unit_keys=frame_unit_keys)
+    return next(iter(distinct_units.values())) if len(distinct_units) == 1 else None
 
 
 def _table_series_from_rows(
@@ -423,7 +480,10 @@ def _table_series_from_rows(
     excluded = {STAT_VAR_COLUMN} | facet_dimension_names()
     role_keys = sorted(key for key in dimension_keys if key not in excluded)
 
-    chunks = _table_row_chunks_by_series_id(rows=rows, component_id=component_id, revision=revision)
+    series_keys = [key for key in dimension_keys if key not in facet_dimension_names()]
+    chunks = _table_row_chunks_by_series_id(
+        rows=rows, series_keys=series_keys, component_id=component_id, revision=revision
+    )
     if chunks is not None:
         return tuple(
             _table_series_entry(id=series_id, rows=chunk_rows, role_keys=role_keys)
@@ -448,12 +508,16 @@ def _table_series_from_rows(
 def _table_row_chunks_by_series_id(
     *,
     rows: Sequence[Mapping[str, object]],
+    series_keys: Sequence[str],
     component_id: str,
     revision: int,
 ) -> list[tuple[str, Sequence[Mapping[str, object]]]] | None:
     """Groups rows by `series_id` in first-seen order when every id is a non-empty string and
-    each id has consistent dimensions. No ids returns `None`. Mixed or malformed
-    ids and inconsistent dimensions log a warning before returning `None`."""
+    each id's rows agree on `series_keys`, every dimension but the facets. Rows of one
+    series may differ on a facet: a series continued by its source's estimates labels each
+    row by its own `measurementMethod` (`assembler.mint.builders`). No ids returns `None`.
+    Mixed or malformed ids and other dimensions that differ within an id log a warning before
+    returning `None`."""
     raw_ids = [row.get("series_id") for row in rows]
     present = [one for one in raw_ids if one is not None]
     if not present:
@@ -478,8 +542,10 @@ def _table_row_chunks_by_series_id(
 
     for series_id in order:
         chunk_rows = chunks[series_id]
-        first_dimensions = chunk_rows[0].get("dimensions")
-        if any(row.get("dimensions") != first_dimensions for row in chunk_rows):
+        first_cells = _series_cells(row=chunk_rows[0], series_keys=series_keys)
+        if any(
+            _series_cells(row=row, series_keys=series_keys) != first_cells for row in chunk_rows
+        ):
             logger.warning(
                 "%s component_id=%s revision=%s reason=heterogeneous_series_id_chunk series_id=%s",
                 TABLE_ROW_SERIES_ID_INCONSISTENT_MARKER,
@@ -490,6 +556,11 @@ def _table_row_chunks_by_series_id(
             return None
 
     return [(series_id, tuple(chunks[series_id])) for series_id in order]
+
+
+def _series_cells(*, row: Mapping[str, object], series_keys: Sequence[str]) -> list[object]:
+    dimensions = cast("Mapping[str, object]", row.get("dimensions") or {})
+    return [dimensions.get(key) for key in series_keys]
 
 
 def _table_series_entry(

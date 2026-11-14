@@ -476,8 +476,9 @@ class MintOptions(BaseModel):
     `without_party_totals: true` leaves out the rows whose party, on a flow party role the
     served identity binds no entity on, the code index declares a group total
     (`datasets_api.party_totals`). It runs on the frame before any reshape, so a `groupby`
-    sums members alone. A cut that leaves rows out mints a version of its own, as a `groupby`
-    collapse does; one that leaves nothing out serves the frame's own version. A request may
+    sums the rows it kept, the totals it keeps in a cell of totals alone included. A cut that
+    leaves rows out mints a version of its own, as a `groupby` collapse does; one that leaves
+    nothing out serves the frame's own version. A request may
     spell the cut `party_totals: false`, the preferred name, which validation folds into
     `without_party_totals` (`fold_party_totals`), so the dump, the rendering and every key
     hashed from them are the same for either spelling. Both given and disagreeing refuses at

@@ -13,7 +13,7 @@ cell of the frame being drawn that differs from it only by its basis.
 from __future__ import annotations
 
 import json
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from typing import cast, get_args
 
 from dfo_frame_grammar import DeflationBasis
@@ -29,6 +29,7 @@ __all__ = [
     "unit_cell_text",
     "unit_identity",
     "unit_key_text",
+    "units_by_identity",
 ]
 
 
@@ -183,3 +184,18 @@ def unit_identity(
     if frame_unit_keys is not None and series_id in frame_unit_keys:
         return "frame", frame_unit_keys[cast("str", series_id)]
     return "payload", json.dumps(payload_unit, sort_keys=True)
+
+
+def units_by_identity(
+    *,
+    entries: Iterable[tuple[object, object]],
+    frame_unit_keys: Mapping[str, object] | None,
+) -> dict[tuple[str, object], object]:
+    """Returns each distinct unit among `entries`, a `(series_id, payload_unit)` pair per
+    series or row, keyed by `unit_identity`. More than one key means the units differ."""
+    return {
+        unit_identity(
+            series_id=series_id, payload_unit=payload_unit, frame_unit_keys=frame_unit_keys
+        ): payload_unit
+        for series_id, payload_unit in entries
+    }
