@@ -92,6 +92,31 @@ def test_arc_targets_cache_holds_answered_nodes_under_the_token(monkeypatch) -> 
     assert client.stats()["arc_targets_entries"] == 0
 
 
+def test_arc_targets_read_with_cached_false_leaves_the_cache_untouched(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_post(self, path, payload, *, deadline=None):
+        calls.append(sorted(payload["nodes"]))
+        return _fake_post_name(payload["nodes"], label="WHO")
+
+    monkeypatch.setattr(GraphClient, "post", fake_post)
+    client = GraphClient(
+        base_url="http://fake/core/api",
+        generation=FakeGeneration(token="gen-a"),
+        label_cache_size=100,
+    )
+
+    for _ in range(2):
+        client.node_arc_targets_many(["dc/base/WHO_GHO"], properties=("name",), cached=False)
+
+    assert len(calls) == 2
+    stats = client.stats()
+    assert (stats["arc_targets_hits"], stats["arc_targets_misses"]) == (0, 0)
+    assert stats["arc_targets_entries"] == 0
+    client.node_arc_targets_many(["dc/base/WHO_GHO"], properties=("name",))
+    assert len(calls) == 3
+
+
 def test_type_cache_hit_under_same_token_miss_after_advance(monkeypatch) -> None:
     calls: list[list[str]] = []
 

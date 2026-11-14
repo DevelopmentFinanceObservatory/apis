@@ -22,7 +22,19 @@ from the bound release's coverage.
 
 Routes: `GET /healthz`, `GET /capabilities`, `GET /json-schema`, `POST /resolve`,
 `GET /node/{dcid}`, `POST /nodes`, `GET /node/{dcid}/members`, `GET /roots`,
-`GET /documentation/{dcid}`, and `GET /sources`, all under `/api/graph`.
+`GET /documentation/{dcid}`, `GET /sources`, `GET /schema`, `GET /schema/terms`,
+`GET /schema/usage`, and `POST /schema/check`, all under `/api/graph`.
+`GET /schema`, `GET /schema/terms` and `POST /schema/check` share one build per graph
+generation and code index, held in a cache the lifespan registers beside the source-document
+and node-envelope caches. `GET /schema/usage` reads each Provenance node's name and
+description in one batch and keeps its body per code index and coverage build in a cache
+registered the same way. A live surface builds the schema
+document in its lifespan, before the instance takes traffic, waiting at most
+`SCHEMA_WARM_TIMEOUT_SECONDS` (20 s). An unfinished build logs and the first request joins
+it. A failed build logs, and the first request builds again, unless the build refused under a
+known generation with a truncated term listing or a document with no DFO node: the entry keeps
+that refusal, and every request answers it 500 with no build. An injected graph builds on the
+first request.
 
 Door classifiers return `ProblemSpec`. The door whose route raised classifies
 first (`dfo_platform.doors.classify_by_door`), so a graph read failure is logged
@@ -57,6 +69,7 @@ from graph_api.config import (
     GRAPH_NODE_POOL_SIZE,
     GRAPH_NODE_TIMEOUT_SECONDS,
     GRAPH_SDMX_TIMEOUT_SECONDS,
+    SCHEMA_WARM_TIMEOUT_SECONDS,
     GraphSettings,
 )
 from graph_api.deps import (
@@ -66,12 +79,18 @@ from graph_api.deps import (
     DcpReadExecutor,
     GraphDeps,
     GraphDepsNotSet,
+    new_check_executor,
 )
 from graph_api.doors.health import build_health_door
 from graph_api.doors.json_schema import build_json_schema_door
 from graph_api.doors.members import build_members_door
 from graph_api.doors.node import NODE_MEMBERSHIP_SLOT, build_node_door
 from graph_api.doors.resolve import build_resolve_door
+from graph_api.doors.schema import (
+    build_schema_door,
+    new_schema_cache,
+    warm_schema,
+)
 from graph_api.doors.sources import build_sources_door, new_provenance_doc_cache
 from graph_api.node_cache import NodeEntryCache
 from graph_api.reader import GraphNodeReader
@@ -187,6 +206,7 @@ def graph_surface(
             build_json_schema_door(),
             build_resolve_door(),
             build_sources_door(),
+            build_schema_door(),
             build_members_door(),
             build_node_door(),
         )
@@ -204,15 +224,20 @@ def graph_surface(
         generation_registration: RegistrationHandle | None = None
         doc_cache_registration: RegistrationHandle | None = None
         node_entries_registration: RegistrationHandle | None = None
+        schema_registration: RegistrationHandle | None = None
+        usage_registration: RegistrationHandle | None = None
         dcp_executor: DcpReadExecutor | None = None
+        check_executor: DcpReadExecutor | None = None
+        usage_executor: ThreadPoolExecutor | None = None
         profile_executor: ThreadPoolExecutor | None = None
         profile_reads: ThreadPoolExecutor | None = None
         card_reads: CardReadCaches | None = None
         graph_dcp_base_url: str | None = None
 
         async def _release_owned() -> None:
-            """Drain queued and running DCP reads off-loop, then wait for running card-read
-            drivers, whose next read the shut DCP executor refuses. Release the shared profile
+            """Drain queued and running DCP reads and schema check jobs off-loop, then wait for
+            running card-read drivers, whose next read the shut DCP executor refuses. Release the
+            shared profile
             cache, or cancel the injected surface's queued profile flights and facet reads and
             wait for running ones. Close registrations, release the resolver, then generation, then
             close the graph reader last. Release only resources this lifespan owns. Injected
@@ -220,6 +245,10 @@ def graph_surface(
             """
             if dcp_executor is not None:
                 await asyncio.to_thread(dcp_executor.shutdown, wait=True)
+            if check_executor is not None:
+                await asyncio.to_thread(check_executor.shutdown, wait=True)
+            if usage_executor is not None:
+                await asyncio.to_thread(usage_executor.shutdown, wait=True)
             if card_reads is not None:
                 await asyncio.to_thread(card_reads.close)
             if shared_profiles is not None:
@@ -232,6 +261,10 @@ def graph_surface(
                 doc_cache_registration.close()
             if node_entries_registration is not None:
                 node_entries_registration.close()
+            if schema_registration is not None:
+                schema_registration.close()
+            if usage_registration is not None:
+                usage_registration.close()
             if generation_registration is not None:
                 generation_registration.close()
             if shared_resolver is not None:
@@ -295,6 +328,7 @@ def graph_surface(
             dcp_executor = DcpReadExecutor(
                 max_workers=effective_pool_size, thread_name_prefix="graph-dcp"
             )
+            check_executor = new_check_executor()
 
             resolved_resolver = resolver
             # Injected resolvers skip shared acquisition. The live resolver's graph
@@ -328,6 +362,22 @@ def graph_surface(
             node_entries = NodeEntryCache(generation=resolved_generation)
             node_entries_registration = resolved_generation.register(
                 "graph_api.node_entries", stats=node_entries.stats, clear=node_entries.clear
+            )
+            schema = new_schema_cache(
+                entries=2, executor=dcp_executor, generation=resolved_generation
+            )
+            schema_registration = resolved_generation.register(
+                "graph_api.schema", stats=schema.stats, clear=schema.clear
+            )
+            # A single-flight cache needs a pool no caller runs on.
+            usage_executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="graph-dataset-usage"
+            )
+            dataset_usage = new_schema_cache(
+                entries=1, executor=usage_executor, generation=resolved_generation
+            )
+            usage_registration = resolved_generation.register(
+                "graph_api.dataset_usage", stats=dataset_usage.stats, clear=dataset_usage.clear
             )
 
             profile_cache: FacetProfileCache | None = None
@@ -371,9 +421,12 @@ def graph_surface(
             graph=resolved_graph,
             resolver=resolved_resolver,
             dcp_executor=dcp_executor,
+            check_executor=check_executor,
             generation=resolved_generation,
             provenance_docs=provenance_docs,
             node_entries=node_entries,
+            schema=schema,
+            dataset_usage=dataset_usage,
             coverage=resolved_coverage,
             profile_cache=profile_cache,
             card_reads=card_reads,
@@ -382,6 +435,11 @@ def graph_surface(
         if shared_resolver is not None:
             NODE_MEMBERSHIP_SLOT.set(_app, shared_resolver.policy)
         try:
+            if live_reader is not None:
+                # Awaited, because Cloud Run throttles the CPU of an instance with no request
+                # in flight, so a build left to run on its own would stall once traffic starts.
+                with bound_catalogue(catalogue.snapshot()), bound_served_release(release):
+                    await warm_schema(deps, timeout_s=SCHEMA_WARM_TIMEOUT_SECONDS)
             yield
         finally:
             NODE_MEMBERSHIP_SLOT.clear(_app)

@@ -27,6 +27,10 @@ _UNBOUND_PATHS = frozenset(
         "/api/graph/capabilities",
         "/api/graph/json-schema",
         "/api/graph/sources",
+        "/api/graph/schema",
+        "/api/graph/schema/terms",
+        "/api/graph/schema/usage",
+        "/api/graph/schema/check",
     }
 )
 

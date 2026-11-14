@@ -20,6 +20,7 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
+from code_index.constraint_values import constraint_value_fault
 from code_index.declarations import (
     BROAD_READINGS,
     CODE_ALSO_CALLED,
@@ -1582,8 +1583,9 @@ def _reject_provisional_constraint_values(
 ) -> None:
     """Require each constraint value to identify a resolved graph node.
 
-    One batched read covers all distinct values. Missing nodes, missing `typeOf`, or nodes typed
-    only `ProvisionalNode` raise `ExportRefused`; a provisional type alongside a real type passes.
+    One batched read covers all distinct values. A value `constraint_value_fault` faults
+    (a missing node, a node with no `typeOf`, or one typed only `ProvisionalNode`) raises
+    `ExportRefused`. A provisional type alongside a real type passes.
     """
     candidate_values = sorted(
         {value for _, constraint_properties in rows for value in constraint_properties.values()}
@@ -1594,20 +1596,20 @@ def _reject_provisional_constraint_values(
     for dcid, constraint_properties in rows:
         for prop, value in constraint_properties.items():
             held = type_arcs.get(value)
-            if held is None:
+            fault = constraint_value_fault(None if held is None else held.get("typeOf", ()))
+            if fault == "not_held":
                 raise ExportRefused(
                     f"{dcid} binds {prop!r} to {value!r}, which the graph holds no node for "
                     "at all -- cannot export a dangling reference as a plain dcid "
                     "indistinguishable from a resolved code"
                 )
-            types = set(held.get("typeOf", ()))
-            if not types:
+            if fault == "untyped":
                 raise ExportRefused(
                     f"{dcid} binds {prop!r} to {value!r}, whose node carries no typeOf arc "
                     "at all -- cannot export a dangling reference as a plain dcid "
                     "indistinguishable from a resolved code"
                 )
-            if types == {"ProvisionalNode"}:
+            if fault == "provisional":
                 raise ExportRefused(
                     f"{dcid} binds {prop!r} to {value!r}, which the graph types exactly "
                     "ProvisionalNode -- cannot export a dangling reference as a plain dcid "

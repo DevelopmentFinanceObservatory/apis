@@ -1072,6 +1072,25 @@ def test_provisional_node_check_runs_once_batched_across_every_row():
         export_statvars(graph, ("SV_Disbursement_Gross", "SV_Disbursement_NoNetting"))
 
 
+@pytest.mark.parametrize(
+    ("types", "refusal"),
+    [
+        pytest.param((UNRESOLVED_NODE,), "no typeOf arc", id="unresolved-only"),
+        pytest.param(
+            ("ProvisionalNode", UNRESOLVED_NODE), "ProvisionalNode", id="provisional-and-unresolved"
+        ),
+    ],
+)
+def test_an_unresolved_type_target_counts_as_no_type(types, refusal):
+    # The batched read marks an unresolvable `typeOf` target `UNRESOLVED_NODE`; the rule
+    # judges the resolved types alone, as `graph_api.schema_check` does.
+    graph = _two_system_graph()
+    graph.forward_arcs["SV_Disbursement_Gross"]["nettingBasis"] = ("MarkedStub",)
+    graph.forward_arcs["MarkedStub"] = {"typeOf": types}
+    with pytest.raises(ExportRefused, match=rf"'MarkedStub'.*{refusal}"):
+        export_statvars(graph, ("SV_Disbursement_Gross",))
+
+
 def test_constraint_value_absent_from_graph_raises_export_refused():
     # The value dcid is absent from the graph, unlike a held `ProvisionalNode` stub.
     graph = _two_system_graph()
