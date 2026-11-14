@@ -2,7 +2,8 @@
 and `ocv_` content version, as a format 2 ref's member names it.
 
 - `GET /api/datasets/derived/{ops_id}/{ocv}` answers `DerivedManifest` (`derived.read_derived_manifest`):
-  the frame's retention, its recipe, its roots with their renderings, the citation of their
+  the frame's retention, its recipe, its roots with their renderings and the group totals
+  each root's read left out (`party_totals_left_out`, absent when none), the citation of their
   sources, the periods its rolling steps resolved to, and `left_out`, every series a step of
   the recipe dropped for a data gap.
 - `GET /api/datasets/derived/{ops_id}/{ocv}/file?format=&bundle=&layout=` answers the frame's rows as
@@ -60,7 +61,7 @@ from datasets_api.doors.files import (
 )
 from datasets_api.doors.mint_errors import MintBackpressure
 from datasets_api.headers import no_store_headers
-from datasets_api.manifest_models import CitationModel, RetentionModel
+from datasets_api.manifest_models import CitationModel, PartyTotalsLeftOutModel, RetentionModel
 from datasets_api.mint_models import MintOptions
 from datasets_api.publish_models import RecipeAnchor, RecipeDroppedSeries
 from datasets_api.query_options import QueryOptionsInvalid
@@ -100,6 +101,15 @@ class DerivedManifestRoot(BaseModel):
     spec_id: str
     content_version: str
     rendering: dict[str, JsonValue]
+    party_totals_left_out: list[PartyTotalsLeftOutModel] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=(
+            "the group totals this root version's read left out, its manifest's "
+            "`trace.party_totals_left_out` entries. Absent when the read left none out. A ref "
+            "root never carries it"
+        ),
+    )
 
 
 class DerivedManifest(BaseModel):

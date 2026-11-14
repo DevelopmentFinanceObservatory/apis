@@ -5,11 +5,13 @@ from __future__ import annotations
 from typing import Any
 
 import pyarrow as pa
+import pyarrow.compute as pc
 import pytest
 from dfo_frame_grammar import Frame, frame_sha256
 from pydantic import TypeAdapter
 
 from code_index.types import PartyRow, RoleAxis, WholeMarker
+from datasets_api import party_totals
 from datasets_api.manifest_models import Trace, TraceModel
 from datasets_api.party_totals import (
     TRACE_KEY,
@@ -147,25 +149,261 @@ def test_a_cut_leaves_out_the_totals_of_each_open_party_role(
     assert trace == entries
 
 
-def test_a_role_whose_every_row_is_a_total_keeps_them():
-    """The totals are then the only parties the role holds."""
+def test_a_series_whose_every_row_is_a_total_keeps_them():
+    """Each recipient's series of providers holds only totals, and so does the G7's series of
+    recipients, though the DAC total's holds Kenya and Ghana: the totals are then the only
+    parties their series holds."""
     pairs = [(_DAC_TOTAL, _KENYA), (_G7, _DEVELOPING), (_DAC_TOTAL, _GHANA)]
 
     kept, trace = _kept(_frame(pairs), identity={"entities": {}})
 
-    assert kept == {(_DAC_TOTAL, _KENYA), (_DAC_TOTAL, _GHANA)}
-    assert trace == [{"role": _RECIPIENT, "provenance": None, "entities": [_DEVELOPING]}]
+    assert kept == set(pairs)
+    assert trace == []
 
 
 def test_each_role_reads_the_rows_the_roles_before_it_kept():
-    """Once the provider totals leave, every row left on the recipient is a total, so the
-    recipient keeps them."""
-    pairs = [(_DAC_TOTAL, _KENYA), (_FRANCE, _DEVELOPING)]
+    """Once the DAC total leaves Kenya's providers, the DAC total's series of recipients holds
+    only developing countries, so the recipient keeps them."""
+    pairs = [(_DAC_TOTAL, _KENYA), (_FRANCE, _KENYA), (_DAC_TOTAL, _DEVELOPING)]
 
     kept, trace = _kept(_frame(pairs), identity={"entities": {}})
 
-    assert kept == {(_FRANCE, _DEVELOPING)}
-    assert trace == [{"role": _PROVIDER, "provenance": None, "entities": [_DAC_TOTAL]}]
+    assert kept == {(_FRANCE, _KENYA), (_DAC_TOTAL, _DEVELOPING)}
+    assert trace == [
+        {
+            "role": _PROVIDER,
+            "provenance": None,
+            "entities": [_DAC_TOTAL],
+            "kept_in": [_kept_in("2022", recipient=_DEVELOPING)],
+        }
+    ]
+
+
+_P = "provenance/P"
+
+
+def _kept_in(
+    *periods: str, recipient: str, unit: object = None, stat_var: str = "dcid:SV"
+) -> dict[str, object]:
+    """A `kept_in` item of the provider role: the series of `recipient` and its `periods`."""
+    return {
+        "series": {
+            _RECIPIENT: recipient,
+            "measurementMethod": None,
+            "stat_var": stat_var,
+            "unit": unit,
+        },
+        "time_periods": list(periods),
+    }
+
+
+@pytest.mark.parametrize(
+    ("rows", "kept", "entries"),
+    [
+        pytest.param(
+            [("2021", _FRANCE), ("2021", _OFFICIAL), ("2022", _OFFICIAL)],
+            [("2021", _FRANCE), ("2022", _OFFICIAL)],
+            [
+                {
+                    "role": _PROVIDER,
+                    "provenance": _P,
+                    "entities": [_OFFICIAL],
+                    "kept_in": [_kept_in("2022", recipient=_KENYA)],
+                }
+            ],
+            id="whole-total-alone-in-a-year-stays-there",
+        ),
+        pytest.param(
+            [("2021", _FRANCE), ("2021", _G7), ("2022", _G7)],
+            [("2021", _FRANCE)],
+            [{"role": _PROVIDER, "provenance": _P, "entities": [_G7]}],
+            id="ordinary-total-alone-in-a-year-leaves",
+        ),
+        pytest.param(
+            [
+                ("1968", _DAC_TOTAL),
+                ("1968", _G7),
+                ("1968", _OFFICIAL),
+                ("1969", _FRANCE),
+                ("1969", _DAC_TOTAL),
+                ("1969", _G7),
+                ("1969", _OFFICIAL),
+            ],
+            [("1968", _OFFICIAL), ("1969", _FRANCE)],
+            [
+                {"role": _PROVIDER, "provenance": _P, "entities": [_DAC_TOTAL, _G7]},
+                {
+                    "role": _PROVIDER,
+                    "provenance": _P,
+                    "entities": [_OFFICIAL],
+                    "kept_in": [_kept_in("1968", recipient=_KENYA)],
+                },
+            ],
+            id="totals-only-year-keeps-its-whole-total",
+        ),
+        pytest.param(
+            [("2021", _FRANCE), ("2022", _OFFICIAL)],
+            [("2021", _FRANCE), ("2022", _OFFICIAL)],
+            [],
+            id="a-cut-keeping-every-total-leaves-nothing-out",
+        ),
+        pytest.param(
+            [("1968", _DAC_TOTAL), ("1968", _G7), ("1968", _OFFICIAL)],
+            [("1968", _OFFICIAL)],
+            [{"role": _PROVIDER, "provenance": _P, "entities": [_DAC_TOTAL, _G7]}],
+            id="all-totals-role-keeps-its-whole-total",
+        ),
+        pytest.param(
+            [("1968", _DAC_TOTAL), ("1968", _OFFICIAL), ("1969", _DAC_TOTAL), ("1969", _G7)],
+            [("1968", _OFFICIAL), ("1969", _DAC_TOTAL), ("1969", _G7)],
+            [
+                {
+                    "role": _PROVIDER,
+                    "provenance": _P,
+                    "entities": [_DAC_TOTAL],
+                    "kept_in": [_kept_in("1969", recipient=_KENYA)],
+                }
+            ],
+            id="all-totals-role-keeps-a-year-without-a-whole-total",
+        ),
+    ],
+)
+def test_a_year_holding_only_totals_keeps_its_whole_totals(
+    rows: list[tuple[str, str]],
+    kept: list[tuple[str, str]],
+    entries: list[dict[str, object]],
+):
+    """A year in which the role holds only totals keeps the whole ones and loses the rest, and a
+    year holding another party loses every total, whole or not (India's 1968 receipts from
+    DAC2B list only the DAC total, the G7 and official donors). A role holding no other party in any year
+    keeps every total of a year without a whole one. The trace names the years each total
+    stayed, a cut rebuilt from it keeps the same rows, and a cut that keeps every row leaves
+    nothing out."""
+    frame = Frame.build(
+        role_keys=_ROLES,
+        rows=[
+            {
+                "stat_var": "dcid:SV",
+                _PROVIDER: provider,
+                _RECIPIENT: _KENYA,
+                "provenance": _P,
+                "time_period": period,
+                "value": 1.0,
+            }
+            for period, provider in rows
+        ],
+    )
+    cut = cut_party_totals(
+        lambda: iter((frame,)), roles=open_party_roles({}, _ROLES), parties=_PARTIES
+    )
+    rebuilt = PartyTotalsCut.of_trace_entries(cut.trace_entries())
+
+    for one in (cut, rebuilt):
+        kept_rows = [
+            (row[frame.columns.index("time_period")], row[frame.columns.index(_PROVIDER)])
+            for chunk in one.chunks(lambda: iter((frame,)))()
+            for row in chunk.rows
+        ]
+        assert sorted(kept_rows) == kept
+    assert cut.trace_entries() == entries == rebuilt.trace_entries()
+    assert rebuilt == cut
+    assert bool(cut.left_out) == bool(entries)
+    trace = {TRACE_KEY: cut.trace_entries()}
+    assert TypeAdapter(TraceModel).validate_python(trace, strict=True) == trace
+
+
+_USD_2021 = {"base_year": 2021, "currency": "USD", "prices": "constant"}
+
+
+@pytest.mark.parametrize(
+    ("identity", "rows", "kept", "entries"),
+    [
+        pytest.param(
+            {},
+            [("2022", _OFFICIAL, _GHANA), ("2022", _G7, _KENYA)],
+            [("2022", _OFFICIAL, _GHANA), ("2022", _G7, _KENYA)],
+            [],
+            id="ghana-whole-total-leaves-kenya-g7-alone",
+        ),
+        pytest.param(
+            {"entities": {"destination": [_GHANA, _KENYA]}},
+            [("2022", _OFFICIAL, _GHANA), ("2022", _G7, _KENYA)],
+            [("2022", _OFFICIAL, _GHANA), ("2022", _G7, _KENYA)],
+            [],
+            id="ghana-whole-total-leaves-kenya-g7-alone-recipients-bound",
+        ),
+        pytest.param(
+            {},
+            [("2021", _FRANCE, _KENYA), ("2022", _G7, _KENYA), ("2022", _DAC_TOTAL, _GHANA)],
+            [("2021", _FRANCE, _KENYA), ("2022", _DAC_TOTAL, _GHANA)],
+            [{"role": _PROVIDER, "provenance": _P, "entities": [_G7]}],
+            id="series-with-members-loses-its-total-series-of-totals-keeps-its-own",
+        ),
+        pytest.param(
+            {},
+            [
+                ("2021", _FRANCE, _KENYA),
+                ("2021", _DAC_TOTAL, _KENYA),
+                ("2022", _DAC_TOTAL, _GHANA),
+                ("2021", _DAC_TOTAL, _GHANA),
+            ],
+            [("2021", _FRANCE, _KENYA), ("2021", _DAC_TOTAL, _GHANA), ("2022", _DAC_TOTAL, _GHANA)],
+            [
+                {
+                    "role": _PROVIDER,
+                    "provenance": _P,
+                    "entities": [_DAC_TOTAL],
+                    "kept_in": [_kept_in("2021", "2022", recipient=_GHANA, unit=_USD_2021)],
+                }
+            ],
+            id="trace-names-each-series-cell-a-total-stayed-in",
+        ),
+    ],
+)
+def test_each_series_of_a_role_keeps_its_own_totals(
+    identity: dict[str, object],
+    rows: list[tuple[str, str, str]],
+    kept: list[tuple[str, str, str]],
+    entries: list[dict[str, object]],
+):
+    """A series is every column of the frame's grain but the role, `time_period` and
+    `provenance`, so another recipient, open or bound, is another series: Ghana's whole
+    official-donor total in a year leaves Kenya's lone G7 row of that year alone, and a series
+    holding members in some year loses its totals in a year of only totals while a series of
+    only totals keeps them. The trace names each cell a total stayed in, its unit in the
+    unit's JSON form, and a cut rebuilt from it keeps the same rows."""
+    frame = Frame.build(
+        role_keys=_ROLES,
+        rows=[
+            {
+                "stat_var": "dcid:SV",
+                _PROVIDER: provider,
+                _RECIPIENT: recipient,
+                "provenance": _P,
+                "time_period": period,
+                "unit": _USD_2021,
+                "value": 1.0,
+            }
+            for period, provider, recipient in rows
+        ],
+    )
+    cut = cut_party_totals(
+        lambda: iter((frame,)), roles=open_party_roles(identity, _ROLES), parties=_PARTIES
+    )
+    rebuilt = PartyTotalsCut.of_trace_entries(cut.trace_entries())
+
+    at = [frame.columns.index(name) for name in ("time_period", _PROVIDER, _RECIPIENT)]
+    for one in (cut, rebuilt):
+        kept_rows = [
+            tuple(row[index] for index in at)
+            for chunk in one.chunks(lambda: iter((frame,)))()
+            for row in chunk.rows
+        ]
+        assert sorted(kept_rows) == sorted(kept)
+    assert cut.trace_entries() == entries == rebuilt.trace_entries()
+    assert rebuilt == cut
+    trace = {TRACE_KEY: cut.trace_entries()}
+    assert TypeAdapter(TraceModel).validate_python(trace, strict=True) == trace
 
 
 @pytest.mark.parametrize(
@@ -330,14 +568,43 @@ def test_a_party_that_is_a_total_in_one_dataset_leaves_that_datasets_rows_alone(
             [2],
             id="one-role-in-two-datasets",
         ),
+        pytest.param(
+            [
+                {
+                    "role": _PROVIDER,
+                    "provenance": _DAC2A,
+                    "entities": [_TRUST_FUNDS],
+                    "kept_in": [_kept_in("2020", recipient=_KENYA)],
+                }
+            ],
+            [0, 1, 2, 3],
+            id="recorded-kept-cell-keeps-those-rows",
+        ),
+        pytest.param(
+            [
+                {
+                    "role": _PROVIDER,
+                    "provenance": _DAC2A,
+                    "entities": [_IMF, _TRUST_FUNDS],
+                    "kept_in": [
+                        _kept_in("2020", recipient=_GHANA),
+                        _kept_in("2020", recipient=_KENYA, stat_var="dcid:Other"),
+                        _kept_in("2019", recipient=_KENYA),
+                    ],
+                }
+            ],
+            [2, 3],
+            id="recorded-kept-cells-cut-every-other-cell",
+        ),
     ],
 )
 def test_a_cut_rebuilt_from_a_trace_leaves_out_the_rows_it_recorded(
     entries: list[dict[str, object]], kept: list[int]
 ):
     """A version recorded before its trace named the provenance left those parties out of
-    every dataset's rows, and a rebuilt cut writes back the entries it was rebuilt from, in the
-    shape the served manifest's trace types."""
+    every dataset's rows, one whose entry names `kept_in` kept their rows in those cells alone,
+    and a rebuilt cut writes back the entries it was rebuilt from, in the shape the served
+    manifest's trace types."""
     cut = PartyTotalsCut.of_trace_entries(entries)
 
     assert _kept_rows(cut, _kenya_2020_frame()) == sorted(_KENYA_2020[index] for index in kept)
@@ -355,3 +622,88 @@ def test_a_trace_keeps_its_null_provenance_through_a_response_dump():
     assert adapter.dump_python(adapter.validate_python(trace), mode="json", exclude_none=True) == (
         trace
     )
+
+
+def _encoded(chunk: Frame, encoding: str) -> Frame:
+    """`chunk` with each text column but `unit` as `encoding`: a dictionary of this chunk's own
+    values or a large string."""
+    table = chunk.table
+    for at, column in enumerate(table.columns):
+        if not pa.types.is_string(column.type):
+            continue
+        encoded = (
+            column.dictionary_encode()
+            if encoding == "dictionary"
+            else column.cast(pa.large_string())
+        )
+        table = table.set_column(at, table.schema.field(at).name, encoded)
+    return Frame(columns=chunk.columns, table=table)
+
+
+@pytest.mark.parametrize("encoding", ["dictionary", "large"])
+def test_a_cut_reads_text_columns_of_any_encoding_across_chunks(encoding: str):
+    """France gives to Kenya in 2021 in the first chunk, which holds no total. The second
+    chunk's totals then lose Kenya's series, which holds France, and official donors keep
+    Ghana's 2022, a year of totals alone. The chunks encode their text columns each with a
+    dictionary of its own, or as large strings."""
+    rows = [
+        ("2021", _FRANCE, _KENYA),
+        ("2021", _OFFICIAL, _KENYA),
+        ("2022", _G7, _KENYA),
+        ("2022", _OFFICIAL, _GHANA),
+    ]
+    frame = Frame.build(
+        role_keys=_ROLES,
+        rows=[
+            {
+                "stat_var": "dcid:SV",
+                _PROVIDER: provider,
+                _RECIPIENT: recipient,
+                "provenance": _P,
+                "time_period": period,
+                "value": 1.0,
+            }
+            for period, provider, recipient in rows
+        ],
+    )
+    france = pc.equal(frame.table.column(_PROVIDER), _FRANCE)
+    chunks = tuple(
+        _encoded(Frame(columns=frame.columns, table=frame.table.filter(mask)), encoding)
+        for mask in (france, pc.invert(france))
+    )
+    cut = cut_party_totals(
+        lambda: iter(chunks), roles=open_party_roles({}, _ROLES), parties=_PARTIES
+    )
+
+    assert cut.trace_entries() == [
+        {"role": _PROVIDER, "provenance": _P, "entities": [_G7]},
+        {
+            "role": _PROVIDER,
+            "provenance": _P,
+            "entities": [_OFFICIAL],
+            "kept_in": [_kept_in("2022", recipient=_GHANA)],
+        },
+    ]
+    at = [frame.columns.index(name) for name in ("time_period", _PROVIDER, _RECIPIENT)]
+    for one in (cut, PartyTotalsCut.of_trace_entries(cut.trace_entries())):
+        kept = [
+            tuple(row[index] for index in at)
+            for chunk in one.chunks(lambda: iter(chunks))()
+            for row in chunk.rows
+        ]
+        assert sorted(kept) == [("2021", _FRANCE, _KENYA), ("2022", _OFFICIAL, _GHANA)]
+
+
+def test_a_role_without_total_rows_reads_no_cells(monkeypatch: pytest.MonkeyPatch):
+    """Neither open role holds a total, so the cut reads no cell of the frame."""
+
+    def refused(*args: object) -> pa.Table:
+        raise AssertionError("a role without total rows read its cells")
+
+    monkeypatch.setattr(party_totals, "_cell_keys", refused)
+    frame = _frame([(_FRANCE, _KENYA), (_GATES, _GHANA), (_GERMANY, _AFRICA_REGIONAL)])
+
+    kept, trace = _kept(frame, identity={})
+
+    assert len(kept) == 3
+    assert trace == []

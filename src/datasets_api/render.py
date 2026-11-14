@@ -3,7 +3,7 @@ Data Package. The party-totals cut, decode, groupby, selection, enrichment, and 
 the writer, in that order. Selection, enrichment and pivot preserve the version's
 `content_version`. A cut that leaves rows out (`options.without_party_totals`,
 `datasets_api.party_totals`) and a groupby collapse to a frame of its own each mint a version of
-their own (`DerivedVersion`); a groupby over a cut frame sums the members the cut kept.
+their own (`DerivedVersion`); a groupby over a cut frame sums the rows the cut kept.
 
 Decode runs first and adds `stat_var_{code_system}` columns, so selection and pivot can name them.
 `options.columns` resolves a token to a real or decoded column first, then to an enabled
@@ -135,7 +135,13 @@ from datasets_api.manifest_models import (
 )
 from datasets_api.mint_models import MintOptions
 from datasets_api.output_options import movable_totals_roles
-from datasets_api.party_totals import CutFrame, cut_frame, cut_party_totals, open_party_roles
+from datasets_api.party_totals import (
+    CutFrame,
+    PartyTotalsCut,
+    cut_frame,
+    cut_party_totals,
+    open_party_roles,
+)
 from datasets_api.query_options import QueryOptionsInvalid
 from datasets_api.store_errors import StoredFrameUnreadable, read_stored_frame
 from datasets_api.timings import phase
@@ -2895,6 +2901,7 @@ def render_and_store(
     base_frame_sha256: Callable[[], str | None] | None = None,
     frame_mode: FrameMode = FrameMode.RAW,
     citation_refs: Sequence[str] | None = None,
+    recorded_cut: PartyTotalsCut | None = None,
 ) -> RenderedDefinition:
     """Renders one definition to a stored artifact and returns its reshape warnings.
     `frame_chunks` returns a fresh pass over the materialised frame's `Frame` chunks in order. Long
@@ -2950,7 +2957,10 @@ def render_and_store(
     kinds from the code index's party rows. A cut that leaves rows out renders from the cut frame,
     which is a version of its own, so the artifact and any collapse of it belong to a version
     minted from their own frame (`RenderedDefinition.derived`). A cut that leaves nothing out
-    renders the frame as it is.
+    renders the frame as it is. `recorded_cut` is the cut a derived version's trace records
+    (`recorded_rendering.recorded_party_cut`), which a render of that version from its base
+    frame replays in place of deriving the cut afresh, so the cut frame hashes to the version
+    its mint recorded.
 
     `frame_mode` says what `frame_chunks` holds of the version (`FrameMode`). A derived
     version's own stored frame is not cut again, and a summed one is not collapsed again either
@@ -2964,10 +2974,14 @@ def render_and_store(
     subject_id = str(spec.get("spec_id"))
     identity = spec.get("identity")
     party_cut = (
-        cut_party_totals(
-            frame_chunks,
-            roles=open_party_roles(identity, entity_columns),
-            parties=parties,
+        (
+            recorded_cut
+            if recorded_cut is not None
+            else cut_party_totals(
+                frame_chunks,
+                roles=open_party_roles(identity, entity_columns),
+                parties=parties,
+            )
         )
         if options.without_party_totals and frame_mode is FrameMode.RAW
         else None

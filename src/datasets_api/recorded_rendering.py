@@ -17,7 +17,8 @@ object a card revision stores. The frame refresh (`datasets_api.doors.refresh`),
 a version's options here.
 
 `serving_frames` is the one rule for which stored frames serve a version and how a render reads
-each, from the version record and the renderings linked under it.
+each, from the version record and the renderings linked under it, and `recorded_party_cut` the
+cut a render of a derived version from its base frame replays.
 """
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ from pydantic import ValidationError
 
 from dataset_store.snapshot import ManifestFacts, StoredVersion
 from datasets_api.mint_models import GroupbyOptions, MintOptions
-from datasets_api.party_totals import TRACE_KEY
+from datasets_api.party_totals import TRACE_KEY, PartyTotalsCut
 from datasets_api.render import (
     FrameMode,
     is_canonical_frame_rendering,
@@ -154,6 +155,18 @@ def own_frame_mode(
     if any(minting.groupby is None for minting in recorded_mintings(renderings)):
         return FrameMode.CUT
     return None
+
+
+def recorded_party_cut(version: StoredVersion) -> PartyTotalsCut:
+    """The party-totals cut derived `version`'s trace records (`TRACE_KEY`), which a render of
+    it from its base version's frame replays (`PartyTotalsCut.of_trace_entries`), so the cut
+    frame hashes to the version it minted whatever the code index and the cut's rule now
+    decide. A trace naming no totals records a cut that left nothing out."""
+    # Only a dataset version names a base.
+    assert isinstance(version.facts, ManifestFacts)
+    return PartyTotalsCut.of_trace_entries(
+        cast("list[Mapping[str, object]]", version.facts.trace.get(TRACE_KEY, []))
+    )
 
 
 class RenderingNotRecorded(Refusal):
@@ -334,6 +347,7 @@ __all__ = [
     "own_frame_mode",
     "recorded_minting",
     "recorded_mintings",
+    "recorded_party_cut",
     "records_plain_file",
     "rendering_of",
     "serving_frames",

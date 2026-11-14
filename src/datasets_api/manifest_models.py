@@ -13,6 +13,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    JsonValue,
     PlainSerializer,
     computed_field,
     model_validator,
@@ -761,11 +762,36 @@ class RetentionModel(BaseModel):
 
 
 @with_config(ConfigDict(extra="forbid"))
+class PartyTotalsKeptSeriesModel(TypedDict):
+    """One series in which a `without_party_totals` cut kept a trace entry's totals
+    (`PartyTotalsLeftOutModel.kept_in`), and the `time_period` values of that series, in the
+    entry's role and provenance, where they stayed."""
+
+    series: Annotated[
+        dict[str, str | dict[str, JsonValue] | None],
+        Field(
+            description="the series: each column of the frame's grain other than the entry's "
+            "role, time_period and provenance (stat_var, the frame's other role columns, unit "
+            "and measurementMethod), mapped to the cell the series holds there, null for a "
+            "null cell and a unit by its JSON form"
+        ),
+    ]
+    time_periods: Annotated[
+        list[str],
+        Field(
+            description="the time_period values of the series in which the entry's totals "
+            "stayed, distinct and sorted by code point"
+        ),
+    ]
+
+
+@with_config(ConfigDict(extra="forbid"))
 class PartyTotalsLeftOutModel(TypedDict):
     """One role's group totals a `without_party_totals` cut left out of one provenance's rows
     (`datasets_api.party_totals.PartyTotalsCut.trace_entries`). An entry without a
     `provenance`, which a version recorded before the trace named the provenance holds, left its
-    parties out of the rows of every dataset."""
+    parties out of the rows of every dataset. An entry with `kept_in` left its parties out of
+    the rows of every other cell; one without left them out of every cell."""
 
     role: Annotated[str, Field(description="the party role whose rows lost the totals")]
     provenance: NotRequired[
@@ -782,6 +808,20 @@ class PartyTotalsLeftOutModel(TypedDict):
         list[str],
         Field(description="the dcid refs of the totals left out, in ref order"),
     ]
+    kept_in: NotRequired[
+        Annotated[
+            list[PartyTotalsKeptSeriesModel],
+            Field(
+                description="the series in which the entry's totals stayed in this "
+                "provenance's rows, one item each, with the time_period values where they "
+                "stayed. A cell, one time_period of one series, that holds only totals keeps "
+                "its whole totals, and keeps every total when none is whole and the role holds "
+                "no other party in that series. Sorted by the series' cells in column-name "
+                "order, each null first, then a string by code point, then an object by the "
+                "code points of its JCS text. Absent when the totals left every cell"
+            ),
+        ]
+    ]
 
 
 # Set here so the enclosing model's `extra="forbid"` does not reach the open keys.
@@ -795,9 +835,12 @@ class TraceModel(TypedDict, extra_items=object):
             list[PartyTotalsLeftOutModel],
             Field(
                 description="the parties whose total rows a without_party_totals rendering "
-                "left out of this version's frame: one entry per open party role and "
-                "provenance that lost rows, in role order and then provenance order (null "
-                "first). Absent when the rendering left nothing out or was not asked to"
+                "left out of this version's frame: one entry per open party role, "
+                "provenance that lost rows and set of kept cells, in role order, then "
+                "provenance order (null first), then kept cells (entries without kept_in "
+                "first, then by kept_in compared item by item: by series in its own order, "
+                "then by time_periods). Absent when "
+                "the rendering left nothing out or was not asked to"
             ),
         ]
     ]
