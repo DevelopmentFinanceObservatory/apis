@@ -15,7 +15,8 @@ it, and the code registry the app serves:
   route to none in `Surface.registry_endpoints`;
 - every strict required member stays required and admits no null, and every strict enum value
   stays admitted;
-- every `actions.json` code is an active registry code.
+- every `actions.json` code is an active registry code;
+- the role-keys rule's frame party columns are `ROLE_AXES`.
 
 A synthetic scenario edits a recorded one to test a client's handling of a malformed answer, and
 a `url` exchange fetches from storage, so neither is checked here.
@@ -32,7 +33,7 @@ from typing import Any
 from urllib.parse import unquote, urlsplit
 
 import pytest
-from dfo_client_contract import actions, scenarios, strict_fields
+from dfo_client_contract import actions, rule, scenarios, strict_fields
 from dfo_spec_kit.registry import REGISTRY
 from fastapi.routing import APIRoute
 from jsonschema import Draft202012Validator
@@ -46,6 +47,7 @@ import dfo_apis.app as dfo_apis_app
 from datasets_api.analysis import RootRendering, _RefRendering
 from datasets_api.mint_models import MintOptions
 from dfo_platform.app import Surface
+from dfo_platform.roles import ROLE_AXES
 
 # The deployed composition's surface flags, as the capture tool sets them.
 _DEPLOYED_FLAGS = {
@@ -366,3 +368,9 @@ def test_the_contract_package_pins_spec_kits_commit():
     the contract package's, so this test does."""
     sources = tomllib.loads(_PYPROJECT.read_text())["tool"]["uv"]["sources"]
     assert sources["dfo-spec-kit-client-contract"]["rev"] == sources["dfo-spec-kit"]["rev"]
+
+
+def test_the_role_keys_columns_are_the_role_axes():
+    """The client contract's frame party columns of each role key are the columns `ROLE_AXES`
+    maps to a caller key: the same columns, each under the same key."""
+    assert rule("role-keys")["columns"] == ROLE_AXES
