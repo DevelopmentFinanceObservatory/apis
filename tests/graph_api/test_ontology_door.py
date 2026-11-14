@@ -41,17 +41,11 @@ _IDENTITY = {"Accept-Encoding": "identity"}
 
 _ARC_SUBJECTS = {
     ("Class", "typeOf"): (
-        ArcSubject(
-            dcid="FinancialFlow", names=("Financial flow",), types=("Class",), provenances=(_DFO,)
-        ),
-        ArcSubject(
-            dcid="Thing", names=("Thing",), types=("Class",), provenances=("dc/base/Schema",)
-        ),
+        ArcSubject(dcid="FinancialFlow", names=("Financial flow",), provenances=(_DFO,)),
+        ArcSubject(dcid="Thing", names=("Thing",), provenances=("dc/base/Schema",)),
     ),
     ("Property", "typeOf"): (
-        ArcSubject(
-            dcid="crsPurpose", names=("CRS purpose",), types=("Property",), provenances=(_DFO,)
-        ),
+        ArcSubject(dcid="crsPurpose", names=("CRS purpose",), provenances=(_DFO,)),
     ),
 }
 _NODES = {
@@ -258,22 +252,6 @@ class TestWaits:
     ("error", "status", "code", "retryable", "builds"),
     [
         pytest.param(
-            OntologyListingTruncatedError("Class listing capped"),
-            503,
-            "service_unavailable",
-            False,
-            1,
-            id="truncated-listing-kept",
-        ),
-        pytest.param(
-            OntologyNoInstanceDeclarationError(3),
-            503,
-            "service_unavailable",
-            False,
-            1,
-            id="no-instance-declaration-kept",
-        ),
-        pytest.param(
             GraphDeadlineExceededError("deadline"), 504, "timeout", True, 2, id="deadline"
         ),
         pytest.param(
@@ -294,7 +272,7 @@ class TestWaits:
         ),
     ],
 )
-def test_a_failed_build_answers_its_problem_and_only_a_deterministic_refusal_is_kept(
+def test_a_failed_build_answers_its_problem_and_is_not_kept(
     generation, error: Exception, status: int, code: str, retryable: bool, builds: int
 ):
     graph = _RaisingReader(error)
@@ -305,6 +283,34 @@ def test_a_failed_build_answers_its_problem_and_only_a_deterministic_refusal_is_
     for response in responses:
         assert response.status_code == status, response.text
         assert response.json()["code"] == code
+        assert response.json()["retryable"] is retryable
+    assert graph.raised == builds
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(OntologyListingTruncatedError("Class listing capped"), id="truncated"),
+        pytest.param(OntologyNoInstanceDeclarationError(3), id="no-instance-declaration"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("known", "retryable", "builds"),
+    [pytest.param(True, False, 1, id="known-kept"), pytest.param(False, True, 2, id="unknown")],
+)
+def test_a_refusal_is_kept_only_under_a_known_generation(
+    generation, error: Exception, known: bool, retryable: bool, builds: int
+):
+    graph = _RaisingReader(error)
+    if not known:
+        generation.set_unknown()
+
+    with make_client(graph=graph) as client:
+        responses = [client.get(_TERMS), client.get(_DOCUMENT)]
+
+    for response in responses:
+        assert response.status_code == 503, response.text
+        assert response.json()["code"] == "service_unavailable"
         assert response.json()["retryable"] is retryable
     assert graph.raised == builds
 

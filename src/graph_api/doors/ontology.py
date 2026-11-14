@@ -2,9 +2,10 @@
 
 `GET /api/graph/ontology` serves `OntologyDocument` and `GET /api/graph/ontology/terms`
 serves `OntologyTerms`. One build (`graph_api.ontology_document.build_ontology`) yields both,
-and `GraphDeps.ontology` holds its result in a single-flight cache of one entry, keyed by the
-graph generation token and the content hash of the code index the build read, beside the
-cache's own generation stamp. The lifespan registers it as `graph_api.ontology`, so a
+and `GraphDeps.ontology` holds its result in a single-flight cache of two entries, keyed by
+the graph generation token and the content hash of the code index the build read, beside the
+cache's own generation stamp. Two entries let a request stamped with an unknown generation
+keep the entry of the known one. The lifespan registers it as `graph_api.ontology`, so a
 generation change clears it.
 
 A request refreshes a stale generation stamp, then waits for the entry until
@@ -16,11 +17,12 @@ request whose own deadline passes first answers retryable 503 `service_unavailab
 that outlives its deadline stores nothing, and its waiters answer 504 `timeout`. An executor
 with every worker busy refuses the build with `DcpExecutorSaturated`, which the surface answers
 as retryable 503. A read past its deadline answers 504 `timeout`. A listing that reached its
-cap, or a document with no node the instance declares, answers non-retryable 503
-`service_unavailable`. A DCP 4xx answers 502 `upstream_error` and any other read failure
-retryable 503. The two non-retryable refusals cannot change while the generation holds, so the
-entry keeps them as `RefusedOntology` and every request for the key answers the same 503 with
-no build. Any other failed build is not kept.
+cap, or a document with no node the instance declares, answers 503 `service_unavailable`. A
+DCP 4xx answers 502 `upstream_error` and any other read failure retryable 503. Under a known
+generation the two refusals cannot change while the generation holds, so the entry keeps them
+as `RefusedOntology` and every request for the key answers the same non-retryable 503 with no
+build. Under an unknown generation nothing would clear a kept refusal, so the build raises it
+unkept and the request answers it retryable. Any other failed build is not kept.
 
 The cached value holds each body encoded once in the models' field order, so two builds of one
 graph give the same bytes. Each answers `public, max-age=300` with a strong `ETag` over those
@@ -96,6 +98,7 @@ from graph_api.deps import (
     log_queue_wait,
     run_dcp_read,
 )
+from graph_api.doors.node import graph_read_problem
 from graph_api.ontology_check import (
     OntologyCheckTooManyFindings,
     OntologyCheckTooManyReads,
@@ -186,11 +189,13 @@ class OntologyCheckBusy(Exception):
 
 
 class OntologyReadFailed(Exception):
-    """A graph read of the build or of the check failed with `error`."""
+    """A graph read of the build or of the check failed with `error`. `kept` is true when the
+    cache holds `error` as the generation's `RefusedOntology`."""
 
-    def __init__(self, error: GraphReadError) -> None:
+    def __init__(self, error: GraphReadError, *, kept: bool = False) -> None:
         super().__init__(f"an ontology graph read failed: {error}")
         self.error = error
+        self.kept = kept
 
 
 class ProvenancesKey(NamedTuple):
@@ -240,14 +245,19 @@ def _build_entry(
     deps: GraphDeps, *, code_index: CodeIndex, generation: str | None, deadline: float
 ) -> OntologyEntry:
     """Build and freeze the bodies, or keep a refusal that cannot change within the
-    generation."""
+    generation. Under an unknown generation, `generation` `None`, nothing would clear a kept
+    refusal before the stamp's age runs out, so the refusal is raised and not kept."""
     try:
         ontology = build_ontology(
             reader=deps.graph, code_index=code_index, generation=generation, deadline=deadline
         )
     except OntologyListingTruncatedError as exc:
+        if generation is None:
+            raise
         return RefusedOntology(error=partial(OntologyListingTruncatedError, str(exc)))
     except OntologyNoInstanceDeclarationError as exc:
+        if generation is None:
+            raise
         return RefusedOntology(error=partial(OntologyNoInstanceDeclarationError, exc.node_count))
     return FrozenOntology(
         document=_freeze(ontology.document),
@@ -292,7 +302,7 @@ async def _frozen_ontology(
         raise OntologyReadFailed(exc) from exc
     entry = found[key]
     if isinstance(entry, RefusedOntology):
-        raise OntologyReadFailed(entry.error())
+        raise OntologyReadFailed(entry.error(), kept=True)
     return entry
 
 
@@ -333,7 +343,7 @@ def classify_ontology_exception(exc: BaseException) -> ProblemSpec | None:
             status=503,
             code="service_unavailable",
             detail=str(error),
-            retryable=False,
+            retryable=not exc.kept,
             log=f"Graph ontology door refused a truncated term listing: {error}",
         )
     if isinstance(error, OntologyNoInstanceDeclarationError):
@@ -341,7 +351,7 @@ def classify_ontology_exception(exc: BaseException) -> ProblemSpec | None:
             status=503,
             code="service_unavailable",
             detail=str(error),
-            retryable=False,
+            retryable=not exc.kept,
             log=f"Graph ontology door refused a document no instance provenance declares: {error}",
         )
     if isinstance(error, GraphDeadlineExceededError):
@@ -351,14 +361,9 @@ def classify_ontology_exception(exc: BaseException) -> ProblemSpec | None:
             detail="the deadline expired during the ontology door's graph reads; retry",
             retryable=TIMEOUT_DEFAULT.retryable,
         )
-    upstream_status = error.upstream_status
-    client_side = isinstance(upstream_status, int) and 400 <= upstream_status < 500
-    spec = (
-        ProblemSpec(status=502, code="upstream_error", retryable=True)
-        if client_side
-        else ProblemSpec(status=503, code="service_unavailable", retryable=True)
+    return graph_read_problem(error)._replace(
+        log=f"Graph ontology door's DCP read failed: {error}", log_traceback=True
     )
-    return spec._replace(log=f"Graph ontology door's DCP read failed: {error}", log_traceback=True)
 
 
 def _freeze_provenances(code_index: CodeIndex, coverage: ProvenanceCoverage) -> FrozenJSON:

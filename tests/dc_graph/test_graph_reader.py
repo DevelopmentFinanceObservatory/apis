@@ -1564,7 +1564,6 @@ def test_node_subjects_dedups_a_subject_declared_by_two_provenances():
             ArcSubject(
                 dcid="LifeExpectancy_Person_Female",
                 names=("Life expectancy, female",),
-                types=("StatisticalVariable",),
                 provenances=("dc/base/Schema", "dc/base/WHO_GHO"),
             ),
         ),
@@ -1573,8 +1572,7 @@ def test_node_subjects_dedups_a_subject_declared_by_two_provenances():
 
 
 def test_node_subjects_dedups_a_subject_repeated_across_pages():
-    # `a`'s second provenance arrives on the second page; `b` carries no name, types or
-    # provenance.
+    # `a`'s second provenance arrives on the second page; `b` carries no name or provenance.
     first_body = json.dumps(
         {
             "data": {
@@ -1623,10 +1621,9 @@ def test_node_subjects_dedups_a_subject_repeated_across_pages():
             ArcSubject(
                 dcid="a",
                 names=("A",),
-                types=(),
                 provenances=("dc/base/Mongolia_Education", "dc/base/Schema"),
             ),
-            ArcSubject(dcid="b", names=(), types=(), provenances=()),
+            ArcSubject(dcid="b", names=(), provenances=()),
         ),
         truncated=False,
     )

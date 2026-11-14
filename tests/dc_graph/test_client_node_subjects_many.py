@@ -99,8 +99,7 @@ def test_node_subjects_many_dedups_a_subject_declared_by_two_provenances(monkeyp
 
 def test_node_subjects_many_multi_page_response_stitched(monkeypatch) -> None:
     """Pages concatenate in order and deduplicate subjects across the page boundary. The detail
-    read collects a subject's provenances from both pages, sorted, and keeps its first entry's
-    name and types."""
+    read collects a subject's provenances from both pages, sorted, and its distinct names."""
     calls: list[dict] = []
     oda = {
         "dcid": "DAC1AidType1010",
@@ -149,10 +148,9 @@ def test_node_subjects_many_multi_page_response_stitched(monkeypatch) -> None:
                 ArcSubject(
                     dcid="DAC1AidType1010",
                     names=("official development assistance (DAC 1 aid type)",),
-                    types=("DAC1AidTypeEnum",),
                     provenances=("dc/base/Schema", "provenance/DFOOntology"),
                 ),
-                ArcSubject(dcid="DAC1AidType1015", names=(), types=(), provenances=()),
+                ArcSubject(dcid="DAC1AidType1015", names=(), provenances=()),
             ),
             "complete",
         )

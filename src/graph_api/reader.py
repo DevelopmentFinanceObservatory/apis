@@ -85,7 +85,7 @@ class GraphNodeReader(Protocol):
         max_results: int,
         deadline: float | None = None,
     ) -> ArcSubjectPage:
-        """Read subjects as `node_subjects` does, each with its name, types and provenances."""
+        """Read subjects as `node_subjects` does, each with its names and provenances."""
         ...
 
     def node_arc_subjects_many(

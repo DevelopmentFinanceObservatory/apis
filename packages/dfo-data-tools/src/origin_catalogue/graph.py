@@ -664,7 +664,7 @@ class OriginGraphClient:
         max_results: int,
         deadline: float | None = None,
     ) -> ArcSubjectPage:
-        """`node_subjects` with each subject's names, types and declaring provenances, routed
+        """`node_subjects` with each subject's names and declaring provenances, routed
         on every name the read carries as `node_subjects` routes a read its tables do not
         answer. The catalogue's tables carry no subject names or provenances, so every read is
         live, and one that needs the UN deployment with the UN off returns an empty page marked
@@ -726,7 +726,7 @@ class OriginGraphClient:
         max_results: int,
         deadline: float | None = None,
     ) -> dict[str, tuple[tuple[ArcSubject, ...], SubjectsCoverageFlag]]:
-        """`node_subjects_many` with each subject's names, types and declaring provenances,
+        """`node_subjects_many` with each subject's names and declaring provenances,
         with leads routed as `node_subjects_many` routes its live reads. The catalogue's tables
         carry no subject names or provenances, so every lead is read live, and a lead that needs
         the UN deployment with the UN off answers no subjects, `"capped"`, since nothing read

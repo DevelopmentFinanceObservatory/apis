@@ -89,20 +89,17 @@ CRS_MEMBERS = (
     ArcSubject(
         dcid="CRSPurposeCode12220",
         names=("Basic health care",),
-        types=("CRSPurposeCodeEnum",),
         provenances=(DFO,),
     ),
     ArcSubject(
         dcid="CRSPurposeCode120",
         names=("Education",),
-        types=("CRSPurposeCodeEnum",),
         provenances=(DFO,),
     ),
 )
 
 GENDER_MEMBERS = tuple(
-    ArcSubject(dcid=dcid, names=(dcid,), types=("GenderType",), provenances=(SCHEMA,))
-    for dcid in ("Female", "Male")
+    ArcSubject(dcid=dcid, names=(dcid,), provenances=(SCHEMA,)) for dcid in ("Female", "Male")
 )
 
 TYPE_PROVENANCES: dict[str, tuple[str, ...]] = {
@@ -149,9 +146,7 @@ INDEX = index_of(
 
 def listing(kind: str, terms: Mapping[str, tuple[str, tuple[str, ...]]]) -> list[ArcSubject]:
     return [
-        ArcSubject(
-            dcid=dcid, names=(NAMES.get(dcid, dcid),), types=(kind,), provenances=provenances
-        )
+        ArcSubject(dcid=dcid, names=(NAMES.get(dcid, dcid),), provenances=provenances)
         for dcid, (term_kind, provenances) in terms.items()
         if term_kind == kind
     ]

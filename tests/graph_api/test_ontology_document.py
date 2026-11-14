@@ -339,7 +339,7 @@ def test_a_term_that_is_also_a_member_is_declared_by_its_node_read_and_its_listi
     }
     members = (
         *CRS_MEMBERS,
-        ArcSubject(dcid="amount", names=(), types=("CRSPurposeCodeEnum",), provenances=(DFO,)),
+        ArcSubject(dcid="amount", names=(), provenances=(DFO,)),
     )
     amount = {
         "typeOf": (
@@ -370,9 +370,7 @@ def test_terms_list_every_class_and_property() -> None:
             **arc_subjects(),
             ("Property", "typeOf"): [
                 *listing("Property", TERMS),
-                ArcSubject(
-                    dcid="FinancialFlow", names=("Financial flow",), types=(), provenances=(SCHEMA,)
-                ),
+                ArcSubject(dcid="FinancialFlow", names=("Financial flow",), provenances=(SCHEMA,)),
             ],
         },
     )

@@ -867,7 +867,7 @@ A node carries `dcid`, `name`, `description`, `types`, `alternate_name`, `sub_cl
 - `provenances` lists the Provenances that declare the node's `typeOf` arcs, verbatim, read with the node's values in one live read of the node. `declared_by` is `"base"` when every one starts `dc/base/`, and `"instance"` otherwise. The Provenances are those the node's `typeOf` targets carry, so a target with none adds nothing. `declared_by` is `null` when the node has no `typeOf` arc or none of its `typeOf` targets carries a Provenance, and its `provenances` is then empty. The build logs one warning that counts the nodes with a `typeOf` target that carries no Provenance and the terms below whose listing entries carry none, naming the first ten of each. The check treats a property with a `null` `declared_by` as one the instance does not declare.
 - `enumeration` is `{members, complete}` on a Class whose `subClassOf` chain reaches `Enumeration`, and `null` on every other node. An instance-declared enumeration lists the members its `<-typeOf` listing read, up to 5,000. A base enumeration lists only the members StatVar rows use. `complete` is `true` only when the build listed the class from the graph and the listing read every member, so `members` is every member the graph holds. Where it is `false`, `members` holds some of them.
 
-One build yields this body and the terms body. It runs as a single job on the DCP-read executor, holding one worker, and its result is kept in a single-flight cache of one entry keyed by the graph generation token and the content hash of the code index. A generation change clears it. Concurrent requests share one build. A request waits up to `GRAPH_NODE_TIMEOUT_SECONDS`. The build itself may run for 60 s (`graph_api.config.ONTOLOGY_FLIGHT_TIMEOUT_SECONDS`).
+One build yields this body and the terms body. It runs as a single job on the DCP-read executor, holding one worker, and its result is kept in a single-flight cache of two entries keyed by the graph generation token and the content hash of the code index. A request stamped with an unknown generation therefore keeps the entry of the known one. A generation change clears the cache. Concurrent requests share one build. A request waits up to `GRAPH_NODE_TIMEOUT_SECONDS`. The build itself may run for 60 s (`graph_api.config.ONTOLOGY_FLIGHT_TIMEOUT_SECONDS`).
 
 Each body is encoded once with its keys in the models' field order and every list sorted, so two builds of one graph give the same bytes. The route answers `public, max-age=300` with a strong `ETag` and a gzip representation, and honours `If-None-Match` with `304`.
 
@@ -875,11 +875,11 @@ Failures:
 
 - `503 service_unavailable`, retryable with `Retry-After: 5`: the request's own wait passed while the build runs on. The build stores its result for the next request.
 - `504 timeout`: the build outlived its 60 s deadline and stored nothing, or a graph read passed its deadline.
-- `503 service_unavailable`, not retryable: a Class or Property listing reached its cap, or the document holds no node whose `declared_by` is `"instance"`. A graph that stopped naming provenances would serve every node `declared_by: null`, and the check would judge no range or domain, so the build refuses instead.
+- `503 service_unavailable`, not retryable under a known generation and retryable under an unknown one: a Class or Property listing reached its cap, or the document holds no node whose `declared_by` is `"instance"`. A graph that stopped naming provenances would serve every node `declared_by: null`, and the check would judge no range or domain, so the build refuses instead.
 - `502 upstream_error`: a DCP read answered 4xx.
 - `503 service_unavailable`, retryable: any other read failure, or every DCP-read worker busy.
 
-A refusal that is not retryable cannot change within the graph generation, so the cache keeps it and answers every request with the same `503` until the generation changes. Any other failed build is not kept. The example keeps two nodes. A served document holds every node.
+Under a known generation these two refusals cannot change until the generation does, so the cache keeps them and answers every request with the same `503` and no build until the generation changes. Under an unknown generation the cache keeps nothing, since no generation change would clear the entry, and the next request builds again. Any other failed build is not kept. The example keeps two nodes. A served document holds every node.
 
 ```json
 {

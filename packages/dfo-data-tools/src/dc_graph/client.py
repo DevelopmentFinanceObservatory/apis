@@ -342,16 +342,14 @@ class SubjectPage:
 @dataclass(frozen=True)
 class ArcSubject:
     """One subject of a reverse arc as `/v2/node` answers it: its `dcid`, `names`, the distinct
-    names over every entry for the subject, sorted, the `types` its first entry carries (`()`
-    when absent), and `provenances`, the distinct `provenanceId`s over every entry for the
-    subject, sorted. `names` and `provenances` are `()` where no entry carries one. Each
+    names over every entry for the subject, sorted, and `provenances`, the distinct
+    `provenanceId`s over every entry for the subject, sorted. `names` and `provenances` are `()` where no entry carries one. Each
     provenance can name a subject its own way, so `display_name` over `names` gives one name
     whatever order the entries arrive in.
     """
 
     dcid: str
     names: tuple[str, ...]
-    types: tuple[str, ...]
     provenances: tuple[str, ...]
 
 
@@ -1637,7 +1635,7 @@ class GraphClient:
         max_results: int,
         deadline: float | None = None,
     ) -> ArcSubjectPage:
-        """`node_subjects` with each subject's names, types and declaring provenances
+        """`node_subjects` with each subject's names and declaring provenances
         (`ArcSubject`), folded over every entry for the subject on the pages read. Paging,
         cap, truncation, guards and `deadline` are `node_subjects`'s."""
         facts = _ArcSubjectFold()
@@ -1754,7 +1752,7 @@ class GraphClient:
         max_results: int,
         deadline: float | None = None,
     ) -> dict[str, tuple[tuple[ArcSubject, ...], SubjectsCoverageFlag]]:
-        """`node_subjects_many` with each subject's names, types and declaring provenances
+        """`node_subjects_many` with each subject's names and declaring provenances
         (`ArcSubject`), folded over every entry for the subject on the pages read for its
         lead. Paging, per-lead cap, coverage flags, guards and `deadline` are
         `node_subjects_many`'s."""
@@ -2770,16 +2768,14 @@ def parse_arc_targets(arcs: dict, properties: Sequence[str]) -> dict[str, tuple[
 
 class _ArcSubjectFold:
     """Each subject's facts, folded from the wire entries of a reverse-arc walk as they
-    arrive: every distinct name, the types of its first entry, and every `provenanceId`."""
+    arrive: every distinct name and every `provenanceId`."""
 
     def __init__(self) -> None:
         self._names: dict[str, set[str]] = {}
-        self._types: dict[str, tuple[str, ...]] = {}
         self._provenances: dict[str, set[str]] = {}
 
     def __call__(self, dcid: str, entry: dict) -> None:
-        if dcid not in self._types:
-            self._types[dcid] = tuple(entry.get("types", ()))
+        if dcid not in self._names:
             self._names[dcid] = set()
             self._provenances[dcid] = set()
         if (name := entry.get("name")) is not None:
@@ -2792,7 +2788,6 @@ class _ArcSubjectFold:
         return ArcSubject(
             dcid=dcid,
             names=tuple(sorted(self._names[dcid])),
-            types=self._types[dcid],
             provenances=tuple(sorted(self._provenances[dcid])),
         )
 
