@@ -127,6 +127,15 @@ GOLDEN_TABLE: list[tuple[str, dict[str, object], str | None]] = [
         {"without_party_totals": "maybe"},
         "/options/without_party_totals",
     ),
+    ("party_totals=false", {"party_totals": False}, None),
+    ("party_totals=false&without_party_totals=true", {"without_party_totals": True}, None),
+    ("party_totals=true", {}, None),
+    (
+        "party_totals=false&without_party_totals=false",
+        {"party_totals": False, "without_party_totals": False},
+        "/options/party_totals",
+    ),
+    ("party_totals=maybe", {"party_totals": "maybe"}, "/options/party_totals"),
     # Both validators report the same pointer for unknown keys.
     ("foo=bar", {"foo": "bar"}, "/options/foo"),
 ]
@@ -282,3 +291,13 @@ _ROUND_TRIP_OPTIONS: list[MintOptions] = [
 @pytest.mark.parametrize("options", _ROUND_TRIP_OPTIONS, ids=[str(o) for o in _ROUND_TRIP_OPTIONS])
 def test_encode_query_options_round_trips_through_parse_query_options(options: MintOptions):
     assert parse_query_options(list(encode_query_options(options).items())) == options
+
+
+def test_party_totals_query_encodes_as_without_party_totals():
+    parsed = parse_query_options([("party_totals", "false"), ("format", "parquet")])
+
+    assert encode_query_options(parsed) == {
+        "format": "parquet",
+        "bundle": "true",
+        "without_party_totals": "true",
+    }

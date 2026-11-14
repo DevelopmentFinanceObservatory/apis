@@ -58,7 +58,7 @@ _CATALOGUE_ROWS = (
 
 
 _NO_FACTS = dict.fromkeys(
-    ("description", "license_type", "update_cadence", "years_covered", "source_url")
+    ("description", "license_type", "update_cadence", "years_covered", "source_url", "licence_type")
 )
 
 
@@ -450,6 +450,10 @@ class TestCardFacts:
             "Annual",
             "1960",
             None,
+        )
+        body = dataset.model_dump(mode="json")
+        assert (
+            body["licence_type"] == body["license_type"] == "Creative Commons Attribution License"
         )
 
 

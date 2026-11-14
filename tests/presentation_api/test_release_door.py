@@ -33,7 +33,7 @@ def test_release_document_shape(client: TestClient):
     resp = client.get("/api/presentation/release")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["catalog_version"] == "2026.11.0"
+    assert body["catalog_version"] == "2026.11.1"
     assert body["schema_version"] == 1
     _all_members = {
         "line_chart",

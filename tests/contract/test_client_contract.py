@@ -43,6 +43,8 @@ from referencing.jsonschema import DRAFT202012
 from starlette.routing import Match
 
 import dfo_apis.app as dfo_apis_app
+from datasets_api.analysis import RootRendering, _RefRendering
+from datasets_api.mint_models import MintOptions
 from dfo_platform.app import Surface
 
 # The deployed composition's surface flags, as the capture tool sets them.
@@ -320,6 +322,37 @@ def test_strict_member_stays_required_and_non_nullable(served: _Served, pointer:
 def test_strict_enum_keeps_every_value(served: _Served, pointer: str, values: list[str]):
     validator = _validator(served, pointer)
     assert [value for value in values if not validator.is_valid(value)] == []
+
+
+_CUT_MODELS = ("MintOptions", "RootRendering", "_RefRendering")
+
+
+@pytest.mark.parametrize("model", _CUT_MODELS)
+@pytest.mark.parametrize("key", ["party_totals", "without_party_totals"])
+def test_neither_cut_key_declares_a_default(served: _Served, model: str, key: str):
+    """A client that fills defaults would otherwise send one key's default beside a caller's
+    other key, a contradiction the server refuses."""
+    member = served.document["components"]["schemas"][model]["properties"][key]
+    assert member["type"] == "boolean"
+    assert "default" not in member
+
+
+@pytest.mark.parametrize("model", _CUT_MODELS)
+@pytest.mark.parametrize("cut", [{"party_totals": False}, {"without_party_totals": True}])
+def test_a_cut_filled_with_schema_defaults_still_validates(
+    served: _Served, model: str, cut: dict[str, bool]
+):
+    """Expanding a cut with every default the served schema declares, as a generated client
+    may, leaves a request the server accepts as the same cut."""
+    properties = served.document["components"]["schemas"][model]["properties"]
+    filled = {key: member["default"] for key, member in properties.items() if "default" in member}
+    filled.update(cut)
+    models = {
+        "MintOptions": MintOptions,
+        "RootRendering": RootRendering,
+        "_RefRendering": _RefRendering,
+    }
+    assert models[model].model_validate(filled).without_party_totals is True
 
 
 def test_every_action_names_an_active_registry_code():

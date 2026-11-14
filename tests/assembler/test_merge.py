@@ -35,11 +35,22 @@ def test_select_replaces_whole_never_merges_key_by_key():
     assert merged["select"] == patch_select
 
 
-def test_window_object_replaces_whole_never_merges_key_by_key():
-    current = {"type": "line_chart", "window": {"start": "2015", "end": "2024"}}
-    merged = merge_intent(current=current, patch={"window": {"end": "2020"}})
-    # A deep merge would have kept start="2015"; RFC 7386 replaces the object whole.
-    assert merged["window"] == {"end": "2020"}
+@pytest.mark.parametrize(
+    ("field", "stored", "patch"),
+    [
+        ("window", {"start": "2015", "end": "2024"}, {"end": "2020"}),
+        (
+            "order",
+            {"by": "value", "direction": "descending", "period": "2020"},
+            {"direction": "ascending"},
+        ),
+    ],
+)
+def test_object_replaces_whole_never_merges_key_by_key(field, stored, patch):
+    merged = merge_intent(current={"type": "line_chart", field: stored}, patch={field: patch})
+    # A deep merge would keep the stored keys. RFC 7386 replaces the object whole, so a
+    # revise sends the whole `order` object, `by` and `period` included.
+    assert merged[field] == patch
 
 
 def test_every_field_is_absolute_resending_cannot_compound():
