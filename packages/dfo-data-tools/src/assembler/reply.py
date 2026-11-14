@@ -22,7 +22,7 @@ from dfo_frame_grammar import STAT_VAR_COLUMN, UNIT_COLUMN
 from assembler.errors import ReleaseMismatch, escape_pointer_segment
 from assembler.frame_view import facet_dimension_names
 from assembler.limits import FACT_SUMMARY_SERIES_CAP, FACT_SUMMARY_TOKEN_CAP
-from assembler.order import order_period
+from assembler.order import order_period, units_differ
 from assembler.select import has_arrayed_dimension
 from materialise.unit_cells import units_by_identity
 
@@ -318,10 +318,13 @@ def build_fact_summary(
         component_id=component_id,
         revision=revision,
     )
+    mixed_units = False
     if member == "table":
-        unit = _table_unit(
+        unit_entries, frame_unit_keys = _table_unit_entries(
             component=component, series_list=series_list, coordinates=coordinates_by_index
         )
+        unit = _table_unit(entries=unit_entries, frame_unit_keys=frame_unit_keys)
+        mixed_units = units_differ(entries=unit_entries, frame_unit_keys=frame_unit_keys)
     per_series = [
         series_entry(
             id=one.get("id"),
@@ -341,7 +344,9 @@ def build_fact_summary(
         "unit": unit,
         "change": component.get("change"),
         "source_refs": source_refs,
-        "order": _order_entry(stored_intent=stored_intent, series_list=series_list),
+        "order": _order_entry(
+            stored_intent=stored_intent, series_list=series_list, mixed_units=mixed_units
+        ),
         "defaults": applied_defaults(
             component=component, member=member, stored_intent=stored_intent
         ),
@@ -383,46 +388,77 @@ def applied_defaults(
 
 
 def _order_entry(
-    *, stored_intent: Mapping[str, object], series_list: Sequence[Mapping[str, object]]
+    *,
+    stored_intent: Mapping[str, object],
+    series_list: Sequence[Mapping[str, object]],
+    mixed_units: bool,
 ) -> dict[str, object] | None:
-    """The order the series were drawn in, `{direction, period}`, or `None` when the intent
-    has no `order` or fewer than two series were drawn, since one series ranks nothing. The
-    period is `assembler.order.order_period` over the payload's points, which is the period
-    the draw ranked at. The payload holds exactly the drawn series, so a write and a readback
-    agree."""
+    """The order the series were drawn in, `{direction, period, detail}`, or `None` when the
+    intent has no `order` or fewer than two series were drawn, since one series ranks nothing.
+
+    `period` is the period the draw ranked at, `assembler.order.order_period` over the
+    payload's points, and `detail` is null when the draw ranked as the intent asked. Otherwise
+    `detail` says what the draw did instead: a render whose stated period no drawn series
+    holds ranks at the fallback period; a table whose series are in more than one unit
+    (`mixed_units`, `assembler.order.units_differ`) or whose series hold no value is drawn
+    unranked, with `period` null. The payload holds exactly the drawn series, so a write and
+    a readback agree."""
     order = cast("Mapping[str, object] | None", stored_intent.get("order"))
     if order is None or len(series_list) < 2:
         return None
+    entry: dict[str, object] = {"direction": order["direction"], "period": None}
+    if mixed_units:
+        entry["detail"] = (
+            "the table's series are in more than one unit, so they are drawn unranked in the "
+            "order the select resolves to"
+        )
+        return entry
+    stated = cast("str | None", order.get("period"))
     points_by_series = [
         cast("Sequence[Mapping[str, object]]", one.get("points") or ()) for one in series_list
     ]
-    period = order_period(
-        stated=cast("str | None", order.get("period")), points_by_series=points_by_series
-    )
-    return {"direction": order["direction"], "period": period}
+    period = order_period(stated=stated, points_by_series=points_by_series)
+    entry["period"] = period
+    if period is None:
+        entry["detail"] = (
+            "no drawn series holds a value, so the series are drawn in the order the select "
+            "resolves to"
+        )
+    elif stated is not None and period != stated:
+        entry["detail"] = (
+            f"no drawn series holds a value at {stated}, so the series are ranked at {period}"
+        )
+    else:
+        entry["detail"] = None
+    return entry
 
 
-def _table_unit(
+def _table_unit_entries(
     *,
     component: Mapping[str, object],
     series_list: Sequence[Mapping[str, object]],
     coordinates: Sequence[Mapping[str, object]],
-) -> object | None:
-    """Returns a table-level unit when every row agrees. Mixed or empty tables return
-    `None`, leaving each row's unit as the reference. Rows compare by `unit_identity`: by
-    their series' frame `unit` coordinate, so two units whose labels read alike differ, and
-    by the canonical JSON of the row's unit for a series stored without coordinates, which
-    makes structured-unit equality independent of key order."""
+) -> tuple[list[tuple[object, object]], dict[str, object]]:
+    """A table's `(series_id, unit)` pair per row and the frame `unit` coordinate of each
+    series stored with coordinates, the inputs `unit_identity` compares rows by."""
     rows = cast("Sequence[Mapping[str, object]]", component.get("rows") or ())
     frame_unit_keys = {
         cast("str", one["id"]): held.get(UNIT_COLUMN)
         for one, held in zip(series_list, coordinates, strict=True)
         if one.get("id") is not None and held
     }
-    distinct_units = units_by_identity(
-        entries=((row.get("series_id"), row.get("unit")) for row in rows),
-        frame_unit_keys=frame_unit_keys,
-    )
+    return [(row.get("series_id"), row.get("unit")) for row in rows], frame_unit_keys
+
+
+def _table_unit(
+    *, entries: Sequence[tuple[object, object]], frame_unit_keys: Mapping[str, object]
+) -> object | None:
+    """Returns a table-level unit when every row agrees. Mixed or empty tables return
+    `None`, leaving each row's unit as the reference. Rows compare by `unit_identity`: by
+    their series' frame `unit` coordinate, so two units whose labels read alike differ, and
+    by the canonical JSON of the row's unit for a series stored without coordinates, which
+    makes structured-unit equality independent of key order."""
+    distinct_units = units_by_identity(entries=entries, frame_unit_keys=frame_unit_keys)
     return next(iter(distinct_units.values())) if len(distinct_units) == 1 else None
 
 

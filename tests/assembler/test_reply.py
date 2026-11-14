@@ -691,7 +691,11 @@ def test_a_write_and_a_readback_state_the_same_order(
     got = get_component(component_id=created.component_id, revision_store=revision_store)
 
     expected_period = period or "2024"
-    assert created.fact_summary["order"] == {"direction": "ascending", "period": expected_period}
+    assert created.fact_summary["order"] == {
+        "direction": "ascending",
+        "period": expected_period,
+        "detail": None,
+    }
     assert cast("dict[str, object]", got["fact_summary"])["order"] == created.fact_summary["order"]
 
 

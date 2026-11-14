@@ -249,3 +249,41 @@ def test_a_render_without_the_stated_period_falls_back_without_refusing(
     )
 
     assert _labels(rendered) == ["Ethiopia", "Kenya", "Ghana"]
+    assert rendered.fact_summary["order"] == {
+        "direction": "descending",
+        "period": "2024",
+        "detail": "no drawn series holds a value at 2023, so the series are ranked at 2024",
+    }
+
+
+def _table_recipients(reply):
+    rows = reply.resolved_payload["component"]["rows"]
+    return list(dict.fromkeys(row["dimensions"]["recipient"] for row in rows))
+
+
+def test_a_render_of_an_ordered_table_whose_series_now_differ_in_unit_draws_unranked(
+    write, frame_store, revision_store, release_registry, frame
+):
+    created = write(frame, _intent(frame, member="table", recipients=_THREE, order=_DESCENDING))
+    assert _table_recipients(created) == ["Ethiopia", "Kenya", "Ghana"]
+    later = _frame(
+        {k: v for k, v in _VALUES.items() if k != "country/MLI"},
+        version="2",
+        units={"country/ETH": "dcid:USDollar", "country/GHA": "dcid:Euro"},
+    )
+    frame_store.put(resolved_frame=later)
+
+    rendered = render_component(
+        component_id=created.component_id,
+        revision=created.revision,
+        target_frame=later.frame_ref,
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+
+    # Select order: the series are not ranked across units.
+    assert _table_recipients(rendered) == ["Ethiopia", "Ghana", "Kenya"]
+    order = rendered.fact_summary["order"]
+    assert order["period"] is None
+    assert order["detail"]

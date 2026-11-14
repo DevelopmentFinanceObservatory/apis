@@ -161,7 +161,9 @@ class ComposedUnitModel(BaseModel):
 
 
 class FactSummaryOrderModel(BaseModel):
-    """The order a chart or table drew its series in, from the intent's `order`."""
+    """The order a chart or table drew its series in, from the intent's `order`. The order
+    moves whole series: a table's rows keep their period order within a series. A render that
+    cannot rank as the intent asks still draws, and `detail` says what it did instead."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -169,8 +171,14 @@ class FactSummaryOrderModel(BaseModel):
         description="whether the series run from the smallest value or the largest"
     )
     period: str | None = Field(
-        description="the period label whose values ranked the series, null when no series "
-        "holds a value"
+        description="the period label whose values ranked the series, null when the series "
+        "were drawn unranked, which `detail` then explains"
+    )
+    detail: str | None = Field(
+        description="null when the series were ranked as the intent's `order` asks, otherwise "
+        "one sentence saying what the draw did instead: ranked at another period because no "
+        "drawn series holds the stated one, or drew a table whose series are in more than one "
+        "unit, or whose series hold no value, unranked in the order the select resolves to"
     )
 
 
@@ -210,7 +218,8 @@ class FactSummaryModel(BaseModel):
     )
     order: FactSummaryOrderModel | None = Field(
         description="the order the series were drawn in, null when the intent has no `order` "
-        "or the component drew fewer than two series"
+        "or the component drew fewer than two series. The order moves whole series, and a "
+        "refresh that cannot rank as asked still draws and says so in `detail`"
     )
     defaults: list[AppliedDefaultModel] = Field(
         description="the choices this component made where its intent left one open, empty "
