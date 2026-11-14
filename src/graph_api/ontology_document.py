@@ -1,7 +1,7 @@
 """Build the instance's ontology document and the terms list from live graph reads.
 
-`build_ontology` reads `Class <-typeOf` and `Property <-typeOf` once each; every subject is a
-term. The document's seed is every term the instance declares plus every node a StatVar row
+`build_ontology` reads `Class <-typeOf` and `Property <-typeOf` once each, and every subject is
+a term. The document's seed is every term the instance declares plus every node a StatVar row
 of the code index names. One `node_arc_targets_many` with `confirm_empty` reads the seed's node
 properties with the provenances that declare each value, and each further level reads the
 nodes not yet read that the instance's terms name in `subClassOf`,
@@ -10,11 +10,12 @@ read that is neither a Class nor a Property, and the `subClassOf` and `subProper
 parents, so the class of every value is present and every ancestor is too. One
 `node_arc_subjects_many` lists the members of every instance-declared enumeration, and each
 enumeration that listing omits or answers with no member is listed again alone with
-`node_arc_subjects`, whose answer stands. The members not yet read join the document with the same closure over their types and ancestors.
-`confirm_empty` confirms an empty answer before returning it: one more read of the empties
-together, then one read of each still empty alone, and a dcid still empty is absent from the
-document. So the number of reads grows with the depth of the class and property hierarchy,
-plus a group read per level with an empty answer and one read per dcid the graph does not hold.
+`node_arc_subjects`, whose answer stands. The members not yet read join the document with the
+same closure over their types and ancestors. `confirm_empty` confirms an empty answer before
+returning it. It reads the empties together once more, then each remaining empty alone, and a
+dcid empty after that is absent from the document. So the number of reads grows with the depth
+of the class and property hierarchy, plus a group read per level with an empty answer and one
+read per dcid the graph does not hold.
 
 Each node's values and provenances come from that one read of the node. Its provenances are
 those declaring its `typeOf` arcs. A node held with no `typeOf` arc, or with a `typeOf` arc that
@@ -24,8 +25,8 @@ neither too. One warning per build counts the terms and the typed nodes served s
 first ten of each.
 
 An instance-declared enumeration's members are its `<-typeOf` listing, `complete` when the
-listing read every subject. A base enumeration lists the members StatVar rows use and is never
-`complete`.
+listing read every subject. A base enumeration lists the members StatVar rows use and is
+always `complete: false`.
 
 Every node, member and list of values is sorted, so two builds from the same graph serialise
 to the same bytes.

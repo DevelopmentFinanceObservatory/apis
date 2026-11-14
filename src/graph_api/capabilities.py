@@ -1,7 +1,7 @@
 """Build `GET /api/graph/capabilities` from enforced limits and live deployment facts.
 
-The published limits use the same constants as their guards. The
-`resolve`, `node`, `members`, `roots`, `sources`, `schema`, and `ontology` doors are live. `node_shape_gaps` and
+The published limits use the same constants as their guards. The `resolve`, `node`,
+`members`, `roots`, `sources`, `schema`, and `ontology` doors are live. `node_shape_gaps` and
 `source_document_gaps` publish the member paths each door always gaps: on the node route, the
 measure's definition of every variable with a measure
 (`graph_api.card_definition.MEASURE_DEFINITION_GAP`). Every other source-document member is

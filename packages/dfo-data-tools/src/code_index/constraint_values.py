@@ -20,7 +20,7 @@ def constraint_value_fault(types: Collection[str] | None) -> ConstraintValueFaul
     """Why a constraint value's node is not a resolved node, or `None` when it is.
 
     Args:
-        types: the value node's `typeOf` values; `None` when the graph holds no node.
+        types: the value node's `typeOf` values, or `None` when the graph holds no node.
 
     Returns:
         `"not_held"` when the graph holds no node, `"untyped"` when the node carries no

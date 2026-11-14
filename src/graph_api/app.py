@@ -226,8 +226,9 @@ def graph_surface(
         graph_dcp_base_url: str | None = None
 
         async def _release_owned() -> None:
-            """Drain queued and running DCP reads and ontology check jobs off-loop, then wait for running card-read
-            drivers, whose next read the shut DCP executor refuses. Release the shared profile
+            """Drain queued and running DCP reads and ontology check jobs off-loop, then wait for
+            running card-read drivers, whose next read the shut DCP executor refuses. Release the
+            shared profile
             cache, or cancel the injected surface's queued profile flights and facet reads and
             wait for running ones. Close registrations, release the resolver, then generation, then
             close the graph reader last. Release only resources this lifespan owns. Injected

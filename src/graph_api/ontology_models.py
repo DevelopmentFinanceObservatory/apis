@@ -1,13 +1,13 @@
 """Wire models for the instance's ontology: the document and the terms list.
 
 `OntologyDocument` holds `generation`, the graph generation token the document was built
-from, null where the token is unknown, and `nodes`, one `OntologyNode` per member of the document, sorted by dcid. The
-document holds every Class and Property the instance declares, every node those name in
+from, null where the token is unknown, and `nodes`, one `OntologyNode` per member of the
+document, sorted by dcid. The document holds every Class and Property the instance declares, every node those name in
 `subClassOf`, `subPropertyOf`, `domainIncludes` or `rangeIncludes`, every node a StatVar row
 of the code index names, every listed member of an enumeration, the `typeOf` targets of
 every node that is neither a Class nor a Property, and every `subClassOf` and
 `subPropertyOf` ancestor of all of these. A dcid the graph does not hold, such as the
-literal range `Number`, is not a node; the arc that names it keeps the dcid.
+literal range `Number`, is not a node, and the arc that names it keeps the dcid.
 
 Members named after a Data Commons property carry that property's values in snake case:
 `types` is `typeOf`, as on the node door's envelope, and `alternate_name`, `sub_class_of`,
@@ -22,18 +22,19 @@ A term's `name` follows the same rule over the names its listing entries carry.
 `provenances` holds the dcids of the Provenances that declare the node's `typeOf` arcs,
 verbatim and sorted. A term's are those its listing entries carry. `declared_by` is `"base"`
 when every one starts `dc/base/`, and `"instance"` otherwise. It is null when the graph names no
-declaring Provenance: a node has no `typeOf` arc, or one of its `typeOf` arcs carries no
-Provenance, or a term's listing entries carry none. Its `provenances` is then empty.
+declaring Provenance, which happens when a node has no `typeOf` arc, when one of its `typeOf`
+arcs carries no Provenance, or when a term's listing entries carry none. Its `provenances` is
+then empty.
 
 `enumeration` is set on a Class whose `subClassOf` chain reaches `Enumeration`, and null on
 every other node. An instance-declared enumeration lists the members its `<-typeOf` listing
 read, up to a cap; a base enumeration lists only the members StatVar rows use. `complete` is
 true only when the build listed the class from the graph and the listing read every member,
-so `members` is every member the graph holds; a list it is false on holds some of them.
+so `members` is every member the graph holds. A list where it is false holds some of them.
 
-`OntologyTerms` holds `generation`, null where the token is unknown, and `terms`, every Class and Property on the graph with
-its `name`, `types` (`Class`, `Property` or both), `provenances` and `declared_by`, sorted
-by dcid.
+`OntologyTerms` holds `generation`, null where the token is unknown, and `terms`, every Class
+and Property on the graph with its `name`, `types` (`Class`, `Property` or both),
+`provenances` and `declared_by`, sorted by dcid.
 
 `OntologyProvenances` says how each Provenance of the code index uses the model
 (`graph_api.ontology_provenances`): its dataset label and description, its StatVar count, the
@@ -49,8 +50,9 @@ door's dcid syntax (`graph_api.node_models.Dcid`). A constraint value is any str
 same 512-character ceiling, a finite number within plus or minus 2**53, a boolean or null, and
 `ref` takes the same ceiling. A row names at most `CHECK_MAX_CONSTRAINT_PROPERTIES` constraint
 properties and `CHECK_MAX_OBSERVATION_PROPERTIES` observation properties. One request reads at
-most `CHECK_MAX_READ_IDS` distinct ids from the graph (`graph_api.ontology_check`), at least the
-most one row names, and answers at most `CHECK_MAX_FINDINGS` findings, more than one row yields.
+most `CHECK_MAX_READ_IDS` distinct ids from the graph (`graph_api.ontology_check`), a cap no
+lower than the most one row names, and answers at most `CHECK_MAX_FINDINGS` findings, a cap
+above what one row yields.
 """
 
 from __future__ import annotations
@@ -67,17 +69,17 @@ CHECK_MAX_ROWS = 2_000
 """The most rows one `POST /api/graph/ontology/check` request carries."""
 
 CHECK_MAX_CONSTRAINT_PROPERTIES = 16
-"""The most constraint properties one check row names: twice the most a StatVar row of the
+"""The most constraint properties one check row names, twice the most a StatVar row of the
 served code index carries (7 on the dev graph)."""
 
 CHECK_MAX_OBSERVATION_PROPERTIES = 4
-"""The most observation properties one check row names: twice the most a StatVar row of the
+"""The most observation properties one check row names, twice the most a StatVar row of the
 served code index carries (2 on the dev graph)."""
 
 CHECK_MAX_READ_IDS = 5 + 2 * CHECK_MAX_CONSTRAINT_PROPERTIES + CHECK_MAX_OBSERVATION_PROPERTIES
-"""The most distinct ids one check request may read from the graph, 41: the ids its rows name
-that the ontology document does not hold, counted before any read, each constraint value
-counted unless the value or the document decides it (`graph_api.ontology_check.plan_reads`).
+"""The most distinct ids one check request may read from the graph, 41. They are the ids its
+rows name that the ontology document does not hold, counted before any read, each constraint
+value counted unless the value or the document decides it (`graph_api.ontology_check.plan_reads`).
 One row names at most this many (its 5 shape fields, each constraint property and its value,
 each observation property), so a single row always fits. The check reads each once, in two
 `node_arcs_many` calls: at most 45 POSTs to `/v2/node` when the graph answers every POST, 49
@@ -286,20 +288,25 @@ FindingCode = Literal[
 ]
 """What a finding says about the value it names.
 
-`node_not_held`: the graph holds no node for it, or a constraint value is a number, a boolean
-or a string outside dcid syntax.
-`node_provisional`: the node of a constraint value, `stat_type`, `measurement_qualifier` or
-`measurement_denominator` has only the type `ProvisionalNode`.
-`node_untyped`: the node of a constraint value, `stat_type`, `measurement_qualifier` or
-`measurement_denominator` has no `typeOf`. `value_missing`: a constraint property has a null value. `not_a_property`: a constraint
-property, the measured property or an observation property is not typed `Property`.
-`not_a_class`: the population type is not typed `Class`. `value_outside_range`: every type of
-the value is a document node and none reaches the instance property's `rangeIncludes` by
-`subClassOf`, or the value is outside the document while the document lists every instance of
-every `rangeIncludes` class. `property_outside_domain`: the population type is a document node
-that reaches none of the instance property's `domainIncludes` by `subClassOf`. A constraint
-value whose property is not a held Property gets no finding of its own. `definition_differs`: the code index serves the row's dcid
-with another value in that field; `value` is the served value.
+- `node_not_held`: the graph holds no node for it, or a constraint value is a number, a
+  boolean or a string outside dcid syntax.
+- `node_provisional`: the node of a constraint value, `stat_type`, `measurement_qualifier` or
+  `measurement_denominator` has only the type `ProvisionalNode`.
+- `node_untyped`: the node of a constraint value, `stat_type`, `measurement_qualifier` or
+  `measurement_denominator` has no `typeOf`.
+- `value_missing`: a constraint property has a null value.
+- `not_a_property`: a constraint property, the measured property or an observation property
+  is not typed `Property`.
+- `not_a_class`: the population type is not typed `Class`.
+- `value_outside_range`: every type of the value is a document node and none reaches the
+  instance property's `rangeIncludes` by `subClassOf`, or the value is outside the document
+  while the document lists every instance of every `rangeIncludes` class.
+- `property_outside_domain`: the population type is a document node that reaches none of the
+  instance property's `domainIncludes` by `subClassOf`.
+- `definition_differs`: the code index serves the row's dcid with another value in that field,
+  and `value` is the served value.
+
+A constraint value whose property is not a held Property gets no finding of its own.
 """
 
 

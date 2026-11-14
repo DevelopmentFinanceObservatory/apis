@@ -1260,11 +1260,11 @@ class GraphClient:
         target's name and types need no read of their own, or `None` for a node the graph
         answers with none of them. The dcids the optional cache (sized `label_cache_size`) does
         not hold under the generation stamp are read in `node_arcs_many`'s initial chunks and
-        pages, bounded by `deadline`. An empty answer is returned as read, unless
-        `confirm_empty`, which reads it again as `node_arcs_many` does, in a group and then
-        alone, every one probed, so `None` is the graph's answer for that dcid read alone. A
-        node answered with arcs is cached; an empty answer is not, since a batch can empty an
-        entry depending on which other dcids share it."""
+        pages, bounded by `deadline`. An empty answer is returned as read. With `confirm_empty`
+        it is read again as `node_arcs_many` does, in a group and then alone, every one
+        probed, so `None` is the graph's answer for that dcid read alone. A node answered with
+        arcs is cached. An empty answer is not, since a batch can empty an entry depending on
+        which other dcids share it."""
         if not dcids:
             return {}
         stamp = self._generation.stamp()
@@ -1663,7 +1663,7 @@ class GraphClient:
         """The reverse-arc walk `node_subjects` documents: the distinct subject dcids in
         first-occurrence order, capped at `max_results`, and whether the walk proved
         truncation. `fold`, where given, receives each subject's dcid and wire entry as the
-        page arrives; the walk itself keeps no entry."""
+        page arrives. The walk itself keeps no entry."""
         spec = _reverse_arc_spec(property, filters)
         dcids: list[str] = []
         seen: set[str] = set()
@@ -1785,7 +1785,7 @@ class GraphClient:
         """The shared-token walk `node_subjects_many` documents: for each distinct lead, its
         distinct subject dcids in first-occurrence order, capped at `max_results`, with the
         lead's coverage flag. `fold`, where given, receives the lead, the subject's dcid and
-        its wire entry as the page arrives; the walk itself keeps no entry."""
+        its wire entry as the page arrives. The walk itself keeps no entry."""
         if not dcids:
             return {}
         unique_dcids = list(dict.fromkeys(dcids))
@@ -2797,7 +2797,7 @@ class _ArcSubjectFold:
 
 
 def _entry_provenances(entries: Iterable[dict]) -> tuple[str, ...]:
-    """The distinct `provenanceId`s of `entries`, sorted; entries without one add nothing."""
+    """The distinct `provenanceId`s of `entries`, sorted. Entries without one add nothing."""
     return tuple(sorted({p for entry in entries if (p := entry.get("provenanceId"))}))
 
 

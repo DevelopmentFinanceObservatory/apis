@@ -6,10 +6,9 @@ nodes. `child_places_batch` expands regions. `resolve_by_arc` and
 `entity_resolution.GraphLookup`. `node_subjects` reads a Dataset's
 Provenance children through the reverse `isPartOf` arc. `node_arc_subjects`,
 `node_arc_subjects_many` and `node_arc_targets_many` read subjects and
-targets with their names, types
-and the provenances that declared each arc, which tell the instance's own
-terms from base Data Commons. Each method accepts an absolute monotonic
-deadline.
+targets with their names, types and the provenances that declared each arc,
+which tell the instance's own terms from base Data Commons. Each method
+accepts an absolute monotonic deadline.
 """
 
 from __future__ import annotations
@@ -39,7 +38,7 @@ class GraphNodeReader(Protocol):
     ) -> NodeArcsByDcid:
         """Read selected arcs in one batch. Each property's values are unique and ordered. An
         empty answer from a batch is read again in a group, then alone up to
-        `individual_probe_budget` ids; with `None`, every `None` is the answer for an id read
+        `individual_probe_budget` ids. With `None`, every `None` is the answer for an id read
         alone."""
         ...
 
@@ -108,6 +107,6 @@ class GraphNodeReader(Protocol):
         confirm_empty: bool = False,
         deadline: float | None = None,
     ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
-        """Read selected arcs' targets with names, types and provenances; `None` if absent.
+        """Read selected arcs' targets with names, types and provenances, or `None` for an absent dcid.
         `confirm_empty` reads an empty answer again until the dcid is read alone."""
         ...

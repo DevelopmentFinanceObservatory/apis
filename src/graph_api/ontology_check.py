@@ -2,54 +2,55 @@
 
 `OntologyLookup` holds the ontology document's nodes as the check reads them, built once per
 document. `plan_reads` decides, before any read, which ids outside the document a request
-reads, and refuses the request when they pass `CHECK_MAX_READ_IDS` or include an id of an
+reads. It refuses the request when they pass `CHECK_MAX_READ_IDS` or include an id of an
 origin the deployment does not serve. `check_rows` answers each node a row names from the
 document and asks every other named id once of the reader's `node_arcs_many`, for its `typeOf`
 and `name`, with no probe budget. The served reader, `origin_catalogue.graph.OriginGraphClient`,
 answers an id the origin catalogue's arc tables hold from those tables, a node they hold with no
 arc as absent, and reads every other id from the graph. There an id a batch answers empty is
 read again with the other empties, then alone, so `None` is the graph's answer for that id
-read alone. A node with neither a type nor a name reads as absent, and a node with a name and no `typeOf` is untyped. A
-read error propagates, so no node is reported absent because a read failed. The check reads no
-ancestry.
+read alone. A node with neither a type nor a name reads as absent, and a node with a name and
+no `typeOf` is untyped. A read error propagates, so no node is reported absent because a read
+failed. The check reads no ancestry.
 
 The reads come in two rounds. The first reads the shape fields, the constraint properties and
 the observation properties the document does not hold, and the values of constraint properties
 the document holds as Properties. The second reads the values of constraint properties the
 first round found held as Properties. A constraint value whose property is not a held Property
-is never read and gets no finding of its own: the property's finding marks the cell.
+is not read and gets no finding of its own, because the property's finding marks the cell.
 
-A request reads at most `CHECK_MAX_READ_IDS`, 41, ids, each once: the second round skips an
-id the first read. It reads fewer from the graph when the arc tables answer some. Each round is
-one `node_arcs_many` call, which sends, for each backend its ids go to (the mixer, and the UN
-deployment where the deployment serves the UN origin), one POST of its ids (a chunk holds 50),
-one POST of the group retry of the empty answers, and one POST per id still empty. A check of k
-ids therefore sends at most k + 4 POSTs with one backend, 45 for 41 ids, and k + 8 with two, 49.
-A front-door refusal splits a POST of several ids into two halves, so a batch or group retry of
-j ids costs at most 2j - 1 POSTs, and a check at most 5k - 2, 203 for 41 ids, on either kind of
-deployment. A continuation page adds one POST. Each POST is tried up to 3 times on a 5xx answer
-or a transport error. Every read carries the check's deadline, `GRAPH_ONTOLOGY_CHECK_TIMEOUT_SECONDS`
-(30 s) from the request's start.
+A request reads at most `CHECK_MAX_READ_IDS` (41) ids, each once, because the second round
+skips an id the first read. It reads fewer from the graph when the arc tables answer some.
+Each round is one `node_arcs_many` call, which sends, for each backend its ids go to (the
+mixer, and the UN deployment where the deployment serves the UN origin), one POST of its ids
+(a chunk holds 50), one POST of the group retry of the empty answers, and one POST per id
+still empty. A check of k ids therefore sends at most k + 4 POSTs with one backend, 45 for 41
+ids, and k + 8 with two, 49. A front-door refusal splits a POST of several ids into two
+halves, so a batch or group retry of j ids costs at most 2j - 1 POSTs, and a check at most
+5k - 2, 203 for 41 ids, on either kind of deployment. A continuation page adds one POST. Each
+POST is tried up to 3 times on a 5xx answer or a transport error. Every read carries the
+check's deadline, `GRAPH_ONTOLOGY_CHECK_TIMEOUT_SECONDS` (30 s) from the request's start.
 
 Some constraint values need no read. A value that is a number, a boolean, or a string outside
-dcid syntax names no node: `node_not_held`. A value outside the document, on an instance
-property whose range the document decides (`OntologyLookup.decides`), is no member of the
-range: `value_outside_range`. Every other id outside the document is read. `plan_reads` counts
-every value under a property outside the document, read or not. One row names at most
-`CHECK_MAX_READ_IDS` ids, so a single row always fits.
+dcid syntax names no node, so it gets `node_not_held`. A value outside the document, on an
+instance property whose range the document decides (`OntologyLookup.decides`), is no member of
+the range and gets `value_outside_range`. Every other id outside the document is read.
+`plan_reads` counts every value under a property outside the document, read or not. One row
+names at most `CHECK_MAX_READ_IDS` ids, so a single row always fits.
 
-The findings stop at `CHECK_MAX_FINDINGS`: `check_rows` raises `OntologyCheckTooManyFindings`
+The findings stop at `CHECK_MAX_FINDINGS`. `check_rows` raises `OntologyCheckTooManyFindings`
 at the row that passes it. One row yields at most 79 findings (`CHECK_MAX_FINDINGS` counts
 them), so a single row always fits.
 
 Every row gets existence and kind checks. A constraint value, `stat_type`,
 `measurement_qualifier` and `measurement_denominator` must each name a resolved node, by
 `code_index.constraint_values.constraint_value_fault`, the test the code index export refuses
-a release on for a constraint value. Range and domain rules apply only to a property the document declares
-`declared_by == "instance"`, and judge only through the document, which holds every
-`subClassOf` ancestor of each class it holds. A value is outside the range when every one of
-its types is a document node and none reaches a `rangeIncludes` class by `subClassOf`; a value
-with any type outside the document gets no range finding. A property is outside its domain
+a release on for a constraint value. Range and domain rules apply only to a property the
+document declares `declared_by == "instance"`, and judge only through the document, which
+holds every `subClassOf` ancestor of each class it holds. A value is outside the range when
+every one of its types is a document node and none reaches a `rangeIncludes` class by
+`subClassOf`. A value with any type outside the document gets no range finding. A property is
+outside its domain
 when the row's population type is a document node that reaches no `domainIncludes` class by
 `subClassOf`; a population type outside the document gets no domain finding. A property with
 no `rangeIncludes` or no `domainIncludes` admits anything. The domain rule covers the measured
@@ -223,7 +224,7 @@ def plan_reads(
     Raises:
         OntologyCheckTooManyReads: the rows name more than `CHECK_MAX_READ_IDS` ids to read.
         OntologyCheckUnservedId: an id to read belongs to the UN origin and `un_served` is
-            false; the smallest such id is named.
+            false. The smallest such id is named.
     """
     first: set[str] = set()
     pending: dict[str, set[str]] = {}
@@ -415,7 +416,7 @@ def _check_row(
             population = lookup.ancestry([row.population_type])
 
     def check_property(field: str, prop: str) -> bool:
-        """Find the property's faults; whether it is a held Property."""
+        """Find the property's faults and return whether it is a held Property."""
         held = nodes.get(prop)
         if held is None:
             find(field, prop, "node_not_held")

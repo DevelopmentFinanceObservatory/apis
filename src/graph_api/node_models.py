@@ -425,8 +425,8 @@ Dcid = Annotated[
         pattern=rf"^{routing.DcidConvertor.regex}$", max_length=routing.DCID_MAX_LENGTH
     ),
 ]
-"""A node dcid as a request body names it: the node route's `{dcid}` path syntax and its
-512-character ceiling."""
+"""A node dcid as a request body names it, in the node route's `{dcid}` path syntax and with
+its 512-character ceiling."""
 
 
 class NodesRequest(BaseModel):

@@ -1113,7 +1113,7 @@ class OriginGraphClient:
     def _subjects_backend(
         self, catalogue: Catalogue, arcs: Sequence[tuple[str, str]]
     ) -> GraphClient | None:
-        """The backend for a reverse read carrying `arcs`: chosen from every property and value
+        """The backend for a reverse read carrying `arcs`, chosen from every property and value
         they name, so one UN name anywhere sends the read to the UN deployment."""
         return self._backend(catalogue, *(name for arc in arcs for name in arc))
 
@@ -1127,7 +1127,7 @@ class OriginGraphClient:
         disabled: Callable[[], V],
         tables: Callable[[Catalogue, str], V | _Unmirrored] | None = None,
     ) -> dict[str, V]:
-        """Route a batched reverse read: a UN `property` sends every distinct lead to the UN
+        """Route a batched reverse read. A UN `property` sends every distinct lead to the UN
         deployment, or answers each `disabled()` with the UN off. Any other property routes the
         leads by dcid through `_route_many`, with `tables` answering the leads they hold."""
         if is_un_dcid(property):

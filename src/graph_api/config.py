@@ -31,7 +31,8 @@ class _GraphDefaults(BaseSettings):
     node_timeout_seconds: int = Field(default=10, ge=1)
 
     # Deadline of `POST /api/graph/ontology/check`: its wait for the ontology build and its
-    # reads of up to `CHECK_MAX_READ_IDS` ids, each absent one read alone, at most 203 POSTs.
+    # reads of up to `CHECK_MAX_READ_IDS` ids, each id the graph does not hold read alone, at
+    # most 203 POSTs.
     ontology_check_timeout_seconds: int = Field(default=30, ge=1)
 
     # Most source documents the documentation route keeps in its cache at once.

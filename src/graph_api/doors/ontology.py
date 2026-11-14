@@ -2,7 +2,7 @@
 
 `GET /api/graph/ontology` serves `OntologyDocument` and `GET /api/graph/ontology/terms`
 serves `OntologyTerms`. One build (`graph_api.ontology_document.build_ontology`) yields both,
-and `GraphDeps.ontology` holds its result: a single-flight cache of one entry, keyed by the
+and `GraphDeps.ontology` holds its result in a single-flight cache of one entry, keyed by the
 graph generation token and the content hash of the code index the build read, beside the
 cache's own generation stamp. The lifespan registers it as `graph_api.ontology`, so a
 generation change clears it.
@@ -22,8 +22,8 @@ the entry keeps it as `RefusedOntology` and every request for the key answers th
 no build. Any other failed build is not kept.
 
 The cached value holds each body encoded once in the models' field order, so two builds of one
-graph give the same bytes. Each answers `public, max-age=300` with a strong `ETag` over those bytes
-and a gzip representation, honouring `If-None-Match` with 304
+graph give the same bytes. Each answers `public, max-age=300` with a strong `ETag` over those
+bytes and a gzip representation, and answers `If-None-Match` with 304
 (`dfo_platform.static_response.FrozenJSON`).
 
 `POST /api/graph/ontology/check` takes 1 to `CHECK_MAX_ROWS` candidate StatVar definitions and
@@ -44,7 +44,7 @@ ids the check reads: more than `CHECK_MAX_READ_IDS`, or a UN id while the bound 
 not serve the UN origin, is refused 400 `request_invalid` with pointer `/rows`.
 
 Every check runs as one job on `GraphDeps.check_executor`, whose
-`GRAPH_ONTOLOGY_CHECK_CONCURRENCY` (2) workers are its own, so a check never takes one of the
+`GRAPH_ONTOLOGY_CHECK_CONCURRENCY` (2) workers are its own, so a check takes none of the
 shared DCP-read workers. The job reads, checks and encodes the response, and the event loop
 only wraps its bytes. A worker stays held until its job returns, even after its request is
 cancelled or times out, so at most two checks run at once in the process. One more is refused at
@@ -150,7 +150,7 @@ class FrozenOntology:
 
 @dataclass(frozen=True, slots=True)
 class RefusedOntology:
-    """A build refusal that cannot change while the generation holds: a truncated term listing.
+    """A build refusal that cannot change while the generation holds, a truncated term listing.
     `error` makes a fresh exception for each request it answers."""
 
     error: Callable[[], GraphReadError]
@@ -395,7 +395,7 @@ def _check_body(
     generation: str | None,
     deadline: float,
 ) -> bytes:
-    """The encoded response of one check: `check_rows` and `OntologyCheckResponse`'s JSON."""
+    """The encoded response of one check, from `check_rows` and `OntologyCheckResponse`'s JSON."""
     findings = check_rows(
         rows, reads=reads, lookup=lookup, reader=reader, code_index=code_index, deadline=deadline
     )
@@ -435,7 +435,7 @@ async def get_ontology_provenances(deps: GraphDepsDep, request: Request) -> Resp
 
 def build_ontology_door() -> DoorContribution:
     router = APIRouter()
-    # `response_model` documents the response body in OpenAPI; the handlers' responses pass
+    # `response_model` documents the response body in OpenAPI. The handlers' responses pass
     # through.
     router.add_api_route(
         "/api/graph/ontology", get_ontology, methods=["GET"], response_model=OntologyDocument

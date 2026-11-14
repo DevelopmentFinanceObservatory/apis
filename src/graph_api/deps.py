@@ -86,7 +86,7 @@ class GraphDeps:
     node_entries: NodeEntryCache = field(default_factory=NodeEntryCache)
     # The ontology routes' built bodies or kept refusal, one entry keyed by generation token and
     # code index.
-    # The lifespan's cache builds on `dcp_executor`; this default has no executor, so a build
+    # The lifespan's cache builds on `dcp_executor`. This default has no executor, so a build
     # through it fails.
     ontology: SingleFlightCache[OntologyKey, OntologyEntry] = field(
         default_factory=lambda: SingleFlightCache(

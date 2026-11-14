@@ -1585,7 +1585,7 @@ def _reject_provisional_constraint_values(
 
     One batched read covers all distinct values. A value `constraint_value_fault` faults
     (a missing node, a node with no `typeOf`, or one typed only `ProvisionalNode`) raises
-    `ExportRefused`; a provisional type alongside a real type passes.
+    `ExportRefused`. A provisional type alongside a real type passes.
     """
     candidate_values = sorted(
         {value for _, constraint_properties in rows for value in constraint_properties.values()}
