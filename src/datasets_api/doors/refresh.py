@@ -54,8 +54,8 @@ recorded yet, mints it from the head's stored frame as a head-hit groupby read d
 A stored frame answers only while its stored frame file (`render.servable_frame_location`) is
 servable, for the plain rendering and a derived one alike, since Presentation loads the frame
 from that file. When a derived version's frame file has expired the door renders it again from
-the head's stored frame and records it. When that cannot be done, or the head's own frame file has
-expired, the door rebuilds the dataset.
+the head's stored frame, replaying the party-totals cut its trace records, and records it. When
+that cannot be done, or the head's own frame file has expired, the door rebuilds the dataset.
 
 A rebuild over the inline budget submits the request's operation
 (`operations.submit.submit_over_budget`). The submission resets a done operation, so the door
@@ -103,6 +103,7 @@ from datasets_api.recorded_rendering import (
     StoredRendering,
     frame_options,
     recorded_mintings,
+    recorded_party_cut,
     records_plain_file,
     rendering_of,
 )
@@ -299,6 +300,9 @@ def _rendering_frame(
     (`_servable_frame`). The plain frame is the head. A derived rendering is the derived version
     on record under the head; with none on record, or with that version's frame file expired,
     the rendering is made from the head's stored frame, as a head-hit groupby read makes it. A
+    version on record replays the party-totals cut its trace records
+    (`recorded_rendering.recorded_party_cut`), so it renders to its own version whatever the code
+    index and the cut's rule now decide; with none on record the cut is derived afresh. A
     rendering with a version of its own is recorded under it with its canonical frame, and one
     that leaves the frame unchanged is linked under the head. `None` sends the caller to a
     rebuild: the head's frame file has expired or cannot render it."""
@@ -307,10 +311,14 @@ def _rendering_frame(
     recorded = _recorded_derived(
         spec_id=spec_id, base_content_version=head_content_version, minting=minting, deps=deps
     )
+    recorded_cut = None
     if recorded is not None:
         stored = _servable_frame(spec_id=spec_id, content_version=recorded, deps=deps)
         if stored is not None:
             return stored
+        version = deps.snapshot_reader.read_version(spec_id, recorded)
+        if version is not None:
+            recorded_cut = recorded_party_cut(version)
     options = frame_options(minting)
     rendered = head_rendering(
         subject_id=spec_id,
@@ -319,6 +327,7 @@ def _rendering_frame(
         options=options,
         trace_id=trace_id,
         coverage_snapshot=coverage_snapshot,
+        recorded_cut=recorded_cut,
     )
     if rendered is None:
         return None

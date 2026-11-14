@@ -400,13 +400,13 @@ _CUT_ENTRIES = [
         "entities": ["dcid:GroupOfSeven"],
         "kept_in": [
             {
-                "time_period": "1968",
                 "series": {
                     "financingProvider": "dcid:DACCountriesTotal",
                     "measurementMethod": None,
                     "stat_var": "dcid:SV",
                     "unit": {"currency": "USD", "prices": "current"},
                 },
+                "time_periods": ["1968"],
             }
         ],
     },

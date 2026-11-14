@@ -210,8 +210,8 @@ def test_a_cut_that_leaves_nothing_out_renders_under_the_frame_s_own_version():
 
 def test_a_cut_keeps_the_whole_totals_of_a_period_holding_only_totals():
     """A period with members loses every total, and a totals-only period keeps its whole
-    total, which the trace names with each cell, a period of one StatVar's series, it stayed
-    in."""
+    total, which the trace names with each StatVar's series it stayed in and the period it
+    stayed there."""
     frame = _periods_frame(
         {
             "2021": (_KENYA, _DEVELOPING, _ALL_RECIPIENTS),
@@ -233,12 +233,12 @@ def test_a_cut_keeps_the_whole_totals_of_a_period_holding_only_totals():
             "entities": [_ALL_RECIPIENTS],
             "kept_in": [
                 {
-                    "time_period": "2022",
                     "series": {
                         "measurementMethod": None,
                         "stat_var": stat_var,
                         "unit": None,
                     },
+                    "time_periods": ["2022"],
                 }
                 for stat_var in ("dcid:SV_A", "dcid:SV_B")
             ],

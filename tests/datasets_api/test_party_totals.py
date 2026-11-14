@@ -5,11 +5,13 @@ from __future__ import annotations
 from typing import Any
 
 import pyarrow as pa
+import pyarrow.compute as pc
 import pytest
 from dfo_frame_grammar import Frame, frame_sha256
 from pydantic import TypeAdapter
 
 from code_index.types import PartyRow, RoleAxis, WholeMarker
+from datasets_api import party_totals
 from datasets_api.manifest_models import Trace, TraceModel
 from datasets_api.party_totals import (
     TRACE_KEY,
@@ -181,17 +183,17 @@ _P = "provenance/P"
 
 
 def _kept_in(
-    period: str, *, recipient: str, unit: object = None, stat_var: str = "dcid:SV"
+    *periods: str, recipient: str, unit: object = None, stat_var: str = "dcid:SV"
 ) -> dict[str, object]:
-    """A `kept_in` cell of the provider role: `period` of the series of `recipient`."""
+    """A `kept_in` item of the provider role: the series of `recipient` and its `periods`."""
     return {
-        "time_period": period,
         "series": {
             _RECIPIENT: recipient,
             "measurementMethod": None,
             "stat_var": stat_var,
             "unit": unit,
         },
+        "time_periods": list(periods),
     }
 
 
@@ -351,10 +353,7 @@ _USD_2021 = {"base_year": 2021, "currency": "USD", "prices": "constant"}
                     "role": _PROVIDER,
                     "provenance": _P,
                     "entities": [_DAC_TOTAL],
-                    "kept_in": [
-                        _kept_in("2021", recipient=_GHANA, unit=_USD_2021),
-                        _kept_in("2022", recipient=_GHANA, unit=_USD_2021),
-                    ],
+                    "kept_in": [_kept_in("2021", "2022", recipient=_GHANA, unit=_USD_2021)],
                 }
             ],
             id="trace-names-each-series-cell-a-total-stayed-in",
@@ -588,9 +587,9 @@ def test_a_party_that_is_a_total_in_one_dataset_leaves_that_datasets_rows_alone(
                     "provenance": _DAC2A,
                     "entities": [_IMF, _TRUST_FUNDS],
                     "kept_in": [
-                        _kept_in("2019", recipient=_KENYA),
                         _kept_in("2020", recipient=_GHANA),
                         _kept_in("2020", recipient=_KENYA, stat_var="dcid:Other"),
+                        _kept_in("2019", recipient=_KENYA),
                     ],
                 }
             ],
@@ -623,3 +622,88 @@ def test_a_trace_keeps_its_null_provenance_through_a_response_dump():
     assert adapter.dump_python(adapter.validate_python(trace), mode="json", exclude_none=True) == (
         trace
     )
+
+
+def _encoded(chunk: Frame, encoding: str) -> Frame:
+    """`chunk` with each text column but `unit` as `encoding`: a dictionary of this chunk's own
+    values or a large string."""
+    table = chunk.table
+    for at, column in enumerate(table.columns):
+        if not pa.types.is_string(column.type):
+            continue
+        encoded = (
+            column.dictionary_encode()
+            if encoding == "dictionary"
+            else column.cast(pa.large_string())
+        )
+        table = table.set_column(at, table.schema.field(at).name, encoded)
+    return Frame(columns=chunk.columns, table=table)
+
+
+@pytest.mark.parametrize("encoding", ["dictionary", "large"])
+def test_a_cut_reads_text_columns_of_any_encoding_across_chunks(encoding: str):
+    """France gives to Kenya in 2021 in the first chunk, which holds no total. The second
+    chunk's totals then lose Kenya's series, which holds France, and official donors keep
+    Ghana's 2022, a year of totals alone. The chunks encode their text columns each with a
+    dictionary of its own, or as large strings."""
+    rows = [
+        ("2021", _FRANCE, _KENYA),
+        ("2021", _OFFICIAL, _KENYA),
+        ("2022", _G7, _KENYA),
+        ("2022", _OFFICIAL, _GHANA),
+    ]
+    frame = Frame.build(
+        role_keys=_ROLES,
+        rows=[
+            {
+                "stat_var": "dcid:SV",
+                _PROVIDER: provider,
+                _RECIPIENT: recipient,
+                "provenance": _P,
+                "time_period": period,
+                "value": 1.0,
+            }
+            for period, provider, recipient in rows
+        ],
+    )
+    france = pc.equal(frame.table.column(_PROVIDER), _FRANCE)
+    chunks = tuple(
+        _encoded(Frame(columns=frame.columns, table=frame.table.filter(mask)), encoding)
+        for mask in (france, pc.invert(france))
+    )
+    cut = cut_party_totals(
+        lambda: iter(chunks), roles=open_party_roles({}, _ROLES), parties=_PARTIES
+    )
+
+    assert cut.trace_entries() == [
+        {"role": _PROVIDER, "provenance": _P, "entities": [_G7]},
+        {
+            "role": _PROVIDER,
+            "provenance": _P,
+            "entities": [_OFFICIAL],
+            "kept_in": [_kept_in("2022", recipient=_GHANA)],
+        },
+    ]
+    at = [frame.columns.index(name) for name in ("time_period", _PROVIDER, _RECIPIENT)]
+    for one in (cut, PartyTotalsCut.of_trace_entries(cut.trace_entries())):
+        kept = [
+            tuple(row[index] for index in at)
+            for chunk in one.chunks(lambda: iter(chunks))()
+            for row in chunk.rows
+        ]
+        assert sorted(kept) == [("2021", _FRANCE, _KENYA), ("2022", _OFFICIAL, _GHANA)]
+
+
+def test_a_role_without_total_rows_reads_no_cells(monkeypatch: pytest.MonkeyPatch):
+    """Neither open role holds a total, so the cut reads no cell of the frame."""
+
+    def refused(*args: object) -> pa.Table:
+        raise AssertionError("a role without total rows read its cells")
+
+    monkeypatch.setattr(party_totals, "_cell_keys", refused)
+    frame = _frame([(_FRANCE, _KENYA), (_GATES, _GHANA), (_GERMANY, _AFRICA_REGIONAL)])
+
+    kept, trace = _kept(frame, identity={})
+
+    assert len(kept) == 3
+    assert trace == []

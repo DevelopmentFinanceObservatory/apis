@@ -762,19 +762,25 @@ class RetentionModel(BaseModel):
 
 
 @with_config(ConfigDict(extra="forbid"))
-class PartyTotalsKeptCellModel(TypedDict):
-    """One cell in which a `without_party_totals` cut kept a trace entry's totals
-    (`PartyTotalsLeftOutModel.kept_in`): one `time_period` value of one series of the entry's
-    role in the entry's provenance."""
+class PartyTotalsKeptSeriesModel(TypedDict):
+    """One series in which a `without_party_totals` cut kept a trace entry's totals
+    (`PartyTotalsLeftOutModel.kept_in`), and the `time_period` values of that series, in the
+    entry's role and provenance, where they stayed."""
 
-    time_period: Annotated[str, Field(description="the time_period value of the cell")]
     series: Annotated[
         dict[str, str | dict[str, JsonValue] | None],
         Field(
-            description="the series of the cell: each column of the frame's grain other than "
-            "the entry's role, time_period and provenance (stat_var, the frame's other role "
-            "columns, unit and measurementMethod), mapped to the cell the series holds there, "
-            "null for a null cell and a unit by its JSON form"
+            description="the series: each column of the frame's grain other than the entry's "
+            "role, time_period and provenance (stat_var, the frame's other role columns, unit "
+            "and measurementMethod), mapped to the cell the series holds there, null for a "
+            "null cell and a unit by its JSON form"
+        ),
+    ]
+    time_periods: Annotated[
+        list[str],
+        Field(
+            description="the time_period values of the series in which the entry's totals "
+            "stayed, distinct and sorted by code point"
         ),
     ]
 
@@ -804,15 +810,15 @@ class PartyTotalsLeftOutModel(TypedDict):
     ]
     kept_in: NotRequired[
         Annotated[
-            list[PartyTotalsKeptCellModel],
+            list[PartyTotalsKeptSeriesModel],
             Field(
-                description="the cells, each one time_period of one series, in which the "
-                "entry's totals stayed in this provenance's rows. A cell that holds only totals "
-                "keeps its whole totals, and keeps every total when none is whole and the role "
-                "holds no other party in that series. Sorted by time_period, then by the "
-                "series' cells in column-name order, each null first, then a string by code "
-                "point, then an object by the code points of its JCS text. Absent when the "
-                "totals left every cell"
+                description="the series in which the entry's totals stayed in this "
+                "provenance's rows, one item each, with the time_period values where they "
+                "stayed. A cell, one time_period of one series, that holds only totals keeps "
+                "its whole totals, and keeps every total when none is whole and the role holds "
+                "no other party in that series. Sorted by the series' cells in column-name "
+                "order, each null first, then a string by code point, then an object by the "
+                "code points of its JCS text. Absent when the totals left every cell"
             ),
         ]
     ]
@@ -832,7 +838,8 @@ class TraceModel(TypedDict, extra_items=object):
                 "left out of this version's frame: one entry per open party role, "
                 "provenance that lost rows and set of kept cells, in role order, then "
                 "provenance order (null first), then kept cells (entries without kept_in "
-                "first, then by kept_in compared item by item in its own order). Absent when "
+                "first, then by kept_in compared item by item: by series in its own order, "
+                "then by time_periods). Absent when "
                 "the rendering left nothing out or was not asked to"
             ),
         ]
