@@ -19,12 +19,11 @@ with a name equal to the dcid counting as no name, so the Graph surface names a 
 A term's `name` follows the same rule over the names its listing entries carry.
 `description` is the smallest of the node's `description` values by code point.
 
-`provenances` holds the dcids of the Provenances that declare the node's `typeOf` arcs,
-verbatim and sorted. A term's are those its listing entries carry. `declared_by` is `"base"`
-when every one starts `dc/base/`, and `"instance"` otherwise. It is null when the graph names no
-declaring Provenance, which happens when a node has no `typeOf` arc, when one of its `typeOf`
-arcs carries no Provenance, or when a term's listing entries carry none. Its `provenances` is
-then empty.
+`provenances` holds the dcids of the Provenances that a node's `typeOf` targets carry, verbatim
+and sorted. A term's are those its listing entries carry. `declared_by` is `"base"` when every
+one starts `dc/base/`, and `"instance"` otherwise. It is null when the graph names no declaring
+Provenance, which happens when a node has no `typeOf` arc, when none of its `typeOf` targets
+carries one, or when a term's listing entries carry none. Its `provenances` is then empty.
 
 `enumeration` is set on a Class whose `subClassOf` chain reaches `Enumeration`, and null on
 every other node. An instance-declared enumeration lists the members its `<-typeOf` listing
@@ -81,12 +80,12 @@ CHECK_MAX_READ_IDS = 5 + 2 * CHECK_MAX_CONSTRAINT_PROPERTIES + CHECK_MAX_OBSERVA
 rows name that the ontology document does not hold, counted before any read, each constraint
 value counted unless the value or the document decides it (`graph_api.ontology_check.plan_reads`).
 One row names at most this many (its 5 shape fields, each constraint property and its value,
-each observation property), so a single row always fits. The check reads each once, in two
-`node_arcs_many` calls: at most 45 POSTs to `/v2/node` when the graph answers every POST, 49
+each observation property), so a single row always fits. The check reads each once, in one
+`node_arcs_many` call: at most 43 POSTs to `/v2/node` when the graph answers every POST, 45
 where the deployment serves the UN origin, and at most 203 when the front door refuses every
 POST naming more than one id, each tried up to 3 times, all within the 30 s
 `GRAPH_ONTOLOGY_CHECK_TIMEOUT_SECONDS` (`graph_api.ontology_check` counts them). On the dev
-graph, 41 absent ids took 43 POSTs and 7.4 to 7.8 s, a quarter of that deadline."""
+graph, 41 absent ids took 43 POSTs and 7.4 to 8.5 s, under a third of that deadline."""
 
 CHECK_MAX_FINDINGS = 2_000
 """The most findings one check answers. A check whose findings pass it stops and is refused.
@@ -132,7 +131,7 @@ class OntologyNode(ResponseModel):
     )
     declared_by: DeclaredBy | None = Field(
         description="null when the graph names no declaring Provenance for the node: it has no "
-        "typeOf arc, or one of its typeOf arcs carries no Provenance"
+        "typeOf arc, or none of its typeOf targets carries one"
     )
     enumeration: OntologyEnumeration | None = Field(
         description="the members when the node is an enumeration Class; null otherwise"

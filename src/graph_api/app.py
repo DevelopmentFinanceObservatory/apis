@@ -220,6 +220,7 @@ def graph_surface(
         provenances_registration: RegistrationHandle | None = None
         dcp_executor: DcpReadExecutor | None = None
         check_executor: DcpReadExecutor | None = None
+        provenances_executor: ThreadPoolExecutor | None = None
         profile_executor: ThreadPoolExecutor | None = None
         profile_reads: ThreadPoolExecutor | None = None
         card_reads: CardReadCaches | None = None
@@ -238,6 +239,8 @@ def graph_surface(
                 await asyncio.to_thread(dcp_executor.shutdown, wait=True)
             if check_executor is not None:
                 await asyncio.to_thread(check_executor.shutdown, wait=True)
+            if provenances_executor is not None:
+                await asyncio.to_thread(provenances_executor.shutdown, wait=True)
             if card_reads is not None:
                 await asyncio.to_thread(card_reads.close)
             if shared_profiles is not None:
@@ -356,7 +359,13 @@ def graph_surface(
             ontology_registration = resolved_generation.register(
                 "graph_api.ontology", stats=ontology.stats, clear=ontology.clear
             )
-            ontology_provenances = new_provenances_cache(generation=resolved_generation)
+            # A single-flight cache needs a pool no caller runs on.
+            provenances_executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="graph-ontology-provenances"
+            )
+            ontology_provenances = new_provenances_cache(
+                executor=provenances_executor, generation=resolved_generation
+            )
             provenances_registration = resolved_generation.register(
                 "graph_api.ontology_provenances",
                 stats=ontology_provenances.stats,

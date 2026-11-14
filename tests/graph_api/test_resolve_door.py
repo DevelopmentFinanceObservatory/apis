@@ -14,9 +14,10 @@ import pytest
 
 from entity_resolution import EntityResolutionError, Matched, NotFound, Resolution, Resolved
 from entity_resolution.membership import DEFAULT_PROJECTION
-from graph_api.deps import GraphDeps
+from graph_api.deps import GraphDeps, new_check_executor
 from graph_api.doors import resolve as resolve_door
 from graph_api.doors.node import NODE_MEMBERSHIP_SLOT
+from graph_api.doors.ontology import new_ontology_cache, new_provenances_cache
 from graph_api.doors.sources import new_provenance_doc_cache
 from graph_api.kinds import KINDS
 from graph_api.resolve_models import ResolveRequest
@@ -822,6 +823,9 @@ def test_run_resolve_refreshes_the_generation_once():
         generation=generation,
         provenance_docs=new_provenance_doc_cache(executor=executor, generation=generation),
         coverage=get_coverage_service(),
+        ontology=new_ontology_cache(executor=executor, generation=generation),
+        ontology_provenances=new_provenances_cache(executor=executor, generation=generation),
+        check_executor=new_check_executor(),
     )
 
     response = asyncio.run(

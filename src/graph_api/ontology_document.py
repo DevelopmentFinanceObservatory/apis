@@ -14,15 +14,17 @@ enumeration that listing omits or answers with no member is listed again alone w
 same closure over their types and ancestors. `confirm_empty` confirms an empty answer before
 returning it. It reads the empties together once more, then each remaining empty alone, and a
 dcid empty after that is absent from the document. So the number of reads grows with the depth
-of the class and property hierarchy, plus a group read per level with an empty answer and one
-read per dcid the graph does not hold.
+of the class and property hierarchy, plus a group read per level with an empty answer, one read
+per dcid the graph does not hold, and one listing per instance enumeration the batched listing
+leaves empty.
 
 Each node's values and provenances come from that one read of the node. Its provenances are
-those declaring its `typeOf` arcs. A node held with no `typeOf` arc, or with a `typeOf` arc that
-carries no provenance, is served with none and declared by neither. A term's provenances come
-from its listing entries, and a listing subject with none is served with none and declared by
-neither too. One warning per build counts the terms and the typed nodes served so and names the
-first ten of each.
+those its `typeOf` targets carry, and `declared_by` follows from them. A node with no `typeOf`
+arc, or whose `typeOf` targets carry no provenance, is served with none and declared by
+neither. A term's provenances come from its listing entries by the same rule. One warning per
+build counts the terms served with none and the nodes with a `typeOf` target that carries none,
+and names the first ten of each. A build whose document holds no node the instance declares
+refuses with `OntologyNoInstanceDeclarationError`.
 
 An instance-declared enumeration's members are its `<-typeOf` listing, `complete` when the
 listing read every subject. A base enumeration lists the members StatVar rows use and is
@@ -93,6 +95,17 @@ class OntologyListingTruncatedError(GraphReadError):
     """A `Class` or `Property` listing reached `TERM_LISTING_CAP`, so the terms are incomplete."""
 
 
+class OntologyNoInstanceDeclarationError(GraphReadError):
+    """No node of the built document is declared by the instance, so the graph named no
+    instance provenance for any of them and the check would judge no range or domain."""
+
+    def __init__(self, node_count: int) -> None:
+        super().__init__(
+            f"none of the {node_count} nodes of the ontology document is declared by the instance"
+        )
+        self.node_count = node_count
+
+
 @dataclass(frozen=True)
 class Ontology:
     """The ontology document and the terms list from one build."""
@@ -138,6 +151,8 @@ def build_ontology(
 
     Raises:
         OntologyListingTruncatedError: a `Class` or `Property` listing reached its cap.
+        OntologyNoInstanceDeclarationError: no node of the document is declared by the
+            instance.
         GraphReadError: a read failed.
     """
     listed = _read_terms(reader, deadline=deadline)
@@ -200,14 +215,17 @@ def build_ontology(
     unsourced_terms = sorted(dcid for dcid, term in listed.items() if not term.provenances)
     if unsourced_terms or unsourced:
         logger.warning(
-            "ontology build serves %d terms with no listed provenance, among them %s, and %d "
-            "typed nodes whose typeOf carries no provenance, among them %s, with declared_by null",
+            "ontology build read %d terms with no listed provenance, served with declared_by null, "
+            "among them %s, and %d nodes with a typeOf target that carries no provenance, among "
+            "them %s",
             len(unsourced_terms),
             unsourced_terms[:_LOGGED_DCIDS],
             len(unsourced),
             sorted(unsourced)[:_LOGGED_DCIDS],
         )
     nodes = [_node(dcid, arcs[dcid], provenances[dcid], members.get(dcid)) for dcid in sorted(arcs)]
+    if not any(node.declared_by == "instance" for node in nodes):
+        raise OntologyNoInstanceDeclarationError(len(nodes))
     terms = [
         OntologyTerm(
             dcid=dcid,
@@ -282,7 +300,7 @@ def _index_named(code_index: CodeIndex) -> set[str]:
 @dataclass(frozen=True, slots=True)
 class _NodeReads:
     """The build's node reads, each filling `arcs` and `provenances` or `absent`, and
-    `unsourced` with the typed nodes whose `typeOf` carries no provenance. `listed` is every
+    `unsourced` with the nodes that have a `typeOf` target with no provenance. `listed` is every
     listed term, whose `typeOf` targets the closure does not follow."""
 
     reader: GraphNodeReader
@@ -296,9 +314,9 @@ class _NodeReads:
     def nodes(self, dcids: Collection[str]) -> set[str]:
         """Read `dcids`' node properties and the provenances declaring each value in one
         `node_arc_targets_many` with `confirm_empty`, so an answer of none is the graph's
-        answer for the dcid read alone and the dcid joins `absent`. A dcid with a `typeOf`
-        target that carries no provenance gets no provenances and joins `unsourced`. Returns the
-        dcids held.
+        answer for the dcid read alone and the dcid joins `absent`. A dcid's provenances are
+        those its `typeOf` targets carry, and a dcid with a target that carries none joins
+        `unsourced`. Returns the dcids held.
         """
         read = self.reader.node_arc_targets_many(
             sorted(dcids), properties=_NODE_PROPERTIES, confirm_empty=True, deadline=self.deadline
@@ -316,11 +334,9 @@ class _NodeReads:
             }
             if any(not target.provenances for target in types):
                 self.unsourced.add(dcid)
-                self.provenances[dcid] = frozenset()
-            else:
-                self.provenances[dcid] = frozenset(
-                    provenance for target in types for provenance in target.provenances
-                )
+            self.provenances[dcid] = frozenset(
+                provenance for target in types for provenance in target.provenances
+            )
             held.add(dcid)
         return held
 

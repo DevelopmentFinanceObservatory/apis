@@ -131,6 +131,9 @@ def _with_deps(generation: FakeGeneration, coverage_build: str):
             generation=generation,
             provenance_docs=None,
             coverage=coverage,
+            ontology=None,
+            ontology_provenances=None,
+            check_executor=None,
         ),
     )
     return TestClient(app)

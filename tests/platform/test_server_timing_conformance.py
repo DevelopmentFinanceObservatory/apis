@@ -14,7 +14,8 @@ from fastapi.testclient import TestClient
 
 from dfo_platform.app import SERVER_TIMING_HEADER
 from entity_resolution import Resolution
-from graph_api.deps import GRAPH_DEPS_SLOT, GraphDeps
+from graph_api.deps import GRAPH_DEPS_SLOT, GraphDeps, new_check_executor
+from graph_api.doors.ontology import new_ontology_cache, new_provenances_cache
 from graph_api.doors.sources import new_provenance_doc_cache
 from graph_generation import UNKNOWN_GENERATION
 from series_coverage.shared import get_coverage_service
@@ -92,6 +93,11 @@ def client() -> TestClient:
                 executor=executor, generation=UNKNOWN_GENERATION
             ),
             coverage=get_coverage_service(),
+            ontology=new_ontology_cache(executor=executor, generation=UNKNOWN_GENERATION),
+            ontology_provenances=new_provenances_cache(
+                executor=executor, generation=UNKNOWN_GENERATION
+            ),
+            check_executor=new_check_executor(),
         ),
     )
     return TestClient(app, raise_server_exceptions=False)

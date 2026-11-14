@@ -18,7 +18,6 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping
-from dataclasses import fields
 from typing import NamedTuple, Protocol
 
 from code_index import CodeIndex, StatVarRow
@@ -49,11 +48,15 @@ class ProvenanceCoverage(Protocol):
     def provenance_currencies(self) -> Mapping[str, frozenset[str]]: ...
 
 
-SHAPE_FIELDS: tuple[str, ...] = tuple(
-    field.name for field in fields(FiveTuple) if field.name != "denominator_unresolved"
+SHAPE_FIELDS: tuple[str, ...] = (
+    "population_type",
+    "measured_property",
+    "stat_type",
+    "measurement_qualifier",
+    "measurement_denominator",
 )
-"""The StatVar shape fields in `FiveTuple`'s order, each a `StatVarRow` field of the same name
-and a field of `OntologyPattern`."""
+"""The StatVar shape fields in `FiveTuple`'s order, each a `FiveTuple` field, a `StatVarRow`
+field of the same name and a field of `OntologyPattern`."""
 
 
 class _PatternKey(NamedTuple):

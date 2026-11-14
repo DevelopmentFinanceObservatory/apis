@@ -504,9 +504,9 @@ def test_an_id_outside_the_document_is_read_once_for_every_row() -> None:
     assert reader.batches == [["Male"]]
 
 
-def test_an_id_named_in_both_rounds_is_read_once() -> None:
-    """An id named as an observation property is read in the first round, and as the value of
-    a property outside the document in the second: it is read in the first only."""
+def test_an_id_named_in_two_roles_is_read_once() -> None:
+    """An id named as an observation property and as the value of a property outside the
+    document is read once, in the check's one read."""
     reader = _RecordingReader()
     rows = [
         *(
@@ -518,8 +518,8 @@ def test_an_id_named_in_both_rounds_is_read_once() -> None:
 
     _check(rows, reader)
 
-    asked = [dcid for batch in reader.batches for dcid in batch]
-    assert len(asked) == len(set(asked)) == CHECK_MAX_READ_IDS
+    assert len(reader.batches) == 1
+    assert len(reader.batches[0]) == len(set(reader.batches[0])) == CHECK_MAX_READ_IDS
 
 
 def test_a_value_typed_outside_the_document_is_read_with_no_ancestry() -> None:
@@ -532,7 +532,7 @@ def test_a_value_typed_outside_the_document_is_read_with_no_ancestry() -> None:
     assert reader.batches == [["country/UGA"]]
 
 
-def test_a_value_is_read_only_after_its_property_is_found_held() -> None:
+def test_a_value_under_a_property_not_held_is_read_and_gets_no_finding() -> None:
     reader = _RecordingReader()
     row = _row(constraint_properties={"gender": "NoSuchGender", "noSuchProperty": "NoSuchValue"})
 
@@ -542,7 +542,7 @@ def test_a_value_is_read_only_after_its_property_is_found_held() -> None:
         ("constraint_properties.gender", "NoSuchGender", "node_not_held", "error"),
         ("constraint_properties.noSuchProperty", "noSuchProperty", "node_not_held", "error"),
     ]
-    assert reader.batches == [["gender", "noSuchProperty"], ["NoSuchGender"]]
+    assert reader.batches == [["NoSuchGender", "NoSuchValue", "gender", "noSuchProperty"]]
 
 
 @pytest.mark.parametrize(
@@ -572,12 +572,37 @@ def test_no_read_where_the_document_or_the_value_decides(constraints: dict[str, 
     assert sum(reader.calls.values()) == 0
 
 
-def test_a_property_with_an_undeclared_type_gets_existence_and_kind_checks_only() -> None:
-    """`crsPurpose` read with a `typeOf` that carries no provenance is served with `declared_by`
-    null, so neither its range nor its domain is judged and its value is read."""
-    unsourced = {"crsPurpose": {**node_targets(_CHECK_NODES, _CHECK_TERMS)["crsPurpose"]}}
-    unsourced["crsPurpose"]["typeOf"] = (ArcTarget(value="Property"),)
-    graph = ontology_graph(terms=_CHECK_TERMS, nodes=_CHECK_NODES, arc_targets=unsourced)
+@pytest.mark.parametrize(
+    ("types", "expected", "batches"),
+    [
+        pytest.param(
+            (ArcTarget(value="Property"),),
+            [(_CRS, "CRSPurposeCode99999", "node_not_held", "error")],
+            [["CRSPurposeCode99999"]],
+            id="no-type-sourced",
+        ),
+        pytest.param(
+            (ArcTarget(value="Property", provenances=(DFO,)), ArcTarget(value="Thing")),
+            [
+                (_CRS, "crsPurpose", "property_outside_domain", "warning"),
+                (_CRS, "CRSPurposeCode99999", "value_outside_range", "error"),
+            ],
+            [],
+            id="one-type-sourced-by-the-instance",
+        ),
+    ],
+)
+def test_a_property_is_judged_by_the_provenances_its_types_carry(
+    types: tuple[ArcTarget, ...],
+    expected: list[tuple[str, object, str, str]],
+    batches: list[list[str]],
+) -> None:
+    """`crsPurpose` with no sourced type is served `declared_by` null, so neither its range nor
+    its domain is judged and its value is read. With one type sourced by the instance it stays
+    an instance property, and both rules apply."""
+    targets = {"crsPurpose": {**node_targets(_CHECK_NODES, _CHECK_TERMS)["crsPurpose"]}}
+    targets["crsPurpose"]["typeOf"] = types
+    graph = ontology_graph(terms=_CHECK_TERMS, nodes=_CHECK_NODES, arc_targets=targets)
     document = build_ontology(reader=graph, code_index=INDEX, generation="g1", deadline=_DEADLINE)
     reader = _RecordingReader()
     row = _row(
@@ -587,8 +612,8 @@ def test_a_property_with_an_undeclared_type_gets_existence_and_kind_checks_only(
 
     findings = _check([row], reader, OntologyLookup.of(document.document))
 
-    assert findings == [(_CRS, "CRSPurposeCode99999", "node_not_held", "error")]
-    assert reader.batches == [["CRSPurposeCode99999"]]
+    assert findings == expected
+    assert reader.batches == batches
 
 
 def _truncated(dcid: str) -> OntologyDocument:
@@ -679,7 +704,7 @@ def test_a_single_row_naming_the_most_ids_a_row_can_is_read_within_the_cap() -> 
 
     asked = {dcid for batch in reader.batches for dcid in batch}
     assert len(asked) == CHECK_MAX_READ_IDS
-    assert len(reader.batches) == 2
+    assert len(reader.batches) == 1
     assert {code for _, _, code, _ in findings} == {"node_not_held"}
     assert len(findings) == CHECK_MAX_READ_IDS - CHECK_MAX_CONSTRAINT_PROPERTIES
 
@@ -720,7 +745,7 @@ def test_a_un_id_to_read_is_refused_while_the_un_origin_is_off(
         plan_reads([row], lookup=_lookup(), un_served=False)
 
     assert raised.value.dcid == read
-    assert plan_reads([row], lookup=_lookup(), un_served=True).ids == {read}
+    assert plan_reads([row], lookup=_lookup(), un_served=True) == {read}
 
 
 def test_values_the_document_decides_count_against_no_cap() -> None:
@@ -742,7 +767,7 @@ def test_every_read_asks_the_type_and_name_and_probes_every_empty_answer() -> No
 
     _check([row], reader)
 
-    assert reader.asked == [(("typeOf", "name"), None)] * 2
+    assert reader.asked == [(("typeOf", "name"), None)]
 
 
 def test_a_held_node_with_neither_a_type_nor_a_name_reads_as_absent() -> None:

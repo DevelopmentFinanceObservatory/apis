@@ -40,7 +40,6 @@ from entity_resolution import EntityResolver
 from graph_api.config import (
     DCP_QUEUE_WAIT_WARN_SECONDS,
     GRAPH_ONTOLOGY_CHECK_CONCURRENCY,
-    ONTOLOGY_FLIGHT_TIMEOUT_SECONDS,
 )
 from graph_api.node_cache import NodeEntryCache
 from graph_api.reader import GraphNodeReader
@@ -76,6 +75,14 @@ class GraphDeps:
     # read on `dcp_executor`.
     provenance_docs: SingleFlightCache[tuple[str, str], ProvenanceDoc]
     coverage: ServedCoverage
+    # The ontology routes' built bodies or kept refusal, keyed by generation token and code
+    # index, built on `dcp_executor`.
+    ontology: SingleFlightCache[OntologyKey, OntologyEntry]
+    # The provenances body, keyed by code index and coverage build.
+    ontology_provenances: SingleFlightCache[ProvenancesKey, FrozenJSON]
+    # The executor every `POST /api/graph/ontology/check` job runs on, apart from
+    # `dcp_executor`, with `GRAPH_ONTOLOGY_CHECK_CONCURRENCY` workers.
+    check_executor: DcpReadExecutor
     # The process's shared facet profiles on a live surface. An injected graph has its own
     # only when the surface was given a profile graph and availability reader, else `None`.
     profile_cache: FacetProfileCache | None = None
@@ -84,26 +91,6 @@ class GraphDeps:
     card_reads: CardReadCaches | None = None
     # The envelopes the node routes built, keyed by generation stamp, table builds and dcid.
     node_entries: NodeEntryCache = field(default_factory=NodeEntryCache)
-    # The ontology routes' built bodies or kept refusal, one entry keyed by generation token and
-    # code index.
-    # The lifespan's cache builds on `dcp_executor`. This default has no executor, so a build
-    # through it fails.
-    ontology: SingleFlightCache[OntologyKey, OntologyEntry] = field(
-        default_factory=lambda: SingleFlightCache(
-            maxsize=1, flight_timeout_s=ONTOLOGY_FLIGHT_TIMEOUT_SECONDS
-        )
-    )
-    # The provenances body, one entry keyed by code index and coverage build. The lifespan's is
-    # registered for clearing beside `ontology`.
-    ontology_provenances: SingleFlightCache[ProvenancesKey, FrozenJSON] = field(
-        default_factory=lambda: SingleFlightCache(
-            maxsize=1, flight_timeout_s=ONTOLOGY_FLIGHT_TIMEOUT_SECONDS
-        )
-    )
-    # The executor every `POST /api/graph/ontology/check` job runs on, apart from
-    # `dcp_executor`, with `GRAPH_ONTOLOGY_CHECK_CONCURRENCY` workers. The lifespan's is shut
-    # down beside `dcp_executor`.
-    check_executor: DcpReadExecutor = field(default_factory=lambda: new_check_executor())
 
 
 class DcpExecutorShutDown(Exception):

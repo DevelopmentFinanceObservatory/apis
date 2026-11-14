@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import threading
 import uuid
 from collections.abc import Mapping
@@ -13,8 +14,9 @@ import pytest
 from code_index import CodeIndex, DatasetDeclaration, IndexStamp, StatVarRow
 from code_index.shared import get_index
 from graph_api.doors import ontology as ontology_door
-from graph_api.ontology_provenances import build_provenances
+from graph_api.ontology_provenances import SHAPE_FIELDS, build_provenances
 from series_coverage.schema import FacetMetadata
+from statvar_members import FiveTuple
 
 from .conftest import FakeGraphNodeReader, make_client, wait_until
 
@@ -352,3 +354,38 @@ def test_concurrent_first_requests_share_one_build(monkeypatch: pytest.MonkeyPat
 
     assert responses == [200, 200]
     assert len(builds) == 1
+
+
+def test_a_build_slower_than_the_request_answers_503_with_retry_after(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = threading.Event()
+    real = ontology_door.build_provenances
+
+    def blocked(**kwargs):
+        release.wait(timeout=5.0)
+        return real(**kwargs)
+
+    monkeypatch.setattr(ontology_door, "build_provenances", blocked)
+    monkeypatch.setattr(ontology_door, "GRAPH_NODE_TIMEOUT_SECONDS", 0.2)
+
+    with make_client(coverage=_FakeCoverage(_coverage_of("CurrencyUSD"))) as client:
+        pending = client.get(_ROUTE, headers=_IDENTITY)
+        release.set()
+        cache = client.app.state.graph_deps.ontology_provenances
+        wait_until(lambda: dict(cache.stats())["entries"] == 1)
+        landed = client.get(_ROUTE, headers=_IDENTITY)
+
+    assert pending.status_code == 503, pending.text
+    assert pending.json()["code"] == "service_unavailable"
+    assert pending.json()["retryable"] is True
+    assert pending.headers["Retry-After"] == "5"
+    assert landed.status_code == 200, landed.text
+
+
+def test_shape_fields_are_five_tuple_fields_and_statvar_row_attributes() -> None:
+    five_tuple = {field.name for field in dataclasses.fields(FiveTuple)}
+    row_fields = {field.name for field in dataclasses.fields(StatVarRow)}
+
+    assert set(SHAPE_FIELDS) <= five_tuple
+    assert set(SHAPE_FIELDS) <= row_fields

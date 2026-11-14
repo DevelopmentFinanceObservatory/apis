@@ -7,10 +7,11 @@ from collections.abc import Callable
 import pytest
 
 from code_index import CodeIndex
-from dc_graph import ArcSubject, ArcTarget
+from dc_graph import ArcSubject, ArcSubjectPage, ArcTarget
 from graph_api import ontology_document
 from graph_api.ontology_document import (
     OntologyListingTruncatedError,
+    OntologyNoInstanceDeclarationError,
     build_ontology,
     declared_by,
 )
@@ -232,6 +233,41 @@ def test_a_held_node_with_no_type_is_served_with_no_provenance() -> None:
     assert graph.confirm_empty and all(graph.confirm_empty)
 
 
+def test_a_node_with_one_unsourced_type_is_declared_by_its_sourced_types(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    arc_targets = {
+        "crsPurpose": {
+            **node_targets(NODES)["crsPurpose"],
+            "typeOf": (ArcTarget(value="Property", provenances=(DFO,)), ArcTarget(value="Thing")),
+        }
+    }
+
+    with caplog.at_level("WARNING", logger=ontology_document.__name__):
+        nodes = _nodes(ontology_graph(arc_targets=arc_targets))
+
+    crs = nodes["crsPurpose"]
+    assert (crs.provenances, crs.declared_by) == ([DFO], "instance")
+    assert [record.args for record in caplog.records] == [(0, [], 1, ["crsPurpose"])]
+
+
+def test_a_document_no_instance_provenance_declares_refuses() -> None:
+    base_terms = {dcid: (kind, (SCHEMA,)) for dcid, (kind, _) in TERMS.items()}
+    base_targets = {
+        dcid: {
+            prop: tuple(
+                ArcTarget(value=target.value, provenances=(SCHEMA,) if prop == "typeOf" else ())
+                for target in targets
+            )
+            for prop, targets in arcs.items()
+        }
+        for dcid, arcs in node_targets(NODES, base_terms).items()
+    }
+
+    with pytest.raises(OntologyNoInstanceDeclarationError):
+        _nodes(ontology_graph(terms=base_terms, arc_targets=base_targets))
+
+
 def test_a_typed_node_whose_type_carries_no_provenance_is_served_undeclared(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -247,12 +283,22 @@ def test_a_typed_node_whose_type_carries_no_provenance_is_served_undeclared(
 
 class _DroppingListings(FakeGraphNodeReader):
     """The fixture graph, whose batched member listing omits `dropped` or answers it with no
-    subject, while a listing of it alone answers its members."""
+    subject, while a listing of it alone answers its members, marked truncated when
+    `alone_truncated`."""
 
-    def __init__(self, dropped: str, *, omit: bool) -> None:
+    def __init__(self, dropped: str, *, omit: bool, alone_truncated: bool = False) -> None:
         super().__init__(nodes=NODES, arc_subjects=arc_subjects(), arc_targets=node_targets(NODES))
         self._dropped = dropped
         self._omit = omit
+        self._alone_truncated = alone_truncated
+
+    def node_arc_subjects(self, dcid, *, property, filters=None, max_results, deadline=None):
+        page = super().node_arc_subjects(
+            dcid, property=property, filters=filters, max_results=max_results, deadline=deadline
+        )
+        if dcid == self._dropped and self._alone_truncated:
+            return ArcSubjectPage(subjects=page.subjects, truncated=True)
+        return page
 
     def node_arc_subjects_many(self, dcids, *, property, max_results, deadline=None):
         listed = super().node_arc_subjects_many(
@@ -265,14 +311,24 @@ class _DroppingListings(FakeGraphNodeReader):
         return listed
 
 
-@pytest.mark.parametrize("omit", [True, False], ids=["omitted", "answered-empty"])
-def test_an_enumeration_the_batched_listing_leaves_empty_is_listed_alone(omit: bool) -> None:
-    graph = _DroppingListings("CRSPurposeCodeEnum", omit=omit)
+@pytest.mark.parametrize(
+    ("omit", "alone_truncated"),
+    [
+        pytest.param(True, False, id="omitted"),
+        pytest.param(False, False, id="answered-empty"),
+        pytest.param(False, True, id="answered-empty-and-truncated-alone"),
+    ],
+)
+def test_an_enumeration_the_batched_listing_leaves_empty_is_listed_alone(
+    omit: bool, alone_truncated: bool
+) -> None:
+    graph = _DroppingListings("CRSPurposeCodeEnum", omit=omit, alone_truncated=alone_truncated)
 
     crs = _nodes(graph)["CRSPurposeCodeEnum"].enumeration
 
     assert crs is not None
-    assert (crs.members, crs.complete) == (["CRSPurposeCode120", "CRSPurposeCode12220"], True)
+    assert crs.members == ["CRSPurposeCode120", "CRSPurposeCode12220"]
+    assert crs.complete is not alone_truncated
 
 
 def test_a_term_that_is_also_a_member_is_declared_by_its_node_read_and_its_listing() -> None:

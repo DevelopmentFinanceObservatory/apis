@@ -13,19 +13,18 @@ read alone. A node with neither a type nor a name reads as absent, and a node wi
 no `typeOf` is untyped. A read error propagates, so no node is reported absent because a read
 failed. The check reads no ancestry.
 
-The reads come in two rounds. The first reads the shape fields, the constraint properties and
-the observation properties the document does not hold, and the values of constraint properties
-the document holds as Properties. The second reads the values of constraint properties the
-first round found held as Properties. A constraint value whose property is not a held Property
-is not read and gets no finding of its own, because the property's finding marks the cell.
+The check reads every planned id in one `node_arcs_many` call: the shape fields, constraint
+properties and observation properties the document does not hold, and the constraint values
+outside the document that neither the value nor the document decides. A constraint value whose
+property is not a held Property gets no finding of its own, because the property's finding marks
+the cell.
 
-A request reads at most `CHECK_MAX_READ_IDS` (41) ids, each once, because the second round
-skips an id the first read. It reads fewer from the graph when the arc tables answer some.
-Each round is one `node_arcs_many` call, which sends, for each backend its ids go to (the
-mixer, and the UN deployment where the deployment serves the UN origin), one POST of its ids
-(a chunk holds 50), one POST of the group retry of the empty answers, and one POST per id
-still empty. A check of k ids therefore sends at most k + 4 POSTs with one backend, 45 for 41
-ids, and k + 8 with two, 49. A front-door refusal splits a POST of several ids into two
+A request reads at most `CHECK_MAX_READ_IDS` (41) ids, each once. It reads fewer from the
+graph when the arc tables answer some. The `node_arcs_many` call sends, for each backend its ids
+go to (the mixer, and the UN deployment where the deployment serves the UN origin), one POST of
+its ids (a chunk holds 50), one POST of the group retry of the empty answers, and one POST per
+id still empty. A check of k ids therefore sends at most k + 2 POSTs with one backend, 43 for
+41 ids, and k + 4 with two, 45. A front-door refusal splits a POST of several ids into two
 halves, so a batch or group retry of j ids costs at most 2j - 1 POSTs, and a check at most
 5k - 2, 203 for 41 ids, on either kind of deployment. A continuation page adds one POST. Each
 POST is tried up to 3 times on a 5xx answer or a transport error. Every read carries the
@@ -35,7 +34,7 @@ Some constraint values need no read. A value that is a number, a boolean, or a s
 dcid syntax names no node, so it gets `node_not_held`. A value outside the document, on an
 instance property whose range the document decides (`OntologyLookup.decides`), is no member of
 the range and gets `value_outside_range`. Every other id outside the document is read.
-`plan_reads` counts every value under a property outside the document, read or not. One row
+`plan_reads` counts and reads every value under a property outside the document. One row
 names at most `CHECK_MAX_READ_IDS` ids, so a single row always fits.
 
 The findings stop at `CHECK_MAX_FINDINGS`. `check_rows` raises `OntologyCheckTooManyFindings`
@@ -195,25 +194,12 @@ def _ancestry(nodes: Mapping[str, _Node], dcids: Iterable[str]) -> set[str]:
     return seen
 
 
-@dataclass(frozen=True)
-class CheckReads:
-    """The ids outside the document one check reads: `first`, read in the first round, and
-    `pending`, each constraint property outside the document with its values outside the
-    document, read in the second round under a property the first found a held Property."""
-
-    first: frozenset[str]
-    pending: Mapping[str, frozenset[str]]
-
-    @property
-    def ids(self) -> frozenset[str]:
-        """Every id the check may read."""
-        return self.first.union(*self.pending.values())
-
-
 def plan_reads(
     rows: Sequence[OntologyCheckRow], *, lookup: OntologyLookup, un_served: bool
-) -> CheckReads:
-    """The ids outside the document `rows` name that the check reads, decided with no read.
+) -> frozenset[str]:
+    """The ids outside the document `rows` name that the check reads, decided with no read:
+    every shape field, constraint property and observation property outside the document, and
+    every constraint value outside it that neither the value nor the document decides.
 
     Args:
         rows: the candidate definitions.
@@ -226,28 +212,20 @@ def plan_reads(
         OntologyCheckUnservedId: an id to read belongs to the UN origin and `un_served` is
             false. The smallest such id is named.
     """
-    first: set[str] = set()
-    pending: dict[str, set[str]] = {}
+    named: set[str] = set()
     for row in rows:
-        first.update(dcid for dcid in _named(row) if dcid not in lookup.nodes)
-        for prop, value in row.constraint_properties.items():
-            read = _read_value(prop, value, lookup)
-            if read is None or read in lookup.nodes:
-                continue
-            if prop in lookup.nodes:
-                first.add(read)
-            else:
-                pending.setdefault(prop, set()).add(read)
-    reads = CheckReads(
-        first=frozenset(first),
-        pending=MappingProxyType({prop: frozenset(values) for prop, values in pending.items()}),
-    )
-    ids = reads.ids
+        named.update(_named(row))
+        named.update(
+            read
+            for prop, value in row.constraint_properties.items()
+            if (read := _read_value(prop, value, lookup)) is not None
+        )
+    ids = frozenset(dcid for dcid in named if dcid not in lookup.nodes)
     if len(ids) > CHECK_MAX_READ_IDS:
         raise OntologyCheckTooManyReads(len(ids))
     if not un_served and (unserved := sorted(dcid for dcid in ids if is_un_dcid(dcid))):
         raise OntologyCheckUnservedId(unserved[0])
-    return reads
+    return ids
 
 
 class _Nodes:
@@ -260,9 +238,8 @@ class _Nodes:
         self._deadline = deadline
 
     def read(self, dcids: Iterable[str]) -> None:
-        """Read every one of `dcids` not read before in one `node_arcs_many` call that confirms
-        each empty answer alone, so a check asks each id once."""
-        unknown = sorted({dcid for dcid in dcids if dcid not in self._read})
+        """Read `dcids` in one `node_arcs_many` call that confirms each empty answer alone."""
+        unknown = sorted(set(dcids))
         if not unknown:
             return
         arcs = self._reader.node_arcs_many(
@@ -294,7 +271,7 @@ def _held(arcs: Mapping[str, tuple[str, ...]] | None) -> _Node | None:
 def check_rows(
     rows: Sequence[OntologyCheckRow],
     *,
-    reads: CheckReads,
+    reads: frozenset[str],
     lookup: OntologyLookup,
     reader: GraphNodeReader,
     code_index: CodeIndex,
@@ -324,13 +301,7 @@ def check_rows(
         GraphReadError: a read failed.
     """
     nodes = _Nodes(lookup, reader=reader, deadline=deadline)
-    nodes.read(reads.first)
-    nodes.read(
-        value
-        for prop, values in reads.pending.items()
-        if _is_property(nodes.get(prop))
-        for value in values
-    )
+    nodes.read(reads)
 
     findings: list[OntologyFinding] = []
     for row in rows:

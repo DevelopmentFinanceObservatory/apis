@@ -16,6 +16,7 @@ from graph_api.doors import ontology as ontology_door
 from graph_api.ontology_check import OntologyLookup
 from graph_api.ontology_document import (
     OntologyListingTruncatedError,
+    OntologyNoInstanceDeclarationError,
 )
 from graph_api.ontology_models import (
     CHECK_MAX_CONSTRAINT_PROPERTIES,
@@ -165,6 +166,20 @@ class TestCache:
         assert (before, after) == ("gen-a", "gen-b")
         assert _builds(graph) == 2
 
+    def test_an_unknown_generation_request_keeps_the_known_entry(self, generation):
+        graph = _graph()
+
+        with make_client(graph=graph) as client:
+            known = client.get(_DOCUMENT)
+            generation.set_unknown()
+            unknown = client.get(_DOCUMENT)
+            generation.advance("gen-a")
+            again = client.get(_DOCUMENT)
+
+        assert [known.status_code, unknown.status_code, again.status_code] == [200, 200, 200]
+        assert (known.json()["generation"], again.json()["generation"]) == ("gen-a", "gen-a")
+        assert _builds(graph) == 2
+
     def test_a_code_index_change_rebuilds(self, generation, monkeypatch: pytest.MonkeyPatch):
         graph = _graph()
         indexes = [
@@ -249,6 +264,14 @@ class TestWaits:
             False,
             1,
             id="truncated-listing-kept",
+        ),
+        pytest.param(
+            OntologyNoInstanceDeclarationError(3),
+            503,
+            "service_unavailable",
+            False,
+            1,
+            id="no-instance-declaration-kept",
         ),
         pytest.param(
             GraphDeadlineExceededError("deadline"), 504, "timeout", True, 2, id="deadline"

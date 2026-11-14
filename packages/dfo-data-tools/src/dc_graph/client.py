@@ -21,6 +21,7 @@ import contextvars
 import json
 import logging
 import re
+import sys
 import threading
 import time
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
@@ -2797,8 +2798,9 @@ class _ArcSubjectFold:
 
 
 def _entry_provenances(entries: Iterable[dict]) -> tuple[str, ...]:
-    """The distinct `provenanceId`s of `entries`, sorted. Entries without one add nothing."""
-    return tuple(sorted({p for entry in entries if (p := entry.get("provenanceId"))}))
+    """The distinct `provenanceId`s of `entries`, sorted and interned, so the targets a cache
+    holds share one string per provenance. Entries without one add nothing."""
+    return tuple(sorted({sys.intern(p) for entry in entries if (p := entry.get("provenanceId"))}))
 
 
 def display_name(names: Iterable[str], dcid: str) -> str | None:
