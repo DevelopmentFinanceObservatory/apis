@@ -1,4 +1,4 @@
-"""Validates live responses for all four statuses against the published `/schema`."""
+"""Validates live responses for all four statuses against the published `/api/search/json-schema`."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ def _client(*, walk: bool = False) -> TestClient:
 
 @pytest.fixture(scope="module")
 def response_schema() -> dict:
-    resp = _client().get("/api/search/schema")
+    resp = _client().get("/api/search/json-schema")
     assert resp.status_code == 200
     return resp.json()["response"]
 
@@ -310,7 +310,7 @@ def _iter_descriptions(node: object):
 
 def test_no_served_schema_description_mentions_a_parenthesis():
     """Served schema descriptions must not claim the composer mints parentheses."""
-    resp = _client().get("/api/search/schema")
+    resp = _client().get("/api/search/json-schema")
     assert resp.status_code == 200
     document = resp.json()
 

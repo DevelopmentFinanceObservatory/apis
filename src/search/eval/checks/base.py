@@ -1,7 +1,7 @@
 """The scoring core: verdicts, the wire schema, path reads, and the check registry.
 
 A check reads named JSON paths from the raw response dict a Search app returned. Whether a
-path exists is decided by that app's own ``GET /api/search/schema`` document, parsed into a
+path exists is decided by that app's own ``GET /api/search/json-schema`` document, parsed into a
 ``WireSchema``: a path the schema lacks is UNVERIFIABLE (the field was renamed or removed on
 that side), and a path the schema has but the body omits reads as None, because the resolve
 endpoint serialises with ``exclude_none``. ``read_path`` raises ``Unverifiable`` for the
@@ -152,7 +152,7 @@ _ANY: Any = True
 
 @dataclass
 class WireSchema:
-    """The response half of one app's ``GET /api/search/schema`` document.
+    """The response half of one app's ``GET /api/search/json-schema`` document.
 
     Paths are dotted property names from the response root, with ``[]`` after a property
     whose value is an array to step into its items (``parts[].spec.definition``). A key
@@ -165,7 +165,7 @@ class WireSchema:
 
     @classmethod
     def from_document(cls, document: Mapping[str, Any]) -> WireSchema:
-        """Parse the JSON body ``GET /api/search/schema`` returns."""
+        """Parse the JSON body ``GET /api/search/json-schema`` returns."""
         return cls(response=document["response"])
 
     def has(self, path: str) -> bool:
@@ -238,7 +238,7 @@ class MembersRefused(Exception):
 @dataclass(frozen=True)
 class ScoreContext:
     schema: WireSchema
-    """The responding app's ``GET /api/search/schema``, parsed."""
+    """The responding app's ``GET /api/search/json-schema``, parsed."""
     graph: GraphClient | None = None
     sdmx: EngineSdmxClient | None = None
     coverage: ServedCoverage | None = None

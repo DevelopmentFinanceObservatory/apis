@@ -22,7 +22,12 @@ from .conftest import FakeGraphNodeReader
 
 # Routes that serve no registry endpoint: they refuse only with platform codes.
 _UNBOUND_PATHS = frozenset(
-    {"/api/graph/healthz", "/api/graph/capabilities", "/api/graph/schema", "/api/graph/sources"}
+    {
+        "/api/graph/healthz",
+        "/api/graph/capabilities",
+        "/api/graph/json-schema",
+        "/api/graph/sources",
+    }
 )
 
 

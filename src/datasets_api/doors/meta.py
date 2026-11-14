@@ -207,7 +207,7 @@ def classify_meta_exception(exc: BaseException) -> ProblemSpec | None:
 
 
 SCHEMA_ROUTE_LIVE = True
-"""Whether `GET /api/datasets/schema` is mounted on this deployment. The
+"""Whether `GET /api/datasets/json-schema` is mounted on this deployment. The
 schemas it serves carry `$id`s that are immutable once published."""
 
 
@@ -416,14 +416,14 @@ def build_meta_door(*, deps: DepsCell, settings: DatasetsBuildSettings) -> DoorC
         schema_document = freeze_public_json(build_schema_document(), max_age=300)
 
         @router.get(
-            "/api/datasets/schema",
+            "/api/datasets/json-schema",
             responses={
                 200: {
                     "content": {"application/json": {"schema": schema_document_response_schema()}}
                 }
             },
         )
-        async def get_schema(request: Request) -> Response:
+        async def get_json_schema(request: Request) -> Response:
             return schema_document.respond(request)
 
     @per_index

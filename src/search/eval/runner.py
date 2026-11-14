@@ -5,7 +5,7 @@ retries infrastructure failures, app errors and degraded answers, and picks the 
 sample by a vote over the raw response bodies. The app's own request timeout, a 504 with
 problem code ``timeout``, is an infrastructure failure that is not retried: a retry
 waits out the same deadline. ``extend_run`` adds samples to a run and
-votes again. ``fetch_schema`` reads the app's ``GET /api/search/schema``.
+votes again. ``fetch_schema`` reads the app's ``GET /api/search/json-schema``.
 The runner reads responses as plain dicts, so it can score an app built from another
 revision of the response models.
 """
@@ -32,7 +32,7 @@ from search.models import ResolveRequest
 logger = logging.getLogger(__name__)
 
 RESOLVE_PATH = "/api/search/resolve"
-SCHEMA_PATH = "/api/search/schema"
+SCHEMA_PATH = "/api/search/json-schema"
 MEMBERS_PATH = "/api/datasets/{spec_id}/members"
 DEGRADED_LEG_HEADER = "X-Search-Degraded-Leg"
 # Every request the eval sends names it, so request logs and analytics can leave it out.
@@ -150,7 +150,7 @@ def build_request(case: Case) -> dict:
 
 
 async def fetch_schema(url: str, *, client: httpx.AsyncClient | None = None) -> dict:
-    """Return the app's schema document from ``GET <url>/api/search/schema``.
+    """Return the app's schema document from ``GET <url>/api/search/json-schema``.
 
     Raises ``httpx.HTTPError`` when the app does not answer with 2xx.
     """

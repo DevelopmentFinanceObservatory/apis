@@ -52,7 +52,7 @@ class TestDoorLivenessAndOtherFields:
             "members": True,
             "roots": True,
             "sources": True,
-            "schema": True,
+            "json_schema": True,
         }
 
     def test_node_shape_gaps_are_the_paths_every_carrying_node_gaps(self):
