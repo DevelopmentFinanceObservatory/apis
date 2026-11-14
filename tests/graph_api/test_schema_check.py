@@ -678,6 +678,9 @@ _RULE_TERMS = {
     "currencyOrAnything": ("Property", (DFO,)),
     "currencyOrUnread": ("Property", (DFO,)),
     "purposeOrUnread": ("Property", (DFO,)),
+    "onlyUnresolved": ("Property", (DFO,)),
+    "undata/HeldKind": ("Class", (DFO,)),
+    "undata/HeldCurrency": ("Class", (DFO,)),
     "DocOut": ("Class", (SCHEMA,)),
     "DomKind": ("Class", (DFO,)),
     "DomChild": ("Class", (DFO,)),
@@ -708,6 +711,12 @@ _RULE_NODES = {
     "RHALFIN": {"typeOf": ("CurrencyUnit", UNRESOLVED_NODE)},
     "RUNTYPE": {"typeOf": ("undata/Kind",)},
     "RWEIRDTYPE": {"typeOf": ("Weird:Kind",)},
+    # UN-origin classes a StatVar row names, so the document holds them: one outside the
+    # range, one below it.
+    "undata/HeldKind": {"typeOf": ("Class",), "subClassOf": ("MeasureKind",)},
+    "undata/HeldCurrency": {"typeOf": ("Class",), "subClassOf": ("CurrencyDenomination",)},
+    "RUNHELD": {"typeOf": ("undata/HeldKind",)},
+    "RUNHELDIN": {"typeOf": ("undata/HeldCurrency",)},
     "DomKind": {"typeOf": ("Class",), "subClassOf": ("Thing", UNRESOLVED_NODE)},
     "DomChild": {"typeOf": ("Class",), "subClassOf": ("DomKind",)},
     "DomAbsent": {"typeOf": ("Class",), "subClassOf": ("NoSuchKind",)},
@@ -726,6 +735,12 @@ _RULE_NODES = {
         "domainIncludes": ("FinancingEvent", UNRESOLVED_NODE),
         "rangeIncludes": ("CRSPurposeCodeEnum",),
     },
+    # A DFO property whose only `rangeIncludes` target the graph cannot resolve.
+    "onlyUnresolved": {
+        "typeOf": ("Property",),
+        "domainIncludes": ("FinancingEvent",),
+        "rangeIncludes": (UNRESOLVED_NODE,),
+    },
 }
 
 
@@ -741,7 +756,10 @@ def _rules_graph() -> FakeGraphNodeReader:
 @cache
 def _rules_schema() -> Schema:
     index = index_of(
-        *INDEX.statvars, index_row("Amount_DHALF", {"currencyOfDenomination": "DHALF"})
+        *INDEX.statvars,
+        index_row("Amount_DHALF", {"currencyOfDenomination": "DHALF"}),
+        index_row("Amount_UNHELD", {"currencyOfDenomination": "undata/HeldKind"}),
+        index_row("Amount_UNHELDIN", {"currencyOfDenomination": "undata/HeldCurrency"}),
     )
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(schema_document, "RANGE_CLOSURE_CAP", 5)
@@ -766,6 +784,8 @@ def test_the_rules_graph_build_records_the_states_the_grids_need() -> None:
     assert schema.closed_ranges >= {"Place", "CurrencyDenomination", "CRSPurposeCodeEnum"}
     assert "Thing" not in schema.closed_ranges
     assert {"DHALF", "DocOut", "DomKind", "DomChild", "DomAbsent", "DomOnlyU"} <= held
+    assert {"undata/HeldKind", "undata/HeldCurrency"} <= held
+    assert "onlyUnresolved" in schema.unresolved_ranges
     assert not {"Currency", "ReadKind", "OutsideKind", "OnlyU"} & held
     assert "DHALF" in schema.unresolved_types
     assert "DomKind" in schema.unresolved_parents
@@ -860,6 +880,21 @@ _RANGE_CASES = [
         _range("currencyOfDenomination", "RUNTYPE"),
         "range_not_judged",
         id="type-of-the-served-un-origin-outside-the-document",
+    ),
+    pytest.param(
+        _range("currencyOfDenomination", "RUNHELD"),
+        "range_not_judged",
+        id="type-of-the-served-un-origin-held-by-the-document-outside-the-range",
+    ),
+    pytest.param(
+        _range("currencyOfDenomination", "RUNHELDIN"),
+        [],
+        id="type-of-the-served-un-origin-held-by-the-document-meeting-the-range",
+    ),
+    pytest.param(
+        _range("onlyUnresolved", "CHF"),
+        "range_not_judged",
+        id="the-only-range-class-unresolved",
     ),
 ]
 

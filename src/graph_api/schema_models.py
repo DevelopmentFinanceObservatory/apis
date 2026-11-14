@@ -394,8 +394,9 @@ FindingCode = Literal[
 - `range_not_judged`: the value's property is a DFO-declared property with a `rangeIncludes`,
   no type of the value the document holds reaches it, and the rule cannot rule the value out:
   the graph answers a `typeOf` target of the value it cannot resolve, a type is an id of the
-  UN origin outside the document or an id outside dcid syntax, the graph answers a
-  `rangeIncludes` target it cannot resolve, or a `rangeIncludes` class has more descendants
+  UN origin, held by the document or not, or an id outside dcid syntax, the graph answers a
+  `rangeIncludes` target it cannot resolve (a property whose only target is unresolved
+  included), or a `rangeIncludes` class has more descendants
   than the document holds.
 - `property_outside_domain`: the population type is a document node whose `subClassOf`
   ancestry in the document reaches none of the DFO-declared property's `domainIncludes` and is

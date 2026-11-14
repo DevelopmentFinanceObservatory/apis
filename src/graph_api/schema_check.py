@@ -59,14 +59,15 @@ The range rule judges a constraint value, a resolved node, under a property with
 `rangeIncludes`. The value's types are its document node's `types`, or for a value the check
 read the types the read answered. A type is unknown when the graph answers a `typeOf` target it
 cannot resolve (the build's `unresolved_types` for a document node), when `_Unread.fault` names
-it, or when it lies outside the document and is an id of the UN origin, since the build lists
-base ranges' descendants on the mixer alone. The value is in range when a type the document
+it, or when it is an id of the UN origin whether the document holds it or not, since the build
+lists base ranges' descendants on the mixer alone. The value is in range when a type the document
 holds has an ancestry that meets a `rangeIncludes` class, whatever its other types. It gets
 `value_outside_range` when no type is in range, no type is unknown, every `rangeIncludes`
 class is in the build's `closed_ranges`, and the property holds no `rangeIncludes` target the
 graph cannot resolve (the build's `unresolved_ranges`): the document holds a closed range's
 whole descendant tree, so a type outside the document is no descendant of it. Otherwise it gets
-the warning `range_not_judged`.
+the warning `range_not_judged`. A property whose only `rangeIncludes` target is unresolved is
+ranged, so its values get `range_not_judged`.
 
 The domain rule judges the measured property and each constraint property against the row's
 population type. A property is outside its domain when the population type is a document node
@@ -407,22 +408,30 @@ def _is_property(node: _Node | None) -> bool:
 
 
 def _ranged(node: _Node | None) -> bool:
-    return node is not None and node.dfo and _is_property(node) and bool(node.range)
+    """Whether the range rule judges values under `node`: a DFO-declared Property whose
+    `rangeIncludes` holds a resolved class or a target the graph cannot resolve."""
+    return (
+        node is not None
+        and node.dfo
+        and _is_property(node)
+        and (bool(node.range) or node.unresolved_range)
+    )
 
 
 def _range_fault(value: _Node, prop: _Node, unread: _Unread) -> FindingCode | None:
     """`None` when a type of `value` the document holds has an ancestry that meets `prop`'s
     range; `value_outside_range` when no type does, no type is unknown, every range class is
-    closed and none is unresolved; `range_not_judged` otherwise. A type outside the document
-    is unknown when `_Unread.fault` names it or it is an id of the UN origin, whose classes
-    the build's descendant listings of base ranges do not reach."""
+    closed and none is unresolved; `range_not_judged` otherwise. A type is unknown when it is
+    an id of the UN origin, held by the document or not, since the build's descendant listings
+    of base ranges do not reach the UN origin; or when it is outside the document and
+    `_Unread.fault` names it."""
     lookup = unread.lookup
     unknown = value.unresolved_type
     for type_ in value.types:
-        if type_ in lookup.nodes:
-            if not lookup.ancestry(type_)[0].isdisjoint(prop.range):
-                return None
-        elif unread.fault(type_) is not None or is_un_dcid(type_):
+        held = type_ in lookup.nodes
+        if held and not lookup.ancestry(type_)[0].isdisjoint(prop.range):
+            return None
+        if is_un_dcid(type_) or (not held and unread.fault(type_) is not None):
             unknown = True
     closed = not prop.unresolved_range and lookup.closed_ranges.issuperset(prop.range)
     if not unknown and closed:
