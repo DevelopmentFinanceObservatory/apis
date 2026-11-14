@@ -1,27 +1,34 @@
-"""Search's `Slot.summable` equals the outcome of the mint's sum over the same family.
+"""Search's `Slot.summable` and `ResolvedStatVars.sums_components` equal the outcome of the
+mint's sum over the same family.
 
 Each family is resolved as the mint resolves it, one of its members holds a row and the
 rest hold none, and the mint sums the frame down to one series per year. The sum completes
-exactly when Search reads the family's summable axes true.
+exactly when Search reads the family's summable axes true. A composite's components sum
+exactly when Search serves `sums_components` true for it.
 """
 
 from __future__ import annotations
 
 import dataclasses
 
+import httpx
 import pytest
 
 import search.engine.retrieval.bound_values as bound_values_module
 from code_index import CodeIndex
+from code_index.declarations import COMPOSITES
 from code_index.shared import get_index
 from datasets_api.adapter import resolve_definition_members
+from datasets_api.config import DatasetsBuildSettings
 from datasets_api.mint_models import GroupbyOptions, MintOptions
 from datasets_api.render import ReshapeResult, _RenderReads, _reshape
 from materialise.enrichment import EnrichmentLookup
 from materialise.frame_build import Frame
 from materialise.reshape import RollupNotSummableError, Table
 from search.engine.retrieval.bound_values import apply_slot_summability
-from search.models import BaseIdentity
+from search.models import BaseIdentity, ResolvedStatVars
+from search.scope.composite import _stat_vars, served_components
+from search.scope.tables import ScopeFacts
 from statvar_members import MemberEnumerator
 from tests.code_index.aid_identity import (
     AID_TYPE,
@@ -34,8 +41,12 @@ from tests.code_index.aid_identity import (
 )
 from tests.engine._builders import unbound_slot, value_slot
 
+from . import test_composite_download as download
+from ._artifact_doubles import FakeArtifactStore
 from ._graph_doubles import FakeMintGraphReader
 from ._member_bounds import mint_bounds
+from .test_definition_door import _client
+from .test_mint_composite import _PROVIDER, _RECIPIENT, _dac2a_oda_identity, _identity, _mint
 
 _SUMMABLE_AXES = ("crsCooperationModality", "crsPurpose", "crsTypeOfFinance", "crsTypeOfFlow")
 # The imputed five-tuple declares two of the CRS code systems.
@@ -206,3 +217,75 @@ def test_the_summed_imputed_frame_is_a_grammar_frame_without_the_classifier_colu
             None,
         ),
     )
+
+
+def _composite_case(identity: dict, populated: download._Populated):
+    """A case minting `identity`, named by the composite provenance it binds."""
+    return pytest.param(identity, populated, id=identity["facets"]["provenance"]["ref"])
+
+
+_COMPOSITE_CASES = [
+    _composite_case(_identity(), download._stacked_crs()),
+    _composite_case(_dac2a_oda_identity("Net"), download._stacked_dac2a()),
+    _composite_case(download._headline_identity(), download._spliced_headline()),
+]
+
+
+def test_the_composite_cases_cover_every_declared_composite():
+    assert sorted(case.id for case in _COMPOSITE_CASES) == sorted(
+        composite.provenance for composite in COMPOSITES
+    )
+
+
+@pytest.mark.parametrize(("identity", "populated"), _COMPOSITE_CASES)
+def test_search_sums_components_equals_the_mints_time_sum_outcome(
+    monkeypatch: pytest.MonkeyPatch, identity: dict, populated: download._Populated
+):
+    """The flag Search serves on a composite's restated StatVar counts (`_stat_vars`) is true
+    exactly where the mint's sum over time adds the composite's components, and false exactly
+    where it refuses `rollup_not_summable` for want of a summable axis (`no_summable_axis`),
+    the precondition the wire leaves out and the refusal records."""
+    refused: list[str] = []
+    refusal_init = RollupNotSummableError.__init__
+
+    def recording_init(self, *args, axis: str, precondition: str) -> None:
+        refused.append(precondition)
+        refusal_init(self, *args, axis=axis, precondition=precondition)
+
+    coverage = download._coverage(populated)
+    client = _client(
+        graph=FakeMintGraphReader(labels={_PROVIDER: "France", _RECIPIENT: "Kenya"}),
+        sdmx_transport=httpx.MockTransport(
+            lambda request: download._sdmx_response(populated, request)
+        ),
+        coverage=coverage,
+        artifact_store=FakeArtifactStore(),
+        settings=DatasetsBuildSettings.from_env(),
+    )
+    facts = ScopeFacts(index=get_index(), coverage=coverage.snapshot())
+    declaration = get_index().composite(identity["facets"]["provenance"]["ref"])
+    assert declaration is not None
+
+    served = _stat_vars(
+        served_components(identity, facts=facts),
+        ResolvedStatVars(member_count=0),
+        identity,
+        declaration,
+        facts=facts,
+    )
+    # The client's construction builds exemplar refusals of its own, so the recording
+    # starts once it is built.
+    monkeypatch.setattr(RollupNotSummableError, "__init__", recording_init)
+    minted = _mint(
+        client, identity=identity, options={"groupby": {"by": ["time_period"], "op": "sum"}}
+    )
+
+    if served.sums_components:
+        assert minted.status_code == 200, minted.text
+        assert refused == []
+    else:
+        assert minted.status_code == 422, minted.text
+        problem = minted.json()
+        assert problem["code"] == "rollup_not_summable"
+        assert [issue["axis"] for issue in problem["issues"]] == ["stat_var"]
+        assert refused == ["no_summable_axis"]

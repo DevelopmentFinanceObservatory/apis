@@ -2401,6 +2401,46 @@ def _dac2a_inclusive_answer(monkeypatch) -> Spec:
     return spec
 
 
+def test_the_dac2a_inclusive_answer_states_its_components_sum_and_leaves_no_slot_open(
+    monkeypatch,
+):
+    """DAC2a's inclusive answer binds every slot its members declare to one value with no
+    expansion, so no slot carries the two aid-type lines apart. It serves its two members and
+    states that a groupby sum adds them (`sums_components`)."""
+    spec = _dac2a_inclusive_answer(monkeypatch)
+
+    resolved = spec.resolved
+    assert (resolved.stat_vars.served_count, resolved.stat_vars.sums_components) == (2, True)
+    declared = [
+        slot
+        for slot in resolved.slots
+        if slot.key.property is not None
+        and slot.key.property.ref not in resolved.inapplicable_slots
+    ]
+    assert declared
+    assert all(slot.binding.kind == "value" and slot.expansion is None for slot in declared), (
+        declared
+    )
+
+
+@pytest.mark.parametrize(
+    ("message", "sums"),
+    [
+        pytest.param("total health aid from the United States to Kenya", True, id="inclusive"),
+        pytest.param("health aid from the United States to Kenya", False, id="bilateral"),
+    ],
+)
+def test_a_crs_answer_states_its_components_sum_only_on_the_composite(
+    monkeypatch, message: str, sums: bool
+):
+    _cover(monkeypatch, _ALL_YEARS)
+
+    spec = _ask(f"{message}, 2015 to 2020", time="2015-2020")
+
+    assert (_source(spec) == _INCLUSIVE_SOURCE) is sums
+    assert spec.resolved.stat_vars.sums_components is sums
+
+
 def _resubmitted(identity: BaseIdentity, scope_entries: list[Entry] | None) -> Spec:
     """`identity` posted on a dataset resubmit with `scope_entries`."""
     row = basis._CELLS["recipient-all-sectors"]
@@ -2501,3 +2541,25 @@ def test_an_inclusive_composite_over_a_donor_keeps_it_on_resubmit(monkeypatch):
 
     assert _source(served) == _DAC2A_INCLUSIVE
     assert served.spec_id == spec.spec_id
+    assert served.resolved.stat_vars.sums_components is True
+
+
+def test_a_switch_to_the_dac2a_inclusive_scope_states_its_components_sum(monkeypatch):
+    """A plan switch posts the bilateral answer's scope base with the inclusive option as an
+    explicit entry. The resubmit answers DAC2a's composite and states that a groupby sum adds
+    its two lines, as the fresh answer does."""
+    _dac2a_inclusive_answer(monkeypatch)
+    row = basis._CELLS["recipient-all-sectors"]
+    bilateral = basis._ask(row.variable, time=row.time, recipient=row.recipient)
+    assert _source(bilateral) is None
+    assert bilateral.resolved.stat_vars.sums_components is False
+    scope = _scope(bilateral)
+    # The default bilateral scope holds no entry, so the switch adds the provider's.
+    assert all(entry.axis != "provider" for entry in scope.entries)
+    entries = [*scope.entries, _switch("provider:inclusive", _provider(bilateral))]
+
+    served = _resubmitted(scope.base.identity, entries)
+
+    assert _source(served) == _DAC2A_INCLUSIVE
+    assert served.resolved.stat_vars.served_count == 2
+    assert served.resolved.stat_vars.sums_components is True
