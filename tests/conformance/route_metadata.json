@@ -641,10 +641,10 @@
   {
     "has_description": false,
     "method": "POST",
-    "name": "check_ontology",
-    "operation_id": "graph_check_ontology",
+    "name": "post_ontology_check",
+    "operation_id": "graph_post_ontology_check",
     "path": "/api/graph/ontology/check",
-    "summary": "Check Ontology",
+    "summary": "Post Ontology Check",
     "surface": "graph"
   },
   {

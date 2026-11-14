@@ -520,14 +520,12 @@ class OriginGraphClient:
         )
 
     def node_arcs_batch(
-        self, dcids: list[str], *, confirm_empty: bool = False, deadline: float | None = None
+        self, dcids: list[str], *, deadline: float | None = None
     ) -> dict[str, dict | None]:
         return self._route_many(
             current_catalogue(),
             dcids,
-            lambda backend, part: backend.node_arcs_batch(
-                part, confirm_empty=confirm_empty, deadline=deadline
-            ),
+            lambda backend, part: backend.node_arcs_batch(part, deadline=deadline),
             disabled=lambda: None,
             tables=_table_arcs,
         )

@@ -1091,7 +1091,7 @@ class GraphClient:
         return self.node_arcs_batch([dcid]).get(dcid)
 
     def node_arcs_batch(
-        self, dcids: list[str], *, confirm_empty: bool = False, deadline: float | None = None
+        self, dcids: list[str], *, deadline: float | None = None
     ) -> dict[str, dict | None]:
         """Fetch each dcid's `->*` arcs in chunks of `node_arc_batch_chunk_size`. This mixer repeats
         continuation tokens for this shape, so chunks halve on continuation. An absent or empty
@@ -1104,11 +1104,6 @@ class GraphClient:
         first-occurrence order. They share the optional cache with `node_arcs`. One absolute
         `deadline` bounds every request and semaphore wait; past it the configured deadline error
         raises.
-
-        `confirm_empty` reads each empty answer that is still empty after the group retry again
-        alone (`_confirm_empty_arcs`), so every `None` returned is the graph's answer for that
-        dcid read alone and is cached. A request then makes one batch, one group retry and one
-        read per empty dcid.
         """
         if not dcids:
             return {}
@@ -1131,20 +1126,6 @@ class GraphClient:
             self._arcs_counters.misses += len(misses)
 
         if not misses:
-            return result
-
-        if confirm_empty:
-
-            def read(part: Sequence[str]) -> dict:
-                return self._post_node_arcs_batch(list(part), deadline=deadline)
-
-            confirmed = self._confirm_empty_arcs(
-                misses, read=read, reread=read, individual_probe_budget=None
-            )
-            for dcid in misses:
-                arcs = _dedup_wire_arcs(confirmed[dcid] or {})
-                result[dcid] = arcs or None
-                self._remember_arcs(stamp, dcid, result[dcid])
             return result
 
         data = self._post_node_arcs_batch(misses, deadline=deadline)
@@ -1366,34 +1347,14 @@ class GraphClient:
         individual_probe_budget: int | None,
         deadline: float | None,
     ) -> dict[str, dict | None]:
-        """Each of `dcids`' wire `arcs` for `properties`, `None` for none, by
-        `_confirm_empty_arcs` over `_post_node_arcs_chunked` and `_post_node_arcs`."""
-        return self._confirm_empty_arcs(
-            dcids,
-            read=lambda part: self._post_node_arcs_chunked(
-                part, properties=properties, deadline=deadline
-            ),
-            reread=lambda part: self._post_node_arcs(
-                part, properties=properties, deadline=deadline
-            ),
-            individual_probe_budget=individual_probe_budget,
-        )
-
-    def _confirm_empty_arcs(
-        self,
-        dcids: Sequence[str],
-        *,
-        read: Callable[[Sequence[str]], dict],
-        reread: Callable[[Sequence[str]], dict],
-        individual_probe_budget: int | None,
-    ) -> dict[str, dict | None]:
-        """Each of `dcids`' wire `arcs` from `read`, `None` for none. An empty answer from a
-        batch of several dcids is read again by `reread` with the other empties as a group,
-        then each still empty alone, up to `individual_probe_budget` (`None` probes all); only
-        an empty answer for a dcid read alone is kept as `None`, beside the unprobed ones,
-        which one log message counts. A dcid a retry or probe omits raises the read error.
-        Each read carries its own deadline, so a read past it raises and stops the probes."""
-        data = read(dcids)
+        """Each of `dcids`' wire `arcs` for `properties`, `None` for none. The dcids are read in
+        `_post_node_arcs_chunked`'s chunks. An empty answer from a batch of several dcids is
+        read again with the other empties as a group, then each still empty alone, up to
+        `individual_probe_budget` (`None` probes all). Only an empty answer for a dcid read
+        alone is kept as `None`, beside the unprobed ones, which one log message counts. A dcid
+        a retry or probe omits raises the read error. Each read carries `deadline`, so a read
+        past it raises and stops the probes."""
+        data = self._post_node_arcs_chunked(dcids, properties=properties, deadline=deadline)
         result: dict[str, dict | None] = {}
         suspects: list[str] = []
         single_dcid = len(dcids) == 1
@@ -1409,7 +1370,7 @@ class GraphClient:
             result[dcid] = arcs
 
         if suspects:
-            retry_data = reread(suspects)
+            retry_data = self._post_node_arcs(suspects, properties=properties, deadline=deadline)
             still_missing = [dcid for dcid in suspects if dcid not in retry_data]
             if still_missing:
                 omitted = GraphOmittedDcidsError(
@@ -1433,7 +1394,7 @@ class GraphClient:
                 unprobed = still_empty[individual_probe_budget:]
 
             for dcid in to_probe:
-                probe_data = reread([dcid])
+                probe_data = self._post_node_arcs([dcid], properties=properties, deadline=deadline)
                 if dcid not in probe_data:
                     omitted = GraphOmittedDcidsError(
                         f"graph omitted {dcid!r} from /v2/node data even after an "

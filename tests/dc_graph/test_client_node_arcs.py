@@ -9,12 +9,7 @@ write the exact same cache. Offline only -- the transport is monkeypatched.
 
 import pytest
 
-from dc_graph import (
-    GraphClient,
-    GraphDeadlineExceededError,
-    GraphOmittedDcidsError,
-    GraphReadError,
-)
+from dc_graph import GraphClient, GraphOmittedDcidsError, GraphReadError
 from graph_generation.stamp import UNKNOWN_KEY
 
 
@@ -130,53 +125,6 @@ def test_node_arcs_batch_group_retry_empty_is_returned_but_not_cached(monkeypatc
     assert calls == [["empty/A", "empty/B"], ["empty/A", "empty/B"]]
     assert (UNKNOWN_KEY, "empty/A") not in client._arcs_cache
     assert (UNKNOWN_KEY, "empty/B") not in client._arcs_cache
-
-
-def test_node_arcs_batch_confirm_empty_reads_each_empty_dcid_alone(monkeypatch) -> None:
-    """With `confirm_empty`, each dcid still empty after the group retry is read alone: one
-    the graph holds when read alone keeps its arcs, and one empty alone caches as `None`."""
-    calls: list[list[str]] = []
-    held = {"typeOf": {"nodes": [{"dcid": "Country"}]}}
-
-    def fake_post(self, path, payload, *, deadline=None):
-        nodes = list(payload["nodes"])
-        calls.append(nodes)
-        alone = nodes == ["held/B"]
-        return {"data": {dcid: {"arcs": held if alone else {}} for dcid in nodes}}
-
-    monkeypatch.setattr(GraphClient, "post", fake_post)
-    client = GraphClient(
-        base_url="http://fake/core/api", arcs_cache_size=10000, obs_properties_cache_size=10000
-    )
-
-    result = client.node_arcs_batch(["empty/A", "held/B"], confirm_empty=True)
-
-    assert result == {"empty/A": None, "held/B": held}
-    assert calls == [["empty/A", "held/B"], ["empty/A", "held/B"], ["empty/A"], ["held/B"]]
-    assert client._arcs_cache[(UNKNOWN_KEY, "empty/A")] is None
-    assert client._arcs_cache[(UNKNOWN_KEY, "held/B")] == held
-
-
-def test_node_arcs_batch_confirm_empty_stops_its_probes_at_the_deadline(monkeypatch) -> None:
-    """A deadline that passes during the group retry raises before any read alone."""
-    calls: list[list[str]] = []
-    clock = [0.0]
-
-    def fake_post(self, path, payload, *, deadline=None):
-        nodes = list(payload["nodes"])
-        calls.append(nodes)
-        clock[0] += 10.0
-        return {"data": {dcid: {"arcs": {}} for dcid in nodes}}
-
-    monkeypatch.setattr(GraphClient, "post", fake_post)
-    monkeypatch.setattr("dc_graph.client.time.monotonic", lambda: clock[0])
-    client = GraphClient(base_url="http://fake/core/api", arcs_cache_size=10000)
-
-    with pytest.raises(GraphDeadlineExceededError):
-        client.node_arcs_batch(["empty/A", "empty/B"], confirm_empty=True, deadline=15.0)
-
-    assert calls == [["empty/A", "empty/B"], ["empty/A", "empty/B"]]
-    assert (UNKNOWN_KEY, "empty/A") not in client._arcs_cache
 
 
 def test_node_arcs_batch_omission_recovered_by_retry(monkeypatch) -> None:

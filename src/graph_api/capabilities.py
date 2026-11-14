@@ -35,6 +35,7 @@ from graph_api.kinds import KINDS, Kind
 from graph_api.node_models import NODES_MAX_DCIDS
 from graph_api.ontology_models import (
     CHECK_MAX_CONSTRAINT_PROPERTIES,
+    CHECK_MAX_FINDINGS,
     CHECK_MAX_OBSERVATION_PROPERTIES,
     CHECK_MAX_READ_IDS,
     CHECK_MAX_ROWS,
@@ -78,6 +79,9 @@ class CapabilityCaps(BaseModel):
     )
     max_check_read_ids: int = Field(
         description="the most distinct ids one POST /api/graph/ontology/check request may read from the graph, counted over all its rows before any read: each shape field, constraint property, observation property and constraint value that the ontology document does not hold, less the constraint values the value or the document decides; at least the most one row can name, so one row always fits; a request counting more is refused 400 request_invalid before any read"
+    )
+    max_check_findings: int = Field(
+        description="the most findings one POST /api/graph/ontology/check request answers, more than one row can yield, so one row always fits. A request whose findings pass it stops and is refused 400 request_invalid"
     )
 
 
@@ -191,5 +195,6 @@ def build_capabilities(
             max_check_constraint_properties=CHECK_MAX_CONSTRAINT_PROPERTIES,
             max_check_observation_properties=CHECK_MAX_OBSERVATION_PROPERTIES,
             max_check_read_ids=CHECK_MAX_READ_IDS,
+            max_check_findings=CHECK_MAX_FINDINGS,
         ),
     )

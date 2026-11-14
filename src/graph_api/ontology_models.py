@@ -46,18 +46,18 @@ fault `graph_api.ontology_check` finds in it. `OntologyCheckRequest` carries 1 t
 with the generation the rows were checked against, null where its token is unknown, and every
 finding. A row's shape fields, constraint properties and observation properties take the node
 door's dcid syntax (`graph_api.node_models.Dcid`). A constraint value is any string up to the
-same 512-character ceiling, a finite number, a boolean or null, and `ref` takes the same
-ceiling. A row names at most `CHECK_MAX_CONSTRAINT_PROPERTIES` constraint properties and
-`CHECK_MAX_OBSERVATION_PROPERTIES` observation properties, and one request reads at most
-`CHECK_MAX_READ_IDS` distinct ids from the graph (`graph_api.ontology_check`), at least the most
-one row names.
+same 512-character ceiling, a finite number within plus or minus 2**53, a boolean or null, and
+`ref` takes the same ceiling. A row names at most `CHECK_MAX_CONSTRAINT_PROPERTIES` constraint
+properties and `CHECK_MAX_OBSERVATION_PROPERTIES` observation properties. One request reads at
+most `CHECK_MAX_READ_IDS` distinct ids from the graph (`graph_api.ontology_check`), at least the
+most one row names, and answers at most `CHECK_MAX_FINDINGS` findings, more than one row yields.
 """
 
 from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, FiniteFloat, StringConstraints
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StringConstraints
 
 from dfo_platform.wire import ResponseModel
 from graph_api.node_models import Dcid
@@ -77,14 +77,23 @@ served code index carries (2 on the dev graph)."""
 CHECK_MAX_READ_IDS = 5 + 2 * CHECK_MAX_CONSTRAINT_PROPERTIES + CHECK_MAX_OBSERVATION_PROPERTIES
 """The most distinct ids one check request may read from the graph, 41: the ids its rows name
 that the ontology document does not hold, counted before any read, each constraint value
-counted unless the value or the document decides it. One row names at most this many (its 5
-shape fields, each constraint property and its value, each observation property), so a single
-row always fits. The check reads them in at most two `node_arcs_batch` calls with
-`confirm_empty`, so the graph sees at most two batches, two group retries of the empty answers
-and one read alone per id the graph does not hold: 4 + 41 requests. On the dev graph, 41 absent ids read in one batch and then alone took 9.2 to 10.2 s, about 0.25 s an id
-after a batch of 0.6 to 1.3 s, and a row naming 41 ids the graph does not hold, read in the
-route's two rounds, took 5.2 to 8.8 s. The worst case, about 10 s, a third of the 30 s
-`GRAPH_ONTOLOGY_CHECK_TIMEOUT_SECONDS`, is too long for the 10 s `GRAPH_NODE_TIMEOUT_SECONDS`."""
+counted unless the value or the document decides it (`graph_api.ontology_check.plan_reads`).
+One row names at most this many (its 5 shape fields, each constraint property and its value,
+each observation property), so a single row always fits. The check reads them in two
+`node_arcs_many` calls: 45 POSTs to `/v2/node` when the graph answers every POST, at most 201
+when the front door refuses every POST naming more than one id, each tried up to 3 times, all
+within the 30 s `GRAPH_ONTOLOGY_CHECK_TIMEOUT_SECONDS` (`graph_api.ontology_check` counts
+them). On the dev graph, 41 absent ids read in one batch and then alone took 9.2 to 10.2 s,
+about a third of that deadline and past the 10 s `GRAPH_NODE_TIMEOUT_SECONDS`."""
+
+CHECK_MAX_FINDINGS = 2_000
+"""The most findings one check answers. A check whose findings pass it stops and is refused.
+One row yields at most 79: 5 on its shape fields, 2 on each of its 16 constraint properties (a
+domain warning and a value finding), 1 on each of its 4 observation properties, and 38
+`definition_differs` warnings (5 shape fields, each constraint property the row or a served
+StatVar of at most `CHECK_MAX_CONSTRAINT_PROPERTIES` names, the observation properties). A
+single row always fits."""
+
 DeclaredBy = Literal["instance", "base"]
 """Who declares a node: `"base"` when every declaring provenance is a base Data Commons one."""
 
@@ -231,12 +240,33 @@ class OntologyProvenances(ResponseModel):
     provenances: list[OntologyProvenance] = Field(description="sorted by dcid")
 
 
+CONSTRAINT_NUMBER_BOUND = 2**53
+"""The largest magnitude of a number a constraint value takes: every integer up to it is exact
+as a JSON number in any client."""
+
+
+def _refuse_integer(value: object) -> object:
+    """Keep an integer out of the float branch, which would round one past
+    `CONSTRAINT_NUMBER_BOUND` into it."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        raise ValueError(f"an integer is within plus or minus {CONSTRAINT_NUMBER_BOUND}")
+    return value
+
+
 type ConstraintValue = (
-    Annotated[str, StringConstraints(max_length=DCID_MAX_LENGTH)] | int | FiniteFloat | bool | None
+    Annotated[str, StringConstraints(max_length=DCID_MAX_LENGTH)]
+    | Annotated[int, Field(ge=-CONSTRAINT_NUMBER_BOUND, le=CONSTRAINT_NUMBER_BOUND)]
+    | Annotated[
+        float,
+        BeforeValidator(_refuse_integer),
+        Field(allow_inf_nan=False, ge=-CONSTRAINT_NUMBER_BOUND, le=CONSTRAINT_NUMBER_BOUND),
+    ]
+    | bool
+    | None
 )
 """A constraint value as sent: a node dcid, or a literal or null the check refuses. A string
-takes the 512-character dcid ceiling, and a number must be finite: `NaN`, `Infinity` and a
-number past the float range are refused."""
+takes the 512-character dcid ceiling, and a number, integer or float, is finite and within
+plus or minus `CONSTRAINT_NUMBER_BOUND`."""
 
 FindingCode = Literal[
     "node_not_held",

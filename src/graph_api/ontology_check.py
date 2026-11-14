@@ -1,29 +1,44 @@
 """Check candidate StatisticalVariable definitions against the instance's ontology.
 
 `OntologyLookup` holds the ontology document's nodes as the check reads them, built once per
-document. `check_rows` answers each node a row names from it and reads every other named id
-once, through `node_arcs_batch` with `confirm_empty`, which reads each id a batch answers empty
-again alone, so an empty answer means the graph does not hold it. A node held with any out-arc
-is held, its types its `typeOf` values, so a held node with no `typeOf` is untyped. A read
-error propagates, so no node is reported absent because a read failed. The check reads no
+document. `plan_reads` decides, before any read, which ids outside the document a request
+reads, and refuses the request when they pass `CHECK_MAX_READ_IDS` or include an id of an
+origin the deployment does not serve. `check_rows` answers each node a row names from the
+document and asks every other named id once of the reader's `node_arcs_many`, for its `typeOf`
+and `name`, with no probe budget. The served reader, `origin_catalogue.graph.OriginGraphClient`,
+answers an id the origin catalogue's arc tables hold from those tables, a node they hold with no
+arc as absent, and reads every other id from the graph. There an id a batch answers empty is
+read again with the other empties, then alone, so `None` is the graph's answer for that id
+read alone. A node with neither a type nor a name reads as absent, and a node with a name and no `typeOf` is untyped. A
+read error propagates, so no node is reported absent because a read failed. The check reads no
 ancestry.
 
 The reads come in two rounds. The first reads the shape fields, the constraint properties and
 the observation properties the document does not hold, and the values of constraint properties
 the document holds as Properties. The second reads the values of constraint properties the
 first round found held as Properties. A constraint value whose property is not a held Property
-is never read and gets no finding of its own: the property's finding marks the cell. Each
-round is one `node_arcs_batch` call, so a request makes at most two; inside each, the client
-sends one batch, one group retry of the empty answers and one read alone per id still empty.
+is never read and gets no finding of its own: the property's finding marks the cell.
+
+A request reads at most `CHECK_MAX_READ_IDS`, 41, ids, and fewer from the graph when the arc
+tables answer some. Each round is one `node_arcs_many` call
+of k ids, k at most 41 over both rounds, which the client sends as one POST (its chunk holds 50
+ids), one POST of the group retry and one POST per id still empty: 2 + k a round, 45 POSTs for
+a check. A front-door refusal splits a POST of k ids into two halves, so a batch or group retry
+costs at most 2k - 1 POSTs, and the worst case is 5k - 2 a round, 201 POSTs for a check. A
+continuation page adds one POST. Each POST is tried up to 3 times on a 5xx answer or a
+transport error. Every read carries the check's deadline, `GRAPH_ONTOLOGY_CHECK_TIMEOUT_SECONDS`
+(30 s) from the request's start.
 
 Some constraint values need no read. A value that is a number, a boolean, or a string outside
 dcid syntax names no node: `node_not_held`. A value outside the document, on an instance
 property whose range the document decides (`OntologyLookup.decides`), is no member of the
-range: `value_outside_range`. Every other id outside the document is read. The ids a request
-could read are counted before any read, every value under a property outside the document
-included, and a request naming more than `CHECK_MAX_READ_IDS` raises
-`OntologyCheckTooManyReads`. One row names at most `CHECK_MAX_READ_IDS` ids, so a single row
-always fits.
+range: `value_outside_range`. Every other id outside the document is read. `plan_reads` counts
+every value under a property outside the document, read or not. One row names at most
+`CHECK_MAX_READ_IDS` ids, so a single row always fits.
+
+The findings stop at `CHECK_MAX_FINDINGS`: `check_rows` raises `OntologyCheckTooManyFindings`
+at the row that passes it. One row yields at most 79 findings (`CHECK_MAX_FINDINGS` counts
+them), so a single row always fits.
 
 Every row gets existence and kind checks. A constraint value must name a resolved node, by
 `code_index.constraint_values.constraint_value_fault`, the test the code index export refuses
@@ -49,8 +64,9 @@ from typing import Final
 
 from code_index import CodeIndex, StatVarRow
 from code_index.constraint_values import constraint_value_fault
-from dc_graph import UNRESOLVED_NODE, parse_arcs
+from dc_graph import UNRESOLVED_NODE
 from graph_api.ontology_models import (
+    CHECK_MAX_FINDINGS,
     CHECK_MAX_READ_IDS,
     ConstraintValue,
     FindingCode,
@@ -58,20 +74,15 @@ from graph_api.ontology_models import (
     OntologyDocument,
     OntologyFinding,
 )
+from graph_api.ontology_provenances import SHAPE_FIELDS
 from graph_api.reader import GraphNodeReader
 from graph_api.routing import DcidConvertor
+from origin_catalogue.graph import is_un_dcid
 
 _CLASS: Final[str] = "Class"
 _PROPERTY: Final[str] = "Property"
-_READ_PROPERTIES: Final[tuple[str, ...]] = ("typeOf", "subClassOf")
+_READ_PROPERTIES: Final[tuple[str, ...]] = ("typeOf", "name")
 _DCID: Final[re.Pattern[str]] = re.compile(rf"{DcidConvertor.regex}")
-_SHAPE_FIELDS: Final[tuple[str, ...]] = (
-    "population_type",
-    "measured_property",
-    "stat_type",
-    "measurement_qualifier",
-    "measurement_denominator",
-)
 _CONSTRAINT: Final[str] = "constraint_properties"
 _OBSERVATION: Final[str] = "observation_properties"
 
@@ -87,10 +98,32 @@ class OntologyCheckTooManyReads(Exception):
         self.count = count
 
 
+class OntologyCheckUnservedId(Exception):
+    """The rows name `dcid`, an id of an origin this deployment does not serve, so no read can
+    establish whether the graph holds it."""
+
+    def __init__(self, dcid: str) -> None:
+        super().__init__(
+            f"{dcid!r} belongs to an origin this deployment does not serve, so the check "
+            "cannot read it"
+        )
+        self.dcid = dcid
+
+
+class OntologyCheckTooManyFindings(Exception):
+    """The rows have more findings than `CHECK_MAX_FINDINGS`."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            f"the rows have more than {CHECK_MAX_FINDINGS} findings, the most one check "
+            "answers; send fewer rows"
+        )
+
+
 @dataclass(frozen=True)
 class _Node:
     types: frozenset[str]
-    parents: tuple[str, ...]
+    parents: tuple[str, ...] = ()
     instance: bool = False
     domain: tuple[str, ...] = ()
     range: tuple[str, ...] = ()
@@ -158,6 +191,61 @@ def _ancestry(nodes: Mapping[str, _Node], dcids: Iterable[str]) -> set[str]:
     return seen
 
 
+@dataclass(frozen=True)
+class CheckReads:
+    """The ids outside the document one check reads: `first`, read in the first round, and
+    `pending`, each constraint property outside the document with its values outside the
+    document, read in the second round under a property the first found a held Property."""
+
+    first: frozenset[str]
+    pending: Mapping[str, frozenset[str]]
+
+    @property
+    def ids(self) -> frozenset[str]:
+        """Every id the check may read."""
+        return self.first.union(*self.pending.values())
+
+
+def plan_reads(
+    rows: Sequence[OntologyCheckRow], *, lookup: OntologyLookup, un_served: bool
+) -> CheckReads:
+    """The ids outside the document `rows` name that the check reads, decided with no read.
+
+    Args:
+        rows: the candidate definitions.
+        lookup: the ontology document's lookup.
+        un_served: whether the deployment serves the UN origin, whose ids
+            `origin_catalogue.graph.is_un_dcid` names.
+
+    Raises:
+        OntologyCheckTooManyReads: the rows name more than `CHECK_MAX_READ_IDS` ids to read.
+        OntologyCheckUnservedId: an id to read belongs to the UN origin and `un_served` is
+            false; the smallest such id is named.
+    """
+    first: set[str] = set()
+    pending: dict[str, set[str]] = {}
+    for row in rows:
+        first.update(dcid for dcid in _named(row) if dcid not in lookup.nodes)
+        for prop, value in row.constraint_properties.items():
+            read = _read_value(prop, value, lookup)
+            if read is None or read in lookup.nodes:
+                continue
+            if prop in lookup.nodes:
+                first.add(read)
+            else:
+                pending.setdefault(prop, set()).add(read)
+    reads = CheckReads(
+        first=frozenset(first),
+        pending=MappingProxyType({prop: frozenset(values) for prop, values in pending.items()}),
+    )
+    ids = reads.ids
+    if len(ids) > CHECK_MAX_READ_IDS:
+        raise OntologyCheckTooManyReads(len(ids))
+    if not un_served and (unserved := sorted(dcid for dcid in ids if is_un_dcid(dcid))):
+        raise OntologyCheckUnservedId(unserved[0])
+    return reads
+
+
 class _Nodes:
     """The nodes the rows name: document nodes free, the rest read once each."""
 
@@ -167,16 +255,18 @@ class _Nodes:
         self._reader = reader
         self._deadline = deadline
 
-    def known(self, dcid: str) -> bool:
-        return dcid in self._lookup.nodes or dcid in self._read
-
     def read(self, dcids: Iterable[str]) -> None:
-        """Read every one of `dcids` not yet known in one `node_arcs_batch` call that confirms
-        each empty answer alone."""
-        unknown = sorted({dcid for dcid in dcids if not self.known(dcid)})
+        """Read every one of `dcids` in one `node_arcs_many` call that confirms each empty
+        answer alone."""
+        unknown = sorted(set(dcids))
         if not unknown:
             return
-        arcs = self._reader.node_arcs_batch(unknown, confirm_empty=True, deadline=self._deadline)
+        arcs = self._reader.node_arcs_many(
+            unknown,
+            properties=_READ_PROPERTIES,
+            individual_probe_budget=None,
+            deadline=self._deadline,
+        )
         for dcid in unknown:
             self._read[dcid] = _held(arcs.get(dcid))
 
@@ -186,20 +276,21 @@ class _Nodes:
         return self._read[dcid]
 
 
-def _held(arcs: Mapping[str, object] | None) -> _Node | None:
-    """The node `node_arcs_batch` answered with `arcs`, or `None` for no out-arc."""
-    if not arcs:
+def _held(arcs: Mapping[str, tuple[str, ...]] | None) -> _Node | None:
+    """The node `node_arcs_many` answered with `arcs`, or `None` for a node with neither a
+    type nor a name."""
+    if arcs is None:
         return None
-    values = parse_arcs(dict(arcs), _READ_PROPERTIES, mark_unresolved=True)
-    return _Node(
-        types=frozenset(value for value in values["typeOf"] if value != UNRESOLVED_NODE),
-        parents=tuple(value for value in values["subClassOf"] if value != UNRESOLVED_NODE),
-    )
+    types = frozenset(value for value in arcs["typeOf"] if value != UNRESOLVED_NODE)
+    if not types and all(value == UNRESOLVED_NODE for value in arcs["name"]):
+        return None
+    return _Node(types=types)
 
 
 def check_rows(
     rows: Sequence[OntologyCheckRow],
     *,
+    reads: CheckReads,
     lookup: OntologyLookup,
     reader: GraphNodeReader,
     code_index: CodeIndex,
@@ -209,8 +300,10 @@ def check_rows(
 
     Args:
         rows: the candidate definitions.
+        reads: `plan_reads` of `rows` and `lookup`.
         lookup: the ontology document's lookup, which answers most ids with no read.
-        reader: the graph reads for nodes the document does not hold.
+        reader: the graph reads for nodes the document does not hold, called only when
+            `reads` names an id.
         code_index: the code index whose StatVar rows the rows' dcids are compared with.
         deadline: the absolute monotonic deadline passed to every read.
 
@@ -222,29 +315,15 @@ def check_rows(
         findings in the same field order.
 
     Raises:
-        OntologyCheckTooManyReads: the rows name more than `CHECK_MAX_READ_IDS` ids to read,
-            raised before any read.
+        OntologyCheckTooManyFindings: the findings passed `CHECK_MAX_FINDINGS`, raised at the
+            row that passed it.
         GraphReadError: a read failed.
     """
     nodes = _Nodes(lookup, reader=reader, deadline=deadline)
-    first: set[str] = set()
-    pending: dict[str, set[str]] = {}
-    for row in rows:
-        first.update(_named(row))
-        for prop, value in row.constraint_properties.items():
-            if (read := _read_value(prop, value, lookup)) is None:
-                continue
-            if prop in lookup.nodes:
-                first.add(read)
-            else:
-                pending.setdefault(prop, set()).add(read)
-    to_read = {dcid for dcid in first.union(*pending.values()) if not nodes.known(dcid)}
-    if len(to_read) > CHECK_MAX_READ_IDS:
-        raise OntologyCheckTooManyReads(len(to_read))
-    nodes.read(first)
+    nodes.read(reads.first)
     nodes.read(
         value
-        for prop, values in pending.items()
+        for prop, values in reads.pending.items()
         if _is_property(nodes.get(prop))
         for value in values
     )
@@ -255,6 +334,8 @@ def check_rows(
         served = code_index.statvar_by_dcid(row.dcid) if row.dcid is not None else None
         if served is not None:
             findings.extend(_differences(row, served))
+        if len(findings) > CHECK_MAX_FINDINGS:
+            raise OntologyCheckTooManyFindings()
     return findings
 
 
@@ -277,7 +358,7 @@ def _read_value(prop: str, value: ConstraintValue, lookup: OntologyLookup) -> st
 
 def _named(row: OntologyCheckRow) -> list[str]:
     """Every node id the row names other than its constraint values."""
-    named = [value for field in _SHAPE_FIELDS if (value := getattr(row, field)) is not None]
+    named = [value for field in SHAPE_FIELDS if (value := getattr(row, field)) is not None]
     named.extend(row.constraint_properties)
     named.extend(row.observation_properties)
     return named
@@ -386,7 +467,7 @@ def _differences(row: OntologyCheckRow, served: StatVarRow) -> list[OntologyFind
     """One `definition_differs` warning per field where the row departs from `served`."""
     differs: list[tuple[str, ConstraintValue | list[str]]] = [
         (field, getattr(served, field))
-        for field in _SHAPE_FIELDS
+        for field in SHAPE_FIELDS
         if getattr(row, field) != getattr(served, field)
     ]
     differs.extend(_constraint_differences(row.constraint_properties, served.constraint_properties))

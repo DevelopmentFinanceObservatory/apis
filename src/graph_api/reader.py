@@ -1,8 +1,7 @@
 """Narrow DCP read interface for the Graph doors, independent of the Datasets `GraphReader`.
 
 `dc_graph.GraphClient` satisfies it directly. `node_arcs_many` confirms
-nodes. `node_arcs_batch` reads every out-arc of a node, so a node held without
-the arcs a caller names still reads as held. `child_places_batch` expands regions. `resolve_by_arc` and
+nodes. `child_places_batch` expands regions. `resolve_by_arc` and
 `node_names_many` also make the same object satisfy
 `entity_resolution.GraphLookup`. `node_subjects` reads a Dataset's
 Provenance children through the reverse `isPartOf` arc. `node_arc_subjects`,
@@ -35,17 +34,13 @@ class GraphNodeReader(Protocol):
         dcids: Sequence[str],
         *,
         properties: Sequence[str],
+        individual_probe_budget: int | None = None,
         deadline: float | None = None,
     ) -> NodeArcsByDcid:
-        """Read selected arcs in one batch. Each property's values are unique and ordered."""
-        ...
-
-    def node_arcs_batch(
-        self, dcids: list[str], *, confirm_empty: bool = False, deadline: float | None = None
-    ) -> Mapping[str, dict | None]:
-        """Each dcid's `->*` arcs as the graph sends them, `None` for a node answered with no
-        out-arc. An empty answer is trusted only for a dcid read alone; `confirm_empty` reads
-        each empty answer of a batch again alone, so every `None` is trusted."""
+        """Read selected arcs in one batch. Each property's values are unique and ordered. An
+        empty answer from a batch is read again in a group, then alone up to
+        `individual_probe_budget` ids; with `None`, every `None` is the answer for an id read
+        alone."""
         ...
 
     def child_places_batch(

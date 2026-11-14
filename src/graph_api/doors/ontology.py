@@ -30,17 +30,28 @@ and a gzip representation, honouring `If-None-Match` with 304
 answers every fault `graph_api.ontology_check.check_rows` finds in them, with the generation
 of the build it checked against. The entry keeps, beside its frozen bodies, the build's
 `OntologyLookup`, built once per entry. The check compares served definitions against the code
-index the request computed the entry's key from, which is the index the build read. The check's deadline is
-`GRAPH_ONTOLOGY_CHECK_TIMEOUT_SECONDS` from its start. It waits on the same flight as the GET
-routes until that deadline and answers their 503 and 504 the same way. The check's own reads,
-of at most `CHECK_MAX_READ_IDS` ids the document does not hold, run as one job on the DCP-read
-executor under the same deadline; a saturated executor, a read past the deadline or a failed
-read answers as the GET routes answer it, with no findings. A body outside the request model
-is refused 400 `request_invalid`: `rows` empty or longer than `CHECK_MAX_ROWS`, a row past
-`CHECK_MAX_CONSTRAINT_PROPERTIES` or `CHECK_MAX_OBSERVATION_PROPERTIES`, a `ref` or a constraint
-value string past 512 characters, or a constraint value that is no finite number. Rows naming
-more than `CHECK_MAX_READ_IDS` ids to read are refused the same way before any read, with
-pointer `/rows`.
+index the request computed the entry's key from, which is the index the build read. The
+check's deadline is `GRAPH_ONTOLOGY_CHECK_TIMEOUT_SECONDS` from its start. It waits on the same
+flight as the GET routes until that deadline and answers their 503 and 504 the same way, so the
+first check after a graph change builds the document before its caps are decided.
+
+A body outside the request model is refused 400 `request_invalid`: `rows` empty or longer than
+`CHECK_MAX_ROWS`, a row past `CHECK_MAX_CONSTRAINT_PROPERTIES` or
+`CHECK_MAX_OBSERVATION_PROPERTIES`, a `ref` or a constraint value string past 512 characters,
+or a constraint value that is a number past plus or minus 2**53, `NaN` or an infinity. With the
+document in hand, `plan_reads` decides on the event loop, before anything is submitted, which
+ids the check reads: more than `CHECK_MAX_READ_IDS`, or a UN id while the bound catalogue does
+not serve the UN origin, is refused 400 `request_invalid` with pointer `/rows`.
+
+Every check runs as one job on `GraphDeps.check_executor`, whose
+`GRAPH_ONTOLOGY_CHECK_CONCURRENCY` (2) workers are its own, so a check never takes one of the
+shared DCP-read workers. The job reads, checks and encodes the response, and the event loop
+only wraps its bytes. A worker stays held until its job returns, even after its request is
+cancelled or times out, so at most two checks run at once in the process. One more is refused at
+submit and answers retryable 503 `service_unavailable` with `Retry-After: 5`
+(`OntologyCheckBusy`). A read past the check's deadline or a failed read answers as the GET
+routes answer it, with no findings. A check whose findings pass `CHECK_MAX_FINDINGS` stops and
+is refused 400 `request_invalid` with pointer `/rows`.
 
 `GET /api/graph/ontology/provenances` serves `OntologyProvenances`, built by
 `graph_api.ontology_provenances.build_provenances` from the bound code index and the served
@@ -54,14 +65,13 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from concurrent.futures import Executor
 from dataclasses import dataclass
 from functools import partial
 from typing import NamedTuple
 
 from fastapi import APIRouter, Request, Response
-from fastapi.responses import JSONResponse
 
 from code_index import CodeIndex
 from code_index.shared import get_index, per_index
@@ -72,11 +82,26 @@ from dfo_platform.single_flight_cache import SingleFlightCache, WaitTimeout
 from dfo_platform.static_response import FrozenJSON, freeze_public_json
 from graph_api.config import (
     GRAPH_NODE_TIMEOUT_SECONDS,
+    GRAPH_ONTOLOGY_CHECK_CONCURRENCY,
     GRAPH_ONTOLOGY_CHECK_TIMEOUT_SECONDS,
     ONTOLOGY_FLIGHT_TIMEOUT_SECONDS,
 )
-from graph_api.deps import GraphDeps, GraphDepsDep, log_queue_wait, run_dcp_read
-from graph_api.ontology_check import OntologyCheckTooManyReads, OntologyLookup, check_rows
+from graph_api.deps import (
+    DcpExecutorSaturated,
+    GraphDeps,
+    GraphDepsDep,
+    log_queue_wait,
+    run_dcp_read,
+)
+from graph_api.ontology_check import (
+    CheckReads,
+    OntologyCheckTooManyFindings,
+    OntologyCheckTooManyReads,
+    OntologyCheckUnservedId,
+    OntologyLookup,
+    check_rows,
+    plan_reads,
+)
 from graph_api.ontology_document import (
     OntologyListingTruncatedError,
     OntologyProvenanceUnreadError,
@@ -86,14 +111,17 @@ from graph_api.ontology_models import (
     CHECK_MAX_READ_IDS,
     OntologyCheckRequest,
     OntologyCheckResponse,
+    OntologyCheckRow,
     OntologyDocument,
     OntologyProvenances,
     OntologyTerms,
 )
 from graph_api.ontology_provenances import ProvenanceCoverage, build_provenances
+from graph_api.reader import GraphNodeReader
 from graph_generation import GenerationProvider
 from graph_generation.stamp import UNKNOWN_KEY
 from materialise.graph import GraphDeadlineExceededError, GraphReadError
+from origin_catalogue import current_catalogue
 
 ONTOLOGY_RETRY_AFTER_SECONDS = 5
 """The `Retry-After` a request sends when its deadline passes while the build runs on."""
@@ -144,6 +172,15 @@ class OntologyBuildExpired(Exception):
 
     def __init__(self) -> None:
         super().__init__("the ontology build passed its deadline")
+
+
+class OntologyCheckBusy(Exception):
+    """Every worker of `GraphDeps.check_executor` holds a check job."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            f"{GRAPH_ONTOLOGY_CHECK_CONCURRENCY} ontology checks are already running; retry"
+        )
 
 
 class OntologyReadFailed(Exception):
@@ -238,8 +275,10 @@ async def _frozen_ontology(
 
 def classify_ontology_exception(exc: BaseException) -> ProblemSpec | None:
     """Classify the build's waits and read failures, which this door raises as its own types,
-    and the check's read cap."""
-    if isinstance(exc, OntologyCheckTooManyReads):
+    and the check's caps and concurrency limit."""
+    if isinstance(
+        exc, OntologyCheckTooManyReads | OntologyCheckUnservedId | OntologyCheckTooManyFindings
+    ):
         return ProblemSpec(
             status=400,
             code="request_invalid",
@@ -247,7 +286,7 @@ def classify_ontology_exception(exc: BaseException) -> ProblemSpec | None:
             pointer="/rows",
             retryable=False,
         )
-    if isinstance(exc, OntologyBuildPending):
+    if isinstance(exc, OntologyBuildPending | OntologyCheckBusy):
         return ProblemSpec(
             status=503,
             code="service_unavailable",
@@ -339,26 +378,48 @@ async def get_ontology_terms(deps: GraphDepsDep, request: Request) -> Response:
     return frozen.terms.respond(request)
 
 
-async def check_ontology(deps: GraphDepsDep, body: OntologyCheckRequest) -> JSONResponse:
+def _check_body(
+    rows: Sequence[OntologyCheckRow],
+    *,
+    reads: CheckReads,
+    lookup: OntologyLookup,
+    reader: GraphNodeReader,
+    code_index: CodeIndex,
+    generation: str | None,
+    deadline: float,
+) -> bytes:
+    """The encoded response of one check: `check_rows` and `OntologyCheckResponse`'s JSON."""
+    findings = check_rows(
+        rows, reads=reads, lookup=lookup, reader=reader, code_index=code_index, deadline=deadline
+    )
+    response = OntologyCheckResponse(generation=generation, row_count=len(rows), findings=findings)
+    return response.model_dump_json().encode()
+
+
+async def post_ontology_check(deps: GraphDepsDep, body: OntologyCheckRequest) -> Response:
     deadline = _request_deadline(GRAPH_ONTOLOGY_CHECK_TIMEOUT_SECONDS)
     code_index = get_index()
     frozen = await _frozen_ontology(deps, code_index=code_index, deadline=deadline)
+    reads = plan_reads(
+        body.rows, lookup=frozen.lookup, un_served=current_catalogue().un_system_enabled
+    )
     try:
-        findings = await run_dcp_read(
-            deps.dcp_executor,
-            check_rows,
+        encoded = await run_dcp_read(
+            deps.check_executor,
+            _check_body,
             body.rows,
+            reads=reads,
             lookup=frozen.lookup,
             reader=deps.graph,
             code_index=code_index,
+            generation=frozen.generation,
             deadline=deadline,
         )
+    except DcpExecutorSaturated:
+        raise OntologyCheckBusy() from None
     except GraphReadError as exc:
         raise OntologyReadFailed(exc) from exc
-    response = OntologyCheckResponse(
-        generation=frozen.generation, row_count=len(body.rows), findings=findings
-    )
-    return JSONResponse(response.model_dump(mode="json"))
+    return Response(content=encoded, media_type="application/json")
 
 
 async def get_ontology_provenances(deps: GraphDepsDep, request: Request) -> Response:
@@ -386,7 +447,7 @@ def build_ontology_door() -> DoorContribution:
     )
     router.add_api_route(
         "/api/graph/ontology/check",
-        check_ontology,
+        post_ontology_check,
         methods=["POST"],
         response_model=OntologyCheckResponse,
     )
@@ -398,9 +459,15 @@ def build_ontology_door() -> DoorContribution:
             OntologyBuildExpired,
             OntologyReadFailed,
             OntologyCheckTooManyReads,
+            OntologyCheckUnservedId,
+            OntologyCheckTooManyFindings,
+            OntologyCheckBusy,
         ),
         exception_exemplars=(
             OntologyCheckTooManyReads(CHECK_MAX_READ_IDS + 1),
+            OntologyCheckUnservedId("undata/exemplar"),
+            OntologyCheckTooManyFindings(),
+            OntologyCheckBusy(),
             OntologyBuildPending(),
             OntologyBuildExpired(),
             OntologyReadFailed(OntologyListingTruncatedError("exemplar")),

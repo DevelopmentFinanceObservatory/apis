@@ -31,7 +31,7 @@ class _GraphDefaults(BaseSettings):
     node_timeout_seconds: int = Field(default=10, ge=1)
 
     # Deadline of `POST /api/graph/ontology/check`: its wait for the ontology build and its
-    # reads of up to `CHECK_MAX_READ_IDS` ids, each absent one read alone.
+    # reads of up to `CHECK_MAX_READ_IDS` ids, each absent one read alone, at most 201 POSTs.
     ontology_check_timeout_seconds: int = Field(default=30, ge=1)
 
     # Most source documents the documentation route keeps in its cache at once.
@@ -59,6 +59,11 @@ GRAPH_SDMX_TIMEOUT_SECONDS: int = _defaults.sdmx_timeout_seconds
 
 # A DCP read that waits longer than this for a worker logs at WARNING (`log_queue_wait`).
 DCP_QUEUE_WAIT_WARN_SECONDS: float = 1.0
+
+# Worker count of the executor the `POST /api/graph/ontology/check` jobs run on, apart from the
+# `GRAPH_NODE_POOL_SIZE` shared DCP-read workers. A check past it answers retryable 503 with
+# `Retry-After`.
+GRAPH_ONTOLOGY_CHECK_CONCURRENCY: int = 2
 
 # The ontology build's flight deadline. On the dev graph the build takes about 5 s over 28
 # graph reads; requests wait `GRAPH_NODE_TIMEOUT_SECONDS` each and retry while it runs.

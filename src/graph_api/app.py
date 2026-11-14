@@ -71,6 +71,7 @@ from graph_api.deps import (
     DcpReadExecutor,
     GraphDeps,
     GraphDepsNotSet,
+    new_check_executor,
 )
 from graph_api.doors.health import build_health_door
 from graph_api.doors.members import build_members_door
@@ -213,13 +214,14 @@ def graph_surface(
         node_entries_registration: RegistrationHandle | None = None
         ontology_registration: RegistrationHandle | None = None
         dcp_executor: DcpReadExecutor | None = None
+        check_executor: DcpReadExecutor | None = None
         profile_executor: ThreadPoolExecutor | None = None
         profile_reads: ThreadPoolExecutor | None = None
         card_reads: CardReadCaches | None = None
         graph_dcp_base_url: str | None = None
 
         async def _release_owned() -> None:
-            """Drain queued and running DCP reads off-loop, then wait for running card-read
+            """Drain queued and running DCP reads and ontology check jobs off-loop, then wait for running card-read
             drivers, whose next read the shut DCP executor refuses. Release the shared profile
             cache, or cancel the injected surface's queued profile flights and facet reads and
             wait for running ones. Close registrations, release the resolver, then generation, then
@@ -228,6 +230,8 @@ def graph_surface(
             """
             if dcp_executor is not None:
                 await asyncio.to_thread(dcp_executor.shutdown, wait=True)
+            if check_executor is not None:
+                await asyncio.to_thread(check_executor.shutdown, wait=True)
             if card_reads is not None:
                 await asyncio.to_thread(card_reads.close)
             if shared_profiles is not None:
@@ -305,6 +309,7 @@ def graph_surface(
             dcp_executor = DcpReadExecutor(
                 max_workers=effective_pool_size, thread_name_prefix="graph-dcp"
             )
+            check_executor = new_check_executor()
 
             resolved_resolver = resolver
             # Injected resolvers skip shared acquisition. The live resolver's graph
@@ -385,6 +390,7 @@ def graph_surface(
             graph=resolved_graph,
             resolver=resolved_resolver,
             dcp_executor=dcp_executor,
+            check_executor=check_executor,
             generation=resolved_generation,
             provenance_docs=provenance_docs,
             node_entries=node_entries,

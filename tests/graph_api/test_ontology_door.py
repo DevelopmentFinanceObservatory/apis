@@ -11,6 +11,7 @@ import pytest
 
 from dc_graph import ArcSubject
 from graph_api import app as app_module
+from graph_api.config import GRAPH_ONTOLOGY_CHECK_CONCURRENCY
 from graph_api.doors import ontology as ontology_door
 from graph_api.ontology_check import OntologyLookup
 from graph_api.ontology_document import (
@@ -19,6 +20,7 @@ from graph_api.ontology_document import (
 )
 from graph_api.ontology_models import (
     CHECK_MAX_CONSTRAINT_PROPERTIES,
+    CHECK_MAX_FINDINGS,
     CHECK_MAX_OBSERVATION_PROPERTIES,
     CHECK_MAX_READ_IDS,
     CHECK_MAX_ROWS,
@@ -26,6 +28,7 @@ from graph_api.ontology_models import (
 from graph_api.routing import DCID_MAX_LENGTH
 from graph_generation import FakeGeneration
 from materialise.graph import GraphDeadlineExceededError, GraphReadError
+from tests.origin_catalogue.fake_catalogue import FakeCatalogue
 
 from .conftest import FakeGraphNodeReader, make_client, wait_until
 from .ontology_fixture import STAMP, index_of, index_row, node_targets
@@ -329,6 +332,17 @@ def _check_row(value: str) -> dict[str, object]:
     }
 
 
+def _nine_findings_row(ref: str) -> dict[str, object]:
+    """A row with nine findings, each decided by the document with no read."""
+    return {
+        "ref": ref,
+        "population_type": "crsPurpose",
+        "measured_property": "FinancialFlow",
+        "constraint_properties": {"crsPurpose": None, "FinancialFlow": "x", "Thing": "x"},
+        "observation_properties": ["FinancialFlow"] * CHECK_MAX_OBSERVATION_PROPERTIES,
+    }
+
+
 class _FailingCheckReader(FakeGraphNodeReader):
     """Raises `error` on a read naming `BrokenCode`, which only the check reads."""
 
@@ -336,10 +350,37 @@ class _FailingCheckReader(FakeGraphNodeReader):
         super().__init__(nodes=_NODES, arc_subjects=_ARC_SUBJECTS, arc_targets=_ARC_TARGETS)
         self._error = error
 
-    def node_arcs_batch(self, dcids, *, confirm_empty=False, deadline=None):
+    def node_arcs_many(self, dcids, *, properties, individual_probe_budget=None, deadline=None):
         if "BrokenCode" in dcids:
             raise self._error
-        return super().node_arcs_batch(dcids, confirm_empty=confirm_empty, deadline=deadline)
+        return super().node_arcs_many(
+            dcids,
+            properties=properties,
+            individual_probe_budget=individual_probe_budget,
+            deadline=deadline,
+        )
+
+
+class _BlockingCheckReader(FakeGraphNodeReader):
+    """Blocks every check read until `release` admits it, counting the reads that started in
+    `waiting`."""
+
+    def __init__(self) -> None:
+        super().__init__(nodes=_NODES, arc_subjects=_ARC_SUBJECTS, arc_targets=_ARC_TARGETS)
+        self.release = threading.Semaphore(0)
+        self.waiting = 0
+        self._lock = threading.Lock()
+
+    def node_arcs_many(self, dcids, *, properties, individual_probe_budget=None, deadline=None):
+        with self._lock:
+            self.waiting += 1
+        self.release.acquire(timeout=5.0)
+        return super().node_arcs_many(
+            dcids,
+            properties=properties,
+            individual_probe_budget=individual_probe_budget,
+            deadline=deadline,
+        )
 
 
 class TestCheck:
@@ -421,9 +462,9 @@ class TestCheck:
                 pytest.param(
                     '{"rows": [{"measured_property": "crsPurpose", '
                     f'"constraint_properties": {{"crsPurpose": {literal}}}}}]}}',
-                    id=f"constraint-value-{literal}",
+                    id=f"constraint-value-{literal[:8]}",
                 )
-                for literal in ("NaN", "Infinity", "-Infinity", "1e400")
+                for literal in ("NaN", "Infinity", "-Infinity", "1e400", "1" + "0" * 400)
             ),
         ],
     )
@@ -442,11 +483,27 @@ class TestCheck:
         assert response.json()["code"] == "request_invalid"
         assert _reads(graph) == 0
 
-    def test_rows_naming_more_ids_to_read_than_the_cap_are_refused_before_any_check_read(
-        self, generation
+    @pytest.mark.parametrize(
+        ("rows", "un_served"),
+        [
+            pytest.param(
+                [_check_row(f"NoSuchCode{i}") for i in range(CHECK_MAX_READ_IDS + 1)],
+                True,
+                id="ids-past-the-read-cap",
+            ),
+            pytest.param([_check_row("undata/NoSuchCode")], False, id="un-id-with-the-un-off"),
+            pytest.param(
+                [_nine_findings_row(str(i)) for i in range(CHECK_MAX_FINDINGS // 9 + 1)],
+                True,
+                id="findings-past-the-cap",
+            ),
+        ],
+    )
+    def test_a_check_past_its_caps_is_refused_with_no_findings(
+        self, generation, serve_catalogue, rows, un_served
     ):
+        serve_catalogue(FakeCatalogue(un_system_enabled=un_served))
         graph = _graph()
-        rows = [_check_row(f"NoSuchCode{i}") for i in range(CHECK_MAX_READ_IDS + 1)]
 
         with make_client(graph=graph) as client:
             response = client.post(_CHECK, json={"rows": rows})
@@ -455,30 +512,7 @@ class TestCheck:
         assert response.json()["code"] == "request_invalid"
         assert response.json()["pointer"] == "/rows"
         assert response.json()["retryable"] is False
-        assert graph.calls["node_arcs_batch"] == 0
-
-    def test_a_single_row_naming_the_most_ids_a_row_can_name_is_checked(self, generation):
-        graph = _graph()
-        row = {
-            "population_type": "NoSuchClass",
-            "measured_property": "noSuchMeasured",
-            "stat_type": "noSuchStatType",
-            "measurement_qualifier": "noSuchQualifier",
-            "measurement_denominator": "noSuchDenominator",
-            "constraint_properties": {
-                f"noSuchProperty{i}": f"NoSuchValue{i}"
-                for i in range(CHECK_MAX_CONSTRAINT_PROPERTIES)
-            },
-            "observation_properties": [
-                f"noSuchObservation{i}" for i in range(CHECK_MAX_OBSERVATION_PROPERTIES)
-            ],
-        }
-
-        with make_client(graph=graph) as client:
-            response = client.post(_CHECK, json={"rows": [row]})
-
-        assert response.status_code == 200, response.text
-        assert {finding["code"] for finding in response.json()["findings"]} == {"node_not_held"}
+        assert graph.calls["node_arcs_many"] == 0
 
     def test_a_swapped_code_index_is_checked_against_its_own_build(
         self, generation, monkeypatch: pytest.MonkeyPatch
@@ -576,22 +610,64 @@ class TestCheck:
         assert response.json()["code"] == code
         assert "findings" not in response.json()
 
-    def test_the_check_read_is_one_executor_job(self, generation):
-        graph = _graph()
+    def test_a_check_with_reads_runs_while_the_shared_pool_is_full(self, generation):
         hold = threading.Event()
 
-        with make_client(graph=graph, node_pool_size=1) as client:
+        with make_client(graph=_graph(), node_pool_size=1) as client:
             executor = client.app.state.graph_deps.dcp_executor
             built = client.get(_DOCUMENT)
             wait_until(lambda: executor._in_flight == 0)
             executor.submit(hold.wait, 5.0)
-            refused = client.post(_CHECK, json={"rows": [_check_row("CRSPurposeCode120")]})
+            checked = client.post(_CHECK, json={"rows": [_check_row("NoSuchCode")]})
             hold.set()
-            wait_until(lambda: executor._in_flight == 0)
-            checked = client.post(_CHECK, json={"rows": [_check_row("CRSPurposeCode120")]})
 
         assert built.status_code == 200, built.text
+        assert checked.status_code == 200, checked.text
+        assert [finding["code"] for finding in checked.json()["findings"]] == ["node_not_held"]
+
+    def test_a_node_read_runs_while_every_check_worker_is_held(self, generation):
+        hold = threading.Event()
+
+        with make_client(graph=_graph()) as client:
+            checks = client.app.state.graph_deps.check_executor
+            for _ in range(GRAPH_ONTOLOGY_CHECK_CONCURRENCY):
+                checks.submit(hold.wait, 5.0)
+            refused = client.post(_CHECK, json={"rows": [_check_row("CRSPurposeCode120")]})
+            node = client.get("/api/graph/node/FinancialFlow")
+            hold.set()
+
+        assert refused.status_code == 503, refused.text
+        assert node.status_code == 200, node.text
+
+    def test_a_cancelled_check_holds_its_worker_until_its_job_returns(self, generation):
+        graph = _BlockingCheckReader()
+
+        async def send(slot: int) -> httpx.Response:
+            transport = httpx.ASGITransport(app=client.app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as caller:
+                return await caller.post(_CHECK, json={"rows": [_check_row(f"NoSuchCode{slot}")]})
+
+        with make_client(graph=graph) as client:
+            checks = client.app.state.graph_deps.check_executor
+            assert client.get(_DOCUMENT).status_code == 200
+            sent = [
+                client.portal.start_task_soon(send, slot)
+                for slot in range(GRAPH_ONTOLOGY_CHECK_CONCURRENCY)
+            ]
+            wait_until(lambda: graph.waiting == GRAPH_ONTOLOGY_CHECK_CONCURRENCY)
+            for request in sent:
+                request.cancel()
+            wait_until(lambda: all(request.done() for request in sent))
+            refused = client.post(_CHECK, json={"rows": [_check_row("CRSPurposeCode120")]})
+            graph.release.release()
+            wait_until(lambda: checks._in_flight == GRAPH_ONTOLOGY_CHECK_CONCURRENCY - 1)
+            admitted = client.post(_CHECK, json={"rows": [_check_row("CRSPurposeCode120")]})
+            graph.release.release()
+            wait_until(lambda: checks._in_flight == 0)
+
+        assert all(request.cancelled() for request in sent)
         assert refused.status_code == 503, refused.text
         assert refused.json()["code"] == "service_unavailable"
-        assert "Retry-After" in refused.headers
-        assert checked.status_code == 200, checked.text
+        assert refused.json()["retryable"] is True
+        assert refused.headers["Retry-After"] == "5"
+        assert admitted.status_code == 200, admitted.text

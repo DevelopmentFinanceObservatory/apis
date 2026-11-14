@@ -37,7 +37,11 @@ from dfo_platform.executor import SaturationTrackingExecutor, submit_with_contex
 from dfo_platform.single_flight_cache import SingleFlightCache
 from dfo_platform.state import StateSlot
 from entity_resolution import EntityResolver
-from graph_api.config import DCP_QUEUE_WAIT_WARN_SECONDS, ONTOLOGY_FLIGHT_TIMEOUT_SECONDS
+from graph_api.config import (
+    DCP_QUEUE_WAIT_WARN_SECONDS,
+    GRAPH_ONTOLOGY_CHECK_CONCURRENCY,
+    ONTOLOGY_FLIGHT_TIMEOUT_SECONDS,
+)
 from graph_api.node_cache import NodeEntryCache
 from graph_api.reader import GraphNodeReader
 from graph_generation import GenerationProvider
@@ -88,6 +92,10 @@ class GraphDeps:
             maxsize=1, flight_timeout_s=ONTOLOGY_FLIGHT_TIMEOUT_SECONDS
         )
     )
+    # The executor every `POST /api/graph/ontology/check` job runs on, apart from
+    # `dcp_executor`, with `GRAPH_ONTOLOGY_CHECK_CONCURRENCY` workers. The lifespan's is shut
+    # down beside `dcp_executor`.
+    check_executor: DcpReadExecutor = field(default_factory=lambda: new_check_executor())
 
 
 class DcpExecutorShutDown(Exception):
@@ -141,6 +149,14 @@ class DcpReadExecutor(SaturationTrackingExecutor):
         # Free admission first, so a caller that sees the in-flight count drop can submit.
         self._admission.release()
         super()._release_slot(_future)
+
+
+def new_check_executor() -> DcpReadExecutor:
+    """The executor of the ontology check jobs: `GRAPH_ONTOLOGY_CHECK_CONCURRENCY` workers, each
+    held by a check until its job returns."""
+    return DcpReadExecutor(
+        max_workers=GRAPH_ONTOLOGY_CHECK_CONCURRENCY, thread_name_prefix="graph-ontology-check"
+    )
 
 
 async def run_dcp_read[**P, R](

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from functools import cache
 from typing import Any
 
@@ -10,16 +10,25 @@ import pytest
 
 from code_index import StatVarRow
 from dc_graph import GraphReadError
-from graph_api.ontology_check import OntologyCheckTooManyReads, OntologyLookup, check_rows
+from graph_api.ontology_check import (
+    OntologyCheckTooManyFindings,
+    OntologyCheckTooManyReads,
+    OntologyCheckUnservedId,
+    OntologyLookup,
+    check_rows,
+    plan_reads,
+)
 from graph_api.ontology_document import Ontology, build_ontology
 from graph_api.ontology_models import (
     CHECK_MAX_CONSTRAINT_PROPERTIES,
+    CHECK_MAX_FINDINGS,
     CHECK_MAX_OBSERVATION_PROPERTIES,
     CHECK_MAX_READ_IDS,
     OntologyCheckRow,
     OntologyDocument,
     OntologyEnumeration,
 )
+from graph_api.reader import NodeArcsByDcid
 
 from .conftest import FakeGraphNodeReader
 from .ontology_fixture import DFO, INDEX, NODES, SCHEMA, TERMS, ontology_graph
@@ -37,6 +46,9 @@ _CHECK_TERMS = {
     "recipientPlace": ("Property", (DFO,)),
     "financingPurpose": ("Property", (DFO,)),
     "purposeOrPlace": ("Property", (DFO,)),
+    "recipientGender": ("Property", (DFO,)),
+    "BeneficiaryGroupEnum": ("Class", (DFO,)),
+    "beneficiaryGroup": ("Property", (DFO,)),
 }
 
 _CHECK_NODES = {
@@ -74,6 +86,20 @@ _CHECK_NODES = {
         "domainIncludes": ("FinancingEvent",),
         "rangeIncludes": ("CRSPurposeCodeEnum", "Place"),
     },
+    # An instance property ranged on the base enumeration, whose member list is incomplete.
+    "recipientGender": {
+        "typeOf": ("Property",),
+        "domainIncludes": ("FinancingEvent",),
+        "rangeIncludes": ("GenderType",),
+    },
+    # A complete instance enumeration (it has no member of its own) above the base one.
+    "BeneficiaryGroupEnum": {"typeOf": ("Class",), "subClassOf": ("Enumeration",)},
+    "GenderType": {"typeOf": ("Class",), "subClassOf": ("BeneficiaryGroupEnum",)},
+    "beneficiaryGroup": {
+        "typeOf": ("Property",),
+        "domainIncludes": ("FinancingEvent",),
+        "rangeIncludes": ("BeneficiaryGroupEnum",),
+    },
     # Held base properties outside the document, for a row naming the most ids a row can.
     **{
         f"baseProperty{i}": {"typeOf": ("Property",)}
@@ -86,20 +112,30 @@ _CHECK_NODES = {
 
 
 class _RecordingReader(FakeGraphNodeReader):
-    """The check graph, recording the dcids and the `confirm_empty` of every `node_arcs_batch`
-    call."""
+    """The check graph, recording the dcids, the properties and the probe budget of every
+    `node_arcs_many` call."""
 
     def __init__(self) -> None:
         super().__init__(nodes=_CHECK_NODES)
         self.batches: list[list[str]] = []
-        self.confirmed: list[bool] = []
+        self.asked: list[tuple[tuple[str, ...], int | None]] = []
 
-    def node_arcs_batch(
-        self, dcids: list[str], *, confirm_empty: bool = False, deadline: float | None = None
-    ) -> dict[str, dict | None]:
+    def node_arcs_many(
+        self,
+        dcids: Sequence[str],
+        *,
+        properties: Sequence[str],
+        individual_probe_budget: int | None = None,
+        deadline: float | None = None,
+    ) -> NodeArcsByDcid:
         self.batches.append(list(dcids))
-        self.confirmed.append(confirm_empty)
-        return super().node_arcs_batch(dcids, confirm_empty=confirm_empty, deadline=deadline)
+        self.asked.append((tuple(properties), individual_probe_budget))
+        return super().node_arcs_many(
+            dcids,
+            properties=properties,
+            individual_probe_budget=individual_probe_budget,
+            deadline=deadline,
+        )
 
 
 @cache
@@ -147,9 +183,11 @@ def _check(
     reader: FakeGraphNodeReader | None = None,
     lookup: OntologyLookup | None = None,
 ) -> list[tuple[str, object, str, str]]:
+    lookup = lookup or _lookup()
     findings = check_rows(
         rows,
-        lookup=lookup or _lookup(),
+        reads=plan_reads(rows, lookup=lookup, un_served=True),
+        lookup=lookup,
         reader=reader or _RecordingReader(),
         code_index=INDEX,
         deadline=_DEADLINE,
@@ -328,6 +366,16 @@ _GENDER = "constraint_properties.beneficiaryGender"
             id="value-outside-a-range-mixing-an-enumeration-and-a-class",
         ),
         pytest.param(
+            _row(constraint_properties={"recipientGender": "NoSuchGender"}),
+            [("constraint_properties.recipientGender", "NoSuchGender", "node_not_held", "error")],
+            id="value-outside-an-incomplete-enumeration",
+        ),
+        pytest.param(
+            _row(constraint_properties={"beneficiaryGroup": "NoSuchGender"}),
+            [("constraint_properties.beneficiaryGroup", "NoSuchGender", "node_not_held", "error")],
+            id="value-outside-a-complete-enumeration-with-an-incomplete-sub-enumeration",
+        ),
+        pytest.param(
             _row(constraint_properties={"noSuchProperty": "NoSuchValue"}),
             [("constraint_properties.noSuchProperty", "noSuchProperty", "node_not_held", "error")],
             id="value-under-a-property-not-held",
@@ -408,7 +456,12 @@ def test_findings_come_in_row_then_field_order_with_the_row_ref() -> None:
     ]
 
     findings = check_rows(
-        rows, lookup=_lookup(), reader=_RecordingReader(), code_index=INDEX, deadline=_DEADLINE
+        rows,
+        reads=plan_reads(rows, lookup=_lookup(), un_served=True),
+        lookup=_lookup(),
+        reader=_RecordingReader(),
+        code_index=INDEX,
+        deadline=_DEADLINE,
     )
 
     assert [(finding.ref, finding.field) for finding in findings] == [
@@ -537,16 +590,6 @@ def _absent_rows(count: int) -> list[OntologyCheckRow]:
     ]
 
 
-def test_rows_naming_more_ids_to_read_than_the_cap_are_refused_before_any_read() -> None:
-    reader = _RecordingReader()
-
-    with pytest.raises(OntologyCheckTooManyReads) as raised:
-        _check(_absent_rows(CHECK_MAX_READ_IDS + 1), reader)
-
-    assert raised.value.count == CHECK_MAX_READ_IDS + 1
-    assert sum(reader.calls.values()) == 0
-
-
 def test_rows_naming_the_cap_of_ids_to_read_are_read() -> None:
     reader = _RecordingReader()
 
@@ -586,14 +629,43 @@ def test_a_single_row_naming_the_most_ids_a_row_can_is_read_within_the_cap() -> 
     assert len(findings) == CHECK_MAX_READ_IDS - CHECK_MAX_CONSTRAINT_PROPERTIES
 
 
-def test_a_request_one_id_past_the_cap_is_refused_before_any_read() -> None:
-    reader = _RecordingReader()
-
+@pytest.mark.parametrize(
+    "rows",
+    [
+        pytest.param(
+            lambda: _absent_rows(CHECK_MAX_READ_IDS + 1), id="values-under-document-properties"
+        ),
+        pytest.param(lambda: [_maximal_row(), *_absent_rows(1)], id="every-field-of-a-row"),
+    ],
+)
+def test_rows_naming_one_id_past_the_cap_are_refused_with_no_read(
+    rows: Callable[[], list[OntologyCheckRow]],
+) -> None:
     with pytest.raises(OntologyCheckTooManyReads) as raised:
-        _check([_maximal_row(), *_absent_rows(1)], reader)
+        plan_reads(rows(), lookup=_lookup(), un_served=True)
 
     assert raised.value.count == CHECK_MAX_READ_IDS + 1
-    assert sum(reader.calls.values()) == 0
+
+
+@pytest.mark.parametrize(
+    ("row", "read"),
+    [
+        pytest.param(
+            _row(constraint_properties={"beneficiaryGender": "undata/NoSuchGroup"}),
+            "undata/NoSuchGroup",
+            id="value",
+        ),
+        pytest.param(_row(measured_property="undataAge"), "undataAge", id="property"),
+    ],
+)
+def test_a_un_id_to_read_is_refused_while_the_un_origin_is_off(
+    row: OntologyCheckRow, read: str
+) -> None:
+    with pytest.raises(OntologyCheckUnservedId) as raised:
+        plan_reads([row], lookup=_lookup(), un_served=False)
+
+    assert raised.value.dcid == read
+    assert plan_reads([row], lookup=_lookup(), un_served=True).ids == {read}
 
 
 def test_values_the_document_decides_count_against_no_cap() -> None:
@@ -609,19 +681,91 @@ def test_values_the_document_decides_count_against_no_cap() -> None:
     assert reader.batches == []
 
 
-def test_every_read_asks_the_client_to_confirm_an_empty_answer() -> None:
+def test_every_read_asks_the_type_and_name_and_probes_every_empty_answer() -> None:
     reader = _RecordingReader()
     row = _row(constraint_properties={"gender": "NoSuchGender", "noSuchProperty": "NoSuchValue"})
 
     _check([row], reader)
 
-    assert reader.confirmed == [True, True]
+    assert reader.asked == [(("typeOf", "name"), None)] * 2
+
+
+def test_a_held_node_with_neither_a_type_nor_a_name_reads_as_absent() -> None:
+    class _DescribedOnly(_RecordingReader):
+        def node_arcs_many(self, dcids, *, properties, individual_probe_budget=None, deadline=None):
+            answered = super().node_arcs_many(
+                dcids,
+                properties=properties,
+                individual_probe_budget=individual_probe_budget,
+                deadline=deadline,
+            )
+            return {**answered, "DescribedCode": dict.fromkeys(properties, ())}
+
+    findings = _check(
+        [_row(constraint_properties={"beneficiaryGender": "DescribedCode"})], _DescribedOnly()
+    )
+
+    assert findings == [(_GENDER, "DescribedCode", "node_not_held", "error")]
+
+
+def _many_findings_row(ref: str) -> OntologyCheckRow:
+    """A row with one `node_not_held` finding on each constraint property, read from nothing."""
+    return _row(
+        ref=ref,
+        constraint_properties={
+            f"baseProperty{i}": f"not a dcid {i}" for i in range(CHECK_MAX_CONSTRAINT_PROPERTIES)
+        },
+    )
+
+
+def test_findings_past_the_cap_stop_the_check() -> None:
+    rows = [
+        _many_findings_row(str(i))
+        for i in range(CHECK_MAX_FINDINGS // CHECK_MAX_CONSTRAINT_PROPERTIES + 1)
+    ]
+
+    assert len(_check(rows[:-1])) == CHECK_MAX_FINDINGS
+    with pytest.raises(OntologyCheckTooManyFindings):
+        _check(rows)
+
+
+def test_one_row_yields_fewer_findings_than_the_cap() -> None:
+    """The most a row yields, from the per-row caps: 5 on the shape fields, 2 on each constraint
+    property, 1 on each observation property, and a `definition_differs` warning on each shape
+    field, each constraint property the row or a served StatVar names, and the observation
+    properties."""
+    served_most = max(len(row.constraint_properties) for row in INDEX.statvars)
+    most = (
+        5
+        + 2 * CHECK_MAX_CONSTRAINT_PROPERTIES
+        + CHECK_MAX_OBSERVATION_PROPERTIES
+        + 5
+        + 2 * CHECK_MAX_CONSTRAINT_PROPERTIES
+        + 1
+    )
+    worst = _as_row(
+        _SERVED,
+        population_type="EconomicActivity",
+        measured_property="noSuchMeasured",
+        stat_type="noSuchStatType",
+        measurement_qualifier="noSuchQualifier",
+        measurement_denominator="noSuchDenominator",
+        constraint_properties={
+            "crsPurpose": "DAC1AidType1010",
+            **{
+                f"baseProperty{i}": f"not a dcid {i}"
+                for i in range(CHECK_MAX_CONSTRAINT_PROPERTIES - 1)
+            },
+        },
+        observation_properties=["FinancialFlow"] * CHECK_MAX_OBSERVATION_PROPERTIES,
+    )
+
+    assert served_most <= CHECK_MAX_CONSTRAINT_PROPERTIES
+    assert len(_check([worst])) <= most < CHECK_MAX_FINDINGS
 
 
 class _FailingReader(_RecordingReader):
-    def node_arcs_batch(
-        self, dcids: list[str], *, confirm_empty: bool = False, deadline: float | None = None
-    ) -> dict[str, dict | None]:
+    def node_arcs_many(self, dcids, *, properties, individual_probe_budget=None, deadline=None):
         raise GraphReadError("graph unavailable")
 
 
