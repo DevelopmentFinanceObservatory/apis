@@ -173,7 +173,7 @@ def test_healthz_route_is_unaffected():
         ("GET", "/api/datasets/register/v1"),
         ("POST", "/api/datasets/register/v1/pin"),
         ("GET", "/api/datasets/healthz/options"),
-        ("GET", "/api/datasets/schema/v1"),
+        ("GET", "/api/datasets/json-schema/v1"),
         ("GET", "/api/datasets/capabilities/v1"),
     ],
 )

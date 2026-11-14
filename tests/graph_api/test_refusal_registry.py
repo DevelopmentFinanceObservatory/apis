@@ -25,7 +25,7 @@ _UNBOUND_PATHS = frozenset(
     {
         "/api/graph/healthz",
         "/api/graph/capabilities",
-        "/api/graph/schema",
+        "/api/graph/json-schema",
         "/api/graph/sources",
         "/api/graph/ontology",
         "/api/graph/ontology/terms",

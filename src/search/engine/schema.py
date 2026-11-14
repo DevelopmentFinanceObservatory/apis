@@ -1,4 +1,4 @@
-"""The document `GET /api/search/schema` serves, which the capability token also hashes."""
+"""The document `GET /api/search/json-schema` serves, which the capability token also hashes."""
 
 from __future__ import annotations
 

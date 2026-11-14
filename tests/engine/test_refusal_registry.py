@@ -13,7 +13,7 @@ from tests.code_registry import problem_statuses, registered_endpoints, unbound_
 _UNBOUND_PATHS = frozenset(
     {
         "/api/search/healthz",
-        "/api/search/schema",
+        "/api/search/json-schema",
         "/api/search/capabilities",
         "/api/search/catalogue",
     }

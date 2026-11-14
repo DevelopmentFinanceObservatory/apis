@@ -43,7 +43,7 @@ class CanonicalDefinition(BaseModel):
     spec_id: str = Field(description="the caller-supplied spec_id this definition must hash to")
     identity: dict[str, Any] = Field(
         description="the identity-core document, shaped as search.models.identity.BaseIdentity "
-        "and published at GET /api/search/schema"
+        "and published at GET /api/search/json-schema"
     )
 
 

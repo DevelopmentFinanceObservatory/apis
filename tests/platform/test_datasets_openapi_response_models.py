@@ -69,7 +69,7 @@ def test_every_datasets_path_is_present(app: FastAPI):
         "/api/datasets",
         "/api/datasets/register",
         "/api/datasets/healthz",
-        "/api/datasets/schema",
+        "/api/datasets/json-schema",
         "/api/datasets/capabilities",
         "/api/datasets/operations/{operation_id}",
         "/api/datasets/{id}",
@@ -130,7 +130,7 @@ def test_register_2xx_response_is_the_definition_response_model(app: FastAPI):
 
 def test_schema_route_2xx_response_matches_the_document_it_describes(app: FastAPI):
     schema = app.openapi()
-    schema_op = schema["paths"]["/api/datasets/schema"]["get"]
+    schema_op = schema["paths"]["/api/datasets/json-schema"]["get"]
     body_schema = schema_op["responses"]["200"]["content"]["application/json"]["schema"]
     assert set(body_schema["required"]) == set(build_schema_document())
     manifest_property = body_schema["properties"]["manifest"]

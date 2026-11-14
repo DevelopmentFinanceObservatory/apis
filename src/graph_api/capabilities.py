@@ -1,7 +1,7 @@
 """Build `GET /api/graph/capabilities` from enforced limits and live deployment facts.
 
 The published limits use the same constants as their guards. The `resolve`, `node`,
-`members`, `roots`, `sources`, `schema`, and `ontology` doors are live. `node_shape_gaps` and
+`members`, `roots`, `sources`, `json_schema`, and `ontology` doors are live. `node_shape_gaps` and
 `source_document_gaps` publish the member paths each door always gaps: on the node route, the
 measure's definition of every variable with a measure
 (`graph_api.card_definition.MEASURE_DEFINITION_GAP`). Every other source-document member is
@@ -43,7 +43,7 @@ from graph_api.routing import DCID_MAX_LENGTH
 from materialise.provenance_doc import UNCONDITIONAL_GAPS
 
 # The non-health doors this surface serves, and their liveness.
-_DOORS: tuple[str, ...] = ("resolve", "node", "members", "roots", "sources", "schema", "ontology")
+_DOORS: tuple[str, ...] = ("resolve", "node", "members", "roots", "sources", "json_schema", "ontology")
 
 
 class CapabilityCaps(BaseModel):
@@ -80,7 +80,7 @@ class CapabilityCaps(BaseModel):
 class CapabilityDoor(BaseModel):
     """One door's liveness in this deployment."""
 
-    name: str = Field(description="resolve, node, members, roots, sources, schema, or ontology")
+    name: str = Field(description="resolve, node, members, roots, sources, json_schema, or ontology")
     live: bool = Field(description="whether this deployment serves this door")
 
 

@@ -57,7 +57,7 @@ class TestDoorLivenessAndOtherFields:
             "members": True,
             "roots": True,
             "sources": True,
-            "schema": True,
+            "json_schema": True,
             "ontology": True,
         }
 

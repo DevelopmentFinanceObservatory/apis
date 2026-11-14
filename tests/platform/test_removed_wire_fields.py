@@ -3,7 +3,7 @@
 Search states how many StatVars an answer holds and serves, and the members door
 (`POST /api/datasets/{id}/members`) names them, so no request takes a member list and no
 response carries one. The composed app's OpenAPI document and Search's schema document
-(`GET /api/search/schema`) are scanned property by property. The Datasets manifest keeps
+(`GET /api/search/json-schema`) are scanned property by property. The Datasets manifest keeps
 `trace.resolved_stat_vars`, the record of what a version served, so that name is checked on
 Search's trace alone.
 

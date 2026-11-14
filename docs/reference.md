@@ -15,7 +15,7 @@ Search queries resolve against the Data Commons graph. Observation previews and 
 | `POST` | `/api/search/resolve`      | Resolves natural-language queries into structured specifications with observation previews. Accepts `Accept: text/event-stream` for Server-Sent Events (SSE) or standard JSON. |
 | `POST` | `/api/search/options`      | Computes candidate entity options on demand for a resolved entity role (`origin`, `destination`, `observationAbout`).                                                          |
 | `GET`  | `/api/search/healthz`      | Liveness probe returning status and search engine build metadata.                                                                                                              |
-| `GET`  | `/api/search/schema`       | JSON Schema for search request and response contracts.                                                                                                                         |
+| `GET`  | `/api/search/json-schema`  | JSON Schema for search request and response contracts.                                                                                                                         |
 | `GET`  | `/api/search/capabilities` | Deployment capabilities, supported recipe classes, limits, and door liveness.                                                                                                  |
 | `GET`  | `/api/search/catalogue`    | What DFO holds (counts) and checked example sentences, globally or at one country (`?place=`). 503 until a search catalogue build loads.                                       |
 
@@ -34,7 +34,7 @@ Gated by `DFO_DATASETS_SURFACE=true` (or `1`). Requires PostgreSQL persistence (
 | `GET`  | `/api/datasets/exports/{export_id}`        | Answers 302 to the prepared file, signed for five minutes. Never renders.                                                                                                                                              |
 | `GET`  | `/api/datasets/operations/{operation_id}`  | Polls a pending or running operation, or returns its completed manifest. Failed operations return a problem response. Unknown IDs return 404 `operation_not_found`.                                                    |
 | `GET`  | `/api/datasets/healthz`                    | Liveness probe returning status and materialiser build metadata.                                                                                                                                                       |
-| `GET`  | `/api/datasets/schema`                     | JSON Schema for dataset envelopes, manifests, mint requests, and snapshots.                                                                                                                                            |
+| `GET`  | `/api/datasets/json-schema`                | JSON Schema for dataset envelopes, manifests, mint requests, and snapshots.                                                                                                                                            |
 | `GET`  | `/api/datasets/capabilities`               | Supported schema versions, admission budgets, asynchronous ceilings, and format support.                                                                                                                               |
 
 ### Graph API (`/api/graph`)
@@ -54,7 +54,7 @@ Gated by `DFO_GRAPH_SURFACE=true` (or `1`). Communicates directly with the Data 
 | `GET`  | `/api/graph/ontology/terms`       | Every Class and Property of the DFO graph, base terms included and UN terms excluded, with its name, types and declaring Provenances.                                                      |
 | `GET`  | `/api/graph/ontology/usage`       | How each Provenance's StatVars use the model: patterns, constraint values and facet facts.                                                                                                 |
 | `POST` | `/api/graph/ontology/check`       | Checks up to 2,000 candidate StatVar definitions against the model in order, lists each fault, and names the row to resume from.                                                           |
-| `GET`  | `/api/graph/schema`               | JSON Schema of every request and response body.                                                                                                                                            |
+| `GET`  | `/api/graph/json-schema`          | JSON Schema of every request and response body.                                                                                                                                            |
 | `GET`  | `/api/graph/healthz`              | Liveness probe returning status and capability version.                                                                                                                                    |
 | `GET`  | `/api/graph/capabilities`         | Door liveness, kinds, input limits, and the data builds in use.                                                                                                                            |
 

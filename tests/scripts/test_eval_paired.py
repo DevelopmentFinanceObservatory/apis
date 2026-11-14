@@ -179,7 +179,7 @@ def fake_app(reply: Reply, *, posts: Counter) -> Starlette:
 
     return Starlette(
         routes=[
-            Route("/api/search/schema", schema),
+            Route("/api/search/json-schema", schema),
             Route("/api/search/resolve", resolve, methods=["POST"]),
         ]
     )

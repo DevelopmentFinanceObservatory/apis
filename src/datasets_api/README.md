@@ -13,7 +13,7 @@ The surface composes six functional doors into a unified router, error classifie
 ```
 /api/datasets
 ├── /healthz                             (Meta door)
-├── /schema                              (Meta door)
+├── /json-schema                         (Meta door)
 ├── /capabilities                        (Meta door)
 ├── /operations/{operation_id}           (Meta door)
 ├── /register                            (Register door)
@@ -33,11 +33,11 @@ Handles service liveness, capability negotiation, and schema discovery.
 | Method | Endpoint                           | Description                                                                                                            |
 | :----- | :--------------------------------- | :--------------------------------------------------------------------------------------------------------------------- |
 | `GET`  | `/api/datasets/healthz`            | Returns liveness status, the running build commit, and the capability version (`{status, build, capability_version}`). |
-| `GET`  | `/api/datasets/schema`             | Returns contract-stable JSON Schema definitions for dataset models.                                                    |
+| `GET`  | `/api/datasets/json-schema`             | Returns contract-stable JSON Schema definitions for dataset models.                                                    |
 | `GET`  | `/api/datasets/capabilities`       | Returns runtime capabilities, format options, and the sync budget.                                                     |
 | `GET`  | `/api/datasets/operations/{op_id}` | Polls asynchronous operation state (`operation_not_found`, 404, for an unknown id).                                    |
 
-Every response carries `x-dfo-commit`, and every response that is not shared-cacheable (`Cache-Control: public`) also carries `x-dfo-trace-id` and `Server-Timing`. Healthz carries all three. `/schema` and `/capabilities` are shared-cacheable and carry `x-dfo-commit` alone. `build` in the healthz and capabilities bodies equals the commit `x-dfo-commit` carries.
+Every response carries `x-dfo-commit`, and every response that is not shared-cacheable (`Cache-Control: public`) also carries `x-dfo-trace-id` and `Server-Timing`. Healthz carries all three. `/json-schema` and `/capabilities` are shared-cacheable and carry `x-dfo-commit` alone. `build` in the healthz and capabilities bodies equals the commit `x-dfo-commit` carries.
 
 `analysis_execution_identity` in the capabilities body is the identity of the engine that computes analysis frames, `{engine_version, frame_grammar_version, reduction_policy_version}` from `dfo_analysis_engine.execution_identity.current_execution_identity`, the same object an analysis answer carries as `execution_identity`. Its pipe-joined `ExecutionIdentity.canonical_string()` is the execution identity hashed into a derived frame's `replay_key` and a toolkit result's `content_version`, so a client predicting either reads it here.
 
@@ -51,7 +51,7 @@ Registers canonical dataset specifications directly in the registry.
 | :----- | :----------------------- | :--------------------------------------------- |
 | `POST` | `/api/datasets/register` | Persists a canonical specification definition. |
 
-Each definition's `identity` field holds a document shaped as `search.models.identity.BaseIdentity`, published at `GET /api/search/schema`.
+Each definition's `identity` field holds a document shaped as `search.models.identity.BaseIdentity`, published at `GET /api/search/json-schema`.
 
 ### 3. Mint Door
 
