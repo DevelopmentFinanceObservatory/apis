@@ -54,7 +54,7 @@ and Property on the graph with its `ref`, `label`, `types` (`Class`, `Property` 
 `provenances` and `declared_by`, sorted by `ref`.
 
 `DatasetUsage` says how each Provenance of the code index uses the model
-(`graph_api.dataset_usage`): its dataset label and description, its StatVar count, the distinct
+(`graph_api.dataset_usage`): the label and description of its graph node, its StatVar count, the distinct
 patterns of its StatVar rows, the values each constraint property takes, and the facet facts of
 its coverage series.
 
@@ -319,10 +319,10 @@ class ProvenanceUsage(ResponseModel):
 
     ref: str = Field(description="the Provenance's dcid")
     label: str | None = Field(
-        description="the dataset's name, from its declaration; null when it has none"
+        description="the Provenance node's name in the graph; null when it has none"
     )
     description: str | None = Field(
-        description="what the dataset measures, from its declaration; null when it has none"
+        description="the Provenance node's description in the graph; null when it has none"
     )
     stat_var_count: int
     patterns: list[SchemaPattern] = Field(

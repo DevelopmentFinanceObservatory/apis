@@ -991,17 +991,17 @@ The route reads the same cached build as `GET /api/graph/schema`, so its caching
 
 ### GET /api/graph/schema/usage
 
-How each Provenance of the code index uses the model. The body is `{provenances}`, sorted by `ref`, with one entry for each Provenance that at least one StatVar row of the index names. The route makes no graph read. It joins the code index with the served coverage index.
+How each Provenance of the code index uses the model. The body is `{provenances}`, sorted by `ref`, with one entry for each Provenance that at least one StatVar row of the index names. The route joins the code index with the served coverage index and one batched read of every Provenance node's `name` and `description`, each empty answer confirmed alone.
 
 An entry holds:
 
-- `ref`, `label` and `description`: the Provenance's dcid and the dataset's name and prose from its declaration, each `null` where the declaration has none.
+- `ref`, `label` and `description`: the Provenance's dcid, its node's display name (the greatest of its `name` values, a name equal to the dcid left out) and the least of its `description` values, each `null` where the graph holds no such value or no node.
 - `stat_var_count`: how many StatVars the Provenance publishes. A StatVar that two Provenances publish counts under both.
 - `patterns`: the distinct combinations of `population_type`, `measured_property`, `stat_type`, `measurement_qualifier`, `measurement_denominator`, `constraint_properties` and `observation_properties` over its StatVars, each with its `stat_var_count` and the first three of its StatVars' dcids as `examples`. They are sorted by `stat_var_count` descending, then by the fields.
 - `constraint_values`: for each constraint property the StatVars set, sorted by `property`, the `values` it takes, each `{value, stat_var_count}`, sorted by value.
 - `facets`: `units`, `scaling_factors`, `measurement_methods`, `observation_periods` (ISO 8601 durations such as `P1Y`) and `currencies` (ISO 4217 codes) read from the Provenance's coverage series, each list sorted and distinct, and empty where coverage holds nothing.
 
-The body is built once per code index and coverage build, by one build that concurrent first requests share, and kept until the generation changes or the generation stamp's maximum age passes. A request that finds another coverage build rebuilds it. A request whose wait passes 10 s while the build runs answers `503 service_unavailable`, retryable, with `Retry-After: 5` and `cause: {"code": "schema_building"}`. A build past its 60 s deadline answers `504 timeout`. It answers `public, max-age=300` with a strong `ETag`, a gzip representation and `304` on `If-None-Match`. The example is abridged. It keeps the first pattern and the first two values of the first constraint property, and `...` marks each cut list.
+The body is built once per code index and coverage build, by one build that concurrent first requests share, and kept until the generation changes or the generation stamp's maximum age passes. A request that finds another coverage build rebuilds it. A request whose wait passes 10 s while the build runs answers `503 service_unavailable`, retryable, with `Retry-After: 5` and `cause: {"code": "schema_building"}`. A build past its 60 s deadline answers `504 timeout`, and a failed node read answers as it does on `GET /api/graph/schema`. A failed build is not kept. It answers `public, max-age=300` with a strong `ETag`, a gzip representation and `304` on `If-None-Match`. The example is abridged. It keeps the first pattern and the first two values of the first constraint property, and `...` marks each cut list.
 
 ```json
 {

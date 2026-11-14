@@ -73,15 +73,17 @@ response past `CHECK_MAX_BODY_BYTES` (4 MB), and always takes the first row. A c
 `rows_checked` when it is less than the rows it sent.
 
 `GET /api/graph/schema/usage` serves `DatasetUsage`, built by
-`graph_api.dataset_usage.build_usage` from the bound code index and the served coverage index
-with no graph read. `GraphDeps.dataset_usage`, a single-flight cache of one entry keyed by the
-code index's content hash and the coverage build (`CoverageManifest.build_id`), holds the
-frozen body, and the lifespan registers it as `graph_api.dataset_usage`, so a generation change
-clears it too. A miss builds the body
-on the cache's own one-worker executor, and concurrent misses share that build. A request whose
-wait passes `GRAPH_NODE_TIMEOUT_SECONDS` answers retryable 503 with `Retry-After: 5` and
-`cause: {"code": "schema_building"}`, and a build
-past its flight deadline answers 504, as for the other two routes.
+`graph_api.dataset_usage.build_usage` from the bound code index, the served coverage index and
+one batched read of every Provenance node's `name` and `description`, each empty answer
+confirmed alone, so each Provenance's label and description are the graph's.
+`GraphDeps.dataset_usage`, a single-flight cache of one entry keyed by the code index's content
+hash and the coverage build (`CoverageManifest.build_id`), holds the frozen body, and the
+lifespan registers it as `graph_api.dataset_usage`, so a generation change clears it too. A
+miss reads and builds the body on the cache's own one-worker executor under the flight
+deadline, and concurrent misses share that build. A request whose wait passes
+`GRAPH_NODE_TIMEOUT_SECONDS` answers retryable 503 with `Retry-After: 5` and
+`cause: {"code": "schema_building"}`, a build past its flight deadline answers 504, and a
+failed read answers as it does for the other two routes. A failed build is not kept.
 
 After each build the door logs one line timing the encoding of the document and terms bodies
 and giving their sizes, beside the build's own per-phase line.
@@ -119,7 +121,7 @@ from graph_api.config import (
     GRAPH_SCHEMA_CHECK_TIMEOUT_SECONDS,
     SCHEMA_FLIGHT_TIMEOUT_SECONDS,
 )
-from graph_api.dataset_usage import ProvenanceCoverage, build_usage
+from graph_api.dataset_usage import PROVENANCE_NODE_PROPERTIES, ProvenanceCoverage, build_usage
 from graph_api.deps import (
     DcpExecutorSaturated,
     GraphDeps,
@@ -409,20 +411,35 @@ def classify_schema_exception(exc: BaseException) -> ProblemSpec | None:
     )
 
 
-def _freeze_usage(code_index: CodeIndex, coverage: ProvenanceCoverage) -> FrozenJSON:
-    return _freeze(build_usage(code_index=code_index, coverage=coverage))
+def _freeze_usage(
+    reader: GraphNodeReader,
+    *,
+    code_index: CodeIndex,
+    coverage: ProvenanceCoverage,
+    deadline: float,
+) -> FrozenJSON:
+    """Read every Provenance node of `code_index` in one batch, confirming each empty answer
+    alone, and freeze the usage body built from it."""
+    nodes = reader.node_arcs_many(
+        sorted(code_index.variables_by_provenance),
+        properties=PROVENANCE_NODE_PROPERTIES,
+        individual_probe_budget=None,
+        deadline=deadline,
+    )
+    return _freeze(build_usage(code_index=code_index, coverage=coverage, nodes=nodes))
 
 
 async def _frozen_usage(deps: GraphDeps) -> FrozenJSON:
     """The usage body of the bound code index and the served coverage build, from
     `deps.dataset_usage`. Refresh the generation first, as `_frozen_schema` does, so
-    the cache's stamp is fresh after an idle gap. A miss builds and encodes the body on the cache's executor,
-    and concurrent misses share that one build. A request waits until `GRAPH_NODE_TIMEOUT_SECONDS`
-    from its start.
+    the cache's stamp is fresh after an idle gap. A miss reads the Provenance nodes, builds and
+    encodes the body on the cache's executor, and concurrent misses share that one build. A
+    request waits until `GRAPH_NODE_TIMEOUT_SECONDS` from its start.
 
     Raises:
         SchemaBuildPending: the request's wait passed while the build runs on.
         SchemaBuildExpired: the build outlived its flight deadline.
+        SchemaReadFailed: the Provenance node read failed.
     """
     await deps.generation.refresh_if_stale()
     code_index = get_index()
@@ -431,8 +448,11 @@ async def _frozen_usage(deps: GraphDeps) -> FrozenJSON:
         code_index=code_index.stamp.content_hash, coverage_build=snapshot.manifest.build_id
     )
 
-    def build(_keys: list[UsageKey], _flight_deadline: float) -> dict[UsageKey, FrozenJSON]:
-        return {key: _freeze_usage(code_index, snapshot.index)}
+    def build(_keys: list[UsageKey], flight_deadline: float) -> dict[UsageKey, FrozenJSON]:
+        frozen = _freeze_usage(
+            deps.graph, code_index=code_index, coverage=snapshot.index, deadline=flight_deadline
+        )
+        return {key: frozen}
 
     try:
         found = await deps.dataset_usage.aget_or_fetch_many(
@@ -442,6 +462,8 @@ async def _frozen_usage(deps: GraphDeps) -> FrozenJSON:
         raise SchemaBuildPending() from None
     except TimeoutError as exc:
         raise SchemaBuildExpired() from exc
+    except GraphReadError as exc:
+        raise SchemaReadFailed(exc) from exc
     return found[key]
 
 

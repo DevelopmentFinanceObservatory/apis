@@ -1,9 +1,13 @@
-"""How each Provenance uses the model, from the code index and the coverage index alone.
+"""How each Provenance uses the model, from the code index, the coverage index and the
+Provenance's graph node.
 
 `build_usage` makes one `ProvenanceUsage` per key of
 `CodeIndex.variables_by_provenance`, so a Provenance appears when at least one StatVar row of
-the index names it. Its `label` and `description` come from the Provenance's
-`DatasetDeclaration` in `CodeIndex.datasets`.
+the index names it. Its `label` and `description` come from the Provenance's graph node, read
+for `PROVENANCE_NODE_PROPERTIES`: the label is the node's display name
+(`dc_graph.display_name`) and the description the least of its `description` values, as the
+schema document labels its nodes. A Provenance the graph does not hold, or whose node carries no
+name or no description, gets null for that field.
 
 A pattern is a distinct combination, over the Provenance's StatVar rows, of the five shape
 fields, the sorted names of the constraint properties and the sorted observation properties.
@@ -22,6 +26,7 @@ from typing import NamedTuple, Protocol
 
 from code_index import CodeIndex, StatVarRow
 from code_index.query import row_five_tuple
+from dc_graph import display_name
 from graph_api.schema_models import (
     DatasetUsage,
     ProvenanceUsage,
@@ -36,6 +41,13 @@ from statvar_members import FiveTuple
 
 EXAMPLES_PER_PATTERN = 3
 """How many StatVar dcids a pattern lists as examples."""
+
+PROVENANCE_NODE_PROPERTIES: tuple[str, ...] = ("name", "description")
+"""The arcs of each Provenance node `build_usage` reads its label and description from."""
+
+type ProvenanceNodes = Mapping[str, Mapping[str, tuple[str, ...]] | None]
+"""Each Provenance's `PROVENANCE_NODE_PROPERTIES` values, `None` for a node the graph does not
+hold, as `GraphNodeReader.node_arcs_many` answers them."""
 
 
 class ProvenanceCoverage(Protocol):
@@ -157,18 +169,21 @@ def _no_facets() -> SchemaFacets:
     )
 
 
-def build_usage(*, code_index: CodeIndex, coverage: ProvenanceCoverage) -> DatasetUsage:
-    """How each Provenance of `code_index` uses the model, with facet facts from `coverage`."""
+def build_usage(
+    *, code_index: CodeIndex, coverage: ProvenanceCoverage, nodes: ProvenanceNodes
+) -> DatasetUsage:
+    """How each Provenance of `code_index` uses the model, with facet facts from `coverage` and
+    the label and description of its node in `nodes`."""
     facets = _facets_by_provenance(coverage)
     provenances: list[ProvenanceUsage] = []
     for provenance, dcids in sorted(code_index.variables_by_provenance.items()):
         rows = [row for dcid in dcids if (row := code_index.statvar_by_dcid(dcid)) is not None]
-        declaration = code_index.datasets.get(provenance)
+        node = nodes.get(provenance) or {}
         provenances.append(
             ProvenanceUsage(
                 ref=provenance,
-                label=declaration.label if declaration is not None else None,
-                description=declaration.description if declaration is not None else None,
+                label=display_name(node.get("name", ()), provenance),
+                description=min(node.get("description", ()), default=None),
                 stat_var_count=len(rows),
                 patterns=_patterns(rows),
                 constraint_values=_constraint_values(rows),
@@ -178,4 +193,11 @@ def build_usage(*, code_index: CodeIndex, coverage: ProvenanceCoverage) -> Datas
     return DatasetUsage(provenances=provenances)
 
 
-__all__ = ["EXAMPLES_PER_PATTERN", "SHAPE_FIELDS", "ProvenanceCoverage", "build_usage"]
+__all__ = [
+    "EXAMPLES_PER_PATTERN",
+    "PROVENANCE_NODE_PROPERTIES",
+    "SHAPE_FIELDS",
+    "ProvenanceCoverage",
+    "ProvenanceNodes",
+    "build_usage",
+]

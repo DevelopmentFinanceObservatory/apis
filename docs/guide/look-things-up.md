@@ -120,7 +120,7 @@ A node's `declared_by` names the origin that declares it: `dfo`, `base` for base
 
 ## See how a dataset uses the model
 
-`GET /api/v1/graph/schema/usage` lists each dataset's Provenance with its StatVar count, the distinct patterns of its StatVars, the values each constraint property takes, and the units, periods and currencies of its series.
+`GET /api/v1/graph/schema/usage` lists each dataset's Provenance with the name and description its graph node carries, its StatVar count, the distinct patterns of its StatVars, the values each constraint property takes, and the units, periods and currencies of its series.
 
 ```bash
 curl -fsS "$DFO_API/api/v1/graph/schema/usage" \

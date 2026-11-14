@@ -1,4 +1,5 @@
-"""`build_usage` over a small code index and coverage, and the route that serves it."""
+"""`build_usage` over a small code index, coverage and Provenance nodes, and the route that
+serves it."""
 
 from __future__ import annotations
 
@@ -6,7 +7,7 @@ import asyncio
 import dataclasses
 import threading
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
 import pytest
@@ -14,9 +15,11 @@ import pytest
 from code_index import CodeIndex, DatasetDeclaration, IndexStamp, StatVarRow
 from code_index.shared import get_index
 from graph_api import app as app_module
-from graph_api.dataset_usage import SHAPE_FIELDS, build_usage
+from graph_api.dataset_usage import SHAPE_FIELDS, ProvenanceNodes, build_usage
 from graph_api.doors import schema as schema_door
+from graph_api.reader import NodeArcsByDcid
 from graph_generation import FakeGeneration
+from materialise.graph import GraphReadError
 from series_coverage.schema import FacetMetadata
 from statvar_members import FiveTuple
 
@@ -109,21 +112,45 @@ _COVERAGE = _FakeCoverageIndex(
 )
 
 
-def _built(index: CodeIndex | None = None, coverage=_COVERAGE) -> dict[str, dict]:
+_NODES: ProvenanceNodes = {
+    _CRS: {"name": ("CRS (graph)",), "description": ("Aid by project, as the graph says.",)},
+    _DAC: {"name": ("DAC1",), "description": ("Totals by donor.",)},
+}
+
+
+def _built(
+    index: CodeIndex | None = None, coverage=_COVERAGE, nodes: ProvenanceNodes = _NODES
+) -> dict[str, dict]:
     if index is None:
         index = _index(*_ROWS)
-    built = build_usage(code_index=index, coverage=coverage).model_dump(mode="json")
+    built = build_usage(code_index=index, coverage=coverage, nodes=nodes).model_dump(mode="json")
     return {entry["ref"]: entry for entry in built["provenances"]}
 
 
-def test_one_entry_per_provenance_with_its_declaration() -> None:
+def test_each_provenance_takes_its_graph_node_name_and_description() -> None:
+    """`_DAC` has no declaration, and `_CRS`'s declaration names it otherwise."""
     built = _built()
 
     assert list(built) == [_CRS, _DAC]
-    assert built[_CRS]["label"] == "Creditor Reporting System"
-    assert built[_CRS]["description"] == "Aid by project."
-    assert built[_DAC]["label"] is None
-    assert built[_DAC]["description"] is None
+    assert (built[_DAC]["label"], built[_DAC]["description"]) == ("DAC1", "Totals by donor.")
+    assert (built[_CRS]["label"], built[_CRS]["description"]) == (
+        "CRS (graph)",
+        "Aid by project, as the graph says.",
+    )
+
+
+@pytest.mark.parametrize(
+    "node",
+    [
+        pytest.param(None, id="no-node"),
+        pytest.param({"name": (), "description": ()}, id="no-arcs"),
+        pytest.param({"name": (_CRS,), "description": ()}, id="named-by-its-dcid"),
+    ],
+)
+def test_a_provenance_the_graph_names_nothing_for_gets_null(node) -> None:
+    built = _built(nodes={**_NODES, _CRS: node})
+
+    assert (built[_CRS]["label"], built[_CRS]["description"]) == (None, None)
 
 
 def test_a_statvar_with_two_provenances_counts_under_both() -> None:
@@ -257,7 +284,90 @@ def _units(response) -> list[list[str]]:
     return [entry["facets"]["units"] for entry in response.json()["provenances"]]
 
 
-def test_the_route_answers_from_the_indexes_with_an_etag_and_no_graph_read() -> None:
+class _LabelledReader(FakeGraphNodeReader):
+    """Holds a name and description for one Provenance of the bound index and records the
+    `node_arcs_many` reads."""
+
+    def __init__(self, provenance: str) -> None:
+        super().__init__(
+            nodes={provenance: {"name": ("Graph name",), "description": ("Graph prose.",)}}
+        )
+        self.reads: list[tuple[tuple[str, ...], tuple[str, ...], int | None]] = []
+
+    def node_arcs_many(
+        self,
+        dcids: Sequence[str],
+        *,
+        properties: Sequence[str],
+        individual_probe_budget: int | None = None,
+        deadline: float | None = None,
+    ) -> NodeArcsByDcid:
+        self.reads.append((tuple(dcids), tuple(properties), individual_probe_budget))
+        return super().node_arcs_many(
+            dcids,
+            properties=properties,
+            individual_probe_budget=individual_probe_budget,
+            deadline=deadline,
+        )
+
+
+def test_the_route_labels_each_provenance_from_one_confirmed_node_read() -> None:
+    provenances = sorted(get_index().variables_by_provenance)
+    graph = _LabelledReader(provenances[0])
+
+    with make_client(graph=graph, coverage=_FakeCoverage(_coverage_of("Percent"))) as client:
+        response = client.get(_ROUTE, headers=_IDENTITY)
+
+    assert response.status_code == 200, response.text
+    entries = response.json()["provenances"]
+    assert (entries[0]["label"], entries[0]["description"]) == ("Graph name", "Graph prose.")
+    assert all(entry["label"] is None for entry in entries[1:])
+    assert graph.reads == [(tuple(provenances), ("name", "description"), None)]
+
+
+class _FailingReader(FakeGraphNodeReader):
+    def __init__(self, error: GraphReadError) -> None:
+        super().__init__()
+        self.error = error
+
+    def node_arcs_many(self, *_args, **_kwargs) -> NodeArcsByDcid:
+        self.calls["node_arcs_many"] += 1
+        raise self.error
+
+
+@pytest.mark.parametrize(
+    ("error", "status", "code"),
+    [
+        pytest.param(
+            GraphReadError("unavailable", upstream_status=503),
+            503,
+            "service_unavailable",
+            id="read-error",
+        ),
+        pytest.param(
+            GraphReadError("bad request", upstream_status=400),
+            502,
+            "upstream_error",
+            id="upstream-4xx",
+        ),
+    ],
+)
+def test_a_failed_node_read_answers_the_read_problem_and_is_not_kept(
+    error: GraphReadError, status: int, code: str
+) -> None:
+    graph = _FailingReader(error)
+
+    with make_client(graph=graph, coverage=_FakeCoverage(_coverage_of("CurrencyUSD"))) as client:
+        responses = [client.get(_ROUTE, headers=_IDENTITY) for _ in range(2)]
+
+    for response in responses:
+        assert response.status_code == status, response.text
+        assert response.json()["code"] == code
+        assert response.json()["retryable"] is True
+    assert graph.calls["node_arcs_many"] == 2
+
+
+def test_the_route_answers_from_the_indexes_with_an_etag() -> None:
     graph = FakeGraphNodeReader()
     coverage = _FakeCoverage(_coverage_of("CurrencyUSD"))
 
@@ -274,7 +384,7 @@ def test_the_route_answers_from_the_indexes_with_an_etag_and_no_graph_read() -> 
     assert gzipped.headers["Content-Encoding"] == "gzip"
     assert gzipped.json() == first.json()
     assert ["CurrencyUSD"] in _units(first)
-    assert set(graph.calls.values()) == {0}
+    assert graph.calls["node_arcs_many"] == 1
 
 
 def test_the_body_is_built_once_per_coverage_build(monkeypatch: pytest.MonkeyPatch) -> None:
