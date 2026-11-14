@@ -10,14 +10,17 @@ import pytest
 
 from code_index import StatVarRow
 from dc_graph import ArcTarget, GraphReadError
+from graph_api import schema_check
 from graph_api.reader import NodeArcsByDcid
 from graph_api.schema_check import CheckedRows, SchemaLookup, check_rows, plan_reads
 from graph_api.schema_document import Schema, build_schema
 from graph_api.schema_models import (
+    CHECK_MAX_BODY_BYTES,
     CHECK_MAX_CONSTRAINT_PROPERTIES,
     CHECK_MAX_FINDINGS,
     CHECK_MAX_OBSERVATION_PROPERTIES,
     CHECK_MAX_READ_IDS,
+    SchemaCheckResponse,
     SchemaCheckRow,
 )
 
@@ -196,6 +199,7 @@ def _checked(
         reader=reader or _RecordingReader(),
         code_index=INDEX,
         un_served=un_served,
+        generation="g1",
         deadline=_DEADLINE,
     )
 
@@ -918,6 +922,53 @@ def test_findings_past_the_cap_stop_before_the_row_that_passes_it() -> None:
     assert checked.row_count == fit
     assert len(checked.findings) == fit * CHECK_MAX_CONSTRAINT_PROPERTIES <= CHECK_MAX_FINDINGS
     assert checked.findings[-1].row == fit - 1
+
+
+def _escaped_row() -> SchemaCheckRow:
+    """A row of 16 `node_not_held` findings, each echoing a 512-character `ref` and value whose
+    every character JSON escapes to six bytes."""
+    escaped = "\x01" * 512
+    return _row(
+        ref=escaped,
+        constraint_properties={
+            f"baseProperty{i}": escaped for i in range(CHECK_MAX_CONSTRAINT_PROPERTIES)
+        },
+    )
+
+
+def _encoded(checked: CheckedRows) -> bytes:
+    return (
+        SchemaCheckResponse(
+            generation="g1",
+            row_count=checked.row_count,
+            next_row=checked.row_count,
+            findings=checked.findings,
+        )
+        .model_dump_json()
+        .encode()
+    )
+
+
+def test_findings_past_the_body_budget_stop_before_the_row_that_passes_it() -> None:
+    rows = [_escaped_row() for _ in range(60)]
+
+    checked = _checked(rows)
+
+    body = _encoded(checked)
+    last_row = [finding for finding in checked.findings if finding.row == checked.row_count - 1]
+    next_row_size = sum(len(finding.model_dump_json().encode()) + 1 for finding in last_row)
+    assert 1 < checked.row_count < len(rows)
+    assert len(checked.findings) < CHECK_MAX_FINDINGS
+    assert len(body) <= CHECK_MAX_BODY_BYTES < len(body) + next_row_size
+
+
+def test_the_first_row_is_taken_past_the_body_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(schema_check, "CHECK_MAX_BODY_BYTES", 1)
+
+    checked = _checked([_escaped_row(), _escaped_row()])
+
+    assert checked.row_count == 1
+    assert len(checked.findings) == CHECK_MAX_CONSTRAINT_PROPERTIES
 
 
 def test_one_row_yields_fewer_findings_than_the_cap() -> None:

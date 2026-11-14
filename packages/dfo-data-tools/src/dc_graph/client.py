@@ -321,12 +321,14 @@ class ArcTarget:
     and for a node target the `name` and `types` the answer carries beside the dcid. A target
     with several names carries the first of them, sorted, where `display_name` takes the
     greatest. `provenances` holds the distinct `provenanceId`s of every entry declaring the
-    target, sorted, `()` where no entry carries one."""
+    target, sorted, `()` where no entry carries one. `literal` is true when the target is a
+    literal `value` and false when it is a node `dcid`."""
 
     value: str
     name: str | None = None
     types: tuple[str, ...] = ()
     provenances: tuple[str, ...] = ()
+    literal: bool = False
 
 
 @dataclass(frozen=True)
@@ -1306,6 +1308,33 @@ class GraphClient:
                     cache[(stamp.key, dcid, wanted)] = targets
         return {dcid: result[dcid] for dcid in dict.fromkeys(dcids)}
 
+    def node_all_arc_targets_many(
+        self, dcids: Sequence[str], *, deadline: float | None = None
+    ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
+        """Each distinct dcid's every outgoing property (`->*`) with its targets
+        (`parse_arc_targets`), or `None` for a node the graph answers with no arc. The dcids are
+        read as `node_arcs_batch` reads them, in its chunks, each halved when the mixer answers
+        a continuation, and an empty answer is confirmed as `node_arc_targets_many` confirms it
+        with `individual_probe_budget=None`: read again in a group and then alone, so `None` for
+        a dcid is the graph's answer for that dcid read alone. A property every entry of which
+        `dfo_visible` hides is left out. Uncached. One absolute `deadline` bounds every
+        request."""
+        if not dcids:
+            return {}
+        unique = list(dict.fromkeys(dcids))
+        read = self._confirmed_arcs(
+            unique,
+            read_all=lambda part: self._post_node_arcs_batch(list(part), deadline=deadline),
+            read_again=lambda part: self._post_node_arcs_batch(list(part), deadline=deadline),
+            individual_probe_budget=None,
+        )
+        result: dict[str, dict[str, tuple[ArcTarget, ...]] | None] = {}
+        for dcid in unique:
+            arcs = read[dcid]
+            targets = parse_arc_targets(arcs, sorted(arcs)) if arcs else {}
+            result[dcid] = {prop: values for prop, values in targets.items() if values} or None
+        return result
+
     def node_names_many(
         self, dcids: Sequence[str], *, deadline: float | None = None
     ) -> dict[str, tuple[str, ...]]:
@@ -1355,15 +1384,37 @@ class GraphClient:
         individual_probe_budget: int | None,
         deadline: float | None,
     ) -> dict[str, dict | None]:
-        """Each of `dcids`' wire `arcs` for `properties`, `None` for none. The dcids are read in
-        `_post_node_arcs_chunked`'s chunks. An empty answer from a batch of several dcids is
+        """`_confirmed_arcs` over `properties`, the dcids read in `_post_node_arcs_chunked`'s
+        chunks and each retry and probe in one paged `_post_node_arcs`."""
+        return self._confirmed_arcs(
+            dcids,
+            read_all=lambda part: self._post_node_arcs_chunked(
+                part, properties=properties, deadline=deadline
+            ),
+            read_again=lambda part: self._post_node_arcs(
+                part, properties=properties, deadline=deadline
+            ),
+            individual_probe_budget=individual_probe_budget,
+        )
+
+    def _confirmed_arcs(
+        self,
+        dcids: Sequence[str],
+        *,
+        read_all: Callable[[Sequence[str]], dict],
+        read_again: Callable[[Sequence[str]], dict],
+        individual_probe_budget: int | None,
+    ) -> dict[str, dict | None]:
+        """Each of `dcids`' wire `arcs`, `None` for none. `read_all` reads the dcids, and
+        `read_again` each retry and probe. An empty answer from a batch of several dcids is
         read again with the other empties as a group, then each still empty alone, up to
         `individual_probe_budget` (`None` probes all). A group of one is that read alone. Only
         an empty answer for a dcid read alone is kept as `None`, beside the unprobed ones, which
         one log message counts. A dcid a retry or probe omits raises the read error. A budget of
         0 sends no retry or probe and returns the first read's answers, `None` for a dcid it
-        omits. Each read carries `deadline`, so a read past it raises and stops the probes."""
-        data = self._post_node_arcs_chunked(dcids, properties=properties, deadline=deadline)
+        omits. Each read carries the caller's deadline, so a read past it raises and stops the
+        probes."""
+        data = read_all(dcids)
         if individual_probe_budget == 0:
             return {dcid: (data.get(dcid) or {}).get("arcs") or None for dcid in dcids}
         result: dict[str, dict | None] = {}
@@ -1381,7 +1432,7 @@ class GraphClient:
             result[dcid] = arcs
 
         if suspects:
-            retry_data = self._post_node_arcs(suspects, properties=properties, deadline=deadline)
+            retry_data = read_again(suspects)
             still_missing = [dcid for dcid in suspects if dcid not in retry_data]
             if still_missing:
                 omitted = GraphOmittedDcidsError(
@@ -1408,7 +1459,7 @@ class GraphClient:
                 unprobed = still_empty[individual_probe_budget:]
 
             for dcid in to_probe:
-                probe_data = self._post_node_arcs([dcid], properties=properties, deadline=deadline)
+                probe_data = read_again([dcid])
                 if dcid not in probe_data:
                     omitted = GraphOmittedDcidsError(
                         f"graph omitted {dcid!r} from /v2/node data even after an "
@@ -2760,9 +2811,9 @@ def parse_arcs(
 
 def parse_arc_targets(arcs: dict, properties: Sequence[str]) -> dict[str, tuple[ArcTarget, ...]]:
     """Each of `properties` with its distinct targets in first-occurrence order, `()` for a
-    missing property. A target's name and types come from its first entry, its provenances
-    from all of them. An entry with neither `dcid` nor `value` is dropped. Entries are read
-    through `_arc_entries`."""
+    missing property. A target's name, types and `literal` come from its first entry, its
+    provenances from all of them. An entry with neither `dcid` nor `value` is dropped. Entries
+    are read through `_arc_entries`."""
     parsed: dict[str, tuple[ArcTarget, ...]] = {}
     for prop in properties:
         entries: dict[str, list[dict]] = {}
@@ -2780,6 +2831,7 @@ def parse_arc_targets(arcs: dict, properties: Sequence[str]) -> dict[str, tuple[
                     name=first.get("name") if is_node else None,
                     types=tuple(first.get("types", ())) if is_node else (),
                     provenances=_entry_provenances(value_entries),
+                    literal=not is_node,
                 )
             )
         parsed[prop] = tuple(targets)

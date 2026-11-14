@@ -367,7 +367,7 @@ _WHO_ARCS = {
                             types=("Dataset",),
                         ),
                     ),
-                    "name": (ArcTarget(value="WHO_GHO"),),
+                    "name": (ArcTarget(value="WHO_GHO", literal=True),),
                     "typeOf": (ArcTarget(value="Provenance"),),
                 },
                 "dc/base/Gone": None,

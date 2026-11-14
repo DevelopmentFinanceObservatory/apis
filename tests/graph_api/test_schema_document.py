@@ -15,7 +15,7 @@ from graph_api.schema_document import (
     build_schema,
     declared_by,
 )
-from graph_api.schema_models import SchemaNode
+from graph_api.schema_models import SchemaLiteral, SchemaNode, SchemaNodeReference
 
 from .conftest import FakeGraphNodeReader
 from .schema_fixture import (
@@ -229,10 +229,104 @@ def test_a_held_node_with_no_type_is_served_with_no_provenance() -> None:
     untyped = {node.dcid: node for node in schema.document.nodes}["UntypedValue"]
     assert (untyped.types, untyped.provenances, untyped.declared_by) == ([], [], None)
     assert '"declared_by":null' in untyped.model_dump_json()
-    # Every node read probes each empty answer, so the build reads a node held as held, and
-    # skips the client's arc-targets cache.
-    assert graph.arc_target_reads
-    assert set(graph.arc_target_reads) == {(None, False)}
+    # Every node read is the all-properties read, which confirms each empty answer alone.
+    assert graph.calls["node_all_arc_targets_many"]
+    assert graph.calls["node_arc_targets_many"] == 0
+
+
+def test_every_other_property_a_node_holds_is_served_typed_and_sorted() -> None:
+    crs = node_targets(NODES)["CRSPurposeCode120"]
+    arc_targets = {
+        "CRSPurposeCode120": {
+            **crs,
+            "wbCode": (
+                ArcTarget(value="EDU", literal=True),
+                ArcTarget(value="DOD", literal=True),
+            ),
+            "isProvisional": (ArcTarget(value="True"),),
+            "iso4217NumericCode": (ArcTarget(value="404", literal=True),),
+            "combinesMethods": (
+                ArcTarget(value="sameText", literal=True),
+                ArcTarget(value="sameText"),
+                ArcTarget(value="MethodA"),
+            ),
+            "descriptionUrl": (),
+        }
+    }
+
+    nodes = _nodes(schema_graph(arc_targets=arc_targets))
+
+    assert nodes["CRSPurposeCode120"].model_dump(mode="json")["other_properties"] == {
+        "combinesMethods": [{"dcid": "MethodA"}, {"dcid": "sameText"}, {"value": "sameText"}],
+        "isProvisional": [{"dcid": "True"}],
+        "iso4217NumericCode": [{"value": "404"}],
+        "wbCode": [{"value": "DOD"}, {"value": "EDU"}],
+    }
+    # The named properties stay in their own members, and a node with no other property
+    # holds an empty map.
+    assert nodes["CRSPurposeCode120"].classification_code == ["120"]
+    assert nodes["Female"].other_properties == {}
+
+
+def test_an_other_property_value_is_one_string_member() -> None:
+    schema = SchemaNode.model_json_schema(mode="serialization")
+    values = schema["properties"]["other_properties"]["additionalProperties"]["items"]["anyOf"]
+    members = [schema["$defs"][value["$ref"].rsplit("/", 1)[1]] for value in values]
+
+    assert [
+        (member["required"], member["properties"], member["additionalProperties"])
+        for member in members
+    ] == [
+        (["dcid"], {"dcid": {"title": "Dcid", "type": "string"}}, False),
+        (["value"], {"value": {"title": "Value", "type": "string"}}, False),
+    ]
+    # A literal stays the graph's string, never a number or a boolean.
+    for model, key in ((SchemaLiteral, "value"), (SchemaNodeReference, "dcid")):
+        for parsed in (404, True):
+            with pytest.raises(ValueError):
+                model.model_validate({key: parsed})
+
+
+def test_other_properties_leave_out_long_literals_and_values_past_the_cap(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    longest = "x" * schema_document.OTHER_LITERAL_MAX_CHARS
+    many = schema_document.OTHER_VALUES_MAX + 5
+    arc_targets = {
+        "CRSPurposeCode120": {
+            **node_targets(NODES)["CRSPurposeCode120"],
+            "geoJsonCoordinates": (
+                ArcTarget(value=longest + "x", literal=True),
+                ArcTarget(value=longest, literal=True),
+            ),
+            "kmlCoordinates": (ArcTarget(value=longest + "x", literal=True),),
+            "containsCode": tuple(
+                ArcTarget(value=f"code{i:03d}", literal=True) for i in reversed(range(many))
+            ),
+        }
+    }
+
+    with caplog.at_level("WARNING", logger=schema_document.__name__):
+        nodes = _nodes(schema_graph(arc_targets=arc_targets))
+
+    others = nodes["CRSPurposeCode120"].model_dump(mode="json")["other_properties"]
+    assert others["geoJsonCoordinates"] == [{"value": longest}]
+    assert "kmlCoordinates" not in others
+    assert others["containsCode"] == [
+        {"value": f"code{i:03d}"} for i in range(schema_document.OTHER_VALUES_MAX)
+    ]
+    assert [record.args for record in caplog.records] == [
+        (
+            7,
+            schema_document.OTHER_LITERAL_MAX_CHARS,
+            schema_document.OTHER_VALUES_MAX,
+            [
+                ("CRSPurposeCode120", "containsCode"),
+                ("CRSPurposeCode120", "geoJsonCoordinates"),
+                ("CRSPurposeCode120", "kmlCoordinates"),
+            ],
+        )
+    ]
 
 
 def test_a_node_with_one_unsourced_type_is_declared_by_its_sourced_types(
@@ -446,7 +540,7 @@ def test_reads_are_bounded_by_hierarchy_depth_not_node_count() -> None:
         "node_arc_subjects_many": 1,  # members of every instance enumeration
         # Each node's values and provenances: the seed, three ancestor levels
         # (EconomicActivity, Intangible, Thing) and the unread members.
-        "node_arc_targets_many": 5,
+        "node_all_arc_targets_many": 5,
     }
     assert _read_counts(small) == expected
     assert _read_counts(large) == expected

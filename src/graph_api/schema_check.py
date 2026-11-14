@@ -40,8 +40,11 @@ descendants, so no member listing proves that a value it lacks lies outside a ra
 names at most `CHECK_MAX_READ_IDS` ids, so the first row always fits.
 
 `check_rows` stops before the row whose findings would take the total past
-`CHECK_MAX_FINDINGS`. One row yields at most 79 findings (`CHECK_MAX_FINDINGS` counts them), so
-the first row always fits.
+`CHECK_MAX_FINDINGS`, or the encoded response past `CHECK_MAX_BODY_BYTES`. It measures each
+finding as `SchemaCheckResponse` encodes it, plus a separating comma, over the encoded response
+with no finding and the widest `row_count` and `next_row`. One row yields at most 79 findings
+(`CHECK_MAX_FINDINGS` counts them), so the first row fits the findings cap, and the first row is
+taken whatever its size.
 
 Every row gets existence and kind checks. A row with no measured property gets `value_missing`.
 A constraint value, `stat_type`, `measurement_qualifier` and `measurement_denominator` must each
@@ -75,11 +78,14 @@ from graph_api.dataset_usage import SHAPE_FIELDS
 from graph_api.reader import GraphNodeReader
 from graph_api.routing import DcidConvertor
 from graph_api.schema_models import (
+    CHECK_MAX_BODY_BYTES,
     CHECK_MAX_FINDINGS,
     CHECK_MAX_READ_IDS,
+    CHECK_MAX_ROWS,
     ConstraintValue,
     FindingCode,
     FindingField,
+    SchemaCheckResponse,
     SchemaCheckRow,
     SchemaDocument,
     SchemaFinding,
@@ -260,10 +266,12 @@ def check_rows(
     reader: GraphNodeReader,
     code_index: CodeIndex,
     un_served: bool,
+    generation: str | None,
     deadline: float,
 ) -> CheckedRows:
     """Find the faults in candidate StatVar definitions, from the first row, stopping before
-    the row whose findings would take the total past `CHECK_MAX_FINDINGS`.
+    the row whose findings would take the total past `CHECK_MAX_FINDINGS`, or the encoded
+    response past `CHECK_MAX_BODY_BYTES`. The first row is always taken.
 
     Args:
         rows: the rows `plan_reads` took.
@@ -273,6 +281,7 @@ def check_rows(
             `reads` names an id.
         code_index: the code index whose StatVar rows the rows' dcids are compared with.
         un_served: whether the deployment serves the UN origin, as `plan_reads` was told.
+        generation: the generation the response carries, which counts toward its size.
         deadline: the absolute monotonic deadline passed to every read.
 
     Returns:
@@ -291,14 +300,29 @@ def check_rows(
     unread = _Unread(lookup, un_served)
 
     findings: list[SchemaFinding] = []
+    size = _envelope_bytes(generation)
     for index, row in enumerate(rows):
         found = _check_row(index, row, nodes, unread)
         if row.dcid is not None and (served := code_index.statvar_by_dcid(row.dcid)) is not None:
             found.extend(_differences(index, row, served))
-        if index and len(findings) + len(found) > CHECK_MAX_FINDINGS:
+        found_size = sum(len(finding.model_dump_json().encode()) + 1 for finding in found)
+        if index and (
+            len(findings) + len(found) > CHECK_MAX_FINDINGS
+            or size + found_size > CHECK_MAX_BODY_BYTES
+        ):
             return CheckedRows(row_count=index, findings=findings)
         findings.extend(found)
+        size += found_size
     return CheckedRows(row_count=len(rows), findings=findings)
+
+
+def _envelope_bytes(generation: str | None) -> int:
+    """The encoded response carrying `generation` and no finding, at its widest `row_count`
+    and `next_row`."""
+    envelope = SchemaCheckResponse(
+        generation=generation, row_count=CHECK_MAX_ROWS, next_row=CHECK_MAX_ROWS, findings=[]
+    )
+    return len(envelope.model_dump_json().encode())
 
 
 def _is_dcid(value: ConstraintValue) -> bool:

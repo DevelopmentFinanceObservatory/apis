@@ -785,6 +785,78 @@ def test_node_arc_targets_many_probes_an_empty_answer_as_node_arcs_many_does(bud
     assert result == {"country/KEN": _COUNTRY, "country/ZZZ": _COUNTRY, "country/YYY": None}
 
 
+def test_node_all_arc_targets_many_reads_every_property_and_confirms_an_empty_answer_alone():
+    transport, requests = _sequenced(_EMPTY_TWICE)
+
+    result = _reader(transport).node_all_arc_targets_many(_DCIDS)
+
+    assert {json.loads(request.content)["property"] for request in requests} == {"->*"}
+    assert _nodes_sent(requests) == [
+        _DCIDS,
+        ["country/ZZZ", "country/YYY"],
+        ["country/ZZZ"],
+        ["country/YYY"],
+    ]
+    assert result == {"country/KEN": _COUNTRY, "country/ZZZ": _COUNTRY, "country/YYY": None}
+
+
+def test_node_all_arc_targets_many_halves_a_chunk_the_mixer_continues():
+    # The mixer repeats continuation tokens for `->*`, so a continued chunk is read again as
+    # halves and the token is never sent.
+    transport, requests = _sequenced(
+        [
+            {"data": {"country/KEN": {"arcs": _TYPED}}, "nextToken": "tok1"},
+            {"data": {"country/KEN": {"arcs": _TYPED}}},
+            {"data": {"country/ZZZ": {"arcs": _TYPED}}},
+        ]
+    )
+
+    result = _reader(transport).node_all_arc_targets_many(["country/KEN", "country/ZZZ"])
+
+    assert _nodes_sent(requests) == [
+        ["country/KEN", "country/ZZZ"],
+        ["country/KEN"],
+        ["country/ZZZ"],
+    ]
+    assert all("nextToken" not in json.loads(request.content) for request in requests)
+    assert result == {"country/KEN": _COUNTRY, "country/ZZZ": _COUNTRY}
+
+
+def test_node_all_arc_targets_many_tells_a_literal_from_a_node():
+    # A target repeated per declaring provenance collapses to one; a property with no target
+    # is left out.
+    arcs = {
+        "wbCode": {
+            "nodes": [
+                {"value": "DOD", "provenanceId": "provenance/DFOOntology"},
+                {"value": "DOD", "provenanceId": "provenance/WorldBank"},
+            ]
+        },
+        "nationalCurrencyOf": {
+            "nodes": [{"dcid": "country/KEN", "name": "Kenya", "types": ["Country"]}]
+        },
+        "sameAs": {"nodes": []},
+    }
+    transport, _ = _sequenced([{"data": {"KES": {"arcs": arcs}}}])
+
+    result = _reader(transport).node_all_arc_targets_many(["KES"])
+
+    assert result == {
+        "KES": {
+            "nationalCurrencyOf": (
+                ArcTarget(value="country/KEN", name="Kenya", types=("Country",)),
+            ),
+            "wbCode": (
+                ArcTarget(
+                    value="DOD",
+                    provenances=("provenance/DFOOntology", "provenance/WorldBank"),
+                    literal=True,
+                ),
+            ),
+        }
+    }
+
+
 @pytest.mark.parametrize(
     ("read", "held"),
     [
@@ -1269,7 +1341,7 @@ def test_node_arc_targets_many_collapses_a_target_and_carries_its_provenances_so
                     provenances=("dc/base/Schema", "provenance/DFOOntology"),
                 ),
             ),
-            "name": (ArcTarget(value="CRS purpose"),),
+            "name": (ArcTarget(value="CRS purpose", literal=True),),
         }
     }
 

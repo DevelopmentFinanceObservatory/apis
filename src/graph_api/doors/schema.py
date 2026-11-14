@@ -61,8 +61,9 @@ submit and answers retryable 503 `service_unavailable` with `Retry-After: 5`
 (`SchemaCheckBusy`). A read past the check's deadline or a failed read answers as the GET
 routes answer it, with no findings. The request stops waiting at the check's deadline and
 answers 504 `timeout` while its job runs on, so a read that answers late yields no 200. The job
-stops before the row whose findings would pass `CHECK_MAX_FINDINGS`. A response that checked
-fewer rows than were sent names the first row left in `next_row`.
+stops before the row whose findings would pass `CHECK_MAX_FINDINGS`, or take the encoded
+response past `CHECK_MAX_BODY_BYTES` (4 MB), and always takes the first row. A response that
+checked fewer rows than were sent names the first row left in `next_row`.
 
 `GET /api/graph/schema/usage` serves `DatasetUsage`, built by
 `graph_api.dataset_usage.build_usage` from the bound code index and the served coverage index
@@ -412,6 +413,7 @@ def _check_body(
         reader=reader,
         code_index=code_index,
         un_served=un_served,
+        generation=generation,
         deadline=deadline,
     )
     response = SchemaCheckResponse(

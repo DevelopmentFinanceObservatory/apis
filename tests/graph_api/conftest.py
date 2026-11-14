@@ -51,7 +51,8 @@ class FakeGraphNodeReader:
     to every subject `node_arc_subjects` and `node_arc_subjects_many` serve,
     capped at `max_results` with `truncated` or `"capped"` set past it. `arc_targets` maps dcids to
     `{property: targets}` for `node_arc_targets_many`, with absent dcids and
-    properties as in `nodes`. Names combine `name` then `alternateName`,
+    properties as in `nodes`, and `node_all_arc_targets_many` answers every property of that
+    map with a target, `None` for a dcid with none. Names combine `name` then `alternateName`,
     deduplicated. `calls` counts calls by method, and `arc_target_reads` records the
     `(individual_probe_budget, cached)` of each `node_arc_targets_many` call.
     """
@@ -82,6 +83,7 @@ class FakeGraphNodeReader:
             "node_arc_subjects": 0,
             "node_arc_subjects_many": 0,
             "node_arc_targets_many": 0,
+            "node_all_arc_targets_many": 0,
         }
 
     def node_arcs_many(
@@ -187,6 +189,20 @@ class FakeGraphNodeReader:
                 None if entry is None else {prop: tuple(entry.get(prop, ())) for prop in properties}
             )
         return result
+
+    def node_all_arc_targets_many(
+        self, dcids: Sequence[str], *, deadline: float | None = None
+    ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
+        self.calls["node_all_arc_targets_many"] += 1
+        return {
+            dcid: {
+                prop: tuple(targets)
+                for prop, targets in self._arc_targets.get(dcid, {}).items()
+                if targets
+            }
+            or None
+            for dcid in dict.fromkeys(dcids)
+        }
 
     def child_places_batch(
         self,

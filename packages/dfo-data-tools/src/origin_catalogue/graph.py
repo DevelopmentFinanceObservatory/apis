@@ -613,6 +613,18 @@ class OriginGraphClient:
             disabled=lambda: None,
         )
 
+    def node_all_arc_targets_many(
+        self, dcids: Sequence[str], *, deadline: float | None = None
+    ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
+        """Each backend's `node_all_arc_targets_many` of its dcids. Every dcid is read live,
+        as `node_arc_targets_many` reads it."""
+        return self._route_many(
+            current_catalogue(),
+            dcids,
+            lambda backend, part: backend.node_all_arc_targets_many(part, deadline=deadline),
+            disabled=lambda: None,
+        )
+
     def arcs_complete(self, dcid: str) -> bool:
         """Whether the bound catalogue's tables answer `dcid`'s arcs (`arcs_mirrored`), so a
         read of them drops none (`statvar_members.CompleteArcReads`)."""

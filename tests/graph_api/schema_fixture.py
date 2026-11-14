@@ -170,7 +170,7 @@ def node_targets(
     nodes: Mapping[str, Mapping[str, tuple[str, ...]]],
     terms: Mapping[str, tuple[str, tuple[str, ...]]] = TERMS,
 ) -> dict[str, dict[str, tuple[ArcTarget, ...]]]:
-    """Each node's arcs as `node_arc_targets_many` reads them: every `typeOf` target declared by
+    """Each node's arcs as `node_all_arc_targets_many` reads them: every `typeOf` target declared by
     the node's `TYPE_PROVENANCES`, its term listing's provenances or `SCHEMA`, in that order,
     and every other value with no provenance. A node holding no value is left out, as the graph
     answers it."""

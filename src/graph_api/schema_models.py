@@ -14,6 +14,16 @@ Members named after a Data Commons property carry that property's values in snak
 `sub_property_of`, `specialization_of`, `domain_includes`, `range_includes` and
 `classification_code` are the properties of the same names. Every list is sorted.
 
+`other_properties` holds every other outgoing property the graph holds on the node, keyed by the
+property's dcid. The ten named properties are a closed set and never appear in it; a property
+promoted to a named member later leaves the map. Each value has exactly one member:
+`{"dcid": <string>}` for a node of the graph or `{"value": <string>}` for a literal, kept as the
+string the graph holds and never parsed to a number or boolean. A value the graph repeats once
+per declaring provenance appears once. Properties are sorted by dcid and values by their text, a
+node reference before a literal of the same text. A literal longer than 2,000 characters, such
+as a geometry, is left out, and a property keeps its first 100 values in that order. A node with
+no other property holds `{}`.
+
 `name` is `dc_graph.display_name` over the node's `name` values: the greatest by code point,
 with a name equal to the dcid counting as no name, so the Graph surface names a node one way.
 A term's `name` follows the same rule over the names its listing entries carry.
@@ -52,8 +62,9 @@ everything else about a row's content as a finding.
 `SchemaCheckResponse` answers with the generation the rows were checked against, null where
 its token is unknown, the count of rows checked from the first, the index of the first row not
 checked, and every finding in the rows checked. The check stops before the row that would take
-its reads from the graph past `CHECK_MAX_READ_IDS` distinct ids or its findings past
-`CHECK_MAX_FINDINGS`; one row fits both, so every response checks at least one row.
+its reads from the graph past `CHECK_MAX_READ_IDS` distinct ids, its findings past
+`CHECK_MAX_FINDINGS` or its encoded body past `CHECK_MAX_BODY_BYTES`; the first row is always
+taken, so every response checks at least one row.
 """
 
 from __future__ import annotations
@@ -106,6 +117,14 @@ StatVar of at most `CHECK_MAX_CONSTRAINT_PROPERTIES` names, the observation prop
 row whose `dcid` is outside dcid syntax gets one finding on it and no `definition_differs`.
 Every check takes at least one row."""
 
+CHECK_MAX_BODY_BYTES = 4_000_000
+"""The most bytes one check response encodes to, an internal budget the wire does not publish.
+The check stops before the row whose findings would take the response past it and answers where
+to resume. The first row is always taken, and fits: its at most 79 findings would encode to
+2.44 MB even if each carried a 512-character `ref` and `property` and four 512-character
+strings in both `value` and `served`, every character escaped to six bytes (30,910 bytes a
+finding)."""
+
 DeclaredBy = Literal["instance", "base"]
 """Who declares a node: `"base"` when every declaring provenance is a base Data Commons one."""
 
@@ -118,6 +137,23 @@ class SchemaEnumeration(ResponseModel):
         description="true when `members` is every member the graph holds: the class was listed "
         "from the graph and the listing read all of them; false when it holds some of them"
     )
+
+
+class SchemaNodeReference(ResponseModel):
+    """A value that names a node of the graph, by its dcid."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    dcid: str
+
+
+class SchemaLiteral(ResponseModel):
+    """A literal value as the graph holds it, a string even where it reads as a number, date or
+    boolean."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    value: str
 
 
 class SchemaNode(ResponseModel):
@@ -136,6 +172,14 @@ class SchemaNode(ResponseModel):
     domain_includes: list[str]
     range_includes: list[str]
     classification_code: list[str]
+    other_properties: dict[str, list[SchemaNodeReference | SchemaLiteral]] = Field(
+        description="every other outgoing property the graph holds on the node, by property "
+        "dcid, sorted; the named members are a closed set, and a property promoted to one "
+        "leaves this map. Each value has exactly one member, {dcid: string} for a node or "
+        "{value: string} for a literal, never parsed to a number or boolean, sorted by its "
+        "text. A literal longer than 2,000 characters is left out, and a property keeps its "
+        "first 100 values. {} when the node holds none"
+    )
     provenances: list[str] = Field(
         description="the Provenances declaring the node's typeOf arcs, verbatim, empty when "
         "declared_by is null"

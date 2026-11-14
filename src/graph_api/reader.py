@@ -7,7 +7,8 @@ nodes. `child_places_batch` expands regions. `resolve_by_arc` and
 Provenance children through the reverse `isPartOf` arc. `node_arc_subjects`,
 `node_arc_subjects_many` and `node_arc_targets_many` read subjects and
 targets with their names, types and the provenances that declared each arc,
-which tell the instance's own terms from base Data Commons. Each method
+which tell the instance's own terms from base Data Commons, and
+`node_all_arc_targets_many` reads every outgoing property's targets the same way. Each method
 accepts an absolute monotonic deadline.
 """
 
@@ -112,4 +113,12 @@ class GraphNodeReader(Protocol):
         The default budget 0 returns the first read's answer; any other budget probes an empty
         answer as `node_arcs_many` does. `cached=False` leaves the client's arc-targets cache
         untouched."""
+        ...
+
+    def node_all_arc_targets_many(
+        self, dcids: Sequence[str], *, deadline: float | None = None
+    ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
+        """Read every outgoing property's targets (`->*`) as `node_arc_targets_many` reads named
+        ones, each empty answer confirmed alone, uncached; `None` for a dcid the graph answers
+        with no arc. A property with no visible target is left out."""
         ...
