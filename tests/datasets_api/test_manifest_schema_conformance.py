@@ -1,5 +1,5 @@
 """Validates fully populated runtime manifests against the published schema.
-This catches runtime fields such as `series_count` missing from `/schema`.
+This catches runtime fields such as `series_count` missing from `/api/datasets/json-schema`.
 """
 
 from __future__ import annotations

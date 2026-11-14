@@ -2,7 +2,7 @@
 
 Responses come from the sentence panel golden (`tests/fixtures/sentence_panel`), which
 keeps each part's status, warnings and specs but drops the envelope; `panel` restores the
-root `kind` and `status` the checks read. The schema is the one `GET /api/search/schema`
+root `kind` and `status` the checks read. The schema is the one `GET /api/search/json-schema`
 serves. A Spec's served StatVars are the members the golden stores beside it
 (`sentence_facts`), which `panel_members` answers as the members door would.
 """

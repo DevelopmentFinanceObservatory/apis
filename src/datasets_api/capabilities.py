@@ -1,4 +1,4 @@
-"""Build the mutable deployment capabilities document linked from `/schema`.
+"""Build the mutable deployment capabilities document linked from `/json-schema`.
 
 Published caps come from enforced constants. Mint input kinds and formats report dispatch
 liveness. Revision provenance is disabled. An unbound facet axis takes the default its StatVar
