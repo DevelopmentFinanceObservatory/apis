@@ -120,5 +120,6 @@ class GraphNodeReader(Protocol):
     ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
         """Read every outgoing property's targets (`->*`) as `node_arc_targets_many` reads named
         ones, each empty answer confirmed alone, uncached; `None` for a dcid the graph answers
-        with no arc. A property with no visible target is left out."""
+        with no arc. A property with no visible target is left out, and a target the graph
+        cannot resolve is one node target `UNRESOLVED_NODE`."""
         ...

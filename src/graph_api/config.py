@@ -32,7 +32,7 @@ class _GraphDefaults(BaseSettings):
 
     # Deadline of `POST /api/graph/schema/check`: its wait for the schema build and its
     # reads of up to `CHECK_MAX_READ_IDS` ids, each id the graph does not hold read alone, at
-    # most 599 POSTs.
+    # most 596 POSTs.
     schema_check_timeout_seconds: int = Field(default=30, ge=1)
 
     # Most source documents the documentation route keeps in its cache at once.
@@ -66,8 +66,10 @@ DCP_QUEUE_WAIT_WARN_SECONDS: float = 1.0
 # `Retry-After`.
 GRAPH_SCHEMA_CHECK_CONCURRENCY: int = 2
 
-# The schema build's flight deadline. On the dev graph the build takes 2.7 to 4.3 s over 29
-# graph requests. Requests wait `GRAPH_NODE_TIMEOUT_SECONDS` each and retry while it runs.
+# The schema build's flight deadline. The build reads nodes in chunks of 12, lists each
+# class's instances in a request of its own and lists subclasses in batches; on the dev graph
+# a cold build takes about 3.8 s over about 260 graph requests. Requests wait `GRAPH_NODE_TIMEOUT_SECONDS` each and retry while it
+# runs.
 SCHEMA_FLIGHT_TIMEOUT_SECONDS: float = 60.0
 
 # How long the Graph lifespan waits for the schema build before the instance takes traffic

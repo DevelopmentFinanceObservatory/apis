@@ -159,7 +159,7 @@ A `resolved` result has an `entity.ref`. `GET /api/v1/graph/node/{ref}` should r
 - `400 request_invalid` on the members route names the fault in its pointer: `/relation` for a list a held node lacks, `/cursor` for a cursor that belongs to another list, `/as_of` for a date asked of a membership that records none.
 - `400 request_invalid` on the check means the body breaks a size bound: more than `caps.max_check_rows` rows, a row over `caps.max_check_constraint_properties` or `caps.max_check_observation_properties`, or a string over 512 characters. A pointer such as `/rows/37/constraint_properties` names the row; send the request again without it.
 - `503 service_unavailable` is retryable. Every graph read worker was busy, or the service was still starting. On the schema routes `cause.code` says why: `schema_building` while the schema build runs, `check_busy` while two checks already run.
-- `500 internal_error` on the schema routes means the build refused the graph: a term listing reached its cap, or no node is declared by DFO. A retry does not clear it.
+- `500 internal_error` on the schema routes means the build refused the graph: a term listing reached its cap, or no node is declared by DFO. A retry within 60 s gets the same 500, and the first request after that builds again.
 
 ## Next
 

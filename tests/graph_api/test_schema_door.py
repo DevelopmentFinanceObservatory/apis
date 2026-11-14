@@ -4,6 +4,7 @@ routes, their waits, their refusals and the frozen bodies."""
 from __future__ import annotations
 
 import dataclasses
+import functools
 import json
 import threading
 import time
@@ -13,7 +14,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from dc_graph import ArcSubject
+from dc_graph import UNRESOLVED_NODE, ArcSubject, ArcTarget
 from dfo_platform.app import create_app
 from entity_resolution.membership import MembershipPolicy
 from graph_api import app as app_module
@@ -39,7 +40,7 @@ from origin_catalogue import BASE
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue, provenance_row
 
 from .conftest import FakeGraphNodeReader, make_client, wait_until
-from .schema_fixture import STAMP, index_of, index_row, node_targets
+from .schema_fixture import STAMP, TERMS, index_of, index_row, listing, node_targets
 
 _DFO = "provenance/DFOOntology"
 _DOCUMENT = "/api/graph/schema"
@@ -369,6 +370,52 @@ def test_a_refusal_answers_500_and_is_kept_only_under_a_known_generation(
     assert graph.raised == builds
 
 
+def test_a_kept_refusal_expires_and_the_next_request_builds_again(
+    generation, monkeypatch: pytest.MonkeyPatch
+):
+    clock = [0.0]
+    monkeypatch.setattr(
+        app_module,
+        "new_schema_cache",
+        functools.partial(schema_door.new_schema_cache, clock=lambda: clock[0]),
+    )
+    graph = _RaisingReader(SchemaNoDfoDeclarationError(3))
+    builds: list[int] = []
+
+    with make_client(graph=graph) as client:
+        for at in (0.0, schema_door.SCHEMA_REFUSAL_TTL_SECONDS - 1, 0.0):
+            clock[0] += at
+            response = client.get(_DOCUMENT)
+            assert response.status_code == 500, response.text
+            builds.append(graph.raised)
+        clock[0] = schema_door.SCHEMA_REFUSAL_TTL_SECONDS + 1
+        response = client.get(_DOCUMENT)
+        builds.append(graph.raised)
+
+    assert response.status_code == 500, response.text
+    assert builds == [1, 1, 1, 2]
+
+
+def test_a_built_document_outlives_the_refusal_lifetime(
+    generation, monkeypatch: pytest.MonkeyPatch
+):
+    clock = [0.0]
+    monkeypatch.setattr(
+        app_module,
+        "new_schema_cache",
+        functools.partial(schema_door.new_schema_cache, clock=lambda: clock[0]),
+    )
+    graph = _graph()
+
+    with make_client(graph=graph) as client:
+        first = client.get(_DOCUMENT)
+        clock[0] = schema_door.SCHEMA_REFUSAL_TTL_SECONDS + 1
+        later = client.get(_DOCUMENT)
+
+    assert [first.status_code, later.status_code] == [200, 200]
+    assert _builds(graph) == 1
+
+
 class _FailingOnceReader(FakeGraphNodeReader):
     """Raises on the first build's first read and serves every later one."""
 
@@ -606,6 +653,92 @@ class _BlockingCheckReader(FakeGraphNodeReader):
             individual_probe_budget=individual_probe_budget,
             deadline=deadline,
         )
+
+
+_NEW_TERMS = {
+    "rangedProp": ("Property", (_DFO,)),
+    "RangeClass": ("Class", (_DFO,)),
+    "DocClass": ("Class", (_DFO,)),
+    "rangedOrUnread": ("Property", (_DFO,)),
+    "domainedOrUnread": ("Property", (_DFO,)),
+}
+_MARKED_TERMS = {**TERMS, **_NEW_TERMS}
+_MARKED_NODES = {
+    **_NODES,
+    "rangedProp": {"typeOf": ("Property",), "rangeIncludes": ("RangeClass",)},
+    "RangeClass": {"typeOf": ("Class",), "subClassOf": ("Thing",)},
+    "DocClass": {"typeOf": ("Class",), "subClassOf": ("Thing",)},
+    "DocVal": {"typeOf": ("DocClass",)},
+    "rangedOrUnread": {"typeOf": ("Property",), "rangeIncludes": ("RangeClass", UNRESOLVED_NODE)},
+    "domainedOrUnread": {
+        "typeOf": ("Property",),
+        "domainIncludes": ("FinancialFlow", UNRESOLVED_NODE),
+    },
+}
+
+
+def _marked_graph() -> FakeGraphNodeReader:
+    """The door's graph with a DFO property ranged on `RangeClass` and a DFO class `DocClass`
+    whose `subClassOf` holds `Thing` and a target the graph cannot resolve."""
+    targets = node_targets(_MARKED_NODES, _MARKED_TERMS)
+    targets["DocClass"] = {
+        **targets["DocClass"],
+        "subClassOf": (*targets["DocClass"]["subClassOf"], ArcTarget(value=UNRESOLVED_NODE)),
+    }
+    return FakeGraphNodeReader(
+        nodes=_MARKED_NODES,
+        arc_subjects={
+            **_ARC_SUBJECTS,
+            **{
+                (kind, "typeOf"): (
+                    *_ARC_SUBJECTS[(kind, "typeOf")],
+                    *listing(kind, _NEW_TERMS),
+                )
+                for kind in ("Class", "Property")
+            },
+        },
+        arc_targets=targets,
+    )
+
+
+def test_the_check_judges_by_the_builds_records(generation):
+    """`DocVal`'s type `DocClass` misses `rangedProp`'s range, which the build records as
+    closed, so `DocVal` is outside it. `DocClass`'s parent the graph cannot resolve, which the
+    build records, leaves its ancestry incomplete, so as a population type it gets no domain
+    finding though its resolved ancestry misses `crsPurpose`'s domain."""
+    ranged = {**_check_row("CRSPurposeCode120"), "constraint_properties": {"rangedProp": "DocVal"}}
+    populated = {**_check_row("CRSPurposeCode120"), "population_type": "DocClass"}
+
+    with make_client(graph=_marked_graph()) as client:
+        document = client.get(_DOCUMENT).json()
+        response = client.post(_CHECK, json={"rows": [ranged, populated]})
+
+    assert response.status_code == 200, response.text
+    doc_class = next(node for node in document["nodes"] if node["ref"] == "DocClass")
+    assert doc_class["sub_class_of"] == ["Thing"]
+    assert [(f["row"], f["value"], f["code"]) for f in response.json()["findings"]] == [
+        (0, "DocVal", "value_outside_range")
+    ]
+
+
+def test_the_check_judges_by_the_builds_unresolved_range_and_domain_targets(generation):
+    """`rangedOrUnread` ranges on the closed `RangeClass` and a target the graph cannot resolve,
+    so `DocVal`, outside `RangeClass`, is not judged. `domainedOrUnread`'s domain holds
+    `FinancialFlow` and an unresolved target, so as the measured property of a row whose
+    population type `Thing` misses `FinancialFlow` it gets no domain finding."""
+    ranged = {
+        **_check_row("CRSPurposeCode120"),
+        "constraint_properties": {"rangedOrUnread": "DocVal"},
+    }
+    domained = {"population_type": "Thing", "measured_property": "domainedOrUnread"}
+
+    with make_client(graph=_marked_graph()) as client:
+        response = client.post(_CHECK, json={"rows": [ranged, domained]})
+
+    assert response.status_code == 200, response.text
+    assert [(f["row"], f["value"], f["code"]) for f in response.json()["findings"]] == [
+        (0, "DocVal", "range_not_judged")
+    ]
 
 
 class TestCheck:
@@ -873,9 +1006,9 @@ class TestCheck:
         built: list[object] = []
         build = SchemaLookup.of
 
-        def counting(document):
+        def counting(document, **marks):
             built.append(document)
-            return build(document)
+            return build(document, **marks)
 
         monkeypatch.setattr(schema_door.SchemaLookup, "of", counting)
 

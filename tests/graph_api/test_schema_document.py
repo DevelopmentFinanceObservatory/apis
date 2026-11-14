@@ -11,9 +11,10 @@ from collections.abc import Callable
 import pytest
 
 from code_index import CodeIndex
-from dc_graph import ArcSubject, ArcTarget, GraphReadError
+from dc_graph import UNRESOLVED_NODE, ArcSubject, ArcTarget, GraphReadError, parse_arc_targets
 from graph_api import schema_document
 from graph_api.schema_document import (
+    Schema,
     SchemaListingTruncatedError,
     SchemaNoDfoDeclarationError,
     build_schema,
@@ -39,6 +40,7 @@ from .schema_fixture import (
     listing,
     node_targets,
     schema_graph,
+    subclass_subjects,
 )
 
 _DEADLINE = 1_000.0
@@ -266,6 +268,7 @@ def _range_graph(
     graph = FakeGraphNodeReader(
         nodes=_RANGE_NODES,
         arc_subjects={
+            **subclass_subjects(_RANGE_NODES, _RANGE_TERMS),
             **arc_subjects(terms=_RANGE_TERMS),
             ("Unit", "typeOf"): units if unit_subjects is None else unit_subjects,
             ("BaseRanged", "typeOf"): (
@@ -313,6 +316,167 @@ def test_only_dfo_ranges_of_dfo_properties_and_base_enumerations_are_value_lists
     gender = nodes["GenderType"].instances
     assert gender is not None
     assert (gender.refs, gender.complete) == (["Female"], False)
+
+
+def _range_schema(graph: object, index: CodeIndex) -> Schema:
+    return build_schema(
+        reader=graph,  # type: ignore[arg-type]
+        code_index=index,
+        catalogue=CATALOGUE,
+        generation="g1",
+        deadline=_DEADLINE,
+    )
+
+
+def test_a_base_range_within_the_cap_joins_the_document_and_is_closed() -> None:
+    graph, index = _range_graph()
+
+    schema = _range_schema(graph, index)
+
+    nodes = {node.ref: node for node in schema.document.nodes}
+    # No read but `Thing`'s descendant listing reaches UnusedBaseClass.
+    assert nodes["UnusedBaseClass"].sub_class_of == ["Thing"]
+    # The DFO ranges, and the base ranges whose every descendant the document holds; the
+    # graph holds no `Number`.
+    assert schema.closed_ranges == {"CRSPurposeCodeEnum", "Denomination", "Region", "Thing"}
+    # A base range's instances stay out.
+    assert "country/KEN" not in nodes
+
+
+def test_a_base_range_past_the_cap_adds_none_of_its_classes_and_is_not_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(schema_document, "RANGE_CLOSURE_CAP", 3)
+    fake, index = _range_graph()
+    graph = _Recorder(fake)
+
+    schema = _range_schema(graph, index)
+
+    nodes = {node.ref: node for node in schema.document.nodes}
+    assert "UnusedBaseClass" not in nodes
+    assert schema.closed_ranges == {"CRSPurposeCodeEnum", "Denomination", "Region"}
+    # `Thing`'s first listing finds five subclasses, past the cap, so it is listed once and
+    # no class below it is listed for it.
+    listed = [dcid for chunk in _subclass_listings(graph) for dcid in chunk]
+    assert listed.count("Thing") == 1
+    assert not {"Intangible", "UnusedBaseClass", "BaseRanged"} & set(listed)
+
+
+@pytest.mark.parametrize(
+    ("cap", "closed"), [pytest.param(0, False, id="truncated"), pytest.param(1, True, id="at")]
+)
+def test_a_dfo_range_whose_subclass_listing_is_truncated_is_not_closed(
+    cap: int, closed: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(schema_document, "SUBCLASS_LISTING_CAP", cap)
+    graph, index = _range_graph()
+
+    schema = _range_schema(graph, index)
+
+    # Denomination has one subclass, Unit, which has none.
+    assert ("Denomination" in schema.closed_ranges) is closed
+
+
+def test_a_base_range_whose_subclass_listing_is_truncated_adds_none_of_its_classes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`Area`, a base range within `RANGE_CLOSURE_CAP`, has two subclasses no other read
+    reaches. Its listing capped at one subject leaves its tree partial, so neither joins."""
+    monkeypatch.setattr(schema_document, "SUBCLASS_LISTING_CAP", 1)
+    terms = {**_RANGE_TERMS, "inArea": ("Property", (DFO,)), "Area": ("Class", (SCHEMA,))}
+    nodes = {
+        **_RANGE_NODES,
+        "inArea": {"typeOf": ("Property",), "rangeIncludes": ("Area",)},
+        "Area": {"typeOf": ("Class",), "subClassOf": ("Thing",)},
+        "AreaA": {"typeOf": ("Class",), "subClassOf": ("Area",)},
+        "AreaB": {"typeOf": ("Class",), "subClassOf": ("Area",)},
+    }
+    graph = FakeGraphNodeReader(
+        nodes=nodes,
+        arc_subjects={**subclass_subjects(nodes, terms), **arc_subjects(terms=terms)},
+        arc_targets=node_targets(nodes, terms),
+    )
+
+    schema = _range_schema(graph, INDEX)
+
+    held = {node.ref for node in schema.document.nodes}
+    assert "Area" in held
+    assert not {"AreaA", "AreaB"} & held
+    assert "Area" not in schema.closed_ranges
+
+
+_GROUP_TERMS = {
+    **TERMS,
+    "BeneficiaryGroupEnum": ("Class", (DFO,)),
+    "AgeGroup": ("Class", (SCHEMA,)),
+    "YouthGroup": ("Class", (SCHEMA,)),
+}
+
+_GROUP_NODES = {
+    **NODES,
+    "beneficiaryGender": {**NODES["beneficiaryGender"], "rangeIncludes": ("BeneficiaryGroupEnum",)},
+    "BeneficiaryGroupEnum": {"typeOf": ("Class",), "subClassOf": ("Enumeration",)},
+    "GenderType": {"typeOf": ("Class",), "subClassOf": ("BeneficiaryGroupEnum",)},
+    "Refugees": {"typeOf": ("BeneficiaryGroupEnum",)},
+    "AgeGroup": {"typeOf": ("Class",), "subClassOf": ("BeneficiaryGroupEnum",)},
+    "YouthGroup": {"typeOf": ("Class",), "subClassOf": ("AgeGroup",)},
+}
+
+
+def _group_nodes() -> dict[str, SchemaNode]:
+    """The fixture graph with a DFO value list `BeneficiaryGroupEnum` holding one instance of
+    its own above the base `GenderType`, whose instances no StatVar row uses, and the base
+    chain `YouthGroup` under `AgeGroup`, which no read but a subclass listing reaches."""
+    graph = FakeGraphNodeReader(
+        nodes=_GROUP_NODES,
+        arc_subjects={
+            **subclass_subjects(_GROUP_NODES, _GROUP_TERMS),
+            **arc_subjects(terms=_GROUP_TERMS),
+            ("BeneficiaryGroupEnum", "typeOf"): (
+                ArcSubject(dcid="Refugees", names=("Refugees",), provenances=(DFO,)),
+            ),
+        },
+        arc_targets=node_targets(_GROUP_NODES, _GROUP_TERMS),
+    )
+    index = index_of(index_row("Amount_CRS12220", {"crsPurpose": "CRSPurposeCode12220"}))
+    return _nodes(graph, index)
+
+
+def test_a_dfo_value_list_with_an_unread_base_subclass_is_not_complete() -> None:
+    nodes = _group_nodes()
+
+    # Only the subclass listing reaches GenderType: no StatVar row uses Female or Male.
+    assert "GenderType" in nodes
+    assert "Female" not in nodes
+    group = nodes["BeneficiaryGroupEnum"].instances
+    assert group is not None
+    assert (group.refs, group.complete) == (["Refugees"], False)
+
+
+def test_a_dfo_value_list_reads_every_level_of_its_descendants() -> None:
+    nodes = _group_nodes()
+
+    assert nodes["YouthGroup"].sub_class_of == ["AgeGroup"]
+    assert nodes["AgeGroup"].sub_class_of == ["BeneficiaryGroupEnum"]
+
+
+@pytest.mark.parametrize(
+    ("cap", "complete"), [pytest.param(0, False, id="over-the-cap"), pytest.param(1, True, id="at")]
+)
+def test_a_value_list_whose_subclass_listing_is_truncated_is_not_complete(
+    cap: int, complete: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(schema_document, "SUBCLASS_LISTING_CAP", cap)
+
+    nodes = _nodes(schema_graph())
+
+    # FinancingPurposeEnum has one subclass, CRSPurposeCodeEnum, which has none.
+    purpose = nodes["FinancingPurposeEnum"].instances
+    assert purpose is not None
+    assert purpose.complete is complete
+    crs = nodes["CRSPurposeCodeEnum"].instances
+    assert crs is not None
+    assert crs.complete is True
 
 
 @pytest.mark.parametrize(
@@ -417,6 +581,39 @@ def test_every_other_property_a_node_holds_is_served_typed_and_sorted() -> None:
     # holds an empty map.
     assert nodes["CRSPurposeCode120"].classification_code == ["120"]
     assert nodes["Female"].other_properties == {}
+
+
+_SAME_TEXT_NODE = {"dcid": "sameText", "name": "Same text", "provenanceId": "provenance/A"}
+_SAME_TEXT_LITERAL = {"value": "sameText", "provenanceId": "provenance/B"}
+
+
+@pytest.mark.parametrize(
+    "entries",
+    [
+        pytest.param([_SAME_TEXT_NODE, _SAME_TEXT_LITERAL], id="node-first"),
+        pytest.param([_SAME_TEXT_LITERAL, _SAME_TEXT_NODE], id="literal-first"),
+    ],
+)
+def test_a_node_and_a_literal_with_the_same_text_are_two_targets(entries: list[dict]) -> None:
+    """From the wire, through `parse_arc_targets`, to the served node: each target keeps its
+    own provenances, `other_properties` serves both, and a named property lists the text
+    once."""
+    wire = {"combinesMethods": {"nodes": entries}, "alternateName": {"nodes": entries}}
+
+    parsed = parse_arc_targets(wire, ["combinesMethods", "alternateName"])
+    crs = node_targets(NODES)["CRSPurposeCode120"]
+    nodes = _nodes(schema_graph(arc_targets={"CRSPurposeCode120": {**crs, **parsed}}))
+
+    node = ArcTarget(value="sameText", name="Same text", provenances=("provenance/A",))
+    literal = ArcTarget(value="sameText", provenances=("provenance/B",), literal=True)
+    assert parsed["combinesMethods"] == tuple(
+        literal if "value" in entry else node for entry in entries
+    )
+    served = nodes["CRSPurposeCode120"].model_dump(mode="json")
+    assert served["other_properties"] == {
+        "combinesMethods": [{"ref": "sameText"}, {"value": "sameText"}]
+    }
+    assert served["alternate_name"] == ["sameText"]
 
 
 def test_an_other_property_value_is_one_string_member() -> None:
@@ -601,6 +798,38 @@ def test_terms_list_every_class_and_property() -> None:
     )
 
 
+def test_an_unresolved_target_changes_no_served_byte_and_is_recorded() -> None:
+    unresolved = ArcTarget(value=UNRESOLVED_NODE, provenances=(_OTHER,))
+    targets = node_targets(NODES)
+    marked = {
+        "Female": {"typeOf": (*targets["Female"]["typeOf"], unresolved)},
+        "GenderType": {
+            **targets["GenderType"],
+            "subClassOf": (*targets["GenderType"]["subClassOf"], unresolved),
+        },
+        # `grantEquivalent` ranges on `Number`, which the plain graph does not hold.
+        "Number": {"typeOf": (unresolved,), "subClassOf": (unresolved,)},
+    }
+
+    plain, with_marks = (
+        build_schema(
+            reader=graph, code_index=INDEX, catalogue=CATALOGUE, generation="g1", deadline=_DEADLINE
+        )
+        for graph in (schema_graph(), schema_graph(arc_targets=marked))
+    )
+
+    assert with_marks.document.model_dump_json() == plain.document.model_dump_json()
+    assert with_marks.terms.model_dump_json() == plain.terms.model_dump_json()
+    assert (plain.unresolved_types, plain.unresolved_parents) == (frozenset(), frozenset())
+    assert (with_marks.unresolved_types, with_marks.unresolved_parents) == (
+        {"Female", "Number"},
+        {"GenderType", "Number"},
+    )
+    # A node answered only with unresolved targets is neither held nor absent.
+    assert "Number" in plain.absent
+    assert with_marks.absent == plain.absent - {"Number"}
+
+
 def test_two_builds_from_reordered_graphs_serialise_to_the_same_bytes() -> None:
     reordered_terms = dict(reversed(TERMS.items()))
     reordered_nodes = {
@@ -626,8 +855,8 @@ def test_two_builds_from_reordered_graphs_serialise_to_the_same_bytes() -> None:
 
 class _Recorder:
     """Pass every read to `reader` from any thread, recording each call's method, first
-    argument and deadline, after waiting `delay(call)` seconds, where `call` is the method and
-    first argument, and raising `fail(call)` where it returns an error."""
+    argument, listed property and deadline, after waiting `delay(call)` seconds, where `call`
+    is the method and first argument, and raising `fail(call)` where it returns an error."""
 
     def __init__(
         self,
@@ -641,6 +870,7 @@ class _Recorder:
         self._fail = fail
         self._lock = threading.Lock()
         self.started: list[tuple[str, object]] = []
+        self.properties: list[object] = []
         self.landed: list[tuple[str, object]] = []
         self.deadlines: list[float | None] = []
 
@@ -651,6 +881,7 @@ class _Recorder:
             call = (name, first)
             with self._lock:
                 self.started.append(call)
+                self.properties.append(kwargs.get("property"))
                 self.deadlines.append(kwargs.get("deadline"))  # type: ignore[arg-type]
             time.sleep(self._delay(call))
             if (error := self._fail(call)) is not None:
@@ -663,6 +894,15 @@ class _Recorder:
         return record
 
 
+def _subclass_listings(graph: _Recorder) -> list[tuple[str, ...]]:
+    """The classes of each `<-subClassOf` listing request `graph` started."""
+    return [
+        dcids  # type: ignore[misc]
+        for (method, dcids), prop in zip(graph.started, graph.properties, strict=True)
+        if method == "node_arc_subjects_many" and prop == "subClassOf"
+    ]
+
+
 def _build(graph: object, index: CodeIndex = INDEX) -> str:
     schema = build_schema(
         reader=graph,  # type: ignore[arg-type]
@@ -671,7 +911,13 @@ def _build(graph: object, index: CodeIndex = INDEX) -> str:
         generation="g1",
         deadline=_DEADLINE,
     )
-    return schema.document.model_dump_json() + "\n" + schema.terms.model_dump_json()
+    return "\n".join(
+        (
+            schema.document.model_dump_json(),
+            schema.terms.model_dump_json(),
+            json.dumps(sorted(schema.closed_ranges)),
+        )
+    )
 
 
 _LARGE_TERMS = {
@@ -683,15 +929,40 @@ _LARGE_TERMS = {
     "LateDenomination": ("Class", (DFO,)),
     "MidUnit": ("Class", (SCHEMA,)),
     "LateUnit": ("Class", (DFO,)),
+    "GroupEnum": ("Class", (DFO,)),
+    "BaseGroup": ("Class", (SCHEMA,)),
+    "BaseSubGroup": ("Class", (SCHEMA,)),
 }
 
 
-def _large_graph() -> tuple[FakeGraphNodeReader, CodeIndex]:
+_RANGED_TERMS = {
+    "rangedOnThing": ("Property", (DFO,)),
+    "rangedOnPlace": ("Property", (DFO,)),
+    "Place": ("Class", (SCHEMA,)),
+    "Country": ("Class", (SCHEMA,)),
+    "City": ("Class", (SCHEMA,)),
+}
+
+_RANGED_NODES = {
+    "rangedOnThing": {"typeOf": ("Property",), "rangeIncludes": ("Thing",)},
+    "rangedOnPlace": {"typeOf": ("Property",), "rangeIncludes": ("Place",)},
+    "Place": {"typeOf": ("Class",), "subClassOf": ("Thing",)},
+    "Country": {"typeOf": ("Class",), "subClassOf": ("Place",)},
+    "City": {"typeOf": ("Class",), "subClassOf": ("Country",)},
+}
+
+
+def _large_graph(*, ranged: bool = False) -> tuple[FakeGraphNodeReader, CodeIndex]:
     """The fixture graph with fifty more DFO properties, each used by an index row with its own
     value, so the seed takes several node reads, a DFO enumeration `SubPurposeEnum` whose
     chain reaches `Enumeration` only through the base `BasePurposeEnum`, a level after the
     fixture's enumerations do, and a DFO class `LateUnit` that lists in full as a subclass of
-    the DFO range `LateDenomination` only once its base parent `MidUnit` is read."""
+    the DFO range `LateDenomination` only once its base parent `MidUnit` is read, and a DFO
+    enumeration `GroupEnum` above the base chain `BaseSubGroup` under `BaseGroup`, which only
+    its subclass listings reach. With `ranged`, DFO properties range on the base `Thing`,
+    with four direct subclasses, and on the base `Place`, with the chain `City` under
+    `Country` under it."""
+    terms = {**_LARGE_TERMS, **(_RANGED_TERMS if ranged else {})}
     nodes = {
         **NODES,
         **{
@@ -707,12 +978,17 @@ def _large_graph() -> tuple[FakeGraphNodeReader, CodeIndex]:
         "MidUnit": {"typeOf": ("Class",), "subClassOf": ("LateDenomination",)},
         "LateUnit": {"typeOf": ("Class",), "subClassOf": ("MidUnit",)},
         "LateUnit1": {"typeOf": ("LateUnit",)},
+        "GroupEnum": {"typeOf": ("Class",), "subClassOf": ("Enumeration",)},
+        "BaseGroup": {"typeOf": ("Class",), "subClassOf": ("GroupEnum",)},
+        "BaseSubGroup": {"typeOf": ("Class",), "subClassOf": ("BaseGroup",)},
+        **(_RANGED_NODES if ranged else {}),
     }
     rows = [index_row(f"Extra{i}", {f"extraProperty{i}": f"extraValue{i}"}) for i in range(50)]
     graph = FakeGraphNodeReader(
         nodes=nodes,
         arc_subjects={
-            **arc_subjects(terms=_LARGE_TERMS),
+            **subclass_subjects(nodes, terms),
+            **arc_subjects(terms=terms),
             ("SubPurposeEnum", "typeOf"): (
                 ArcSubject(dcid="SubPurpose1", names=("Sub purpose",), provenances=(DFO,)),
             ),
@@ -720,7 +996,7 @@ def _large_graph() -> tuple[FakeGraphNodeReader, CodeIndex]:
                 ArcSubject(dcid="LateUnit1", names=("Late unit",), provenances=(DFO,)),
             ),
         },
-        arc_targets=node_targets(nodes, _LARGE_TERMS),
+        arc_targets=node_targets(nodes, terms),
     )
     return graph, index_of(*INDEX.statvars, *rows)
 
@@ -736,17 +1012,93 @@ def test_each_node_is_read_once_and_each_dfo_class_listed_once() -> None:
     assert len(read) == len(set(read))
     assert {"extraValue49", "Thing", "CRSPurposeCode120", "SubPurpose1", "LateUnit1"} <= set(read)
     assert max(len(dcids) for dcids in node_reads) == 12  # type: ignore[arg-type]
-    listings = sorted(dcid for method, dcid in graph.started if method == "node_arc_subjects")
+    listings = sorted(
+        [
+            *(
+                (str(prop), str(dcid))
+                for (method, dcid), prop in zip(graph.started, graph.properties, strict=True)
+                if method == "node_arc_subjects"
+            ),
+            *(("subClassOf", dcid) for chunk in _subclass_listings(graph) for dcid in chunk),
+        ]
+    )
     dfo_classes = [
         dcid
         for dcid, (kind, provenances) in _LARGE_TERMS.items()
         if provenances == (DFO,) and kind == "Class"
     ]
-    assert listings == sorted(["Class", "Property", *dfo_classes])
+    # Each DFO value list and each descendant its subclass listings find is listed once.
+    descendants = [
+        "Number",  # a base range with no subclass
+        "BaseGroup",
+        "BaseSubGroup",
+        "CRSPurposeCodeEnum",
+        "FinancingPurposeEnum",
+        "GroupEnum",
+        "LateDenomination",
+        "LateUnit",
+        "MidUnit",
+        "SubPurposeEnum",
+    ]
+    assert listings == sorted(
+        [
+            ("typeOf", "Class"),
+            ("typeOf", "Property"),
+            *(("typeOf", dcid) for dcid in dfo_classes),
+            *(("subClassOf", dcid) for dcid in descendants),
+        ]
+    )
     assert {method for method, _ in graph.started} == {
         "node_all_arc_targets_many",
         "node_arc_subjects",
+        "node_arc_subjects_many",
     }
+
+
+_WIDE = tuple(f"Wide{i:02d}" for i in range(30))
+
+
+@pytest.mark.parametrize(
+    ("parent", "terms", "nodes"),
+    [
+        pytest.param(
+            "WideEnum",
+            {"WideEnum": ("Class", (DFO,))},
+            {"WideEnum": {"typeOf": ("Class",), "subClassOf": ("Enumeration",)}},
+            id="dfo-value-list",
+        ),
+        pytest.param(
+            "WideBase",
+            {"rangedOnWide": ("Property", (DFO,)), "WideBase": ("Class", (SCHEMA,))},
+            {
+                "rangedOnWide": {"typeOf": ("Property",), "rangeIncludes": ("WideBase",)},
+                "WideBase": {"typeOf": ("Class",), "subClassOf": ("Thing",)},
+            },
+            id="base-range",
+        ),
+    ],
+)
+def test_a_level_of_subclasses_is_listed_in_chunks(
+    parent: str,
+    terms: dict[str, tuple[str, tuple[str, ...]]],
+    nodes: dict[str, dict[str, tuple[str, ...]]],
+) -> None:
+    """The 30 subclasses `parent`'s listing finds, none with a subclass, are listed in
+    ceil(30 / 12) requests."""
+    graph_nodes = {
+        **NODES,
+        **nodes,
+        **{dcid: {"typeOf": ("Class",), "subClassOf": (parent,)} for dcid in _WIDE},
+    }
+    graph = _Recorder(schema_graph(terms={**TERMS, **terms}, nodes=graph_nodes))
+
+    nodes_read = json.loads(_build(graph).split("\n")[0])["nodes"]
+
+    wide = [chunk for chunk in _subclass_listings(graph) if set(chunk) & set(_WIDE)]
+    chunk = schema_document._NODE_READ_CHUNK
+    assert sorted(len(listing) for listing in wide) == [6, chunk, chunk]
+    assert sorted(dcid for listing in wide for dcid in listing) == list(_WIDE)
+    assert set(_WIDE) <= {node["ref"] for node in nodes_read}
 
 
 def _reversed(call: tuple[str, object], calls: dict[tuple[str, object], int]) -> float:
@@ -756,16 +1108,31 @@ def _reversed(call: tuple[str, object], calls: dict[tuple[str, object], int]) ->
 
 
 @pytest.mark.parametrize(
+    "ranged",
+    [
+        pytest.param(False, id="dfo-ranges"),
+        # `Thing`'s first listing passes the cap of 3 and `Place`'s closure stays within it.
+        pytest.param(True, id="base-ranges"),
+    ],
+)
+@pytest.mark.parametrize(
     "order", ["term-listings-last", "instance-listings-last", "reversed", "seed-1", "seed-2"]
 )
 def test_answers_arriving_in_any_order_build_the_same_bytes(
-    order: str, monkeypatch: pytest.MonkeyPatch
+    order: str, ranged: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    fake, index = _large_graph()
+    monkeypatch.setattr(schema_document, "RANGE_CLOSURE_CAP", 3)
+    fake, index = _large_graph(ranged=ranged)
     with monkeypatch.context() as serial:
         serial.setattr(schema_document, "BUILD_CONCURRENCY", 1)
         reference = _build(_Recorder(fake), index)
-    nodes = {node["ref"]: node for node in json.loads(reference.split("\n")[0])["nodes"]}
+    document, _, closed = reference.split("\n")
+    nodes = {node["ref"]: node for node in json.loads(document)["nodes"]}
+    if ranged:
+        assert {"Country", "City"} <= nodes.keys()
+        assert "UnusedBaseClass" not in nodes
+        assert "Place" in json.loads(closed)
+        assert "Thing" not in json.loads(closed)
     assert nodes["SubPurposeEnum"]["instances"]["refs"] == ["SubPurpose1"]
     assert "SubPurpose1" in nodes
     # MidUnit is base, so it lists only the used instances, and none are; LateDenomination
@@ -774,6 +1141,10 @@ def test_answers_arriving_in_any_order_build_the_same_bytes(
     assert nodes["LateUnit"]["instances"] == {"refs": ["LateUnit1"], "complete": True}
     assert nodes["LateDenomination"]["instances"] == {"refs": ["LateUnit1"], "complete": False}
     assert "LateUnit1" in nodes
+    # Only GroupEnum's subclass listings reach its base descendants, which leave it incomplete
+    # with no instance, so it lists nothing.
+    assert nodes["BaseSubGroup"]["sub_class_of"] == ["BaseGroup"]
+    assert nodes["GroupEnum"]["instances"] is None
     jitter = random.Random(order)
     calls: dict[tuple[str, object], int] = {}
     delays: dict[str, Callable[[tuple[str, object]], float]] = {

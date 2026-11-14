@@ -70,11 +70,10 @@ everything else about a row's content as a finding.
 `SchemaCheckResponse` answers with the generation the rows were checked against, null where
 its token is unknown, `rows_checked`, the count of rows checked from the first, and every
 finding in the rows checked. A caller resumes at `rows_checked` when it is less than the rows
-sent. The check stops before the row that would take
-its reads from the graph, ancestry included, past `CHECK_MAX_READ_IDS` distinct ids, its
-findings past
-`CHECK_MAX_FINDINGS` or its encoded body past `CHECK_MAX_BODY_BYTES`; the first row is always
-taken, so every response checks at least one row.
+sent. The check stops before the row that would take its reads from the graph past
+`CHECK_MAX_READ_IDS` distinct ids, its findings past `CHECK_MAX_FINDINGS` or its encoded body
+past `CHECK_MAX_BODY_BYTES`; the first row is always taken, so every response checks at least
+one row.
 """
 
 from __future__ import annotations
@@ -107,48 +106,36 @@ served code index carries (2 on the dev graph)."""
 
 CHECK_MAX_ROW_NAMED_IDS = 5 + 2 * CHECK_MAX_CONSTRAINT_PROPERTIES + CHECK_MAX_OBSERVATION_PROPERTIES
 """The most distinct ids one check row names for a read, 41: its 5 shape fields, each
-constraint property and its value, and each observation property."""
-
-CHECK_MAX_ROW_ANCESTRY_IDS = 40
-"""The most `subClassOf` ancestors outside the schema document one check row reads for the
-types of its values: room for two outside ancestors under each of 16 values, with 8 to spare.
-On the dev graph `CHF`'s chain holds two, `Currency` and `CurrencyUnitOfMeasure`. A row whose
-chains hold more is checked only as the first row of a check, and the types whose chains it
-leaves unread get no range verdict."""
-
-CHECK_MAX_ROW_READ_IDS = CHECK_MAX_ROW_NAMED_IDS + CHECK_MAX_ROW_ANCESTRY_IDS
-"""The most distinct ids one check row reads from the graph, 81: the ids it names and the
-ancestors of its values' types."""
+constraint property and its value, and each observation property. These are every id a row
+reads from the graph."""
 
 CHECK_MAX_READ_IDS = 200
 """The most distinct ids one check reads from the graph, an internal budget the wire does not
 publish. It counts the ids the rows name that the schema document does not hold, each
 constraint value counted unless it is a literal or its property a document node that is no
-Property, before any read (`graph_api.schema_check.plan_reads`), and the `subClassOf`
-ancestors outside the document that the range rule then reads for the rows' value types. The
-check takes rows from the first while their named ids, plus `CHECK_MAX_ROW_ANCESTRY_IDS` held
-back once a row taken may read ancestry, stay within the budget. It then reads ancestry in row
-order and stops before the first row whose ancestry passes what is left or
-`CHECK_MAX_ROW_ANCESTRY_IDS`, and answers where to resume. A row counts as checked only when
-every read it needs was done. The budget is at least `CHECK_MAX_ROW_READ_IDS`, so the first
-row always gets its reads and every check takes at least one row.
+Property, before any read (`graph_api.schema_check.plan_reads`). The check takes rows from
+the first while their ids stay within the budget, and answers where to resume. The budget is
+at least `CHECK_MAX_ROW_NAMED_IDS`, so the first row always gets its reads and every check
+takes at least one row.
 
-The check reads its planned ids in one `node_arcs_many` call, and each level of ancestry in
-one more (`graph_api.schema_check` counts the POSTs): a batch POST per 50 ids, then each id
-answered empty read alone, 16 at a time. The worst check names 200 ids the graph does not
-hold, 204 POSTs in 13 rounds of 16. On the dev graph that took 2.6 to 4.4 s over eight runs
-(POST median 170 to 210 ms), against 7.8 to 8.7 s for 41 ids read one at a time before the probes ran concurrently. Two checks at once, or other
-node readers holding the client's 32 node slots, can halve the width to about 9 s, and a wait
-for a cold schema build adds about 6.5 s, which leaves the worst check near 16 s, half of the
-30 s `GRAPH_SCHEMA_CHECK_TIMEOUT_SECONDS`. The other half covers 5xx retries (0.5 s and 2 s
-backoffs) and slower graph answers."""
+The check reads its planned ids in one `node_arcs_many` call (`graph_api.schema_check` counts
+the POSTs): a batch POST per 50 ids, then each id answered empty read alone, 16 at a time.
+The worst check names 200 ids the graph does not hold, 204 POSTs in 13 rounds of 16. On the
+dev graph that took 2.6 to 4.4 s over eight runs (POST median 170 to 210 ms), against 7.8 to
+8.7 s for 41 ids read one at a time before the probes ran concurrently. Two checks at once, or
+other node readers holding the client's 32 node slots, can halve the width to about 9 s, and a
+wait for a cold schema build adds about 3.8 s, which leaves the worst check near 13 s, under
+half of the 30 s `GRAPH_SCHEMA_CHECK_TIMEOUT_SECONDS`. The rest covers 5xx retries (0.5 s and
+2 s backoffs) and slower graph answers."""
 
 CHECK_MAX_FINDINGS = 2_000
 """The most findings one check answers, an internal cap the wire does not publish. The check
-stops before the row whose findings would pass it and answers where to resume. One row yields at most 79: 5 on its shape fields, 2 on each of its 16 constraint properties (a
-domain warning and a value finding), 1 on each of its 4 observation properties, and 38
-`definition_differs` warnings (5 shape fields, each constraint property the row or a served
-StatVar of at most `CHECK_MAX_CONSTRAINT_PROPERTIES` names, the observation properties). A
+stops before the row whose findings would pass it and answers where to resume. One row yields
+at most 79: 5 on its shape fields, 2 on each of its 16 constraint properties (a domain warning
+and one value finding, `range_not_judged` included), 1 on each of its 4 observation
+properties, and 38 `definition_differs` warnings (5 shape fields, each constraint property
+the row or a served StatVar of at most `CHECK_MAX_CONSTRAINT_PROPERTIES` names, the
+observation properties). A
 row whose `dcid` is outside dcid syntax gets one finding on it and no `definition_differs`.
 Every check takes at least one row."""
 
@@ -380,6 +367,7 @@ FindingCode = Literal[
     "not_a_property",
     "not_a_class",
     "value_outside_range",
+    "range_not_judged",
     "property_outside_domain",
     "definition_differs",
 ]
@@ -398,11 +386,22 @@ FindingCode = Literal[
 - `not_a_property`: a constraint property, the measured property or an observation property
   is not typed `Property`.
 - `not_a_class`: the population type is not typed `Class`.
-- `value_outside_range`: the ancestry of every type of the value is known, from the schema
-  document or read from the graph, and none reaches the DFO-declared property's
-  `rangeIncludes` by `subClassOf`.
-- `property_outside_domain`: the population type is a document node that reaches none of the
-  DFO-declared property's `domainIncludes` by `subClassOf`.
+- `value_outside_range`: no type of the value is a schema document class whose
+  `subClassOf` ancestry in the document meets the DFO-declared property's `rangeIncludes`,
+  every type of the value is known, every `rangeIncludes` target resolves, and the document
+  holds the whole descendant tree of every `rangeIncludes` class, so a type outside the
+  document is no descendant of one.
+- `range_not_judged`: the value's property is a DFO-declared property with a `rangeIncludes`,
+  no type of the value the document holds reaches it, and the rule cannot rule the value out:
+  the graph answers a `typeOf` target of the value it cannot resolve, a type is an id of the
+  UN origin outside the document or an id outside dcid syntax, the graph answers a
+  `rangeIncludes` target it cannot resolve, or a `rangeIncludes` class has more descendants
+  than the document holds.
+- `property_outside_domain`: the population type is a document node whose `subClassOf`
+  ancestry in the document reaches none of the DFO-declared property's `domainIncludes` and is
+  complete: no node on it has a `subClassOf` target the graph cannot resolve, and every parent
+  it reaches is a document node or one the graph answered with nothing. Every
+  `domainIncludes` target of the property resolves.
 - `definition_differs`: the code index serves the row's dcid with another value in that cell,
   and `served` is the served value.
 

@@ -9,20 +9,34 @@ targets of every node read that is neither a Class nor a Property, and the `subC
 `subPropertyOf` parents, so the class of every value is present and every ancestor is too. One
 `node_arc_subjects` listing per DFO-declared Class reads its instances, and the instances of
 each that is a value list join the document with the same closure over their types and
-ancestors.
+ancestors. Each DFO value list's descendants are read too: the `<-subClassOf` subjects of
+each DFO value list are listed, then those of the subclasses a listing finds as soon as that
+listing lands, until no new class appears. Every subclass found joins the document with the
+same closure. `node_arc_subjects_many` lists the classes that become ready together in
+listings of at most 12 classes, each class listed once.
+
+A range class is a class the `rangeIncludes` of a DFO-declared Property names. A DFO range is a
+value list, so its descendants are listed and join as above. A base range's descendants are
+listed the same way, and they join the document with the same closure only when the listings
+cover its whole closure, none is truncated and it holds at most `RANGE_CLOSURE_CAP`
+descendants. A base range past the cap lists no more once the classes found pass it and adds
+none of its listed classes. Each class is listed once, whichever closures it is in.
+`Schema.closed_ranges` records the range classes whose whole descendant tree the document
+holds.
 
 The reads run as a pipeline, at most `BUILD_CONCURRENCY` at once: the index-named nodes are read
 while the term listings run, each node read of at most 12 dcids is expanded the moment it lands,
-every DFO Class is listed as soon as the terms are known, and a value list's instances are read
-once the nodes read make it one. The nodes read follow from the graph alone,
-so the order the answers arrive in changes nothing in the document. Each node read probes every
-empty answer: it reads each empty dcid again alone, and a dcid empty after that is absent from
-the document. The node reads are uncached, since no other
+every DFO Class's instances are listed as soon as the terms are known, a value list's instances and
+subclasses are listed and read once the nodes read make it one, and a base range's descendants
+are listed once a DFO term naming it is read. The nodes read and the closed ranges follow from
+the graph alone, so the order the answers arrive in changes nothing in the document. Each node
+read probes every empty answer: it reads each empty dcid again alone, and a dcid empty after
+that is absent from the document. The node reads are uncached, since no other
 caller reads every property of these nodes. A read that fails ends the build with its error at
 once, while the reads already in flight finish on their own threads and land nowhere. One
 log line per build gives each phase's read count and when its first read started and last read
-ended: the term listings, the seed, each closure level, the instance listings and the
-instances.
+ended: the term listings, the seed, each closure level, the instance listings, the
+instances, the subclass listings, the subclasses, the range listings and the range classes.
 
 Each node's values and provenances come from that one read of the node. The ten properties
 `SchemaNode` names are its named members, and every other property the read answers is in
@@ -45,9 +59,11 @@ A value list is a Class whose instances the document lists. A DFO-declared Class
 its `subClassOf` chain reaches `Enumeration`, or when it or an ancestor is a DFO-declared Class
 that the `rangeIncludes` of a DFO-declared Property names, so a DFO subclass of a DFO range
 lists too. A base Class is one only when its chain reaches `Enumeration`, so neither
-`Enumeration` itself nor a base range such as `Thing` or `Country` is. A DFO list holds the subjects of the `<-typeOf` listings of
-it and its DFO-declared subclasses, `complete` when each listing read every subject, plus the
-nodes StatVar rows use typed by a base subclass, which make it incomplete. A base list holds
+`Enumeration` itself nor a base range such as `Thing` or `Country` is. A DFO list covers itself
+and every descendant its `<-subClassOf` listings find. It holds the subjects of the `<-typeOf`
+listings of the DFO-declared classes it covers and the nodes StatVar rows use typed by a base
+one. It is `complete` when it covers no base class and every listing, of instances or of
+subclasses, read every subject. A base list holds
 the nodes StatVar rows use typed by it or any subclass and is always `complete: false`. A list
 that holds no node and is not complete is left out.
 
@@ -68,7 +84,15 @@ from functools import partial
 from typing import Final, Literal
 
 from code_index import CodeIndex
-from dc_graph import ArcSubject, ArcSubjectPage, ArcTarget, GraphReadError, display_name
+from dc_graph import (
+    UNRESOLVED_NODE,
+    ArcSubject,
+    ArcSubjectPage,
+    ArcTarget,
+    GraphReadError,
+    SubjectsCoverageFlag,
+    display_name,
+)
 from dfo_platform.executor import ContextCarryingExecutor
 from graph_api.dataset_usage import SHAPE_FIELDS
 from graph_api.reader import GraphNodeReader
@@ -112,10 +136,28 @@ _NODE_READ_CHUNK: Final[int] = 12
 read is one request. A chunk of 12 schema nodes carries 65 to 124 arc values, well inside the
 mixer's page of about 500."""
 
+RANGE_CLOSURE_CAP: Final[int] = 500
+"""The most descendant classes a base range class's closure joins the document with. A base
+range with more adds none of its listed classes, its listings stop once the classes found pass
+the cap, and it is no closed range. On the dev graph `Organization` has 176 descendants, `Class`,
+`Number`, `Text`, `Country` and `Provenance` 0 to 2 each, and `Thing` 1,957."""
+
+SUBCLASS_LISTING_CAP: Final[int] = 1_000
+"""The most `<-subClassOf` subjects a listing reads for one class, in a `node_arc_subjects_many`
+request of at most `_NODE_READ_CHUNK` classes. A value list covering a class with more is served
+with the subclasses read and `complete: false`, and no range covering it is closed.
+
+A build lists each class in the descendant closures of the DFO value lists and the base
+ranges once, and the build's deadline bounds how many it lists."""
+
 _TERM_LISTINGS: Final[str] = "term listings"
 _SEED: Final[str] = "seed"
 _INSTANCE_LISTINGS: Final[str] = "instance listings"
 _INSTANCES: Final[str] = "instances"
+_SUBCLASS_LISTINGS: Final[str] = "subclass listings"
+_SUBCLASSES: Final[str] = "subclasses"
+_RANGE_LISTINGS: Final[str] = "range listings"
+_RANGE_CLASSES: Final[str] = "range classes"
 
 _LOGGED_DCIDS: Final[int] = 10
 _BASE_PREFIX: Final[str] = "dc/base/"
@@ -124,6 +166,9 @@ _PROPERTY: Final = "Property"
 _ENUMERATION: Final[str] = "Enumeration"
 
 _TYPE_OF: Final[str] = "typeOf"
+_SUB_CLASS_OF: Final[str] = "subClassOf"
+_RANGE_INCLUDES: Final[str] = "rangeIncludes"
+_DOMAIN_INCLUDES: Final[str] = "domainIncludes"
 _ANCESTOR_ARCS: Final[tuple[str, ...]] = ("subClassOf", "subPropertyOf")
 _SCHEMA_ARCS: Final[tuple[str, ...]] = (*_ANCESTOR_ARCS, "domainIncludes", "rangeIncludes")
 _NODE_PROPERTIES: Final[tuple[str, ...]] = (
@@ -161,10 +206,27 @@ class SchemaNoDfoDeclarationError(GraphReadError):
 
 @dataclass(frozen=True)
 class Schema:
-    """The schema document and the terms list from one build."""
+    """The schema document and the terms list from one build, with what the build read that
+    neither body serves: the nodes whose read answered a `typeOf` target (`unresolved_types`),
+    a `subClassOf` target (`unresolved_parents`), a `rangeIncludes` target
+    (`unresolved_ranges`) or a `domainIncludes` target (`unresolved_domains`) the graph cannot
+    resolve, the ids the graph answered with no node and no unresolved target (`absent`), and
+    the range classes whose whole descendant tree the document holds (`closed_ranges`).
+
+    A range class is a class the `rangeIncludes` of a DFO-declared Property names. It is closed
+    when the build listed the `<-subClassOf` subjects of it and of every descendant, no listing
+    was truncated, and the document holds it and every descendant: a DFO range by the
+    descendant listing of its value list, a base range by its own listings within
+    `RANGE_CLOSURE_CAP`. A value typed by no class of a closed range's tree is outside it."""
 
     document: SchemaDocument
     terms: SchemaTerms
+    unresolved_types: frozenset[str]
+    unresolved_parents: frozenset[str]
+    unresolved_ranges: frozenset[str]
+    unresolved_domains: frozenset[str]
+    absent: frozenset[str]
+    closed_ranges: frozenset[str]
 
 
 @dataclass
@@ -292,6 +354,12 @@ def build_schema(
     schema = Schema(
         document=SchemaDocument(generation=generation, nodes=nodes),
         terms=SchemaTerms(generation=generation, terms=terms),
+        unresolved_types=frozenset(reads.unresolved[_TYPE_OF]),
+        unresolved_parents=frozenset(reads.unresolved[_SUB_CLASS_OF]),
+        unresolved_ranges=frozenset(reads.unresolved[_RANGE_INCLUDES]),
+        unresolved_domains=frozenset(reads.unresolved[_DOMAIN_INCLUDES]),
+        absent=frozenset(reads.absent),
+        closed_ranges=reads.closed_ranges(),
     )
     reads.log_timings(started=started, read_at=read_at, ended=time.monotonic())
     return schema
@@ -337,12 +405,33 @@ class _Reads:
     are read next, unless already read or under way. A node read that lands before the listings
     is expanded when they land. A DFO Class's instances are read, and expanded the same way, once
     its listing has landed and the nodes read make it a value list (`lists_in_full`), a test
-    run again after every landing. Each node is read once, in reads of at most
-    `_NODE_READ_CHUNK` dcids, and the reads end when none is left to start. The successor rule
-    depends only on a node's own read and the listings, and `lists_in_full` only grows as nodes
-    land, so the nodes read are the same whatever order the answers arrive in. The first
-    read that raises cancels the reads not yet started and its error propagates at once, with
-    no wait for the reads in flight.
+    run again after every landing. Once a DFO Class is a value list, its `<-subClassOf`
+    subjects are listed; each subject is read and expanded the same way, and its own
+    `<-subClassOf` subjects listed, until no new class appears. The classes whose listing a
+    landing makes due are listed together by `node_arc_subjects_many`, at most
+    `_NODE_READ_CHUNK` a request, and a class whose coverage is not `"complete"` counts as a
+    truncated listing. Each base range class, one the
+    `rangeIncludes` of a DFO term names that DFO does not declare, has its descendants listed
+    the same way, each listing as soon as the classes found so far are known, but its classes
+    are read only once its whole closure is listed: when no listing in it was truncated and it
+    holds at most `RANGE_CLOSURE_CAP` descendants, every class in it is read and expanded the
+    same way. Once a listing is truncated or the classes found pass the cap, the range lists
+    no more and reads none of them. Each class is listed once, whichever closures it is in,
+    and each node is read once, in reads of at most `_NODE_READ_CHUNK` dcids; the reads end
+    when none is left to start.
+
+    The successor rule depends only on a node's own read and the listings, `lists_in_full`
+    only grows as nodes land, and a subclass listing's subjects depend only on the class
+    listed, whichever request lists it with which others. A base range's classes join only
+    when its whole closure is known, and whether it
+    is known within the cap follows from the graph alone: a closure within the cap with no
+    truncated listing is listed in full whatever the order, and any other passes the cap or
+    meets a truncated listing before it is. The listings of a range past the cap that land
+    before it stops depend on the order, and they read no node. So every rule that reads a
+    node only adds reads as answers land, and the build stops at the one set they all close
+    over: the nodes read and `closed_ranges` are the same whatever order the answers arrive
+    in. The first read that raises cancels the reads not yet started and its error propagates
+    at once, with no wait for the reads in flight.
     """
 
     def __init__(
@@ -367,12 +456,27 @@ class _Reads:
         # Each node's provenances, read with its arcs.
         self.provenances: dict[str, frozenset[str]] = {}
         self.absent: set[str] = set()
+        # The nodes whose `typeOf`, `subClassOf`, `rangeIncludes` or `domainIncludes` held a
+        # target the graph cannot resolve, by property.
+        self.unresolved: dict[str, set[str]] = {
+            prop: set() for prop in (_TYPE_OF, _SUB_CLASS_OF, _RANGE_INCLUDES, _DOMAIN_INCLUDES)
+        }
         self.unsourced: set[str] = set()
         # Each DFO Class's `<-typeOf` subjects, and whether the listing read every one.
         self.instance_pages: dict[str, tuple[tuple[ArcSubject, ...], bool]] = {}
         self._instances_read: set[str] = set()
+        # Each listed class's `<-subClassOf` subjects, and whether the listing read every one.
+        self.subclass_pages: dict[str, tuple[tuple[str, ...], bool]] = {}
+        self._subclasses_listed: set[str] = set()
+        # The DFO value lists and every descendant their listings found, whose subclasses the
+        # build reads.
+        self._dfo_closure: set[str] = set()
         # Every class the `rangeIncludes` of a DFO term read names.
         self.ranges: set[str] = set()
+        # The base ranges whose listing is over, and those of them whose closure joined.
+        self._ranges_settled: set[str] = set()
+        self._ranges_joined: set[str] = set()
+        self._ranges_changed = False
         self._submitted: set[str] = set()
         self._unexpanded: list[tuple[set[str], str]] = []
         # Each read under way, whose answer is the landing the build runs on its own thread.
@@ -403,7 +507,8 @@ class _Reads:
                 for future in done:
                     future.result()()
                 if self._listed is not None:
-                    self._read_listed_instances()
+                    self._read_value_lists()
+                    self._list_base_ranges()
         except BaseException:
             for future in self._pending:
                 future.cancel()
@@ -454,6 +559,27 @@ class _Reads:
 
             self._pending.add(self._executor.submit(read))
 
+    def _list_subclasses(self, dcids: Iterable[str], *, phase: str) -> None:
+        """List the `<-subClassOf` subjects of each of `dcids` not yet listed, in listings of
+        at most `_NODE_READ_CHUNK` classes."""
+        fresh = sorted(set(dcids) - self._subclasses_listed)
+        self._subclasses_listed.update(fresh)
+        for start in range(0, len(fresh), _NODE_READ_CHUNK):
+            chunk = tuple(fresh[start : start + _NODE_READ_CHUNK])
+
+            def read(chunk: tuple[str, ...] = chunk) -> _Landing:
+                started = time.monotonic()
+                pages = self._reader.node_arc_subjects_many(
+                    chunk,
+                    property=_SUB_CLASS_OF,
+                    max_results=SUBCLASS_LISTING_CAP,
+                    deadline=self._deadline,
+                )
+                self._record(phase, started)
+                return partial(self._land_subclasses, pages, dcids=chunk)
+
+            self._pending.add(self._executor.submit(read))
+
     def _record(self, phase: str, started: float) -> None:
         with self._phases_lock:
             self._phases.setdefault(phase, _PhaseTiming()).add(started, time.monotonic())
@@ -469,6 +595,25 @@ class _Reads:
         self._term_pages[dcid] = page
         if len(self._term_pages) == 2:
             self._land_terms()
+
+    def _land_subclasses(
+        self,
+        pages: Mapping[str, tuple[Sequence[ArcSubject], SubjectsCoverageFlag]],
+        *,
+        dcids: tuple[str, ...],
+    ) -> None:
+        """Keep each class's subclasses, read in full when its coverage is `"complete"`, and
+        read and join to the DFO closure the subclasses of each class in it."""
+        found: set[str] = set()
+        for dcid in dcids:
+            subjects, coverage = pages[dcid]
+            subclasses = tuple(sorted({subject.dcid for subject in subjects}))
+            self.subclass_pages[dcid] = (subclasses, coverage == "complete")
+            if dcid in self._dfo_closure:
+                found.update(subclasses)
+        self._ranges_changed = True
+        self._read_nodes(found, phase=_SUBCLASSES)
+        self._join_dfo_closure(found)
 
     def _land_terms(self) -> None:
         listed: dict[str, _ListedTerm] = {}
@@ -497,16 +642,27 @@ class _Reads:
         """Keep each node's arcs, other properties and provenances, or mark it absent: the read
         confirms every empty answer alone, so an answer of none is the graph's answer for the
         dcid read alone. A node's provenances are those its `typeOf` targets carry, and a node
-        with a target that carries none joins `unsourced`."""
+        with a target that carries none joins `unsourced`. A node's arcs keep each distinct
+        target text once, in first-occurrence order, where a node reference and a literal share
+        it. A target the graph cannot resolve (`UNRESOLVED_NODE`) is served nowhere: it marks
+        the node in `unresolved` under its property when that is `typeOf`, `subClassOf`,
+        `rangeIncludes` or `domainIncludes`. A
+        node answered with nothing is `absent`; one answered only with unresolved targets is
+        neither held nor absent."""
         held: set[str] = set()
         for dcid in dcids:
-            entry = entries.get(dcid)
-            if entry is None:
+            read = entries.get(dcid)
+            if read is None:
                 self.absent.add(dcid)
+                continue
+            for prop, marked in self.unresolved.items():
+                if any(target.value == UNRESOLVED_NODE for target in read.get(prop, ())):
+                    marked.add(dcid)
+            if (entry := _resolved_entry(read)) is None:
                 continue
             types = entry.get(_TYPE_OF, ())
             self.arcs[dcid] = {
-                prop: tuple(target.value for target in entry.get(prop, ()))
+                prop: tuple(dict.fromkeys(target.value for target in entry.get(prop, ())))
                 for prop in _NODE_PROPERTIES
             }
             self.others[dcid] = _other_properties(dcid, entry, self.left_out)
@@ -522,7 +678,9 @@ class _Reads:
             self._expand(held, phase=phase)
 
     def _expand(self, held: set[str], *, phase: str) -> None:
-        self.ranges.update(_named(self.arcs, held & self.dfo_terms, ("rangeIncludes",)))
+        if ranges := _named(self.arcs, held & self.dfo_terms, ("rangeIncludes",)) - self.ranges:
+            self.ranges |= ranges
+            self._ranges_changed = True
         successors = _next_level(self.arcs, held, self.listed) | _named(
             self.arcs, held & self.dfo_terms, _SCHEMA_ARCS
         )
@@ -539,8 +697,88 @@ class _Reads:
             for ancestor in _ancestry(dcid, self.arcs)
         )
 
-    def _read_listed_instances(self) -> None:
-        """Read the instances of each listed DFO Class that is now a value list read in full."""
+    def _join_dfo_closure(self, dcids: Iterable[str]) -> None:
+        """Add `dcids` to the DFO value lists' descendant closure: list the subclasses of those
+        whose listing has not landed, together, and read and add those of each whose listing
+        has."""
+        unlisted: set[str] = set()
+        found: set[str] = set()
+        stack = list(dcids)
+        while stack:
+            dcid = stack.pop()
+            if dcid in self._dfo_closure:
+                continue
+            self._dfo_closure.add(dcid)
+            if (page := self.subclass_pages.get(dcid)) is None:
+                unlisted.add(dcid)
+            else:
+                found.update(page[0])
+                stack.extend(page[0])
+        self._read_nodes(found, phase=_SUBCLASSES)
+        self._list_subclasses(unlisted, phase=_SUBCLASS_LISTINGS)
+
+    def _closure(self, dcid: str) -> tuple[set[str], set[str], bool]:
+        """`dcid` and every descendant the landed `<-subClassOf` listings found, those of them
+        whose listing has not landed, and whether any landed listing in it was truncated."""
+        members: set[str] = set()
+        unlisted: set[str] = set()
+        truncated = False
+        stack = [dcid]
+        while stack:
+            current = stack.pop()
+            if current in members:
+                continue
+            members.add(current)
+            if (page := self.subclass_pages.get(current)) is None:
+                unlisted.add(current)
+                continue
+            subclasses, read_all = page
+            truncated = truncated or not read_all
+            stack.extend(subclasses)
+        return members, unlisted, truncated
+
+    def _list_base_ranges(self) -> None:
+        """Advance each base range not yet settled: settle it unjoined once a listing in its
+        closure is truncated or its descendants pass `RANGE_CLOSURE_CAP`, settle it and read
+        every class of its closure once every one is listed, and otherwise list each class of
+        it whose subclasses are not listed, every range's together."""
+        if not self._ranges_changed:
+            return
+        self._ranges_changed = False
+        to_list: set[str] = set()
+        for dcid in sorted(self.ranges - self.dfo_terms - self._ranges_settled):
+            members, unlisted, truncated = self._closure(dcid)
+            if truncated or len(members) - 1 > RANGE_CLOSURE_CAP:
+                self._ranges_settled.add(dcid)
+            elif not unlisted:
+                self._ranges_settled.add(dcid)
+                self._ranges_joined.add(dcid)
+                self._read_nodes(members, phase=_RANGE_CLASSES)
+            else:
+                to_list |= unlisted
+        self._list_subclasses(to_list, phase=_RANGE_LISTINGS)
+
+    def closed_ranges(self) -> frozenset[str]:
+        """The range classes whose whole descendant closure the build listed with no truncated
+        listing, and whose every class the document holds: each DFO range in the value lists'
+        closure, and each base range whose closure joined the document."""
+        closed: set[str] = set()
+        for dcid in self.ranges:
+            if dcid not in self._dfo_closure and dcid not in self._ranges_joined:
+                continue
+            members, unlisted, truncated = self._closure(dcid)
+            if not unlisted and not truncated and members <= self.arcs.keys():
+                closed.add(dcid)
+        return frozenset(closed)
+
+    def _read_value_lists(self) -> None:
+        """Join each DFO Class read that is now a value list read in full to the descendant
+        closure, and read the instances of each whose instance listing has landed."""
+        self._join_dfo_closure(
+            dcid
+            for dcid in self.dfo_terms - self._dfo_closure
+            if _CLASS in self.listed[dcid].kinds and dcid in self.arcs and self.lists_in_full(dcid)
+        )
         for dcid, (subjects, _) in sorted(self.instance_pages.items()):
             if dcid in self._instances_read or dcid not in self.arcs:
                 continue
@@ -549,11 +787,26 @@ class _Reads:
                 self._read_nodes((subject.dcid for subject in subjects), phase=_INSTANCES)
 
 
+def _resolved_entry(
+    entry: Mapping[str, Sequence[ArcTarget]] | None,
+) -> dict[str, tuple[ArcTarget, ...]] | None:
+    """`entry` less every `UNRESOLVED_NODE` target and every property left with none, `None`
+    when none is left."""
+    if entry is None:
+        return None
+    resolved = {
+        prop: kept
+        for prop, targets in entry.items()
+        if (kept := tuple(target for target in targets if target.value != UNRESOLVED_NODE))
+    }
+    return resolved or None
+
+
 def _next_phase(phase: str) -> str:
     """The phase a read's successors are timed under: the seed's are level 2, a level's the
-    next level's, and the instances' the instances'."""
-    if phase == _INSTANCES:
-        return _INSTANCES
+    next level's, and the instances', the subclasses' and the range classes' their own."""
+    if phase in (_INSTANCES, _SUBCLASSES, _RANGE_CLASSES):
+        return phase
     if phase == _SEED:
         return "level 2"
     return f"level {int(phase.removeprefix('level ')) + 1}"
@@ -599,12 +852,13 @@ def _instances(reads: _Reads, index_named: Collection[str]) -> dict[str, SchemaI
     """Each value list's instances, by class.
 
     The value lists are the DFO Classes `_Reads.lists_in_full` names, and every base Class whose
-    chain reaches `Enumeration`. A DFO list holds, for
-    itself and each subclass, the subjects of a DFO Class's listing and the index-named nodes
-    typed by any other class. A base list holds the index-named nodes typed by it or any
-    subclass. A list is `complete` when it is DFO, and every class it covers is a listed DFO
-    Class whose listing read every subject. A list with no node that is not complete is left
-    out.
+    chain reaches `Enumeration`. A DFO list covers itself, each read class whose ancestry
+    reaches it, and each descendant its `<-subClassOf` listings found, and holds, for each
+    class it covers, the subjects of a DFO Class's listing and the index-named nodes typed by
+    any other class. A base list holds the index-named nodes typed by it or any read subclass.
+    A list is `complete` when it is DFO, every class it covers is a listed DFO Class whose
+    listing read every subject, and every class it covers has a subclass listing that read
+    every subject. A list with no node that is not complete is left out.
     """
     arcs, listed = reads.arcs, reads.listed
     classes = [dcid for dcid in sorted(arcs) if dcid in listed and _CLASS in listed[dcid].kinds]
@@ -623,8 +877,13 @@ def _instances(reads: _Reads, index_named: Collection[str]) -> dict[str, SchemaI
             continue
         refs: set[str] = set()
         complete = dfo
-        for covered in (sub for sub in classes if dcid in ancestry[sub]):
+        covered_classes = {sub for sub in classes if dcid in ancestry[sub]}
+        if dfo:
+            covered_classes |= _descendants(dcid, reads.subclass_pages)
+        for covered in sorted(covered_classes):
             refs |= used_by_type[covered]
+            if dfo and not reads.subclass_pages.get(covered, ((), False))[1]:
+                complete = False
             if dfo and (page := reads.instance_pages.get(covered)) is not None:
                 subjects, read_all = page
                 refs.update(subject.dcid for subject in subjects)
@@ -634,6 +893,18 @@ def _instances(reads: _Reads, index_named: Collection[str]) -> dict[str, SchemaI
         if refs or complete:
             instances[dcid] = SchemaInstances(refs=sorted(refs), complete=complete)
     return instances
+
+
+def _descendants(dcid: str, subclass_pages: Mapping[str, tuple[tuple[str, ...], bool]]) -> set[str]:
+    """`dcid` and every class the `<-subClassOf` listings found below it."""
+    seen: set[str] = set()
+    stack = [dcid]
+    while stack:
+        current = stack.pop()
+        if current not in seen:
+            seen.add(current)
+            stack.extend(subclass_pages.get(current, ((), True))[0])
+    return seen
 
 
 def _other_properties(

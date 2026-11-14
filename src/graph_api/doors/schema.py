@@ -23,13 +23,13 @@ its result for the next request. A flight
 that outlives its deadline stores nothing, and its waiters answer 504 `timeout`. An executor
 with every worker busy refuses the build with `DcpExecutorSaturated`, which the surface answers
 as retryable 503. A read past its deadline answers 504 `timeout`. A listing that reached its
-cap, or a document with no node DFO declares, is a server fault a retry does not clear and
-answers non-retryable 500 `internal_error`. A DCP 4xx answers 502 `upstream_error` and any other
-read failure retryable 503. Under a known generation the two refusals cannot change while the
-generation holds, so the entry keeps them as `RefusedSchema` and every request for the key
-answers the same 500 with no build. Under an unknown generation nothing would clear a kept
-refusal, so the build raises it unkept and the next request builds again. Any other failed
-build is not kept.
+cap, or a document with no node DFO declares, is a server fault and answers non-retryable 500
+`internal_error`. A DCP 4xx answers 502 `upstream_error` and any other read failure retryable
+503. Under a known generation the entry keeps either refusal as `RefusedSchema` for
+`SCHEMA_REFUSAL_TTL_SECONDS` (60 s), so every request for the key in that time answers the
+same 500 with no build, and the first request after it builds again. Under an unknown
+generation the build raises the refusal unkept and the next request builds again. Any other
+failed build is not kept.
 
 The cached value holds each body encoded once in the models' field order, so two builds of one
 graph give the same bytes. Each answers `public, max-age=300` with a strong `ETag` over those
@@ -54,10 +54,8 @@ infinity. The pointer names the first such member, `/rows/37/constraint_properti
 in row 37. Everything else about a row's content is a finding. With the document in hand,
 `plan_reads` decides on the event loop, before anything is submitted, how many rows the check
 takes and which ids they read: rows from the first while their ids stay within
-`CHECK_MAX_READ_IDS`, less the room held back for ancestry once a row may need it. The job
-may take fewer rows when their ancestry does not fit (`graph_api.schema_check.check_rows`).
-Whether the bound catalogue serves the UN origin decides whether a UN id
-is read or gets `origin_not_served`.
+`CHECK_MAX_READ_IDS`, the first row always. Whether the bound catalogue serves the UN origin
+decides whether a UN id is read or gets `origin_not_served`.
 
 Every check runs as one job on `GraphDeps.check_executor`, whose
 `GRAPH_SCHEMA_CHECK_CONCURRENCY` (2) workers are its own, so a check takes none of the
@@ -91,7 +89,8 @@ and giving their sizes, beside the build's own per-phase line.
 `warm_schema` builds the entry for the current generation and the bound code index before an
 instance takes traffic. The Graph lifespan awaits it for its live reader. An unfinished build
 logs and the first request joins it. A failed build logs and the first request builds again,
-except a refusal the entry keeps, which the first request answers 500 with no build.
+except a refusal the entry keeps, which a request within its lifetime answers 500 with no
+build.
 """
 
 from __future__ import annotations
@@ -165,6 +164,11 @@ SCHEMA_GENERATION_WAIT_SECONDS = 3.0
 and the request builds a second entry under `UNKNOWN_KEY`, which costs a whole build; a cold
 read of the generation took 1.5 s from a laptop and 1.9 s at an instance's start."""
 
+SCHEMA_REFUSAL_TTL_SECONDS = 60.0
+"""How long the schema cache keeps a build's refusal (`RefusedSchema`). A listing the upstream
+answers empty or truncated for a moment refuses the requests of this window, and the first
+request after it builds again, so a lasting fault costs one build a minute."""
+
 _MAX_AGE_SECONDS = 300
 
 
@@ -191,8 +195,8 @@ class FrozenSchema:
 
 @dataclass(frozen=True, slots=True)
 class RefusedSchema:
-    """A build refusal that cannot change while the generation holds: a truncated term listing,
-    or a document with no node DFO declares. `error` makes a fresh exception for each
+    """A build refusal: a truncated term listing, or a document with no node DFO declares. The
+    cache keeps it for `SCHEMA_REFUSAL_TTL_SECONDS`. `error` makes a fresh exception for each
     request it answers."""
 
     error: Callable[[], GraphReadError]
@@ -240,18 +244,29 @@ class UsageKey(NamedTuple):
 
 
 def new_schema_cache[K, V](
-    *, entries: int, executor: Executor, generation: GenerationProvider
+    *,
+    entries: int,
+    executor: Executor,
+    generation: GenerationProvider,
+    clock: Callable[[], float] = time.monotonic,
 ) -> SingleFlightCache[K, V]:
     """A cache of this door's bodies holding `entries` entries, each built on `executor` within
-    `SCHEMA_FLIGHT_TIMEOUT_SECONDS`, with a key that carries `generation`'s stamp.
-    `GraphDeps.schema` holds two, so a request stamped with an unknown generation keeps the
-    entry of the known one, and `GraphDeps.dataset_usage` holds one."""
+    `SCHEMA_FLIGHT_TIMEOUT_SECONDS`, with a key that carries `generation`'s stamp and entry
+    lifetimes measured on `clock`. `GraphDeps.schema` holds two, so a request stamped with an
+    unknown generation keeps the entry of the known one, and `GraphDeps.dataset_usage` holds
+    one."""
     return SingleFlightCache(
         maxsize=entries,
         flight_timeout_s=SCHEMA_FLIGHT_TIMEOUT_SECONDS,
         executor=executor,
         generation=generation,
+        clock=clock,
     )
+
+
+def _entry_ttl(entry: SchemaEntry) -> float | None:
+    """`SCHEMA_REFUSAL_TTL_SECONDS` for a refusal, and the cache's own TTL for built bodies."""
+    return SCHEMA_REFUSAL_TTL_SECONDS if isinstance(entry, RefusedSchema) else None
 
 
 def _freeze(model: SchemaDocument | SchemaTerms | DatasetUsage) -> FrozenJSON:
@@ -271,9 +286,9 @@ def _build_entry(
     generation: str | None,
     deadline: float,
 ) -> SchemaEntry:
-    """Build and freeze the bodies, or keep a refusal that cannot change within the
-    generation. Under an unknown generation, `generation` `None`, nothing would clear a kept
-    refusal before the stamp's age runs out, so the refusal is raised and not kept."""
+    """Build and freeze the bodies, or return a refusal for the cache to keep for
+    `SCHEMA_REFUSAL_TTL_SECONDS`. Under an unknown generation, `generation` `None`, the refusal
+    is raised and not kept."""
     try:
         schema = build_schema(
             reader=deps.graph,
@@ -307,7 +322,15 @@ def _build_entry(
         document=document,
         terms=terms,
         generation=schema.document.generation,
-        lookup=SchemaLookup.of(schema.document),
+        lookup=SchemaLookup.of(
+            schema.document,
+            unresolved_types=schema.unresolved_types,
+            unresolved_parents=schema.unresolved_parents,
+            unresolved_ranges=schema.unresolved_ranges,
+            unresolved_domains=schema.unresolved_domains,
+            absent=schema.absent,
+            closed_ranges=schema.closed_ranges,
+        ),
     )
 
 
@@ -342,7 +365,7 @@ async def _frozen_schema(
 
     try:
         found = await deps.schema.aget_or_fetch_many(
-            [key], log_queue_wait(build), deadline=deadline
+            [key], log_queue_wait(build), deadline=deadline, value_ttl=_entry_ttl
         )
     except WaitTimeout:
         raise SchemaBuildPending() from None
@@ -472,8 +495,8 @@ async def warm_schema(deps: GraphDeps, *, timeout_s: float) -> None:
     catalogue and served release, waiting at most `timeout_s`. A build still running then
     runs on under its flight deadline and lands for the request that joins it. A failure or
     an unfinished build logs and returns. The first request after a failure builds again,
-    unless the entry kept the build's refusal (`RefusedSchema`), which it answers with no
-    build."""
+    unless the entry kept the build's refusal (`RefusedSchema`), which a request within
+    `SCHEMA_REFUSAL_TTL_SECONDS` (60 s) answers with no build."""
     started = time.monotonic()
     try:
         async with asyncio.timeout(timeout_s):

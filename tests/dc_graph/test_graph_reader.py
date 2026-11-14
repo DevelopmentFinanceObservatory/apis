@@ -23,6 +23,7 @@ from dc_graph import (
     GraphNotAdvancingError,
     GraphReadError,
     SubjectPage,
+    parse_arc_targets,
 )
 from dc_graph.client import GraphOmittedDcidsError, _arc_spec
 
@@ -832,6 +833,42 @@ def test_node_all_arc_targets_many_halves_a_chunk_the_mixer_continues():
     ]
     assert all("nextToken" not in json.loads(request.content) for request in requests)
     assert result == {"country/KEN": _COUNTRY, "country/ZZZ": _COUNTRY}
+
+
+_WITH_UNRESOLVED = {
+    "typeOf": {
+        "nodes": [
+            {"dcid": "Currency", "provenanceId": "dc/base/Schema"},
+            {"provenanceId": "dc/base/Schema"},
+        ]
+    }
+}
+
+
+@pytest.mark.parametrize(
+    ("options", "expected"),
+    [
+        pytest.param({}, ("Currency",), id="default-drops-it"),
+        pytest.param(
+            {"mark_unresolved": True}, ("Currency", UNRESOLVED_NODE), id="opt-in-marks-it"
+        ),
+    ],
+)
+def test_parse_arc_targets_marks_an_unresolved_entry_only_when_asked(
+    options: dict[str, bool], expected: tuple[str, ...]
+):
+    parsed = parse_arc_targets(_WITH_UNRESOLVED, ["typeOf"], **options)
+
+    assert tuple(target.value for target in parsed["typeOf"]) == expected
+
+
+def test_node_all_arc_targets_many_marks_an_unresolved_target():
+    transport, _ = _sequenced([{"data": {"CHF": {"arcs": _WITH_UNRESOLVED}}}])
+
+    result = _reader(transport).node_all_arc_targets_many(["CHF"])
+
+    assert result is not None
+    assert [target.value for target in result["CHF"]["typeOf"]] == ["Currency", UNRESOLVED_NODE]
 
 
 def test_node_all_arc_targets_many_tells_a_literal_from_a_node():

@@ -1326,13 +1326,13 @@ class GraphClient:
         self, dcids: Sequence[str], *, deadline: float | None = None
     ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
         """Each distinct dcid's every outgoing property (`->*`) with its targets
-        (`parse_arc_targets`), or `None` for a node the graph answers with no arc. The dcids are
-        read as `node_arcs_batch` reads them, in its chunks, each halved when the mixer answers
-        a continuation, and an empty answer is confirmed as `node_arc_targets_many` confirms it
-        with `individual_probe_budget=None`: read again alone, so `None` for a dcid is the
-        graph's answer for that dcid read alone. A property every entry of which
-        `dfo_visible` hides is left out. Uncached. One absolute `deadline` bounds every
-        request."""
+        (`parse_arc_targets`, an unresolvable target marked `UNRESOLVED_NODE`), or `None` for a
+        node the graph answers with no arc. The dcids are read as `node_arcs_batch` reads them,
+        in its chunks, each halved when the mixer answers a continuation, and an empty answer
+        is confirmed as `node_arc_targets_many` confirms it with `individual_probe_budget=None`:
+        read again alone, so `None` for a dcid is the graph's answer for that dcid read alone.
+        A property every entry of which `dfo_visible` hides is left out. Uncached. One absolute
+        `deadline` bounds every request."""
         if not dcids:
             return {}
         unique = list(dict.fromkeys(dcids))
@@ -1346,7 +1346,7 @@ class GraphClient:
         result: dict[str, dict[str, tuple[ArcTarget, ...]] | None] = {}
         for dcid in unique:
             arcs = read[dcid]
-            targets = parse_arc_targets(arcs, sorted(arcs)) if arcs else {}
+            targets = parse_arc_targets(arcs, sorted(arcs), mark_unresolved=True) if arcs else {}
             result[dcid] = {prop: values for prop, values in targets.items() if values} or None
         return result
 
@@ -2871,22 +2871,28 @@ def parse_arcs(
     }
 
 
-def parse_arc_targets(arcs: dict, properties: Sequence[str]) -> dict[str, tuple[ArcTarget, ...]]:
+def parse_arc_targets(
+    arcs: dict, properties: Sequence[str], *, mark_unresolved: bool = False
+) -> dict[str, tuple[ArcTarget, ...]]:
     """Each of `properties` with its distinct targets in first-occurrence order, `()` for a
-    missing property. A target's name, types and `literal` come from its first entry, its
-    provenances from all of them. An entry with neither `dcid` nor `value` is dropped. Entries
-    are read through `_arc_entries`."""
+    missing property. A target is a node `dcid` or a literal `value`, so a node and a literal
+    with the same text are two targets, each with the provenances of its own entries. A
+    target's name and types come from its first entry, its provenances from all of them. An
+    entry with neither `dcid` nor `value` is dropped, or with `mark_unresolved` is one node
+    target `UNRESOLVED_NODE` per property. Entries are read through `_arc_entries`."""
     parsed: dict[str, tuple[ArcTarget, ...]] = {}
     for prop in properties:
-        entries: dict[str, list[dict]] = {}
+        entries: dict[tuple[bool, str], list[dict]] = {}
         for entry in _arc_entries(arcs, prop):
+            is_node = bool(entry.get("dcid"))
             value = entry.get("dcid") or entry.get("value")
+            if value is None and mark_unresolved:
+                is_node, value = True, UNRESOLVED_NODE
             if value is not None:
-                entries.setdefault(value, []).append(entry)
+                entries.setdefault((is_node, value), []).append(entry)
         targets: list[ArcTarget] = []
-        for value, value_entries in entries.items():
+        for (is_node, value), value_entries in entries.items():
             first = value_entries[0]
-            is_node = bool(first.get("dcid"))
             targets.append(
                 ArcTarget(
                     value=value,

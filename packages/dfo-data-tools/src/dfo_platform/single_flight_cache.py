@@ -1,8 +1,10 @@
 """Bounded, generation-keyed cache that coalesces concurrent fetches per key.
 
 Each call captures one generation stamp before lookup and keys entries by `(stamp.key, key)`.
-The default TTL is `stamp.max_age_s`. `maxsize` bounds the LRU store. One lock protects O(1)
-bookkeeping and is released before fetches or awaits.
+The default TTL is `stamp.max_age_s`. A `get_or_fetch_many` caller that starts a flight may
+pass `value_ttl`, which stores a value it names a lifetime for under the lesser of that
+lifetime and the TTL. `maxsize` bounds the LRU store. One lock protects O(1) bookkeeping and is
+released before fetches or awaits.
 
 A miss starts a flight, which belongs to no caller. Its deadline is `flight_timeout_s` from the
 moment it starts, queue time included. Its fetch receives that deadline as an argument and runs
@@ -88,13 +90,14 @@ class WaitTimeout(TimeoutError):
 @dataclass(eq=False)
 class _SyncFlight[K, V]:
     """One sync flight: its deadline, the TTL its values store under, which values it stores
-    (`is_cacheable`, every value when `None`), the slots it owns, and its executor job once
-    submitted. A flight is filled under the lock by the caller that starts it and never gains
-    slots afterwards."""
+    (`is_cacheable`, every value when `None`), the shorter lifetime `value_ttl` names for a
+    value, the slots it owns, and its executor job once submitted. A flight is filled under the
+    lock by the caller that starts it and never gains slots afterwards."""
 
     deadline: float
     ttl: float
     is_cacheable: Callable[[V], bool] | None = None
+    value_ttl: Callable[[V], float | None] | None = None
     owned: dict[K, tuple[tuple[str, K], _SyncSlot[K, V]]] = field(default_factory=dict)
     job: Future[dict[K, V]] | None = None
 
@@ -226,6 +229,7 @@ class SingleFlightCache[K, V]:
         deadline: float | None = None,
         copy_result: Callable[[V], V] | None = None,
         is_cacheable: Callable[[V], bool] | None = None,
+        value_ttl: Callable[[V], float | None] | None = None,
         flight_per_key: bool = False,
         on_error: Callable[[K, Exception], V] | None = None,
     ) -> dict[K, V]:
@@ -233,7 +237,11 @@ class SingleFlightCache[K, V]:
         or with `flight_per_key` one flight each, whose `fetch` receives its keys and its
         deadline. Fetch failures reach every caller waiting on the flight. The cache stores
         successful fetches only. A fetched value `is_cacheable` rejects reaches the flight's
-        callers and leaves the store unchanged, while the flight's other values store. Each wait
+        callers and leaves the store unchanged, while the flight's other values store. A value for
+        which `value_ttl` returns a lifetime in seconds stores for the lesser of it and the TTL,
+        by the cache's `clock`; one it returns `None` for stores for the TTL. The caller that
+        starts a flight decides its `is_cacheable` and `value_ttl`; a caller that joins a live
+        flight has its own ignored. Each wait
         ends at the earlier of its flight's deadline and `deadline`, as in `get_or_fetch`. The
         first key whose flight fails or whose wait ends raises that error, unless `on_error` is
         given: then such a key resolves to `on_error(key, error)`, which is not stored, and the
@@ -245,7 +253,11 @@ class SingleFlightCache[K, V]:
             return fetch(unique_keys, self._direct_deadline(deadline))
 
         hits, waiting = self._claim_many(
-            unique_keys, fetch, is_cacheable=is_cacheable, flight_per_key=flight_per_key
+            unique_keys,
+            fetch,
+            is_cacheable=is_cacheable,
+            value_ttl=value_ttl,
+            flight_per_key=flight_per_key,
         )
         for key, slot in waiting:
             try:
@@ -264,6 +276,7 @@ class SingleFlightCache[K, V]:
         deadline: float | None = None,
         copy_result: Callable[[V], V] | None = None,
         is_cacheable: Callable[[V], bool] | None = None,
+        value_ttl: Callable[[V], float | None] | None = None,
         flight_per_key: bool = False,
         on_error: Callable[[K, Exception], V] | None = None,
     ) -> dict[K, V]:
@@ -275,7 +288,11 @@ class SingleFlightCache[K, V]:
             return await asyncio.to_thread(fetch, unique_keys, self._direct_deadline(deadline))
 
         hits, waiting = self._claim_many(
-            unique_keys, fetch, is_cacheable=is_cacheable, flight_per_key=flight_per_key
+            unique_keys,
+            fetch,
+            is_cacheable=is_cacheable,
+            value_ttl=value_ttl,
+            flight_per_key=flight_per_key,
         )
         for key, slot in waiting:
             try:
@@ -292,6 +309,7 @@ class SingleFlightCache[K, V]:
         fetch: Callable[[list[K], float], dict[K, V]],
         *,
         is_cacheable: Callable[[V], bool] | None,
+        value_ttl: Callable[[V], float | None] | None,
         flight_per_key: bool,
     ) -> tuple[dict[K, V], list[tuple[K, _SyncSlot[K, V]]]]:
         """The hits among `unique_keys`, and the slot each miss waits on: a live flight's, or
@@ -302,7 +320,10 @@ class SingleFlightCache[K, V]:
 
         def new_flight() -> _SyncFlight[K, V]:
             return _SyncFlight(
-                deadline=self._new_flight_deadline(), ttl=ttl, is_cacheable=is_cacheable
+                deadline=self._new_flight_deadline(),
+                ttl=ttl,
+                is_cacheable=is_cacheable,
+                value_ttl=value_ttl,
             )
 
         flights: list[_SyncFlight[K, V]] = []
@@ -510,7 +531,13 @@ class SingleFlightCache[K, V]:
             if error is None:
                 slot.value = fetched[key]
                 if flight.is_cacheable is None or flight.is_cacheable(fetched[key]):
-                    self._publish_locked(full_key, fetched[key], ttl=flight.ttl, now=now)
+                    ttl = flight.ttl
+                    if (
+                        flight.value_ttl is not None
+                        and (lifetime := flight.value_ttl(fetched[key])) is not None
+                    ):
+                        ttl = min(ttl, lifetime)
+                    self._publish_locked(full_key, fetched[key], ttl=ttl, now=now)
             else:
                 slot.error = error
             slot.ready.set()

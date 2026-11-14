@@ -171,6 +171,22 @@ def arc_subjects(
     }
 
 
+def subclass_subjects(
+    nodes: Mapping[str, Mapping[str, tuple[str, ...]]],
+    terms: Mapping[str, tuple[str, tuple[str, ...]]] = TERMS,
+) -> dict[tuple[str, str], list[ArcSubject]]:
+    """The reverse `subClassOf` subjects of every class `nodes` names as a parent, each declared
+    by its term listing's provenances or `SCHEMA`."""
+    subjects: dict[tuple[str, str], list[ArcSubject]] = {}
+    for dcid, arcs in nodes.items():
+        provenances = terms[dcid][1] if dcid in terms else (SCHEMA,)
+        for parent in arcs.get("subClassOf", ()):
+            subjects.setdefault((parent, "subClassOf"), []).append(
+                ArcSubject(dcid=dcid, names=(dcid,), provenances=provenances)
+            )
+    return subjects
+
+
 def node_targets(
     nodes: Mapping[str, Mapping[str, tuple[str, ...]]],
     terms: Mapping[str, tuple[str, tuple[str, ...]]] = TERMS,
@@ -202,9 +218,13 @@ def schema_graph(
     arc_targets: Mapping[str, Mapping[str, Sequence[ArcTarget]]] = {},
 ) -> FakeGraphNodeReader:
     """The fake graph over `nodes`, whose node reads `node_targets` answers, with `arc_targets`
-    replacing a node's read where it names the node."""
+    replacing a node's read where it names the node, and whose `<-subClassOf` listings
+    `subclass_subjects` answers."""
     return FakeGraphNodeReader(
         nodes=nodes,
-        arc_subjects=arc_subjects(terms=terms, members=members),
+        arc_subjects={
+            **subclass_subjects(nodes, terms),
+            **arc_subjects(terms=terms, members=members),
+        },
         arc_targets={**node_targets(nodes, terms), **arc_targets},
     )

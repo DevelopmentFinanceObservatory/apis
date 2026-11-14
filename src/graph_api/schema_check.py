@@ -1,12 +1,12 @@
 """Check candidate StatisticalVariable definitions against the deployment's schema.
 
-`SchemaLookup` holds the schema document's nodes as the check reads them, built once per
-document. `plan_reads` decides, before any read, how many rows from the first the check takes
-and which ids outside the document they read: it adds rows while their distinct ids stay within
-`CHECK_MAX_READ_IDS`, less `CHECK_MAX_ROW_ANCESTRY_IDS` held back for ancestry once a row taken
-may need it. `check_rows` answers each node a row names from the document and asks
-every other named id once of the reader's `node_arcs_many`, for its `typeOf`, `name` and
-`subClassOf`, with no probe budget. The served reader,
+`SchemaLookup` holds the schema document's nodes as the check reads them and the build's
+record of them (`graph_api.schema_document.Schema`), built once per document. `plan_reads`
+decides, before any read, how many rows from the first the check takes and which ids outside
+the document they read: it adds rows while their distinct ids stay within
+`CHECK_MAX_READ_IDS`, and always takes the first. `check_rows` answers each node a row names
+from the document and reads every other named id once, in one `node_arcs_many` call, for its
+`typeOf` and `name`, with no probe budget. It reads no ancestry. The served reader,
 `origin_catalogue.graph.OriginGraphClient`, answers an id the origin catalogue's arc tables hold
 from those tables, a node they hold with no arc as absent, and reads every other id from the
 graph. There an id a batch answers empty is read again alone, so `None` is the graph's answer
@@ -14,42 +14,32 @@ for that id read alone. A node with neither a type nor a name reads as absent, a
 name and no `typeOf` is untyped. A read error propagates, so no node is reported absent because
 a read failed.
 
-The check reads every planned id in one `node_arcs_many` call: the shape fields, constraint
-properties, observation properties and constraint values the document does not hold, less the
-cells no read can decide and the values under a document node that is no Property. A
-constraint value whose property is not a held Property gets no finding of its own, because the
-property's finding marks the cell, so a value under a property outside dcid syntax or outside
-the served origins is not read. It then reads, one `node_arcs_many` call a level, the
-`subClassOf` parents of each type the range rule judges that lies outside the document, then
-of each parent outside it, until every chain reaches the document or ends. Each id is read
-once, and an id the first call read needs no second read, since that call asked its
-`subClassOf` too. Rows claim these ids in row order within what the planned ids leave of
-`CHECK_MAX_READ_IDS`, each row at most `CHECK_MAX_ROW_ANCESTRY_IDS`, and the check stops before
-the first row after the first whose chains do not fit (`_read_ancestry`). A row counts in
-`rows_checked` only with every read it needs done, so it gets the findings it would get
-alone. The first row always gets its reads: the plan holds back room for its ancestry, and past
-`CHECK_MAX_ROW_ANCESTRY_IDS` ids its chains are cut the same way whatever rows follow it.
+The ids read are the shape fields, constraint properties, observation properties and
+constraint values the document does not hold, less the cells no read can decide and the values
+under a document node that is no Property. A constraint value whose property is not a held
+Property gets no finding of its own, because the property's finding marks the cell, so a value
+under a property outside dcid syntax or outside the served origins is not read. One row names
+at most `CHECK_MAX_ROW_NAMED_IDS` (41) such ids, fewer than `CHECK_MAX_READ_IDS`, so the first
+row always fits. A row's findings depend only on the row, the document, the build's record and
+the answers to the row's own ids, which are the same whichever rows share the read, so each
+row gets the findings it gets checked alone.
 
-A check reads at most `CHECK_MAX_READ_IDS` (200) ids, each once. It reads fewer from the
-graph when the arc tables answer some. Each `node_arcs_many` call sends, for each backend its
-ids go to (the mixer, and the UN deployment where the deployment serves the UN origin), one
-POST per chunk of 50 of its ids, then one POST per id answered empty, 16 at a time. A call of k
-ids therefore sends at most k + ceil(k / 50) POSTs with one backend, 204 for 200 ids, and one
-more with two, 205, and each level of ancestry is one more call. A front-door refusal splits a
-POST of several ids into two halves, so a chunk of j ids costs at most 2j - 1 POSTs, and a
-check of k ids over all its calls at most 3k - 1, 599 for 200 ids, on either kind of
-deployment. A continuation page adds one POST. Each POST is tried up to 3 times on a 5xx
-answer or a transport error. Every read carries the check's deadline,
+A check reads at most `CHECK_MAX_READ_IDS` (200) ids, each once, in one `node_arcs_many` call.
+It reads fewer from the graph when the arc tables answer some. The call sends, for each backend
+its ids go to (the mixer, and the UN deployment where the deployment serves the UN origin), one
+POST per chunk of 50 of its ids, then one POST per id answered empty, 16 at a time. A check of
+k ids therefore sends at most k + ceil(k / 50) POSTs with one backend, 204 for 200 ids, and one
+more with two, 205. A front-door refusal splits a POST of several ids into two halves, so a
+chunk of j ids costs at most 2j - 1 POSTs, and a check of k ids at most 3k - ceil(k / 50), 596
+for 200 ids, on either kind of deployment. A continuation page adds one POST. Each POST is tried
+up to 3 times on a 5xx answer or a transport error. Every read carries the check's deadline,
 `GRAPH_SCHEMA_CHECK_TIMEOUT_SECONDS` (30 s) from the request's start.
 
 No read can decide three kinds of cell, so each gets its finding with no read: a string outside
 dcid syntax, a number or a boolean gets `not_a_node`, and an id of the UN origin on a
 deployment that does not serve it (`origin_catalogue.graph.is_un_dcid`) gets
 `origin_not_served`. Every other id outside the document is read, whatever the range of its
-property: the document holds the ancestors of the classes it holds and none of their
-descendants, so no value list proves that a value it lacks lies outside a range. One row
-reads at most `CHECK_MAX_ROW_READ_IDS` (81) ids, the 41 it names and 40 ancestors, fewer than
-`CHECK_MAX_READ_IDS`, so the first row always fits.
+property.
 
 `check_rows` stops before the row whose findings would take the total past
 `CHECK_MAX_FINDINGS`, or the encoded response past `CHECK_MAX_BODY_BYTES`. It measures each
@@ -62,26 +52,39 @@ Every row gets existence and kind checks. A row with no measured property gets `
 A constraint value, `stat_type`, `measurement_qualifier` and `measurement_denominator` must each
 name a resolved node, by `code_index.constraint_values.constraint_value_fault`, the test the
 code index export refuses a release on for a constraint value. Range and domain rules apply
-only to a property the document holds with `declared_by == "dfo"`. The range rule judges
-through the document, which holds every `subClassOf` ancestor of each class it holds, and
-through the parents read for the types outside it. A value is outside the range when it has a
-type, the ancestry of every type is known, and none reaches a `rangeIncludes` class by
-`subClassOf`. A type whose chain reaches an id neither the document nor the reads hold, left
-unread past the first row's cap or an id of an origin not served, or an id whose parents the
-graph answers with an unresolved target, gives no range verdict. A property is
-outside its domain when the row's population type is a document
-node that reaches no `domainIncludes` class by `subClassOf`; a population type outside the
-document gets no domain finding. A property with no `rangeIncludes` or no `domainIncludes`
-admits anything. The domain rule covers the measured property and the constraint properties,
-and is skipped when the row names no population type. A row's `dcid` outside dcid syntax gets
-`not_a_node`. A row whose `dcid` the code index serves is compared with the served
-definition cell by cell.
+only to a property the document holds with `declared_by == "dfo"`, and both walk `subClassOf`
+chains over the document's nodes alone (`SchemaLookup.ancestry`).
+
+The range rule judges a constraint value, a resolved node, under a property with
+`rangeIncludes`. The value's types are its document node's `types`, or for a value the check
+read the types the read answered. A type is unknown when the graph answers a `typeOf` target it
+cannot resolve (the build's `unresolved_types` for a document node), when `_Unread.fault` names
+it, or when it lies outside the document and is an id of the UN origin, since the build lists
+base ranges' descendants on the mixer alone. The value is in range when a type the document
+holds has an ancestry that meets a `rangeIncludes` class, whatever its other types. It gets
+`value_outside_range` when no type is in range, no type is unknown, every `rangeIncludes`
+class is in the build's `closed_ranges`, and the property holds no `rangeIncludes` target the
+graph cannot resolve (the build's `unresolved_ranges`): the document holds a closed range's
+whole descendant tree, so a type outside the document is no descendant of it. Otherwise it gets
+the warning `range_not_judged`.
+
+The domain rule judges the measured property and each constraint property against the row's
+population type. A property is outside its domain when the population type is a document node
+whose ancestry meets no `domainIncludes` class and is complete: no node on it carries a
+`subClassOf` target the graph cannot resolve (the build's `unresolved_parents`), and every
+parent it reaches is a document node or one the build read as absent. A population type outside
+the document, or one whose ancestry is incomplete, gets no domain finding, nor does a property
+holding a `domainIncludes` target the graph cannot resolve (the build's `unresolved_domains`),
+and the rule is
+skipped when the row names no population type. A property with no `rangeIncludes` or no
+`domainIncludes` admits anything. A row's `dcid` outside dcid syntax gets `not_a_node`. A row
+whose `dcid` the code index serves is compared with the served definition cell by cell.
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Final, Literal
@@ -96,7 +99,6 @@ from graph_api.schema_models import (
     CHECK_MAX_BODY_BYTES,
     CHECK_MAX_FINDINGS,
     CHECK_MAX_READ_IDS,
-    CHECK_MAX_ROW_ANCESTRY_IDS,
     CHECK_MAX_ROWS,
     ConstraintValue,
     FindingCode,
@@ -110,9 +112,7 @@ from origin_catalogue.graph import is_un_dcid
 
 _CLASS: Final[str] = "Class"
 _PROPERTY: Final[str] = "Property"
-_SUB_CLASS_OF: Final[str] = "subClassOf"
-_READ_PROPERTIES: Final[tuple[str, ...]] = ("typeOf", "name", _SUB_CLASS_OF)
-_ANCESTRY_PROPERTIES: Final[tuple[str, ...]] = (_SUB_CLASS_OF,)
+_READ_PROPERTIES: Final[tuple[str, ...]] = ("typeOf", "name")
 _DCID: Final[re.Pattern[str]] = re.compile(rf"{DcidConvertor.regex}")
 _CONSTRAINT: Final = "constraint_properties"
 _OBSERVATION: Final = "observation_properties"
@@ -122,6 +122,16 @@ _OBSERVATION: Final = "observation_properties"
 class _Node:
     types: frozenset[str]
     parents: tuple[str, ...] = ()
+    # Whether the graph answered a `typeOf` target it cannot resolve, a type of unknown kind
+    # that `types` leaves out.
+    unresolved_type: bool = False
+    # Whether the graph answered a `subClassOf` target it cannot resolve, which leaves a chain
+    # through the node incomplete.
+    unresolved_parent: bool = False
+    # Whether the graph answered a `rangeIncludes` or `domainIncludes` target it cannot
+    # resolve, a range or domain class of unknown name that `range` or `domain` leaves out.
+    unresolved_range: bool = False
+    unresolved_domain: bool = False
     dfo: bool = False
     domain: tuple[str, ...] = ()
     range: tuple[str, ...] = ()
@@ -129,40 +139,71 @@ class _Node:
 
 @dataclass(frozen=True)
 class SchemaLookup:
-    """The schema document's nodes as the check reads them."""
+    """The schema document's nodes as the check reads them, the ids the build read that the
+    graph answered with no node and no unresolved target (`absent`), and the range classes
+    whose whole descendant tree the document holds (`closed_ranges`)."""
 
     nodes: Mapping[str, _Node]
+    absent: frozenset[str]
+    closed_ranges: frozenset[str]
 
     @classmethod
-    def of(cls, document: SchemaDocument) -> SchemaLookup:
+    def of(
+        cls,
+        document: SchemaDocument,
+        *,
+        unresolved_types: Collection[str],
+        unresolved_parents: Collection[str],
+        unresolved_ranges: Collection[str],
+        unresolved_domains: Collection[str],
+        absent: Collection[str],
+        closed_ranges: Collection[str],
+    ) -> SchemaLookup:
+        """The lookup of `document` with the build's record (`graph_api.schema_document.Schema`):
+        its nodes in `unresolved_types`, `unresolved_parents`, `unresolved_ranges` or
+        `unresolved_domains` held a `typeOf`, `subClassOf`, `rangeIncludes` or `domainIncludes`
+        target the graph cannot resolve, the graph answered the ids in `absent` with nothing,
+        and the document holds the whole descendant tree of each class in `closed_ranges`."""
         nodes = {
             node.ref: _Node(
                 types=frozenset(node.types),
                 parents=tuple(node.sub_class_of),
+                unresolved_type=node.ref in unresolved_types,
+                unresolved_parent=node.ref in unresolved_parents,
+                unresolved_range=node.ref in unresolved_ranges,
+                unresolved_domain=node.ref in unresolved_domains,
                 dfo=node.declared_by == "dfo",
                 domain=tuple(node.domain_includes),
                 range=tuple(node.range_includes),
             )
             for node in document.nodes
         }
-        return cls(nodes=MappingProxyType(nodes))
+        return cls(
+            nodes=MappingProxyType(nodes),
+            absent=frozenset(absent),
+            closed_ranges=frozenset(closed_ranges),
+        )
 
-    def ancestry(self, dcids: Iterable[str]) -> set[str]:
-        """`dcids` and every `subClassOf` ancestor of them the document holds."""
-        return _ancestry(self.nodes, dcids)
-
-
-def _ancestry(nodes: Mapping[str, _Node], dcids: Iterable[str]) -> set[str]:
-    seen: set[str] = set()
-    stack = list(dcids)
-    while stack:
-        dcid = stack.pop()
-        if dcid in seen:
-            continue
-        seen.add(dcid)
-        if (node := nodes.get(dcid)) is not None:
-            stack.extend(node.parents)
-    return seen
+    def ancestry(self, dcid: str) -> tuple[set[str], bool]:
+        """`dcid`, a document node, and every `subClassOf` ancestor of it among the document's
+        nodes, and whether that is every ancestor: no node reached carries an unresolved
+        parent, and every parent reached is a document node or in `absent`."""
+        seen: set[str] = set()
+        complete = True
+        stack = [dcid]
+        while stack:
+            current = stack.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            node = self.nodes[current]
+            complete = complete and not node.unresolved_parent
+            for parent in node.parents:
+                if parent in self.nodes:
+                    stack.append(parent)
+                else:
+                    complete = complete and parent in self.absent
+        return seen, complete
 
 
 @dataclass(frozen=True)
@@ -198,9 +239,7 @@ def plan_reads(
     `CHECK_MAX_READ_IDS`, decided with no read. A row reads every shape field, constraint
     property and observation property outside the document, and every constraint value outside
     it that is a dcid, less the cells no read can decide and the values under a property no read
-    can decide or under a document node that is no Property. Once a row taken may read
-    ancestry (`_may_read_ancestry`), `CHECK_MAX_ROW_ANCESTRY_IDS` of the budget is held back
-    for it. The first row is always taken.
+    can decide or under a document node that is no Property. The first row is always taken.
 
     Args:
         rows: the candidate definitions, at least one.
@@ -210,28 +249,12 @@ def plan_reads(
     """
     unread = _Unread(lookup, un_served)
     ids: set[str] = set()
-    held_back = 0
     for count, row in enumerate(rows):
         taken = ids | _row_reads(row, unread)
-        held = held_back or (CHECK_MAX_ROW_ANCESTRY_IDS if _may_read_ancestry(row, unread) else 0)
-        if count and len(taken) + held > CHECK_MAX_READ_IDS:
+        if count and len(taken) > CHECK_MAX_READ_IDS:
             return ReadPlan(row_count=count, ids=frozenset(ids))
-        ids, held_back = taken, held
+        ids = taken
     return ReadPlan(row_count=len(rows), ids=frozenset(ids))
-
-
-def _may_read_ancestry(row: SchemaCheckRow, unread: _Unread) -> bool:
-    """Whether the range rule may read ancestry for a value of `row`: a value under a ranged
-    DFO Property of the document that is outside the document, or a document node with a type
-    outside it."""
-    nodes = unread.lookup.nodes
-    for prop, value in row.constraint_properties.items():
-        if not isinstance(value, str) or unread.fault(value) or not _ranged(nodes.get(prop)):
-            continue
-        held = nodes.get(value)
-        if held is None or not held.types <= nodes.keys():
-            return True
-    return False
 
 
 def _row_reads(row: SchemaCheckRow, unread: _Unread) -> set[str]:
@@ -247,85 +270,36 @@ def _row_reads(row: SchemaCheckRow, unread: _Unread) -> set[str]:
 
 
 class _Nodes:
-    """The nodes the rows name: document nodes free, the rest read once each, and the
-    `subClassOf` parents of every id read, `None` for an id whose parents the read left
-    unresolved."""
+    """The nodes the rows name: document nodes free, the rest read once each."""
 
     def __init__(self, lookup: SchemaLookup, *, reader: GraphNodeReader, deadline: float) -> None:
         self.lookup = lookup
         self._read: dict[str, _Node | None] = {}
-        self.parents: dict[str, tuple[str, ...] | None] = {}
         self._reader = reader
         self._deadline = deadline
 
     def read(self, dcids: Iterable[str]) -> None:
         """Read `dcids` in one `node_arcs_many` call that confirms each empty answer alone."""
-        for dcid, arcs in self._arcs(dcids, _READ_PROPERTIES).items():
-            self._read[dcid] = _held(arcs)
-
-    def read_parents(self, dcids: Iterable[str]) -> None:
-        """Read the `subClassOf` parents of `dcids` in one `node_arcs_many` call that confirms
-        each empty answer alone."""
-        self._arcs(dcids, _ANCESTRY_PROPERTIES)
-
-    def _arcs(
-        self, dcids: Iterable[str], properties: tuple[str, ...]
-    ) -> dict[str, dict[str, tuple[str, ...]] | None]:
         unknown = sorted(set(dcids))
         if not unknown:
-            return {}
+            return
         arcs = self._reader.node_arcs_many(
-            unknown, properties=properties, individual_probe_budget=None, deadline=self._deadline
+            unknown,
+            properties=_READ_PROPERTIES,
+            individual_probe_budget=None,
+            deadline=self._deadline,
         )
-        answers = {dcid: arcs.get(dcid) for dcid in unknown}
-        for dcid, answer in answers.items():
-            self.parents[dcid] = _parents(answer)
-        return answers
+        for dcid in unknown:
+            self._read[dcid] = _held(arcs.get(dcid))
 
     def get(self, dcid: str) -> _Node | None:
         if (node := self.lookup.nodes.get(dcid)) is not None:
             return node
         return self._read[dcid]
 
-    def ancestry(
-        self, dcids: Iterable[str], *, within: frozenset[str] | None = None
-    ) -> set[str] | None:
-        """`dcids` and every `subClassOf` ancestor of them, over the document and the parents
-        read, or `None` when the chain of one reaches an id neither holds, an id whose parents
-        were left unresolved, or, with `within`, an id outside the document and `within`. A
-        parent a document node names that the document lacks ends its chain, since the
-        document holds every ancestor the graph holds of each class it holds."""
-        seen: set[str] = set()
-        stack = [(dcid, False) for dcid in dcids]
-        while stack:
-            dcid, named_by_document = stack.pop()
-            if dcid in seen:
-                continue
-            seen.add(dcid)
-            if (node := self.lookup.nodes.get(dcid)) is not None:
-                stack.extend((parent, True) for parent in node.parents)
-            elif dcid in self.parents and (within is None or dcid in within):
-                if (parents := self.parents[dcid]) is None:
-                    return None
-                stack.extend((parent, False) for parent in parents)
-            elif not named_by_document:
-                return None
-        return seen
 
-
-def _parents(arcs: Mapping[str, tuple[str, ...]] | None) -> tuple[str, ...] | None:
-    """The `subClassOf` parents in `arcs`, `None` when one is unresolved, since a chain through
-    it cannot be read in full."""
-    parents = _resolved(arcs, _SUB_CLASS_OF)
-    if arcs is not None and len(parents) < len(arcs[_SUB_CLASS_OF]):
-        return None
-    return parents
-
-
-def _resolved(arcs: Mapping[str, tuple[str, ...]] | None, prop: str) -> tuple[str, ...]:
+def _resolved(arcs: Mapping[str, tuple[str, ...]], prop: str) -> tuple[str, ...]:
     """The values of `prop` in `arcs`, less the mark of an unresolved node."""
-    if arcs is None:
-        return ()
     return tuple(value for value in arcs[prop] if value != UNRESOLVED_NODE)
 
 
@@ -337,7 +311,7 @@ def _held(arcs: Mapping[str, tuple[str, ...]] | None) -> _Node | None:
     types = frozenset(_resolved(arcs, "typeOf"))
     if not types and all(value == UNRESOLVED_NODE for value in arcs["name"]):
         return None
-    return _Node(types=types)
+    return _Node(types=types, unresolved_type=UNRESOLVED_NODE in arcs["typeOf"])
 
 
 @dataclass(frozen=True)
@@ -385,17 +359,14 @@ def check_rows(
     Raises:
         GraphReadError: a read failed.
     """
+    unread = _Unread(lookup, un_served)
     nodes = _Nodes(lookup, reader=reader, deadline=deadline)
     nodes.read(reads)
-    unread = _Unread(lookup, un_served)
-    ancestry = _read_ancestry(rows, nodes, unread, budget=CHECK_MAX_READ_IDS - len(reads))
-    rows = rows[: ancestry.taken]
 
     findings: list[SchemaFinding] = []
     size = _envelope_bytes(generation)
     for index, row in enumerate(rows):
-        within = ancestry.first_row_within if index == 0 else None
-        found = _check_row(index, row, nodes, unread, within=within)
+        found = _check_row(index, row, nodes, unread)
         if row.dcid is not None and (served := code_index.statvar_by_dcid(row.dcid)) is not None:
             found.extend(_differences(index, row, served))
         found_size = sum(len(finding.model_dump_json().encode()) + 1 for finding in found)
@@ -439,120 +410,24 @@ def _ranged(node: _Node | None) -> bool:
     return node is not None and node.dfo and _is_property(node) and bool(node.range)
 
 
-def _range_judged(
-    prop: str, value: ConstraintValue, nodes: _Nodes, unread: _Unread
-) -> tuple[_Node, _Node] | None:
-    """The nodes of `value` and `prop` when the range rule judges the cell: `prop` is a
-    ranged DFO Property and `value` a resolved node. `None` otherwise."""
-    if unread.fault(prop) or not isinstance(value, str) or unread.fault(value):
-        return None
-    if not _ranged(prop_node := nodes.get(prop)) or prop_node is None:
-        return None
-    held = nodes.get(value)
-    if held is None or _node_fault(held) is not None:
-        return None
-    return held, prop_node
-
-
-def _outside_range(
-    value: _Node, prop: _Node, nodes: _Nodes, *, within: frozenset[str] | None
-) -> bool:
-    """`value` has a type, the ancestry of every one is known, through `within` where given,
-    and none reaches `prop`'s range."""
-    if not value.types or (ancestry := nodes.ancestry(value.types, within=within)) is None:
-        return False
-    return ancestry.isdisjoint(prop.range)
-
-
-@dataclass(frozen=True)
-class _Ancestry:
-    """How many rows from the first the ancestry reads leave whole, and, when the first row's
-    chains hold more than `CHECK_MAX_ROW_ANCESTRY_IDS` ids, the ids outside the document its
-    range verdicts may pass through."""
-
-    taken: int
-    first_row_within: frozenset[str] | None
-
-
-def _read_ancestry(
-    rows: Sequence[SchemaCheckRow], nodes: _Nodes, unread: _Unread, *, budget: int
-) -> _Ancestry:
-    """Read the `subClassOf` chains of the types the range rule judges that lie outside the
-    document, one `node_arcs_many` call per level of the chains, and return how many rows from
-    the first are taken.
-
-    A row's ancestry is every id outside the document that its value types' chains pass
-    through, found a level at a time and sorted within a level. Within a level, rows claim
-    their new ids in row order, and an id counts once against `budget` whichever rows claim it
-    and whether or not an earlier read holds its parents. The level then reads the parents of
-    the ids claimed that no read holds. While the first row's chains may still grow, the other
-    rows leave room for the rest of its `CHECK_MAX_ROW_ANCESTRY_IDS`. A row after the first
-    whose ancestry would pass that room or its own `CHECK_MAX_ROW_ANCESTRY_IDS` is not taken,
-    nor any row after it, so each row taken but the first has its chains read in full, as it
-    would alone, and a row cut leads the next check. The first row is always taken: past
-    `CHECK_MAX_ROW_ANCESTRY_IDS` it keeps the first ids of its ancestry in that order, the same
-    whatever rows follow, and a type whose chain leaves them gets no range verdict.
-    """
-    document = nodes.lookup.nodes
-    frontiers: list[set[str]] = []
-    for row in rows:
-        types: set[str] = set()
-        for prop, value in row.constraint_properties.items():
-            if (judged := _range_judged(prop, value, nodes, unread)) is not None:
-                types.update(judged[0].types)
-        frontiers.append(types)
-    claimed: list[set[str]] = [set() for _ in rows]
-    spent: set[str] = set()
-    taken = len(rows)
-    first_row_full = True
-    while any(frontiers[index] for index in range(taken)):
-        for index in range(taken):
-            new = sorted(
-                dcid
-                for dcid in frontiers[index]
-                if dcid not in claimed[index]
-                and dcid not in document
-                and unread.fault(dcid) is None
-            )
-            room = budget - len(spent)
-            if index and frontiers[0]:
-                room -= CHECK_MAX_ROW_ANCESTRY_IDS - len(claimed[0])
-            kept = _first_fitting(
-                new,
-                spent=spent,
-                room=room,
-                row_room=CHECK_MAX_ROW_ANCESTRY_IDS - len(claimed[index]),
-            )
-            if len(kept) < len(new):
-                if index:
-                    taken = index
-                    break
-                first_row_full = False
-            claimed[index].update(kept)
-            spent.update(kept)
-            frontiers[index] = set(kept)
-        nodes.read_parents(
-            dcid for dcid in sorted(set().union(*frontiers[:taken])) if dcid not in nodes.parents
-        )
-        for index in range(taken):
-            frontiers[index] = {
-                parent for dcid in frontiers[index] for parent in nodes.parents[dcid] or ()
-            }
-    within = None if first_row_full else frozenset(claimed[0])
-    return _Ancestry(taken=taken, first_row_within=within)
-
-
-def _first_fitting(new: list[str], *, spent: set[str], room: int, row_room: int) -> list[str]:
-    """The ids of `new` from the first while they number at most `row_room` and those not in
-    `spent` at most `room`."""
-    kept: list[str] = []
-    fresh = 0
-    for dcid in new:
-        fresh += dcid not in spent
-        if len(kept) == row_room or fresh > room:
-            break
-        kept.append(dcid)
-    return kept
+def _range_fault(value: _Node, prop: _Node, unread: _Unread) -> FindingCode | None:
+    """`None` when a type of `value` the document holds has an ancestry that meets `prop`'s
+    range; `value_outside_range` when no type does, no type is unknown, every range class is
+    closed and none is unresolved; `range_not_judged` otherwise. A type outside the document
+    is unknown when `_Unread.fault` names it or it is an id of the UN origin, whose classes
+    the build's descendant listings of base ranges do not reach."""
+    lookup = unread.lookup
+    unknown = value.unresolved_type
+    for type_ in value.types:
+        if type_ in lookup.nodes:
+            if not lookup.ancestry(type_)[0].isdisjoint(prop.range):
+                return None
+        elif unread.fault(type_) is not None or is_un_dcid(type_):
+            unknown = True
+    closed = not prop.unresolved_range and lookup.closed_ranges.issuperset(prop.range)
+    if not unknown and closed:
+        return "value_outside_range"
+    return "range_not_judged"
 
 
 _NODE_FAULTS: Final[Mapping[ConstraintValueFault, FindingCode]] = MappingProxyType(
@@ -567,7 +442,7 @@ def _node_fault(node: _Node | None) -> FindingCode | None:
 
 
 _WARNINGS: Final[frozenset[FindingCode]] = frozenset(
-    {"property_outside_domain", "definition_differs"}
+    {"range_not_judged", "property_outside_domain", "definition_differs"}
 )
 
 
@@ -598,8 +473,6 @@ def _check_row(
     row: SchemaCheckRow,
     nodes: _Nodes,
     unread: _Unread,
-    *,
-    within: frozenset[str] | None,
 ) -> list[SchemaFinding]:
     findings: list[SchemaFinding] = []
     lookup = unread.lookup
@@ -626,7 +499,8 @@ def _check_row(
         elif _CLASS not in held.types:
             find("population_type", row.population_type, "not_a_class")
         elif row.population_type in lookup.nodes:
-            population = lookup.ancestry([row.population_type])
+            reached, complete = lookup.ancestry(row.population_type)
+            population = reached if complete else None
 
     def check_property(field: FindingField, prop: str, *, cell: bool) -> bool:
         """Find the property's faults and return whether it is a held Property. `cell` is true
@@ -652,6 +526,7 @@ def _check_row(
             population is not None
             and held.dfo
             and held.domain
+            and not held.unresolved_domain
             and population.isdisjoint(held.domain)
         ):
             find_property("property_outside_domain")
@@ -680,12 +555,14 @@ def _check_row(
         if fault := unread.fault(value):
             find(_CONSTRAINT, value, fault, prop=prop)
             continue
-        if fault := _node_fault(nodes.get(value)):
-            find(_CONSTRAINT, value, fault, prop=prop)
-        elif (judged := _range_judged(prop, value, nodes, unread)) is not None and _outside_range(
-            *judged, nodes, within=within
+        held = nodes.get(value)
+        if (fault := _node_fault(held)) or (
+            held is not None
+            and _ranged(prop_node := nodes.get(prop))
+            and prop_node is not None
+            and (fault := _range_fault(held, prop_node, unread))
         ):
-            find(_CONSTRAINT, value, "value_outside_range", prop=prop)
+            find(_CONSTRAINT, value, fault, prop=prop)
 
     for prop in row.observation_properties:
         if (fault := unread.fault(prop)) is None:
