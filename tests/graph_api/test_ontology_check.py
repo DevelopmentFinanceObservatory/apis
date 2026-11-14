@@ -10,14 +10,7 @@ import pytest
 
 from code_index import StatVarRow
 from dc_graph import ArcTarget, GraphReadError
-from graph_api.ontology_check import (
-    OntologyCheckTooManyFindings,
-    OntologyCheckTooManyReads,
-    OntologyCheckUnservedId,
-    OntologyLookup,
-    check_rows,
-    plan_reads,
-)
+from graph_api.ontology_check import CheckedRows, OntologyLookup, check_rows, plan_reads
 from graph_api.ontology_document import Ontology, build_ontology
 from graph_api.ontology_models import (
     CHECK_MAX_CONSTRAINT_PROPERTIES,
@@ -186,26 +179,70 @@ def _as_row(served: StatVarRow, **fields: Any) -> OntologyCheckRow:
     )
 
 
+def _checked(
+    rows: Sequence[OntologyCheckRow],
+    reader: FakeGraphNodeReader | None = None,
+    lookup: OntologyLookup | None = None,
+    *,
+    un_served: bool = True,
+) -> CheckedRows:
+    """`check_rows` over the rows `plan_reads` takes."""
+    lookup = lookup or _lookup()
+    plan = plan_reads(rows, lookup=lookup, un_served=un_served)
+    return check_rows(
+        rows[: plan.row_count],
+        reads=plan.ids,
+        lookup=lookup,
+        reader=reader or _RecordingReader(),
+        code_index=INDEX,
+        un_served=un_served,
+        deadline=_DEADLINE,
+    )
+
+
+type _Finding = tuple[str, str | None, str, object, object, str]
+
+
 def _check(
     rows: Sequence[OntologyCheckRow],
     reader: FakeGraphNodeReader | None = None,
     lookup: OntologyLookup | None = None,
-) -> list[tuple[str, object, str, str]]:
-    lookup = lookup or _lookup()
-    findings = check_rows(
-        rows,
-        reads=plan_reads(rows, lookup=lookup, un_served=True),
-        lookup=lookup,
-        reader=reader or _RecordingReader(),
-        code_index=INDEX,
-        deadline=_DEADLINE,
-    )
-    return [(finding.field, finding.value, finding.code, finding.severity) for finding in findings]
+    *,
+    un_served: bool = True,
+) -> list[_Finding]:
+    """The findings over every row, as `(field, property, subject, value, served, code)`."""
+    checked = _checked(rows, reader, lookup, un_served=un_served)
+    assert checked.row_count == len(rows)
+    return [
+        (
+            finding.field,
+            finding.property,
+            finding.subject,
+            finding.value,
+            finding.served,
+            finding.code,
+        )
+        for finding in checked.findings
+    ]
+
+
+def _cell(field: str, value: object, code: str) -> _Finding:
+    return (field, None, "value", value, None, code)
+
+
+def _prop(prop: str, code: str) -> _Finding:
+    return ("constraint_properties", prop, "property", prop, None, code)
+
+
+def _value(prop: str, value: object, code: str) -> _Finding:
+    return ("constraint_properties", prop, "value", value, None, code)
+
+
+def _observation(prop: str, code: str) -> _Finding:
+    return ("observation_properties", prop, "property", prop, None, code)
 
 
 _SERVED = INDEX.statvars[0]
-_CRS = "constraint_properties.crsPurpose"
-_GENDER = "constraint_properties.beneficiaryGender"
 
 
 @pytest.mark.parametrize(
@@ -218,27 +255,27 @@ _GENDER = "constraint_properties.beneficiaryGender"
         ),
         pytest.param(
             _row(constraint_properties={"crsPurpos": "CRSPurposeCode12220"}),
-            [("constraint_properties.crsPurpos", "crsPurpos", "node_not_held", "error")],
+            [_prop("crsPurpos", "node_not_held")],
             id="key-not-held",
         ),
         pytest.param(
             _row(constraint_properties={"crsPurpose": "CRSPurposeCode99999"}),
-            [(_CRS, "CRSPurposeCode99999", "node_not_held", "error")],
+            [_value("crsPurpose", "CRSPurposeCode99999", "node_not_held")],
             id="value-not-held-on-a-fully-listed-enumeration",
         ),
         pytest.param(
             _row(constraint_properties={"recipientPlace": "country/XYZ"}),
-            [("constraint_properties.recipientPlace", "country/XYZ", "node_not_held", "error")],
+            [_value("recipientPlace", "country/XYZ", "node_not_held")],
             id="value-not-held-on-a-range-that-is-no-enumeration",
         ),
         pytest.param(
             _row(constraint_properties={"beneficiaryGender": "NoSuchGender"}),
-            [(_GENDER, "NoSuchGender", "node_not_held", "error")],
+            [_value("beneficiaryGender", "NoSuchGender", "node_not_held")],
             id="value-not-held-on-an-instance-property-with-no-range",
         ),
         pytest.param(
             _row(population_type="Person", constraint_properties={"gender": "NoSuchGender"}),
-            [("constraint_properties.gender", "NoSuchGender", "node_not_held", "error")],
+            [_value("gender", "NoSuchGender", "node_not_held")],
             id="value-not-held-on-a-base-property",
         ),
         pytest.param(
@@ -250,20 +287,20 @@ _GENDER = "constraint_properties.beneficiaryGender"
                 }
             ),
             [
-                ("constraint_properties.amount", 5, "node_not_held", "error"),
-                (_GENDER, "two words", "node_not_held", "error"),
-                ("constraint_properties.gender", True, "node_not_held", "error"),
+                _value("amount", 5, "node_not_held"),
+                _value("beneficiaryGender", "two words", "node_not_held"),
+                _value("gender", True, "node_not_held"),
             ],
             id="literal-value",
         ),
         pytest.param(
             _row(constraint_properties={"beneficiaryGender": "PlaceholderCode"}),
-            [(_GENDER, "PlaceholderCode", "node_provisional", "error")],
+            [_value("beneficiaryGender", "PlaceholderCode", "node_provisional")],
             id="provisional-only",
         ),
         pytest.param(
             _row(constraint_properties={"beneficiaryGender": "UntypedCode"}),
-            [(_GENDER, "UntypedCode", "node_untyped", "error")],
+            [_value("beneficiaryGender", "UntypedCode", "node_untyped")],
             id="untyped-value-outside-the-document",
         ),
         pytest.param(
@@ -273,17 +310,17 @@ _GENDER = "constraint_properties.beneficiaryGender"
         ),
         pytest.param(
             _row(constraint_properties={"crsPurpose": None}),
-            [(_CRS, None, "value_missing", "error")],
+            [_value("crsPurpose", None, "value_missing")],
             id="null-value",
         ),
         pytest.param(
             _row(constraint_properties={"FinancialFlow": "CRSPurposeCode120"}),
-            [("constraint_properties.FinancialFlow", "FinancialFlow", "not_a_property", "error")],
+            [_prop("FinancialFlow", "not_a_property")],
             id="key-is-class",
         ),
         pytest.param(
             _row(population_type="crsPurpose"),
-            [("population_type", "crsPurpose", "not_a_class", "error")],
+            [_cell("population_type", "crsPurpose", "not_a_class")],
             id="population-type-is-property",
         ),
         pytest.param(
@@ -293,42 +330,42 @@ _GENDER = "constraint_properties.beneficiaryGender"
         ),
         pytest.param(
             _row(measured_property="FinancialFlow"),
-            [("measured_property", "FinancialFlow", "not_a_property", "error")],
+            [_cell("measured_property", "FinancialFlow", "not_a_property")],
             id="measured-property-is-class",
         ),
         pytest.param(
             _row(observation_properties=["financingRecipient", "FinancialFlow"]),
-            [("observation_properties", "FinancialFlow", "not_a_property", "error")],
+            [_observation("FinancialFlow", "not_a_property")],
             id="observation-property-is-class",
         ),
         pytest.param(
             _row(stat_type="noSuchStatType"),
-            [("stat_type", "noSuchStatType", "node_not_held", "error")],
+            [_cell("stat_type", "noSuchStatType", "node_not_held")],
             id="stat-type-not-held",
         ),
         pytest.param(
             _row(measurement_qualifier="noSuchQualifier"),
-            [("measurement_qualifier", "noSuchQualifier", "node_not_held", "error")],
+            [_cell("measurement_qualifier", "noSuchQualifier", "node_not_held")],
             id="qualifier-not-held",
         ),
         pytest.param(
             _row(measurement_denominator="noSuchDenominator"),
-            [("measurement_denominator", "noSuchDenominator", "node_not_held", "error")],
+            [_cell("measurement_denominator", "noSuchDenominator", "node_not_held")],
             id="denominator-not-held",
         ),
         pytest.param(
             _row(stat_type="UntypedCode"),
-            [("stat_type", "UntypedCode", "node_untyped", "error")],
+            [_cell("stat_type", "UntypedCode", "node_untyped")],
             id="stat-type-untyped",
         ),
         pytest.param(
             _row(measurement_qualifier="PlaceholderCode"),
-            [("measurement_qualifier", "PlaceholderCode", "node_provisional", "error")],
+            [_cell("measurement_qualifier", "PlaceholderCode", "node_provisional")],
             id="qualifier-provisional-only",
         ),
         pytest.param(
             _row(measurement_denominator="UntypedCode"),
-            [("measurement_denominator", "UntypedCode", "node_untyped", "error")],
+            [_cell("measurement_denominator", "UntypedCode", "node_untyped")],
             id="denominator-untyped",
         ),
         pytest.param(
@@ -336,7 +373,7 @@ _GENDER = "constraint_properties.beneficiaryGender"
         ),
         pytest.param(
             _row(constraint_properties={"crsPurpose": "DAC1AidType1010"}),
-            [(_CRS, "DAC1AidType1010", "value_outside_range", "error")],
+            [_value("crsPurpose", "DAC1AidType1010", "value_outside_range")],
             id="member-of-another-enumeration",
         ),
         pytest.param(
@@ -352,14 +389,7 @@ _GENDER = "constraint_properties.beneficiaryGender"
         ),
         pytest.param(
             _row(constraint_properties={"recipientPlace": "CRSPurposeCode120"}),
-            [
-                (
-                    "constraint_properties.recipientPlace",
-                    "CRSPurposeCode120",
-                    "value_outside_range",
-                    "error",
-                )
-            ],
+            [_value("recipientPlace", "CRSPurposeCode120", "value_outside_range")],
             id="held-value-typed-in-the-document-outside-a-class-range",
         ),
         pytest.param(
@@ -369,34 +399,27 @@ _GENDER = "constraint_properties.beneficiaryGender"
         ),
         pytest.param(
             _row(constraint_properties={"purposeOrPlace": "CRSPurposeCode99999"}),
-            [
-                (
-                    "constraint_properties.purposeOrPlace",
-                    "CRSPurposeCode99999",
-                    "node_not_held",
-                    "error",
-                )
-            ],
+            [_value("purposeOrPlace", "CRSPurposeCode99999", "node_not_held")],
             id="value-outside-a-range-mixing-an-enumeration-and-a-class",
         ),
         pytest.param(
             _row(constraint_properties={"recipientGender": "NoSuchGender"}),
-            [("constraint_properties.recipientGender", "NoSuchGender", "node_not_held", "error")],
+            [_value("recipientGender", "NoSuchGender", "node_not_held")],
             id="value-outside-an-incomplete-enumeration",
         ),
         pytest.param(
             _row(constraint_properties={"beneficiaryGroup": "NoSuchGender"}),
-            [("constraint_properties.beneficiaryGroup", "NoSuchGender", "node_not_held", "error")],
+            [_value("beneficiaryGroup", "NoSuchGender", "node_not_held")],
             id="value-outside-a-complete-enumeration-with-an-incomplete-sub-enumeration",
         ),
         pytest.param(
             _row(constraint_properties={"noSuchProperty": "NoSuchValue"}),
-            [("constraint_properties.noSuchProperty", "noSuchProperty", "node_not_held", "error")],
+            [_prop("noSuchProperty", "node_not_held")],
             id="value-under-a-property-not-held",
         ),
         pytest.param(
             _row(constraint_properties={"noSuchProperty": None}),
-            [("constraint_properties.noSuchProperty", "noSuchProperty", "node_not_held", "error")],
+            [_prop("noSuchProperty", "node_not_held")],
             id="null-value-under-a-property-not-held",
         ),
         pytest.param(_row(), [], id="base-measured-property-outside-domain"),
@@ -405,7 +428,7 @@ _GENDER = "constraint_properties.beneficiaryGender"
                 population_type="EconomicActivity",
                 constraint_properties={"crsPurpose": "CRSPurposeCode120"},
             ),
-            [(_CRS, "crsPurpose", "property_outside_domain", "warning")],
+            [_prop("crsPurpose", "property_outside_domain")],
             id="instance-property-outside-domain",
         ),
         pytest.param(
@@ -417,7 +440,7 @@ _GENDER = "constraint_properties.beneficiaryGender"
         ),
         pytest.param(
             _row(measured_property="grantEquivalent", population_type="FinancingEvent"),
-            [("measured_property", "grantEquivalent", "property_outside_domain", "warning")],
+            [_cell("measured_property", "grantEquivalent", "property_outside_domain")],
             id="instance-measured-property-outside-domain",
         ),
         pytest.param(
@@ -443,46 +466,134 @@ _GENDER = "constraint_properties.beneficiaryGender"
                     "crsPurpose": "CRSPurposeCode120",
                 },
             ),
-            [(_CRS, "CRSPurposeCode12220", "definition_differs", "warning")],
+            [
+                (
+                    "constraint_properties",
+                    "crsPurpose",
+                    "value",
+                    "CRSPurposeCode120",
+                    "CRSPurposeCode12220",
+                    "definition_differs",
+                )
+            ],
             id="served-constraint-differs",
         ),
         pytest.param(
             _as_row(_SERVED, measured_property="grantEquivalent"),
-            [("measured_property", "amount", "definition_differs", "warning")],
+            [
+                (
+                    "measured_property",
+                    None,
+                    "value",
+                    "grantEquivalent",
+                    "amount",
+                    "definition_differs",
+                )
+            ],
             id="served-five-tuple-differs",
         ),
         pytest.param(
             _as_row(_SERVED, observation_properties=[]),
-            [("observation_properties", ["financingRecipient"], "definition_differs", "warning")],
+            [
+                (
+                    "observation_properties",
+                    None,
+                    "value",
+                    [],
+                    ["financingRecipient"],
+                    "definition_differs",
+                )
+            ],
             id="served-observation-properties-differ",
         ),
         pytest.param(_as_row(_SERVED), [], id="served-same-definition"),
+        pytest.param(
+            _row(measured_property=None),
+            [_cell("measured_property", None, "value_missing")],
+            id="measured-property-absent",
+        ),
+        pytest.param(
+            _row(measured_property=""),
+            [_cell("measured_property", None, "value_missing")],
+            id="measured-property-blank",
+        ),
+        pytest.param(
+            _row(constraint_properties={"crsPurpose": ""}),
+            [_value("crsPurpose", None, "value_missing")],
+            id="constraint-value-blank",
+        ),
+        pytest.param(
+            _row(stat_type="", observation_properties=[""]), [], id="blank-cells-are-absent"
+        ),
+        pytest.param(
+            _row(population_type="Financial Flow"),
+            [_cell("population_type", "Financial Flow", "node_not_held")],
+            id="population-type-outside-dcid-syntax",
+        ),
+        pytest.param(
+            _row(measured_property="dcid:amount"),
+            [_cell("measured_property", "dcid:amount", "node_not_held")],
+            id="measured-property-outside-dcid-syntax",
+        ),
+        pytest.param(
+            _row(constraint_properties={"crs purpose": "CRSPurposeCode120"}),
+            [_prop("crs purpose", "node_not_held")],
+            id="key-outside-dcid-syntax",
+        ),
+        pytest.param(
+            _row(observation_properties=["financing recipient"]),
+            [_observation("financing recipient", "node_not_held")],
+            id="observation-property-outside-dcid-syntax",
+        ),
+        pytest.param(
+            _row(dcid="Amount CRS"),
+            [_cell("dcid", "Amount CRS", "node_not_held")],
+            id="dcid-outside-dcid-syntax",
+        ),
     ],
 )
-def test_check_rules(row: OntologyCheckRow, expected: list[tuple[str, object, str, str]]) -> None:
+def test_check_rules(row: OntologyCheckRow, expected: list[_Finding]) -> None:
     assert _check([row]) == expected
 
 
-def test_findings_come_in_row_then_field_order_with_the_row_ref() -> None:
+def test_findings_come_in_row_then_field_order_with_the_row_index_and_ref() -> None:
     rows = [
         _row(ref="a", stat_type="noSuchStatType", population_type="crsPurpose"),
-        _row(ref="b", constraint_properties={"crsPurpose": None}),
+        _row(ref=None, constraint_properties={"crsPurpose": None}),
+        _row(ref="a", measurement_qualifier="noSuchQualifier"),
     ]
 
-    findings = check_rows(
-        rows,
-        reads=plan_reads(rows, lookup=_lookup(), un_served=True),
-        lookup=_lookup(),
-        reader=_RecordingReader(),
-        code_index=INDEX,
-        deadline=_DEADLINE,
-    )
+    findings = _checked(rows).findings
 
-    assert [(finding.ref, finding.field) for finding in findings] == [
-        ("a", "population_type"),
-        ("a", "stat_type"),
-        ("b", _CRS),
+    assert [(finding.row, finding.ref, finding.field) for finding in findings] == [
+        (0, "a", "population_type"),
+        (0, "a", "stat_type"),
+        (1, None, "constraint_properties"),
+        (2, "a", "measurement_qualifier"),
     ]
+
+
+@pytest.mark.parametrize(
+    ("code", "severity"),
+    [
+        pytest.param("node_not_held", "error", id="error"),
+        pytest.param("property_outside_domain", "warning", id="domain"),
+        pytest.param("definition_differs", "warning", id="differs"),
+    ],
+)
+def test_a_finding_carries_its_code_severity(code: str, severity: str) -> None:
+    rows = [
+        _row(stat_type="noSuchStatType"),
+        _row(
+            population_type="EconomicActivity",
+            constraint_properties={"crsPurpose": "CRSPurposeCode120"},
+        ),
+        _as_row(_SERVED, measured_property="grantEquivalent"),
+    ]
+
+    severities = {finding.code: finding.severity for finding in _checked(rows).findings}
+
+    assert severities[code] == severity
 
 
 def test_every_served_statvar_sent_back_has_no_finding() -> None:
@@ -535,8 +646,8 @@ def test_a_value_under_a_property_not_held_is_read_and_gets_no_finding() -> None
     findings = _check([row], reader)
 
     assert findings == [
-        ("constraint_properties.gender", "NoSuchGender", "node_not_held", "error"),
-        ("constraint_properties.noSuchProperty", "noSuchProperty", "node_not_held", "error"),
+        _value("gender", "NoSuchGender", "node_not_held"),
+        _prop("noSuchProperty", "node_not_held"),
     ]
     assert reader.batches == [["NoSuchGender", "NoSuchValue", "gender", "noSuchProperty"]]
 
@@ -571,15 +682,15 @@ def test_no_read_where_the_document_or_the_value_decides(constraints: dict[str, 
     [
         pytest.param(
             (ArcTarget(value="Property"),),
-            [(_CRS, "CRSPurposeCode99999", "node_not_held", "error")],
+            [_value("crsPurpose", "CRSPurposeCode99999", "node_not_held")],
             [["CRSPurposeCode99999"]],
             id="no-type-sourced",
         ),
         pytest.param(
             (ArcTarget(value="Property", provenances=(DFO,)), ArcTarget(value="Thing")),
             [
-                (_CRS, "crsPurpose", "property_outside_domain", "warning"),
-                (_CRS, "CRSPurposeCode99999", "node_not_held", "error"),
+                _prop("crsPurpose", "property_outside_domain"),
+                _value("crsPurpose", "CRSPurposeCode99999", "node_not_held"),
             ],
             [["CRSPurposeCode99999"]],
             id="one-type-sourced-by-the-instance",
@@ -588,7 +699,7 @@ def test_no_read_where_the_document_or_the_value_decides(constraints: dict[str, 
 )
 def test_a_property_is_judged_by_the_provenances_its_types_carry(
     types: tuple[ArcTarget, ...],
-    expected: list[tuple[str, object, str, str]],
+    expected: list[_Finding],
     batches: list[list[str]],
 ) -> None:
     """`crsPurpose` with no sourced type is served `declared_by` null, so neither its range nor
@@ -636,12 +747,12 @@ def _absent_rows(count: int) -> list[OntologyCheckRow]:
     ]
 
 
-def test_rows_naming_the_cap_of_ids_to_read_are_read() -> None:
+def test_rows_naming_the_budget_of_ids_to_read_are_read() -> None:
     reader = _RecordingReader()
 
     findings = _check(_absent_rows(CHECK_MAX_READ_IDS), reader)
 
-    assert [code for _, _, code, _ in findings] == ["node_not_held"] * CHECK_MAX_READ_IDS
+    assert [finding[-1] for finding in findings] == ["node_not_held"] * CHECK_MAX_READ_IDS
     assert len(reader.batches[0]) == CHECK_MAX_READ_IDS
 
 
@@ -663,7 +774,7 @@ def _maximal_row() -> OntologyCheckRow:
     )
 
 
-def test_a_single_row_naming_the_most_ids_a_row_can_is_read_within_the_cap() -> None:
+def test_a_single_row_naming_the_most_ids_a_row_can_is_read_within_the_budget() -> None:
     reader = _RecordingReader()
 
     findings = _check([_maximal_row()], reader)
@@ -671,54 +782,94 @@ def test_a_single_row_naming_the_most_ids_a_row_can_is_read_within_the_cap() -> 
     asked = {dcid for batch in reader.batches for dcid in batch}
     assert len(asked) == CHECK_MAX_READ_IDS
     assert len(reader.batches) == 1
-    assert {code for _, _, code, _ in findings} == {"node_not_held"}
+    assert {finding[-1] for finding in findings} == {"node_not_held"}
     assert len(findings) == CHECK_MAX_READ_IDS - CHECK_MAX_CONSTRAINT_PROPERTIES
 
 
 @pytest.mark.parametrize(
-    "rows",
+    ("rows", "taken"),
     [
         pytest.param(
-            lambda: _absent_rows(CHECK_MAX_READ_IDS + 1), id="values-under-document-properties"
+            lambda: _absent_rows(CHECK_MAX_READ_IDS + 5),
+            CHECK_MAX_READ_IDS,
+            id="values-under-document-properties",
         ),
-        pytest.param(lambda: [_maximal_row(), *_absent_rows(1)], id="every-field-of-a-row"),
+        pytest.param(lambda: [_maximal_row(), *_absent_rows(1)], 1, id="every-field-of-a-row"),
         pytest.param(
             lambda: [
                 _row(ref=str(i), constraint_properties={"crsPurpose": f"CRSPurposeCode9{i:04d}"})
                 for i in range(CHECK_MAX_READ_IDS + 1)
             ],
+            CHECK_MAX_READ_IDS,
             id="values-under-a-complete-enumeration",
+        ),
+        pytest.param(
+            lambda: [*_absent_rows(CHECK_MAX_READ_IDS), _absent_rows(1)[0], _row()],
+            CHECK_MAX_READ_IDS + 2,
+            id="rows-reading-ids-already-taken",
         ),
     ],
 )
-def test_rows_naming_one_id_past_the_cap_are_refused_with_no_read(
-    rows: Callable[[], list[OntologyCheckRow]],
+def test_rows_past_the_read_budget_stop_before_the_row_that_passes_it(
+    rows: Callable[[], list[OntologyCheckRow]], taken: int
 ) -> None:
-    with pytest.raises(OntologyCheckTooManyReads) as raised:
-        plan_reads(rows(), lookup=_lookup(), un_served=True)
+    reader = _RecordingReader()
+    sent = rows()
 
-    assert raised.value.count == CHECK_MAX_READ_IDS + 1
+    plan = plan_reads(sent, lookup=_lookup(), un_served=True)
+    checked = _checked(sent, reader)
+
+    assert plan.row_count == checked.row_count == taken
+    assert len(plan.ids) <= CHECK_MAX_READ_IDS
+    assert reader.batches == [sorted(plan.ids)]
+    assert {finding.row for finding in checked.findings} <= set(range(taken))
 
 
 @pytest.mark.parametrize(
-    ("row", "read"),
+    ("row", "expected"),
     [
         pytest.param(
             _row(constraint_properties={"beneficiaryGender": "undata/NoSuchGroup"}),
-            "undata/NoSuchGroup",
+            [_value("beneficiaryGender", "undata/NoSuchGroup", "origin_not_served")],
             id="value",
         ),
-        pytest.param(_row(measured_property="undataAge"), "undataAge", id="property"),
+        pytest.param(
+            _row(measured_property="undataAge"),
+            [_cell("measured_property", "undataAge", "origin_not_served")],
+            id="measured-property",
+        ),
+        pytest.param(
+            _row(population_type="undata/Person"),
+            [_cell("population_type", "undata/Person", "origin_not_served")],
+            id="population-type",
+        ),
+        pytest.param(
+            _row(stat_type="undata/Stat"),
+            [_cell("stat_type", "undata/Stat", "origin_not_served")],
+            id="stat-type",
+        ),
+        pytest.param(
+            _row(constraint_properties={"undataSex": "undata/Female"}),
+            [_prop("undataSex", "origin_not_served")],
+            id="constraint-property-and-its-value",
+        ),
+        pytest.param(
+            _row(observation_properties=["undataUnit"]),
+            [_observation("undataUnit", "origin_not_served")],
+            id="observation-property",
+        ),
     ],
 )
-def test_a_un_id_to_read_is_refused_while_the_un_origin_is_off(
-    row: OntologyCheckRow, read: str
+def test_a_un_id_gets_origin_not_served_with_no_read_while_the_un_origin_is_off(
+    row: OntologyCheckRow, expected: list[_Finding]
 ) -> None:
-    with pytest.raises(OntologyCheckUnservedId) as raised:
-        plan_reads([row], lookup=_lookup(), un_served=False)
+    off = _RecordingReader()
+    on = _RecordingReader()
 
-    assert raised.value.dcid == read
-    assert plan_reads([row], lookup=_lookup(), un_served=True) == {read}
+    assert _check([row], off, un_served=False) == expected
+    assert off.batches == []
+    assert "origin_not_served" not in {finding[-1] for finding in _check([row], on)}
+    assert on.batches != []
 
 
 def test_every_read_asks_the_type_and_name_and_probes_every_empty_answer() -> None:
@@ -745,11 +896,11 @@ def test_a_held_node_with_neither_a_type_nor_a_name_reads_as_absent() -> None:
         [_row(constraint_properties={"beneficiaryGender": "DescribedCode"})], _DescribedOnly()
     )
 
-    assert findings == [(_GENDER, "DescribedCode", "node_not_held", "error")]
+    assert findings == [_value("beneficiaryGender", "DescribedCode", "node_not_held")]
 
 
 def _many_findings_row(ref: str) -> OntologyCheckRow:
-    """A row with one `node_not_held` finding on each constraint property, read from nothing."""
+    """A row with one `node_not_held` finding on each constraint property."""
     return _row(
         ref=ref,
         constraint_properties={
@@ -758,15 +909,15 @@ def _many_findings_row(ref: str) -> OntologyCheckRow:
     )
 
 
-def test_findings_past_the_cap_stop_the_check() -> None:
-    rows = [
-        _many_findings_row(str(i))
-        for i in range(CHECK_MAX_FINDINGS // CHECK_MAX_CONSTRAINT_PROPERTIES + 1)
-    ]
+def test_findings_past_the_cap_stop_before_the_row_that_passes_it() -> None:
+    fit = CHECK_MAX_FINDINGS // CHECK_MAX_CONSTRAINT_PROPERTIES
+    rows = [_many_findings_row(str(i)) for i in range(fit + 2)]
 
-    assert len(_check(rows[:-1])) == CHECK_MAX_FINDINGS
-    with pytest.raises(OntologyCheckTooManyFindings):
-        _check(rows)
+    checked = _checked(rows)
+
+    assert checked.row_count == fit
+    assert len(checked.findings) == fit * CHECK_MAX_CONSTRAINT_PROPERTIES <= CHECK_MAX_FINDINGS
+    assert checked.findings[-1].row == fit - 1
 
 
 def test_one_row_yields_fewer_findings_than_the_cap() -> None:

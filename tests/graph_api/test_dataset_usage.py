@@ -1,4 +1,4 @@
-"""`build_provenances` over a small code index and coverage, and the route that serves it."""
+"""`build_usage` over a small code index and coverage, and the route that serves it."""
 
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ import pytest
 from code_index import CodeIndex, DatasetDeclaration, IndexStamp, StatVarRow
 from code_index.shared import get_index
 from graph_api import app as app_module
+from graph_api.dataset_usage import SHAPE_FIELDS, build_usage
 from graph_api.doors import ontology as ontology_door
-from graph_api.ontology_provenances import SHAPE_FIELDS, build_provenances
 from graph_generation import FakeGeneration
 from series_coverage.schema import FacetMetadata
 from statvar_members import FiveTuple
@@ -24,7 +24,7 @@ from .conftest import FakeGraphNodeReader, make_client, wait_until
 
 _CRS = "provenance/CRS"
 _DAC = "provenance/DAC1"
-_ROUTE = "/api/graph/ontology/provenances"
+_ROUTE = "/api/graph/ontology/usage"
 _IDENTITY = {"Accept-Encoding": "identity"}
 
 _STAMP = IndexStamp(
@@ -112,7 +112,7 @@ _COVERAGE = _FakeCoverageIndex(
 def _built(index: CodeIndex | None = None, coverage=_COVERAGE) -> dict[str, dict]:
     if index is None:
         index = _index(*_ROWS)
-    built = build_provenances(code_index=index, coverage=coverage).model_dump(mode="json")
+    built = build_usage(code_index=index, coverage=coverage).model_dump(mode="json")
     return {entry["dcid"]: entry for entry in built["provenances"]}
 
 
@@ -279,13 +279,13 @@ def test_the_route_answers_from_the_indexes_with_an_etag_and_no_graph_read() -> 
 
 def test_the_body_is_built_once_per_coverage_build(monkeypatch: pytest.MonkeyPatch) -> None:
     builds: list[object] = []
-    real = ontology_door.build_provenances
+    real = ontology_door.build_usage
 
     def counted(**kwargs):
         builds.append(kwargs["coverage"])
         return real(**kwargs)
 
-    monkeypatch.setattr(ontology_door, "build_provenances", counted)
+    monkeypatch.setattr(ontology_door, "build_usage", counted)
     coverage = _FakeCoverage(_coverage_of("CurrencyUSD"))
 
     with make_client(coverage=coverage) as client:
@@ -319,13 +319,13 @@ def test_a_request_refreshes_a_stale_generation_before_it_reads_the_cache(
     monkeypatch.setattr(app_module, "acquire_shared_generation", lambda **_kwargs: generation)
     monkeypatch.setattr(app_module, "release_shared_generation", lambda _shared: None)
     builds: list[object] = []
-    real = ontology_door.build_provenances
+    real = ontology_door.build_usage
 
     def counted(**kwargs):
         builds.append(kwargs["coverage"])
         return real(**kwargs)
 
-    monkeypatch.setattr(ontology_door, "build_provenances", counted)
+    monkeypatch.setattr(ontology_door, "build_usage", counted)
 
     with make_client(coverage=_FakeCoverage(_coverage_of("CurrencyUSD"))) as client:
         first = client.get(_ROUTE, headers=_IDENTITY)
@@ -338,7 +338,7 @@ def test_a_request_refreshes_a_stale_generation_before_it_reads_the_cache(
 
 def test_a_miss_builds_the_body_off_the_event_loop(monkeypatch: pytest.MonkeyPatch) -> None:
     on_loop: list[bool] = []
-    real = ontology_door.build_provenances
+    real = ontology_door.build_usage
 
     def recorded(**kwargs):
         try:
@@ -349,7 +349,7 @@ def test_a_miss_builds_the_body_off_the_event_loop(monkeypatch: pytest.MonkeyPat
             on_loop.append(True)
         return real(**kwargs)
 
-    monkeypatch.setattr(ontology_door, "build_provenances", recorded)
+    monkeypatch.setattr(ontology_door, "build_usage", recorded)
 
     with make_client(coverage=_FakeCoverage(_coverage_of("CurrencyUSD"))) as client:
         response = client.get(_ROUTE, headers=_IDENTITY)
@@ -362,7 +362,7 @@ def test_concurrent_first_requests_share_one_build(monkeypatch: pytest.MonkeyPat
     started = threading.Event()
     release = threading.Event()
     builds: list[object] = []
-    real = ontology_door.build_provenances
+    real = ontology_door.build_usage
 
     def blocked(**kwargs):
         builds.append(kwargs["coverage"])
@@ -370,11 +370,11 @@ def test_concurrent_first_requests_share_one_build(monkeypatch: pytest.MonkeyPat
         release.wait(timeout=5.0)
         return real(**kwargs)
 
-    monkeypatch.setattr(ontology_door, "build_provenances", blocked)
+    monkeypatch.setattr(ontology_door, "build_usage", blocked)
     responses: list[int] = []
 
     with make_client(coverage=_FakeCoverage(_coverage_of("CurrencyUSD"))) as client:
-        cache = client.app.state.graph_deps.ontology_provenances
+        cache = client.app.state.graph_deps.dataset_usage
 
         def send() -> None:
             responses.append(client.get(_ROUTE, headers=_IDENTITY).status_code)
@@ -397,19 +397,19 @@ def test_a_build_slower_than_the_request_answers_503_with_retry_after(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     release = threading.Event()
-    real = ontology_door.build_provenances
+    real = ontology_door.build_usage
 
     def blocked(**kwargs):
         release.wait(timeout=5.0)
         return real(**kwargs)
 
-    monkeypatch.setattr(ontology_door, "build_provenances", blocked)
+    monkeypatch.setattr(ontology_door, "build_usage", blocked)
     monkeypatch.setattr(ontology_door, "GRAPH_NODE_TIMEOUT_SECONDS", 0.2)
 
     with make_client(coverage=_FakeCoverage(_coverage_of("CurrencyUSD"))) as client:
         pending = client.get(_ROUTE, headers=_IDENTITY)
         release.set()
-        cache = client.app.state.graph_deps.ontology_provenances
+        cache = client.app.state.graph_deps.dataset_usage
         wait_until(lambda: dict(cache.stats())["entries"] == 1)
         landed = client.get(_ROUTE, headers=_IDENTITY)
 

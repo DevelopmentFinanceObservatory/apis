@@ -19,9 +19,7 @@ from graph_api.deps import GRAPH_DEPS_SLOT, GraphDeps
 from graph_api.node_models import NODES_MAX_DCIDS
 from graph_api.ontology_models import (
     CHECK_MAX_CONSTRAINT_PROPERTIES,
-    CHECK_MAX_FINDINGS,
     CHECK_MAX_OBSERVATION_PROPERTIES,
-    CHECK_MAX_READ_IDS,
     CHECK_MAX_ROWS,
 )
 from graph_api.routing import DCID_MAX_LENGTH
@@ -101,8 +99,6 @@ class TestEndpoint:
             "max_check_rows": CHECK_MAX_ROWS,
             "max_check_constraint_properties": CHECK_MAX_CONSTRAINT_PROPERTIES,
             "max_check_observation_properties": CHECK_MAX_OBSERVATION_PROPERTIES,
-            "max_check_read_ids": CHECK_MAX_READ_IDS,
-            "max_check_findings": CHECK_MAX_FINDINGS,
         }
 
     def test_serves_public_with_an_etag_and_answers_304(self):
@@ -132,7 +128,7 @@ def _with_deps(generation: FakeGeneration, coverage_build: str):
             provenance_docs=None,
             coverage=coverage,
             ontology=None,
-            ontology_provenances=None,
+            dataset_usage=None,
             check_executor=None,
         ),
     )

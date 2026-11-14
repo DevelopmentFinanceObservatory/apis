@@ -50,7 +50,7 @@ if TYPE_CHECKING:
     # `card_reads` imports this module's executor refusals.
     from dfo_platform.static_response import FrozenJSON
     from graph_api.card_reads import CardReadCaches
-    from graph_api.doors.ontology import OntologyEntry, OntologyKey, ProvenancesKey
+    from graph_api.doors.ontology import OntologyEntry, OntologyKey, UsageKey
     from materialise.provenance_doc import ProvenanceDoc
     from series_coverage.shared import ServedCoverage
 
@@ -78,8 +78,8 @@ class GraphDeps:
     # The ontology routes' built bodies or kept refusal, keyed by generation token and code
     # index, built on `dcp_executor`.
     ontology: SingleFlightCache[OntologyKey, OntologyEntry]
-    # The provenances body, keyed by code index and coverage build.
-    ontology_provenances: SingleFlightCache[ProvenancesKey, FrozenJSON]
+    # The usage body, keyed by code index and coverage build.
+    dataset_usage: SingleFlightCache[UsageKey, FrozenJSON]
     # The executor every `POST /api/graph/ontology/check` job runs on, apart from
     # `dcp_executor`, with `GRAPH_ONTOLOGY_CHECK_CONCURRENCY` workers.
     check_executor: DcpReadExecutor

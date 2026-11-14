@@ -1,6 +1,6 @@
 """How each Provenance uses the model, from the code index and the coverage index alone.
 
-`build_provenances` makes one `OntologyProvenance` per key of
+`build_usage` makes one `ProvenanceUsage` per key of
 `CodeIndex.variables_by_provenance`, so a Provenance appears when at least one StatVar row of
 the index names it. Its `label` and `description` come from the Provenance's
 `DatasetDeclaration` in `CodeIndex.datasets`.
@@ -23,12 +23,13 @@ from typing import NamedTuple, Protocol
 from code_index import CodeIndex, StatVarRow
 from code_index.query import row_five_tuple
 from graph_api.ontology_models import (
+    DatasetUsage,
     OntologyConstraintValues,
     OntologyFacets,
     OntologyPattern,
-    OntologyProvenance,
-    OntologyProvenances,
     OntologyValueCount,
+    ProvenanceUsage,
+    ShapeField,
 )
 from series_coverage.schema import FacetMetadata
 from statvar_members import FiveTuple
@@ -48,7 +49,7 @@ class ProvenanceCoverage(Protocol):
     def provenance_currencies(self) -> Mapping[str, frozenset[str]]: ...
 
 
-SHAPE_FIELDS: tuple[str, ...] = (
+SHAPE_FIELDS: tuple[ShapeField, ...] = (
     "population_type",
     "measured_property",
     "stat_type",
@@ -156,17 +157,15 @@ def _no_facets() -> OntologyFacets:
     )
 
 
-def build_provenances(
-    *, code_index: CodeIndex, coverage: ProvenanceCoverage
-) -> OntologyProvenances:
+def build_usage(*, code_index: CodeIndex, coverage: ProvenanceCoverage) -> DatasetUsage:
     """How each Provenance of `code_index` uses the model, with facet facts from `coverage`."""
     facets = _facets_by_provenance(coverage)
-    provenances: list[OntologyProvenance] = []
+    provenances: list[ProvenanceUsage] = []
     for provenance, dcids in sorted(code_index.variables_by_provenance.items()):
         rows = [row for dcid in dcids if (row := code_index.statvar_by_dcid(dcid)) is not None]
         declaration = code_index.datasets.get(provenance)
         provenances.append(
-            OntologyProvenance(
+            ProvenanceUsage(
                 dcid=provenance,
                 label=declaration.label if declaration is not None else None,
                 description=declaration.description if declaration is not None else None,
@@ -176,7 +175,7 @@ def build_provenances(
                 facets=facets.get(provenance) or _no_facets(),
             )
         )
-    return OntologyProvenances(provenances=provenances)
+    return DatasetUsage(provenances=provenances)
 
 
-__all__ = ["EXAMPLES_PER_PATTERN", "SHAPE_FIELDS", "ProvenanceCoverage", "build_provenances"]
+__all__ = ["EXAMPLES_PER_PATTERN", "SHAPE_FIELDS", "ProvenanceCoverage", "build_usage"]

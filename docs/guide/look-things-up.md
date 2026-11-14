@@ -120,25 +120,32 @@ A node's `declared_by` is `base` when Data Commons declares it and `instance` wh
 
 ## See how a dataset uses the model
 
-`GET /api/v1/graph/ontology/provenances` lists each dataset's Provenance with its StatVar count, the distinct patterns of its StatVars, the values each constraint property takes, and the units, periods and currencies of its series.
+`GET /api/v1/graph/ontology/usage` lists each dataset's Provenance with its StatVar count, the distinct patterns of its StatVars, the values each constraint property takes, and the units, periods and currencies of its series.
 
 ```bash
-curl -fsS "$DFO_API/api/v1/graph/ontology/provenances" \
+curl -fsS "$DFO_API/api/v1/graph/ontology/usage" \
   | jq '.provenances[0] | {dcid, stat_var_count, patterns: (.patterns | length)}'
 ```
 
 ## Check StatVar definitions
 
-`POST /api/v1/graph/ontology/check` takes 1 to 2,000 candidate definitions and lists every fault. An empty `findings` list means no row has a fault. The check reads each id its rows name that the ontology document does not hold, and one request reads at most `caps.max_check_read_ids` (41) of them and answers at most `caps.max_check_findings` (2,000) findings, both from `GET /api/v1/graph/capabilities`. One row always fits both. A request past either cap answers `400 request_invalid` with pointer `/rows`. Split the rows into smaller requests and send them one after another. Rows naming terms the model already declares read little, so a sheet of known terms fits in large requests. Each instance runs two checks at once, and a third answers a retryable `503` with `Retry-After`.
+`POST /api/v1/graph/ontology/check` takes 1 to 2,000 candidate definitions (`caps.max_check_rows`) and lists the faults in the rows it checked. It checks rows in order from the first and may stop before the end: `row_count` says how many it checked and `next_row` names the first row left, or is `null` when it checked every row. Send the rest from `next_row` until `next_row` is `null`. Every response checks at least one row. Rows naming terms the model already declares read little from the graph, so a sheet of known terms is checked in few requests. Each instance runs two checks at once, and a third answers a retryable `503` with `Retry-After`.
+
+This loop checks the rows in `rows.json`, a file holding `{"rows": [...]}`, and prints each finding with `row` counted from the start of the file:
 
 ```bash
-curl -fsS -X POST "$DFO_API/api/v1/graph/ontology/check" \
-  -H "Content-Type: application/json" \
-  -d '{"rows": [{"ref": "row-1", "population_type": "FinancialFlow", "measured_property": "amount", "constraint_properties": {"crsPurpose": "CRSPurposeCode99999"}}]}' \
-  | jq '.findings'
+start=0
+while [ -n "$start" ]; do
+  page=$(jq -c --argjson start "$start" '{rows: .rows[$start:$start + 2000]}' rows.json \
+    | curl -fsS -X POST "$DFO_API/api/v1/graph/ontology/check" \
+        -H "Content-Type: application/json" -d @-)
+  echo "$page" | jq -c --argjson start "$start" '.findings[] | .row += $start'
+  start=$(echo "$page" \
+    | jq -r --argjson start "$start" 'if .next_row == null then empty else .next_row + $start end')
+done
 ```
 
-Each finding names the `ref` of its row, the `field` at fault, the `value`, a `code` such as `node_not_held` or `value_outside_range`, and a `severity` of `error` or `warning`. A `definition_differs` warning means the row's `dcid` is a StatVar the code index serves with another value in that field, and `value` is the served one.
+A row's content is never refused. A cell that names no node, a blank measured property and an id of an origin the deployment does not serve each come back as a finding. Each finding names its `row` (the index in the request's `rows`), the row's `ref`, the `field` at fault, the constraint or observation `property` it is about, whether it judges that property itself or its value (`subject`), the `value` sent, a `code` such as `node_not_held` or `value_outside_range`, and a `severity` of `error` or `warning`. A `definition_differs` warning means the row's `dcid` is a StatVar the code index serves with another value in that cell, and `served` holds the served value.
 
 ## Verify it worked
 
@@ -150,7 +157,7 @@ A `resolved` result has an `entity.ref`. `GET /api/v1/graph/node/{ref}` should r
 - `404 not_found` on the node route usually means that the path did not match. Remove any `dcid:` prefix.
 - `400 request_invalid` with `/texts` in the pointer means the request contains an invalid name or exceeds a current request limit. Check `GET /api/v1/graph/capabilities`.
 - `400 request_invalid` on the members route names the fault in its pointer: `/relation` for a list a held node lacks, `/cursor` for a cursor that belongs to another list, `/as_of` for a date asked of a membership that records none.
-- `400 request_invalid` with pointer `/rows` on the check means the rows name more ids to read than `caps.max_check_read_ids`, have more findings than `caps.max_check_findings`, or name a UN id the deployment does not serve. Send fewer rows per request, or drop the named id.
+- `400 request_invalid` on the check means the body breaks a size bound: more than `caps.max_check_rows` rows, a row over `caps.max_check_constraint_properties` or `caps.max_check_observation_properties`, or a string over 512 characters. A pointer such as `/rows/37/constraint_properties` names the row; send the request again without it.
 - `503 service_unavailable` is retryable. Every graph read worker was busy, or the service was still starting.
 
 ## Next

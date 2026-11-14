@@ -824,9 +824,7 @@ def test_run_resolve_refreshes_the_generation_once():
         provenance_docs=new_provenance_doc_cache(executor=executor, generation=generation),
         coverage=get_coverage_service(),
         ontology=new_ontology_cache(entries=2, executor=executor, generation=generation),
-        ontology_provenances=new_ontology_cache(
-            entries=1, executor=executor, generation=generation
-        ),
+        dataset_usage=new_ontology_cache(entries=1, executor=executor, generation=generation),
         check_executor=new_check_executor(),
     )
 

@@ -35,33 +35,41 @@ so `members` is every member the graph holds. A list where it is false holds som
 and Property on the graph with its `name`, `types` (`Class`, `Property` or both),
 `provenances` and `declared_by`, sorted by dcid.
 
-`OntologyProvenances` says how each Provenance of the code index uses the model
-(`graph_api.ontology_provenances`): its dataset label and description, its StatVar count, the
-distinct patterns of its StatVar rows, the values each constraint property takes, and the facet
-facts of its coverage series.
+`DatasetUsage` says how each Provenance of the code index uses the model
+(`graph_api.dataset_usage`): its dataset label and description, its StatVar count, the distinct
+patterns of its StatVar rows, the values each constraint property takes, and the facet facts of
+its coverage series.
 
 `OntologyCheckRow` is a candidate StatisticalVariable definition and `OntologyFinding` one
 fault `graph_api.ontology_check` finds in it. `OntologyCheckRequest` carries 1 to
-`CHECK_MAX_ROWS` rows to `POST /api/graph/ontology/check`, and `OntologyCheckResponse` answers
-with the generation the rows were checked against, null where its token is unknown, and every
-finding. A row's shape fields, constraint properties and observation properties take the node
-door's dcid syntax (`graph_api.node_models.Dcid`). A constraint value is any string up to the
-same 512-character ceiling, a finite number within plus or minus 2**53, a boolean or null, and
-`ref` takes the same ceiling. A row names at most `CHECK_MAX_CONSTRAINT_PROPERTIES` constraint
-properties and `CHECK_MAX_OBSERVATION_PROPERTIES` observation properties. One request reads at
-most `CHECK_MAX_READ_IDS` distinct ids from the graph (`graph_api.ontology_check`), a cap no
-lower than the most one row names, and answers at most `CHECK_MAX_FINDINGS` findings, a cap
-above what one row yields.
+`CHECK_MAX_ROWS` rows to `POST /api/graph/ontology/check`. Every string of a row is bounded at
+512 characters, and an empty string counts as absent. A row names at most
+`CHECK_MAX_CONSTRAINT_PROPERTIES` constraint properties and `CHECK_MAX_OBSERVATION_PROPERTIES`
+observation properties. A constraint value is a string, a finite number within plus or minus
+2**53, a boolean or null. The request model checks only these bounds; the check reports
+everything else about a row's content as a finding.
+
+`OntologyCheckResponse` answers with the generation the rows were checked against, null where
+its token is unknown, the count of rows checked from the first, the index of the first row not
+checked, and every finding in the rows checked. The check stops before the row that would take
+its reads from the graph past `CHECK_MAX_READ_IDS` distinct ids or its findings past
+`CHECK_MAX_FINDINGS`; one row fits both, so every response checks at least one row.
 """
 
 from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StringConstraints
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    StringConstraints,
+)
 
 from dfo_platform.wire import ResponseModel
-from graph_api.node_models import Dcid
 from graph_api.routing import DCID_MAX_LENGTH
 
 CHECK_MAX_ROWS = 2_000
@@ -76,12 +84,13 @@ CHECK_MAX_OBSERVATION_PROPERTIES = 4
 served code index carries (2 on the dev graph)."""
 
 CHECK_MAX_READ_IDS = 5 + 2 * CHECK_MAX_CONSTRAINT_PROPERTIES + CHECK_MAX_OBSERVATION_PROPERTIES
-"""The most distinct ids one check request may read from the graph, 41. They are the ids its
-rows name that the ontology document does not hold, counted before any read, each constraint
-value counted unless it is a literal or its property a document node that is no Property
-(`graph_api.ontology_check.plan_reads`).
-One row names at most this many (its 5 shape fields, each constraint property and its value,
-each observation property), so a single row always fits. The check reads each once, in one
+"""The most distinct ids one check reads from the graph, 41, an internal budget the wire does
+not publish. They are the ids its rows name that the ontology document does not hold, counted
+before any read, each constraint value counted unless it is a literal or its property a
+document node that is no Property (`graph_api.ontology_check.plan_reads`). The check takes rows
+from the first while their ids stay within the budget and answers where to resume. One row
+names at most this many (its 5 shape fields, each constraint property and its value, each
+observation property), so every check takes at least one row. The check reads each once, in one
 `node_arcs_many` call: at most 43 POSTs to `/v2/node` when the graph answers every POST, 45
 where the deployment serves the UN origin, and at most 203 when the front door refuses every
 POST naming more than one id, each tried up to 3 times, all within the 30 s
@@ -89,12 +98,13 @@ POST naming more than one id, each tried up to 3 times, all within the 30 s
 graph, 41 absent ids took 43 POSTs and 7.4 to 8.5 s, under a third of that deadline."""
 
 CHECK_MAX_FINDINGS = 2_000
-"""The most findings one check answers. A check whose findings pass it stops and is refused.
-One row yields at most 79: 5 on its shape fields, 2 on each of its 16 constraint properties (a
+"""The most findings one check answers, an internal cap the wire does not publish. The check
+stops before the row whose findings would pass it and answers where to resume. One row yields at most 79: 5 on its shape fields, 2 on each of its 16 constraint properties (a
 domain warning and a value finding), 1 on each of its 4 observation properties, and 38
 `definition_differs` warnings (5 shape fields, each constraint property the row or a served
 StatVar of at most `CHECK_MAX_CONSTRAINT_PROPERTIES` names, the observation properties). A
-single row always fits."""
+row whose `dcid` is outside dcid syntax gets one finding on it and no `definition_differs`.
+Every check takes at least one row."""
 
 DeclaredBy = Literal["instance", "base"]
 """Who declares a node: `"base"` when every declaring provenance is a base Data Commons one."""
@@ -220,7 +230,7 @@ class OntologyFacets(ResponseModel):
     currencies: list[str] = Field(description="ISO 4217 codes of the currency units")
 
 
-class OntologyProvenance(ResponseModel):
+class ProvenanceUsage(ResponseModel):
     """How one Provenance's StatVars use the model."""
 
     dcid: str
@@ -242,10 +252,10 @@ class OntologyProvenance(ResponseModel):
     )
 
 
-class OntologyProvenances(ResponseModel):
+class DatasetUsage(ResponseModel):
     """How each Provenance of the code index uses the model."""
 
-    provenances: list[OntologyProvenance] = Field(description="sorted by dcid")
+    provenances: list[ProvenanceUsage] = Field(description="sorted by dcid")
 
 
 CONSTRAINT_NUMBER_BOUND = 2**53
@@ -272,7 +282,7 @@ type ConstraintValue = (
     | bool
     | None
 )
-"""A constraint value as sent: a node dcid, or a literal or null the check refuses. A string
+"""A constraint value as sent: a node dcid, or a literal or null the check reports. A string
 takes the 512-character dcid ceiling, and a number, integer or float, is finite and within
 plus or minus `CONSTRAINT_NUMBER_BOUND`."""
 
@@ -280,6 +290,7 @@ FindingCode = Literal[
     "node_not_held",
     "node_provisional",
     "node_untyped",
+    "origin_not_served",
     "value_missing",
     "not_a_property",
     "not_a_class",
@@ -287,15 +298,17 @@ FindingCode = Literal[
     "property_outside_domain",
     "definition_differs",
 ]
-"""What a finding says about the value it names.
+"""What a finding says about the cell it names.
 
-- `node_not_held`: the graph holds no node for it, or a constraint value is a number, a
-  boolean or a string outside dcid syntax.
+- `node_not_held`: the graph holds no node for it, or it is outside dcid syntax, or a
+  constraint value is a number or a boolean.
 - `node_provisional`: the node of a constraint value, `stat_type`, `measurement_qualifier` or
   `measurement_denominator` has only the type `ProvisionalNode`.
 - `node_untyped`: the node of a constraint value, `stat_type`, `measurement_qualifier` or
   `measurement_denominator` has no `typeOf`.
-- `value_missing`: a constraint property has a null value.
+- `origin_not_served`: it is an id of the UN origin, which this deployment does not serve, so
+  no read can establish whether the graph holds it.
+- `value_missing`: the measured property is absent, or a constraint property has a null value.
 - `not_a_property`: a constraint property, the measured property or an observation property
   is not typed `Property`.
 - `not_a_class`: the population type is not typed `Class`.
@@ -303,38 +316,70 @@ FindingCode = Literal[
   instance property's `rangeIncludes` by `subClassOf`.
 - `property_outside_domain`: the population type is a document node that reaches none of the
   instance property's `domainIncludes` by `subClassOf`.
-- `definition_differs`: the code index serves the row's dcid with another value in that field,
-  and `value` is the served value.
+- `definition_differs`: the code index serves the row's dcid with another value in that cell,
+  and `served` is the served value.
 
 A constraint value whose property is not a held Property gets no finding of its own.
 """
 
+ShapeField = Literal[
+    "population_type",
+    "measured_property",
+    "stat_type",
+    "measurement_qualifier",
+    "measurement_denominator",
+]
+"""A StatVar shape field."""
+
+FindingField = Literal["dcid", ShapeField, "constraint_properties", "observation_properties"]
+"""The row member a finding is about."""
+
+type _Text = Annotated[str, StringConstraints(max_length=DCID_MAX_LENGTH)]
+
+
+def _blank_is_absent(value: str | None) -> str | None:
+    return value or None
+
+
+type _OptionalText = Annotated[_Text | None, AfterValidator(_blank_is_absent)]
+
+
+def _blank_value_is_absent(values: dict[str, ConstraintValue]) -> dict[str, ConstraintValue]:
+    return {prop: None if value == "" else value for prop, value in values.items()}
+
+
+def _drop_blank(values: list[str]) -> list[str]:
+    return [value for value in values if value]
+
 
 class OntologyCheckRow(BaseModel):
-    """A candidate StatisticalVariable definition."""
+    """A candidate StatisticalVariable definition. Each string is at most 512 characters, and
+    an empty string counts as absent."""
 
     model_config = ConfigDict(extra="forbid", title="GraphOntologyCheckRow")
 
-    ref: str | None = Field(
-        default=None,
-        max_length=DCID_MAX_LENGTH,
-        description="the caller's label, echoed on findings; at most 512 characters",
+    ref: _OptionalText = Field(
+        default=None, description="the caller's label, echoed on findings; at most 512 characters"
     )
-    dcid: Dcid | None = Field(
+    dcid: _OptionalText = Field(
         default=None,
         description="the StatVar's dcid; when the code index serves it, the row is compared",
     )
-    population_type: Dcid | None = None
-    measured_property: Dcid
-    stat_type: Dcid | None = None
-    measurement_qualifier: Dcid | None = None
-    measurement_denominator: Dcid | None = None
-    constraint_properties: dict[Dcid, ConstraintValue] = Field(
+    population_type: _OptionalText = None
+    measured_property: _OptionalText = Field(
+        default=None, description="absent or empty gets a `value_missing` finding"
+    )
+    stat_type: _OptionalText = None
+    measurement_qualifier: _OptionalText = None
+    measurement_denominator: _OptionalText = None
+    constraint_properties: Annotated[
+        dict[_Text, ConstraintValue], AfterValidator(_blank_value_is_absent)
+    ] = Field(
         default_factory=dict,
         max_length=CHECK_MAX_CONSTRAINT_PROPERTIES,
-        description="each constraint property and its value node",
+        description="each constraint property and its value node; an empty value counts as null",
     )
-    observation_properties: list[Dcid] = Field(
+    observation_properties: Annotated[list[_Text], AfterValidator(_drop_blank)] = Field(
         default_factory=list, max_length=CHECK_MAX_OBSERVATION_PROPERTIES
     )
 
@@ -342,26 +387,33 @@ class OntologyCheckRow(BaseModel):
 class OntologyFinding(ResponseModel):
     """One fault in one checked row."""
 
-    ref: str | None = Field(description="the row's `ref`")
-    field: str = Field(
-        description=(
-            "the row member: `population_type`, `measured_property`, `stat_type`, "
-            "`measurement_qualifier`, `measurement_denominator`, `observation_properties`, or "
-            "`constraint_properties.<property>` for a constraint property or its value"
-        )
+    row: int = Field(description="the row's index in the request's `rows`")
+    ref: str | None = Field(description="the row's `ref`; null when it has none")
+    field: FindingField = Field(description="the row member the finding is about")
+    property: str | None = Field(
+        description="the constraint or observation property the finding is about; null for the "
+        "other members"
+    )
+    subject: Literal["property", "value"] = Field(
+        description="`property` when the finding judges a constraint or observation property "
+        "itself, `value` otherwise"
     )
     value: ConstraintValue | list[str] = Field(
-        description=(
-            "the value at fault; for `definition_differs`, the value the code index serves "
-            "(a sorted list for `observation_properties`, null where it serves none)"
-        )
+        description="what the row sent in the judged cell: the property's dcid when `subject` is "
+        "`property`, a list for `observation_properties` on `definition_differs`, null where the "
+        "row sent none"
+    )
+    served: ConstraintValue | list[str] = Field(
+        description="for `definition_differs`, the value the code index serves (a sorted list "
+        "for `observation_properties`, null where it serves none); null for every other code"
     )
     code: FindingCode
     severity: Literal["error", "warning"]
 
 
 class OntologyCheckRequest(BaseModel):
-    """`rows`: 1 to `CHECK_MAX_ROWS` candidate StatVar definitions, checked as one batch."""
+    """`rows`: 1 to `CHECK_MAX_ROWS` candidate StatVar definitions, checked in order from the
+    first."""
 
     model_config = ConfigDict(extra="forbid", title="GraphOntologyCheckRequest")
 
@@ -369,12 +421,20 @@ class OntologyCheckRequest(BaseModel):
 
 
 class OntologyCheckResponse(ResponseModel):
-    """The findings over every row of one check."""
+    """The findings over the rows one check took, from the first."""
 
     generation: str | None = Field(
         description="the graph generation the rows were checked against; null when unknown"
     )
-    row_count: int = Field(description="how many rows were checked")
+    row_count: int = Field(
+        description="how many rows were checked, counted from the first row of the request; at "
+        "least 1"
+    )
+    next_row: int | None = Field(
+        description="the index of the first row not checked, equal to `row_count`; null when "
+        "every row was checked"
+    )
     findings: list[OntologyFinding] = Field(
-        description="one finding per fault, in row order; empty when no row has a fault"
+        description="one finding per fault in the rows checked, in row order; empty when none of "
+        "them has a fault"
     )

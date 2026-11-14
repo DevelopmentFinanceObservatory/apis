@@ -43,6 +43,7 @@ from typing import Final, Literal
 
 from code_index import CodeIndex
 from dc_graph import ArcSubject, GraphReadError, display_name
+from graph_api.dataset_usage import SHAPE_FIELDS
 from graph_api.ontology_models import (
     DeclaredBy,
     OntologyDocument,
@@ -51,7 +52,6 @@ from graph_api.ontology_models import (
     OntologyTerm,
     OntologyTerms,
 )
-from graph_api.ontology_provenances import SHAPE_FIELDS
 from graph_api.reader import GraphNodeReader
 
 logger = logging.getLogger(__name__)

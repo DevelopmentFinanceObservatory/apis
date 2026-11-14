@@ -150,7 +150,7 @@ def _surface_app(
                     ontology=new_ontology_cache(
                         entries=2, executor=dcp, generation=UNKNOWN_GENERATION
                     ),
-                    ontology_provenances=new_ontology_cache(
+                    dataset_usage=new_ontology_cache(
                         entries=1, executor=dcp, generation=UNKNOWN_GENERATION
                     ),
                     check_executor=new_check_executor(),

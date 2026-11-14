@@ -29,7 +29,7 @@ _UNBOUND_PATHS = frozenset(
         "/api/graph/sources",
         "/api/graph/ontology",
         "/api/graph/ontology/terms",
-        "/api/graph/ontology/provenances",
+        "/api/graph/ontology/usage",
         "/api/graph/ontology/check",
     }
 )

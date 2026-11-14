@@ -4,6 +4,7 @@ routes, their waits, their refusals and the frozen bodies."""
 from __future__ import annotations
 
 import dataclasses
+import json
 import threading
 
 import httpx
@@ -414,16 +415,49 @@ class TestCheck:
         assert response.json() == {
             "generation": "gen-a",
             "row_count": 2,
+            "next_row": None,
             "findings": [
                 {
+                    "row": 1,
                     "ref": "NoSuchCode",
-                    "field": "constraint_properties.crsPurpose",
+                    "field": "constraint_properties",
+                    "property": "crsPurpose",
+                    "subject": "value",
                     "value": "NoSuchCode",
+                    "served": None,
                     "code": "node_not_held",
                     "severity": "error",
                 }
             ],
         }
+
+    def test_every_finding_member_and_next_row_is_encoded_with_nulls(self, generation):
+        no_ref = {**_check_row("CRSPurposeCode120"), "measured_property": "", "ref": None}
+        rows = [no_ref, *(_check_row(f"NoSuchCode{i}") for i in range(CHECK_MAX_READ_IDS + 1))]
+
+        with make_client(graph=_graph()) as client:
+            partial = client.post(_CHECK, json={"rows": rows})
+            whole = client.post(_CHECK, json={"rows": [no_ref]})
+
+        assert partial.status_code == whole.status_code == 200, partial.text
+        members = ["row", "ref", "field", "property", "subject", "value", "served", "code"]
+        first = json.loads(partial.content)["findings"][0]
+        assert {key: first[key] for key in members} == {
+            "row": 0,
+            "ref": None,
+            "field": "measured_property",
+            "property": None,
+            "subject": "value",
+            "value": None,
+            "served": None,
+            "code": "value_missing",
+        }
+        for body in (json.loads(partial.content), json.loads(whole.content)):
+            assert list(body) == ["generation", "row_count", "next_row", "findings"]
+            for finding in body["findings"]:
+                assert list(finding) == [*members, "severity"]
+        assert json.loads(partial.content)["next_row"] == CHECK_MAX_READ_IDS
+        assert b'"next_row":null' in whole.content
 
     def test_clean_rows_answer_no_findings(self, generation):
         with make_client(graph=_graph()) as client:
@@ -432,6 +466,7 @@ class TestCheck:
         assert response.status_code == 200, response.text
         assert response.json()["findings"] == []
         assert response.json()["row_count"] == 1
+        assert response.json()["next_row"] is None
 
     @pytest.mark.parametrize(
         "body",
@@ -440,9 +475,10 @@ class TestCheck:
                 {"rows": [_check_row("CRSPurposeCode120")] * (CHECK_MAX_ROWS + 1)}, id="too-many"
             ),
             pytest.param({"rows": []}, id="empty"),
+            pytest.param({}, id="rows-missing"),
             pytest.param(
-                {"rows": [{**_check_row("CRSPurposeCode120"), "measured_property": "bad code"}]},
-                id="malformed-dcid",
+                {"rows": [{**_check_row("CRSPurposeCode120"), "unit": "USDollar"}]},
+                id="unknown-member",
             ),
             pytest.param(
                 {
@@ -504,34 +540,97 @@ class TestCheck:
         assert _reads(graph) == 0
 
     @pytest.mark.parametrize(
-        ("rows", "un_served"),
+        ("row", "pointer"),
         [
             pytest.param(
-                [_check_row(f"NoSuchCode{i}") for i in range(CHECK_MAX_READ_IDS + 1)],
-                True,
-                id="ids-past-the-read-cap",
+                {
+                    **_check_row("CRSPurposeCode120"),
+                    "constraint_properties": {
+                        f"p{i}": "CRSPurposeCode120"
+                        for i in range(CHECK_MAX_CONSTRAINT_PROPERTIES + 1)
+                    },
+                },
+                "/rows/2/constraint_properties",
+                id="constraint-properties",
             ),
-            pytest.param([_check_row("undata/NoSuchCode")], False, id="un-id-with-the-un-off"),
             pytest.param(
-                [_nine_findings_row(str(i)) for i in range(CHECK_MAX_FINDINGS // 9 + 1)],
-                True,
-                id="findings-past-the-cap",
+                {
+                    **_check_row("CRSPurposeCode120"),
+                    "population_type": "x" * (DCID_MAX_LENGTH + 1),
+                },
+                "/rows/2/population_type",
+                id="shape-field",
             ),
         ],
     )
-    def test_a_check_past_its_caps_is_refused_with_no_findings(
-        self, generation, serve_catalogue, rows, un_served
+    def test_a_row_past_a_size_bound_is_refused_with_a_pointer_naming_it(
+        self, generation, row, pointer
     ):
-        serve_catalogue(FakeCatalogue(un_system_enabled=un_served))
-        graph = _graph()
+        rows = [_check_row("CRSPurposeCode120"), _check_row("CRSPurposeCode120"), row]
 
-        with make_client(graph=graph) as client:
+        with make_client(graph=_graph()) as client:
             response = client.post(_CHECK, json={"rows": rows})
 
         assert response.status_code == 400, response.text
         assert response.json()["code"] == "request_invalid"
-        assert response.json()["pointer"] == "/rows"
-        assert response.json()["retryable"] is False
+        assert response.json()["pointer"] == pointer
+
+    def test_a_malformed_cell_and_a_blank_measured_property_are_findings(self, generation):
+        rows = [
+            {**_check_row("CRSPurposeCode120"), "measured_property": "bad code"},
+            {**_check_row("CRSPurposeCode120"), "measured_property": ""},
+        ]
+
+        with make_client(graph=_graph()) as client:
+            response = client.post(_CHECK, json={"rows": rows})
+
+        assert response.status_code == 200, response.text
+        assert [
+            (finding["row"], finding["field"], finding["value"], finding["code"])
+            for finding in response.json()["findings"]
+        ] == [
+            (0, "measured_property", "bad code", "node_not_held"),
+            (1, "measured_property", None, "value_missing"),
+        ]
+
+    def test_rows_past_the_read_budget_answer_a_prefix_and_the_next_row(self, generation):
+        graph = _graph()
+        rows = [_check_row(f"NoSuchCode{i}") for i in range(CHECK_MAX_READ_IDS + 3)]
+
+        with make_client(graph=graph) as client:
+            response = client.post(_CHECK, json={"rows": rows})
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert (body["row_count"], body["next_row"]) == (CHECK_MAX_READ_IDS, CHECK_MAX_READ_IDS)
+        assert [finding["row"] for finding in body["findings"]] == list(range(CHECK_MAX_READ_IDS))
+        assert graph.calls["node_arcs_many"] == 1
+
+    def test_findings_past_the_cap_answer_the_rows_before_and_the_next_row(self, generation):
+        fit = CHECK_MAX_FINDINGS // 9
+        rows = [_nine_findings_row(str(i)) for i in range(fit + 3)]
+
+        with make_client(graph=_graph()) as client:
+            response = client.post(_CHECK, json={"rows": rows})
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert (body["row_count"], body["next_row"]) == (fit, fit)
+        assert len(body["findings"]) == 9 * fit
+        assert body["findings"][-1]["row"] == fit - 1
+
+    def test_a_un_id_with_the_un_off_is_a_finding_with_no_read(self, generation, serve_catalogue):
+        serve_catalogue(FakeCatalogue(un_system_enabled=False))
+        graph = _graph()
+
+        with make_client(graph=graph) as client:
+            response = client.post(_CHECK, json={"rows": [_check_row("undata/NoSuchCode")]})
+
+        assert response.status_code == 200, response.text
+        assert [
+            (finding["property"], finding["value"], finding["code"], finding["severity"])
+            for finding in response.json()["findings"]
+        ] == [("crsPurpose", "undata/NoSuchCode", "origin_not_served", "error")]
         assert graph.calls["node_arcs_many"] == 0
 
     def test_a_swapped_code_index_is_checked_against_its_own_build(

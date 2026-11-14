@@ -7,7 +7,7 @@ The surface mounts at `/api/graph` and operates as an independent composition ro
 ```
  POST /resolve        GET /node/{dcid}      GET /node/{dcid}/members     GET /documentation/{dcid}
                       POST /nodes           GET /roots                   GET /sources
-                      GET /ontology  GET /ontology/terms  GET /ontology/provenances  POST /ontology/check
+                      GET /ontology  GET /ontology/terms  GET /ontology/usage  POST /ontology/check
       |                    |                        |                            |
       v                    v                        v                            |
 +------------------+  +------------------------------------------+               |
@@ -986,7 +986,7 @@ The route reads the same cached build as `GET /api/graph/ontology`, so its cachi
 
 ---
 
-### GET /api/graph/ontology/provenances
+### GET /api/graph/ontology/usage
 
 How each Provenance of the code index uses the model. The body is `{provenances}`, sorted by `dcid`, with one entry for each Provenance that at least one StatVar row of the index names. The route makes no graph read. It joins the code index with the served coverage index.
 
@@ -1074,43 +1074,60 @@ The body is built once per code index and coverage build, by one build that conc
 
 ### POST /api/graph/ontology/check
 
-Checks candidate StatVar definitions against the ontology and answers every fault it finds. The request is `{rows}`, 1 to 2,000 rows (`graph_api.ontology_models.CHECK_MAX_ROWS`), checked as one batch. `caps.max_check_rows` publishes the row limit. A longer or empty list, an extra key, a malformed dcid, a row naming more than 16 constraint properties (`caps.max_check_constraint_properties`) or 4 observation properties (`caps.max_check_observation_properties`), a `ref` or a constraint value string longer than 512 characters, or a constraint value that is a number past plus or minus 2**53 (9,007,199,254,740,992), `NaN` or an infinity is refused `400 request_invalid` with the offending field as the pointer. With the ontology document in hand, the route decides which ids it reads before it submits any work. Rows naming more than 41 distinct ids to read from the graph (`caps.max_check_read_ids`) are refused `400 request_invalid` with pointer `/rows`. Send the rows in smaller chunks. The ids counted are the shape fields, constraint properties, observation properties and constraint values the ontology document does not hold, less the literal constraint values and those under a document node that is no `Property`. One row names at most 41 such ids (5 shape fields, 16 constraint properties and their values, 4 observation properties), so a single row always fits. An id of the UN origin (under `undata/`, or a UN property such as `undataAge`) on a deployment that does not serve that origin is refused the same way, naming the id, because no read can establish whether the graph holds it. A request whose findings pass 2,000 (`caps.max_check_findings`) stops and is refused the same way. Send fewer rows. One row yields at most 79 findings, so a single row always fits. The first request after a graph change builds the ontology document, within its 60 s flight deadline, before these caps are decided.
+Checks candidate StatVar definitions against the ontology. The request is `{rows}`, 1 to 2,000 rows (`caps.max_check_rows`). The route checks rows in order from the first and answers the findings for the rows it checked, how many that is (`row_count`), and the index of the first row left (`next_row`, `null` when every row was checked). Send the rows from `next_row` in the next request until `next_row` is `null`. Every response checks at least one row.
+
+A `400 request_invalid` means the envelope or a size bound is wrong: the body is not JSON, `rows` is missing, empty or longer than 2,000, a member is unknown, a row names more than 16 constraint properties (`caps.max_check_constraint_properties`) or 4 observation properties (`caps.max_check_observation_properties`), a string is longer than 512 characters, or a constraint value is a number past plus or minus 2**53 (9,007,199,254,740,992), `NaN` or an infinity. The pointer names the first member at fault, with its row: `/rows/37/constraint_properties`. Everything else about a row's content is a finding.
 
 A row holds:
 
 - `ref`: the caller's label, echoed on its findings.
 - `dcid`: the StatVar's dcid. When the code index serves it, the row is compared with the served definition.
-- `population_type`, `measured_property` (required), `stat_type`, `measurement_qualifier` and `measurement_denominator`.
+- `population_type`, `measured_property`, `stat_type`, `measurement_qualifier` and `measurement_denominator`.
 - `constraint_properties`: a map of constraint property to value node. A number, a boolean, a string outside dcid syntax or `null` is a fault.
 - `observation_properties`: a list of property dcids.
 
-The shape fields, constraint properties and observation properties take the node route's dcid syntax. The route answers each node a row names from the cached ontology document and asks every other named id once for its `typeOf` and `name`, and reads no ancestry. An id the origin catalogue's arc tables hold is answered from those tables, a node they hold with no arc as absent, and every other id is read from the graph. The document reads its nodes live. The check answers an id the tables hold from those tables.
+Every member is optional, and an empty string counts as absent. A row with no measured property gets `value_missing`.
 
-The check reads every planned id once, in one read: the shape fields, constraint properties, observation properties and constraint values outside the document. For each backend its ids go to (the mixer, and the UN deployment where the deployment serves the UN origin), the read sends its ids outside the arc tables in one POST to `/v2/node` (one chunk holds 50 ids), reads the empty answers again in one POST as a group, and reads each id still empty alone. A check reading k ids therefore sends at most k + 2 POSTs with one backend, 43 for 41 ids, and k + 4 with the UN origin served, 45. A front-door refusal splits a POST of several ids into two halves, so a batch or group retry of j ids costs at most 2j - 1 POSTs and a check at most 5k - 2, 203 for 41 ids. A continuation page adds one POST, and each POST is tried up to 3 times on a 5xx answer or a transport error, all within the route's 30 s deadline. A node read alone with neither a `typeOf` nor a `name` is `node_not_held`, and a node with a name and no `typeOf` is `node_untyped`. A constraint value whose property is not a held `Property` is read with the rest and gets no finding of its own: the property's finding marks the cell. A number, a boolean or a string outside dcid syntax is `node_not_held` with no read. Every other constraint value outside the document is read, whatever its property's range: the document holds the ancestors of its classes and not their descendants, so a complete member listing does not prove that a value it lacks lies outside the range. The check waits on the same build as `GET /api/graph/ontology` and refuses with the same `503` and `504` outcomes when the build is not ready or a read fails. A failed read yields no findings.
+With the ontology document in hand, the route decides before it submits any work how many rows it checks: it takes rows from the first while the distinct ids they read from the graph stay within an internal budget of 41. The ids counted are the shape fields, constraint properties, observation properties and constraint values the ontology document does not hold, less the cells no read can decide and the constraint values under a document node that is no `Property`. One row names at most 41 such ids (5 shape fields, 16 constraint properties and their values, 4 observation properties), so the first row always fits. The check then stops before the row whose findings would take the total past 2,000. One row yields at most 79 findings, so the first row always fits. The first request after a graph change builds the ontology document, within its 60 s flight deadline, before it decides how many rows to take.
 
-A constraint value, `stat_type`, `measurement_qualifier` and `measurement_denominator` must each name a held node typed beyond `ProvisionalNode`, the test the code index export applies to a constraint value in a release. Range and domain rules apply only to a property whose `declared_by` is `"instance"`, and judge only through the document, which holds every `subClassOf` ancestor of each class it holds. A value is outside the range when every one of its types is a document node and none reaches a `rangeIncludes` class by `subClassOf`. A value with any type outside the document gets no range finding. A property is outside the domain when the population type is a document node that reaches no `domainIncludes` class the same way. A population type outside the document gets no domain finding. A property with no `rangeIncludes` or `domainIncludes` admits anything. The domain rule covers the measured property and the constraint properties, and is skipped when the row names no population type.
+A cell names a node when it is in the node route's dcid syntax. A cell outside that syntax gets `node_not_held` with no read. An id of the UN origin (under `undata/`, or a UN property such as `undataAge`) on a deployment that does not serve that origin gets `origin_not_served` with no read, because no read can establish whether the graph holds it. The route answers each node a row names from the cached ontology document and asks every other named id once for its `typeOf` and `name`, and reads no ancestry. An id the origin catalogue's arc tables hold is answered from those tables, a node they hold with no arc as absent, and every other id is read from the graph. The document reads its nodes live. The check answers an id the tables hold from those tables.
 
-The response is `{generation, row_count, findings}`. `generation` is the graph generation the rows were checked against, `null` when its token is unknown. Findings come in row order and are empty when no row has a fault. A finding is `{ref, field, value, code, severity}`. `field` is `population_type`, `measured_property`, `stat_type`, `measurement_qualifier`, `measurement_denominator`, `observation_properties`, or `constraint_properties.<property>` for a constraint property or its value. `value` is the value at fault. For `definition_differs` it is the value the code index serves (a sorted list for `observation_properties`, `null` where it serves none). The route sets no cache headers.
+The check reads every planned id once, in one read: the shape fields, constraint properties, observation properties and constraint values outside the document. For each backend its ids go to (the mixer, and the UN deployment where the deployment serves the UN origin), the read sends its ids outside the arc tables in one POST to `/v2/node` (one chunk holds 50 ids), reads the empty answers again in one POST as a group, and reads each id still empty alone. A check reading k ids therefore sends at most k + 2 POSTs with one backend, 43 for 41 ids, and k + 4 with the UN origin served, 45. A front-door refusal splits a POST of several ids into two halves, so a batch or group retry of j ids costs at most 2j - 1 POSTs and a check at most 5k - 2, 203 for 41 ids. A continuation page adds one POST, and each POST is tried up to 3 times on a 5xx answer or a transport error, all within the route's 30 s deadline. A node read alone with neither a `typeOf` nor a `name` is `node_not_held`, and a node with a name and no `typeOf` is `node_untyped`. A constraint value whose property is not a held `Property` gets no finding of its own: the property's finding marks the cell. Such a value is read with the rest unless its property is outside dcid syntax or the served origins. A number or a boolean is `node_not_held` with no read. Every other constraint value outside the document is read, whatever its property's range: the document holds the ancestors of its classes and not their descendants, so a complete member listing does not prove that a value it lacks lies outside the range. The check waits on the same build as `GET /api/graph/ontology` and refuses with the same `503` and `504` outcomes when the build is not ready or a read fails. A failed read yields no findings.
+
+A constraint value, `stat_type`, `measurement_qualifier` and `measurement_denominator` must each name a held node typed beyond `ProvisionalNode`, the test the code index export applies to a constraint value in a release. Range and domain rules apply only to a property whose `declared_by` is `"instance"`, and judge only through the document, which holds every `subClassOf` ancestor of each class it holds. A value is outside the range when every one of its types is a document node and none reaches a `rangeIncludes` class by `subClassOf`. A value with any type outside the document gets no range finding. A property is outside the domain when the population type is a document node that reaches no `domainIncludes` class the same way. A population type outside the document gets no domain finding. A property with no `rangeIncludes` or `domainIncludes` admits anything. The domain rule covers the measured property and the constraint properties, and is skipped when the row names no population type. A row's `dcid` outside dcid syntax gets `node_not_held`, and the row is then compared with nothing.
+
+The response is `{generation, row_count, next_row, findings}`. `generation` is the graph generation the rows were checked against, `null` when its token is unknown. `row_count` counts the rows checked from the first row of the request. `next_row` equals `row_count` when rows are left and is `null` otherwise. Findings come in row order and are empty when none of the rows checked has a fault. A finding is `{row, ref, field, property, subject, value, served, code, severity}`:
+
+- `row`: the row's index in the request's `rows`.
+- `ref`: the row's `ref`, or `null`.
+- `field`: the row member, one of `dcid`, `population_type`, `measured_property`, `stat_type`, `measurement_qualifier`, `measurement_denominator`, `constraint_properties` and `observation_properties`.
+- `property`: the constraint or observation property the finding is about, `null` for the other members.
+- `subject`: `property` when the finding judges a constraint or observation property itself, `value` otherwise.
+- `value`: what the row sent in the judged cell, the property's dcid when `subject` is `property`. For `definition_differs` on `observation_properties` it is the sorted list the row sent.
+- `served`: for `definition_differs`, the value the code index serves (a sorted list for `observation_properties`, `null` where it serves none); `null` for every other code.
+
+The route sets no cache headers.
 
 | Code | Severity | Meaning |
 | :--- | :------- | :------ |
-| `node_not_held` | `error` | The graph holds no node for the value, or a constraint value is a number, a boolean or a string outside dcid syntax. |
+| `node_not_held` | `error` | The graph holds no node for the cell, the cell is outside dcid syntax, or a constraint value is a number or a boolean. |
 | `node_untyped` | `error` | The node of a constraint value, `stat_type`, `measurement_qualifier` or `measurement_denominator` has no `typeOf`. |
 | `node_provisional` | `error` | The node of a constraint value, `stat_type`, `measurement_qualifier` or `measurement_denominator` has only the type `ProvisionalNode`. |
-| `value_missing` | `error` | A constraint property has a `null` value. |
+| `origin_not_served` | `error` | The cell is an id of the UN origin, which this deployment does not serve. |
+| `value_missing` | `error` | The row has no measured property, or a constraint property has a `null` value. |
 | `not_a_property` | `error` | A constraint property, the measured property or an observation property is not typed `Property`. |
 | `not_a_class` | `error` | The population type is not typed `Class`. |
 | `value_outside_range` | `error` | Every type of the value is a document node and none reaches the instance property's `rangeIncludes` by `subClassOf`. |
 | `property_outside_domain` | `warning` | The population type is a document node that reaches none of the instance property's `domainIncludes` by `subClassOf`. |
-| `definition_differs` | `warning` | The code index serves the row's `dcid` with another value in that field. |
+| `definition_differs` | `warning` | The code index serves the row's `dcid` with another value in that cell. |
 
-Within a row, findings come first for the shape fields, in the order `population_type`, `measured_property`, `stat_type`, `measurement_qualifier` and `measurement_denominator`. The constraint properties follow sorted, each property's finding before its value's, then the observation properties in row order, then the `definition_differs` findings in the same field order.
+Within a row, a finding on `dcid` comes first, then the shape fields, in the order `population_type`, `measured_property`, `stat_type`, `measurement_qualifier` and `measurement_denominator`. The constraint properties follow sorted, each property's finding before its value's, then the observation properties in row order, then the `definition_differs` findings in the same field order.
 
 The route's deadline is `GRAPH_ONTOLOGY_CHECK_TIMEOUT_SECONDS` (30 s) from its start, covering its wait for the build and its own reads. Failures beyond `400`: `503 service_unavailable` with `Retry-After: 5` while the build runs on past that deadline, `504 timeout` when the build outlives its 60 s deadline or a read passes the route's, a non-retryable `503` for a listing at its cap, `502 upstream_error` for a DCP 4xx and a retryable `503` for any other read failure or a saturated executor, as for `GET /api/graph/ontology`.
 
 Every check runs as one job on its own executor of two workers (`graph_api.config.GRAPH_ONTOLOGY_CHECK_CONCURRENCY`), apart from the four shared DCP-read workers, so at most two checks run at once in a process and a check takes no shared worker. The job reads, checks and encodes the response. A worker stays held until its job returns, even after its request is cancelled or times out, and the reads of a job end by the 30 s deadline. The request answers `504 timeout` at that deadline even while its job runs on. A third check answers retryable `503 service_unavailable` with `Retry-After: 5`. The graph can therefore see reads from the four shared workers and the two check workers at once.
 
-A response holds at most 2,000 findings. With ASCII text it is at most about 3.3 MB, a 512-character `ref`, a 534-character `field` and a 512-character `value` per finding. A `ref` and values of 512 characters JSON escapes to six bytes each bring it to at most about 12.5 MB (12,510,310 bytes, measured over 2,000 such findings).
+A response holds at most 2,000 findings. A finding carries at most a 512-character `ref` and either a `property`, `value` and `served` of up to 512 characters each or, on `observation_properties`, two lists of up to four values. 2,000 findings of the larger kind, with every string at 512 characters, measure 9,582,109 bytes in ASCII and 55,662,109 bytes when every character JSON-escapes to six bytes.
 
 The example sends two rows. `DAC1AidType1010` lies outside the range of `crsPurpose`, and the constraint property `crsPurpos` names no node.
 
@@ -1143,18 +1160,27 @@ The example sends two rows. `DAC1AidType1010` lies outside the range of `crsPurp
 {
   "generation": "graph_<token>",
   "row_count": 2,
+  "next_row": null,
   "findings": [
     {
+      "row": 0,
       "ref": "wrong-list",
-      "field": "constraint_properties.crsPurpose",
+      "field": "constraint_properties",
+      "property": "crsPurpose",
+      "subject": "value",
       "value": "DAC1AidType1010",
+      "served": null,
       "code": "value_outside_range",
       "severity": "error"
     },
     {
+      "row": 1,
       "ref": "no-such-property",
-      "field": "constraint_properties.crsPurpos",
+      "field": "constraint_properties",
+      "property": "crsPurpos",
+      "subject": "property",
       "value": "crsPurpos",
+      "served": null,
       "code": "node_not_held",
       "severity": "error"
     }
@@ -1166,7 +1192,7 @@ The example sends two rows. `DAC1AidType1010` lies outside the range of `crsPurp
 
 ### GET /api/graph/schema
 
-Serves the JSON Schema of every request and response body, keyed by name under `schemas`: `health_response`, `resolve_request`, `resolve_response`, `node_response`, `nodes_request`, `nodes_response`, `members_response`, `roots_response`, `source_documentation_response`, `source_catalogue_response`, `ontology_response`, `ontology_terms_response`, `ontology_provenances_response`, `ontology_check_request` and `ontology_check_response`. `capabilities` holds the path of the capability document. The document is encoded once when the door is built, answers `public, max-age=300` with a strong `ETag` and a gzip representation, and honours `If-None-Match` with `304`. It changes only with a deploy, and `capability_version` hashes the schemas with their descriptions removed.
+Serves the JSON Schema of every request and response body, keyed by name under `schemas`: `health_response`, `resolve_request`, `resolve_response`, `node_response`, `nodes_request`, `nodes_response`, `members_response`, `roots_response`, `source_documentation_response`, `source_catalogue_response`, `ontology_response`, `ontology_terms_response`, `ontology_usage_response`, `ontology_check_request` and `ontology_check_response`. `capabilities` holds the path of the capability document. The document is encoded once when the door is built, answers `public, max-age=300` with a strong `ETag` and a gzip representation, and honours `If-None-Match` with `304`. It changes only with a deploy, and `capability_version` hashes the schemas with their descriptions removed.
 
 ---
 
@@ -1216,9 +1242,7 @@ The example comes from the app built with `make_client` and the restrictive test
     "max_node_batch_dcids": 50,
     "max_check_rows": 2000,
     "max_check_constraint_properties": 16,
-    "max_check_observation_properties": 4,
-    "max_check_read_ids": 41,
-    "max_check_findings": 2000
+    "max_check_observation_properties": 4
   }
 }
 ```
@@ -1272,8 +1296,7 @@ Errors use RFC 9457 problem detail envelopes:
 | `400`       | `request_invalid`     | `GET /api/graph/documentation/{dcid}`'s `dcid` is held, but is neither a `Dataset` nor a `Provenance` node, including a `Source` dcid.   | `/dcid`                                                                                     | No        |
 | `503`       | `service_unavailable` | `GET /api/graph/documentation/{dcid}`'s own Dataset children read came back truncated (more than 256 children, or a surviving `nextToken`).            | None                                                                                        | No        |
 | `404`       | `not_found`           | Unmatched route or empty DCID path parameter (`/api/graph/node/`).                                                                                     | None                                                                                        | No        |
-| `400`       | `request_invalid`     | `POST /api/graph/ontology/check` with `rows` empty or over 2,000 entries, a malformed dcid, extra keys, a row over 16 constraint properties or 4 observation properties, a `ref` or a constraint value string over 512 characters, or a constraint value that is a number past plus or minus 2**53, `NaN` or an infinity. | The offending body field (e.g. `/rows`, `/rows/0/measured_property`).                       | No        |
-| `400`       | `request_invalid`     | `POST /api/graph/ontology/check` whose rows name more than 41 distinct ids to read from the graph (`caps.max_check_read_ids`) or a UN id the deployment does not serve, refused before any read, or whose findings pass 2,000 (`caps.max_check_findings`). | `/rows`                                                                                     | No        |
+| `400`       | `request_invalid`     | `POST /api/graph/ontology/check` that is not JSON, with `rows` missing, empty or over 2,000 entries, an unknown member, a row over 16 constraint properties or 4 observation properties, a string over 512 characters, or a constraint value that is a number past plus or minus 2**53, `NaN` or an infinity. A row's content is never refused; its faults are findings. | The offending body field, naming the row (e.g. `/rows`, `/rows/37/constraint_properties`). | No        |
 | `503`       | `service_unavailable` | An ontology route's own wait passed while the build runs on, or two ontology checks already run in the process (`Retry-After: 5`).                                                                        | None                                                                                        | Yes       |
 | `503`       | `service_unavailable` | An ontology build's Class or Property listing reached its cap, or its document holds no node the instance declares. Under a known generation the ontology, terms and check routes answer it until the graph changes. Under an unknown generation the next request builds again. | None                                                                                        | No under a known generation, yes under an unknown one |
 | `502`       | `upstream_error`      | DCP read failure with a 4xx upstream response status.                                                                                                  | None                                                                                        | Yes       |

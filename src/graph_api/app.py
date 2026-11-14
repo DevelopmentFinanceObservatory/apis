@@ -23,10 +23,10 @@ from the bound release's coverage.
 Routes: `GET /healthz`, `GET /capabilities`, `GET /schema`, `POST /resolve`,
 `GET /node/{dcid}`, `POST /nodes`, `GET /node/{dcid}/members`, `GET /roots`,
 `GET /documentation/{dcid}`, `GET /sources`, `GET /ontology`, `GET /ontology/terms`,
-`GET /ontology/provenances`, and `POST /ontology/check`, all under `/api/graph`.
+`GET /ontology/usage`, and `POST /ontology/check`, all under `/api/graph`.
 `GET /ontology`, `GET /ontology/terms` and `POST /ontology/check` share one build per graph
 generation and code index, held in a cache the lifespan registers beside the source-document
-and node-envelope caches. `GET /ontology/provenances` reads no graph and keeps its body per code
+and node-envelope caches. `GET /ontology/usage` reads no graph and keeps its body per code
 index and coverage build in a cache registered the same way.
 
 Door classifiers return `ProblemSpec`. The door whose route raised classifies
@@ -216,10 +216,10 @@ def graph_surface(
         doc_cache_registration: RegistrationHandle | None = None
         node_entries_registration: RegistrationHandle | None = None
         ontology_registration: RegistrationHandle | None = None
-        provenances_registration: RegistrationHandle | None = None
+        usage_registration: RegistrationHandle | None = None
         dcp_executor: DcpReadExecutor | None = None
         check_executor: DcpReadExecutor | None = None
-        provenances_executor: ThreadPoolExecutor | None = None
+        usage_executor: ThreadPoolExecutor | None = None
         profile_executor: ThreadPoolExecutor | None = None
         profile_reads: ThreadPoolExecutor | None = None
         card_reads: CardReadCaches | None = None
@@ -238,8 +238,8 @@ def graph_surface(
                 await asyncio.to_thread(dcp_executor.shutdown, wait=True)
             if check_executor is not None:
                 await asyncio.to_thread(check_executor.shutdown, wait=True)
-            if provenances_executor is not None:
-                await asyncio.to_thread(provenances_executor.shutdown, wait=True)
+            if usage_executor is not None:
+                await asyncio.to_thread(usage_executor.shutdown, wait=True)
             if card_reads is not None:
                 await asyncio.to_thread(card_reads.close)
             if shared_profiles is not None:
@@ -254,8 +254,8 @@ def graph_surface(
                 node_entries_registration.close()
             if ontology_registration is not None:
                 ontology_registration.close()
-            if provenances_registration is not None:
-                provenances_registration.close()
+            if usage_registration is not None:
+                usage_registration.close()
             if generation_registration is not None:
                 generation_registration.close()
             if shared_resolver is not None:
@@ -361,16 +361,14 @@ def graph_surface(
                 "graph_api.ontology", stats=ontology.stats, clear=ontology.clear
             )
             # A single-flight cache needs a pool no caller runs on.
-            provenances_executor = ThreadPoolExecutor(
-                max_workers=1, thread_name_prefix="graph-ontology-provenances"
+            usage_executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="graph-dataset-usage"
             )
-            ontology_provenances = new_ontology_cache(
-                entries=1, executor=provenances_executor, generation=resolved_generation
+            dataset_usage = new_ontology_cache(
+                entries=1, executor=usage_executor, generation=resolved_generation
             )
-            provenances_registration = resolved_generation.register(
-                "graph_api.ontology_provenances",
-                stats=ontology_provenances.stats,
-                clear=ontology_provenances.clear,
+            usage_registration = resolved_generation.register(
+                "graph_api.dataset_usage", stats=dataset_usage.stats, clear=dataset_usage.clear
             )
 
             profile_cache: FacetProfileCache | None = None
@@ -419,7 +417,7 @@ def graph_surface(
             provenance_docs=provenance_docs,
             node_entries=node_entries,
             ontology=ontology,
-            ontology_provenances=ontology_provenances,
+            dataset_usage=dataset_usage,
             coverage=resolved_coverage,
             profile_cache=profile_cache,
             card_reads=card_reads,
