@@ -480,7 +480,10 @@ def _table_series_from_rows(
     excluded = {STAT_VAR_COLUMN} | facet_dimension_names()
     role_keys = sorted(key for key in dimension_keys if key not in excluded)
 
-    chunks = _table_row_chunks_by_series_id(rows=rows, component_id=component_id, revision=revision)
+    series_keys = [key for key in dimension_keys if key not in facet_dimension_names()]
+    chunks = _table_row_chunks_by_series_id(
+        rows=rows, series_keys=series_keys, component_id=component_id, revision=revision
+    )
     if chunks is not None:
         return tuple(
             _table_series_entry(id=series_id, rows=chunk_rows, role_keys=role_keys)
@@ -505,12 +508,16 @@ def _table_series_from_rows(
 def _table_row_chunks_by_series_id(
     *,
     rows: Sequence[Mapping[str, object]],
+    series_keys: Sequence[str],
     component_id: str,
     revision: int,
 ) -> list[tuple[str, Sequence[Mapping[str, object]]]] | None:
     """Groups rows by `series_id` in first-seen order when every id is a non-empty string and
-    each id has consistent dimensions. No ids returns `None`. Mixed or malformed
-    ids and inconsistent dimensions log a warning before returning `None`."""
+    each id's rows agree on `series_keys`, every dimension but the facets. Rows of one
+    series may differ on a facet: a series continued by its source's estimates labels each
+    row by its own `measurementMethod` (`assembler.mint.builders`). No ids returns `None`.
+    Mixed or malformed ids and other dimensions that differ within an id log a warning before
+    returning `None`."""
     raw_ids = [row.get("series_id") for row in rows]
     present = [one for one in raw_ids if one is not None]
     if not present:
@@ -535,8 +542,10 @@ def _table_row_chunks_by_series_id(
 
     for series_id in order:
         chunk_rows = chunks[series_id]
-        first_dimensions = chunk_rows[0].get("dimensions")
-        if any(row.get("dimensions") != first_dimensions for row in chunk_rows):
+        first_cells = _series_cells(row=chunk_rows[0], series_keys=series_keys)
+        if any(
+            _series_cells(row=row, series_keys=series_keys) != first_cells for row in chunk_rows
+        ):
             logger.warning(
                 "%s component_id=%s revision=%s reason=heterogeneous_series_id_chunk series_id=%s",
                 TABLE_ROW_SERIES_ID_INCONSISTENT_MARKER,
@@ -547,6 +556,11 @@ def _table_row_chunks_by_series_id(
             return None
 
     return [(series_id, tuple(chunks[series_id])) for series_id in order]
+
+
+def _series_cells(*, row: Mapping[str, object], series_keys: Sequence[str]) -> list[object]:
+    dimensions = cast("Mapping[str, object]", row.get("dimensions") or {})
+    return [dimensions.get(key) for key in series_keys]
 
 
 def _table_series_entry(
