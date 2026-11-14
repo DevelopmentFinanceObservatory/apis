@@ -474,6 +474,8 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
 # composite asks for. Both components read DAC2a, so each binds its own aid type, and a row's
 # aid type names the one component it belongs to (`code_index.composites.component_of`).
 # DAC2a reads a missing row as unknown, so the imputed component writes no zero rows.
+# A groupby sum then serves, for a cell holding one of the two lines, the line it holds
+# (`code_index.composites.components_sum`).
 #
 # The OECD headline ODA splices DAC1's net flows to 2017 and its grant equivalents from 2018,
 # the year the OECD made grant equivalents its headline measure.
