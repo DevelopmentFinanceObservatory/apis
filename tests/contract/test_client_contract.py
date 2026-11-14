@@ -15,7 +15,8 @@ it, and the code registry the app serves:
   route to none in `Surface.registry_endpoints`;
 - every strict required member stays required and admits no null, and every strict enum value
   stays admitted;
-- every `actions.json` code is an active registry code.
+- every `actions.json` code is an active registry code;
+- the role-keys rule's frame party columns are `ROLE_AXES`.
 
 A synthetic scenario edits a recorded one to test a client's handling of a malformed answer, and
 a `url` exchange fetches from storage, so neither is checked here.
