@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -15,7 +16,7 @@ from graph_api.doors import ontology as ontology_door
 from graph_api.ontology_provenances import build_provenances
 from series_coverage.schema import FacetMetadata
 
-from .conftest import FakeGraphNodeReader, make_client
+from .conftest import FakeGraphNodeReader, make_client, wait_until
 
 _CRS = "provenance/CRS"
 _DAC = "provenance/DAC1"
@@ -316,3 +317,38 @@ def test_a_miss_builds_the_body_off_the_event_loop(monkeypatch: pytest.MonkeyPat
 
     assert response.status_code == 200, response.text
     assert on_loop == [False]
+
+
+def test_concurrent_first_requests_share_one_build(monkeypatch: pytest.MonkeyPatch) -> None:
+    started = threading.Event()
+    release = threading.Event()
+    builds: list[object] = []
+    real = ontology_door.build_provenances
+
+    def blocked(**kwargs):
+        builds.append(kwargs["coverage"])
+        started.set()
+        release.wait(timeout=5.0)
+        return real(**kwargs)
+
+    monkeypatch.setattr(ontology_door, "build_provenances", blocked)
+    responses: list[int] = []
+
+    with make_client(coverage=_FakeCoverage(_coverage_of("CurrencyUSD"))) as client:
+        cache = client.app.state.graph_deps.ontology_provenances
+
+        def send() -> None:
+            responses.append(client.get(_ROUTE, headers=_IDENTITY).status_code)
+
+        first = threading.Thread(target=send)
+        first.start()
+        assert started.wait(timeout=5.0), "the build never started"
+        second = threading.Thread(target=send)
+        second.start()
+        wait_until(lambda: dict(cache.stats())["misses"] == 2)
+        release.set()
+        first.join(timeout=5.0)
+        second.join(timeout=5.0)
+
+    assert responses == [200, 200]
+    assert len(builds) == 1

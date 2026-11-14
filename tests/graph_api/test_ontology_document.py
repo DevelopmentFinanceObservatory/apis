@@ -11,7 +11,6 @@ from dc_graph import ArcSubject, ArcTarget
 from graph_api import ontology_document
 from graph_api.ontology_document import (
     OntologyListingTruncatedError,
-    OntologyProvenanceUnreadError,
     build_ontology,
     declared_by,
 )
@@ -195,13 +194,23 @@ def test_a_truncated_listing_refuses(monkeypatch: pytest.MonkeyPatch) -> None:
         _nodes(ontology_graph())
 
 
-def test_a_listing_subject_with_no_provenance_refuses() -> None:
+def test_a_listing_subject_with_no_provenance_is_served_undeclared(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     terms = {**TERMS, "educationalAttainment": ("Property", ())}
 
-    with pytest.raises(OntologyProvenanceUnreadError) as refused:
-        _nodes(ontology_graph(terms=terms))
+    with caplog.at_level("WARNING", logger=ontology_document.__name__):
+        ontology = build_ontology(
+            reader=ontology_graph(terms=terms),
+            code_index=INDEX,
+            generation="g1",
+            deadline=_DEADLINE,
+        )
 
-    assert refused.value.dcid == "educationalAttainment"
+    term = {term.dcid: term for term in ontology.terms.terms}["educationalAttainment"]
+    assert (term.provenances, term.declared_by) == ([], None)
+    assert '"declared_by":null' in term.model_dump_json()
+    assert [record.args for record in caplog.records] == [(1, ["educationalAttainment"], 0, [])]
 
 
 def test_a_held_node_with_no_type_is_served_with_no_provenance() -> None:
@@ -223,13 +232,47 @@ def test_a_held_node_with_no_type_is_served_with_no_provenance() -> None:
     assert graph.confirm_empty and all(graph.confirm_empty)
 
 
-def test_a_typed_node_with_no_provenance_refuses() -> None:
+def test_a_typed_node_whose_type_carries_no_provenance_is_served_undeclared(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     arc_targets = {"Female": {"typeOf": (ArcTarget(value="GenderType"),)}}
 
-    with pytest.raises(OntologyProvenanceUnreadError) as refused:
-        _nodes(ontology_graph(arc_targets=arc_targets))
+    with caplog.at_level("WARNING", logger=ontology_document.__name__):
+        nodes = _nodes(ontology_graph(arc_targets=arc_targets))
 
-    assert refused.value.dcid == "Female"
+    female = nodes["Female"]
+    assert (female.types, female.provenances, female.declared_by) == (["GenderType"], [], None)
+    assert [record.args for record in caplog.records] == [(0, [], 1, ["Female"])]
+
+
+class _DroppingListings(FakeGraphNodeReader):
+    """The fixture graph, whose batched member listing omits `dropped` or answers it with no
+    subject, while a listing of it alone answers its members."""
+
+    def __init__(self, dropped: str, *, omit: bool) -> None:
+        super().__init__(nodes=NODES, arc_subjects=arc_subjects(), arc_targets=node_targets(NODES))
+        self._dropped = dropped
+        self._omit = omit
+
+    def node_arc_subjects_many(self, dcids, *, property, max_results, deadline=None):
+        listed = super().node_arc_subjects_many(
+            dcids, property=property, max_results=max_results, deadline=deadline
+        )
+        if self._omit:
+            listed.pop(self._dropped)
+        else:
+            listed[self._dropped] = ((), "complete")
+        return listed
+
+
+@pytest.mark.parametrize("omit", [True, False], ids=["omitted", "answered-empty"])
+def test_an_enumeration_the_batched_listing_leaves_empty_is_listed_alone(omit: bool) -> None:
+    graph = _DroppingListings("CRSPurposeCodeEnum", omit=omit)
+
+    crs = _nodes(graph)["CRSPurposeCodeEnum"].enumeration
+
+    assert crs is not None
+    assert (crs.members, crs.complete) == (["CRSPurposeCode120", "CRSPurposeCode12220"], True)
 
 
 def test_a_term_that_is_also_a_member_is_declared_by_its_node_read_and_its_listing() -> None:
@@ -344,7 +387,8 @@ def test_reads_are_bounded_by_hierarchy_depth_not_node_count() -> None:
 
     assert "extraValue49" in large_nodes
     expected = {
-        "node_arc_subjects": 2,  # Class and Property listings
+        # Class and Property listings, and FinancingPurposeEnum's empty listing read alone
+        "node_arc_subjects": 3,
         "node_arc_subjects_many": 1,  # members of every instance enumeration
         # Each node's values and provenances: the seed, three ancestor levels
         # (EconomicActivity, Intangible, Thing) and the unread members.
@@ -377,5 +421,5 @@ def test_every_read_carries_the_deadline() -> None:
 
     build_ontology(reader=graph, code_index=INDEX, generation="g1", deadline=_DEADLINE)  # type: ignore[arg-type]
 
-    assert len(graph.deadlines) == sum(fake.calls.values()) == 8
+    assert len(graph.deadlines) == sum(fake.calls.values()) == 9
     assert set(graph.deadlines) == {_DEADLINE}

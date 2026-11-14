@@ -16,10 +16,10 @@ request whose own deadline passes first answers retryable 503 `service_unavailab
 that outlives its deadline stores nothing, and its waiters answer 504 `timeout`. An executor
 with every worker busy refuses the build with `DcpExecutorSaturated`, which the surface answers
 as retryable 503. A read past its deadline answers 504 `timeout`, a listing that reached its
-cap or a typed node read with no declaring provenance non-retryable 503 `service_unavailable`, a DCP 4xx 502 `upstream_error` and any other read
-failure retryable 503. Those two non-retryable refusals cannot change while the generation
-holds, so the entry keeps them as `RefusedOntology` and every request for the key answers the
-same 503 with no build. Any other failed build is not kept.
+cap non-retryable 503 `service_unavailable`, a DCP 4xx 502 `upstream_error` and any other read
+failure retryable 503. The non-retryable refusal cannot change while the generation holds, so
+the entry keeps it as `RefusedOntology` and every request for the key answers the same 503 with
+no build. Any other failed build is not kept.
 
 The cached value holds each body encoded once in the models' field order, so two builds of one
 graph give the same bytes. Each answers `public, max-age=300` with a strong `ETag` over those bytes
@@ -55,15 +55,16 @@ is refused 400 `request_invalid` with pointer `/rows`.
 
 `GET /api/graph/ontology/provenances` serves `OntologyProvenances`, built by
 `graph_api.ontology_provenances.build_provenances` from the bound code index and the served
-coverage index with no graph read. The frozen body is kept per code index (`per_index`) for the
-coverage build it was read with (`CoverageManifest.build_id`): a request with another build
-rebuilds it in a worker thread, and the entry goes with its code index. It answers as the other
-two routes do.
+coverage index with no graph read. `GraphDeps.ontology_provenances`, a single-flight cache of
+one entry keyed by the code index's content hash and the coverage build
+(`CoverageManifest.build_id`), holds the frozen body, and the lifespan registers it as
+`graph_api.ontology_provenances`, so a generation change clears it too. A miss builds the body
+in a worker thread, and concurrent misses share that build. It answers as the other two routes
+do.
 """
 
 from __future__ import annotations
 
-import asyncio
 import time
 from collections.abc import Callable, Sequence
 from concurrent.futures import Executor
@@ -74,7 +75,7 @@ from typing import NamedTuple
 from fastapi import APIRouter, Request, Response
 
 from code_index import CodeIndex
-from code_index.shared import get_index, per_index
+from code_index.shared import get_index
 from dfo_platform import ProblemSpec
 from dfo_platform.doors import DoorContribution
 from dfo_platform.refusal import TIMEOUT_DEFAULT
@@ -104,7 +105,6 @@ from graph_api.ontology_check import (
 )
 from graph_api.ontology_document import (
     OntologyListingTruncatedError,
-    OntologyProvenanceUnreadError,
     build_ontology,
 )
 from graph_api.ontology_models import (
@@ -150,9 +150,8 @@ class FrozenOntology:
 
 @dataclass(frozen=True, slots=True)
 class RefusedOntology:
-    """A build refusal that cannot change while the generation holds: a truncated term listing
-    or a typed node read with no declaring provenance. `error` makes a fresh exception for each
-    request it answers."""
+    """A build refusal that cannot change while the generation holds: a truncated term listing.
+    `error` makes a fresh exception for each request it answers."""
 
     error: Callable[[], GraphReadError]
 
@@ -191,6 +190,23 @@ class OntologyReadFailed(Exception):
         self.error = error
 
 
+class ProvenancesKey(NamedTuple):
+    """The content hash of the code index and the coverage build the provenances body reads."""
+
+    code_index: str
+    coverage_build: str
+
+
+def new_provenances_cache(
+    *, generation: GenerationProvider
+) -> SingleFlightCache[ProvenancesKey, FrozenJSON]:
+    """The cache of the provenances body: one entry, whose build runs in a worker thread and
+    whose key carries `generation`'s stamp."""
+    return SingleFlightCache(
+        maxsize=1, flight_timeout_s=ONTOLOGY_FLIGHT_TIMEOUT_SECONDS, generation=generation
+    )
+
+
 def new_ontology_cache(
     *, executor: Executor, generation: GenerationProvider
 ) -> SingleFlightCache[OntologyKey, OntologyEntry]:
@@ -224,8 +240,6 @@ def _build_entry(
         )
     except OntologyListingTruncatedError as exc:
         return RefusedOntology(error=partial(OntologyListingTruncatedError, str(exc)))
-    except OntologyProvenanceUnreadError as exc:
-        return RefusedOntology(error=partial(OntologyProvenanceUnreadError, exc.dcid))
     return FrozenOntology(
         document=_freeze(ontology.document),
         terms=_freeze(ontology.terms),
@@ -313,14 +327,6 @@ def classify_ontology_exception(exc: BaseException) -> ProblemSpec | None:
             retryable=False,
             log=f"Graph ontology door refused a truncated term listing: {error}",
         )
-    if isinstance(error, OntologyProvenanceUnreadError):
-        return ProblemSpec(
-            status=503,
-            code="service_unavailable",
-            detail=str(error),
-            retryable=False,
-            log=f"Graph ontology door refused {error.dcid!r}, read with no declaring provenance",
-        )
     if isinstance(error, GraphDeadlineExceededError):
         return ProblemSpec(
             status=TIMEOUT_DEFAULT.status,
@@ -338,34 +344,35 @@ def classify_ontology_exception(exc: BaseException) -> ProblemSpec | None:
     return spec._replace(log=f"Graph ontology door's DCP read failed: {error}", log_traceback=True)
 
 
-@dataclass(slots=True)
-class _ProvenancesMemo:
-    """One code index's frozen provenances body and the coverage build it was read with."""
-
-    coverage_build: str | None = None
-    body: FrozenJSON | None = None
-
-
-_provenances_memo = per_index(lambda _index: _ProvenancesMemo())
-
-
 def _freeze_provenances(code_index: CodeIndex, coverage: ProvenanceCoverage) -> FrozenJSON:
     return _freeze(build_provenances(code_index=code_index, coverage=coverage))
 
 
 async def _frozen_provenances(deps: GraphDeps) -> FrozenJSON:
-    """The provenances body of the bound code index and the served coverage build. A miss
-    builds and encodes the body in a worker thread; two concurrent misses both build, and
-    either stores the same body."""
+    """The provenances body of the bound code index and the served coverage build, from
+    `deps.ontology_provenances`. A miss builds and encodes the body in a worker thread, and
+    concurrent misses share that one build. A request waits until `GRAPH_NODE_TIMEOUT_SECONDS`
+    from its start.
+
+    Raises:
+        OntologyBuildPending: the request's wait passed while the build runs on.
+        OntologyBuildExpired: the build outlived its flight deadline.
+    """
     code_index = get_index()
     snapshot = deps.coverage.snapshot()
-    memo = _provenances_memo(code_index)
-    build_id = snapshot.manifest.build_id
-    if memo.body is not None and memo.coverage_build == build_id:
-        return memo.body
-    body = await asyncio.to_thread(_freeze_provenances, code_index, snapshot.index)
-    memo.body, memo.coverage_build = body, build_id
-    return body
+    key = ProvenancesKey(
+        code_index=code_index.stamp.content_hash, coverage_build=snapshot.manifest.build_id
+    )
+    try:
+        return await deps.ontology_provenances.aget_or_fetch(
+            key,
+            lambda _flight_deadline: _freeze_provenances(code_index, snapshot.index),
+            deadline=_request_deadline(),
+        )
+    except WaitTimeout:
+        raise OntologyBuildPending() from None
+    except TimeoutError as exc:
+        raise OntologyBuildExpired() from exc
 
 
 async def get_ontology(deps: GraphDepsDep, request: Request) -> Response:
@@ -471,7 +478,6 @@ def build_ontology_door() -> DoorContribution:
             OntologyBuildPending(),
             OntologyBuildExpired(),
             OntologyReadFailed(OntologyListingTruncatedError("exemplar")),
-            OntologyReadFailed(OntologyProvenanceUnreadError("exemplar")),
             OntologyReadFailed(GraphDeadlineExceededError("exemplar")),
             OntologyReadFailed(GraphReadError("exemplar", upstream_status=400)),
             OntologyReadFailed(GraphReadError("exemplar", upstream_status=503)),

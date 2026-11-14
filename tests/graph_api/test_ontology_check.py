@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from code_index import StatVarRow
-from dc_graph import GraphReadError
+from dc_graph import ArcTarget, GraphReadError
 from graph_api.ontology_check import (
     OntologyCheckTooManyFindings,
     OntologyCheckTooManyReads,
@@ -31,7 +31,7 @@ from graph_api.ontology_models import (
 from graph_api.reader import NodeArcsByDcid
 
 from .conftest import FakeGraphNodeReader
-from .ontology_fixture import DFO, INDEX, NODES, SCHEMA, TERMS, ontology_graph
+from .ontology_fixture import DFO, INDEX, NODES, SCHEMA, TERMS, node_targets, ontology_graph
 
 _DEADLINE = 1_000.0
 
@@ -309,6 +309,24 @@ _GENDER = "constraint_properties.beneficiaryGender"
             id="denominator-not-held",
         ),
         pytest.param(
+            _row(stat_type="UntypedCode"),
+            [("stat_type", "UntypedCode", "node_untyped", "error")],
+            id="stat-type-untyped",
+        ),
+        pytest.param(
+            _row(measurement_qualifier="PlaceholderCode"),
+            [("measurement_qualifier", "PlaceholderCode", "node_provisional", "error")],
+            id="qualifier-provisional-only",
+        ),
+        pytest.param(
+            _row(measurement_denominator="UntypedCode"),
+            [("measurement_denominator", "UntypedCode", "node_untyped", "error")],
+            id="denominator-untyped",
+        ),
+        pytest.param(
+            _row(measurement_qualifier="RealizedCode"), [], id="qualifier-provisional-and-real-type"
+        ),
+        pytest.param(
             _row(constraint_properties={"crsPurpose": "DAC1AidType1010"}),
             [(_CRS, "DAC1AidType1010", "value_outside_range", "error")],
             id="member-of-another-enumeration",
@@ -486,6 +504,24 @@ def test_an_id_outside_the_document_is_read_once_for_every_row() -> None:
     assert reader.batches == [["Male"]]
 
 
+def test_an_id_named_in_both_rounds_is_read_once() -> None:
+    """An id named as an observation property is read in the first round, and as the value of
+    a property outside the document in the second: it is read in the first only."""
+    reader = _RecordingReader()
+    rows = [
+        *(
+            _row(ref=f"v{i}", constraint_properties={"baseProperty0": f"NoSuchX{i}"})
+            for i in range(40)
+        ),
+        *(_row(ref=f"o{i}", observation_properties=[f"NoSuchX{i}"]) for i in range(40)),
+    ]
+
+    _check(rows, reader)
+
+    asked = [dcid for batch in reader.batches for dcid in batch]
+    assert len(asked) == len(set(asked)) == CHECK_MAX_READ_IDS
+
+
 def test_a_value_typed_outside_the_document_is_read_with_no_ancestry() -> None:
     reader = _RecordingReader()
     rows = [
@@ -534,6 +570,25 @@ def test_no_read_where_the_document_or_the_value_decides(constraints: dict[str, 
 
     assert reader.batches == []
     assert sum(reader.calls.values()) == 0
+
+
+def test_a_property_with_an_undeclared_type_gets_existence_and_kind_checks_only() -> None:
+    """`crsPurpose` read with a `typeOf` that carries no provenance is served with `declared_by`
+    null, so neither its range nor its domain is judged and its value is read."""
+    unsourced = {"crsPurpose": {**node_targets(_CHECK_NODES, _CHECK_TERMS)["crsPurpose"]}}
+    unsourced["crsPurpose"]["typeOf"] = (ArcTarget(value="Property"),)
+    graph = ontology_graph(terms=_CHECK_TERMS, nodes=_CHECK_NODES, arc_targets=unsourced)
+    document = build_ontology(reader=graph, code_index=INDEX, generation="g1", deadline=_DEADLINE)
+    reader = _RecordingReader()
+    row = _row(
+        population_type="EconomicActivity",
+        constraint_properties={"crsPurpose": "CRSPurposeCode99999"},
+    )
+
+    findings = _check([row], reader, OntologyLookup.of(document.document))
+
+    assert findings == [(_CRS, "CRSPurposeCode99999", "node_not_held", "error")]
+    assert reader.batches == [["CRSPurposeCode99999"]]
 
 
 def _truncated(dcid: str) -> OntologyDocument:

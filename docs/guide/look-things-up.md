@@ -116,7 +116,7 @@ curl -fsS "$DFO_API/api/v1/graph/ontology" \
   | jq '.nodes[] | select(.dcid == "crsPurpose")'
 ```
 
-A node's `declared_by` is `base` when Data Commons declares it and `instance` when this deployment does. `range_includes` and `domain_includes` name the classes a property accepts. The first request after a graph release builds the document and can take longer than later ones; a `503` with `Retry-After` means to ask again.
+A node's `declared_by` is `base` when Data Commons declares it and `instance` when this deployment does. It is `null` when the graph names no declaring Provenance for the node or term. `range_includes` and `domain_includes` name the classes a property accepts. The first request after a graph release builds the document and can take longer than later ones. A `503` with `Retry-After` means to ask again.
 
 ## See how a dataset uses the model
 
@@ -129,7 +129,7 @@ curl -fsS "$DFO_API/api/v1/graph/ontology/provenances" \
 
 ## Check StatVar definitions
 
-`POST /api/v1/graph/ontology/check` takes 1 to 2,000 candidate definitions and lists every fault. An empty `findings` list means no row has a fault. The check reads each id its rows name that the ontology document does not hold, and one request reads at most `caps.max_check_read_ids` (41) of them and answers at most `caps.max_check_findings` (2,000) findings, both from `GET /api/v1/graph/capabilities`. One row always fits both. A request past either cap answers `400 request_invalid` with pointer `/rows`: split the rows into smaller requests and send them one after another. Rows naming terms the model already declares read little, so a sheet of known terms fits in large requests. A deployment runs two checks at once, and a third answers a retryable `503` with `Retry-After`.
+`POST /api/v1/graph/ontology/check` takes 1 to 2,000 candidate definitions and lists every fault. An empty `findings` list means no row has a fault. The check reads each id its rows name that the ontology document does not hold, and one request reads at most `caps.max_check_read_ids` (41) of them and answers at most `caps.max_check_findings` (2,000) findings, both from `GET /api/v1/graph/capabilities`. One row always fits both. A request past either cap answers `400 request_invalid` with pointer `/rows`: split the rows into smaller requests and send them one after another. Rows naming terms the model already declares read little, so a sheet of known terms fits in large requests. Each instance runs two checks at once, and a third answers a retryable `503` with `Retry-After`.
 
 ```bash
 curl -fsS -X POST "$DFO_API/api/v1/graph/ontology/check" \
@@ -138,7 +138,7 @@ curl -fsS -X POST "$DFO_API/api/v1/graph/ontology/check" \
   | jq '.findings'
 ```
 
-Each finding names the `ref` of its row, the `field` at fault, the `value`, a `code` such as `node_not_held` or `value_outside_range`, and a `severity` of `error` or `warning`. A `definition_differs` warning means the row's `dcid` is a StatVar the code index serves with another value in that field; `value` is the served one.
+Each finding names the `ref` of its row, the `field` at fault, the `value`, a `code` such as `node_not_held` or `value_outside_range`, and a `severity` of `error` or `warning`. A `definition_differs` warning means the row's `dcid` is a StatVar the code index serves with another value in that field, and `value` is the served one.
 
 ## Verify it worked
 

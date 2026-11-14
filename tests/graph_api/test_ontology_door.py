@@ -16,7 +16,6 @@ from graph_api.doors import ontology as ontology_door
 from graph_api.ontology_check import OntologyLookup
 from graph_api.ontology_document import (
     OntologyListingTruncatedError,
-    OntologyProvenanceUnreadError,
 )
 from graph_api.ontology_models import (
     CHECK_MAX_CONSTRAINT_PROPERTIES,
@@ -250,14 +249,6 @@ class TestWaits:
             False,
             1,
             id="truncated-listing-kept",
-        ),
-        pytest.param(
-            OntologyProvenanceUnreadError("Female"),
-            503,
-            "service_unavailable",
-            False,
-            1,
-            id="unread-provenance-kept",
         ),
         pytest.param(
             GraphDeadlineExceededError("deadline"), 504, "timeout", True, 2, id="deadline"

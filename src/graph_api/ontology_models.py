@@ -20,10 +20,10 @@ A term's `name` follows the same rule over the names its listing entries carry.
 `description` is the smallest of the node's `description` values by code point.
 
 `provenances` holds the dcids of the Provenances that declare the node's `typeOf` arcs,
-verbatim and sorted; every term and every typed node carries at least one. `declared_by` is
-`"base"` when every one starts `dc/base/`, and `"instance"` otherwise. A node the graph holds
-with no `typeOf` arc has no declaring Provenance: its `provenances` is empty and its
-`declared_by` null.
+verbatim and sorted. A term's are those its listing entries carry. `declared_by` is `"base"`
+when every one starts `dc/base/`, and `"instance"` otherwise. It is null when the graph names no
+declaring Provenance: a node has no `typeOf` arc, or one of its `typeOf` arcs carries no
+Provenance, or a term's listing entries carry none. Its `provenances` is then empty.
 
 `enumeration` is set on a Class whose `subClassOf` chain reaches `Enumeration`, and null on
 every other node. An instance-declared enumeration lists the members its `<-typeOf` listing
@@ -79,12 +79,12 @@ CHECK_MAX_READ_IDS = 5 + 2 * CHECK_MAX_CONSTRAINT_PROPERTIES + CHECK_MAX_OBSERVA
 that the ontology document does not hold, counted before any read, each constraint value
 counted unless the value or the document decides it (`graph_api.ontology_check.plan_reads`).
 One row names at most this many (its 5 shape fields, each constraint property and its value,
-each observation property), so a single row always fits. The check reads them in two
-`node_arcs_many` calls: 45 POSTs to `/v2/node` when the graph answers every POST, at most 201
-when the front door refuses every POST naming more than one id, each tried up to 3 times, all
-within the 30 s `GRAPH_ONTOLOGY_CHECK_TIMEOUT_SECONDS` (`graph_api.ontology_check` counts
-them). On the dev graph, 41 absent ids read in one batch and then alone took 9.2 to 10.2 s,
-about a third of that deadline and past the 10 s `GRAPH_NODE_TIMEOUT_SECONDS`."""
+each observation property), so a single row always fits. The check reads each once, in two
+`node_arcs_many` calls: at most 45 POSTs to `/v2/node` when the graph answers every POST, 49
+where the deployment serves the UN origin, and at most 203 when the front door refuses every
+POST naming more than one id, each tried up to 3 times, all within the 30 s
+`GRAPH_ONTOLOGY_CHECK_TIMEOUT_SECONDS` (`graph_api.ontology_check` counts them). On the dev
+graph, 41 absent ids took 43 POSTs and 7.4 to 7.8 s, a quarter of that deadline."""
 
 CHECK_MAX_FINDINGS = 2_000
 """The most findings one check answers. A check whose findings pass it stops and is refused.
@@ -125,11 +125,12 @@ class OntologyNode(ResponseModel):
     range_includes: list[str]
     classification_code: list[str]
     provenances: list[str] = Field(
-        description="the Provenances declaring the node's typeOf arcs, verbatim; empty for a "
-        "node with no typeOf arc"
+        description="the Provenances declaring the node's typeOf arcs, verbatim, empty when "
+        "declared_by is null"
     )
     declared_by: DeclaredBy | None = Field(
-        description="null for a node with no typeOf arc, which no Provenance declares"
+        description="null when the graph names no declaring Provenance for the node: it has no "
+        "typeOf arc, or one of its typeOf arcs carries no Provenance"
     )
     enumeration: OntologyEnumeration | None = Field(
         description="the members when the node is an enumeration Class; null otherwise"
@@ -154,9 +155,13 @@ class OntologyTerm(ResponseModel):
         description="whether the term is typed Class, Property or both"
     )
     provenances: list[str] = Field(
-        description="the Provenances declaring the term's typeOf arc, verbatim"
+        description="the Provenances declaring the term's typeOf arc, verbatim, empty when "
+        "declared_by is null"
     )
-    declared_by: DeclaredBy
+    declared_by: DeclaredBy | None = Field(
+        description="null when the graph names no declaring Provenance for the term: its "
+        "listing entries carry none"
+    )
 
 
 class OntologyTerms(ResponseModel):
@@ -283,8 +288,10 @@ FindingCode = Literal[
 
 `node_not_held`: the graph holds no node for it, or a constraint value is a number, a boolean
 or a string outside dcid syntax.
-`node_provisional`: a constraint value's node has only the type `ProvisionalNode`.
-`node_untyped`: a constraint value's node has no `typeOf`. `value_missing`: a constraint property has a null value. `not_a_property`: a constraint
+`node_provisional`: the node of a constraint value, `stat_type`, `measurement_qualifier` or
+`measurement_denominator` has only the type `ProvisionalNode`.
+`node_untyped`: the node of a constraint value, `stat_type`, `measurement_qualifier` or
+`measurement_denominator` has no `typeOf`. `value_missing`: a constraint property has a null value. `not_a_property`: a constraint
 property, the measured property or an observation property is not typed `Property`.
 `not_a_class`: the population type is not typed `Class`. `value_outside_range`: every type of
 the value is a document node and none reaches the instance property's `rangeIncludes` by

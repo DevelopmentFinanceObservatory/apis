@@ -49,8 +49,9 @@ from materialise.facet_profile import FacetProfileCache
 
 if TYPE_CHECKING:
     # `card_reads` imports this module's executor refusals.
+    from dfo_platform.static_response import FrozenJSON
     from graph_api.card_reads import CardReadCaches
-    from graph_api.doors.ontology import OntologyEntry, OntologyKey
+    from graph_api.doors.ontology import OntologyEntry, OntologyKey, ProvenancesKey
     from materialise.provenance_doc import ProvenanceDoc
     from series_coverage.shared import ServedCoverage
 
@@ -88,6 +89,13 @@ class GraphDeps:
     # The lifespan's cache builds on `dcp_executor`; this default has no executor, so a build
     # through it fails.
     ontology: SingleFlightCache[OntologyKey, OntologyEntry] = field(
+        default_factory=lambda: SingleFlightCache(
+            maxsize=1, flight_timeout_s=ONTOLOGY_FLIGHT_TIMEOUT_SECONDS
+        )
+    )
+    # The provenances body, one entry keyed by code index and coverage build. The lifespan's is
+    # registered for clearing beside `ontology`.
+    ontology_provenances: SingleFlightCache[ProvenancesKey, FrozenJSON] = field(
         default_factory=lambda: SingleFlightCache(
             maxsize=1, flight_timeout_s=ONTOLOGY_FLIGHT_TIMEOUT_SECONDS
         )

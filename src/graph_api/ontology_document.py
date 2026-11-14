@@ -8,18 +8,20 @@ nodes not yet read that the instance's terms name in `subClassOf`,
 `subPropertyOf`, `domainIncludes` or `rangeIncludes`, the `typeOf` targets of every node
 read that is neither a Class nor a Property, and the `subClassOf` and `subPropertyOf`
 parents, so the class of every value is present and every ancestor is too. One
-`node_arc_subjects_many` lists the members of every instance-declared enumeration, and the
-members not yet read join the document with the same closure over their types and ancestors.
+`node_arc_subjects_many` lists the members of every instance-declared enumeration, and each
+enumeration that listing omits or answers with no member is listed again alone with
+`node_arc_subjects`, whose answer stands. The members not yet read join the document with the same closure over their types and ancestors.
 `confirm_empty` confirms an empty answer before returning it: one more read of the empties
 together, then one read of each still empty alone, and a dcid still empty is absent from the
 document. So the number of reads grows with the depth of the class and property hierarchy,
 plus a group read per level with an empty answer and one read per dcid the graph does not hold.
 
 Each node's values and provenances come from that one read of the node. Its provenances are
-those declaring its `typeOf` arcs: every typed node carries at least one, and a node held with
-no `typeOf` arc carries none and is declared by neither. A term's provenances come from its
-listing entries. A listing subject with none, or a `typeOf` arc read with none, refuses the
-build with `OntologyProvenanceUnreadError`.
+those declaring its `typeOf` arcs. A node held with no `typeOf` arc, or with a `typeOf` arc that
+carries no provenance, is served with none and declared by neither. A term's provenances come
+from its listing entries, and a listing subject with none is served with none and declared by
+neither too. One warning per build counts the terms and the typed nodes served so and names the
+first ten of each.
 
 An instance-declared enumeration's members are its `<-typeOf` listing, `complete` when the
 listing read every subject. A base enumeration lists the members StatVar rows use and is never
@@ -31,12 +33,14 @@ to the same bytes.
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable, Mapping
+import logging
+from collections import defaultdict
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Final, Literal
 
 from code_index import CodeIndex
-from dc_graph import GraphReadError, display_name
+from dc_graph import ArcSubject, GraphReadError, display_name
 from graph_api.ontology_models import (
     DeclaredBy,
     OntologyDocument,
@@ -48,6 +52,8 @@ from graph_api.ontology_models import (
 from graph_api.ontology_provenances import SHAPE_FIELDS
 from graph_api.reader import GraphNodeReader
 
+logger = logging.getLogger(__name__)
+
 TERM_LISTING_CAP: Final[int] = 20_000
 """The most subjects one `<-typeOf` listing of `Class` or `Property` reads. A listing that
 reaches it raises `OntologyListingTruncatedError`."""
@@ -56,6 +62,7 @@ ENUMERATION_MEMBER_CAP: Final[int] = 5_000
 """The most members read for one instance-declared enumeration. An enumeration with more is
 served with the members read and `complete: false`."""
 
+_LOGGED_DCIDS: Final[int] = 10
 _BASE_PREFIX: Final[str] = "dc/base/"
 _CLASS: Final = "Class"
 _PROPERTY: Final = "Property"
@@ -83,15 +90,6 @@ type _TermKind = Literal["Class", "Property"]
 
 class OntologyListingTruncatedError(GraphReadError):
     """A `Class` or `Property` listing reached `TERM_LISTING_CAP`, so the terms are incomplete."""
-
-
-class OntologyProvenanceUnreadError(GraphReadError):
-    """`dcid`, a listing subject or a node with a `typeOf` arc, came back with no declaring
-    provenance on any entry, so it cannot be labelled base or instance."""
-
-    def __init__(self, dcid: str) -> None:
-        super().__init__(f"no declaring provenance read for {dcid!r}")
-        self.dcid = dcid
 
 
 @dataclass(frozen=True)
@@ -139,12 +137,13 @@ def build_ontology(
 
     Raises:
         OntologyListingTruncatedError: a `Class` or `Property` listing reached its cap.
-        OntologyProvenanceUnreadError: a term or node has no declaring provenance.
         GraphReadError: a read failed.
     """
     listed = _read_terms(reader, deadline=deadline)
     instance_terms = {
-        dcid for dcid, term in listed.items() if declared_by(term.provenances) == "instance"
+        dcid
+        for dcid, term in listed.items()
+        if term.provenances and declared_by(term.provenances) == "instance"
     }
     index_named = _index_named(code_index)
 
@@ -152,12 +151,14 @@ def build_ontology(
     # Each node's provenances, read with its arcs.
     provenances: dict[str, frozenset[str]] = {}
     absent: set[str] = set()
+    unsourced: set[str] = set()
     read = _NodeReads(
         reader,
         listed=listed,
         arcs=arcs,
         provenances=provenances,
         absent=absent,
+        unsourced=unsourced,
         deadline=deadline,
     )
     read.nodes(instance_terms | index_named)
@@ -170,23 +171,20 @@ def build_ontology(
     )
     members: dict[str, OntologyEnumeration] = {}
     listed_members: set[str] = set()
-    if instance_enumerations:
-        listings = reader.node_arc_subjects_many(
-            instance_enumerations,
-            property=_TYPE_OF,
-            max_results=ENUMERATION_MEMBER_CAP,
-            deadline=deadline,
+    for enumeration, (subjects, complete) in _list_members(
+        reader, instance_enumerations, deadline=deadline
+    ).items():
+        listed_members.update(subject.dcid for subject in subjects)
+        members[enumeration] = OntologyEnumeration(
+            members=sorted({subject.dcid for subject in subjects}), complete=complete
         )
-        for enumeration in instance_enumerations:
-            subjects, coverage = listings[enumeration]
-            listed_members.update(subject.dcid for subject in subjects)
-            members[enumeration] = OntologyEnumeration(
-                members=sorted({subject.dcid for subject in subjects}),
-                complete=coverage == "complete",
-            )
     if unread_members := listed_members - arcs.keys() - absent:
         read.close(_next_level(arcs, read.nodes(unread_members), listed))
 
+    index_named_by_type: dict[str, list[str]] = defaultdict(list)
+    for dcid in index_named:
+        for type_ in arcs.get(dcid, {}).get(_TYPE_OF, ()):
+            index_named_by_type[type_].append(dcid)
     enumerations = (
         dcid
         for dcid, term in listed.items()
@@ -195,14 +193,19 @@ def build_ontology(
     for enumeration in enumerations:
         if enumeration not in members:
             members[enumeration] = OntologyEnumeration(
-                members=sorted(
-                    dcid
-                    for dcid in index_named
-                    if dcid in arcs and enumeration in arcs[dcid][_TYPE_OF]
-                ),
-                complete=False,
+                members=sorted(index_named_by_type.get(enumeration, ())), complete=False
             )
 
+    unsourced_terms = sorted(dcid for dcid, term in listed.items() if not term.provenances)
+    if unsourced_terms or unsourced:
+        logger.warning(
+            "ontology build serves %d terms with no listed provenance, among them %s, and %d "
+            "typed nodes whose typeOf carries no provenance, among them %s, with declared_by null",
+            len(unsourced_terms),
+            unsourced_terms[:_LOGGED_DCIDS],
+            len(unsourced),
+            sorted(unsourced)[:_LOGGED_DCIDS],
+        )
     nodes = [_node(dcid, arcs[dcid], provenances[dcid], members.get(dcid)) for dcid in sorted(arcs)]
     terms = [
         OntologyTerm(
@@ -210,7 +213,7 @@ def build_ontology(
             name=display_name(term.names, dcid),
             types=sorted(term.kinds),
             provenances=sorted(term.provenances),
-            declared_by=declared_by(term.provenances),
+            declared_by=declared_by(term.provenances) if term.provenances else None,
         )
         for dcid, term in sorted(listed.items())
     ]
@@ -218,6 +221,30 @@ def build_ontology(
         document=OntologyDocument(generation=generation, nodes=nodes),
         terms=OntologyTerms(generation=generation, terms=terms),
     )
+
+
+def _list_members(
+    reader: GraphNodeReader, enumerations: Sequence[str], *, deadline: float
+) -> dict[str, tuple[tuple[ArcSubject, ...], bool]]:
+    """Each of `enumerations`' `<-typeOf` subjects, and whether the listing read every one. One
+    batched listing reads them all, and an enumeration the batch omits or answers with no
+    subject is listed again alone, whose answer stands, as a forward read alone does."""
+    if not enumerations:
+        return {}
+    batched = reader.node_arc_subjects_many(
+        enumerations, property=_TYPE_OF, max_results=ENUMERATION_MEMBER_CAP, deadline=deadline
+    )
+    listed: dict[str, tuple[tuple[ArcSubject, ...], bool]] = {}
+    for enumeration in enumerations:
+        subjects, coverage = batched.get(enumeration, ((), "complete"))
+        if subjects:
+            listed[enumeration] = (subjects, coverage == "complete")
+            continue
+        page = reader.node_arc_subjects(
+            enumeration, property=_TYPE_OF, max_results=ENUMERATION_MEMBER_CAP, deadline=deadline
+        )
+        listed[enumeration] = (page.subjects, not page.truncated)
+    return listed
 
 
 def _read_terms(reader: GraphNodeReader, *, deadline: float) -> dict[str, _ListedTerm]:
@@ -237,8 +264,6 @@ def _read_terms(reader: GraphNodeReader, *, deadline: float) -> dict[str, _Liste
             term.names.update(subject.names)
             term.kinds.add(kind)
             term.provenances.update(subject.provenances)
-    if unsourced := sorted(dcid for dcid, term in listed.items() if not term.provenances):
-        raise OntologyProvenanceUnreadError(unsourced[0])
     return listed
 
 
@@ -255,23 +280,24 @@ def _index_named(code_index: CodeIndex) -> set[str]:
 
 @dataclass(frozen=True, slots=True)
 class _NodeReads:
-    """The build's node reads, each filling `arcs` and `provenances` or `absent`. `listed` is
-    every listed term, whose `typeOf` targets the closure does not follow."""
+    """The build's node reads, each filling `arcs` and `provenances` or `absent`, and
+    `unsourced` with the typed nodes whose `typeOf` carries no provenance. `listed` is every
+    listed term, whose `typeOf` targets the closure does not follow."""
 
     reader: GraphNodeReader
     listed: Collection[str]
     arcs: dict[str, _Arcs]
     provenances: dict[str, frozenset[str]]
     absent: set[str]
+    unsourced: set[str]
     deadline: float
 
     def nodes(self, dcids: Collection[str]) -> set[str]:
         """Read `dcids`' node properties and the provenances declaring each value in one
         `node_arc_targets_many` with `confirm_empty`, so an answer of none is the graph's
-        answer for the dcid read alone and the dcid joins `absent`. Returns the dcids held.
-
-        Raises:
-            OntologyProvenanceUnreadError: a `typeOf` target of a dcid carries no provenance.
+        answer for the dcid read alone and the dcid joins `absent`. A dcid with a `typeOf`
+        target that carries no provenance gets no provenances and joins `unsourced`. Returns the
+        dcids held.
         """
         read = self.reader.node_arc_targets_many(
             sorted(dcids), properties=_NODE_PROPERTIES, confirm_empty=True, deadline=self.deadline
@@ -283,15 +309,17 @@ class _NodeReads:
                 self.absent.add(dcid)
                 continue
             types = entry.get(_TYPE_OF, ())
-            if any(not target.provenances for target in types):
-                raise OntologyProvenanceUnreadError(dcid)
             self.arcs[dcid] = {
                 prop: tuple(target.value for target in entry.get(prop, ()))
                 for prop in _NODE_PROPERTIES
             }
-            self.provenances[dcid] = frozenset(
-                provenance for target in types for provenance in target.provenances
-            )
+            if any(not target.provenances for target in types):
+                self.unsourced.add(dcid)
+                self.provenances[dcid] = frozenset()
+            else:
+                self.provenances[dcid] = frozenset(
+                    provenance for target in types for provenance in target.provenances
+                )
             held.add(dcid)
         return held
 

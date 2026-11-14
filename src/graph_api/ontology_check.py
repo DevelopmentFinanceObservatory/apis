@@ -19,14 +19,16 @@ the document holds as Properties. The second reads the values of constraint prop
 first round found held as Properties. A constraint value whose property is not a held Property
 is never read and gets no finding of its own: the property's finding marks the cell.
 
-A request reads at most `CHECK_MAX_READ_IDS`, 41, ids, and fewer from the graph when the arc
-tables answer some. Each round is one `node_arcs_many` call
-of k ids, k at most 41 over both rounds, which the client sends as one POST (its chunk holds 50
-ids), one POST of the group retry and one POST per id still empty: 2 + k a round, 45 POSTs for
-a check. A front-door refusal splits a POST of k ids into two halves, so a batch or group retry
-costs at most 2k - 1 POSTs, and the worst case is 5k - 2 a round, 201 POSTs for a check. A
-continuation page adds one POST. Each POST is tried up to 3 times on a 5xx answer or a
-transport error. Every read carries the check's deadline, `GRAPH_ONTOLOGY_CHECK_TIMEOUT_SECONDS`
+A request reads at most `CHECK_MAX_READ_IDS`, 41, ids, each once: the second round skips an
+id the first read. It reads fewer from the graph when the arc tables answer some. Each round is
+one `node_arcs_many` call, which sends, for each backend its ids go to (the mixer, and the UN
+deployment where the deployment serves the UN origin), one POST of its ids (a chunk holds 50),
+one POST of the group retry of the empty answers, and one POST per id still empty. A check of k
+ids therefore sends at most k + 4 POSTs with one backend, 45 for 41 ids, and k + 8 with two, 49.
+A front-door refusal splits a POST of several ids into two halves, so a batch or group retry of
+j ids costs at most 2j - 1 POSTs, and a check at most 5k - 2, 203 for 41 ids, on either kind of
+deployment. A continuation page adds one POST. Each POST is tried up to 3 times on a 5xx answer
+or a transport error. Every read carries the check's deadline, `GRAPH_ONTOLOGY_CHECK_TIMEOUT_SECONDS`
 (30 s) from the request's start.
 
 Some constraint values need no read. A value that is a number, a boolean, or a string outside
@@ -40,9 +42,10 @@ The findings stop at `CHECK_MAX_FINDINGS`: `check_rows` raises `OntologyCheckToo
 at the row that passes it. One row yields at most 79 findings (`CHECK_MAX_FINDINGS` counts
 them), so a single row always fits.
 
-Every row gets existence and kind checks. A constraint value must name a resolved node, by
+Every row gets existence and kind checks. A constraint value, `stat_type`,
+`measurement_qualifier` and `measurement_denominator` must each name a resolved node, by
 `code_index.constraint_values.constraint_value_fault`, the test the code index export refuses
-a release on. Range and domain rules apply only to a property the document declares
+a release on for a constraint value. Range and domain rules apply only to a property the document declares
 `declared_by == "instance"`, and judge only through the document, which holds every
 `subClassOf` ancestor of each class it holds. A value is outside the range when every one of
 its types is a document node and none reaches a `rangeIncludes` class by `subClassOf`; a value
@@ -63,7 +66,7 @@ from types import MappingProxyType
 from typing import Final
 
 from code_index import CodeIndex, StatVarRow
-from code_index.constraint_values import constraint_value_fault
+from code_index.constraint_values import ConstraintValueFault, constraint_value_fault
 from dc_graph import UNRESOLVED_NODE
 from graph_api.ontology_models import (
     CHECK_MAX_FINDINGS,
@@ -256,9 +259,9 @@ class _Nodes:
         self._deadline = deadline
 
     def read(self, dcids: Iterable[str]) -> None:
-        """Read every one of `dcids` in one `node_arcs_many` call that confirms each empty
-        answer alone."""
-        unknown = sorted(set(dcids))
+        """Read every one of `dcids` not read before in one `node_arcs_many` call that confirms
+        each empty answer alone, so a check asks each id once."""
+        unknown = sorted({dcid for dcid in dcids if dcid not in self._read})
         if not unknown:
             return
         arcs = self._reader.node_arcs_many(
@@ -379,6 +382,17 @@ def _outside_range(value: _Node, prop: _Node, lookup: OntologyLookup) -> bool:
     return lookup.ancestry(value.types).isdisjoint(prop.range)
 
 
+_NODE_FAULTS: Final[Mapping[ConstraintValueFault, FindingCode]] = MappingProxyType(
+    {"not_held": "node_not_held", "untyped": "node_untyped", "provisional": "node_provisional"}
+)
+
+
+def _node_fault(node: _Node | None) -> FindingCode | None:
+    """Why `node` is no resolved node, by `constraint_value_fault`, or `None` when it is."""
+    fault = constraint_value_fault(None if node is None else node.types)
+    return None if fault is None else _NODE_FAULTS[fault]
+
+
 def _check_row(
     row: OntologyCheckRow, nodes: _Nodes, lookup: OntologyLookup
 ) -> list[OntologyFinding]:
@@ -420,9 +434,8 @@ def _check_row(
 
     check_property("measured_property", row.measured_property)
     for field in ("stat_type", "measurement_qualifier", "measurement_denominator"):
-        value = getattr(row, field)
-        if value is not None and nodes.get(value) is None:
-            find(field, value, "node_not_held")
+        if (value := getattr(row, field)) is not None and (fault := _node_fault(nodes.get(value))):
+            find(field, value, fault)
 
     for prop, value in sorted(row.constraint_properties.items()):
         field = f"{_CONSTRAINT}.{prop}"
@@ -439,13 +452,8 @@ def _check_row(
             find(field, value, "value_outside_range")
             continue
         held_value = nodes.get(read)
-        fault = constraint_value_fault(None if held_value is None else held_value.types)
-        if fault == "not_held":
-            find(field, value, "node_not_held")
-        elif fault == "untyped":
-            find(field, value, "node_untyped")
-        elif fault == "provisional":
-            find(field, value, "node_provisional")
+        if fault := _node_fault(held_value):
+            find(field, value, fault)
         elif (
             held_value is not None
             and _ranged(prop_node := nodes.get(prop))
