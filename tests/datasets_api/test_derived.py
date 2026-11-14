@@ -22,7 +22,8 @@ from artifact_store import Tier
 from dataset_store.snapshot import ManifestFacts, StoredVersion
 from datasets_api.analysis import AnalysisRequest, run_analysis
 from datasets_api.config import DatasetsBuildSettings
-from datasets_api.derived import roots_citation
+from datasets_api.derived import root_reads, roots_citation
+from datasets_api.doors.derived import DerivedManifestRoot
 from datasets_api.render import frame_file_location, stored_frame_location
 from datasets_api.version_store import LiveVersionLister
 from materialise.formats import canonical_frame_document, read_canonical_frame_table
@@ -32,6 +33,7 @@ from spec_registry import LiveSpecRegistry
 from ._analysis_doubles import (
     AID,
     AID_V1,
+    AID_V2,
     POPULATION,
     POPULATION_V1,
     FakeRootSource,
@@ -340,30 +342,157 @@ def test_an_unknown_frame_refuses_snapshot_not_found(monkeypatch: pytest.MonkeyP
     assert file.json()["code"] == "snapshot_not_found"
 
 
-class _Versions:
-    """Root versions holding one citation each."""
+def _version(
+    subject_id: str,
+    content_version: str,
+    *,
+    citation: dict[str, Any],
+    trace: dict[str, Any] | None = None,
+) -> StoredVersion:
+    return StoredVersion(
+        subject_id=subject_id,
+        subject_kind="spec",
+        content_version=content_version,
+        schema_version=1,
+        facts=ManifestFacts(
+            prepared_at=datetime(2026, 1, 1, tzinfo=UTC),
+            definition={},
+            coverage={},
+            citation=citation,
+            trace=trace or {},
+            warnings=(),
+        ),
+    )
 
-    def __init__(self, citations: dict[tuple[str, str], dict[str, Any]]) -> None:
+
+class _Versions:
+    """Root versions holding one citation each, and the traces `traces` names."""
+
+    def __init__(
+        self,
+        citations: dict[tuple[str, str], dict[str, Any]],
+        traces: dict[tuple[str, str], dict[str, Any]] | None = None,
+    ) -> None:
         self.citations = citations
+        self.traces = traces or {}
 
     def read_version(self, subject_id: str, content_version: str) -> StoredVersion | None:
         citation = self.citations.get((subject_id, content_version))
         if citation is None:
             return None
-        return StoredVersion(
-            subject_id=subject_id,
-            subject_kind="spec",
-            content_version=content_version,
-            schema_version=1,
-            facts=ManifestFacts(
-                prepared_at=datetime(2026, 1, 1, tzinfo=UTC),
-                definition={},
-                coverage={},
-                citation=citation,
-                trace={},
-                warnings=(),
-            ),
+        return _version(
+            subject_id,
+            content_version,
+            citation=citation,
+            trace=self.traces.get((subject_id, content_version)),
         )
+
+
+_CUT_ENTRIES = [
+    {
+        "role": "financingRecipient",
+        "provenance": "dcid:dc/base/OECD_CRS",
+        "entities": ["dcid:DACCountriesTotal"],
+    },
+    {
+        "role": "financingRecipient",
+        "provenance": None,
+        "entities": ["dcid:GroupOfSeven"],
+        "kept_periods": ["1968"],
+    },
+]
+
+
+def test_each_root_carries_the_party_totals_its_own_version_left_out() -> None:
+    citation = {"text": "OECD.", "sources": []}
+    reader = _Versions(
+        {(AID, AID_V1): citation, (AID, AID_V2): citation, (POPULATION, POPULATION_V1): citation},
+        traces={(AID, AID_V2): {"party_totals_left_out": _CUT_ENTRIES, "other": 1}},
+    )
+    roots = [
+        {"spec_id": AID, "content_version": AID_V1, "rendering": {"format": "csv"}},
+        {
+            "spec_id": AID,
+            "content_version": AID_V2,
+            "rendering": {"format": "csv", "without_party_totals": True},
+        },
+        {"spec_id": POPULATION, "content_version": POPULATION_V1, "rendering": {}},
+        {"spec_id": "spec_" + "f" * 32, "content_version": "cv_" + "f" * 32, "rendering": {}},
+    ]
+
+    served, _ = root_reads(reader, roots)  # ty: ignore[invalid-argument-type] -- a reader double
+
+    wire = [DerivedManifestRoot.model_validate(root).model_dump(mode="json") for root in served]
+    assert [root.get("party_totals_left_out") for root in wire] == [
+        None,
+        _CUT_ENTRIES,
+        None,
+        None,
+    ]
+    assert [set(root) for root in wire] == [
+        {"spec_id", "content_version", "rendering"},
+        {"spec_id", "content_version", "rendering", "party_totals_left_out"},
+        {"spec_id", "content_version", "rendering"},
+        {"spec_id", "content_version", "rendering"},
+    ]
+
+
+class _CutAidReader:
+    """The stores' snapshot reader, with the aid root's version a cut whose trace lists
+    `_CUT_ENTRIES`."""
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    def read_version(self, subject_id: str, content_version: str) -> StoredVersion | None:
+        if (subject_id, content_version) == (AID, AID_V1):
+            return _version(
+                AID,
+                AID_V1,
+                citation={"text": "OECD.", "sources": []},
+                trace={"party_totals_left_out": _CUT_ENTRIES},
+            )
+        return self._inner.read_version(subject_id, content_version)
+
+
+def test_the_derived_manifest_alone_names_the_totals_a_root_left_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stores = Stores()
+    monkeypatch.setattr(analysis_door, "LiveRootSource", lambda **_: _roots(stores))
+    client = make_client(
+        registry=LiveSpecRegistry(store=FakeDatasetStore()),
+        settings=DatasetsBuildSettings.from_env(),
+        artifact_store=stores.artifact_store,
+        snapshot_reader=_CutAidReader(stores.snapshot_reader),
+        version_writer=stores.version_writer,
+        recipe_store=stores.recipe_store,
+        version_lister=LiveVersionLister(store=stores.store),
+        now=lambda: stores.now,
+    )
+
+    with client:
+        answer = client.post("/api/datasets/analysis", json={"tree": _CHAIN})
+        member = answer.json()["ref"]["members"][0]
+        manifest = client.get(_path(member))
+
+    assert answer.status_code == 200, answer.text
+    assert [set(root) for root in member["roots"]] == [
+        {"spec_id", "content_version", "rendering"},
+        {"spec_id", "content_version", "rendering"},
+    ]
+    assert manifest.status_code == 200, manifest.text
+    roots = manifest.json()["roots"]
+    assert [(root["spec_id"], root.get("party_totals_left_out")) for root in roots] == [
+        (AID, _CUT_ENTRIES),
+        (POPULATION, None),
+    ]
+    assert [{**root, "party_totals_left_out": None} for root in roots] == [
+        {**root, "party_totals_left_out": None} for root in member["roots"]
+    ]
 
 
 def test_the_citation_names_each_roots_sources_once() -> None:

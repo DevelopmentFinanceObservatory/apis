@@ -168,6 +168,124 @@ def test_each_role_reads_the_rows_the_roles_before_it_kept():
     assert trace == [{"role": _PROVIDER, "provenance": None, "entities": [_DAC_TOTAL]}]
 
 
+_P = "provenance/P"
+
+
+@pytest.mark.parametrize(
+    ("rows", "kept", "entries"),
+    [
+        pytest.param(
+            [("2021", _FRANCE), ("2021", _OFFICIAL), ("2022", _OFFICIAL)],
+            [("2021", _FRANCE), ("2022", _OFFICIAL)],
+            [
+                {
+                    "role": _PROVIDER,
+                    "provenance": _P,
+                    "entities": [_OFFICIAL],
+                    "kept_periods": ["2022"],
+                }
+            ],
+            id="whole-total-alone-in-a-year-stays-there",
+        ),
+        pytest.param(
+            [("2021", _FRANCE), ("2021", _G7), ("2022", _G7)],
+            [("2021", _FRANCE)],
+            [{"role": _PROVIDER, "provenance": _P, "entities": [_G7]}],
+            id="ordinary-total-alone-in-a-year-leaves",
+        ),
+        pytest.param(
+            [
+                ("1968", _DAC_TOTAL),
+                ("1968", _G7),
+                ("1968", _OFFICIAL),
+                ("1969", _FRANCE),
+                ("1969", _DAC_TOTAL),
+                ("1969", _G7),
+                ("1969", _OFFICIAL),
+            ],
+            [("1968", _OFFICIAL), ("1969", _FRANCE)],
+            [
+                {"role": _PROVIDER, "provenance": _P, "entities": [_DAC_TOTAL, _G7]},
+                {
+                    "role": _PROVIDER,
+                    "provenance": _P,
+                    "entities": [_OFFICIAL],
+                    "kept_periods": ["1968"],
+                },
+            ],
+            id="totals-only-year-keeps-its-whole-total",
+        ),
+        pytest.param(
+            [("2021", _FRANCE), ("2022", _OFFICIAL)],
+            [("2021", _FRANCE), ("2022", _OFFICIAL)],
+            [],
+            id="a-cut-keeping-every-total-leaves-nothing-out",
+        ),
+        pytest.param(
+            [("1968", _DAC_TOTAL), ("1968", _G7), ("1968", _OFFICIAL)],
+            [("1968", _OFFICIAL)],
+            [{"role": _PROVIDER, "provenance": _P, "entities": [_DAC_TOTAL, _G7]}],
+            id="all-totals-role-keeps-its-whole-total",
+        ),
+        pytest.param(
+            [("1968", _DAC_TOTAL), ("1968", _OFFICIAL), ("1969", _DAC_TOTAL), ("1969", _G7)],
+            [("1968", _OFFICIAL), ("1969", _DAC_TOTAL), ("1969", _G7)],
+            [
+                {
+                    "role": _PROVIDER,
+                    "provenance": _P,
+                    "entities": [_DAC_TOTAL],
+                    "kept_periods": ["1969"],
+                }
+            ],
+            id="all-totals-role-keeps-a-year-without-a-whole-total",
+        ),
+    ],
+)
+def test_a_year_holding_only_totals_keeps_its_whole_totals(
+    rows: list[tuple[str, str]],
+    kept: list[tuple[str, str]],
+    entries: list[dict[str, object]],
+):
+    """A year in which the role holds only totals keeps the whole ones and loses the rest, and a
+    year holding another party loses every total, whole or not (India's 1968 receipts from
+    DAC2B list only the DAC total, the G7 and official donors). A role holding no other party in any year
+    keeps every total of a year without a whole one. The trace names the years each total
+    stayed, a cut rebuilt from it keeps the same rows, and a cut that keeps every row leaves
+    nothing out."""
+    frame = Frame.build(
+        role_keys=_ROLES,
+        rows=[
+            {
+                "stat_var": "dcid:SV",
+                _PROVIDER: provider,
+                _RECIPIENT: _KENYA,
+                "provenance": _P,
+                "time_period": period,
+                "value": 1.0,
+            }
+            for period, provider in rows
+        ],
+    )
+    cut = cut_party_totals(
+        lambda: iter((frame,)), roles=open_party_roles({}, _ROLES), parties=_PARTIES
+    )
+    rebuilt = PartyTotalsCut.of_trace_entries(cut.trace_entries())
+
+    for one in (cut, rebuilt):
+        kept_rows = [
+            (row[frame.columns.index("time_period")], row[frame.columns.index(_PROVIDER)])
+            for chunk in one.chunks(lambda: iter((frame,)))()
+            for row in chunk.rows
+        ]
+        assert sorted(kept_rows) == kept
+    assert cut.trace_entries() == entries == rebuilt.trace_entries()
+    assert rebuilt == cut
+    assert bool(cut.left_out) == bool(entries)
+    trace = {TRACE_KEY: cut.trace_entries()}
+    assert TypeAdapter(TraceModel).validate_python(trace, strict=True) == trace
+
+
 @pytest.mark.parametrize(
     ("identity", "open_roles"),
     [
@@ -330,13 +448,38 @@ def test_a_party_that_is_a_total_in_one_dataset_leaves_that_datasets_rows_alone(
             [2],
             id="one-role-in-two-datasets",
         ),
+        pytest.param(
+            [
+                {
+                    "role": _PROVIDER,
+                    "provenance": _DAC2A,
+                    "entities": [_TRUST_FUNDS],
+                    "kept_periods": ["2020"],
+                }
+            ],
+            [0, 1, 2, 3],
+            id="recorded-kept-periods-keep-those-rows",
+        ),
+        pytest.param(
+            [
+                {
+                    "role": _PROVIDER,
+                    "provenance": _DAC2A,
+                    "entities": [_IMF, _TRUST_FUNDS],
+                    "kept_periods": ["2019"],
+                }
+            ],
+            [2, 3],
+            id="recorded-kept-periods-cut-every-other-period",
+        ),
     ],
 )
 def test_a_cut_rebuilt_from_a_trace_leaves_out_the_rows_it_recorded(
     entries: list[dict[str, object]], kept: list[int]
 ):
     """A version recorded before its trace named the provenance left those parties out of
-    every dataset's rows, and a rebuilt cut writes back the entries it was rebuilt from, in the
+    every dataset's rows, one whose entry names `kept_periods` kept their rows in those periods
+    alone, and a rebuilt cut writes back the entries it was rebuilt from, in the
     shape the served manifest's trace types."""
     cut = PartyTotalsCut.of_trace_entries(entries)
 

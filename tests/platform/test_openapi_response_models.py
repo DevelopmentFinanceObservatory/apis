@@ -187,7 +187,22 @@ def test_a_trace_types_the_party_totals_left_out_and_keeps_other_keys_open(
     entry = components[entry_ref.rsplit("/", 1)[-1]]
     assert entry["additionalProperties"] is False
     assert set(entry["required"]) == {"role", "entities"}
-    assert set(entry["properties"]) == {"role", "provenance", "entities"}
+    assert set(entry["properties"]) == {"role", "provenance", "entities", "kept_periods"}
+
+
+def test_a_derived_manifest_root_alone_names_the_party_totals_its_read_left_out(
+    schema: dict[str, Any],
+):
+    components = schema["components"]["schemas"]
+    root = components["DerivedManifestRoot"]
+    assert set(root["required"]) == {"spec_id", "content_version", "rendering"}
+    items = next(
+        branch["items"]
+        for branch in root["properties"]["party_totals_left_out"]["anyOf"]
+        if branch.get("type") == "array"
+    )
+    trace = components[components["Manifest"]["properties"]["trace"]["$ref"].rsplit("/", 1)[-1]]
+    assert items == trace["properties"]["party_totals_left_out"]["items"]
 
 
 def test_no_two_schemas_share_a_title(schema: dict[str, Any]):

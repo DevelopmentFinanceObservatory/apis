@@ -765,7 +765,8 @@ class PartyTotalsLeftOutModel(TypedDict):
     """One role's group totals a `without_party_totals` cut left out of one provenance's rows
     (`datasets_api.party_totals.PartyTotalsCut.trace_entries`). An entry without a
     `provenance`, which a version recorded before the trace named the provenance holds, left its
-    parties out of the rows of every dataset."""
+    parties out of the rows of every dataset. An entry with `kept_periods` left its parties out
+    of every other period's rows; one without left them out of every period."""
 
     role: Annotated[str, Field(description="the party role whose rows lost the totals")]
     provenance: NotRequired[
@@ -782,6 +783,17 @@ class PartyTotalsLeftOutModel(TypedDict):
         list[str],
         Field(description="the dcid refs of the totals left out, in ref order"),
     ]
+    kept_periods: NotRequired[
+        Annotated[
+            list[str],
+            Field(
+                description="the time_period values, sorted, in which the entry's totals stayed "
+                "in this provenance's rows. A period that holds only totals keeps its whole "
+                "totals, and keeps every total when none is whole and the role holds no other "
+                "party in the frame. Absent when the totals left every period"
+            ),
+        ]
+    ]
 
 
 # Set here so the enclosing model's `extra="forbid"` does not reach the open keys.
@@ -795,9 +807,10 @@ class TraceModel(TypedDict, extra_items=object):
             list[PartyTotalsLeftOutModel],
             Field(
                 description="the parties whose total rows a without_party_totals rendering "
-                "left out of this version's frame: one entry per open party role and "
-                "provenance that lost rows, in role order and then provenance order (null "
-                "first). Absent when the rendering left nothing out or was not asked to"
+                "left out of this version's frame: one entry per open party role, "
+                "provenance that lost rows and set of kept periods, in role order, then "
+                "provenance order (null first), then kept periods (entries without "
+                "kept_periods first). Absent when the rendering left nothing out or was not asked to"
             ),
         ]
     ]

@@ -6,7 +6,9 @@ stored under an `ops_` id and an `ocv_` content version.
 - `retention`: the frame's own (`retention.version_retention`), `pinned` or `held_until`;
 - `recipe`: the stored recipe's hashes, execution identity, `tree` and `roots`;
 - `roots`: each root dataset version once, with the rendering its frame was read with,
-  `groupby` included;
+  `groupby` included, and `party_totals_left_out`, the entries of the root version's own
+  `trace.party_totals_left_out` (`root_reads`), absent when that version's read left no group
+  total out;
 - `resolved_periods`: each period the recipe states relative to the latest, with the period it
   resolved to (`analysis.resolved_periods`), and `anchor`, the recipe's rolling anchor;
 - `left_out`: every series a step of the recipe dropped for a data gap, each naming its
@@ -60,6 +62,7 @@ from datasets_api.analysis import resolved_periods
 from datasets_api.codes_snapshot import ArtifactExpired
 from datasets_api.manifest_models import CitationModel, CitationSource, RetentionModel
 from datasets_api.mint_models import MintOptions
+from datasets_api.party_totals import TRACE_KEY
 from datasets_api.publish_models import Recipe
 from datasets_api.recipe_store import RecipeReader, RecipeRecord
 from datasets_api.render import (
@@ -148,12 +151,19 @@ def recipe_roots(records: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     return roots
 
 
-def _root_citation(reader: SnapshotReader, root: Mapping[str, Any]) -> CitationModel | None:
-    """The citation of `root`'s version, `None` for a root with no stored manifest record."""
+def _root_facts(reader: SnapshotReader, root: Mapping[str, Any]) -> ManifestFacts | None:
+    """The manifest facts of `root`'s version, `None` for a root with no stored manifest
+    record."""
     stored = reader.read_version(root["spec_id"], root["content_version"])
     if stored is None or not isinstance(stored.facts, ManifestFacts):
         return None
-    return CitationModel.model_validate(stored.facts.citation)
+    return stored.facts
+
+
+def _root_citation(reader: SnapshotReader, root: Mapping[str, Any]) -> CitationModel | None:
+    """The citation of `root`'s version, `None` for a root with no stored manifest record."""
+    facts = _root_facts(reader, root)
+    return None if facts is None else CitationModel.model_validate(facts.citation)
 
 
 def _merged_citation(citations: Iterable[CitationModel]) -> CitationModel:
@@ -174,6 +184,29 @@ def roots_citation(reader: SnapshotReader, roots: Sequence[Mapping[str, Any]]) -
     nothing."""
     citations = (_root_citation(reader, root) for root in roots)
     return _merged_citation(citation for citation in citations if citation is not None)
+
+
+def root_reads(
+    reader: SnapshotReader, roots: Sequence[Mapping[str, Any]]
+) -> tuple[list[dict[str, Any]], CitationModel]:
+    """`roots` as the derived manifest serves them, and their citations merged
+    (`roots_citation`), from one version read per root. A root whose version's trace lists
+    `party_totals_left_out` entries carries them under that key. Any other root is served as
+    the recipe names it. Ref roots keep the recipe's shape, so the key belongs to the derived
+    manifest alone."""
+    served: list[dict[str, Any]] = []
+    citations: list[CitationModel] = []
+    for root in roots:
+        facts = _root_facts(reader, root)
+        if facts is None:
+            served.append(dict(root))
+            continue
+        citations.append(CitationModel.model_validate(facts.citation))
+        left_out = facts.trace.get(TRACE_KEY)
+        served.append(
+            {**root, TRACE_KEY: list(cast("Sequence[Any]", left_out))} if left_out else dict(root)
+        )
+    return served, _merged_citation(citations)
 
 
 def stored_recipe_roots(record: RecipeRecord | None) -> list[dict[str, Any]]:
@@ -239,14 +272,17 @@ def read_derived_manifest(
         reads.snapshot_reader, subject_id=spec_id, content_version=content_version, now=now
     )
     recipe = _stored_recipe(reads, spec_id=spec_id, content_version=content_version)
-    roots = [] if recipe is None else recipe_roots(recipe.model_dump(mode="json")["roots"])
+    roots, citation = root_reads(
+        reads.snapshot_reader,
+        [] if recipe is None else recipe_roots(recipe.model_dump(mode="json")["roots"]),
+    )
     return DerivedManifestFacts(
         spec_id=spec_id,
         content_version=content_version,
         retention=retention,
         recipe=recipe,
         roots=roots,
-        citation=roots_citation(reads.snapshot_reader, roots),
+        citation=citation,
     )
 
 
