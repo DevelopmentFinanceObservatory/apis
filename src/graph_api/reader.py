@@ -37,10 +37,10 @@ class GraphNodeReader(Protocol):
         individual_probe_budget: int | None = None,
         deadline: float | None = None,
     ) -> NodeArcsByDcid:
-        """Read selected arcs in one batch. Each property's values are unique and ordered. An
-        empty answer from a batch is read again in a group, then alone up to
-        `individual_probe_budget` ids. With `None`, every `None` is the answer for an id read
-        alone."""
+        """Read selected arcs in one batch. Each property's values are unique and ordered. With
+        `individual_probe_budget=None` every empty answer from a batch is read again alone, so
+        every `None` is the answer for an id read alone. A budget first reads the empties again
+        in a group, then alone up to that many ids."""
         ...
 
     def child_places_batch(

@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import json
+import random
+import threading
+import time
 from collections.abc import Callable
 
 import pytest
 
 from code_index import CodeIndex
-from dc_graph import ArcSubject, ArcSubjectPage, ArcTarget
+from dc_graph import ArcSubject, ArcTarget, GraphReadError
 from graph_api import schema_document
 from graph_api.schema_document import (
     SchemaListingTruncatedError,
@@ -421,56 +425,6 @@ def test_a_typed_node_whose_type_carries_no_provenance_is_served_undeclared(
     assert [record.args for record in caplog.records] == [(0, [], 1, ["Female"])]
 
 
-class _DroppingListings(FakeGraphNodeReader):
-    """The fixture graph, whose batched member listing omits `dropped` or answers it with no
-    subject, while a listing of it alone answers its members, marked truncated when
-    `alone_truncated`."""
-
-    def __init__(self, dropped: str, *, omit: bool, alone_truncated: bool = False) -> None:
-        super().__init__(nodes=NODES, arc_subjects=arc_subjects(), arc_targets=node_targets(NODES))
-        self._dropped = dropped
-        self._omit = omit
-        self._alone_truncated = alone_truncated
-
-    def node_arc_subjects(self, dcid, *, property, filters=None, max_results, deadline=None):
-        page = super().node_arc_subjects(
-            dcid, property=property, filters=filters, max_results=max_results, deadline=deadline
-        )
-        if dcid == self._dropped and self._alone_truncated:
-            return ArcSubjectPage(subjects=page.subjects, truncated=True)
-        return page
-
-    def node_arc_subjects_many(self, dcids, *, property, max_results, deadline=None):
-        listed = super().node_arc_subjects_many(
-            dcids, property=property, max_results=max_results, deadline=deadline
-        )
-        if self._omit:
-            listed.pop(self._dropped)
-        else:
-            listed[self._dropped] = ((), "complete")
-        return listed
-
-
-@pytest.mark.parametrize(
-    ("omit", "alone_truncated"),
-    [
-        pytest.param(True, False, id="omitted"),
-        pytest.param(False, False, id="answered-empty"),
-        pytest.param(False, True, id="answered-empty-and-truncated-alone"),
-    ],
-)
-def test_an_enumeration_the_batched_listing_leaves_empty_is_listed_alone(
-    omit: bool, alone_truncated: bool
-) -> None:
-    graph = _DroppingListings("CRSPurposeCodeEnum", omit=omit, alone_truncated=alone_truncated)
-
-    crs = _nodes(graph)["CRSPurposeCodeEnum"].enumeration
-
-    assert crs is not None
-    assert crs.members == ["CRSPurposeCode120", "CRSPurposeCode12220"]
-    assert crs.complete is not alone_truncated
-
-
 def test_a_term_that_is_also_a_member_is_declared_by_its_node_read_and_its_listing() -> None:
     # amount is a base Property and a DFO-declared member of CRSPurposeCodeEnum.
     graph_nodes = {
@@ -563,62 +517,187 @@ def test_two_builds_from_reordered_graphs_serialise_to_the_same_bytes() -> None:
     assert dcids == sorted(dcids)
 
 
-def _read_counts(graph: FakeGraphNodeReader) -> dict[str, int]:
-    return {method: count for method, count in graph.calls.items() if count}
+class _Recorder:
+    """Pass every read to `reader` from any thread, recording each call's method, first
+    argument and deadline, after waiting `delay(call)` seconds, where `call` is the method and
+    first argument, and raising `fail(call)` where it returns an error."""
 
-
-def test_reads_are_bounded_by_hierarchy_depth_not_node_count() -> None:
-    small = schema_graph()
-    _nodes(small)
-
-    # Fifty more DFO properties, each used by an index row with its own value.
-    extra = {f"extraProperty{i}": ("Property", (DFO,)) for i in range(50)}
-    extra_nodes = {
-        **NODES,
-        **{dcid: {"typeOf": ("Property",), "domainIncludes": ("FinancialFlow",)} for dcid in extra},
-        **{f"extraValue{i}": {"typeOf": ("StatType",)} for i in range(50)},
-    }
-    large = schema_graph(terms={**TERMS, **extra}, nodes=extra_nodes)
-    rows = [index_row(f"Extra{i}", {f"extraProperty{i}": f"extraValue{i}"}) for i in range(50)]
-    large_nodes = _nodes(large, index_of(*INDEX.statvars, *rows))
-
-    assert "extraValue49" in large_nodes
-    expected = {
-        # Class and Property listings, and FinancingPurposeEnum's empty listing read alone
-        "node_arc_subjects": 3,
-        "node_arc_subjects_many": 1,  # members of every DFO enumeration
-        # Each node's values and provenances: the seed, three ancestor levels
-        # (EconomicActivity, Intangible, Thing) and the unread members.
-        "node_all_arc_targets_many": 5,
-    }
-    assert _read_counts(small) == expected
-    assert _read_counts(large) == expected
-
-
-class _DeadlineRecorder:
-    """Pass every read to `reader`, recording the `deadline` each one carries."""
-
-    def __init__(self, reader: FakeGraphNodeReader) -> None:
+    def __init__(
+        self,
+        reader: FakeGraphNodeReader,
+        *,
+        delay: Callable[[tuple[str, object]], float] = lambda call: 0.0,
+        fail: Callable[[tuple[str, object]], Exception | None] = lambda call: None,
+    ) -> None:
         self._reader = reader
+        self._delay = delay
+        self._fail = fail
+        self._lock = threading.Lock()
+        self.started: list[tuple[str, object]] = []
+        self.landed: list[tuple[str, object]] = []
         self.deadlines: list[float | None] = []
 
     def __getattr__(self, name: str) -> Callable[..., object]:
         method = getattr(self._reader, name)
 
-        def record(*args: object, **kwargs: object) -> object:
-            self.deadlines.append(kwargs.get("deadline"))  # type: ignore[arg-type]
-            return method(*args, **kwargs)
+        def record(first: object, /, **kwargs: object) -> object:
+            call = (name, first)
+            with self._lock:
+                self.started.append(call)
+                self.deadlines.append(kwargs.get("deadline"))  # type: ignore[arg-type]
+            time.sleep(self._delay(call))
+            if (error := self._fail(call)) is not None:
+                raise error
+            answer = method(first, **kwargs)
+            with self._lock:
+                self.landed.append(call)
+            return answer
 
         return record
 
 
+def _build(graph: object, index: CodeIndex = INDEX) -> str:
+    schema = build_schema(
+        reader=graph,  # type: ignore[arg-type]
+        code_index=index,
+        catalogue=CATALOGUE,
+        generation="g1",
+        deadline=_DEADLINE,
+    )
+    return schema.document.model_dump_json() + "\n" + schema.terms.model_dump_json()
+
+
+_LARGE_TERMS = {
+    **TERMS,
+    **{f"extraProperty{i}": ("Property", (DFO,)) for i in range(50)},
+    "SubPurposeEnum": ("Class", (DFO,)),
+    "BasePurposeEnum": ("Class", (SCHEMA,)),
+}
+
+
+def _large_graph() -> tuple[FakeGraphNodeReader, CodeIndex]:
+    """The fixture graph with fifty more DFO properties, each used by an index row with its own
+    value, so the seed takes several node reads, and a DFO enumeration `SubPurposeEnum` whose
+    chain reaches `Enumeration` only through the base `BasePurposeEnum`, a level after the
+    fixture's enumerations do."""
+    nodes = {
+        **NODES,
+        **{
+            f"extraProperty{i}": {"typeOf": ("Property",), "domainIncludes": ("FinancialFlow",)}
+            for i in range(50)
+        },
+        **{f"extraValue{i}": {"typeOf": ("StatType",)} for i in range(50)},
+        "SubPurposeEnum": {"typeOf": ("Class",), "subClassOf": ("BasePurposeEnum",)},
+        "BasePurposeEnum": {"typeOf": ("Class",), "subClassOf": ("Enumeration",)},
+        "SubPurpose1": {"typeOf": ("SubPurposeEnum",)},
+    }
+    rows = [index_row(f"Extra{i}", {f"extraProperty{i}": f"extraValue{i}"}) for i in range(50)]
+    graph = FakeGraphNodeReader(
+        nodes=nodes,
+        arc_subjects={
+            **arc_subjects(terms=_LARGE_TERMS),
+            ("SubPurposeEnum", "typeOf"): (
+                ArcSubject(dcid="SubPurpose1", names=("Sub purpose",), provenances=(DFO,)),
+            ),
+        },
+        arc_targets=node_targets(nodes, _LARGE_TERMS),
+    )
+    return graph, index_of(*INDEX.statvars, *rows)
+
+
+def test_each_node_is_read_once_and_each_dfo_class_listed_once() -> None:
+    fake, index = _large_graph()
+    graph = _Recorder(fake)
+
+    _build(graph, index)
+
+    node_reads = [dcids for method, dcids in graph.started if method == "node_all_arc_targets_many"]
+    read = [dcid for dcids in node_reads for dcid in dcids]  # type: ignore[attr-defined]
+    assert len(read) == len(set(read))
+    assert {"extraValue49", "Thing", "CRSPurposeCode120", "SubPurpose1"} <= set(read)
+    assert max(len(dcids) for dcids in node_reads) == 12  # type: ignore[arg-type]
+    listings = sorted(dcid for method, dcid in graph.started if method == "node_arc_subjects")
+    dfo_classes = [
+        dcid
+        for dcid, (kind, provenances) in _LARGE_TERMS.items()
+        if provenances == (DFO,) and kind == "Class"
+    ]
+    assert listings == sorted(["Class", "Property", *dfo_classes])
+    assert {method for method, _ in graph.started} == {
+        "node_all_arc_targets_many",
+        "node_arc_subjects",
+    }
+
+
+def _reversed(call: tuple[str, object], calls: dict[tuple[str, object], int]) -> float:
+    """The earlier a read starts, the later it lands."""
+    calls.setdefault((call[0], str(call[1])), len(calls))
+    return 0.002 * max(0, 40 - calls[(call[0], str(call[1]))])
+
+
+@pytest.mark.parametrize(
+    "order", ["term-listings-last", "member-listings-last", "reversed", "seed-1", "seed-2"]
+)
+def test_answers_arriving_in_any_order_build_the_same_bytes(
+    order: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake, index = _large_graph()
+    with monkeypatch.context() as serial:
+        serial.setattr(schema_document, "BUILD_CONCURRENCY", 1)
+        reference = _build(_Recorder(fake), index)
+    nodes = {node["ref"]: node for node in json.loads(reference.split("\n")[0])["nodes"]}
+    assert nodes["SubPurposeEnum"]["enumeration"]["members"] == ["SubPurpose1"]
+    assert "SubPurpose1" in nodes
+    jitter = random.Random(order)
+    calls: dict[tuple[str, object], int] = {}
+    delays: dict[str, Callable[[tuple[str, object]], float]] = {
+        "term-listings-last": lambda call: 0.05 if call[1] in ("Class", "Property") else 0.0,
+        "member-listings-last": lambda call: (
+            0.05 if call[0] == "node_arc_subjects" and call[1] not in ("Class", "Property") else 0.0
+        ),
+        "reversed": lambda call: _reversed(call, calls),
+        "seed-1": lambda call: jitter.uniform(0, 0.02),
+        "seed-2": lambda call: jitter.uniform(0, 0.02),
+    }
+    graph = _Recorder(fake, delay=delays[order])
+
+    assert _build(graph, index) == reference
+    # The answers landed in another order than the reads started.
+    assert graph.landed != graph.started
+
+
+@pytest.mark.parametrize(
+    "failing",
+    [
+        pytest.param(("node_all_arc_targets_many", "Intangible"), id="closure-level"),
+        pytest.param(("node_arc_subjects", "FinancingEvent"), id="member-listing"),
+        pytest.param(("node_arc_subjects", "Property"), id="term-listing"),
+    ],
+)
+def test_a_read_failing_mid_pipeline_ends_the_build_with_its_error(
+    failing: tuple[str, str],
+) -> None:
+    error = GraphReadError("the mixer answered 503")
+    method, dcid = failing
+
+    def fail(call: tuple[str, object]) -> Exception | None:
+        names = call[1] if isinstance(call[1], tuple) else (call[1],)
+        return error if call[0] == method and dcid in names else None
+
+    graph = _Recorder(schema_graph(), fail=fail)
+
+    with pytest.raises(GraphReadError) as raised:
+        _build(graph)
+
+    assert raised.value is error
+    assert graph.started
+
+
 def test_every_read_carries_the_deadline() -> None:
     fake = schema_graph()
-    graph = _DeadlineRecorder(fake)
+    graph = _Recorder(fake)
 
-    build_schema(
-        reader=graph, code_index=INDEX, catalogue=CATALOGUE, generation="g1", deadline=_DEADLINE
-    )  # type: ignore[arg-type]
+    _build(graph)
 
-    assert len(graph.deadlines) == sum(fake.calls.values()) == 9
+    assert len(graph.deadlines) == sum(fake.calls.values())
     assert set(graph.deadlines) == {_DEADLINE}

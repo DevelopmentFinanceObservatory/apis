@@ -8,8 +8,7 @@ every other named id once of the reader's `node_arcs_many`, for its `typeOf` and
 no probe budget. The served reader, `origin_catalogue.graph.OriginGraphClient`, answers an id
 the origin catalogue's arc tables hold from those tables, a node they hold with no arc as
 absent, and reads every other id from the graph. There an id a batch answers empty is read
-again with the other empties, then alone, so `None` is the graph's answer for that id read
-alone. A node with neither a type nor a name reads as absent, and a node with a name and no
+again alone, so `None` is the graph's answer for that id read alone. A node with neither a type nor a name reads as absent, and a node with a name and no
 `typeOf` is untyped. A read error propagates, so no node is reported absent because a read
 failed. The check reads no ancestry.
 
@@ -20,16 +19,16 @@ constraint value whose property is not a held Property gets no finding of its ow
 property's finding marks the cell, so a value under a property outside dcid syntax or outside
 the served origins is not read.
 
-A check reads at most `CHECK_MAX_READ_IDS` (41) ids, each once. It reads fewer from the
+A check reads at most `CHECK_MAX_READ_IDS` (200) ids, each once. It reads fewer from the
 graph when the arc tables answer some. The `node_arcs_many` call sends, for each backend its ids
-go to (the mixer, and the UN deployment where the deployment serves the UN origin), one POST of
-its ids (a chunk holds 50), one POST of the group retry of the empty answers, and one POST per
-id still empty. A check of k ids therefore sends at most k + 2 POSTs with one backend, 43 for
-41 ids, and k + 4 with two, 45. A front-door refusal splits a POST of several ids into two
-halves, so a batch or group retry of j ids costs at most 2j - 1 POSTs, and a check at most
-5k - 2, 203 for 41 ids, on either kind of deployment. A continuation page adds one POST. Each
-POST is tried up to 3 times on a 5xx answer or a transport error. Every read carries the
-check's deadline, `GRAPH_SCHEMA_CHECK_TIMEOUT_SECONDS` (30 s) from the request's start.
+go to (the mixer, and the UN deployment where the deployment serves the UN origin), one POST
+per chunk of 50 of its ids, then one POST per id answered empty, 16 at a time. A check of k ids
+therefore sends at most k + ceil(k / 50) POSTs with one backend, 204 for 200 ids, and one more
+with two, 205. A front-door refusal splits a POST of several ids into two halves, so a chunk of
+j ids costs at most 2j - 1 POSTs, and a check at most 3k - 1, 599 for 200 ids, on either kind
+of deployment. A continuation page adds one POST. Each POST is tried up to 3 times on a 5xx
+answer or a transport error. Every read carries the check's deadline,
+`GRAPH_SCHEMA_CHECK_TIMEOUT_SECONDS` (30 s) from the request's start.
 
 No read can decide three kinds of cell, so each gets its finding with no read: a string outside
 dcid syntax, a number or a boolean gets `not_a_node`, and an id of the UN origin on a
@@ -37,7 +36,8 @@ deployment that does not serve it (`origin_catalogue.graph.is_un_dcid`) gets
 `origin_not_served`. Every other id outside the document is read, whatever the range of its
 property: the document holds the ancestors of the classes it holds and none of their
 descendants, so no member listing proves that a value it lacks lies outside a range. One row
-names at most `CHECK_MAX_READ_IDS` ids, so the first row always fits.
+names at most `CHECK_MAX_ROW_READ_IDS` (41) ids, fewer than `CHECK_MAX_READ_IDS`, so the
+first row always fits.
 
 `check_rows` stops before the row whose findings would take the total past
 `CHECK_MAX_FINDINGS`, or the encoded response past `CHECK_MAX_BODY_BYTES`. It measures each

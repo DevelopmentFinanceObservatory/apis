@@ -99,19 +99,27 @@ CHECK_MAX_OBSERVATION_PROPERTIES = 4
 """The most observation properties one check row names, twice the most a StatVar row of the
 served code index carries (2 on the dev graph)."""
 
-CHECK_MAX_READ_IDS = 5 + 2 * CHECK_MAX_CONSTRAINT_PROPERTIES + CHECK_MAX_OBSERVATION_PROPERTIES
-"""The most distinct ids one check reads from the graph, 41, an internal budget the wire does
-not publish. They are the ids its rows name that the schema document does not hold, counted
+CHECK_MAX_ROW_READ_IDS = 5 + 2 * CHECK_MAX_CONSTRAINT_PROPERTIES + CHECK_MAX_OBSERVATION_PROPERTIES
+"""The most distinct ids one check row reads from the graph, 41: its 5 shape fields, each
+constraint property and its value, and each observation property."""
+
+CHECK_MAX_READ_IDS = 200
+"""The most distinct ids one check reads from the graph, an internal budget the wire does not
+publish. They are the ids its rows name that the schema document does not hold, counted
 before any read, each constraint value counted unless it is a literal or its property a
 document node that is no Property (`graph_api.schema_check.plan_reads`). The check takes rows
-from the first while their ids stay within the budget and answers where to resume. One row
-names at most this many (its 5 shape fields, each constraint property and its value, each
-observation property), so every check takes at least one row. The check reads each once, in one
-`node_arcs_many` call: at most 43 POSTs to `/v2/node` when the graph answers every POST, 45
-where the deployment serves the UN origin, and at most 203 when the front door refuses every
-POST naming more than one id, each tried up to 3 times, all within the 30 s
-`GRAPH_SCHEMA_CHECK_TIMEOUT_SECONDS` (`graph_api.schema_check` counts them). On the dev
-graph, 41 absent ids took 43 POSTs and 7.4 to 8.5 s, under a third of that deadline."""
+from the first while their ids stay within the budget and answers where to resume. The budget
+is at least `CHECK_MAX_ROW_READ_IDS`, so every check takes at least one row.
+
+The check reads its ids in one `node_arcs_many` call (`graph_api.schema_check` counts the
+POSTs): a batch POST per 50 ids, then each id answered empty read alone, 16 at a time. The
+worst check names 200 ids the graph does not hold, 204 POSTs in 13 rounds of 16. On the dev
+graph that took 2.6 to 4.4 s over eight runs (POST median 170 to 210 ms), against 7.8 to 8.7 s
+for 41 ids read one at a time before the probes ran concurrently. Two checks at once, or other
+node readers holding the client's 32 node slots, can halve the width to about 9 s, and a wait
+for a cold schema build adds about 6.5 s, which leaves the worst check near 16 s, half of the
+30 s `GRAPH_SCHEMA_CHECK_TIMEOUT_SECONDS`. The other half covers 5xx retries (0.5 s and 2 s
+backoffs) and slower graph answers."""
 
 CHECK_MAX_FINDINGS = 2_000
 """The most findings one check answers, an internal cap the wire does not publish. The check

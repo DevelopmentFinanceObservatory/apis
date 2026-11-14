@@ -20,6 +20,7 @@ from graph_api.schema_models import (
     CHECK_MAX_FINDINGS,
     CHECK_MAX_OBSERVATION_PROPERTIES,
     CHECK_MAX_READ_IDS,
+    CHECK_MAX_ROW_READ_IDS,
     SchemaCheckResponse,
     SchemaCheckRow,
 )
@@ -623,8 +624,11 @@ def test_an_id_named_in_two_roles_is_read_once() -> None:
     document is read once, in the check's one read."""
     reader = _RecordingReader()
     rows = [
-        *(_row(constraint_properties={"baseProperty0": f"NoSuchX{i}"}) for i in range(40)),
-        *(_row(observation_properties=[f"NoSuchX{i}"]) for i in range(40)),
+        *(
+            _row(constraint_properties={"baseProperty0": f"NoSuchX{i}"})
+            for i in range(CHECK_MAX_READ_IDS - 1)
+        ),
+        *(_row(observation_properties=[f"NoSuchX{i}"]) for i in range(CHECK_MAX_READ_IDS - 1)),
     ]
 
     _check(rows, reader)
@@ -785,10 +789,10 @@ def test_a_single_row_naming_the_most_ids_a_row_can_is_read_within_the_budget() 
     findings = _check([_maximal_row()], reader)
 
     asked = {dcid for batch in reader.batches for dcid in batch}
-    assert len(asked) == CHECK_MAX_READ_IDS
+    assert len(asked) == CHECK_MAX_ROW_READ_IDS
     assert len(reader.batches) == 1
     assert {finding[-1] for finding in findings} == {"node_not_held"}
-    assert len(findings) == CHECK_MAX_READ_IDS - CHECK_MAX_CONSTRAINT_PROPERTIES
+    assert len(findings) == CHECK_MAX_ROW_READ_IDS - CHECK_MAX_CONSTRAINT_PROPERTIES
 
 
 @pytest.mark.parametrize(
@@ -799,7 +803,14 @@ def test_a_single_row_naming_the_most_ids_a_row_can_is_read_within_the_budget() 
             CHECK_MAX_READ_IDS,
             id="values-under-document-properties",
         ),
-        pytest.param(lambda: [_maximal_row(), *_absent_rows(1)], 1, id="every-field-of-a-row"),
+        pytest.param(
+            lambda: [
+                *_absent_rows(CHECK_MAX_READ_IDS - CHECK_MAX_ROW_READ_IDS + 1),
+                _maximal_row(),
+            ],
+            CHECK_MAX_READ_IDS - CHECK_MAX_ROW_READ_IDS + 1,
+            id="every-field-of-a-row",
+        ),
         pytest.param(
             lambda: [
                 _row(constraint_properties={"crsPurpose": f"CRSPurposeCode9{i:04d}"})

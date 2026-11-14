@@ -94,7 +94,7 @@ def test_node_arcs_many_multi_dcid_empty_entry_retries_then_resolves(monkeypatch
     assert calls == [["country/KEN", "country/ETH"], ["country/ETH"]]
 
 
-def test_node_arcs_many_dcid_omitted_from_retry_raises(monkeypatch) -> None:
+def test_node_arcs_many_dcid_omitted_from_its_probe_raises(monkeypatch) -> None:
     def fake_post(self, path, payload, *, deadline=None):
         return {"data": {}}
 
@@ -103,20 +103,18 @@ def test_node_arcs_many_dcid_omitted_from_retry_raises(monkeypatch) -> None:
     with pytest.raises(GraphReadError) as raised:
         client.node_arcs_many(["country/KEN", "country/ETH"], properties=("typeOf",))
     assert isinstance(raised.value.__cause__, GraphOmittedDcidsError)
-    assert raised.value.__cause__.dcids == ("country/KEN", "country/ETH")
+    assert raised.value.__cause__.dcids in {("country/KEN",), ("country/ETH",)}
 
 
-def test_node_arcs_many_group_retry_false_empty_caught_by_individual_probe(monkeypatch) -> None:
-    """Empties a group retry of several dcids answers empty again get an individual probe."""
+def test_node_arcs_many_false_empty_caught_by_individual_probe(monkeypatch) -> None:
+    """Each dcid a batch of several answers empty is read alone, with no group retry."""
     calls: list[list[str]] = []
     typed = {"arcs": {"typeOf": {"nodes": [{"dcid": "Country"}]}}}
 
     def fake_post(self, path, payload, *, deadline=None):
         calls.append(payload["nodes"])
-        if len(calls) == 1:
+        if len(payload["nodes"]) > 1:
             return {"data": {"country/KEN": typed, "country/ETH": {}, "country/NGA": {}}}
-        if len(calls) == 2:
-            return {"data": {"country/ETH": {}, "country/NGA": {}}}
         return {"data": {dcid: dict(typed) for dcid in payload["nodes"]}}
 
     client = GraphClient(base_url="http://fake/core/api")
@@ -129,12 +127,8 @@ def test_node_arcs_many_group_retry_false_empty_caught_by_individual_probe(monke
         "country/ETH": {"typeOf": ("Country",)},
         "country/NGA": {"typeOf": ("Country",)},
     }
-    assert calls == [
-        ["country/KEN", "country/ETH", "country/NGA"],
-        ["country/ETH", "country/NGA"],
-        ["country/ETH"],
-        ["country/NGA"],
-    ]
+    assert calls[0] == ["country/KEN", "country/ETH", "country/NGA"]
+    assert sorted(calls[1:]) == [["country/ETH"], ["country/NGA"]]
 
 
 def test_node_arcs_many_still_empty_after_individual_probe_resolves_to_none(monkeypatch) -> None:

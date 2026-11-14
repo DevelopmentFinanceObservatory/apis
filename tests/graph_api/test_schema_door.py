@@ -6,12 +6,18 @@ from __future__ import annotations
 import dataclasses
 import json
 import threading
+import time
+from types import SimpleNamespace
 
 import httpx
 import pytest
+from fastapi.testclient import TestClient
 
 from dc_graph import ArcSubject
+from dfo_platform.app import create_app
+from entity_resolution.membership import MembershipPolicy
 from graph_api import app as app_module
+from graph_api.app import graph_surface
 from graph_api.config import GRAPH_SCHEMA_CHECK_CONCURRENCY
 from graph_api.doors import schema as schema_door
 from graph_api.routing import DCID_MAX_LENGTH
@@ -59,24 +65,38 @@ _NODES = {
 _ARC_TARGETS = node_targets(_NODES)
 
 
-def _graph() -> FakeGraphNodeReader:
-    return FakeGraphNodeReader(nodes=_NODES, arc_subjects=_ARC_SUBJECTS, arc_targets=_ARC_TARGETS)
+class _Graph(FakeGraphNodeReader):
+    """The door's fixture graph, counting the builds in `builds` by their one `Class` listing."""
+
+    def __init__(self) -> None:
+        super().__init__(nodes=_NODES, arc_subjects=_ARC_SUBJECTS, arc_targets=_ARC_TARGETS)
+        self.builds = 0
+
+    def node_arc_subjects(self, dcid, *, property, filters=None, max_results, deadline=None):
+        if dcid == "Class":
+            self.builds += 1
+        return super().node_arc_subjects(
+            dcid, property=property, filters=filters, max_results=max_results, deadline=deadline
+        )
 
 
-def _builds(graph: FakeGraphNodeReader) -> int:
-    """Every build opens with one `Class` and one `Property` listing."""
-    return graph.calls["node_arc_subjects"] // 2
+def _graph() -> _Graph:
+    return _Graph()
+
+
+def _builds(graph: _Graph) -> int:
+    return graph.builds
 
 
 def _reads(graph: FakeGraphNodeReader) -> int:
     return sum(graph.calls.values())
 
 
-class _BlockingReader(FakeGraphNodeReader):
-    """Blocks the build's first read until `release` is set."""
+class _BlockingReader(_Graph):
+    """Blocks the build's listings until `release` is set."""
 
     def __init__(self) -> None:
-        super().__init__(nodes=_NODES, arc_subjects=_ARC_SUBJECTS, arc_targets=_ARC_TARGETS)
+        super().__init__()
         self.entered = threading.Event()
         self.release = threading.Event()
 
@@ -89,7 +109,7 @@ class _BlockingReader(FakeGraphNodeReader):
 
 
 class _RaisingReader(FakeGraphNodeReader):
-    """Raises `error` on every build's first read, counting the builds in `raised`."""
+    """Raises `error` on every build's `Class` listing, counting the builds in `raised`."""
 
     def __init__(self, error: Exception) -> None:
         super().__init__()
@@ -97,6 +117,10 @@ class _RaisingReader(FakeGraphNodeReader):
         self.raised = 0
 
     def node_arc_subjects(self, dcid, *, property, filters=None, max_results, deadline=None):
+        if dcid != "Class":
+            return super().node_arc_subjects(
+                dcid, property=property, filters=filters, max_results=max_results, deadline=deadline
+            )
         self.raised += 1
         raise self._error
 
@@ -343,6 +367,142 @@ def test_a_refusal_answers_500_and_is_kept_only_under_a_known_generation(
         assert response.json()["retryable"] is False
         assert "Retry-After" not in response.headers
     assert graph.raised == builds
+
+
+class _FailingOnceReader(FakeGraphNodeReader):
+    """Raises on the first build's first read and serves every later one."""
+
+    def __init__(self) -> None:
+        super().__init__(nodes=_NODES, arc_subjects=_ARC_SUBJECTS, arc_targets=_ARC_TARGETS)
+        self.failed = False
+
+    def node_arc_subjects(self, dcid, *, property, filters=None, max_results, deadline=None):
+        if not self.failed:
+            self.failed = True
+            raise GraphReadError("unavailable", upstream_status=503)
+        return super().node_arc_subjects(
+            dcid, property=property, filters=filters, max_results=max_results, deadline=deadline
+        )
+
+
+def _live_client(monkeypatch: pytest.MonkeyPatch, graph: FakeGraphNodeReader) -> TestClient:
+    """A client over a surface that builds its own reader, as deployed, with `graph` standing
+    in for that reader and inert shared resolver and profile cache."""
+    monkeypatch.setenv("GRAPH_DCP_BASE_URL", "https://mixer.example.org/core/api")
+    monkeypatch.setattr(graph, "close", lambda: None, raising=False)
+    monkeypatch.setattr(app_module, "build_graph_client", lambda **_options: graph)
+    monkeypatch.setattr(app_module, "SdmxClient", lambda **_options: None)
+    monkeypatch.setattr(
+        app_module, "acquire_shared_profiles", lambda **_kwargs: SimpleNamespace(cache=None)
+    )
+    monkeypatch.setattr(app_module, "release_shared_profiles", lambda _shared: None)
+    monkeypatch.setattr(
+        app_module, "acquire_shared", lambda: SimpleNamespace(policy=MembershipPolicy([]))
+    )
+    monkeypatch.setattr(app_module, "release_shared", lambda _shared: None)
+    monkeypatch.setattr(
+        app_module,
+        "EntityResolver",
+        lambda **_kwargs: SimpleNamespace(stats=dict, clear=lambda: None),
+    )
+    return TestClient(create_app([graph_surface()]), raise_server_exceptions=False)
+
+
+class TestWarmUp:
+    def test_a_live_surface_builds_the_schema_before_it_takes_traffic(
+        self, generation, monkeypatch: pytest.MonkeyPatch
+    ):
+        graph = _graph()
+
+        with _live_client(monkeypatch, graph) as client:
+            entries = _schema_stats(client)["entries"]
+            reads = _reads(graph)
+            document = client.get(_DOCUMENT)
+
+        assert entries == 1
+        assert document.status_code == 200, document.text
+        assert _reads(graph) == reads
+
+    def test_an_injected_graph_builds_on_the_first_request(self, generation):
+        with make_client(graph=_graph()) as client:
+            entries = _schema_stats(client)["entries"]
+
+        assert entries == 0
+
+    def test_a_failed_warm_build_logs_and_the_first_request_builds(
+        self, generation, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ):
+        graph = _FailingOnceReader()
+
+        with (
+            caplog.at_level("WARNING", logger=schema_door.__name__),
+            _live_client(monkeypatch, graph) as client,
+        ):
+            entries = _schema_stats(client)["entries"]
+            document = client.get(_DOCUMENT)
+
+        assert graph.failed
+        assert entries == 0
+        assert any(record.exc_info for record in caplog.records)
+        assert document.status_code == 200, document.text
+
+    def test_a_warm_build_past_its_bound_lets_the_instance_start_and_lands_later(
+        self, generation, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setattr(app_module, "SCHEMA_WARM_TIMEOUT_SECONDS", 0.2)
+        graph = _BlockingReader()
+        client = _live_client(monkeypatch, graph)
+
+        started = time.monotonic()
+        with client:
+            took = time.monotonic() - started
+            entries = _schema_stats(client)["entries"]
+            graph.release.set()
+            wait_until(lambda: _schema_stats(client)["entries"] == 1)
+            reads = _reads(graph)
+            document = client.get(_DOCUMENT)
+
+        assert graph.entered.is_set()
+        assert took < 3.0
+        assert entries == 0
+        assert document.status_code == 200, document.text
+        assert _reads(graph) == reads
+
+
+class _WaitRecordingGeneration(FakeGeneration):
+    """Records the wait each `refresh_if_stale` call allows."""
+
+    def __init__(self) -> None:
+        super().__init__(token="gen-a")
+        self.waits: list[float] = []
+
+    async def refresh_if_stale(self, *, timeout_s: float = 1.0) -> None:
+        self.waits.append(timeout_s)
+
+
+@pytest.mark.parametrize(
+    "send",
+    [
+        pytest.param(lambda client: client.get(_DOCUMENT), id="document"),
+        pytest.param(lambda client: client.get(_TERMS), id="terms"),
+        pytest.param(
+            lambda client: client.post(_CHECK, json={"rows": [_check_row("CRSPurposeCode120")]}),
+            id="check",
+        ),
+    ],
+)
+def test_a_schema_route_waits_3_s_for_a_stale_generation_read(
+    send, monkeypatch: pytest.MonkeyPatch
+):
+    generation = _WaitRecordingGeneration()
+    monkeypatch.setattr(app_module, "acquire_shared_generation", lambda **_kwargs: generation)
+    monkeypatch.setattr(app_module, "release_shared_generation", lambda _shared: None)
+
+    with make_client(graph=_graph()) as client:
+        response = send(client)
+
+    assert response.status_code == 200, response.text
+    assert generation.waits == [3.0]
 
 
 class TestFrozenBody:
@@ -850,5 +1010,5 @@ class TestCheck:
         assert refused.json()["code"] == "service_unavailable"
         assert refused.json()["retryable"] is True
         assert refused.json()["cause"]["code"] == "check_busy"
-        assert refused.headers["Retry-After"] == "5"
+        assert refused.headers["Retry-After"] == "1"
         assert admitted.status_code == 200, admitted.text

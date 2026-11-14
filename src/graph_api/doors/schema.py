@@ -11,7 +11,9 @@ own generation stamp. Two entries let a request stamped with an unknown generati
 keep the entry of the known one. The lifespan registers it as `graph_api.schema`, so a
 generation change clears it.
 
-A request refreshes a stale generation stamp, then waits for the entry until
+A request refreshes a stale generation stamp, waiting up to
+`SCHEMA_GENERATION_WAIT_SECONDS` (3 s) for the read so an instance back from an idle spell
+keys on the known generation and keeps its built entry, then waits for the entry until
 `GRAPH_NODE_TIMEOUT_SECONDS` from its start. A miss runs the whole build as one job on the
 DCP-read executor, holding one worker, under a flight deadline of
 `SCHEMA_FLIGHT_TIMEOUT_SECONDS` from submission. Concurrent requests share the flight, and a
@@ -60,8 +62,8 @@ Every check runs as one job on `GraphDeps.check_executor`, whose
 shared DCP-read workers. The job reads, checks and encodes the response, and the event loop
 only wraps its bytes. A worker stays held until its job returns, even after its request is
 cancelled or times out, so at most two checks run at once in the process. One more is refused at
-submit and answers retryable 503 `service_unavailable` with `Retry-After: 5` and
-`cause: {"code": "check_busy"}` (`SchemaCheckBusy`). A read past the check's deadline or a failed read answers as the GET
+submit and answers retryable 503 `service_unavailable` with `Retry-After: 1`
+(`CHECK_BUSY_RETRY_AFTER_SECONDS`) and `cause: {"code": "check_busy"}` (`SchemaCheckBusy`). A read past the check's deadline or a failed read answers as the GET
 routes answer it, with no findings. The request stops waiting at the check's deadline and
 answers 504 `timeout` while its job runs on, so a read that answers late yields no 200. The job
 stops before the row whose findings would pass `CHECK_MAX_FINDINGS`, or take the encoded
@@ -78,11 +80,19 @@ on the cache's own one-worker executor, and concurrent misses share that build. 
 wait passes `GRAPH_NODE_TIMEOUT_SECONDS` answers retryable 503 with `Retry-After: 5` and
 `cause: {"code": "schema_building"}`, and a build
 past its flight deadline answers 504, as for the other two routes.
+
+After each build the door logs one line timing the encoding of the document and terms bodies
+and giving their sizes, beside the build's own per-phase line.
+
+`warm_schema` builds the entry for the current generation and the bound code index before an
+instance takes traffic. The Graph lifespan awaits it for its live reader, and a failed or
+unfinished build logs and leaves the first request to build or join it.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import Callable, Sequence
 from concurrent.futures import Executor
@@ -135,8 +145,20 @@ from graph_generation.stamp import UNKNOWN_KEY
 from materialise.graph import GraphDeadlineExceededError, GraphReadError
 from origin_catalogue import Catalogue, current_catalogue
 
+logger = logging.getLogger(__name__)
+
 SCHEMA_RETRY_AFTER_SECONDS = 5
 """The `Retry-After` a request sends when its deadline passes while the build runs on."""
+
+CHECK_BUSY_RETRY_AFTER_SECONDS = 1
+"""The `Retry-After` a check refused for a full check executor sends. A check of
+`CHECK_MAX_READ_IDS` absent ids took 2.6 to 4.4 s on the dev graph and one of 41 under 1 s, so
+a worker usually frees within a second."""
+
+SCHEMA_GENERATION_WAIT_SECONDS = 3.0
+"""How long a schema request waits for a stale generation read. Past it the stamp is unknown
+and the request builds a second entry under `UNKNOWN_KEY`, which costs a whole build; a cold
+read of the generation took 1.5 s from a laptop and 1.9 s at an instance's start."""
 
 _MAX_AGE_SECONDS = 300
 
@@ -263,9 +285,22 @@ def _build_entry(
         if generation is None:
             raise
         return RefusedSchema(error=partial(SchemaNoDfoDeclarationError, exc.node_count))
+    started = time.monotonic()
+    document = _freeze(schema.document)
+    document_at = time.monotonic()
+    terms = _freeze(schema.terms)
+    ended = time.monotonic()
+    logger.info(
+        "schema encode took %d ms: document %d ms %d bytes; terms %d ms %d bytes",
+        round((ended - started) * 1_000),
+        round((document_at - started) * 1_000),
+        len(document.identity),
+        round((ended - document_at) * 1_000),
+        len(terms.identity),
+    )
     return FrozenSchema(
-        document=_freeze(schema.document),
-        terms=_freeze(schema.terms),
+        document=document,
+        terms=terms,
         generation=schema.document.generation,
         lookup=SchemaLookup.of(schema.document),
     )
@@ -281,7 +316,7 @@ async def _frozen_schema(
     Raises:
         SchemaReadFailed: the build failed, or the entry keeps its refusal.
     """
-    await deps.generation.refresh_if_stale()
+    await deps.generation.refresh_if_stale(timeout_s=SCHEMA_GENERATION_WAIT_SECONDS)
     token = deps.generation.stamp().token
     catalogue = current_catalogue()
     key = SchemaKey(
@@ -322,15 +357,15 @@ def classify_schema_exception(exc: BaseException) -> ProblemSpec | None:
     `schema_building` or `check_busy`, so a caller can tell a build in progress from a full
     check pool."""
     if isinstance(exc, SchemaBuildPending | SchemaCheckBusy):
+        busy = isinstance(exc, SchemaCheckBusy)
+        retry_after = CHECK_BUSY_RETRY_AFTER_SECONDS if busy else SCHEMA_RETRY_AFTER_SECONDS
         return ProblemSpec(
             status=503,
             code="service_unavailable",
             detail=str(exc),
             retryable=True,
-            cause=Cause(
-                code="check_busy" if isinstance(exc, SchemaCheckBusy) else "schema_building"
-            ),
-            headers={"Retry-After": str(SCHEMA_RETRY_AFTER_SECONDS)},
+            cause=Cause(code="check_busy" if busy else "schema_building"),
+            headers={"Retry-After": str(retry_after)},
         )
     if isinstance(exc, SchemaBuildExpired):
         return ProblemSpec(
@@ -405,6 +440,26 @@ async def _frozen_usage(deps: GraphDeps) -> FrozenJSON:
     except TimeoutError as exc:
         raise SchemaBuildExpired() from exc
     return found[key]
+
+
+async def warm_schema(deps: GraphDeps, *, timeout_s: float) -> None:
+    """Build the entry `GET /api/graph/schema` would build now, under the bound origin
+    catalogue and served release, waiting at most `timeout_s`. A build still running then
+    runs on under its flight deadline and lands for the request that joins it. A failure or
+    an unfinished build logs and returns, leaving the first request to build."""
+    started = time.monotonic()
+    try:
+        async with asyncio.timeout(timeout_s):
+            await _frozen_schema(deps, code_index=get_index(), deadline=started + timeout_s)
+    except (TimeoutError, SchemaBuildPending):
+        logger.warning(
+            "Graph schema warm-up did not finish within %.0f s; the first request waits for it",
+            timeout_s,
+        )
+    except Exception:
+        logger.warning("Graph schema warm-up failed; the first request builds", exc_info=True)
+    else:
+        logger.info("Graph schema warm-up built in %.2f s", time.monotonic() - started)
 
 
 async def get_schema(deps: GraphDepsDep, request: Request) -> Response:

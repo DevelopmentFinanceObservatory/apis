@@ -157,6 +157,16 @@ _OBSERVATION_PROPERTIES_FLIGHTS: Final = ThreadPoolExecutor(
 )
 """Runs every client's shared observation-property reads. No caller of them runs on it."""
 
+_PROBE_WORKERS: Final[int] = 16
+"""Threads that run single-dcid confirmation probes, process-wide, across every client and
+call. On the dev mixer 16 probes in flight read 41 absent ids in 0.55 to 0.59 s, and per-probe
+latency rose by 40 to 100 ms at 41 in flight. One pool keeps the thread count at 16 however many
+reads confirm empty answers at once."""
+
+_PROBES: Final = ThreadPoolExecutor(max_workers=_PROBE_WORKERS, thread_name_prefix="graph-probe")
+"""Runs every client's confirmation probes (`GraphClient._probe_alone`). A probe sends one
+paged read and submits nothing to this pool, so its workers cannot wait on each other."""
+
 _declared_role_refresh_deadline: contextvars.ContextVar[float | None] = contextvars.ContextVar(
     "dc_graph_declared_role_refresh_deadline", default=None
 )
@@ -387,7 +397,8 @@ class GraphClient:
     `node_arcs_batch` and `node_observation_properties_batch`. `node_arc_many_total_concurrency`
     bounds `node_arcs_many` and `node_names_many` across all concurrent calls. Within one
     `node_arcs_many` call, `node_arc_chunk_size` limits dcids per POST and
-    `node_arc_call_concurrency` limits in-flight chunks. `single_arc_batch_chunk_size` limits label
+    `node_arc_call_concurrency` limits in-flight chunks. Single-dcid confirmation probes run on
+    one process-wide pool of `_PROBE_WORKERS` (16) threads. `single_arc_batch_chunk_size` limits label
     and type batches, which use no pool and run `node_arc_call_concurrency` chunks at a time.
     `node_arc_batch_chunk_size` limits arc and observation-property batches, which halve chunks on
     continuation.
@@ -1232,13 +1243,16 @@ class GraphClient:
         error. Initial reads use `node_arc_chunk_size`, `node_arc_call_concurrency` and
         `node_arc_many_total_concurrency`.
 
-        Empty results from multi-dcid batches get one group retry, then individual probes up to
-        `individual_probe_budget` (`None` probes all). A budget of 0 sends neither: the first
-        read's answer stands, and a dcid it omits maps to `None`. The budget covers the whole
-        call. Missing
-        retry or probe entries raise the read error. Unprobed entries map to `None` and are counted
-        in one log message. A single-dcid empty result is trusted, and a group retry of one dcid
-        is that dcid read alone, so it gets no probe.
+        An empty result from a multi-dcid batch is read again alone (a probe). With
+        `individual_probe_budget=None` every such dcid is probed. A positive budget first reads
+        the empties again as a group and probes those still empty up to the budget, which covers
+        the whole call; a group retry of one dcid is that dcid read alone, so it gets no probe. A
+        budget of 0 sends neither: the first read's answer stands, and a dcid it omits maps to
+        `None`. Probes run on the process-wide probe pool, 16 at a time across all calls, each
+        holding a `node_arc_many_total_concurrency` slot. Missing retry or probe entries raise the read
+        error, and a failed probe raises after cancelling the probes not yet sent. Unprobed
+        entries map to `None` and are counted in one log message. A single-dcid empty result is
+        trusted.
 
         One absolute `deadline` bounds every request. An entry without `dcid` or `value` contributes
         `UNRESOLVED_NODE`, distinct from an absent arc. This method is uncached.
@@ -1266,8 +1280,8 @@ class GraphClient:
         answers with none of them. The dcids are read as `node_arcs_many` reads them, in its
         chunks and pages bounded by `deadline`, and `individual_probe_budget` has its meaning
         there. The default 0 returns the first read's answer, an empty one included. `None`
-        reads an empty answer again in a group and then alone, so `None` for a dcid is the
-        graph's answer for that dcid read alone.
+        reads each empty answer again alone, so `None` for a dcid is the graph's answer for that
+        dcid read alone.
 
         With `cached`, the cache (sized `label_cache_size`) answers the dcids it holds under the
         generation stamp, and a node answered with arcs joins it. An empty answer does not,
@@ -1315,8 +1329,8 @@ class GraphClient:
         (`parse_arc_targets`), or `None` for a node the graph answers with no arc. The dcids are
         read as `node_arcs_batch` reads them, in its chunks, each halved when the mixer answers
         a continuation, and an empty answer is confirmed as `node_arc_targets_many` confirms it
-        with `individual_probe_budget=None`: read again in a group and then alone, so `None` for
-        a dcid is the graph's answer for that dcid read alone. A property every entry of which
+        with `individual_probe_budget=None`: read again alone, so `None` for a dcid is the
+        graph's answer for that dcid read alone. A property every entry of which
         `dfo_visible` hides is left out. Uncached. One absolute `deadline` bounds every
         request."""
         if not dcids:
@@ -1407,13 +1421,15 @@ class GraphClient:
     ) -> dict[str, dict | None]:
         """Each of `dcids`' wire `arcs`, `None` for none. `read_all` reads the dcids, and
         `read_again` each retry and probe. An empty answer from a batch of several dcids is
-        read again with the other empties as a group, then each still empty alone, up to
-        `individual_probe_budget` (`None` probes all). A group of one is that read alone. Only
-        an empty answer for a dcid read alone is kept as `None`, beside the unprobed ones, which
-        one log message counts. A dcid a retry or probe omits raises the read error. A budget of
-        0 sends no retry or probe and returns the first read's answers, `None` for a dcid it
-        omits. Each read carries the caller's deadline, so a read past it raises and stops the
-        probes."""
+        read again alone (a probe). With `individual_probe_budget=None` every such dcid is
+        probed. With a budget, the empties are first read again as a group, and each still
+        empty is probed up to the budget; a group of one is that read alone. Probes run on the
+        process-wide probe pool. Only an empty answer for a dcid read alone is
+        kept as `None`, beside the unprobed ones, which one log message counts. A dcid a retry
+        or probe omits raises the read error, and a failed probe raises its error after
+        cancelling the probes not yet sent. A budget of 0 sends no retry or probe and returns
+        the first read's answers, `None` for a dcid it omits. Each read carries the caller's
+        deadline, so a read past it raises and stops the probes."""
         data = read_all(dcids)
         if individual_probe_budget == 0:
             return {dcid: (data.get(dcid) or {}).get("arcs") or None for dcid in dcids}
@@ -1430,55 +1446,84 @@ class GraphClient:
                 suspects.append(dcid)
                 continue
             result[dcid] = arcs
+        if not suspects:
+            return result
 
-        if suspects:
-            retry_data = read_again(suspects)
-            still_missing = [dcid for dcid in suspects if dcid not in retry_data]
-            if still_missing:
+        if individual_probe_budget is None:
+            # Every empty is read alone, so a group retry would decide nothing.
+            self._probe_alone(suspects, read_again=read_again, result=result)
+            return result
+
+        retry_data = read_again(suspects)
+        still_missing = [dcid for dcid in suspects if dcid not in retry_data]
+        if still_missing:
+            omitted = GraphOmittedDcidsError(
+                f"graph omitted {still_missing!r} from /v2/node data even after a "
+                "re-request scoped to just those dcids",
+                dcids=still_missing,
+            )
+            raise self._read_error_cls(str(omitted)) from omitted
+        still_empty: list[str] = []
+        for dcid in suspects:
+            retry_arcs = (retry_data.get(dcid) or {}).get("arcs", {})
+            if retry_arcs:
+                result[dcid] = retry_arcs
+            elif len(suspects) == 1:
+                # The group retry read this dcid alone, as a probe would.
+                result[dcid] = None
+            else:
+                still_empty.append(dcid)
+
+        to_probe = still_empty[:individual_probe_budget]
+        unprobed = still_empty[individual_probe_budget:]
+        self._probe_alone(to_probe, read_again=read_again, result=result)
+        for dcid in unprobed:
+            result[dcid] = None
+        if unprobed:
+            logger.info(
+                "node_arcs_many: %d dcid(s) left unprobed beyond individual_probe_budget=%d",
+                len(unprobed),
+                individual_probe_budget,
+            )
+        return result
+
+    def _probe_alone(
+        self,
+        dcids: Sequence[str],
+        *,
+        read_again: Callable[[Sequence[str]], dict],
+        result: dict[str, dict | None],
+    ) -> None:
+        """Read each of `dcids` alone, on the process-wide probe pool, into `result`:
+        its arcs, or `None` when the read answers it empty. A read that omits its dcid raises
+        the read error. The first failure cancels the reads not yet sent and raises."""
+
+        def probe(dcid: str) -> dict | None:
+            probe_data = read_again([dcid])
+            if dcid not in probe_data:
                 omitted = GraphOmittedDcidsError(
-                    f"graph omitted {still_missing!r} from /v2/node data even after a "
-                    "re-request scoped to just those dcids",
-                    dcids=still_missing,
+                    f"graph omitted {dcid!r} from /v2/node data even after an "
+                    "individual re-request scoped to just that dcid",
+                    dcids=[dcid],
                 )
                 raise self._read_error_cls(str(omitted)) from omitted
-            still_empty: list[str] = []
-            for dcid in suspects:
-                retry_arcs = (retry_data.get(dcid) or {}).get("arcs", {})
-                if retry_arcs:
-                    result[dcid] = retry_arcs
-                elif len(suspects) == 1:
-                    # The group retry read this dcid alone, as a probe would.
-                    result[dcid] = None
-                else:
-                    still_empty.append(dcid)
+            return (probe_data.get(dcid) or {}).get("arcs", {}) or None
 
-            if individual_probe_budget is None:
-                to_probe, unprobed = still_empty, []
-            else:
-                to_probe = still_empty[:individual_probe_budget]
-                unprobed = still_empty[individual_probe_budget:]
-
-            for dcid in to_probe:
-                probe_data = read_again([dcid])
-                if dcid not in probe_data:
-                    omitted = GraphOmittedDcidsError(
-                        f"graph omitted {dcid!r} from /v2/node data even after an "
-                        "individual re-request scoped to just that dcid",
-                        dcids=[dcid],
-                    )
-                    raise self._read_error_cls(str(omitted)) from omitted
-                result[dcid] = (probe_data.get(dcid) or {}).get("arcs", {}) or None
-
-            for dcid in unprobed:
-                result[dcid] = None
-            if unprobed:
-                logger.info(
-                    "node_arcs_many: %d dcid(s) left unprobed beyond individual_probe_budget=%d",
-                    len(unprobed),
-                    individual_probe_budget,
-                )
-
-        return result
+        if len(dcids) <= 1:
+            for dcid in dcids:
+                result[dcid] = probe(dcid)
+            return
+        found: dict[str, dict | None] = {}
+        futures = {submit_with_context(_PROBES, probe, dcid): dcid for dcid in dcids}
+        try:
+            for future in as_completed(futures):
+                found[futures[future]] = future.result()
+        except BaseException:
+            for future in futures:
+                future.cancel()
+            raise
+        for dcid in dcids:
+            result[dcid] = found[dcid]
 
     def _post_node_arcs_chunked(
         self, dcids: Sequence[str], *, properties: Sequence[str], deadline: float | None

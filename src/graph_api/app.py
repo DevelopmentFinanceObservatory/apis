@@ -27,7 +27,10 @@ Routes: `GET /healthz`, `GET /capabilities`, `GET /json-schema`, `POST /resolve`
 `GET /schema`, `GET /schema/terms` and `POST /schema/check` share one build per graph
 generation and code index, held in a cache the lifespan registers beside the source-document
 and node-envelope caches. `GET /schema/usage` reads no graph and keeps its body per code
-index and coverage build in a cache registered the same way.
+index and coverage build in a cache registered the same way. A live surface builds the schema
+document in its lifespan, before the instance takes traffic, waiting at most
+`SCHEMA_WARM_TIMEOUT_SECONDS` (20 s); a failed or unfinished build logs and leaves the first
+request to build or join it. An injected graph builds on the first request.
 
 Door classifiers return `ProblemSpec`. The door whose route raised classifies
 first (`dfo_platform.doors.classify_by_door`), so a graph read failure is logged
@@ -62,6 +65,7 @@ from graph_api.config import (
     GRAPH_NODE_POOL_SIZE,
     GRAPH_NODE_TIMEOUT_SECONDS,
     GRAPH_SDMX_TIMEOUT_SECONDS,
+    SCHEMA_WARM_TIMEOUT_SECONDS,
     GraphSettings,
 )
 from graph_api.deps import (
@@ -81,6 +85,7 @@ from graph_api.doors.resolve import build_resolve_door
 from graph_api.doors.schema import (
     build_schema_door,
     new_schema_cache,
+    warm_schema,
 )
 from graph_api.doors.sources import build_sources_door, new_provenance_doc_cache
 from graph_api.node_cache import NodeEntryCache
@@ -426,6 +431,11 @@ def graph_surface(
         if shared_resolver is not None:
             NODE_MEMBERSHIP_SLOT.set(_app, shared_resolver.policy)
         try:
+            if live_reader is not None:
+                # Awaited, because Cloud Run throttles the CPU of an instance with no request
+                # in flight, so a build left to run on its own would stall once traffic starts.
+                with bound_catalogue(catalogue.snapshot()), bound_served_release(release):
+                    await warm_schema(deps, timeout_s=SCHEMA_WARM_TIMEOUT_SECONDS)
             yield
         finally:
             NODE_MEMBERSHIP_SLOT.clear(_app)
