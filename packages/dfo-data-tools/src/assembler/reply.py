@@ -22,8 +22,9 @@ from dfo_frame_grammar import STAT_VAR_COLUMN, UNIT_COLUMN
 from assembler.errors import ReleaseMismatch, escape_pointer_segment
 from assembler.frame_view import facet_dimension_names
 from assembler.limits import FACT_SUMMARY_SERIES_CAP, FACT_SUMMARY_TOKEN_CAP
+from assembler.order import order_period
 from assembler.select import has_arrayed_dimension
-from materialise.unit_cells import unit_identity
+from materialise.unit_cells import units_by_identity
 
 logger = logging.getLogger(__name__)
 
@@ -340,6 +341,7 @@ def build_fact_summary(
         "unit": unit,
         "change": component.get("change"),
         "source_refs": source_refs,
+        "order": _order_entry(stored_intent=stored_intent, series_list=series_list),
         "defaults": applied_defaults(
             component=component, member=member, stored_intent=stored_intent
         ),
@@ -354,9 +356,10 @@ def applied_defaults(
     pointer it fills and a sentence saying how to narrow it.
 
     An entity-mode bar chart whose select lists no values compared every value of its
-    category dimension, largest first (`assembler.mint.builders`). The stored intent and
-    payload both carry what this reads, so a write and a later read agree, and
-    `assembler.pipeline.write` mints a new revision when a revise changes them."""
+    category dimension, largest first unless the intent has an `order`, which
+    `fact_summary.order` reports (`assembler.order`). The stored intent and payload both
+    carry what this reads, so a write and a later read agree, and `assembler.pipeline.write`
+    mints a new revision when a revise changes them."""
     if member != "bar_chart":
         return []
     axis = cast("Mapping[str, object]", component["category_axis"])
@@ -365,16 +368,38 @@ def applied_defaults(
         return []
     dimension = cast(str, axis["category_dimension"])
     count = len(cast("Sequence[object]", component["series"]))
+    drawn = f"all {count} of its values at {axis['period']}"
+    if "order" not in stored_intent:
+        drawn += ", largest first"
     return [
         {
             "pointer": f"/select/{escape_pointer_segment(dimension)}",
             "detail": (
-                f"select leaves {dimension!r} unbound, so this bar_chart draws all {count} of "
-                f"its values at {axis['period']}, largest first; list the {dimension!r} "
-                "values to keep in select to narrow it"
+                f"select leaves {dimension!r} unbound, so this bar_chart draws {drawn}; list "
+                f"the {dimension!r} values to keep in select to narrow it"
             ),
         }
     ]
+
+
+def _order_entry(
+    *, stored_intent: Mapping[str, object], series_list: Sequence[Mapping[str, object]]
+) -> dict[str, object] | None:
+    """The order the series were drawn in, `{direction, period}`, or `None` when the intent
+    has no `order` or fewer than two series were drawn, since one series ranks nothing. The
+    period is `assembler.order.order_period` over the payload's points, which is the period
+    the draw ranked at. The payload holds exactly the drawn series, so a write and a readback
+    agree."""
+    order = cast("Mapping[str, object] | None", stored_intent.get("order"))
+    if order is None or len(series_list) < 2:
+        return None
+    points_by_series = [
+        cast("Sequence[Mapping[str, object]]", one.get("points") or ()) for one in series_list
+    ]
+    period = order_period(
+        stated=cast("str | None", order.get("period")), points_by_series=points_by_series
+    )
+    return {"direction": order["direction"], "period": period}
 
 
 def _table_unit(
@@ -394,15 +419,11 @@ def _table_unit(
         for one, held in zip(series_list, coordinates, strict=True)
         if one.get("id") is not None and held
     }
-    units_by_identity = {
-        unit_identity(
-            series_id=row.get("series_id"),
-            payload_unit=row.get("unit"),
-            frame_unit_keys=frame_unit_keys,
-        ): row.get("unit")
-        for row in rows
-    }
-    return next(iter(units_by_identity.values())) if len(units_by_identity) == 1 else None
+    distinct_units = units_by_identity(
+        entries=((row.get("series_id"), row.get("unit")) for row in rows),
+        frame_unit_keys=frame_unit_keys,
+    )
+    return next(iter(distinct_units.values())) if len(distinct_units) == 1 else None
 
 
 def _table_series_from_rows(

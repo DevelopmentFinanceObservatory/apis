@@ -254,7 +254,7 @@ dfo-analysis-engine = { workspace = true }
 # The registry refuses a part's `source_code` on search.resolve with
 # `source_code_not_held`, `source_code_ambiguous`, and
 # `source_code_shares_variable`.
-# The pin is spec-kit 5589a72, which registers the organisation reading codes,
+# The pin is spec-kit eafdde0, which registers the organisation reading codes,
 # defining the tie between them by the role the query's reading states,
 # and the Presentation limit names
 # (`LIMIT_NAMES`), publishes `resource_exhausted` as `correct_and_retry`,
@@ -283,7 +283,8 @@ dfo-analysis-engine = { workspace = true }
 # analysis engine's refusal codes and the Datasets codes the datasets.analysis
 # route serves, each at its status. Its frame grammar is 1.2.0, which adds `deflation_basis`,
 # and its steps schema's `simple_unit` and components catalogue's `structured_unit`
-# carry `deflation_basis` too, under components catalogue release 2026.11.0.
+# carry `deflation_basis` too, under components catalogue release 2026.11.0. It also adds the
+# `order` member, under catalogue release 2026.11.1.
 # It maps the share routes' refusals on presentation.shares at the statuses the
 # presentation write and components routes use, adds `payload_too_large` (413)
 # for a share body over the routes' limit, maps `timeout` (504) on
@@ -318,8 +319,8 @@ dfo-analysis-engine = { workspace = true }
 # warnings on search.resolve's raw_text door.
 # Follow-up: move all nine to a real spec-kit tag once one is cut, so a future
 # force-push or GC on spec-kit's dev can't silently break this lock.
-dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "5589a728308902adf9a32ef8f3ed2c3d2b1e92de", subdirectory = "python/spec-kit" }
-dfo-spec-kit-client-contract = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "5589a728308902adf9a32ef8f3ed2c3d2b1e92de", subdirectory = "python/client-contract" }
+dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "eafdde0255061b1b6d45ebeb94449be09d5e26a7", subdirectory = "python/spec-kit" }
+dfo-spec-kit-client-contract = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "eafdde0255061b1b6d45ebeb94449be09d5e26a7", subdirectory = "python/client-contract" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "packages/dfo-analysis-engine/tests"]

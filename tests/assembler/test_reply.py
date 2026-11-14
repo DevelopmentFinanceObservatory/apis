@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import dataclasses
+from typing import cast
 
 import pytest
 
 from assembler.bind import bind_all
 from assembler.limits import LABEL_MAX
 from assembler.mint import default_window, mint_component, stamp_envelope
+from assembler.pipeline import get_component, write_component
+from assembler.ports import FrameRef
 from assembler.reply import (
     WriteReply,
     build_changed_fields,
@@ -615,3 +618,128 @@ def test_token_cap_truncates_series_before_fields(release, monkeypatch):
     )
     assert reply.fact_summary["series"] == []
     assert reply.fact_summary["series_cut"] == 1
+
+
+_ORDER_STAT_VAR = "dcid:MalariaGrantDisbursements"
+_ORDER_VALUES = {
+    "country/ETH": {"2023": 5.0, "2024": 30.0},
+    "country/GHA": {"2023": 50.0, "2024": 10.0},
+    "country/KEN": {"2023": 1.0, "2024": 20.0},
+}
+
+
+def _order_frame():
+    return build_resolved_frame(
+        frame_ref=FrameRef(spec_id="spec_" + "b" * 32, content_version="cv_" + "1" * 32),
+        role_keys=("recipient",),
+        rows=[
+            {
+                "stat_var": _ORDER_STAT_VAR,
+                "recipient": recipient,
+                "time_period": period,
+                "value": value,
+                "unit": None,
+                "measurementMethod": None,
+                "provenance": "src_oecd_dac",
+            }
+            for recipient, by_period in _ORDER_VALUES.items()
+            for period, value in by_period.items()
+        ],
+        labels={"country/ETH": "Ethiopia", "country/GHA": "Ghana", "country/KEN": "Kenya"},
+    )
+
+
+def _order_write(
+    frame, *, frame_store, revision_store, release_registry, select, member="bar_chart", **fields
+):
+    frame_store.put(resolved_frame=frame)
+    intent = {
+        "type": member,
+        "frame_ref": {
+            "spec_id": frame.frame_ref.spec_id,
+            "content_version": frame.frame_ref.content_version,
+        },
+        "select": {"stat_var": _ORDER_STAT_VAR, **select},
+        **fields,
+    }
+    return write_component(
+        intent=intent,
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+
+
+@pytest.mark.parametrize(
+    ("member", "period"), [("bar_chart", None), ("line_chart", None), ("line_chart", "2023")]
+)
+def test_a_write_and_a_readback_state_the_same_order(
+    frame_store, revision_store, release_registry, member, period
+):
+    order = {"by": "value", "direction": "ascending", **({"period": period} if period else {})}
+    created = _order_write(
+        _order_frame(),
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+        select={"recipient": list(_ORDER_VALUES)},
+        member=member,
+        window={"start": "2023", "end": "2024"},
+        order=order,
+    )
+
+    got = get_component(component_id=created.component_id, revision_store=revision_store)
+
+    expected_period = period or "2024"
+    assert created.fact_summary["order"] == {"direction": "ascending", "period": expected_period}
+    assert cast("dict[str, object]", got["fact_summary"])["order"] == created.fact_summary["order"]
+
+
+def test_an_unordered_chart_states_no_order(frame_store, revision_store, release_registry):
+    created = _order_write(
+        _order_frame(),
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+        select={"recipient": list(_ORDER_VALUES)},
+    )
+
+    assert created.fact_summary["order"] is None
+
+
+@pytest.mark.parametrize(
+    ("order", "drawn_values"),
+    [(None, [30.0, 20.0, 10.0]), ({"by": "value", "direction": "ascending"}, [10.0, 20.0, 30.0])],
+)
+def test_an_unlisted_bar_chart_draws_largest_first_unless_an_order_says_otherwise(
+    frame_store, revision_store, release_registry, order, drawn_values
+):
+    created = _order_write(
+        _order_frame(),
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+        select={},
+        window={"start": "2024", "end": "2024"},
+        **({"order": order} if order else {}),
+    )
+
+    (default,) = created.fact_summary["defaults"]
+    assert default["pointer"] == "/select/recipient"
+    series = created.resolved_payload["component"]["series"]
+    assert [one["points"][0]["value"] for one in series] == drawn_values
+    assert (created.fact_summary["order"] is None) is (order is None)
+
+
+def test_one_series_ranks_nothing_so_states_no_order(frame_store, revision_store, release_registry):
+    created = _order_write(
+        _order_frame(),
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+        select={"recipient": "country/ETH"},
+        member="line_chart",
+        order={"by": "value", "direction": "ascending"},
+    )
+
+    assert created.fact_summary["order"] is None

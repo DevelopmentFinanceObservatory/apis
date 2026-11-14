@@ -22,6 +22,7 @@ __all__ = [
     "CountedStatVarModel",
     "CreateReplyResponse",
     "FactSummaryModel",
+    "FactSummaryOrderModel",
     "FactSummarySeriesEntry",
     "FrameDimensionMatch",
     "FrameDimensionSummary",
@@ -83,7 +84,7 @@ class WindowModel(BaseModel):
 class AppliedDefaultModel(BaseModel):
     """One `fact_summary.defaults[]` entry: a choice the component made where its intent
     left one open. An entity-mode bar_chart whose select lists no values draws every value
-    of its one varying dimension, largest first."""
+    of its one varying dimension, largest first unless the intent has an `order`."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -159,6 +160,20 @@ class ComposedUnitModel(BaseModel):
     )
 
 
+class FactSummaryOrderModel(BaseModel):
+    """The order a chart or table drew its series in, from the intent's `order`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    direction: Literal["ascending", "descending"] = Field(
+        description="whether the series run from the smallest value or the largest"
+    )
+    period: str | None = Field(
+        description="the period label whose values ranked the series, null when no series "
+        "holds a value"
+    )
+
+
 class FactSummaryModel(BaseModel):
     """The closed, token-capped fact summary a revision reports."""
 
@@ -192,6 +207,10 @@ class FactSummaryModel(BaseModel):
     source_refs: list[str] | None = Field(
         description="every distinct raw provenance ref a source_card's frame carries. It is "
         "null for every other member."
+    )
+    order: FactSummaryOrderModel | None = Field(
+        description="the order the series were drawn in, null when the intent has no `order` "
+        "or the component drew fewer than two series"
     )
     defaults: list[AppliedDefaultModel] = Field(
         description="the choices this component made where its intent left one open, empty "

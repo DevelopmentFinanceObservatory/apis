@@ -1475,6 +1475,7 @@ def test_source_card_create_and_readback_both_carry_source_refs(
         "unit",
         "change",
         "source_refs",
+        "order",
         "defaults",
     }
     assert set(created.fact_summary) == expected_keys
