@@ -456,7 +456,7 @@ class TestCheck:
             assert list(body) == ["generation", "row_count", "next_row", "findings"]
             for finding in body["findings"]:
                 assert list(finding) == [*members, "severity"]
-        assert json.loads(partial.content)["next_row"] == CHECK_MAX_READ_IDS
+        assert json.loads(partial.content)["next_row"] == 1 + CHECK_MAX_READ_IDS
         assert b'"next_row":null' in whole.content
 
     def test_clean_rows_answer_no_findings(self, generation):
