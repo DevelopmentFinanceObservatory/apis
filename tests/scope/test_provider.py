@@ -19,6 +19,7 @@ import pytest
 
 from code_index.composites import component_identities
 from code_index.scope_conventions import (
+    INCLUSIVE_SOURCES,
     OPTION_LABELS,
     PROVIDER_CONVENTIONS,
     PROVIDER_SCOPE_RULES,
@@ -51,7 +52,13 @@ from search.scope import provider
 from search.scope.build import build_part_scope
 from search.scope.compile import Refusal
 from search.scope.edits import ScopeTableError, apply_binding
-from search.scope.provider import _settled, inclusive_reach, provider_rule, settle_provider
+from search.scope.provider import (
+    _not_offered,
+    _settled,
+    inclusive_reach,
+    provider_rule,
+    settle_provider,
+)
 from search.scope.rules import AXIS_RULES
 from search.scope.state import AxisRecord, ScopeState
 from search.scope.tables import ScopeFacts
@@ -778,6 +785,16 @@ def test_a_bound_modality_or_instrument_keeps_a_total_bilateral_with_the_reason(
         "default",
         "bilateral_flows",
     )
+
+
+def test_the_inclusive_edit_replaces_a_pin_to_the_table_its_bilateral_line_reads():
+    pinned = _pinned(_bilateral_identity(), {"state": "value", "ref": _CRS})
+
+    edited = apply_binding(
+        pinned, ProviderBinding(scope="inclusive", provenance=_INCLUSIVE_SOURCE), []
+    )
+
+    assert (edited.facets or {})["provenance"] == IdentityBindingValue(ref=_INCLUSIVE_SOURCE)
 
 
 def test_the_bilateral_and_inclusive_edits_are_inverses():
@@ -2263,6 +2280,50 @@ def test_a_dac2a_total_offers_bilateral_plus_its_own_imputed_line_on_gross_and_n
     (choice,) = (c for c in held.choices if c.axis == "provider")
     assert choice.active == "provider:inclusive"
     assert back.compiled.spec_id == identity_spec_id(identity)
+
+
+def _pinned(identity: BaseIdentity, pin: dict) -> BaseIdentity:
+    document = identity.model_dump(mode="json", exclude_none=True)
+    return BaseIdentity.model_validate({**document, "facets": {"provenance": pin}})
+
+
+def test_a_dac2a_part_pinned_to_its_own_table_still_offers_the_inclusive_scope():
+    """A provenance pin to the table the composite's bilateral line reads (a question saying
+    "from the OECD DAC2a") leaves the inclusive scope offered, and a switch to it replaces
+    the pin with the composite."""
+    facts = _dac2a_facts(_ALL_YEARS)
+    identity = _pinned(_dac2a_identity("Gross"), {"state": "value", "ref": _DAC2A})
+
+    table = provider_rule(identity, None, facts)
+
+    assert table is not None
+    inclusive = table.option("provider:inclusive")
+    assert inclusive is not None
+    assert inclusive.availability.status == "available"
+    switched = build_part_scope(
+        base=identity, entries=[switch("provider:inclusive")], records={}, facts=facts
+    )
+    assert isinstance(switched, PartScope)
+    assert (switched.compiled.identity.facets or {})["provenance"] == IdentityBindingValue(
+        ref=_DAC2A_INCLUSIVE
+    )
+
+
+@pytest.mark.parametrize(
+    ("pin", "why"),
+    [
+        pytest.param({"state": "value", "ref": _DAC2A}, None, id="the-table"),
+        pytest.param({"state": "set", "refs": [_DAC2A]}, None, id="set-of-the-table"),
+        pytest.param({"state": "value", "ref": _CRS}, "provenance_pinned", id="other-table"),
+        pytest.param(
+            {"state": "set", "refs": [_DAC2A, _CRS]}, "provenance_pinned", id="set-with-other"
+        ),
+    ],
+)
+def test_a_provenance_pin_refuses_the_inclusive_scope_only_when_it_admits_another_table(pin, why):
+    (source,) = (row for row in INCLUSIVE_SOURCES if row.composite == _DAC2A_INCLUSIVE)
+
+    assert _not_offered(_pinned(_dac2a_identity("Gross"), pin), source) == why
 
 
 @pytest.mark.parametrize(

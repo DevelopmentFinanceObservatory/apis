@@ -160,14 +160,28 @@ def _with_window(identity: BaseIdentity, window: YearSpan | None) -> BaseIdentit
     )
 
 
+def _replaceable_pins(provenance: str) -> frozenset[str]:
+    """The tables whose pin the source `provenance` replaces: the table every component
+    reads, where there is one, and the table a stacked composite's bilateral component
+    reads."""
+    datasets = provenance_datasets(provenance)
+    composite = DECLARED_COMPOSITES.get(provenance)
+    pins = set(datasets) if composite is None or len(datasets) == 1 else set()
+    if composite is not None and composite.kind == "stacked":
+        pins.update(r.dataset for r in composite.components if r.role == "bilateral")
+    return frozenset(pins)
+
+
 def _with_source(
     identity: BaseIdentity, provenance: str | None, *, kind: CompositeKind
 ) -> BaseIdentity:
     """`identity` binding `provenance` as its source, or, when it is None, without a source
     that binds a declared composite of `kind`. A source binding the one table every component
-    of `provenance` reads gives way to it, as DAC1 gives way to the OECD headline that splices
-    DAC1's series (`provenance_datasets`). Raises `ScopeTableError` where the identity's source
-    binds anything else, which no option replaces."""
+    of `provenance` reads, or the table a stacked composite's bilateral component reads, gives
+    way to it, as DAC1 gives way to the OECD headline that splices DAC1's series
+    (`provenance_datasets`) and the CRS to the inclusive composite stacked on it. Raises
+    `ScopeTableError` where the identity's source binds anything else, which no option
+    replaces."""
     facets = dict(identity.facets or {})
     held = facets.get(_PROVENANCE)
     held_ref = held.ref if isinstance(held, IdentityBindingValue) else None
@@ -175,7 +189,7 @@ def _with_source(
     if held is not None and (held_composite is None or held_composite.kind != kind):
         if provenance is None:
             return identity
-        if held_composite is not None or provenance_datasets(provenance) != (held_ref,):
+        if held_composite is not None or held_ref not in _replaceable_pins(provenance):
             raise ScopeTableError(f"the identity's source binds {held_ref or 'a set'}")
     if provenance is None:
         facets.pop(_PROVENANCE, None)
