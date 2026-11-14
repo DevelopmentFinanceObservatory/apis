@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import threading
 import time
 from collections.abc import Sequence
 
@@ -13,6 +14,9 @@ import pytest
 import dc_graph.client as graph_module
 from dc_graph import (
     UNRESOLVED_NODE,
+    ArcSubject,
+    ArcSubjectPage,
+    ArcTarget,
     Facet,
     GraphClient,
     GraphDeadlineExceededError,
@@ -20,7 +24,7 @@ from dc_graph import (
     GraphReadError,
     SubjectPage,
 )
-from dc_graph.client import _arc_spec
+from dc_graph.client import GraphOmittedDcidsError, _arc_spec
 
 from .conftest import read_fixture_text
 
@@ -577,7 +581,8 @@ def test_node_arcs_many_request_shape():
 
 
 def test_node_arcs_many_parses_held_absent_and_missing_property():
-    # The empty `country/ZZZ` result is retried alone; missing `description` maps to `()`.
+    # The empty `country/ZZZ` result is retried alone, which stands as its probe; missing
+    # `description` maps to `()`.
     first_body = json.dumps(
         {
             "data": {
@@ -592,8 +597,7 @@ def test_node_arcs_many_parses_held_absent_and_missing_property():
         }
     )
     second_body = json.dumps({"data": {"country/ZZZ": {}}})
-    third_body = json.dumps({"data": {"country/ZZZ": {}}})
-    responses = [first_body, second_body, third_body]
+    responses = [first_body, second_body]
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -606,11 +610,9 @@ def test_node_arcs_many_parses_held_absent_and_missing_property():
         ["country/KEN", "country/ZZZ"], properties=("typeOf", "name", "description")
     )
 
-    assert len(requests) == 3
+    assert len(requests) == 2
     second_payload = json.loads(requests[1].content)
     assert second_payload["nodes"] == ["country/ZZZ"]
-    third_payload = json.loads(requests[2].content)
-    assert third_payload["nodes"] == ["country/ZZZ"]
     assert result == {
         "country/KEN": {"typeOf": ("Country",), "name": ("Kenya",), "description": ()},
         "country/ZZZ": None,
@@ -630,11 +632,10 @@ def test_node_arcs_many_single_dcid_present_but_empty_trusted_without_retry():
 
 
 def test_node_arcs_many_single_dcid_missing_key_still_retries():
-    # A missing response key gets a singleton retry, then a probe if still empty.
+    # A missing response key gets a singleton retry, whose empty answer stands.
     first_body = json.dumps({"data": {}})
     second_body = json.dumps({"data": {"country/ZZZ": {}}})
-    third_body = json.dumps({"data": {"country/ZZZ": {}}})
-    responses = [first_body, second_body, third_body]
+    responses = [first_body, second_body]
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -645,11 +646,9 @@ def test_node_arcs_many_single_dcid_missing_key_still_retries():
 
     result = reader.node_arcs_many(["country/ZZZ"], properties=("typeOf",))
 
-    assert len(requests) == 3
+    assert len(requests) == 2
     second_payload = json.loads(requests[1].content)
     assert second_payload["nodes"] == ["country/ZZZ"]
-    third_payload = json.loads(requests[2].content)
-    assert third_payload["nodes"] == ["country/ZZZ"]
     assert result == {"country/ZZZ": None}
 
 
@@ -686,137 +685,435 @@ def test_node_arcs_many_multi_dcid_false_empty_caught_by_retry():
     }
 
 
-def test_node_arcs_many_group_retry_false_empty_caught_by_individual_probe():
-    # Both "country/ZZZ" and "country/YYY" come back present but empty in
-    # the initial batch and in the group retry that re-batches them
-    # together. A false-empty shared by both suspects in that one retry
-    # batch, which the group retry alone cannot tell apart from a genuine
-    # absence. Each gets its own individual, single-dcid probe, which
-    # reveals both actually carry arcs.
-    first_body = json.dumps(
+def test_node_arcs_many_probes_every_empty_answer_alone_with_no_group_retry():
+    # "country/ZZZ" and "country/YYY" come back present but empty in a batch. Each is read
+    # alone, which reveals that ZZZ carries arcs and confirms YYY absent; no group retry is
+    # sent, since a probe of each would follow it anyway.
+    transport, requests = _keyed(
         {
-            "data": {
-                "country/KEN": {"arcs": {"typeOf": {"nodes": [{"dcid": "Country"}]}}},
-                "country/ZZZ": {},
-                "country/YYY": {},
-            }
+            tuple(_DCIDS): {
+                "data": {"country/KEN": {"arcs": _TYPED}, "country/ZZZ": {}, "country/YYY": {}}
+            },
+            ("country/ZZZ",): {"data": {"country/ZZZ": {"arcs": _TYPED}}},
+            ("country/YYY",): {"data": {"country/YYY": {}}},
         }
     )
-    group_retry_body = json.dumps({"data": {"country/ZZZ": {}, "country/YYY": {}}})
-    zzz_probe_body = json.dumps(
-        {"data": {"country/ZZZ": {"arcs": {"typeOf": {"nodes": [{"dcid": "Country"}]}}}}}
-    )
-    yyy_probe_body = json.dumps(
-        {"data": {"country/YYY": {"arcs": {"typeOf": {"nodes": [{"dcid": "Country"}]}}}}}
-    )
-    responses = [first_body, group_retry_body, zzz_probe_body, yyy_probe_body]
-    requests: list[httpx.Request] = []
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        return httpx.Response(200, content=responses[len(requests) - 1])
+    result = _reader(transport).node_arcs_many(_DCIDS, properties=("typeOf",))
 
-    reader = _reader(httpx.MockTransport(handler))
-
-    result = reader.node_arcs_many(
-        ["country/KEN", "country/ZZZ", "country/YYY"], properties=("typeOf",)
-    )
-
-    assert len(requests) == 4
-    group_retry_payload = json.loads(requests[1].content)
-    assert group_retry_payload["nodes"] == ["country/ZZZ", "country/YYY"]
-    assert json.loads(requests[2].content)["nodes"] == ["country/ZZZ"]
-    assert json.loads(requests[3].content)["nodes"] == ["country/YYY"]
+    sent = _nodes_sent(requests)
+    assert sent[0] == _DCIDS
+    assert sorted(sent[1:]) == [["country/YYY"], ["country/ZZZ"]]
     assert result == {
         "country/KEN": {"typeOf": ("Country",)},
         "country/ZZZ": {"typeOf": ("Country",)},
-        "country/YYY": {"typeOf": ("Country",)},
+        "country/YYY": None,
     }
 
 
-def test_node_arcs_many_individual_probe_missing_key_raises():
-    # The individual probe omits "country/ZZZ" from "data" entirely, rather
-    # than reporting it present-but-empty. This is a protocol violation, the
-    # same as a group-retry-missing dcid.
-    first_body = json.dumps(
-        {
-            "data": {
-                "country/KEN": {"arcs": {"typeOf": {"nodes": [{"dcid": "Country"}]}}},
-                "country/ZZZ": {},
-            }
+_TYPED = {"typeOf": {"nodes": [{"dcid": "Country", "provenanceId": "dc/base/Schema"}]}}
+_COUNTRY = {"typeOf": (ArcTarget(value="Country", provenances=("dc/base/Schema",)),)}
+_EMPTY_TWICE = [
+    {"data": {"country/KEN": {"arcs": _TYPED}, "country/ZZZ": {}, "country/YYY": {}}},
+    {"data": {"country/ZZZ": {}, "country/YYY": {}}},
+    {"data": {"country/ZZZ": {"arcs": _TYPED}}},
+    {"data": {"country/YYY": {}}},
+]
+"""A batch and its group retry that answer ZZZ and YYY empty, then ZZZ typed read alone and
+YYY empty read alone."""
+
+_EMPTY_ONCE = {
+    ("country/KEN", "country/ZZZ", "country/YYY"): _EMPTY_TWICE[0],
+    ("country/ZZZ", "country/YYY"): _EMPTY_TWICE[1],
+    ("country/ZZZ",): _EMPTY_TWICE[2],
+    ("country/YYY",): _EMPTY_TWICE[3],
+}
+"""`_EMPTY_TWICE` keyed by the dcids each request names."""
+
+
+def _sequenced(bodies: list[dict], *, slow: int | None = None, delay: float = 0.0):
+    """A transport answering `bodies` in order, sleeping `delay` before answering request
+    number `slow`, and the requests it served. The wait is an `Event` wait, since the module's
+    `time.sleep` is patched out."""
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if len(requests) == slow:
+            threading.Event().wait(delay)
+        return httpx.Response(200, content=json.dumps(bodies[len(requests) - 1]))
+
+    return httpx.MockTransport(handler), requests
+
+
+def _nodes_sent(requests: list[httpx.Request]) -> list[list[str]]:
+    return [json.loads(request.content)["nodes"] for request in requests]
+
+
+def _keyed(
+    bodies: dict[tuple[str, ...], dict],
+    *,
+    slow: tuple[str, ...] | None = None,
+    delay: float = 0.0,
+    failing: tuple[str, ...] | None = None,
+):
+    """A transport answering each request by the dcids it names, as concurrent probes need,
+    sleeping `delay` before answering `slow` and answering `failing` 400, and the requests it
+    served."""
+    requests: list[httpx.Request] = []
+    lock = threading.Lock()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nodes = tuple(json.loads(request.content)["nodes"])
+        with lock:
+            requests.append(request)
+        if nodes == slow:
+            threading.Event().wait(delay)
+        if nodes == failing:
+            return httpx.Response(400, content=b"bad request")
+        return httpx.Response(200, content=json.dumps(bodies[nodes]))
+
+    return httpx.MockTransport(handler), requests
+
+
+_DCIDS = ["country/KEN", "country/ZZZ", "country/YYY"]
+
+
+@pytest.mark.parametrize(
+    ("budget", "sent"),
+    [
+        (None, [_DCIDS, ["country/YYY"], ["country/ZZZ"]]),
+        (1, [_DCIDS, ["country/ZZZ", "country/YYY"], ["country/ZZZ"]]),
+    ],
+)
+def test_node_arc_targets_many_probes_an_empty_answer_as_node_arcs_many_does(budget, sent):
+    """With no budget each empty is read alone; a budget first reads the empties again as a
+    group and probes those still empty up to it."""
+    transport, requests = _keyed(_EMPTY_ONCE)
+
+    result = _reader(transport).node_arc_targets_many(
+        _DCIDS, properties=("typeOf",), individual_probe_budget=budget
+    )
+
+    nodes = _nodes_sent(requests)
+    assert [nodes[0], *sorted(nodes[1:])] == [sent[0], *sorted(sent[1:])]
+    assert result == {"country/KEN": _COUNTRY, "country/ZZZ": _COUNTRY, "country/YYY": None}
+
+
+def test_node_all_arc_targets_many_reads_every_property_and_confirms_an_empty_answer_alone():
+    transport, requests = _keyed(_EMPTY_ONCE)
+
+    result = _reader(transport).node_all_arc_targets_many(_DCIDS)
+
+    assert {json.loads(request.content)["property"] for request in requests} == {"->*"}
+    nodes = _nodes_sent(requests)
+    assert nodes[0] == _DCIDS
+    assert sorted(nodes[1:]) == [["country/YYY"], ["country/ZZZ"]]
+    assert result == {"country/KEN": _COUNTRY, "country/ZZZ": _COUNTRY, "country/YYY": None}
+
+
+def test_node_all_arc_targets_many_halves_a_chunk_the_mixer_continues():
+    # The mixer repeats continuation tokens for `->*`, so a continued chunk is read again as
+    # halves and the token is never sent.
+    transport, requests = _sequenced(
+        [
+            {"data": {"country/KEN": {"arcs": _TYPED}}, "nextToken": "tok1"},
+            {"data": {"country/KEN": {"arcs": _TYPED}}},
+            {"data": {"country/ZZZ": {"arcs": _TYPED}}},
+        ]
+    )
+
+    result = _reader(transport).node_all_arc_targets_many(["country/KEN", "country/ZZZ"])
+
+    assert _nodes_sent(requests) == [
+        ["country/KEN", "country/ZZZ"],
+        ["country/KEN"],
+        ["country/ZZZ"],
+    ]
+    assert all("nextToken" not in json.loads(request.content) for request in requests)
+    assert result == {"country/KEN": _COUNTRY, "country/ZZZ": _COUNTRY}
+
+
+def test_node_all_arc_targets_many_tells_a_literal_from_a_node():
+    # A target repeated per declaring provenance collapses to one; a property with no target
+    # is left out.
+    arcs = {
+        "wbCode": {
+            "nodes": [
+                {"value": "DOD", "provenanceId": "provenance/DFOOntology"},
+                {"value": "DOD", "provenanceId": "provenance/WorldBank"},
+            ]
+        },
+        "nationalCurrencyOf": {
+            "nodes": [{"dcid": "country/KEN", "name": "Kenya", "types": ["Country"]}]
+        },
+        "sameAs": {"nodes": []},
+    }
+    transport, _ = _sequenced([{"data": {"KES": {"arcs": arcs}}}])
+
+    result = _reader(transport).node_all_arc_targets_many(["KES"])
+
+    assert result == {
+        "KES": {
+            "nationalCurrencyOf": (
+                ArcTarget(value="country/KEN", name="Kenya", types=("Country",)),
+            ),
+            "wbCode": (
+                ArcTarget(
+                    value="DOD",
+                    provenances=("provenance/DFOOntology", "provenance/WorldBank"),
+                    literal=True,
+                ),
+            ),
         }
+    }
+
+
+@pytest.mark.parametrize(
+    ("read", "held"),
+    [
+        (
+            lambda reader, dcids: reader.node_arc_targets_many(dcids, properties=("typeOf",)),
+            _COUNTRY,
+        ),
+        (
+            lambda reader, dcids: reader.node_arcs_many(
+                dcids, properties=("typeOf",), individual_probe_budget=0
+            ),
+            {"typeOf": ("Country",)},
+        ),
+    ],
+    ids=["node_arc_targets_many-default", "node_arcs_many-budget-0"],
+)
+def test_a_budget_of_0_returns_the_first_read_with_its_empty_entry(read, held):
+    # One POST for a batch with one empty entry: the request count search and dataset callers
+    # of `node_arc_targets_many` rely on.
+    transport, requests = _sequenced(
+        [{"data": {"country/KEN": {"arcs": _TYPED}, "country/ZZZ": {}}}]
     )
-    group_retry_body = json.dumps({"data": {"country/ZZZ": {}}})
-    probe_body = json.dumps({"data": {}})
-    responses = [first_body, group_retry_body, probe_body]
-    requests: list[httpx.Request] = []
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        return httpx.Response(200, content=responses[len(requests) - 1])
+    result = read(_reader(transport), ["country/KEN", "country/ZZZ"])
 
-    reader = _reader(httpx.MockTransport(handler))
-
-    with pytest.raises(GraphReadError):
-        reader.node_arcs_many(["country/KEN", "country/ZZZ"], properties=("typeOf",))
-    assert len(requests) == 3
+    assert _nodes_sent(requests) == [["country/KEN", "country/ZZZ"]]
+    assert result == {"country/KEN": held, "country/ZZZ": None}
 
 
-def test_node_arcs_many_individual_probe_budget_stops_probing_beyond_the_cap(caplog):
-    # Three suspects survive the group retry still empty. With the budget
-    # capped at one, only the first gets an individual probe. The other
-    # two are left unprobed, and their group-retry empty result stands,
-    # resolving to `None` the same way a confirmed-absent dcid would.
-    first_body = json.dumps({"data": {"country/AAA": {}, "country/BBB": {}, "country/CCC": {}}})
-    group_retry_body = json.dumps(
-        {"data": {"country/AAA": {}, "country/BBB": {}, "country/CCC": {}}}
-    )
-    probe_body = json.dumps({"data": {"country/AAA": {}}})
-    responses = [first_body, group_retry_body, probe_body]
-    requests: list[httpx.Request] = []
+@pytest.mark.parametrize(
+    ("budget", "sent"),
+    [(None, [_DCIDS]), (1, [_DCIDS, ["country/ZZZ", "country/YYY"]])],
+)
+def test_node_arc_targets_many_stops_confirming_at_the_deadline(budget, sent):
+    # The read before the probes answers after the deadline, so no probe is sent.
+    slow = tuple(sent[-1])
+    transport, requests = _keyed(_EMPTY_ONCE, slow=slow, delay=0.3)
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        return httpx.Response(200, content=responses[len(requests) - 1])
-
-    reader = _reader(httpx.MockTransport(handler))
-
-    with caplog.at_level("INFO", logger="dc_graph.client"):
-        result = reader.node_arcs_many(
-            ["country/AAA", "country/BBB", "country/CCC"],
+    with pytest.raises(GraphDeadlineExceededError):
+        _reader(transport).node_arc_targets_many(
+            _DCIDS,
             properties=("typeOf",),
-            individual_probe_budget=1,
+            individual_probe_budget=budget,
+            deadline=time.monotonic() + 0.2,
         )
 
-    assert len(requests) == 3
-    assert result == {"country/AAA": None, "country/BBB": None, "country/CCC": None}
-    assert any("2 dcid" in record.getMessage() for record in caplog.records)
+    assert _nodes_sent(requests) == sent
+
+
+def test_node_arcs_many_trusts_a_group_retry_of_one_dcid_as_its_probe():
+    transport, requests = _sequenced(
+        [
+            {"data": {"country/KEN": {"arcs": _TYPED}, "country/ZZZ": {}}},
+            {"data": {"country/ZZZ": {}}},
+        ]
+    )
+
+    result = _reader(transport).node_arcs_many(
+        ["country/KEN", "country/ZZZ"], properties=("typeOf",)
+    )
+
+    assert _nodes_sent(requests) == [["country/KEN", "country/ZZZ"], ["country/ZZZ"]]
+    assert result == {"country/KEN": {"typeOf": ("Country",)}, "country/ZZZ": None}
+
+
+def test_node_arcs_many_individual_probe_missing_key_raises():
+    # The probe omits "country/ZZZ" from "data" entirely, rather than reporting it present but
+    # empty: a protocol violation, the same as a group retry that omits a dcid.
+    transport, requests = _keyed({**_EMPTY_ONCE, ("country/ZZZ",): {"data": {}}})
+
+    with pytest.raises(GraphReadError) as raised:
+        _reader(transport).node_arcs_many(_DCIDS, properties=("typeOf",))
+
+    assert isinstance(raised.value.__cause__, GraphOmittedDcidsError)
+    assert raised.value.__cause__.dcids == ("country/ZZZ",)
+    assert len(requests) <= 3
+
+
+def test_a_failed_probe_raises_and_no_dcid_is_reported_absent():
+    # The probe of "country/YYY" fails, so the read raises instead of answering YYY absent.
+    transport, _ = _keyed(_EMPTY_ONCE, failing=("country/YYY",))
+
+    with pytest.raises(GraphReadError) as raised:
+        _reader(transport).node_arcs_many(_DCIDS, properties=("typeOf",))
+
+    assert raised.value.upstream_status == 400
+
+
+def _absent_handler(*, hold: float, failing: str | None = None):
+    """A transport that answers every dcid empty, holding each probe `hold` seconds and
+    answering the probe of `failing` 400 at once, with the dcids it probed, the most probes it
+    held in flight at once, and an event set whenever none is in flight."""
+    probes: list[str] = []
+    widest = [0]
+    in_flight = [0]
+    lock = threading.Lock()
+    idle = threading.Event()
+    idle.set()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nodes = json.loads(request.content)["nodes"]
+        if len(nodes) > 1:
+            return httpx.Response(200, json={"data": {dcid: {} for dcid in nodes}})
+        with lock:
+            probes.extend(nodes)
+            in_flight[0] += 1
+            idle.clear()
+            widest[0] = max(widest[0], in_flight[0])
+        if nodes[0] != failing:
+            threading.Event().wait(hold)
+        with lock:
+            in_flight[0] -= 1
+            if not in_flight[0]:
+                idle.set()
+        if nodes[0] == failing:
+            return httpx.Response(400, content=b"bad request")
+        return httpx.Response(200, json={"data": {nodes[0]: {}}})
+
+    return httpx.MockTransport(handler), probes, widest, idle
+
+
+def test_a_failed_probe_cancels_the_probes_not_yet_sent():
+    # The first probe fails at once while the 15 beside it are held, so the probes queued
+    # behind them are dropped rather than sent.
+    dcids = [f"absent/{i:02d}" for i in range(48)]
+    transport, probes, _, idle = _absent_handler(hold=0.2, failing="absent/00")
+
+    with pytest.raises(GraphReadError):
+        _reader(transport).node_arcs_many(dcids, properties=("typeOf",))
+    # The probes already sent run on in the shared pool; let them finish before the next test.
+    assert idle.wait(timeout=5)
+
+    assert len(probes) < len(dcids)
+
+
+def test_node_arcs_many_probes_run_16_at_a_time():
+    """20 empty answers are each read alone, 16 at a time."""
+    dcids = [f"absent/{i:02d}" for i in range(20)]
+    transport, probes, widest, _ = _absent_handler(hold=0.05)
+
+    result = _reader(transport).node_arcs_many(dcids, properties=("typeOf",))
+
+    assert result == dict.fromkeys(dcids)
+    assert sorted(probes) == dcids
+    assert widest[0] == 16
+
+
+def test_probes_of_simultaneous_reads_share_one_pool_of_16():
+    """Four reads on two clients, each confirming 12 empty answers at once, hold at most 16
+    probes in flight between them, on at most 16 probe threads."""
+    transport, probes, widest, _ = _absent_handler(hold=0.05)
+    readers = [_reader(transport), _reader(transport)]
+    threads_seen: set[str] = set()
+    original = GraphClient._post_node_arcs
+
+    def recording(self, dcids, **kwargs):
+        if len(dcids) == 1:
+            threads_seen.add(threading.current_thread().name)
+        return original(self, dcids, **kwargs)
+
+    batches = [[f"absent/{call}/{i:02d}" for i in range(12)] for call in range(4)]
+    results: list[dict] = []
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(pytest.MonkeyPatch.context()).setattr(
+            GraphClient, "_post_node_arcs", recording
+        )
+        callers = [
+            threading.Thread(
+                target=lambda dcids=dcids, reader=readers[call % 2]: results.append(
+                    reader.node_arcs_many(dcids, properties=("typeOf",))
+                )
+            )
+            for call, dcids in enumerate(batches)
+        ]
+        for caller in callers:
+            caller.start()
+        for caller in callers:
+            caller.join(timeout=10)
+
+    assert len(results) == 4
+    assert len(probes) == 48
+    assert widest[0] == 16
+    assert len(threads_seen) <= 16
+
+
+@pytest.mark.parametrize("queued", [True, False], ids=["queued", "in_flight"])
+def test_probes_end_at_the_callers_deadline(queued):
+    """A read whose probes queue behind 16 held probes of another caller, or whose own probes
+    hang in flight, raises the deadline error at its deadline and reports no dcid absent."""
+    release = threading.Event()
+    held_in_flight = threading.Semaphore(0)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nodes = json.loads(request.content)["nodes"]
+        if len(nodes) > 1:
+            return httpx.Response(200, json={"data": {dcid: {} for dcid in nodes}})
+        if nodes[0].startswith("held/"):
+            held_in_flight.release()
+            release.wait(timeout=10)
+        return httpx.Response(200, json={"data": {nodes[0]: {}}})
+
+    reader = _reader(httpx.MockTransport(handler))
+    holder = threading.Thread(
+        target=reader.node_arcs_many,
+        args=([f"held/{i:02d}" for i in range(16)],),
+        kwargs={"properties": ("typeOf",)},
+    )
+    try:
+        if queued:
+            holder.start()
+            for _ in range(16):
+                assert held_in_flight.acquire(timeout=5)
+        dcids = ["absent/a", "absent/b"] if queued else ["held/a", "held/b"]
+        started = time.monotonic()
+        with pytest.raises(GraphDeadlineExceededError):
+            reader.node_arcs_many(
+                dcids,
+                properties=("typeOf",),
+                individual_probe_budget=None,
+                deadline=started + 0.3,
+            )
+        assert time.monotonic() - started < 2
+    finally:
+        release.set()
+        if queued:
+            holder.join(timeout=10)
 
 
 def test_node_arcs_many_default_budget_probes_every_suspect_individually():
-    # With no `individual_probe_budget` passed, the default probes every
-    # suspect still empty after the group retry individually, however
-    # many there are.
-    first_body = json.dumps({"data": {"country/AAA": {}, "country/BBB": {}}})
-    group_retry_body = json.dumps({"data": {"country/AAA": {}, "country/BBB": {}}})
-    aaa_probe_body = json.dumps(
-        {"data": {"country/AAA": {"arcs": {"typeOf": {"nodes": [{"dcid": "Country"}]}}}}}
+    # With no `individual_probe_budget` passed, the default reads every empty answer alone,
+    # however many there are, and sends no group retry.
+    typed = {"arcs": {"typeOf": {"nodes": [{"dcid": "Country"}]}}}
+    transport, requests = _keyed(
+        {
+            ("country/AAA", "country/BBB"): {"data": {"country/AAA": {}, "country/BBB": {}}},
+            ("country/AAA",): {"data": {"country/AAA": typed}},
+            ("country/BBB",): {"data": {"country/BBB": typed}},
+        }
     )
-    bbb_probe_body = json.dumps(
-        {"data": {"country/BBB": {"arcs": {"typeOf": {"nodes": [{"dcid": "Country"}]}}}}}
+
+    result = _reader(transport).node_arcs_many(
+        ["country/AAA", "country/BBB"], properties=("typeOf",)
     )
-    responses = [first_body, group_retry_body, aaa_probe_body, bbb_probe_body]
-    requests: list[httpx.Request] = []
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        return httpx.Response(200, content=responses[len(requests) - 1])
-
-    reader = _reader(httpx.MockTransport(handler))
-
-    result = reader.node_arcs_many(["country/AAA", "country/BBB"], properties=("typeOf",))
-
-    assert len(requests) == 4
+    assert len(requests) == 3
     assert result == {
         "country/AAA": {"typeOf": ("Country",)},
         "country/BBB": {"typeOf": ("Country",)},
@@ -862,20 +1159,19 @@ def test_node_arcs_many_deadline_none_behaves_exactly_as_before(monkeypatch: pyt
 def test_node_arcs_many_deadline_forwarded_unchanged_to_every_read_in_the_ladder(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    # The initial batch, the group retry, and each individual probe all
-    # take the same absolute deadline -- proven here by advancing a
-    # controlled clock between each of the four reads this scenario
-    # triggers and checking that every request's own httpx timeout
-    # shrinks accordingly, rather than resetting to a fresh full budget.
-    first_body = json.dumps({"data": {"country/AAA": {}, "country/BBB": {}}})
-    group_retry_body = json.dumps({"data": {"country/AAA": {}, "country/BBB": {}}})
-    aaa_probe_body = json.dumps(
-        {"data": {"country/AAA": {"arcs": {"typeOf": {"nodes": [{"dcid": "Country"}]}}}}}
+    # The batch and the probe take the same absolute deadline: a controlled clock advances
+    # between the two reads, and the probe's own httpx timeout shrinks accordingly rather than
+    # resetting to a fresh full budget.
+    first_body = json.dumps(
+        {
+            "data": {
+                "country/AAA": {},
+                "country/BBB": {"arcs": {"typeOf": {"nodes": [{"dcid": "Country"}]}}},
+            }
+        }
     )
-    bbb_probe_body = json.dumps(
-        {"data": {"country/BBB": {"arcs": {"typeOf": {"nodes": [{"dcid": "Country"}]}}}}}
-    )
-    responses = [first_body, group_retry_body, aaa_probe_body, bbb_probe_body]
+    aaa_probe_body = json.dumps({"data": {"country/AAA": {}}})
+    responses = [first_body, aaa_probe_body]
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -884,19 +1180,16 @@ def test_node_arcs_many_deadline_forwarded_unchanged_to_every_read_in_the_ladder
 
     reader = _reader(httpx.MockTransport(handler), timeout=1000)
 
-    # Each read now calls time.monotonic() twice: once to size the
-    # node-arc semaphore acquire's own timeout (_acquire_node_arc_slot),
-    # once for post's own request timeout. The clock is unheld here (no
-    # concurrent reader), so the acquire always succeeds immediately
-    # regardless of its computed timeout; each value is repeated so the
-    # request timeout this test asserts on is unaffected by the extra call.
-    monotonic_values = iter([0.0, 0.0, 10.0, 10.0, 20.0, 20.0, 25.0, 25.0])
+    # Each read calls time.monotonic() twice: once to size the node-arc semaphore acquire's
+    # own timeout (_acquire_node_arc_slot), once for post's own request timeout. The
+    # semaphore is free, so the acquire succeeds whatever its computed timeout; each value
+    # is repeated so the request timeout this test asserts on is unaffected by the extra call.
+    monotonic_values = iter([0.0, 0.0, 10.0, 10.0])
     monkeypatch.setattr(graph_module.time, "monotonic", lambda: next(monotonic_values))
 
     reader.node_arcs_many(["country/AAA", "country/BBB"], properties=("typeOf",), deadline=100.0)
 
-    assert len(requests) == 4
-    assert [r.extensions["timeout"]["read"] for r in requests] == [100, 90, 80, 75]
+    assert [r.extensions["timeout"]["read"] for r in requests] == [100, 90]
 
 
 def test_node_arcs_many_single_property_uses_unbracketed_arc_spec():
@@ -1111,6 +1404,57 @@ def test_node_arcs_many_dedups_a_value_declared_by_two_provenances():
     assert result == {"lifeExpectancy": {"measuredProperty": ("lifeExpectancy",)}}
 
 
+def test_node_arc_targets_many_collapses_a_target_and_carries_its_provenances_sorted():
+    # A target repeated per declaring provenance collapses to one, its first entry's name and
+    # types, and every provenance sorted; an entry without `provenanceId` adds none.
+    body = json.dumps(
+        {
+            "data": {
+                "crsPurpose": {
+                    "arcs": {
+                        "typeOf": {
+                            "nodes": [
+                                {
+                                    "dcid": "Property",
+                                    "name": "Property",
+                                    "types": ["Class"],
+                                    "provenanceId": "provenance/DFOOntology",
+                                },
+                                {
+                                    "dcid": "Property",
+                                    "name": "Property",
+                                    "types": ["Class"],
+                                    "provenanceId": "dc/base/Schema",
+                                },
+                                {"dcid": "Property", "provenanceId": "dc/base/Schema"},
+                            ]
+                        },
+                        "name": {"nodes": [{"value": "CRS purpose"}]},
+                    }
+                }
+            }
+        }
+    )
+    transport, _ = _replay(body)
+    reader = _reader(transport)
+
+    result = reader.node_arc_targets_many(["crsPurpose"], properties=("typeOf", "name"))
+
+    assert result == {
+        "crsPurpose": {
+            "typeOf": (
+                ArcTarget(
+                    value="Property",
+                    name="Property",
+                    types=("Class",),
+                    provenances=("dc/base/Schema", "provenance/DFOOntology"),
+                ),
+            ),
+            "name": (ArcTarget(value="CRS purpose", literal=True),),
+        }
+    }
+
+
 def test_node_arcs_many_dedups_unresolved_node_marker():
     # Duplicate unresolved targets collapse to one marker.
     body = json.dumps({"data": {"sv": {"arcs": {"measurementDenominator": {"nodes": [{}, {}]}}}}})
@@ -1286,7 +1630,7 @@ def test_node_subjects_truncated_true_when_continuation_page_has_new_distinct_su
     second_body = json.dumps(
         {"data": {"lifeExpectancy": {"arcs": {"measuredProperty": {"nodes": [{"dcid": "c"}]}}}}}
     )
-    responses = [first_body, second_body]
+    responses = [first_body, second_body] * 2
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -1296,9 +1640,12 @@ def test_node_subjects_truncated_true_when_continuation_page_has_new_distinct_su
     reader = _reader(httpx.MockTransport(handler))
 
     page = reader.node_subjects("lifeExpectancy", property="measuredProperty", max_results=2)
+    detail = reader.node_arc_subjects("lifeExpectancy", property="measuredProperty", max_results=2)
 
     assert page == SubjectPage(dcids=("a", "b"), truncated=True)
-    assert len(requests) == 2
+    assert [subject.dcid for subject in detail.subjects] == ["a", "b"]
+    assert detail.truncated is True
+    assert len(requests) == 4
 
 
 def test_node_subjects_not_truncated_when_continuation_page_has_only_duplicates():
@@ -1404,8 +1751,18 @@ def test_node_subjects_dedups_a_subject_declared_by_two_provenances():
                     "arcs": {
                         "measuredProperty": {
                             "nodes": [
-                                {"dcid": "LifeExpectancy_Person_Female"},
-                                {"dcid": "LifeExpectancy_Person_Female"},
+                                {
+                                    "dcid": "LifeExpectancy_Person_Female",
+                                    "name": "Life expectancy, female",
+                                    "types": ["StatisticalVariable"],
+                                    "provenanceId": "dc/base/WHO_GHO",
+                                },
+                                {
+                                    "dcid": "LifeExpectancy_Person_Female",
+                                    "name": "Life expectancy, female",
+                                    "types": ["StatisticalVariable"],
+                                    "provenanceId": "dc/base/Schema",
+                                },
                             ]
                         }
                     }
@@ -1417,14 +1774,34 @@ def test_node_subjects_dedups_a_subject_declared_by_two_provenances():
     reader = _reader(transport)
 
     page = reader.node_subjects("lifeExpectancy", property="measuredProperty", max_results=10)
+    detail = reader.node_arc_subjects("lifeExpectancy", property="measuredProperty", max_results=10)
 
     assert page == SubjectPage(dcids=("LifeExpectancy_Person_Female",), truncated=False)
+    assert detail == ArcSubjectPage(
+        subjects=(
+            ArcSubject(
+                dcid="LifeExpectancy_Person_Female",
+                names=("Life expectancy, female",),
+                provenances=("dc/base/Schema", "dc/base/WHO_GHO"),
+            ),
+        ),
+        truncated=False,
+    )
 
 
 def test_node_subjects_dedups_a_subject_repeated_across_pages():
+    # `a`'s second provenance arrives on the second page; `b` carries no name or provenance.
     first_body = json.dumps(
         {
-            "data": {"lifeExpectancy": {"arcs": {"measuredProperty": {"nodes": [{"dcid": "a"}]}}}},
+            "data": {
+                "lifeExpectancy": {
+                    "arcs": {
+                        "measuredProperty": {
+                            "nodes": [{"dcid": "a", "name": "A", "provenanceId": "dc/base/Schema"}]
+                        }
+                    }
+                }
+            },
             "nextToken": "tok1",
         }
     )
@@ -1432,12 +1809,19 @@ def test_node_subjects_dedups_a_subject_repeated_across_pages():
         {
             "data": {
                 "lifeExpectancy": {
-                    "arcs": {"measuredProperty": {"nodes": [{"dcid": "a"}, {"dcid": "b"}]}}
+                    "arcs": {
+                        "measuredProperty": {
+                            "nodes": [
+                                {"dcid": "a", "provenanceId": "dc/base/Mongolia_Education"},
+                                {"dcid": "b"},
+                            ]
+                        }
+                    }
                 }
             }
         }
     )
-    responses = [first_body, second_body]
+    responses = [first_body, second_body] * 2
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -1447,9 +1831,21 @@ def test_node_subjects_dedups_a_subject_repeated_across_pages():
     reader = _reader(httpx.MockTransport(handler))
 
     page = reader.node_subjects("lifeExpectancy", property="measuredProperty", max_results=10)
+    detail = reader.node_arc_subjects("lifeExpectancy", property="measuredProperty", max_results=10)
 
     assert page == SubjectPage(dcids=("a", "b"), truncated=False)
-    assert len(requests) == 2
+    assert detail == ArcSubjectPage(
+        subjects=(
+            ArcSubject(
+                dcid="a",
+                names=("A",),
+                provenances=("dc/base/Mongolia_Education", "dc/base/Schema"),
+            ),
+            ArcSubject(dcid="b", names=(), provenances=()),
+        ),
+        truncated=False,
+    )
+    assert len(requests) == 4
 
 
 def test_node_subjects_max_results_and_truncated_count_distinct_subjects():
@@ -1570,11 +1966,33 @@ def test_node_subjects_single_sparse_page_does_not_raise_and_still_completes():
     assert len(requests) == 3
 
 
-def test_node_subjects_sustained_no_progress_raises_graph_not_advancing_error():
-    # (#697) Fresh tokens do not prove progress; repeated subjects hit the consecutive-page limit.
+def test_node_subjects_reads_on_through_pages_that_only_repeat_subjects():
+    # A listing names a subject once per declaring provenance, so pages past the stuck limit
+    # can repeat subjects read before. Each page has entries and a fresh token: progress.
     limit = graph_module._NODE_SUBJECTS_STUCK_PAGE_LIMIT
     responses = [_subject_page_body(["a"], next_token="tok0")]
-    responses += [_subject_page_body(["a"], next_token=f"tok{i}") for i in range(1, limit + 1)]
+    responses += [_subject_page_body(["a"], next_token=f"tok{i}") for i in range(1, limit + 2)]
+    responses += [_subject_page_body(["a", "b"])]
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, content=responses[len(requests) - 1])
+
+    reader = _reader(httpx.MockTransport(handler))
+
+    page = reader.node_subjects("lifeExpectancy", property="measuredProperty", max_results=100)
+
+    assert page == SubjectPage(dcids=("a", "b"), truncated=False)
+    assert len(requests) == len(responses)
+
+
+def test_node_subjects_raises_on_a_token_it_already_followed():
+    responses = [
+        _subject_page_body(["a"], next_token="tok1"),
+        _subject_page_body(["a"], next_token="tok2"),
+        _subject_page_body(["a"], next_token="tok1"),
+    ]
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -1585,7 +2003,7 @@ def test_node_subjects_sustained_no_progress_raises_graph_not_advancing_error():
 
     with pytest.raises(GraphNotAdvancingError) as excinfo:
         reader.node_subjects("lifeExpectancy", property="measuredProperty", max_results=100)
-    assert len(requests) == 1 + limit
+    assert len(requests) == 3
     assert excinfo.value.dcid == "lifeExpectancy"
     assert excinfo.value.property == "measuredProperty"
 

@@ -11,7 +11,8 @@ profile comes from the process's shared `FacetProfileCache` for its source
 runs on. The national currencies and node facts a
 variable's availability reads beside its profile (`CardReadCaches`) run their
 flights on the DCP-read executor. The node routes keep the envelopes they build in
-`node_entries`, which guards every operation with its own lock.
+`node_entries`, which guards every operation with its own lock. The schema routes keep
+their built bodies in `schema`, whose one build runs on the DCP-read executor.
 
 This module holds the bundle and the doors' one way onto the executor,
 `run_dcp_read`, to keep door imports separate from the composition root,
@@ -36,7 +37,10 @@ from dfo_platform.executor import SaturationTrackingExecutor, submit_with_contex
 from dfo_platform.single_flight_cache import SingleFlightCache
 from dfo_platform.state import StateSlot
 from entity_resolution import EntityResolver
-from graph_api.config import DCP_QUEUE_WAIT_WARN_SECONDS
+from graph_api.config import (
+    DCP_QUEUE_WAIT_WARN_SECONDS,
+    GRAPH_SCHEMA_CHECK_CONCURRENCY,
+)
 from graph_api.node_cache import NodeEntryCache
 from graph_api.reader import GraphNodeReader
 from graph_generation import GenerationProvider
@@ -44,7 +48,9 @@ from materialise.facet_profile import FacetProfileCache
 
 if TYPE_CHECKING:
     # `card_reads` imports this module's executor refusals.
+    from dfo_platform.static_response import FrozenJSON
     from graph_api.card_reads import CardReadCaches
+    from graph_api.doors.schema import SchemaEntry, SchemaKey, UsageKey
     from materialise.provenance_doc import ProvenanceDoc
     from series_coverage.shared import ServedCoverage
 
@@ -69,6 +75,14 @@ class GraphDeps:
     # read on `dcp_executor`.
     provenance_docs: SingleFlightCache[tuple[str, str], ProvenanceDoc]
     coverage: ServedCoverage
+    # The schema routes' built bodies or kept refusal, keyed by generation token and code
+    # index, built on `dcp_executor`.
+    schema: SingleFlightCache[SchemaKey, SchemaEntry]
+    # The usage body, keyed by code index and coverage build.
+    dataset_usage: SingleFlightCache[UsageKey, FrozenJSON]
+    # The executor every `POST /api/graph/schema/check` job runs on, apart from
+    # `dcp_executor`, with `GRAPH_SCHEMA_CHECK_CONCURRENCY` workers.
+    check_executor: DcpReadExecutor
     # The process's shared facet profiles on a live surface. An injected graph has its own
     # only when the surface was given a profile graph and availability reader, else `None`.
     profile_cache: FacetProfileCache | None = None
@@ -130,6 +144,14 @@ class DcpReadExecutor(SaturationTrackingExecutor):
         # Free admission first, so a caller that sees the in-flight count drop can submit.
         self._admission.release()
         super()._release_slot(_future)
+
+
+def new_check_executor() -> DcpReadExecutor:
+    """The executor of the schema check jobs: `GRAPH_SCHEMA_CHECK_CONCURRENCY` workers, each
+    held by a check until its job returns."""
+    return DcpReadExecutor(
+        max_workers=GRAPH_SCHEMA_CHECK_CONCURRENCY, thread_name_prefix="graph-schema-check"
+    )
 
 
 async def run_dcp_read[**P, R](

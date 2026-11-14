@@ -214,7 +214,6 @@ def test_empty_dcids_returns_empty_dict_no_call():
                         }
                     }
                 ),
-                json.dumps({"data": {"country/ZZZ": {}}}),
                 json.dumps({"data": {"country/ZZZ": {"arcs": {"typeOf": {"nodes": [{}]}}}}}),
             ],
             ["country/KEN", "country/ZZZ"],

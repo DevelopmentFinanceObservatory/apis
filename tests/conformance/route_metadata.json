@@ -640,6 +640,42 @@
   },
   {
     "has_description": false,
+    "method": "GET",
+    "name": "get_schema",
+    "operation_id": "graph_get_schema",
+    "path": "/api/graph/schema",
+    "summary": "Get Schema",
+    "surface": "graph"
+  },
+  {
+    "has_description": false,
+    "method": "POST",
+    "name": "post_schema_check",
+    "operation_id": "graph_post_schema_check",
+    "path": "/api/graph/schema/check",
+    "summary": "Post Schema Check",
+    "surface": "graph"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "get_schema_terms",
+    "operation_id": "graph_get_schema_terms",
+    "path": "/api/graph/schema/terms",
+    "summary": "Get Schema Terms",
+    "surface": "graph"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "get_schema_usage",
+    "operation_id": "graph_get_schema_usage",
+    "path": "/api/graph/schema/usage",
+    "summary": "Get Schema Usage",
+    "surface": "graph"
+  },
+  {
+    "has_description": false,
     "method": "POST",
     "name": "resolve",
     "operation_id": "graph_resolve",

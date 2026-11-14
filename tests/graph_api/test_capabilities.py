@@ -18,6 +18,11 @@ from graph_api.config import (
 from graph_api.deps import GRAPH_DEPS_SLOT, GraphDeps
 from graph_api.node_models import NODES_MAX_DCIDS
 from graph_api.routing import DCID_MAX_LENGTH
+from graph_api.schema_models import (
+    CHECK_MAX_CONSTRAINT_PROPERTIES,
+    CHECK_MAX_OBSERVATION_PROPERTIES,
+    CHECK_MAX_ROWS,
+)
 from graph_api.version import GRAPH_CAPABILITY_VERSION
 from graph_generation.fake import FakeGeneration
 from tests.origin_catalogue.fake_catalogue import restrictive_catalogue
@@ -53,6 +58,7 @@ class TestDoorLivenessAndOtherFields:
             "roots": True,
             "sources": True,
             "json_schema": True,
+            "schema": True,
         }
 
     def test_node_shape_gaps_are_the_paths_every_carrying_node_gaps(self):
@@ -90,6 +96,9 @@ class TestEndpoint:
             "node_timeout_seconds": GRAPH_NODE_TIMEOUT_SECONDS,
             "max_dcid_chars": DCID_MAX_LENGTH,
             "max_node_batch_dcids": NODES_MAX_DCIDS,
+            "max_check_rows": CHECK_MAX_ROWS,
+            "max_check_constraint_properties": CHECK_MAX_CONSTRAINT_PROPERTIES,
+            "max_check_observation_properties": CHECK_MAX_OBSERVATION_PROPERTIES,
         }
 
     def test_serves_public_with_an_etag_and_answers_304(self):
@@ -118,6 +127,9 @@ def _with_deps(generation: FakeGeneration, coverage_build: str):
             generation=generation,
             provenance_docs=None,
             coverage=coverage,
+            schema=None,
+            dataset_usage=None,
+            check_executor=None,
         ),
     )
     return TestClient(app)

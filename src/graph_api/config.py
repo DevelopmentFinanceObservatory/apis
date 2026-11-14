@@ -30,6 +30,11 @@ class _GraphDefaults(BaseSettings):
     # Bounds the client's wait for one `node_arcs_many` call.
     node_timeout_seconds: int = Field(default=10, ge=1)
 
+    # Deadline of `POST /api/graph/schema/check`: its wait for the schema build and its
+    # reads of up to `CHECK_MAX_READ_IDS` ids, each id the graph does not hold read alone, at
+    # most 599 POSTs.
+    schema_check_timeout_seconds: int = Field(default=30, ge=1)
+
     # Most source documents the documentation route keeps in its cache at once.
     provenance_doc_cache_size: int = Field(default=512, ge=1)
 
@@ -48,12 +53,29 @@ except ValidationError as exc:
 GRAPH_NODE_POOL_SIZE: int = _defaults.node_pool_size
 GRAPH_RESOLVE_TIMEOUT_SECONDS: int = _defaults.resolve_timeout_seconds
 GRAPH_NODE_TIMEOUT_SECONDS: int = _defaults.node_timeout_seconds
+GRAPH_SCHEMA_CHECK_TIMEOUT_SECONDS: int = _defaults.schema_check_timeout_seconds
 GRAPH_PROVENANCE_DOC_CACHE_SIZE: int = _defaults.provenance_doc_cache_size
 GRAPH_NODE_ENTRY_CACHE_SIZE: int = _defaults.node_entry_cache_size
 GRAPH_SDMX_TIMEOUT_SECONDS: int = _defaults.sdmx_timeout_seconds
 
 # A DCP read that waits longer than this for a worker logs at WARNING (`log_queue_wait`).
 DCP_QUEUE_WAIT_WARN_SECONDS: float = 1.0
+
+# Worker count of the executor the `POST /api/graph/schema/check` jobs run on, apart from the
+# `GRAPH_NODE_POOL_SIZE` shared DCP-read workers. A check past it answers retryable 503 with
+# `Retry-After`.
+GRAPH_SCHEMA_CHECK_CONCURRENCY: int = 2
+
+# The schema build's flight deadline. On the dev graph the build takes 2.7 to 4.3 s over 29
+# graph requests. Requests wait `GRAPH_NODE_TIMEOUT_SECONDS` each and retry while it runs.
+SCHEMA_FLIGHT_TIMEOUT_SECONDS: float = 60.0
+
+# How long the Graph lifespan waits for the schema build before the instance takes traffic
+# (`graph_api.doors.schema.warm_schema`). On the dev graph the build took 3.6 to 6.5 s and an
+# instance start 61 to 90 s (p10 to p90), so 20 s, three times the slowest build, adds at most
+# a fifth to a start and covers a graph that answers slowly. An unfinished build runs on under
+# `SCHEMA_FLIGHT_TIMEOUT_SECONDS`.
+SCHEMA_WARM_TIMEOUT_SECONDS: float = 20.0
 
 
 class GraphSettings(BaseSettings):

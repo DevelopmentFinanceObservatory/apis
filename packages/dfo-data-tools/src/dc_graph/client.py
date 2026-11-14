@@ -21,6 +21,7 @@ import contextvars
 import json
 import logging
 import re
+import sys
 import threading
 import time
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
@@ -155,6 +156,16 @@ _OBSERVATION_PROPERTIES_FLIGHTS: Final = ThreadPoolExecutor(
     max_workers=_OBSERVATION_PROPERTIES_FLIGHT_WORKERS, thread_name_prefix="obs-properties"
 )
 """Runs every client's shared observation-property reads. No caller of them runs on it."""
+
+_PROBE_WORKERS: Final[int] = 16
+"""Threads that run single-dcid confirmation probes, process-wide, across every client and
+call. On the dev mixer 16 probes in flight read 41 absent ids in 0.55 to 0.59 s, and per-probe
+latency rose by 40 to 100 ms at 41 in flight. One pool keeps the thread count at 16 however many
+reads confirm empty answers at once."""
+
+_PROBES: Final = ThreadPoolExecutor(max_workers=_PROBE_WORKERS, thread_name_prefix="graph-probe")
+"""Runs every client's confirmation probes (`GraphClient._probe_alone`). A probe sends one
+paged read and submits nothing to this pool, so its workers cannot wait on each other."""
 
 _declared_role_refresh_deadline: contextvars.ContextVar[float | None] = contextvars.ContextVar(
     "dc_graph_declared_role_refresh_deadline", default=None
@@ -319,11 +330,15 @@ class ArcTarget:
     """One target of a node's arc as `/v2/node` answers it: its dcid, or a literal's `value`,
     and for a node target the `name` and `types` the answer carries beside the dcid. A target
     with several names carries the first of them, sorted, where `display_name` takes the
-    greatest."""
+    greatest. `provenances` holds the distinct `provenanceId`s of every entry declaring the
+    target, sorted, `()` where no entry carries one. `literal` is true when the target is a
+    literal `value` and false when it is a node `dcid`."""
 
     value: str
     name: str | None = None
     types: tuple[str, ...] = ()
+    provenances: tuple[str, ...] = ()
+    literal: bool = False
 
 
 @dataclass(frozen=True)
@@ -333,6 +348,28 @@ class SubjectPage:
     """
 
     dcids: tuple[str, ...]
+    truncated: bool
+
+
+@dataclass(frozen=True)
+class ArcSubject:
+    """One subject of a reverse arc as `/v2/node` answers it: its `dcid`, `names`, the distinct
+    names over every entry for the subject, sorted, and `provenances`, the distinct
+    `provenanceId`s over every entry for the subject, sorted. `names` and `provenances` are `()` where no entry carries one. Each
+    provenance can name a subject its own way, so `display_name` over `names` gives one name
+    whatever order the entries arrive in.
+    """
+
+    dcid: str
+    names: tuple[str, ...]
+    provenances: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ArcSubjectPage:
+    """One `node_arc_subjects` page, capped and truncated as `SubjectPage` is."""
+
+    subjects: tuple[ArcSubject, ...]
     truncated: bool
 
 
@@ -360,7 +397,8 @@ class GraphClient:
     `node_arcs_batch` and `node_observation_properties_batch`. `node_arc_many_total_concurrency`
     bounds `node_arcs_many` and `node_names_many` across all concurrent calls. Within one
     `node_arcs_many` call, `node_arc_chunk_size` limits dcids per POST and
-    `node_arc_call_concurrency` limits in-flight chunks. `single_arc_batch_chunk_size` limits label
+    `node_arc_call_concurrency` limits in-flight chunks. Single-dcid confirmation probes run on
+    one process-wide pool of `_PROBE_WORKERS` (16) threads. `single_arc_batch_chunk_size` limits label
     and type batches, which use no pool and run `node_arc_call_concurrency` chunks at a time.
     `node_arc_batch_chunk_size` limits arc and observation-property batches, which halve chunks on
     continuation.
@@ -1205,10 +1243,16 @@ class GraphClient:
         error. Initial reads use `node_arc_chunk_size`, `node_arc_call_concurrency` and
         `node_arc_many_total_concurrency`.
 
-        Empty results from multi-dcid batches get one group retry, then individual probes up to
-        `individual_probe_budget` (`None` probes all). The budget covers the whole call. Missing
-        retry or probe entries raise the read error. Unprobed entries map to `None` and are counted
-        in one log message. A single-dcid empty result is trusted.
+        An empty result from a multi-dcid batch is read again alone (a probe). With
+        `individual_probe_budget=None` every such dcid is probed. A positive budget first reads
+        the empties again as a group and probes those still empty up to the budget, which covers
+        the whole call; a group retry of one dcid is that dcid read alone, so it gets no probe. A
+        budget of 0 sends neither: the first read's answer stands, and a dcid it omits maps to
+        `None`. Probes run on the process-wide probe pool, 16 at a time across all calls, each
+        holding a `node_arc_many_total_concurrency` slot. Missing retry or probe entries raise the read
+        error, and a failed probe raises after cancelling the probes not yet sent. Unprobed
+        entries map to `None` and are counted in one log message. A single-dcid empty result is
+        trusted.
 
         One absolute `deadline` bounds every request. An entry without `dcid` or `value` contributes
         `UNRESOLVED_NODE`, distinct from an absent arc. This method is uncached.
@@ -1227,17 +1271,26 @@ class GraphClient:
         dcids: Sequence[str],
         *,
         properties: Sequence[str],
+        individual_probe_budget: int | None = 0,
+        cached: bool = True,
         deadline: float | None = None,
     ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
         """Each distinct dcid's `properties` with their targets (`parse_arc_targets`), so a
         target's name and types need no read of their own, or `None` for a node the graph
-        answers with none of them. The reads are `node_arcs_many`'s initial chunks and pages
-        for the dcids the optional cache (sized `label_cache_size`) does not hold under the
-        generation stamp, bounded by `deadline`, with no retry of an empty answer. A node
-        answered with arcs is cached; an empty answer is not, since a batch can empty an entry
-        depending on which other dcids share it."""
+        answers with none of them. The dcids are read as `node_arcs_many` reads them, in its
+        chunks and pages bounded by `deadline`, and `individual_probe_budget` has its meaning
+        there. The default 0 returns the first read's answer, an empty one included. `None`
+        reads each empty answer again alone, so `None` for a dcid is the graph's answer for that
+        dcid read alone.
+
+        With `cached`, the cache (sized `label_cache_size`) answers the dcids it holds under the
+        generation stamp, and a node answered with arcs joins it. An empty answer does not,
+        since a batch can empty an entry depending on which other dcids share it. A caller
+        whose reads no other caller repeats passes `cached=False`, which leaves the cache
+        untouched."""
         if not dcids:
             return {}
+        cache = self._arc_targets_cache if cached else None
         stamp = self._generation.stamp()
         wanted = tuple(sorted(properties))
         result: dict[str, dict[str, tuple[ArcTarget, ...]] | None] = {}
@@ -1245,23 +1298,57 @@ class GraphClient:
         with self._cache_lock:
             for dcid in dict.fromkeys(dcids):
                 key = (stamp.key, dcid, wanted)
-                if self._arc_targets_cache is not None and key in self._arc_targets_cache:
+                if cache is not None and key in cache:
                     self._arc_targets_counters.hits += 1
-                    result[dcid] = self._arc_targets_cache[key]
+                    result[dcid] = cache[key]
                 else:
-                    self._arc_targets_counters.misses += 1
+                    if cache is not None:
+                        self._arc_targets_counters.misses += 1
                     misses.append(dcid)
         if not misses:
             return result
-        data = self._post_node_arcs_chunked(misses, properties=properties, deadline=deadline)
+        read = self._confirmed_node_arcs(
+            misses,
+            properties=properties,
+            individual_probe_budget=individual_probe_budget,
+            deadline=deadline,
+        )
         for dcid in misses:
-            arcs = (data.get(dcid) or {}).get("arcs", {})
+            arcs = read[dcid]
             targets = parse_arc_targets(arcs, properties) if arcs else None
             result[dcid] = targets
-            if targets is not None and self._arc_targets_cache is not None:
+            if targets is not None and cache is not None:
                 with self._cache_lock:
-                    self._arc_targets_cache[(stamp.key, dcid, wanted)] = targets
+                    cache[(stamp.key, dcid, wanted)] = targets
         return {dcid: result[dcid] for dcid in dict.fromkeys(dcids)}
+
+    def node_all_arc_targets_many(
+        self, dcids: Sequence[str], *, deadline: float | None = None
+    ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
+        """Each distinct dcid's every outgoing property (`->*`) with its targets
+        (`parse_arc_targets`), or `None` for a node the graph answers with no arc. The dcids are
+        read as `node_arcs_batch` reads them, in its chunks, each halved when the mixer answers
+        a continuation, and an empty answer is confirmed as `node_arc_targets_many` confirms it
+        with `individual_probe_budget=None`: read again alone, so `None` for a dcid is the
+        graph's answer for that dcid read alone. A property every entry of which
+        `dfo_visible` hides is left out. Uncached. One absolute `deadline` bounds every
+        request."""
+        if not dcids:
+            return {}
+        unique = list(dict.fromkeys(dcids))
+        read = self._confirmed_arcs(
+            unique,
+            read_all=lambda part: self._post_node_arcs_batch(list(part), deadline=deadline),
+            read_again=lambda part: self._post_node_arcs_batch(list(part), deadline=deadline),
+            individual_probe_budget=None,
+            deadline=deadline,
+        )
+        result: dict[str, dict[str, tuple[ArcTarget, ...]] | None] = {}
+        for dcid in unique:
+            arcs = read[dcid]
+            targets = parse_arc_targets(arcs, sorted(arcs)) if arcs else {}
+            result[dcid] = {prop: values for prop, values in targets.items() if values} or None
+        return result
 
     def node_names_many(
         self, dcids: Sequence[str], *, deadline: float | None = None
@@ -1293,8 +1380,64 @@ class GraphClient:
         individual_probe_budget: int | None,
         deadline: float | None,
     ) -> dict[str, dict[str, tuple[str, ...]] | None]:
-        data = self._post_node_arcs_chunked(dcids, properties=properties, deadline=deadline)
-        result: dict[str, dict[str, tuple[str, ...]] | None] = {}
+        confirmed = self._confirmed_node_arcs(
+            dcids,
+            properties=properties,
+            individual_probe_budget=individual_probe_budget,
+            deadline=deadline,
+        )
+        return {
+            dcid: parse_arcs(arcs, properties, mark_unresolved=True) if arcs else None
+            for dcid, arcs in confirmed.items()
+        }
+
+    def _confirmed_node_arcs(
+        self,
+        dcids: Sequence[str],
+        *,
+        properties: Sequence[str],
+        individual_probe_budget: int | None,
+        deadline: float | None,
+    ) -> dict[str, dict | None]:
+        """`_confirmed_arcs` over `properties`, the dcids read in `_post_node_arcs_chunked`'s
+        chunks and each retry and probe in one paged `_post_node_arcs`."""
+        return self._confirmed_arcs(
+            dcids,
+            read_all=lambda part: self._post_node_arcs_chunked(
+                part, properties=properties, deadline=deadline
+            ),
+            read_again=lambda part: self._post_node_arcs(
+                part, properties=properties, deadline=deadline
+            ),
+            individual_probe_budget=individual_probe_budget,
+            deadline=deadline,
+        )
+
+    def _confirmed_arcs(
+        self,
+        dcids: Sequence[str],
+        *,
+        read_all: Callable[[Sequence[str]], dict],
+        read_again: Callable[[Sequence[str]], dict],
+        individual_probe_budget: int | None,
+        deadline: float | None,
+    ) -> dict[str, dict | None]:
+        """Each of `dcids`' wire `arcs`, `None` for none. `read_all` reads the dcids, and
+        `read_again` each retry and probe. An empty answer from a batch of several dcids is
+        read again alone (a probe). With `individual_probe_budget=None` every such dcid is
+        probed. With a budget, the empties are first read again as a group, and each still
+        empty is probed up to the budget; a group of one is that read alone. Probes run on the
+        process-wide probe pool. Only an empty answer for a dcid read alone is
+        kept as `None`, beside the unprobed ones, which one log message counts. A dcid a retry
+        or probe omits raises the read error, and a failed probe raises its error after
+        cancelling the probes not yet sent. A budget of 0 sends no retry or probe and returns
+        the first read's answers, `None` for a dcid it omits. Each read carries the caller's
+        deadline, and the wait for the probes ends at it (`_probe_alone`), so a read past it
+        raises and stops the probes."""
+        data = read_all(dcids)
+        if individual_probe_budget == 0:
+            return {dcid: (data.get(dcid) or {}).get("arcs") or None for dcid in dcids}
+        result: dict[str, dict | None] = {}
         suspects: list[str] = []
         single_dcid = len(dcids) == 1
         for dcid in dcids:
@@ -1306,56 +1449,98 @@ class GraphClient:
                     continue
                 suspects.append(dcid)
                 continue
-            result[dcid] = parse_arcs(arcs, properties, mark_unresolved=True)
+            result[dcid] = arcs
+        if not suspects:
+            return result
 
-        if suspects:
-            retry_data = self._post_node_arcs(suspects, properties=properties, deadline=deadline)
-            still_missing = [dcid for dcid in suspects if dcid not in retry_data]
-            if still_missing:
+        if individual_probe_budget is None:
+            # Every empty is read alone, so a group retry would decide nothing.
+            self._probe_alone(suspects, read_again=read_again, result=result, deadline=deadline)
+            return result
+
+        retry_data = read_again(suspects)
+        still_missing = [dcid for dcid in suspects if dcid not in retry_data]
+        if still_missing:
+            omitted = GraphOmittedDcidsError(
+                f"graph omitted {still_missing!r} from /v2/node data even after a "
+                "re-request scoped to just those dcids",
+                dcids=still_missing,
+            )
+            raise self._read_error_cls(str(omitted)) from omitted
+        still_empty: list[str] = []
+        for dcid in suspects:
+            retry_arcs = (retry_data.get(dcid) or {}).get("arcs", {})
+            if retry_arcs:
+                result[dcid] = retry_arcs
+            elif len(suspects) == 1:
+                # The group retry read this dcid alone, as a probe would.
+                result[dcid] = None
+            else:
+                still_empty.append(dcid)
+
+        to_probe = still_empty[:individual_probe_budget]
+        unprobed = still_empty[individual_probe_budget:]
+        self._probe_alone(to_probe, read_again=read_again, result=result, deadline=deadline)
+        for dcid in unprobed:
+            result[dcid] = None
+        if unprobed:
+            logger.info(
+                "node_arcs_many: %d dcid(s) left unprobed beyond individual_probe_budget=%d",
+                len(unprobed),
+                individual_probe_budget,
+            )
+        return result
+
+    def _probe_alone(
+        self,
+        dcids: Sequence[str],
+        *,
+        read_again: Callable[[Sequence[str]], dict],
+        result: dict[str, dict | None],
+        deadline: float | None,
+    ) -> None:
+        """Read each of `dcids` alone, on the process-wide probe pool, into `result`:
+        its arcs, or `None` when the read answers it empty. A read that omits its dcid raises
+        the read error. The first failure cancels the reads not yet sent and raises. The wait
+        ends at `deadline`, narrowed by a bound request deadline, whether the probes still
+        queue behind other callers' or are in flight: it cancels the probes not yet sent and
+        raises the deadline error. Each probe's read carries the same deadline."""
+
+        def probe(dcid: str) -> dict | None:
+            probe_data = read_again([dcid])
+            if dcid not in probe_data:
                 omitted = GraphOmittedDcidsError(
-                    f"graph omitted {still_missing!r} from /v2/node data even after a "
-                    "re-request scoped to just those dcids",
-                    dcids=still_missing,
+                    f"graph omitted {dcid!r} from /v2/node data even after an "
+                    "individual re-request scoped to just that dcid",
+                    dcids=[dcid],
                 )
                 raise self._read_error_cls(str(omitted)) from omitted
-            still_empty: list[str] = []
-            for dcid in suspects:
-                retry_arcs = (retry_data.get(dcid) or {}).get("arcs", {})
-                if retry_arcs:
-                    result[dcid] = parse_arcs(retry_arcs, properties, mark_unresolved=True)
-                else:
-                    still_empty.append(dcid)
+            return (probe_data.get(dcid) or {}).get("arcs", {}) or None
 
-            if individual_probe_budget is None:
-                to_probe, unprobed = still_empty, []
-            else:
-                to_probe = still_empty[:individual_probe_budget]
-                unprobed = still_empty[individual_probe_budget:]
-
-            for dcid in to_probe:
-                probe_data = self._post_node_arcs([dcid], properties=properties, deadline=deadline)
-                if dcid not in probe_data:
-                    omitted = GraphOmittedDcidsError(
-                        f"graph omitted {dcid!r} from /v2/node data even after an "
-                        "individual re-request scoped to just that dcid",
-                        dcids=[dcid],
-                    )
-                    raise self._read_error_cls(str(omitted)) from omitted
-                probe_arcs = (probe_data.get(dcid) or {}).get("arcs", {})
-                result[dcid] = (
-                    parse_arcs(probe_arcs, properties, mark_unresolved=True) if probe_arcs else None
-                )
-
-            for dcid in unprobed:
-                result[dcid] = None
-            if unprobed:
-                logger.info(
-                    "node_arcs_many: %d dcid(s) left unprobed beyond individual_probe_budget=%d",
-                    len(unprobed),
-                    individual_probe_budget,
-                )
-
-        return result
+        if len(dcids) <= 1:
+            for dcid in dcids:
+                result[dcid] = probe(dcid)
+            return
+        deadline = bounded_deadline(deadline)
+        found: dict[str, dict | None] = {}
+        futures = {submit_with_context(_PROBES, probe, dcid): dcid for dcid in dcids}
+        try:
+            timeout = None if deadline is None else max(0.0, deadline - time.monotonic())
+            completed = as_completed(futures, timeout=timeout)
+            while True:
+                try:
+                    future = next(completed)
+                except StopIteration:
+                    break
+                except TimeoutError as exc:
+                    raise self._deadline_error_cls(_DEADLINE_EXCEEDED_DETAIL) from exc
+                found[futures[future]] = future.result()
+        except BaseException:
+            for future in futures:
+                future.cancel()
+            raise
+        for dcid in dcids:
+            result[dcid] = found[dcid]
 
     def _post_node_arcs_chunked(
         self, dcids: Sequence[str], *, properties: Sequence[str], deadline: float | None
@@ -1554,16 +1739,66 @@ class GraphClient:
         """Return distinct subjects pointing to `dcid` via `property`, in first-occurrence order.
         Follow `nextToken` until exhaustion or the `(max_results + 1)`th subject confirms
         truncation.
-        More than `_NODE_SUBJECTS_MAX_PAGES` pages raises the read error. A repeated token or
-        `_NODE_SUBJECTS_STUCK_PAGE_LIMIT` fresh-token pages with no new dcids raises
-        `GraphNotAdvancingError`. `filters` narrows subjects by value-bound arcs. One absolute
-        `deadline` bounds every page.
+        More than `_NODE_SUBJECTS_MAX_PAGES` pages raises the read error. A token the walk has
+        already followed, or `_NODE_SUBJECTS_STUCK_PAGE_LIMIT` consecutive fresh-token pages with
+        no entry, raises `GraphNotAdvancingError`. A page of entries advances the walk even when
+        every entry repeats a subject read before, as a listing that names a subject once per
+        declaring provenance does. `filters` narrows subjects by value-bound arcs. One absolute
+        `deadline` bounds every page. The walk holds only the subjects' dcids.
         """
+        dcids, truncated = self._walk_subjects(
+            dcid,
+            property=property,
+            filters=filters,
+            max_results=max_results,
+            deadline=deadline,
+            fold=None,
+        )
+        return SubjectPage(dcids=dcids, truncated=truncated)
+
+    def node_arc_subjects(
+        self,
+        dcid: str,
+        *,
+        property: str,
+        filters: Mapping[str, str] | None = None,
+        max_results: int,
+        deadline: float | None = None,
+    ) -> ArcSubjectPage:
+        """`node_subjects` with each subject's names and declaring provenances
+        (`ArcSubject`), folded over every entry for the subject on the pages read. Paging,
+        cap, truncation, guards and `deadline` are `node_subjects`'s."""
+        facts = _ArcSubjectFold()
+        dcids, truncated = self._walk_subjects(
+            dcid,
+            property=property,
+            filters=filters,
+            max_results=max_results,
+            deadline=deadline,
+            fold=facts,
+        )
+        return ArcSubjectPage(subjects=tuple(map(facts.subject, dcids)), truncated=truncated)
+
+    def _walk_subjects(
+        self,
+        dcid: str,
+        *,
+        property: str,
+        filters: Mapping[str, str] | None,
+        max_results: int,
+        deadline: float | None,
+        fold: Callable[[str, dict], None] | None,
+    ) -> tuple[tuple[str, ...], bool]:
+        """The reverse-arc walk `node_subjects` documents: the distinct subject dcids in
+        first-occurrence order, capped at `max_results`, and whether the walk proved
+        truncation. `fold`, where given, receives each subject's dcid and wire entry as the
+        page arrives. The walk itself keeps no entry."""
         spec = _reverse_arc_spec(property, filters)
         dcids: list[str] = []
         seen: set[str] = set()
+        tokens: set[str] = set()
         token: str | None = None
-        stuck_pages = 0
+        empty_pages = 0
         for _ in range(_NODE_SUBJECTS_MAX_PAGES):
             payload: dict = {"nodes": [dcid], "property": spec}
             if token is not None:
@@ -1571,32 +1806,38 @@ class GraphClient:
             body = self.post(NODE_PATH, payload, deadline=deadline)
             node_data = body.get("data", {}).get(dcid) or {}
             arcs = node_data.get("arcs", {})
-            distinct_before = len(dcids)
+            entries = 0
             for entry in arcs.get(property, {}).get("nodes", []):
                 entry_dcid = entry.get("dcid")
-                if entry_dcid is not None and entry_dcid not in seen:
+                if entry_dcid is None:
+                    continue
+                entries += 1
+                if entry_dcid not in seen:
                     seen.add(entry_dcid)
                     dcids.append(entry_dcid)
+                if fold is not None:
+                    fold(entry_dcid, entry)
             next_token = body.get("nextToken")
-            if next_token is not None and next_token == token:
+            if next_token is not None and next_token in tokens:
                 raise GraphNotAdvancingError(
-                    f"graph repeated the same nextToken paging subjects for {dcid!r} via "
+                    f"graph repeated a nextToken paging subjects for {dcid!r} via "
                     f"{property!r} instead of making progress",
                     dcid=dcid,
                     property=property,
                 )
-            if next_token is not None and len(dcids) == distinct_before:
-                stuck_pages += 1
-                if stuck_pages >= _NODE_SUBJECTS_STUCK_PAGE_LIMIT:
+            if next_token is not None and not entries:
+                empty_pages += 1
+                if empty_pages >= _NODE_SUBJECTS_STUCK_PAGE_LIMIT:
                     raise GraphNotAdvancingError(
                         f"graph reported a fresh nextToken paging subjects for {dcid!r} via "
-                        f"{property!r} without contributing a new distinct dcid across "
-                        f"{stuck_pages} consecutive pages",
+                        f"{property!r} without an entry across {empty_pages} consecutive pages",
                         dcid=dcid,
                         property=property,
                     )
             else:
-                stuck_pages = 0
+                empty_pages = 0
+            if next_token is not None:
+                tokens.add(next_token)
             token = next_token
             if len(dcids) > max_results or token is None:
                 break
@@ -1609,8 +1850,8 @@ class GraphClient:
             )
             raise self._read_error_cls(str(capped)) from capped
         if len(dcids) > max_results:
-            return SubjectPage(dcids=tuple(dcids[:max_results]), truncated=True)
-        return SubjectPage(dcids=tuple(dcids), truncated=token is not None)
+            return tuple(dcids[:max_results]), True
+        return tuple(dcids), token is not None
 
     def node_subjects_many(
         self,
@@ -1630,7 +1871,53 @@ class GraphClient:
         uncapped leads return `"budget_exhausted"`. Capped leads retain `"capped"`.
 
         Empty reverse arcs are ordinary leaf results. One absolute `deadline` bounds every page.
+        The walk holds only the subjects' dcids.
         """
+        return self._walk_subjects_many(
+            dcids, property=property, max_results=max_results, deadline=deadline, fold=None
+        )
+
+    def node_arc_subjects_many(
+        self,
+        dcids: Sequence[str],
+        *,
+        property: str,
+        max_results: int,
+        deadline: float | None = None,
+    ) -> dict[str, tuple[tuple[ArcSubject, ...], SubjectsCoverageFlag]]:
+        """`node_subjects_many` with each subject's names and declaring provenances
+        (`ArcSubject`), folded over every entry for the subject on the pages read for its
+        lead. Paging, per-lead cap, coverage flags, guards and `deadline` are
+        `node_subjects_many`'s."""
+        facts: dict[str, _ArcSubjectFold] = {}
+
+        def fold(lead: str, subject: str, entry: dict) -> None:
+            lead_facts = facts.get(lead)
+            if lead_facts is None:
+                lead_facts = facts[lead] = _ArcSubjectFold()
+            lead_facts(subject, entry)
+
+        walked = self._walk_subjects_many(
+            dcids, property=property, max_results=max_results, deadline=deadline, fold=fold
+        )
+        return {
+            lead: (tuple(map(facts[lead].subject, subjects)) if subjects else (), flag)
+            for lead, (subjects, flag) in walked.items()
+        }
+
+    def _walk_subjects_many(
+        self,
+        dcids: Sequence[str],
+        *,
+        property: str,
+        max_results: int,
+        deadline: float | None,
+        fold: Callable[[str, str, dict], None] | None,
+    ) -> dict[str, tuple[tuple[str, ...], SubjectsCoverageFlag]]:
+        """The shared-token walk `node_subjects_many` documents: for each distinct lead, its
+        distinct subject dcids in first-occurrence order, capped at `max_results`, with the
+        lead's coverage flag. `fold`, where given, receives the lead, the subject's dcid and
+        its wire entry as the page arrives. The walk itself keeps no entry."""
         if not dcids:
             return {}
         unique_dcids = list(dict.fromkeys(dcids))
@@ -1640,6 +1927,19 @@ class GraphClient:
         collected: dict[str, list[str]] = {dcid: [] for dcid in unique_dcids}
         capped: set[str] = set()
         token: str | None = None
+
+        def result(
+            uncapped: SubjectsCoverageFlag,
+        ) -> dict[str, tuple[tuple[str, ...], SubjectsCoverageFlag]]:
+            return {
+                dcid: (
+                    (tuple(collected[dcid][:max_results]), "capped")
+                    if dcid in capped
+                    else (tuple(collected[dcid]), uncapped)
+                )
+                for dcid in unique_dcids
+            }
+
         for _ in range(_NODE_SUBJECTS_MANY_MAX_PAGES):
             pending = [dcid for dcid in unique_dcids if dcid not in capped]
             payload: dict = {"nodes": pending, "property": arc_spec}
@@ -1651,13 +1951,16 @@ class GraphClient:
                 node_data = data.get(dcid) or {}
                 for entry in node_data.get("arcs", {}).get(property, {}).get("nodes", []):
                     subject_dcid = entry.get("dcid")
-                    if subject_dcid is None or subject_dcid in seen[dcid]:
+                    if subject_dcid is None:
                         continue
-                    seen[dcid].add(subject_dcid)
-                    collected[dcid].append(subject_dcid)
-                    if len(collected[dcid]) > max_results:
-                        capped.add(dcid)
-                        break
+                    if subject_dcid not in seen[dcid]:
+                        seen[dcid].add(subject_dcid)
+                        collected[dcid].append(subject_dcid)
+                        if len(collected[dcid]) > max_results:
+                            capped.add(dcid)
+                            break
+                    if fold is not None:
+                        fold(dcid, subject_dcid, entry)
             next_token = body.get("nextToken")
             if next_token is not None and next_token == token:
                 stuck = GraphNotAdvancingError(
@@ -1669,22 +1972,8 @@ class GraphClient:
                 raise self._read_error_cls(str(stuck)) from stuck
             token = next_token
             if token is None or len(capped) == len(unique_dcids):
-                return {
-                    dcid: (
-                        (tuple(collected[dcid][:max_results]), "capped")
-                        if dcid in capped
-                        else (tuple(collected[dcid]), "complete")
-                    )
-                    for dcid in unique_dcids
-                }
-        return {
-            dcid: (
-                (tuple(collected[dcid][:max_results]), "capped")
-                if dcid in capped
-                else (tuple(collected[dcid]), "budget_exhausted")
-            )
-            for dcid in unique_dcids
-        }
+                return result("complete")
+        return result("budget_exhausted")
 
     def node_observation_properties_batch(self, dcids: list[str]) -> dict[str, tuple[str, ...]]:
         """Fetch `->observationProperties` in chunks of `node_arc_batch_chunk_size`, halving on
@@ -2584,23 +2873,63 @@ def parse_arcs(
 
 def parse_arc_targets(arcs: dict, properties: Sequence[str]) -> dict[str, tuple[ArcTarget, ...]]:
     """Each of `properties` with its distinct targets in first-occurrence order, `()` for a
-    missing property. An entry with neither `dcid` nor `value` is dropped. Entries are read
-    through `_arc_entries`."""
+    missing property. A target's name, types and `literal` come from its first entry, its
+    provenances from all of them. An entry with neither `dcid` nor `value` is dropped. Entries
+    are read through `_arc_entries`."""
     parsed: dict[str, tuple[ArcTarget, ...]] = {}
     for prop in properties:
-        targets: dict[str, ArcTarget] = {}
+        entries: dict[str, list[dict]] = {}
         for entry in _arc_entries(arcs, prop):
-            dcid = entry.get("dcid")
-            value = dcid or entry.get("value")
-            if value is None or value in targets:
-                continue
-            targets[value] = ArcTarget(
-                value=value,
-                name=entry.get("name") if dcid else None,
-                types=tuple(entry.get("types", ())) if dcid else (),
+            value = entry.get("dcid") or entry.get("value")
+            if value is not None:
+                entries.setdefault(value, []).append(entry)
+        targets: list[ArcTarget] = []
+        for value, value_entries in entries.items():
+            first = value_entries[0]
+            is_node = bool(first.get("dcid"))
+            targets.append(
+                ArcTarget(
+                    value=value,
+                    name=first.get("name") if is_node else None,
+                    types=tuple(first.get("types", ())) if is_node else (),
+                    provenances=_entry_provenances(value_entries),
+                    literal=not is_node,
+                )
             )
-        parsed[prop] = tuple(targets.values())
+        parsed[prop] = tuple(targets)
     return parsed
+
+
+class _ArcSubjectFold:
+    """Each subject's facts, folded from the wire entries of a reverse-arc walk as they
+    arrive: every distinct name and every `provenanceId`."""
+
+    def __init__(self) -> None:
+        self._names: dict[str, set[str]] = {}
+        self._provenances: dict[str, set[str]] = {}
+
+    def __call__(self, dcid: str, entry: dict) -> None:
+        if dcid not in self._names:
+            self._names[dcid] = set()
+            self._provenances[dcid] = set()
+        if (name := entry.get("name")) is not None:
+            self._names[dcid].add(name)
+        if provenance := entry.get("provenanceId"):
+            self._provenances[dcid].add(provenance)
+
+    def subject(self, dcid: str) -> ArcSubject:
+        """`dcid` as an `ArcSubject` over the entries folded for it."""
+        return ArcSubject(
+            dcid=dcid,
+            names=tuple(sorted(self._names[dcid])),
+            provenances=tuple(sorted(self._provenances[dcid])),
+        )
+
+
+def _entry_provenances(entries: Iterable[dict]) -> tuple[str, ...]:
+    """The distinct `provenanceId`s of `entries`, sorted and interned, so the targets a cache
+    holds share one string per provenance. Entries without one add nothing."""
+    return tuple(sorted({sys.intern(p) for entry in entries if (p := entry.get("provenanceId"))}))
 
 
 def display_name(names: Iterable[str], dcid: str) -> str | None:

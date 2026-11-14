@@ -4,8 +4,12 @@
 nodes. `child_places_batch` expands regions. `resolve_by_arc` and
 `node_names_many` also make the same object satisfy
 `entity_resolution.GraphLookup`. `node_subjects` reads a Dataset's
-Provenance children through the reverse `isPartOf` arc. Each method accepts
-an absolute monotonic deadline.
+Provenance children through the reverse `isPartOf` arc. `node_arc_subjects`,
+`node_arc_subjects_many` and `node_arc_targets_many` read subjects and
+targets with their names, types and the provenances that declared each arc,
+which tell the instance's own terms from base Data Commons, and
+`node_all_arc_targets_many` reads every outgoing property's targets the same way. Each method
+accepts an absolute monotonic deadline.
 """
 
 from __future__ import annotations
@@ -13,6 +17,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Protocol
 
+from dc_graph import ArcSubject, ArcSubjectPage, ArcTarget, SubjectsCoverageFlag
 from materialise.graph import SubjectPage
 
 type NodeArcsByDcid = dict[str, dict[str, tuple[str, ...]] | None]
@@ -29,9 +34,13 @@ class GraphNodeReader(Protocol):
         dcids: Sequence[str],
         *,
         properties: Sequence[str],
+        individual_probe_budget: int | None = None,
         deadline: float | None = None,
     ) -> NodeArcsByDcid:
-        """Read selected arcs in one batch. Each property's values are unique and ordered."""
+        """Read selected arcs in one batch. Each property's values are unique and ordered. With
+        `individual_probe_budget=None` every empty answer from a batch is read again alone, so
+        every `None` is the answer for an id read alone. A budget first reads the empties again
+        in a group, then alone up to that many ids."""
         ...
 
     def child_places_batch(
@@ -66,4 +75,50 @@ class GraphNodeReader(Protocol):
         deadline: float | None = None,
     ) -> SubjectPage:
         """Read subjects with a matching arc, optionally filtered by their other properties."""
+        ...
+
+    def node_arc_subjects(
+        self,
+        dcid: str,
+        *,
+        property: str,
+        filters: Mapping[str, str] | None = None,
+        max_results: int,
+        deadline: float | None = None,
+    ) -> ArcSubjectPage:
+        """Read subjects as `node_subjects` does, each with its names and provenances."""
+        ...
+
+    def node_arc_subjects_many(
+        self,
+        dcids: Sequence[str],
+        *,
+        property: str,
+        max_results: int,
+        deadline: float | None = None,
+    ) -> dict[str, tuple[tuple[ArcSubject, ...], SubjectsCoverageFlag]]:
+        """Read many leads' subjects in one walk, each with a coverage flag."""
+        ...
+
+    def node_arc_targets_many(
+        self,
+        dcids: Sequence[str],
+        *,
+        properties: Sequence[str],
+        individual_probe_budget: int | None = 0,
+        cached: bool = True,
+        deadline: float | None = None,
+    ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
+        """Read selected arcs' targets with names, types and provenances, or `None` for an absent dcid.
+        The default budget 0 returns the first read's answer; any other budget probes an empty
+        answer as `node_arcs_many` does. `cached=False` leaves the client's arc-targets cache
+        untouched."""
+        ...
+
+    def node_all_arc_targets_many(
+        self, dcids: Sequence[str], *, deadline: float | None = None
+    ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
+        """Read every outgoing property's targets (`->*`) as `node_arc_targets_many` reads named
+        ones, each empty answer confirmed alone, uncached; `None` for a dcid the graph answers
+        with no arc. A property with no visible target is left out."""
         ...
