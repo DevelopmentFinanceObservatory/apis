@@ -119,6 +119,15 @@
   {
     "has_description": false,
     "method": "GET",
+    "name": "get_json_schema",
+    "operation_id": "datasets_get_json_schema",
+    "path": "/api/datasets/json-schema",
+    "summary": "Get Json Schema",
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
     "name": "get_operation",
     "operation_id": "datasets_get_operation",
     "path": "/api/datasets/operations/{operation_id}",
@@ -141,15 +150,6 @@
     "operation_id": "datasets_register",
     "path": "/api/datasets/register",
     "summary": "Register",
-    "surface": "datasets"
-  },
-  {
-    "has_description": false,
-    "method": "GET",
-    "name": "get_schema",
-    "operation_id": "datasets_get_schema",
-    "path": "/api/datasets/schema",
-    "summary": "Get Schema",
     "surface": "datasets"
   },
   {
@@ -605,6 +605,15 @@
   {
     "has_description": false,
     "method": "GET",
+    "name": "get_json_schema",
+    "operation_id": "graph_get_json_schema",
+    "path": "/api/graph/json-schema",
+    "summary": "Get Json Schema",
+    "surface": "graph"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
     "name": "get_node",
     "operation_id": "graph_get_node",
     "path": "/api/graph/node/{dcid}",
@@ -645,15 +654,6 @@
     "operation_id": "graph_list_roots",
     "path": "/api/graph/roots",
     "summary": "List Roots",
-    "surface": "graph"
-  },
-  {
-    "has_description": false,
-    "method": "GET",
-    "name": "get_schema",
-    "operation_id": "graph_get_schema",
-    "path": "/api/graph/schema",
-    "summary": "Get Schema",
     "surface": "graph"
   },
   {
@@ -873,6 +873,15 @@
     "surface": "search"
   },
   {
+    "has_description": false,
+    "method": "GET",
+    "name": "get_json_schema",
+    "operation_id": "search_get_json_schema",
+    "path": "/api/search/json-schema",
+    "summary": "Get Json Schema",
+    "surface": "search"
+  },
+  {
     "has_description": true,
     "method": "POST",
     "name": "list_options",
@@ -888,15 +897,6 @@
     "operation_id": "search_resolve",
     "path": "/api/search/resolve",
     "summary": "Resolve",
-    "surface": "search"
-  },
-  {
-    "has_description": false,
-    "method": "GET",
-    "name": "get_schema",
-    "operation_id": "search_get_schema",
-    "path": "/api/search/schema",
-    "summary": "Get Schema",
     "surface": "search"
   },
   {

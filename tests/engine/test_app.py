@@ -487,34 +487,34 @@ class TestResolveOpenAPIResponseModel:
 class TestSchema:
     def test_schema_version(self):
         client = make_client()
-        resp = client.get("/api/search/schema")
+        resp = client.get("/api/search/json-schema")
         body = resp.json()
         assert body["schema_version"] == 1
 
     def test_schema_has_request_and_response(self):
         client = make_client()
-        resp = client.get("/api/search/schema")
+        resp = client.get("/api/search/json-schema")
         body = resp.json()
         assert isinstance(body["request"], dict)
         assert isinstance(body["response"], dict)
 
     def test_request_schema_version_is_const_integer_one(self):
         client = make_client()
-        body = client.get("/api/search/schema").json()
+        body = client.get("/api/search/json-schema").json()
         schema_version = body["request"]["properties"]["schema_version"]
         assert schema_version["type"] == "integer"
         assert schema_version["const"] == 1
 
     def test_request_properties_use_response_options_not_options(self):
         client = make_client()
-        body = client.get("/api/search/schema").json()
+        body = client.get("/api/search/json-schema").json()
         properties = body["request"]["properties"]
         assert "response_options" in properties
         assert "options" not in properties
 
     def test_response_options_schema_has_exactly_the_contract_fields(self):
         client = make_client()
-        body = client.get("/api/search/schema").json()
+        body = client.get("/api/search/json-schema").json()
         resolve_options = body["request"]["$defs"]["ResolveOptions"]
         assert set(resolve_options["properties"]) == {
             "include_observations",
@@ -524,7 +524,7 @@ class TestSchema:
 
     def test_include_observations_schema_describes_the_opt_in_default(self):
         client = make_client()
-        body = client.get("/api/search/schema").json()
+        body = client.get("/api/search/json-schema").json()
         description = body["request"]["$defs"]["ResolveOptions"]["properties"][
             "include_observations"
         ]["description"]
@@ -533,7 +533,7 @@ class TestSchema:
 
     def test_role_key_descriptions_use_only_clean_contract_vocabulary(self):
         client = make_client()
-        schema = client.get("/api/search/schema").json()
+        schema = client.get("/api/search/json-schema").json()
         response_defs = schema["response"]["$defs"]
         descriptions = [
             response_defs["ResolvedScope"]["description"],
@@ -551,7 +551,7 @@ class TestSchema:
 
     def test_truncated_flag_present_on_option_and_observation_schemas(self):
         client = make_client()
-        body = client.get("/api/search/schema").json()
+        body = client.get("/api/search/json-schema").json()
         defs = body["response"]["$defs"]
         for def_name in ("SlotOptions", "EntityOptions", "SpecObservations"):
             assert "truncated" in defs[def_name]["properties"], def_name
@@ -559,13 +559,13 @@ class TestSchema:
     def test_schema_json_has_no_bare_options_include_leak(self):
         # Reject bare options wording while allowing response_options.include_*.
         client = make_client()
-        raw = client.get("/api/search/schema").text
+        raw = client.get("/api/search/json-schema").text
         assert not re.search(r"(?<!response_)options\.include", raw)
 
     def test_schema_links_to_capabilities(self):
         # The schema link must resolve to the capabilities endpoint.
         client = make_client()
-        resp = client.get("/api/search/schema")
+        resp = client.get("/api/search/json-schema")
         body = resp.json()
         assert body["capabilities"] == "/api/search/capabilities"
         assert client.get(body["capabilities"]).status_code == 200
@@ -577,7 +577,7 @@ class TestSchemaAndCapabilitiesOpenAPIResponseModels:
     def test_schema_operation_declares_a_non_empty_200_schema(self):
         client = make_client()
         spec = client.get("/openapi.json").json()
-        op = spec["paths"]["/api/search/schema"]["get"]
+        op = spec["paths"]["/api/search/json-schema"]["get"]
         body_schema = op["responses"]["200"]["content"]["application/json"]["schema"]
         assert body_schema["type"] == "object"
         assert set(body_schema["properties"]) == {

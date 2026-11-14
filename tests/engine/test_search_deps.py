@@ -49,13 +49,13 @@ def test_two_sequential_lifespan_entries_each_publish_and_clear_the_bundle():
         resolver=make_resolver(graph),
         llm=FakeLLM(),
         sdmx=FakeSdmxClient(),
-        skills_index=object(),  # type: ignore[arg-type]  # never read by /schema
+        skills_index=object(),  # type: ignore[arg-type]  # never read by /json-schema
         generation=FakeGeneration(),
     )
     for _ in range(2):
         with TestClient(app, raise_server_exceptions=False) as client:
             assert hasattr(app.state, SEARCH_DEPS_SLOT.name)
-            assert client.get("/api/search/schema").status_code == 200
+            assert client.get("/api/search/json-schema").status_code == 200
         assert not hasattr(app.state, SEARCH_DEPS_SLOT.name)
 
 

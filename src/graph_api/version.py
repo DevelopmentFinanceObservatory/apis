@@ -9,8 +9,8 @@ The hash covers three inputs:
    token. Rebuilds with unchanged values, and new data builds, keep the
    token stable.
 2. Rendered refusal bodies for every code in `GRAPH_CODE_CATALOGUE`.
-3. The schemas `GET /api/graph/schema` serves
-   (`graph_api.doors.schema.served_wire_schemas`), sorted by name, with
+3. The schemas `GET /api/graph/json-schema` serves
+   (`graph_api.doors.json_schema.served_wire_schemas`), sorted by name, with
    `description` and `title` annotations removed by
    `strip_schema_annotations`. Field names, types,
    `enum`, `const` and `default` values affect the token; annotation prose
@@ -32,7 +32,7 @@ from dfo_platform.schema_annotations import strip_schema_annotations
 from dfo_platform.trace import set_trace_id
 from graph_api.capabilities import DataBuilds, build_capabilities
 from graph_api.codes import GRAPH_CODE_CATALOGUE
-from graph_api.doors.schema import served_wire_schemas
+from graph_api.doors.json_schema import served_wire_schemas
 
 # Fix the trace id so rendered refusal bodies hash deterministically.
 _EXEMPLAR_TRACE_ID = "0" * 32

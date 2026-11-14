@@ -427,7 +427,7 @@ class TestCodesEndpoint:
 
 
 class TestSchemaAndCapabilitiesAreFrozenDocuments:
-    """`/api/search/schema` and `/api/search/capabilities` are each served by
+    """`/api/search/json-schema` and `/api/search/capabilities` are each served by
     a `dfo_platform.static_response.FrozenJSON` built once per surface (see
     `search.engine.app.search_surface`'s `freeze_public_json` call sites), so both
     routes carry an ETag and `Cache-Control`, honor gzip negotiation and
@@ -435,7 +435,7 @@ class TestSchemaAndCapabilitiesAreFrozenDocuments:
     of the underlying payload would.
     """
 
-    @pytest.mark.parametrize("path", ["/api/search/schema", "/api/search/capabilities"])
+    @pytest.mark.parametrize("path", ["/api/search/json-schema", "/api/search/capabilities"])
     def test_headers_present_on_plain_get(self, path):
         client = make_client()
         resp = client.get(path, headers={"accept-encoding": "identity"})
@@ -445,7 +445,7 @@ class TestSchemaAndCapabilitiesAreFrozenDocuments:
         assert "etag" in resp.headers
         assert "content-encoding" not in resp.headers
 
-    @pytest.mark.parametrize("path", ["/api/search/schema", "/api/search/capabilities"])
+    @pytest.mark.parametrize("path", ["/api/search/json-schema", "/api/search/capabilities"])
     def test_gzip_round_trips_to_the_same_json(self, path):
         # httpx transparently decodes a gzip Content-Encoding, so `.content`
         # below is already the inflated body -- this exercises the server's
@@ -457,7 +457,7 @@ class TestSchemaAndCapabilitiesAreFrozenDocuments:
         assert gzipped.content == identity.content
         assert gzipped.json() == identity.json()
 
-    @pytest.mark.parametrize("path", ["/api/search/schema", "/api/search/capabilities"])
+    @pytest.mark.parametrize("path", ["/api/search/json-schema", "/api/search/capabilities"])
     def test_304_on_if_none_match(self, path):
         client = make_client()
         first = client.get(path, headers={"accept-encoding": "identity"})
@@ -470,7 +470,7 @@ class TestSchemaAndCapabilitiesAreFrozenDocuments:
 
     def test_schema_identity_body_matches_jsonresponse_of_schema_payload(self):
         client = make_client()
-        resp = client.get("/api/search/schema", headers={"accept-encoding": "identity"})
+        resp = client.get("/api/search/json-schema", headers={"accept-encoding": "identity"})
         assert resp.content == JSONResponse(schema_payload()).body
 
     def test_capabilities_identity_body_matches_jsonresponse_of_build_capabilities(self):

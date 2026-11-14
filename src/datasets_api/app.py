@@ -5,7 +5,7 @@ checks, and owns the one lifespan that builds the doors' shared `Deps` (`dataset
 meta door mounts first. Static paths are disjoint from subject-id routes. Those routes accept only
 `spec_` ids, but for the description routes and the derived door's, which take an `ops_` id.
 
-Routes include `GET /api/datasets/healthz`, `/api/datasets/schema`,
+Routes include `GET /api/datasets/healthz`, `/api/datasets/json-schema`,
 `/api/datasets/capabilities`, `/api/datasets/operations/{operation_id}`,
 `GET /api/datasets/{spec_id}/{content_version}/observations`,
 `GET /api/datasets/{spec_id}/{content_version}/files/{digest}`,

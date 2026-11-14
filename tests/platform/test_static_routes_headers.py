@@ -30,9 +30,9 @@ def _datasets_capabilities_payload() -> dict[str, object]:
 
 
 _ROUTE_PAYLOAD_BUILDERS = {
-    "/api/search/schema": search.engine.schema.schema_payload,
+    "/api/search/json-schema": search.engine.schema.schema_payload,
     "/api/search/capabilities": lambda: build_search_capabilities().model_dump(mode="json"),
-    "/api/datasets/schema": datasets_api.schema.build_schema_document,
+    "/api/datasets/json-schema": datasets_api.schema.build_schema_document,
     "/api/datasets/capabilities": _datasets_capabilities_payload,
 }
 
@@ -75,7 +75,7 @@ def test_vary_covers_accept_encoding_and_origin_with_no_cross_request_accumulati
     client = TestClient(with_fake_search_deps(create_app()), raise_server_exceptions=False)
 
     first = client.get(
-        "/api/search/schema",
+        "/api/search/json-schema",
         headers={"accept-encoding": "identity", "origin": "https://a.example.com"},
     )
     vary_values = ",".join(first.headers.get_list("vary"))
@@ -84,7 +84,7 @@ def test_vary_covers_accept_encoding_and_origin_with_no_cross_request_accumulati
     assert first.headers.get_list("access-control-allow-origin") == ["https://a.example.com"]
 
     second = client.get(
-        "/api/search/schema",
+        "/api/search/json-schema",
         headers={"accept-encoding": "identity", "origin": "https://b.example.com"},
     )
     assert second.headers.get_list("access-control-allow-origin") == ["https://b.example.com"]
@@ -98,11 +98,11 @@ def test_304_through_the_full_stack_has_no_body_and_no_content_length(
     monkeypatch.delenv("DFO_PRESENTATION_SURFACE", raising=False)
     client = TestClient(with_fake_search_deps(create_app()), raise_server_exceptions=False)
 
-    fresh = client.get("/api/search/schema", headers={"accept-encoding": "identity"})
+    fresh = client.get("/api/search/json-schema", headers={"accept-encoding": "identity"})
     etag = fresh.headers["etag"]
 
     conditional = client.get(
-        "/api/search/schema",
+        "/api/search/json-schema",
         headers={"accept-encoding": "identity", "if-none-match": etag},
     )
     assert conditional.status_code == 304
@@ -119,12 +119,12 @@ def test_static_cacheable_route_carries_no_trace_id_header_on_200_or_304(
     monkeypatch.delenv("DFO_PRESENTATION_SURFACE", raising=False)
     client = TestClient(with_fake_search_deps(create_app()), raise_server_exceptions=False)
 
-    fresh = client.get("/api/search/schema", headers={"accept-encoding": "identity"})
+    fresh = client.get("/api/search/json-schema", headers={"accept-encoding": "identity"})
     assert fresh.status_code == 200
     assert TRACE_ID_HEADER not in fresh.headers
 
     conditional = client.get(
-        "/api/search/schema",
+        "/api/search/json-schema",
         headers={"accept-encoding": "identity", "if-none-match": fresh.headers["etag"]},
     )
     assert conditional.status_code == 304

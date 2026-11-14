@@ -682,7 +682,7 @@ class SearchSettings(BaseSettings):
         """Deterministic `capability_version` token: a short content hash over
         this deployment's stable capability fields (per-door liveness, the
         place-as-constraint default, and the published caps) and the schema
-        `GET /api/search/schema` serves (`search.engine.schema.schema_payload`,
+        `GET /api/search/json-schema` serves (`search.engine.schema.schema_payload`,
         without annotations), so a wire change or a config
         change mints a new token while repeated boots of the identical config
         agree on the same one. The running image's own commit sha is excluded

@@ -1,4 +1,4 @@
-"""Tests for the schema door: `GET /api/graph/schema`."""
+"""Tests for the schema door: `GET /api/graph/json-schema`."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from graph_api import version
-from graph_api.doors.schema import build_schema_door, served_wire_schemas
+from graph_api.doors.json_schema import build_json_schema_door, served_wire_schemas
 from graph_api.node_models import NodesRequest
 from graph_api.resolve_models import ResolveRequest
 from graph_api.version import GRAPH_CAPABILITY_VERSION
@@ -14,12 +14,12 @@ from graph_api.version import GRAPH_CAPABILITY_VERSION
 
 def _client() -> TestClient:
     app = FastAPI()
-    app.include_router(build_schema_door().router)
+    app.include_router(build_json_schema_door().router)
     return TestClient(app)
 
 
 def test_serves_every_wire_schema_and_the_capabilities_path():
-    resp = _client().get("/api/graph/schema")
+    resp = _client().get("/api/graph/json-schema")
 
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -65,10 +65,10 @@ def test_the_served_set_is_the_set_the_capability_token_hashes():
 
 def test_serves_public_gzip_with_an_etag_and_answers_304():
     client = _client()
-    first = client.get("/api/graph/schema", headers={"accept-encoding": "gzip"})
+    first = client.get("/api/graph/json-schema", headers={"accept-encoding": "gzip"})
 
     again = client.get(
-        "/api/graph/schema",
+        "/api/graph/json-schema",
         headers={"accept-encoding": "gzip", "if-none-match": first.headers["etag"]},
     )
 

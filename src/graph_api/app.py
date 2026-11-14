@@ -20,7 +20,7 @@ release, so an unset `GRAPH_RELEASE_URI` or an unreadable release fails startup.
 matching uses its own single-worker executor. The sources door reads currency and granularity
 from the bound release's coverage.
 
-Routes: `GET /healthz`, `GET /capabilities`, `GET /schema`, `POST /resolve`,
+Routes: `GET /healthz`, `GET /capabilities`, `GET /json-schema`, `POST /resolve`,
 `GET /node/{dcid}`, `POST /nodes`, `GET /node/{dcid}/members`, `GET /roots`,
 `GET /documentation/{dcid}`, and `GET /sources`, all under `/api/graph`.
 
@@ -68,10 +68,10 @@ from graph_api.deps import (
     GraphDepsNotSet,
 )
 from graph_api.doors.health import build_health_door
+from graph_api.doors.json_schema import build_json_schema_door
 from graph_api.doors.members import build_members_door
 from graph_api.doors.node import NODE_MEMBERSHIP_SLOT, build_node_door
 from graph_api.doors.resolve import build_resolve_door
-from graph_api.doors.schema import build_schema_door
 from graph_api.doors.sources import build_sources_door, new_provenance_doc_cache
 from graph_api.node_cache import NodeEntryCache
 from graph_api.reader import GraphNodeReader
@@ -184,7 +184,7 @@ def graph_surface(
     with bound_served_release(release):
         doors: tuple[DoorContribution, ...] = (
             build_health_door(),
-            build_schema_door(),
+            build_json_schema_door(),
             build_resolve_door(),
             build_sources_door(),
             build_members_door(),

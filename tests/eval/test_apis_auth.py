@@ -73,7 +73,7 @@ def _send(auth: ApisAuth, url: str, *, status: int = 200) -> str | None:
 
 @pytest.mark.parametrize(
     "url",
-    ["http://localhost:8083/api/search/schema", "http://in-process/api/search/resolve"],
+    ["http://localhost:8083/api/search/json-schema", "http://in-process/api/search/resolve"],
 )
 def test_plain_http_gets_no_token_and_mints_none(url):
     fetcher = _Fetcher(_Clock())
