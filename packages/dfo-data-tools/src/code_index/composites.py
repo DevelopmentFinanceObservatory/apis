@@ -41,6 +41,16 @@ DECLARED_COMPOSITES: Mapping[str, CompositeDeclaration] = {
 """Every declared composite by its provenance."""
 
 
+def components_sum(composite: CompositeDeclaration) -> bool:
+    """Whether a Datasets groupby whose `by` keeps no `stat_var` adds the members of
+    `composite`'s different components into one series per cell: true for a stacked
+    composite, whose components are parts of one total by declaration, and false for a
+    spliced one. The mint sums by it (`datasets_api.groupby.sums_components`) and Search
+    serves it (`ResolvedStatVars.sums_components`), so the two cannot disagree. A cell
+    holding one component's line serves that line."""
+    return composite.kind == "stacked"
+
+
 def _jsonable(value: object) -> object:
     if isinstance(value, frozenset | set):
         return sorted(str(item) for item in value)
