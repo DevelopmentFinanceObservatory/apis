@@ -186,22 +186,24 @@ def test_node_fields_and_declaring_provenances() -> None:
     assert nodes["measuredValue"].provenances == [SCHEMA]
 
 
-def test_enumerations_are_marked_and_list_members() -> None:
+def test_enumerations_are_value_lists_of_their_instances() -> None:
     nodes = _nodes(schema_graph())
 
-    enumerations = {dcid for dcid, node in nodes.items() if node.enumeration is not None}
-    assert enumerations == {"CRSPurposeCodeEnum", "FinancingPurposeEnum", "GenderType"}
-    crs = nodes["CRSPurposeCodeEnum"].enumeration
+    lists = {dcid for dcid, node in nodes.items() if node.instances is not None}
+    assert lists == {"CRSPurposeCodeEnum", "FinancingPurposeEnum", "GenderType"}
+    crs = nodes["CRSPurposeCodeEnum"].instances
     assert crs is not None
-    assert (crs.members, crs.complete) == (["CRSPurposeCode120", "CRSPurposeCode12220"], True)
+    assert (crs.refs, crs.complete) == (["CRSPurposeCode120", "CRSPurposeCode12220"], True)
     assert nodes["CRSPurposeCode120"].label == "Education"
     assert nodes["CRSPurposeCode120"].provenances == [DFO]
-    # A DFO enumeration with no members of its own lists none.
-    assert nodes["FinancingPurposeEnum"].enumeration is not None
-    assert nodes["FinancingPurposeEnum"].enumeration.members == []
+    # A DFO enumeration lists the instances of its subclasses beside its own none.
+    purpose = nodes["FinancingPurposeEnum"].instances
+    assert purpose is not None
+    assert (purpose.refs, purpose.complete) == (crs.refs, True)
+    assert nodes["crsPurpose"].instances is None
 
 
-def test_a_base_enumeration_lists_only_members_the_index_uses() -> None:
+def test_a_base_enumeration_lists_only_instances_the_index_uses() -> None:
     nodes = _nodes(schema_graph())
 
     # No DFO term names GenderType; it joins as the typeOf of the used value Female.
@@ -213,21 +215,126 @@ def test_a_base_enumeration_lists_only_members_the_index_uses() -> None:
     )
     gender = nodes["GenderType"]
     assert (gender.declared_by, gender.sub_class_of) == ("base", ["Enumeration"])
-    assert gender.enumeration is not None
-    # The members StatVar rows use are some of the members the graph holds.
-    assert (gender.enumeration.members, gender.enumeration.complete) == (["Female"], False)
+    assert gender.instances is not None
+    # The instances StatVar rows use are some of the instances the graph holds.
+    assert (gender.instances.refs, gender.instances.complete) == (["Female"], False)
     assert "Male" not in nodes
 
 
-def test_an_enumeration_over_the_member_cap_is_not_complete(
-    monkeypatch: pytest.MonkeyPatch,
+_RANGE_TERMS = {
+    **TERMS,
+    "currencyOf": ("Property", (DFO,)),
+    "recipientCountry": ("Property", (DFO,)),
+    "hasMember": ("Property", (DFO,)),
+    "Denomination": ("Class", (DFO,)),
+    "Unit": ("Class", (DFO,)),
+    "Country": ("Class", (SCHEMA,)),
+    "Region": ("Class", (SCHEMA,)),
+    "baseRanged": ("Property", (SCHEMA,)),
+    "BaseRanged": ("Class", (DFO,)),
+}
+
+_RANGE_NODES = {
+    **NODES,
+    "currencyOf": {"typeOf": ("Property",), "rangeIncludes": ("Denomination",)},
+    "recipientCountry": {"typeOf": ("Property",), "rangeIncludes": ("Region",)},
+    "hasMember": {"typeOf": ("Property",), "rangeIncludes": ("Thing",)},
+    "Denomination": {"typeOf": ("Class",), "subClassOf": ("Thing",)},
+    "Unit": {"typeOf": ("Class",), "subClassOf": ("Denomination",)},
+    "UnitCHF": {"typeOf": ("Unit",), "name": ("Swiss franc",)},
+    "UnitEUR": {"typeOf": ("Unit",), "name": ("Euro",)},
+    "Region": {"typeOf": ("Class",), "subClassOf": ("Thing",)},
+    "Country": {"typeOf": ("Class",), "subClassOf": ("Region",)},
+    "country/UGA": {"typeOf": ("Country",)},
+    "country/KEN": {"typeOf": ("Country",)},
+    "baseRanged": {"typeOf": ("Property",), "rangeIncludes": ("BaseRanged",)},
+    "BaseRanged": {"typeOf": ("Class",), "subClassOf": ("Thing",)},
+    "BaseRanged1": {"typeOf": ("BaseRanged",)},
+}
+
+
+def _range_graph(
+    *, unit_subjects: tuple[ArcSubject, ...] | None = None
+) -> tuple[FakeGraphNodeReader, CodeIndex]:
+    """The fixture graph with a DFO range `Denomination` whose instances are all typed by its
+    DFO subclass `Unit`, a base range `Region` whose subclass `Country` types a used and an
+    unused node, a DFO property ranged on the base `Thing`, and a DFO class `BaseRanged` that
+    only the base property `baseRanged`, which a StatVar row names, ranges on."""
+    units = tuple(
+        ArcSubject(dcid=dcid, names=(dcid,), provenances=(DFO,)) for dcid in ("UnitCHF", "UnitEUR")
+    )
+    graph = FakeGraphNodeReader(
+        nodes=_RANGE_NODES,
+        arc_subjects={
+            **arc_subjects(terms=_RANGE_TERMS),
+            ("Unit", "typeOf"): units if unit_subjects is None else unit_subjects,
+            ("BaseRanged", "typeOf"): (
+                ArcSubject(dcid="BaseRanged1", names=(), provenances=(DFO,)),
+            ),
+            ("Country", "typeOf"): (
+                ArcSubject(dcid="country/KEN", names=(), provenances=(SCHEMA,)),
+                ArcSubject(dcid="country/UGA", names=(), provenances=(SCHEMA,)),
+            ),
+        },
+        arc_targets=node_targets(_RANGE_NODES, _RANGE_TERMS),
+    )
+    row = index_row("Amount_UGA", {"recipientCountry": "country/UGA", "baseRanged": "Thing"})
+    return graph, index_of(*INDEX.statvars, row)
+
+
+def test_a_dfo_range_and_its_subclasses_list_every_instance() -> None:
+    graph, index = _range_graph()
+
+    nodes = _nodes(graph, index)
+
+    for dcid in ("Denomination", "Unit"):
+        instances = nodes[dcid].instances
+        assert instances is not None
+        assert (instances.refs, instances.complete) == (["UnitCHF", "UnitEUR"], True)
+    # The instances join the document, though no StatVar row uses them.
+    assert nodes["UnitCHF"].label == "Swiss franc"
+    assert "UnitEUR" in nodes
+
+
+def test_only_dfo_ranges_of_dfo_properties_and_base_enumerations_are_value_lists() -> None:
+    graph, index = _range_graph()
+
+    nodes = _nodes(graph, index)
+
+    # A base range, its base subclass, the base root it shares with every node, and a DFO
+    # subclass of that root list nothing, though StatVar rows use `country/UGA`.
+    for dcid in ("Region", "Country", "Thing", "FinancingEvent", "Enumeration"):
+        assert nodes[dcid].instances is None, dcid
+    assert "country/KEN" not in nodes
+    # A DFO class only a base property ranges on lists nothing, and its instance stays out.
+    assert nodes["BaseRanged"].instances is None
+    assert "BaseRanged1" not in nodes
+    # A base enumeration still lists the instances StatVar rows use.
+    gender = nodes["GenderType"].instances
+    assert gender is not None
+    assert (gender.refs, gender.complete) == (["Female"], False)
+
+
+@pytest.mark.parametrize(
+    ("cap", "complete"), [pytest.param(1, False, id="over-the-cap"), pytest.param(2, True, id="at")]
+)
+def test_a_value_list_over_the_listing_cap_is_not_complete(
+    cap: int, complete: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(schema_document, "ENUMERATION_MEMBER_CAP", 1)
+    monkeypatch.setattr(schema_document, "INSTANCE_LISTING_CAP", cap)
+    graph, index = _range_graph()
 
-    crs = _nodes(schema_graph())["CRSPurposeCodeEnum"].enumeration
+    nodes = _nodes(graph, index)
 
+    crs = nodes["CRSPurposeCodeEnum"].instances
     assert crs is not None
-    assert (crs.members, crs.complete) == (["CRSPurposeCode12220"], False)
+    # The listing reads `CRSPurposeCode12220` first, and the index uses it.
+    assert crs.complete is complete
+    assert len(crs.refs) == cap
+    # A subclass's truncated listing leaves its superclass's list incomplete too.
+    denomination = nodes["Denomination"].instances
+    assert denomination is not None
+    assert (denomination.refs, denomination.complete) == (["UnitCHF", "UnitEUR"][:cap], complete)
 
 
 def test_a_truncated_listing_refuses(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -572,14 +679,19 @@ _LARGE_TERMS = {
     **{f"extraProperty{i}": ("Property", (DFO,)) for i in range(50)},
     "SubPurposeEnum": ("Class", (DFO,)),
     "BasePurposeEnum": ("Class", (SCHEMA,)),
+    "rangedOnDenomination": ("Property", (DFO,)),
+    "LateDenomination": ("Class", (DFO,)),
+    "MidUnit": ("Class", (SCHEMA,)),
+    "LateUnit": ("Class", (DFO,)),
 }
 
 
 def _large_graph() -> tuple[FakeGraphNodeReader, CodeIndex]:
     """The fixture graph with fifty more DFO properties, each used by an index row with its own
-    value, so the seed takes several node reads, and a DFO enumeration `SubPurposeEnum` whose
+    value, so the seed takes several node reads, a DFO enumeration `SubPurposeEnum` whose
     chain reaches `Enumeration` only through the base `BasePurposeEnum`, a level after the
-    fixture's enumerations do."""
+    fixture's enumerations do, and a DFO class `LateUnit` that lists in full as a subclass of
+    the DFO range `LateDenomination` only once its base parent `MidUnit` is read."""
     nodes = {
         **NODES,
         **{
@@ -590,6 +702,11 @@ def _large_graph() -> tuple[FakeGraphNodeReader, CodeIndex]:
         "SubPurposeEnum": {"typeOf": ("Class",), "subClassOf": ("BasePurposeEnum",)},
         "BasePurposeEnum": {"typeOf": ("Class",), "subClassOf": ("Enumeration",)},
         "SubPurpose1": {"typeOf": ("SubPurposeEnum",)},
+        "rangedOnDenomination": {"typeOf": ("Property",), "rangeIncludes": ("LateDenomination",)},
+        "LateDenomination": {"typeOf": ("Class",), "subClassOf": ("Thing",)},
+        "MidUnit": {"typeOf": ("Class",), "subClassOf": ("LateDenomination",)},
+        "LateUnit": {"typeOf": ("Class",), "subClassOf": ("MidUnit",)},
+        "LateUnit1": {"typeOf": ("LateUnit",)},
     }
     rows = [index_row(f"Extra{i}", {f"extraProperty{i}": f"extraValue{i}"}) for i in range(50)]
     graph = FakeGraphNodeReader(
@@ -598,6 +715,9 @@ def _large_graph() -> tuple[FakeGraphNodeReader, CodeIndex]:
             **arc_subjects(terms=_LARGE_TERMS),
             ("SubPurposeEnum", "typeOf"): (
                 ArcSubject(dcid="SubPurpose1", names=("Sub purpose",), provenances=(DFO,)),
+            ),
+            ("LateUnit", "typeOf"): (
+                ArcSubject(dcid="LateUnit1", names=("Late unit",), provenances=(DFO,)),
             ),
         },
         arc_targets=node_targets(nodes, _LARGE_TERMS),
@@ -614,7 +734,7 @@ def test_each_node_is_read_once_and_each_dfo_class_listed_once() -> None:
     node_reads = [dcids for method, dcids in graph.started if method == "node_all_arc_targets_many"]
     read = [dcid for dcids in node_reads for dcid in dcids]  # type: ignore[attr-defined]
     assert len(read) == len(set(read))
-    assert {"extraValue49", "Thing", "CRSPurposeCode120", "SubPurpose1"} <= set(read)
+    assert {"extraValue49", "Thing", "CRSPurposeCode120", "SubPurpose1", "LateUnit1"} <= set(read)
     assert max(len(dcids) for dcids in node_reads) == 12  # type: ignore[arg-type]
     listings = sorted(dcid for method, dcid in graph.started if method == "node_arc_subjects")
     dfo_classes = [
@@ -636,7 +756,7 @@ def _reversed(call: tuple[str, object], calls: dict[tuple[str, object], int]) ->
 
 
 @pytest.mark.parametrize(
-    "order", ["term-listings-last", "member-listings-last", "reversed", "seed-1", "seed-2"]
+    "order", ["term-listings-last", "instance-listings-last", "reversed", "seed-1", "seed-2"]
 )
 def test_answers_arriving_in_any_order_build_the_same_bytes(
     order: str, monkeypatch: pytest.MonkeyPatch
@@ -646,13 +766,19 @@ def test_answers_arriving_in_any_order_build_the_same_bytes(
         serial.setattr(schema_document, "BUILD_CONCURRENCY", 1)
         reference = _build(_Recorder(fake), index)
     nodes = {node["ref"]: node for node in json.loads(reference.split("\n")[0])["nodes"]}
-    assert nodes["SubPurposeEnum"]["enumeration"]["members"] == ["SubPurpose1"]
+    assert nodes["SubPurposeEnum"]["instances"]["refs"] == ["SubPurpose1"]
     assert "SubPurpose1" in nodes
+    # MidUnit is base, so it lists only the used instances, and none are; LateDenomination
+    # then cannot know the instances typed by MidUnit alone.
+    assert nodes["MidUnit"]["instances"] is None
+    assert nodes["LateUnit"]["instances"] == {"refs": ["LateUnit1"], "complete": True}
+    assert nodes["LateDenomination"]["instances"] == {"refs": ["LateUnit1"], "complete": False}
+    assert "LateUnit1" in nodes
     jitter = random.Random(order)
     calls: dict[tuple[str, object], int] = {}
     delays: dict[str, Callable[[tuple[str, object]], float]] = {
         "term-listings-last": lambda call: 0.05 if call[1] in ("Class", "Property") else 0.0,
-        "member-listings-last": lambda call: (
+        "instance-listings-last": lambda call: (
             0.05 if call[0] == "node_arc_subjects" and call[1] not in ("Class", "Property") else 0.0
         ),
         "reversed": lambda call: _reversed(call, calls),
@@ -670,7 +796,7 @@ def test_answers_arriving_in_any_order_build_the_same_bytes(
     "failing",
     [
         pytest.param(("node_all_arc_targets_many", "Intangible"), id="closure-level"),
-        pytest.param(("node_arc_subjects", "FinancingEvent"), id="member-listing"),
+        pytest.param(("node_arc_subjects", "FinancingEvent"), id="instance-listing"),
         pytest.param(("node_arc_subjects", "Property"), id="term-listing"),
     ],
 )

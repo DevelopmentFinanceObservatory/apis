@@ -7,19 +7,21 @@ provenances that declare each value, and the closure reads the nodes not yet rea
 terms name in `subClassOf`, `subPropertyOf`, `domainIncludes` or `rangeIncludes`, the `typeOf`
 targets of every node read that is neither a Class nor a Property, and the `subClassOf` and
 `subPropertyOf` parents, so the class of every value is present and every ancestor is too. One
-`node_arc_subjects` listing per DFO-declared Class reads its members, and the members of each
-that is an enumeration join the document with the same closure over their types and ancestors.
+`node_arc_subjects` listing per DFO-declared Class reads its instances, and the instances of
+each that is a value list join the document with the same closure over their types and
+ancestors.
 
 The reads run as a pipeline, at most `BUILD_CONCURRENCY` at once: the index-named nodes are read
 while the term listings run, each node read of at most 12 dcids is expanded the moment it lands,
-every DFO Class is listed as soon as the terms are known, and an enumeration's members are read
-once its `subClassOf` chain reaches `Enumeration`. The nodes read follow from the graph alone,
+every DFO Class is listed as soon as the terms are known, and a value list's instances are read
+once the nodes read make it one. The nodes read follow from the graph alone,
 so the order the answers arrive in changes nothing in the document. Each node read probes every
 empty answer: it reads each empty dcid again alone, and a dcid empty after that is absent from
 the document. The node reads are uncached, since no other
 caller reads every property of these nodes. A read that fails ends the build with its error. One
 log line per build gives each phase's read count and when its first read started and last read
-ended: the term listings, the seed, each closure level, the member listings and the members.
+ended: the term listings, the seed, each closure level, the instance listings and the
+instances.
 
 Each node's values and provenances come from that one read of the node. The ten properties
 `SchemaNode` names are its named members, and every other property the read answers is in
@@ -38,11 +40,17 @@ build counts the terms served with none and the nodes with a `typeOf` target tha
 and names the first ten of each. A build whose document holds no node DFO declares refuses with
 `SchemaNoDfoDeclarationError`.
 
-A DFO-declared enumeration's members are its `<-typeOf` listing, `complete` when the
-listing read every subject. A base enumeration lists the members StatVar rows use and is
-always `complete: false`.
+A value list is a Class whose instances the document lists. A DFO-declared Class is one when
+its `subClassOf` chain reaches `Enumeration`, or when it or an ancestor is a DFO-declared Class
+that the `rangeIncludes` of a DFO-declared Property names, so a DFO subclass of a DFO range
+lists too. A base Class is one only when its chain reaches `Enumeration`, so neither
+`Enumeration` itself nor a base range such as `Thing` or `Country` is. A DFO list holds the subjects of the `<-typeOf` listings of
+it and its DFO-declared subclasses, `complete` when each listing read every subject, plus the
+nodes StatVar rows use typed by a base subclass, which make it incomplete. A base list holds
+the nodes StatVar rows use typed by it or any subclass and is always `complete: false`. A list
+that holds no node and is not complete is left out.
 
-Every node, member and list of values is sorted, so two builds from the same graph serialise
+Every node, instance and list of values is sorted, so two builds from the same graph serialise
 to the same bytes.
 """
 
@@ -66,7 +74,7 @@ from graph_api.reader import GraphNodeReader
 from graph_api.schema_models import (
     DeclaredBy,
     SchemaDocument,
-    SchemaEnumeration,
+    SchemaInstances,
     SchemaLiteral,
     SchemaNode,
     SchemaNodeReference,
@@ -82,9 +90,9 @@ TERM_LISTING_CAP: Final[int] = 20_000
 """The most subjects one `<-typeOf` listing of `Class` or `Property` reads. A listing that
 reaches it raises `SchemaListingTruncatedError`."""
 
-ENUMERATION_MEMBER_CAP: Final[int] = 5_000
-"""The most members read for one DFO-declared enumeration. An enumeration with more is
-served with the members read and `complete: false`."""
+INSTANCE_LISTING_CAP: Final[int] = 5_000
+"""The most subjects one `<-typeOf` listing of a DFO-declared Class reads. A value list whose
+class or subclass has more is served with the subjects read and `complete: false`."""
 
 OTHER_LITERAL_MAX_CHARS: Final[int] = 2_000
 """The longest literal `other_properties` holds. A longer one, such as a geometry, is left out."""
@@ -104,8 +112,8 @@ mixer's page of about 500."""
 
 _TERM_LISTINGS: Final[str] = "term listings"
 _SEED: Final[str] = "seed"
-_MEMBER_LISTINGS: Final[str] = "member listings"
-_MEMBERS: Final[str] = "members"
+_INSTANCE_LISTINGS: Final[str] = "instance listings"
+_INSTANCES: Final[str] = "instances"
 
 _LOGGED_DCIDS: Final[int] = 10
 _BASE_PREFIX: Final[str] = "dc/base/"
@@ -227,32 +235,7 @@ def build_schema(
     read_at = time.monotonic()
     listed, arcs = reads.listed, reads.arcs
 
-    members: dict[str, SchemaEnumeration] = {}
-    for enumeration in sorted(reads.dfo_terms):
-        if (
-            enumeration in arcs
-            and _CLASS in listed[enumeration].kinds
-            and _reaches_enumeration(enumeration, arcs)
-        ):
-            subjects, complete = reads.member_pages[enumeration]
-            members[enumeration] = SchemaEnumeration(
-                members=sorted({subject.dcid for subject in subjects}), complete=complete
-            )
-
-    index_named_by_type: dict[str, list[str]] = defaultdict(list)
-    for dcid in index_named:
-        for type_ in arcs.get(dcid, {}).get(_TYPE_OF, ()):
-            index_named_by_type[type_].append(dcid)
-    enumerations = (
-        dcid
-        for dcid, term in listed.items()
-        if dcid in arcs and _CLASS in term.kinds and _reaches_enumeration(dcid, arcs)
-    )
-    for enumeration in enumerations:
-        if enumeration not in members:
-            members[enumeration] = SchemaEnumeration(
-                members=sorted(index_named_by_type.get(enumeration, ())), complete=False
-            )
+    instances = _instances(reads, index_named)
 
     unsourced_terms = sorted(dcid for dcid, term in listed.items() if not term.provenances)
     if unsourced_terms or reads.unsourced:
@@ -280,7 +263,7 @@ def build_schema(
             arcs[dcid],
             reads.others[dcid],
             reads.provenances[dcid],
-            members.get(dcid),
+            instances.get(dcid),
             catalogue,
         )
         for dcid in sorted(arcs)
@@ -341,15 +324,16 @@ class _Reads:
     `BUILD_CONCURRENCY` at once on `executor`.
 
     The `Class` and `Property` listings and the reads of the index-named nodes start together.
-    Once both listings land, the DFO terms are read and every DFO Class's members are listed.
+    Once both listings land, the DFO terms are read and every DFO Class's instances are listed.
     Each node read is expanded as it lands: its `subClassOf` and `subPropertyOf` parents, the
     `typeOf` targets of a node that is no listed term, and the four schema arcs of a DFO term
     are read next, unless already read or under way. A node read that lands before the listings
-    is expanded when they land. A DFO Class's members are read, and expanded the same way, once
-    its listing has landed and its `subClassOf` chain over the nodes read reaches `Enumeration`.
-    Each node is read once, in reads of at most `_NODE_READ_CHUNK` dcids, and the reads end when
-    none is left to start. The successor rule depends only on a node's own read and the
-    listings, so the nodes read are the same whatever order the answers arrive in. The first
+    is expanded when they land. A DFO Class's instances are read, and expanded the same way, once
+    its listing has landed and the nodes read make it a value list (`lists_in_full`), a test
+    run again after every landing. Each node is read once, in reads of at most
+    `_NODE_READ_CHUNK` dcids, and the reads end when none is left to start. The successor rule
+    depends only on a node's own read and the listings, and `lists_in_full` only grows as nodes
+    land, so the nodes read are the same whatever order the answers arrive in. The first
     read that raises cancels the reads not yet started and its error propagates.
     """
 
@@ -377,8 +361,10 @@ class _Reads:
         self.absent: set[str] = set()
         self.unsourced: set[str] = set()
         # Each DFO Class's `<-typeOf` subjects, and whether the listing read every one.
-        self.member_pages: dict[str, tuple[tuple[ArcSubject, ...], bool]] = {}
-        self._members_read: set[str] = set()
+        self.instance_pages: dict[str, tuple[tuple[ArcSubject, ...], bool]] = {}
+        self._instances_read: set[str] = set()
+        # Every class the `rangeIncludes` of a DFO term read names.
+        self.ranges: set[str] = set()
         self._submitted: set[str] = set()
         self._unexpanded: list[tuple[set[str], str]] = []
         # Each read under way, whose answer is the landing the build runs on its own thread.
@@ -409,7 +395,7 @@ class _Reads:
                 for future in done:
                     future.result()()
                 if self._listed is not None:
-                    self._read_enumeration_members()
+                    self._read_listed_instances()
         except BaseException:
             for future in self._pending:
                 future.cancel()
@@ -465,8 +451,8 @@ class _Reads:
             self._phases.setdefault(phase, _PhaseTiming()).add(started, time.monotonic())
 
     def _land_listing(self, page: ArcSubjectPage, *, phase: str, dcid: str) -> None:
-        if phase == _MEMBER_LISTINGS:
-            self.member_pages[dcid] = (page.subjects, not page.truncated)
+        if phase == _INSTANCE_LISTINGS:
+            self.instance_pages[dcid] = (page.subjects, not page.truncated)
             return
         if page.truncated:
             raise SchemaListingTruncatedError(
@@ -494,7 +480,7 @@ class _Reads:
         self._read_nodes(self.dfo_terms, phase=_SEED)
         for dcid in sorted(self.dfo_terms):
             if _CLASS in listed[dcid].kinds:
-                self._list(dcid, cap=ENUMERATION_MEMBER_CAP, phase=_MEMBER_LISTINGS)
+                self._list(dcid, cap=INSTANCE_LISTING_CAP, phase=_INSTANCE_LISTINGS)
         for held, phase in self._unexpanded:
             self._expand(held, phase=phase)
         self._unexpanded.clear()
@@ -528,26 +514,38 @@ class _Reads:
             self._expand(held, phase=phase)
 
     def _expand(self, held: set[str], *, phase: str) -> None:
+        self.ranges.update(_named(self.arcs, held & self.dfo_terms, ("rangeIncludes",)))
         successors = _next_level(self.arcs, held, self.listed) | _named(
             self.arcs, held & self.dfo_terms, _SCHEMA_ARCS
         )
         self._read_nodes(successors, phase=_next_phase(phase))
 
-    def _read_enumeration_members(self) -> None:
-        """Read the members of each listed DFO Class whose chain now reaches `Enumeration`."""
-        for enumeration, (subjects, _) in sorted(self.member_pages.items()):
-            if enumeration in self._members_read or enumeration not in self.arcs:
+    def lists_in_full(self, dcid: str) -> bool:
+        """Whether DFO Class `dcid` is a value list read in full, over the nodes read: its
+        `subClassOf` chain reaches `Enumeration`, or it or an ancestor is a DFO Class the
+        `rangeIncludes` of a DFO term names."""
+        if _reaches_enumeration(dcid, self.arcs):
+            return True
+        return any(
+            ancestor in self.ranges and ancestor in self.dfo_terms
+            for ancestor in _ancestry(dcid, self.arcs)
+        )
+
+    def _read_listed_instances(self) -> None:
+        """Read the instances of each listed DFO Class that is now a value list read in full."""
+        for dcid, (subjects, _) in sorted(self.instance_pages.items()):
+            if dcid in self._instances_read or dcid not in self.arcs:
                 continue
-            if _reaches_enumeration(enumeration, self.arcs):
-                self._members_read.add(enumeration)
-                self._read_nodes((subject.dcid for subject in subjects), phase=_MEMBERS)
+            if self.lists_in_full(dcid):
+                self._instances_read.add(dcid)
+                self._read_nodes((subject.dcid for subject in subjects), phase=_INSTANCES)
 
 
 def _next_phase(phase: str) -> str:
     """The phase a read's successors are timed under: the seed's are level 2, a level's the
-    next level's, and the members' the members'."""
-    if phase == _MEMBERS:
-        return _MEMBERS
+    next level's, and the instances' the instances'."""
+    if phase == _INSTANCES:
+        return _INSTANCES
     if phase == _SEED:
         return "level 2"
     return f"level {int(phase.removeprefix('level ')) + 1}"
@@ -570,20 +568,64 @@ def _next_level(
     return _named(arcs, read, _ANCESTOR_ARCS) | _named(arcs, values, (_TYPE_OF,))
 
 
-def _reaches_enumeration(dcid: str, arcs: Mapping[str, _Arcs]) -> bool:
-    """Whether `dcid`'s `subClassOf` chain, over the nodes read, reaches `Enumeration`."""
+def _ancestry(dcid: str, arcs: Mapping[str, _Arcs]) -> set[str]:
+    """`dcid` and every `subClassOf` ancestor of it over the nodes read."""
     seen: set[str] = set()
     stack = [dcid]
     while stack:
         current = stack.pop()
-        if current in seen or current not in arcs:
+        if current in seen:
             continue
         seen.add(current)
-        parents = arcs[current]["subClassOf"]
-        if _ENUMERATION in parents:
-            return True
-        stack.extend(parents)
-    return False
+        if current in arcs:
+            stack.extend(arcs[current]["subClassOf"])
+    return seen
+
+
+def _reaches_enumeration(dcid: str, arcs: Mapping[str, _Arcs]) -> bool:
+    """Whether `dcid`'s `subClassOf` chain, over the nodes read, reaches `Enumeration`."""
+    return _ENUMERATION in _ancestry(dcid, arcs) - {dcid}
+
+
+def _instances(reads: _Reads, index_named: Collection[str]) -> dict[str, SchemaInstances]:
+    """Each value list's instances, by class.
+
+    The value lists are the DFO Classes `_Reads.lists_in_full` names, and every base Class whose
+    chain reaches `Enumeration`. A DFO list holds, for
+    itself and each subclass, the subjects of a DFO Class's listing and the index-named nodes
+    typed by any other class. A base list holds the index-named nodes typed by it or any
+    subclass. A list is `complete` when it is DFO, and every class it covers is a listed DFO
+    Class whose listing read every subject. A list with no node that is not complete is left
+    out.
+    """
+    arcs, listed = reads.arcs, reads.listed
+    classes = [dcid for dcid in sorted(arcs) if dcid in listed and _CLASS in listed[dcid].kinds]
+    ancestry = {dcid: _ancestry(dcid, arcs) for dcid in classes}
+    used_by_type: dict[str, set[str]] = defaultdict(set)
+    for dcid in index_named:
+        for type_ in arcs.get(dcid, {}).get(_TYPE_OF, ()):
+            used_by_type[type_].add(dcid)
+
+    instances: dict[str, SchemaInstances] = {}
+    for dcid in classes:
+        dfo = dcid in reads.dfo_terms
+        if dfo and not reads.lists_in_full(dcid):
+            continue
+        if not dfo and not _reaches_enumeration(dcid, arcs):
+            continue
+        refs: set[str] = set()
+        complete = dfo
+        for covered in (sub for sub in classes if dcid in ancestry[sub]):
+            refs |= used_by_type[covered]
+            if dfo and (page := reads.instance_pages.get(covered)) is not None:
+                subjects, read_all = page
+                refs.update(subject.dcid for subject in subjects)
+                complete = complete and read_all
+            else:
+                complete = False
+        if refs or complete:
+            instances[dcid] = SchemaInstances(refs=sorted(refs), complete=complete)
+    return instances
 
 
 def _other_properties(
@@ -622,7 +664,7 @@ def _node(
     arcs: _Arcs,
     other_properties: _OtherProperties,
     provenances: Collection[str],
-    enumeration: SchemaEnumeration | None,
+    instances: SchemaInstances | None,
     catalogue: Catalogue,
 ) -> SchemaNode:
     return SchemaNode(
@@ -640,5 +682,5 @@ def _node(
         other_properties=other_properties,
         provenances=sorted(provenances),
         declared_by=declared_by(provenances, catalogue=catalogue) if provenances else None,
-        enumeration=enumeration,
+        instances=instances,
     )

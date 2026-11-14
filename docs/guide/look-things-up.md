@@ -109,7 +109,7 @@ The documentation record includes source details, licence, scope and units, meth
 
 ## Read the model
 
-`GET /api/v1/graph/schema` serves every Class and Property DFO declares, with their ranges, domains and enumeration members. Each node is named by `ref`, its dcid, and `label`, its name, as on the node route. `GET /api/v1/graph/schema/terms` lists every Class and Property of the DFO graph, base Data Commons included and the UN origin's terms excluded, with name, types and declaring Provenances.
+`GET /api/v1/graph/schema` serves every Class and Property DFO declares, with their ranges and domains. A DFO Class that is an enumeration or the range of a DFO property, and a base enumeration, carries `instances`, the nodes typed by it or its subclasses, so a value list such as `CurrencyDenomination` names every currency DFO declares. Each node is named by `ref`, its dcid, and `label`, its name, as on the node route. `GET /api/v1/graph/schema/terms` lists every Class and Property of the DFO graph, base Data Commons included and the UN origin's terms excluded, with name, types and declaring Provenances.
 
 ```bash
 curl -fsS "$DFO_API/api/v1/graph/schema" \

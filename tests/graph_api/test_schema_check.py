@@ -55,6 +55,9 @@ _CHECK_TERMS = {
     "recipientGender": ("Property", (DFO,)),
     "BeneficiaryGroupEnum": ("Class", (DFO,)),
     "beneficiaryGroup": ("Property", (DFO,)),
+    "currencyOfDenomination": ("Property", (DFO,)),
+    "CurrencyDenomination": ("Class", (DFO,)),
+    "CurrencyUnit": ("Class", (DFO,)),
 }
 
 _CHECK_NODES = {
@@ -111,6 +114,19 @@ _CHECK_NODES = {
         f"baseProperty{i}": {"typeOf": ("Property",)}
         for i in range(CHECK_MAX_CONSTRAINT_PROPERTIES)
     },
+    # A DFO range whose instances are DFO currencies, beside base currencies typed `Currency`,
+    # a class outside the document two levels above the document's `Intangible`.
+    "currencyOfDenomination": {
+        "typeOf": ("Property",),
+        "domainIncludes": ("FinancingEvent",),
+        "rangeIncludes": ("CurrencyDenomination",),
+    },
+    "CurrencyDenomination": {"typeOf": ("Class",), "subClassOf": ("Thing",)},
+    "CurrencyUnit": {"typeOf": ("Class",), "subClassOf": ("CurrencyDenomination",)},
+    "CurrencyCHF": {"typeOf": ("CurrencyUnit",)},
+    "CHF": {"typeOf": ("Currency",)},
+    "Currency": {"typeOf": ("Class",), "subClassOf": ("MeasureKind",)},
+    "MeasureKind": {"typeOf": ("Class",), "subClassOf": ("Intangible",)},
     "PlaceholderCode": {"typeOf": ("ProvisionalNode",)},
     "RealizedCode": {"typeOf": ("ProvisionalNode", "CRSPurposeCodeEnum")},
     "UntypedCode": {"name": ("Untyped code",)},
@@ -637,12 +653,73 @@ def test_an_id_named_in_two_roles_is_read_once() -> None:
     assert len(reader.batches[0]) == len(set(reader.batches[0])) == CHECK_MAX_READ_IDS
 
 
-def test_a_value_typed_outside_the_document_is_read_with_no_ancestry() -> None:
+def test_a_value_typed_outside_the_document_is_judged_by_its_read_ancestry() -> None:
+    """`country/UGA`'s type `Country` lies outside the document. The check reads its chain a
+    level at a time, once for both rows, until it reaches the document's `Place`, the range."""
     reader = _RecordingReader()
     rows = [_row(constraint_properties={"recipientPlace": "country/UGA"}) for _ in range(2)]
 
     assert _check(rows, reader) == []
-    assert reader.batches == [["country/UGA"]]
+    assert reader.batches == [["country/UGA"], ["Country"], ["AdministrativeArea"]]
+
+
+def test_a_value_whose_read_ancestry_misses_the_range_is_outside_it() -> None:
+    """Base `CHF` is typed `Currency`, outside the document, whose chain reaches
+    `Intangible` and never `CurrencyDenomination`. DFO's `CurrencyCHF` lies inside."""
+    reader = _RecordingReader()
+    rows = [
+        _row(constraint_properties={"currencyOfDenomination": "CHF"}),
+        _row(constraint_properties={"currencyOfDenomination": "CurrencyCHF"}),
+    ]
+
+    findings = _check(rows, reader)
+
+    assert findings == [_value("currencyOfDenomination", "CHF", "value_outside_range")]
+    assert reader.batches == [["CHF", "CurrencyCHF"], ["Currency"], ["MeasureKind"]]
+    assert reader.asked[1:] == [(("subClassOf",), None)] * 2
+
+
+def test_a_type_read_with_the_row_ids_is_not_read_again() -> None:
+    """The check's one read asks each id's parents, so `Currency`, named as the population
+    type, needs no read of its own as `CHF`'s type."""
+    reader = _RecordingReader()
+    row = _row(population_type="Currency", constraint_properties={"currencyOfDenomination": "CHF"})
+
+    findings = _check([row], reader)
+
+    assert _value("currencyOfDenomination", "CHF", "value_outside_range") in findings
+    assert reader.batches == [["CHF", "Currency"], ["MeasureKind"]]
+
+
+@pytest.mark.parametrize(
+    ("budget", "taken"),
+    [
+        # The first row's ids take the budget, so no chain is read and CHF gets no verdict.
+        pytest.param(1, 1, id="first-row"),
+        # The second row's chain passes the budget a level up, so it is not taken.
+        pytest.param(3, 1, id="later-row"),
+        pytest.param(4, 2, id="within"),
+    ],
+)
+def test_ancestry_reads_count_in_the_read_budget(
+    budget: int, taken: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(schema_check, "CHECK_MAX_READ_IDS", budget)
+    first = (
+        _row(constraint_properties={"currencyOfDenomination": "CHF"})
+        if budget == 1
+        else _row(constraint_properties={"currencyOfDenomination": "CurrencyCHF"})
+    )
+    rows = [first, _row(constraint_properties={"currencyOfDenomination": "CHF"})]
+    reader = _RecordingReader()
+
+    checked = _checked(rows, reader)
+
+    assert checked.rows_checked == taken
+    read = [dcid for batch in reader.batches for dcid in batch]
+    assert len(read) == len(set(read)) <= budget
+    outside = [finding.row for finding in checked.findings if finding.code == "value_outside_range"]
+    assert outside == ([1] if taken == 2 else [])
 
 
 def test_a_value_under_a_property_not_held_is_read_and_gets_no_finding() -> None:
@@ -731,8 +808,8 @@ def test_a_property_is_judged_by_the_provenances_its_types_carry(
 
 def test_a_value_typed_below_a_complete_enumeration_outside_the_document_is_read() -> None:
     """`Male` is typed `GenderType`, a subclass of the complete `BeneficiaryGroupEnum`. With no
-    reference bringing `GenderType` into the document, the check reads `Male` and finds no
-    fault, because its type lies outside the document."""
+    reference bringing `GenderType` into the document, the check reads `Male`, then
+    `GenderType`'s parents, which reach the range, so it finds no fault."""
     terms = {k: v for k, v in _CHECK_TERMS.items() if k not in ("gender", "recipientGender")}
     nodes = {k: v for k, v in _CHECK_NODES.items() if k not in ("gender", "recipientGender")}
     index = index_of(index_row("Amount_CRS12220", {"crsPurpose": "CRSPurposeCode12220"}))
@@ -747,7 +824,7 @@ def test_a_value_typed_below_a_complete_enumeration_outside_the_document_is_read
 
     assert "GenderType" not in lookup.nodes
     assert findings == []
-    assert reader.batches == [["Male"]]
+    assert reader.batches == [["Male"], ["GenderType"]]
 
 
 def _absent_rows(count: int) -> list[SchemaCheckRow]:
@@ -888,13 +965,13 @@ def test_a_un_id_gets_origin_not_served_with_no_read_while_the_un_origin_is_off(
     assert on.batches != []
 
 
-def test_every_read_asks_the_type_and_name_and_probes_every_empty_answer() -> None:
+def test_every_read_asks_the_type_name_and_parents_and_probes_every_empty_answer() -> None:
     reader = _RecordingReader()
     row = _row(constraint_properties={"gender": "NoSuchGender", "noSuchProperty": "NoSuchValue"})
 
     _check([row], reader)
 
-    assert reader.asked == [(("typeOf", "name"), None)]
+    assert reader.asked == [(("typeOf", "name", "subClassOf"), None)]
 
 
 def test_a_held_node_with_neither_a_type_nor_a_name_reads_as_absent() -> None:

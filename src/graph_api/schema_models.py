@@ -6,7 +6,7 @@ document, sorted by `ref`. A node, a term and a usage entry name a node by `ref`
 and `label`, its name, as the node route's envelope does. The document holds every Class and
 Property DFO declares, every node those name in
 `subClassOf`, `subPropertyOf`, `domainIncludes` or `rangeIncludes`, every node a StatVar row
-of the code index names, every listed member of an enumeration, the `typeOf` targets of
+of the code index names, every listed instance of a Class, the `typeOf` targets of
 every node that is neither a Class nor a Property, and every `subClassOf` and
 `subPropertyOf` ancestor of all of these. A dcid the graph does not hold, such as the
 literal range `Number`, is not a node, and the arc that names it keeps the dcid.
@@ -38,11 +38,16 @@ provenances is DFO's, `"base"` when every one is base Data Commons', and `"un_sy
 otherwise. It is null when the graph names no declaring Provenance, which happens when a node has no `typeOf` arc, when none of its `typeOf` targets
 carries one, or when a term's listing entries carry none. Its `provenances` is then empty.
 
-`enumeration` is set on a Class whose `subClassOf` chain reaches `Enumeration`, and null on
-every other node. A DFO-declared enumeration lists the members its `<-typeOf` listing
-read, up to a cap; a base enumeration lists only the members StatVar rows use. `complete` is
-true only when the build listed the class from the graph and the listing read every member,
-so `members` is every member the graph holds. A list where it is false holds some of them.
+`instances` is set on a Class that lists the nodes typed by it or by any of its subclasses:
+every DFO-declared Class whose `subClassOf` chain reaches `Enumeration` or that the
+`rangeIncludes` of a DFO-declared Property names, every DFO-declared subclass of one, and every
+base Class whose chain reaches `Enumeration`. A DFO-declared Class lists, for itself and each
+DFO-declared subclass, the subjects its `<-typeOf` listing read, up to a cap, and a base Class
+or base subclass only the nodes StatVar rows use. `complete` is true only when every one of
+those classes is DFO-declared and its listing read every subject, so `refs` is every instance
+the graph holds. A list where it is false holds some of them. `instances` is null on every
+other node, `Enumeration` and base ranges such as `Thing` included, and on a Class whose list
+holds no node and is not complete.
 
 `SchemaTerms` holds `generation`, null where the token is unknown, and `terms`, every Class
 and Property on the graph with its `ref`, `label`, `types` (`Class`, `Property` or both),
@@ -66,7 +71,8 @@ everything else about a row's content as a finding.
 its token is unknown, `rows_checked`, the count of rows checked from the first, and every
 finding in the rows checked. A caller resumes at `rows_checked` when it is less than the rows
 sent. The check stops before the row that would take
-its reads from the graph past `CHECK_MAX_READ_IDS` distinct ids, its findings past
+its reads from the graph, ancestry included, past `CHECK_MAX_READ_IDS` distinct ids, its
+findings past
 `CHECK_MAX_FINDINGS` or its encoded body past `CHECK_MAX_BODY_BYTES`; the first row is always
 taken, so every response checks at least one row.
 """
@@ -105,17 +111,19 @@ constraint property and its value, and each observation property."""
 
 CHECK_MAX_READ_IDS = 200
 """The most distinct ids one check reads from the graph, an internal budget the wire does not
-publish. They are the ids its rows name that the schema document does not hold, counted
-before any read, each constraint value counted unless it is a literal or its property a
-document node that is no Property (`graph_api.schema_check.plan_reads`). The check takes rows
-from the first while their ids stay within the budget and answers where to resume. The budget
-is at least `CHECK_MAX_ROW_READ_IDS`, so every check takes at least one row.
+publish. It counts the ids the rows name that the schema document does not hold, each
+constraint value counted unless it is a literal or its property a document node that is no
+Property, before any read (`graph_api.schema_check.plan_reads`), and the `subClassOf`
+parents the range rule then reads for value types outside the document. The check takes rows
+from the first while their ids stay within the budget, stops before the first row whose
+ancestry would pass it, and answers where to resume. The budget is at least
+`CHECK_MAX_ROW_READ_IDS`, so every check takes at least one row.
 
-The check reads its ids in one `node_arcs_many` call (`graph_api.schema_check` counts the
-POSTs): a batch POST per 50 ids, then each id answered empty read alone, 16 at a time. The
-worst check names 200 ids the graph does not hold, 204 POSTs in 13 rounds of 16. On the dev
-graph that took 2.6 to 4.4 s over eight runs (POST median 170 to 210 ms), against 7.8 to 8.7 s
-for 41 ids read one at a time before the probes ran concurrently. Two checks at once, or other
+The check reads its planned ids in one `node_arcs_many` call, and each level of ancestry in
+one more (`graph_api.schema_check` counts the POSTs): a batch POST per 50 ids, then each id
+answered empty read alone, 16 at a time. The worst check names 200 ids the graph does not
+hold, 204 POSTs in 13 rounds of 16. On the dev graph that took 2.6 to 4.4 s over eight runs
+(POST median 170 to 210 ms), against 7.8 to 8.7 s for 41 ids read one at a time before the probes ran concurrently. Two checks at once, or other
 node readers holding the client's 32 node slots, can halve the width to about 9 s, and a wait
 for a cold schema build adds about 6.5 s, which leaves the worst check near 16 s, half of the
 30 s `GRAPH_SCHEMA_CHECK_TIMEOUT_SECONDS`. The other half covers 5xx retries (0.5 s and 2 s
@@ -141,13 +149,14 @@ type DeclaredBy = OriginId
 """The origin that declares a node: `"dfo"`, `"base"` or `"un_system"`."""
 
 
-class SchemaEnumeration(ResponseModel):
-    """The members of an enumeration Class."""
+class SchemaInstances(ResponseModel):
+    """The nodes typed by a Class or by any of its subclasses."""
 
-    members: list[str] = Field(description="the dcids of the members listed, sorted")
+    refs: list[str] = Field(description="the dcids of the instances listed, sorted")
     complete: bool = Field(
-        description="true when `members` is every member the graph holds: the class was listed "
-        "from the graph and the listing read all of them; false when it holds some of them"
+        description="true when `refs` is every instance the graph holds: the class and each of "
+        "its subclasses were listed from the graph and each listing read all of them; false "
+        "when it holds some of them"
     )
 
 
@@ -202,8 +211,11 @@ class SchemaNode(ResponseModel):
         "names no declaring Provenance for the node: it has no typeOf arc, or none of its "
         "typeOf targets carries one"
     )
-    enumeration: SchemaEnumeration | None = Field(
-        description="the members when the node is an enumeration Class; null otherwise"
+    instances: SchemaInstances | None = Field(
+        description="the nodes typed by the Class or any of its subclasses, on a DFO Class that "
+        "descends from Enumeration or that a DFO property ranges on, a DFO subclass of one, or "
+        "a base enumeration; null on every other node and on a Class whose list holds no node "
+        "and is not complete"
     )
 
 
