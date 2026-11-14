@@ -20,6 +20,7 @@ import pytest
 
 from artifact_store import LiveArtifactInventory, Tier
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration
+from code_index.types import WholeMarker
 from dataset_store.snapshot import LiveSnapshotReader, Revocation
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors import files as files_module
@@ -677,18 +678,112 @@ def test_a_cut_version_serves_its_files_after_a_party_classification_changes():
     assert frame.num_rows == 1
 
 
+# DAC2A lists the DAC total beside France in 2020 and alone in 2021.
+_TOTALS_ALONE_CSV = party_totals._CSV_HEADER + "".join(
+    f"dataflow,DC:DF_OBS(1.0.0),I,{party_totals._MEMBER},{provider},{party_totals._KENYA},USD,"
+    f"GrantEquivalent,NotApplicable,{party_totals._PROVENANCE},{year},{value},,"
+    f"{party_totals._FACET_ID}\r\n"
+    for provider, year, value in (
+        (party_totals._DAC_TOTAL, 2020, 900),
+        (party_totals._FRANCE, 2020, 100),
+        (party_totals._DAC_TOTAL, 2021, 950),
+    )
+)
+
+
+def _dac_total_whole() -> CodeIndex:
+    """The party-totals fixture index with the DAC total a whole total of DAC2A's official
+    donors, so a year listing it alone keeps it."""
+    index = party_totals._code_index()
+    return CodeIndex(
+        stamp=index.stamp,
+        declarations=(),
+        codes=(),
+        statvars=index.statvars,
+        parties=[
+            replace(
+                row,
+                whole=(WholeMarker(dataset=party_totals._PROVENANCE, covers=("official",)),),
+            )
+            if row.dcid == party_totals._DAC_TOTAL
+            else row
+            for row in index.parties.values()
+        ],
+    )
+
+
+def _totals_alone_coverage() -> FakeCoverageService:
+    """Coverage of `_TOTALS_ALONE_CSV`: the DAC total in 2020 and 2021, France in 2020."""
+    return FakeCoverageService(
+        build_coverage_index(
+            [
+                (
+                    party_totals._MEMBER,
+                    party_totals._FACET_ID,
+                    provider,
+                    party_totals._KENYA,
+                    years,
+                )
+                for provider, years in (
+                    (party_totals._DAC_TOTAL, [2020, 2021]),
+                    (party_totals._FRANCE, [2020]),
+                )
+            ],
+            role_names={party_totals._MEMBER: RoleNames(donor="provider", recipient="recipient")},
+            facet_metadata={
+                party_totals._FACET_ID: FacetMetadata(
+                    provenance_id=party_totals._PROVENANCE,
+                    measurement_method="GrantEquivalent",
+                    unit="USD",
+                )
+            },
+        )
+    )
+
+
+def _totals_alone_client(rig: _PartyRig, code_index: CodeIndex):
+    return _client(
+        graph=party_totals._graph(),
+        sdmx_transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                text=_TOTALS_ALONE_CSV,
+                headers={"content-type": "application/vnd.sdmx.data+csv;version=2.0.0"},
+            )
+        ),
+        store=rig.dataset_store,
+        version_store=rig.version_store,
+        head_writer=rig.head_store,
+        artifact_store=rig.artifact_store,
+        code_index=code_index,
+        coverage=_totals_alone_coverage(),
+    )
+
+
+def _drop_own_frame(rig: _PartyRig, *, spec_id: str, cut: dict[str, Any]) -> dict[str, Any]:
+    """Age every file of the cut version `cut` and drop the bytes of its CSV and its own frame,
+    so a CSV selector renders it from its base version's frame. Returns the CSV's artifact."""
+    [csv] = [a for a in cut["artifacts"] if a["media_type"] == "text/csv"]
+    cut_frame = canonical_frame_digest(
+        rig.version_store, subject_id=spec_id, content_version=cut["content_version"]
+    )
+    _age_every_location(rig.version_store)
+    del rig.artifact_store._objects[(csv["artifact_digest"], Tier.working.value)]
+    del rig.artifact_store._objects[(cut_frame, Tier.working.value)]
+    return csv
+
+
 @pytest.mark.parametrize(
-    ("code_index", "status"),
+    "code_index",
     [
-        pytest.param(party_totals._code_index, 302, id="same-classification"),
-        pytest.param(_dac_total_read_as_a_party, 410, id="reclassified"),
+        pytest.param(party_totals._code_index, id="same-classification"),
+        pytest.param(_dac_total_read_as_a_party, id="reclassified"),
     ],
 )
-def test_a_cut_version_whose_own_frame_is_gone_serves_a_re_cut_only_when_it_reproduces(
-    code_index, status: int
-):
-    """With the cut version's own frame object gone, the selector cuts its base frame again
-    under the serving index, and serves the file only when that cut gives the same version."""
+def test_a_cut_version_whose_own_frame_is_gone_replays_its_recorded_cut(code_index):
+    """With the cut version's own frame object gone, the selector cuts its base frame again by
+    the cut its trace records, so an index that now reads the DAC total as a party cuts the
+    same rows and serves the same file."""
     rig = _PartyRig()
     spec_id, sidecar = party_totals._spec_id_and_sidecar()
     cut = _mint(
@@ -697,23 +792,47 @@ def test_a_cut_version_whose_own_frame_is_gone_serves_a_re_cut_only_when_it_repr
         sidecar=sidecar,
         options=party_totals._CUT,
     )
-    [csv] = [a for a in cut["artifacts"] if a["media_type"] == "text/csv"]
-    cut_frame = canonical_frame_digest(
-        rig.version_store, subject_id=spec_id, content_version=cut["content_version"]
-    )
-    _age_every_location(rig.version_store)
-    del rig.artifact_store._objects[(csv["artifact_digest"], Tier.working.value)]
-    del rig.artifact_store._objects[(cut_frame, Tier.working.value)]
+    csv = _drop_own_frame(rig, spec_id=spec_id, cut=cut)
 
     resp = rig.client(code_index()).get(
         _selector(cut, "format=csv&bundle=false"), follow_redirects=False
     )
 
-    assert resp.status_code == status, resp.text
-    if status == 302:
-        assert _signed_digest(resp.headers["location"]) == csv["artifact_digest"]
-    else:
-        assert resp.json()["code"] == "artifact_expired"
+    assert resp.status_code == 302, resp.text
+    assert _signed_digest(resp.headers["location"]) == csv["artifact_digest"]
+
+
+def test_a_cut_recorded_before_whole_totals_stayed_re_renders_to_its_own_version():
+    """A cut that left out every total, as the cut did before a year of totals alone kept its
+    whole ones, recorded the DAC total left out of 2021 too. With its own frame gone, the
+    selector replays that record on the base frame and serves the version's file, though a
+    fresh cut now keeps the DAC total in 2021, a year it lists alone."""
+    rig = _PartyRig()
+    spec_id, sidecar = party_totals._spec_id_and_sidecar()
+    cut = _mint(
+        _totals_alone_client(rig, party_totals._code_index()),
+        spec_id=spec_id,
+        sidecar=sidecar,
+        options=party_totals._CUT,
+    )
+    assert cut["trace"]["party_totals_left_out"] == party_totals._LEFT_OUT
+    assert cut["coverage"]["rows"] == 1
+    fresh = _mint(
+        _totals_alone_client(_PartyRig(), _dac_total_whole()),
+        spec_id=spec_id,
+        sidecar=sidecar,
+        options=party_totals._CUT,
+    )
+    assert fresh["content_version"] != cut["content_version"]
+    assert fresh["coverage"]["rows"] == 2
+    csv = _drop_own_frame(rig, spec_id=spec_id, cut=cut)
+
+    resp = _totals_alone_client(rig, _dac_total_whole()).get(
+        _selector(cut, "format=csv&bundle=false"), follow_redirects=False
+    )
+
+    assert resp.status_code == 302, resp.text
+    assert _signed_digest(resp.headers["location"]) == csv["artifact_digest"]
 
 
 def test_a_dead_aged_canonical_frame_gives_way_to_a_servable_pinned_frame(version_store):

@@ -22,6 +22,7 @@ from assembler.bind import BoundSeries, role_columns, series_label_parts
 from assembler.errors import BindingInvalid, ConstraintViolation
 from assembler.frame_view import dimension_columns, facet_dimension_names
 from assembler.limits import LABEL_MAX, joined_label
+from assembler.order import value_order
 from assembler.ports import ResolvedFrame
 from assembler.resolve import ResolvedSeries
 from assembler.select import has_arrayed_dimension
@@ -123,11 +124,12 @@ def _build_bar_chart(
 ) -> tuple[dict[str, object], frozenset[str]]:
     """Builds a bar chart in entity or period mode.
 
-    A select that lists values on one dimension draws one bar per value, in list order. A
-    select that resolves to one series draws it across the window. Otherwise, when the
-    series vary on exactly one dimension and each holds a value in the one period with data,
-    the chart draws one bar per value of that dimension, largest first; `assembler.reply`
-    states this default in the fact summary. Any other selection refuses `binding_invalid`."""
+    A select that lists values on one dimension draws one bar per value, in series order
+    (member-id order, or the intent's `order`). A select that resolves to one series
+    draws it across the window. Otherwise, when the series vary on exactly one dimension and
+    each holds a value in the one period with data, the chart draws one bar per value of
+    that dimension, largest first unless the intent has an `order`. `assembler.reply` states
+    this default in the fact summary. Any other selection refuses `binding_invalid`."""
     stat_var_labels = _stat_var_labels(resolved_frame=resolved_frame, series=series)
     y_label = _axis_label(stat_var_labels=stat_var_labels)
     title_text = cast(str | None, merged_intent.get("title")) or _default_title(
@@ -151,7 +153,7 @@ def _build_bar_chart(
             series=series,
             bound_series=bound_series,
             source_id_by_raw_ref=source_id_by_raw_ref,
-            largest_first=not has_arrayed_dimension(select=select),
+            largest_first=not has_arrayed_dimension(select=select) and "order" not in merged_intent,
         )
     payload_series, category_axis, observed_periods = series_and_axis
     scale, range_ = _value_axis_scale_and_range(merged_intent=merged_intent)
@@ -218,9 +220,10 @@ def _bar_chart_entity_mode(
     source_id_by_raw_ref: Mapping[str | None, str],
     largest_first: bool,
 ) -> tuple[list[dict[str, object]], dict[str, object], frozenset[str]]:
-    """Builds one bar per value of `category.dimension` at `category.period`, in series order
-    or, with `largest_first`, by value from largest to smallest. Each bar carries its value's
-    label on that dimension, which is what tells the bars apart."""
+    """Builds one bar per value of `category.dimension` at `category.period`, in series
+    order (member-id order, or the intent's `order`) or, with `largest_first`, by value from
+    largest to smallest. Each bar carries its value's label on that dimension, which is what
+    tells the bars apart."""
     category_dimension, shared_period = category
     payload_series: list[dict[str, object]] = [
         {
@@ -236,10 +239,13 @@ def _bar_chart_entity_mode(
     ]
     if largest_first:
         # Every series is observed at the shared period, so each bar holds a value.
-        payload_series.sort(
-            key=lambda bar: cast(float, cast("list[dict[str, object]]", bar["points"])[0]["value"]),
-            reverse=True,
-        )
+        bar_values = [
+            cast(float, cast("list[dict[str, object]]", bar["points"])[0]["value"])
+            for bar in payload_series
+        ]
+        payload_series = [
+            payload_series[index] for index in value_order(values=bar_values, descending=True)
+        ]
     category_axis: dict[str, object] = {
         "mode": "entity",
         "category_dimension": category_dimension,

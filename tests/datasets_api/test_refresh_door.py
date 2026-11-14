@@ -47,6 +47,7 @@ from statvar_members import MemberEnumerator
 
 from . import test_serve_groupby_collapse as collapse_fixture
 from . import test_serve_party_totals as party_fixture
+from . import test_version_file_selector as selector_fixture
 from ._app_factories import make_client
 from ._frame_doubles import link_frame1_only
 from ._operation_store import FakeOperationDatasetStore
@@ -140,17 +141,30 @@ def _rig(
     live_refresh_principal: str = _LIVE_PRINCIPAL,
     materialise_max_concurrency: int | None = None,
     work_max_concurrency: int | None = None,
+    stores_of: _Rig | None = None,
     **settings: object,
 ) -> _Rig:
     """A composed Datasets app over one SQLite version store, with a head store tests can age
-    and an SDMX body tests can replace."""
-    spec_store = FakeDatasetStore()
-    version_store = FakeVersionRecordDatasetStore()
-    artifact_store = _RenderableArtifactStore(inventory=LiveArtifactInventory(store=version_store))
-    head_store = _FakeHeadStore()
-    reference_writer = FakeArtifactReferenceWriter()
-    task_client = FakeTaskClient()
-    operation_store = LiveOperationStore(store=FakeOperationDatasetStore())
+    and an SDMX body tests can replace. `stores_of` names a rig whose stores, head store and
+    queue the app shares, so a test can serve them under another code index."""
+    if stores_of is None:
+        spec_store = FakeDatasetStore()
+        version_store = FakeVersionRecordDatasetStore()
+        artifact_store = _RenderableArtifactStore(
+            inventory=LiveArtifactInventory(store=version_store)
+        )
+        head_store = _FakeHeadStore()
+        reference_writer = FakeArtifactReferenceWriter()
+        task_client = FakeTaskClient()
+        operation_store = LiveOperationStore(store=FakeOperationDatasetStore())
+    else:
+        spec_store = stores_of.spec_store
+        version_store = stores_of.version_store
+        artifact_store = stores_of.artifact_store
+        head_store = stores_of.head_store
+        reference_writer = stores_of.reference_writer
+        task_client = stores_of.task_client
+        operation_store = stores_of.operation_store
     body_ref = {"text": body}
     sdmx_requests: list[httpx.Request] = []
 
@@ -691,6 +705,47 @@ def test_a_rebuild_moves_a_cut_frame_to_the_cut_of_the_new_head():
     snapshot = rig.client.get(f"/api/datasets/{spec_id}/{moved_to}")
     assert snapshot.json()["trace"]["party_totals_left_out"] == party_fixture._LEFT_OUT
     assert snapshot.json()["coverage"]["rows"] == 1
+
+
+def _totals_alone_rig(*, code_index: CodeIndex, stores_of: _Rig | None = None) -> _Rig:
+    """A rig over the party-totals dataset whose DAC total stands alone in 2021, under
+    `code_index`."""
+    return _rig(
+        graph=party_fixture._graph(),
+        coverage=selector_fixture._totals_alone_coverage(),
+        body=selector_fixture._TOTALS_ALONE_CSV,
+        code_index=code_index,
+        stores_of=stores_of,
+    )
+
+
+def test_a_recorded_cut_whose_frame_expired_re_renders_to_its_own_version():
+    """A cut minted when the cut left out every total, so the DAC total of 2021 too, keeps
+    answering `current` once its own frame expires under an index that marks that total whole:
+    the refresh replays the cut its trace records on the head's frame, where a fresh cut now
+    keeps the DAC total in 2021."""
+    minting = _totals_alone_rig(code_index=party_fixture._code_index())
+    spec_id, sidecar = party_fixture._spec_id_and_sidecar()
+    cut = party_fixture._mint(minting.client, spec_id=spec_id, sidecar=sidecar, options=_CUT_FRAME)
+    assert cut["coverage"]["rows"] == 1
+    fresh = party_fixture._mint(
+        _totals_alone_rig(code_index=selector_fixture._dac_total_whole()).client,
+        spec_id=spec_id,
+        sidecar=sidecar,
+        options=_CUT_FRAME,
+    )
+    assert fresh["content_version"] != cut["content_version"]
+    minting.expire_frame(spec_id=spec_id, content_version=cut["content_version"])
+    serving = _totals_alone_rig(code_index=selector_fixture._dac_total_whole(), stores_of=minting)
+
+    resp = serving.refresh(spec_id=spec_id, content_version=cut["content_version"])
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {
+        "status": "current",
+        "frame": {"spec_id": spec_id, "content_version": cut["content_version"]},
+    }
+    assert serving.frame_servable(spec_id=spec_id, content_version=cut["content_version"])
 
 
 # --- A sum that left the frame unchanged shares the raw version ---

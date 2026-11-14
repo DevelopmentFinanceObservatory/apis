@@ -71,6 +71,7 @@ from search.models import (
     BaseIdentity,
     ChoiceOrigin,
     Entry,
+    IdentityBindingSet,
     IdentityBindingValue,
     IdentityFacetValueRequest,
     IdentityShapeSchema,
@@ -761,10 +762,13 @@ def _years_label(window: YearSpan) -> str:
 
 def _not_offered(identity: BaseIdentity, source: InclusiveSource) -> str | None:
     """Why the inclusive scope binding `source`'s composite cannot serve `identity`, None
-    when it can: the identity pins a provenance (`provenance_pinned`), is counted on a basis
-    the source does not add its imputed line on (`basis`, `InclusiveSource.bases`), or at
-    constant prices, which the imputed lines are not published at (`constant_prices`)."""
-    if (identity.facets or {}).get("provenance") is not None:
+    when it can: the identity pins a provenance that admits a table other than the one the
+    bilateral answer reads (`provenance_pinned`; a pin to `InclusiveSource.dataset` alone
+    passes, since the composite reads that table), is counted on a basis the source does not
+    add its imputed line on (`basis`, `InclusiveSource.bases`), or at constant prices, which
+    the imputed lines are not published at (`constant_prices`)."""
+    pin = (identity.facets or {}).get("provenance")
+    if pin is not None and _pinned_tables(pin) != {source.dataset}:
         return "provenance_pinned"
     measure = held_measure(identity)
     if measure is None or measure.basis not in source.bases:
@@ -776,6 +780,16 @@ def _not_offered(identity: BaseIdentity, source: InclusiveSource) -> str | None:
     ):
         return "constant_prices"
     return None
+
+
+def _pinned_tables(pin: object) -> set[str]:
+    """The tables a provenance binding admits: its value, or the members of its set. Empty
+    for any other binding, which admits every table."""
+    if isinstance(pin, IdentityBindingValue):
+        return {pin.ref}
+    if isinstance(pin, IdentityBindingSet):
+        return set(pin.refs)
+    return set()
 
 
 def _providers_not_offered(

@@ -30,6 +30,7 @@ from code_index.composites import (
     ComponentIdentity,
     CompositeNotServable,
     component_identities,
+    components_sum,
     provenance_account,
     table_identity,
 )
@@ -406,7 +407,8 @@ def assemble_composite(
     `identity`; its coverage counts every component's series in the years each serves, over
     the window those years span; its
     headline counts the latest of those years over every component serving it
-    (`_headline`); its StatVar counts are the components' summed (`_stat_vars`); its
+    (`_headline`); its StatVar counts are the components' summed, and it states whether a
+    groupby sum adds the components (`_stat_vars`); its
     provenance facet names the composite, with the composite's label and the account its
     component tables give; its sources are its component tables, whose labels its
     `published_tables` joins, and its measure label reads the declaration's `measure_noun`
@@ -442,7 +444,9 @@ def assemble_composite(
             "facets": facets,
             "observations": None,
             "headline": _headline(served, document, spec.resolved.headline, facts=facts),
-            "stat_vars": _stat_vars(served, spec.resolved.stat_vars, document, facts=facts),
+            "stat_vars": _stat_vars(
+                served, spec.resolved.stat_vars, document, declaration, facts=facts
+            ),
             "slots": [
                 slot.model_copy(update={"binding": _window_binding(window)})
                 if slot.key.axis == "when" and window is not None
@@ -533,14 +537,17 @@ def _stat_vars(
     served: Sequence[ServedComponent],
     stated: ResolvedStatVars,
     identity: Mapping[str, object],
+    declaration: CompositeDeclaration,
     *,
     facts: ScopeFacts,
 ) -> ResolvedStatVars:
-    """`stated`, the table identity's StatVar counts, restated over every component. The
-    member count is the StatVars holding a series in the years their component serves, the
-    served count sums the StatVars a mint of each component serves (None where the index does
-    not settle some component's members), and the served date range spans the years the
-    components serve."""
+    """`stated`, the table identity's StatVar counts, restated over every component of the
+    composite `declaration`. The member count is the StatVars holding a series in the years
+    their component serves, the served count sums the StatVars a mint of each component
+    serves (None where the index does not settle some component's members), the served date
+    range spans the years the components serve, and `sums_components` states whether a
+    groupby sum adds the components (`code_index.composites.components_sum`), the rule the
+    mint sums by."""
     years = sorted({year for item in served for year in item.served})
     bound = _bound(identity)
     confirmed = sum(
@@ -552,6 +559,7 @@ def _stat_vars(
             "member_count": confirmed,
             "member_count_exact": True,
             "served_count": None if None in counts else sum(c for c in counts if c is not None),
+            "sums_components": components_sum(declaration),
             "data_date_range": (
                 DateRange(start=str(years[0]), end=str(years[-1])) if years else None
             ),

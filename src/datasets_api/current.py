@@ -112,6 +112,7 @@ from datasets_api.operation_store import (
 from datasets_api.operations.submit import submit_over_budget
 from datasets_api.operations.task_client import NullTaskClient, TaskClient
 from datasets_api.output_options import derive_output_options
+from datasets_api.party_totals import PartyTotalsCut
 from datasets_api.query_options import encode_query_options
 from datasets_api.recorded_rendering import serving_frames
 from datasets_api.render import (
@@ -727,6 +728,7 @@ def _render_frame(
     coverage_index: CoverageIndex,
     frame: StoredFrame,
     plan: StoredRenderPlan,
+    recorded_cut: PartyTotalsCut | None = None,
 ) -> Manifest | None:
     """Render a missing request format from the stored frame `frame` on a head hit. The caller
     holds a materialise permit from before it read `frame` to after this returns.
@@ -735,7 +737,9 @@ def _render_frame(
     fresh rendering. The full population keeps `groupby` completeness checks consistent,
     including zero-row members. `plan` is what `plan_stored_render` read from the stored
     version: a pivot reads its stored output profile, a groupby compares its collapse with the
-    recorded frame hash, and its frame mode says how the render reads `frame`.
+    recorded frame hash, and its frame mode says how the render reads `frame`. `recorded_cut`
+    is the party-totals cut a derived version rendered from this base frame replays
+    (`render.render_and_store`).
 
     Return the derived version's manifest when groupby or a party-totals cut changes the frame
     (`render.DerivedVersion`). A derived version's own frame (`StoredRenderPlan.frame_mode`
@@ -819,6 +823,7 @@ def _render_frame(
             else None
         ),
         frame_mode=plan.frame_mode,
+        recorded_cut=recorded_cut,
     )
     artifact, reshape_warnings, derived = (
         rendered.artifact,
@@ -898,11 +903,12 @@ def _render_located_frame(
     trace_id: str | None,
     coverage_index: CoverageIndex,
     plan: StoredRenderPlan,
+    recorded_cut: PartyTotalsCut | None = None,
 ) -> Manifest | None:
     """Read the stored frame at `location`, one of the version's links (`read_located_frame`),
-    and render it (`_render_frame`), or return `None` for missing or corrupt frame bytes. The
-    caller holds a materialise permit and binds no frame itself, so the frame is freed when
-    this returns, before the permit is released."""
+    and render it (`_render_frame`, with `recorded_cut`), or return `None` for missing or
+    corrupt frame bytes. The caller holds a materialise permit and binds no frame itself, so the
+    frame is freed when this returns, before the permit is released."""
 
     def read() -> bytes | None:
         try:
@@ -925,6 +931,7 @@ def _render_located_frame(
         coverage_index=coverage_index,
         frame=stored_frame,
         plan=plan,
+        recorded_cut=recorded_cut,
     )
 
 
@@ -939,9 +946,11 @@ def _render_stored_rendering(
     coverage_snapshot: CoverageSnapshot,
     frame: StoredFrame | None = None,
     plan: StoredRenderPlan | None = None,
+    recorded_cut: PartyTotalsCut | None = None,
 ) -> Manifest | None:
-    """Render a missing request format from the version's stored frame (`_render_frame`),
-    under exactly one materialise permit from the frame read to the end of the render.
+    """Render a missing request format from the version's stored frame (`_render_frame`, with
+    `recorded_cut`), under exactly one materialise permit from the frame read to the end of the
+    render.
 
     With `frame` `None` this takes the permit: it reads the servable stored frame
     (`servable_frame_location`) inside a `bounded_materialise_slot`, and returns `None` for a
@@ -999,6 +1008,7 @@ def _render_stored_rendering(
             coverage_index=coverage_snapshot.index,
             frame=frame,
             plan=decided,
+            recorded_cut=recorded_cut,
         )
     locations = deps.snapshot_reader.read_artifact_locations(subject_id, content_version)
     location = servable_frame_location(locations, now=deps.now())
@@ -1025,6 +1035,7 @@ def _render_stored_rendering(
             trace_id=trace_id,
             coverage_index=coverage_snapshot.index,
             plan=decided,
+            recorded_cut=recorded_cut,
         )
 
 
@@ -1040,6 +1051,7 @@ def head_rendering(
     frame: StoredFrame | None = None,
     plan: StoredRenderPlan | None = None,
     revoked_under: Sequence[str] = (),
+    recorded_cut: PartyTotalsCut | None = None,
 ) -> Manifest | None:
     """Load the stored version, narrowed to the rendering `options` names. `options` `None`
     loads the version without its artifacts. `revoked_under` is `load_stored`'s. Options asking
@@ -1057,7 +1069,9 @@ def head_rendering(
     frame the caller read and verified under a materialise permit it still holds: the render
     takes those bytes in place of the read, takes no permit, and trusts `coverage_snapshot`
     as taken under that permit. A `plan` argument is the `plan_stored_render` decision the
-    caller made from this version, so the render does not make it again.
+    caller made from this version, so the render does not make it again. A `recorded_cut`
+    argument is the party-totals cut a derived version's trace records, which a render of that
+    version from this, its base version's frame, replays (`render.render_and_store`).
     """
     keys = (
         resolved_rendering_keys(
@@ -1090,6 +1104,7 @@ def head_rendering(
         coverage_snapshot=coverage_snapshot,
         frame=frame,
         plan=plan,
+        recorded_cut=recorded_cut,
     )
 
 

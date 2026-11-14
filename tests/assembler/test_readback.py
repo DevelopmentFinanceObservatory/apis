@@ -677,6 +677,77 @@ def test_table_readback_with_no_series_id_on_any_row_is_a_pre_fix_payload(
     assert TABLE_ROW_SERIES_ID_INCONSISTENT_MARKER not in caplog.text
 
 
+def test_a_table_series_continued_by_estimates_summarises_as_one_series(
+    frame_store, revision_store, release_registry, caplog
+):
+    """ETH is reported for 2019-2021 and continued by its source's estimates for 2022-2023,
+    beside GHA reported under `Reported`, so the table has a `measurementMethod` column and
+    ETH's estimated rows carry their own method. The summary still reads each drawn series
+    once, under its id."""
+    rows = [
+        {
+            "stat_var": "dcid:MalariaGrantDisbursements",
+            "recipient": "country/ETH",
+            "time_period": str(year),
+            "value": float(year),
+            "unit": None,
+            "measurementMethod": "Estimated" if year >= 2022 else None,
+            "provenance": "src_oecd_dac",
+        }
+        for year in range(2019, 2024)
+    ]
+    rows += [
+        {
+            **row,
+            "recipient": "country/GHA",
+            "value": row["value"] + 0.5,
+            "measurementMethod": "Reported",
+        }
+        for row in rows
+    ]
+    rf = build_resolved_frame(
+        frame_ref=FrameRef(spec_id="spec_" + "e" * 32, content_version="cv_" + "e" * 32),
+        role_keys=("recipient",),
+        rows=rows,
+        labels={"country/ETH": "Ethiopia", "country/GHA": "Ghana"},
+        manifest={
+            "schema_version": 1,
+            "trace": {
+                "continuations": [
+                    {
+                        "axis": "measurementMethod",
+                        "method": "Estimated",
+                        "periods": ["2022", "2023"],
+                    }
+                ]
+            },
+        },
+    )
+    frame_store.put(resolved_frame=rf)
+    created = write_component(
+        intent={
+            "type": "table",
+            "frame_ref": {
+                "spec_id": rf.frame_ref.spec_id,
+                "content_version": rf.frame_ref.content_version,
+            },
+            "select": {"stat_var": "dcid:MalariaGrantDisbursements"},
+        },
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+    got = get_component(component_id=created.component_id, revision_store=revision_store)
+
+    table_rows = created.resolved_payload["component"]["rows"]
+    methods = {row["dimensions"]["measurementMethod"] for row in table_rows[:5]}
+    assert len(methods) == 2, "ETH's rows must differ on their method for this test to bite"
+    series_ids = list(dict.fromkeys(row["series_id"] for row in table_rows))
+    for summary in (created.fact_summary, got["fact_summary"]):
+        assert [one["id"] for one in summary["series"]] == series_ids
+    assert TABLE_ROW_SERIES_ID_INCONSISTENT_MARKER not in caplog.text
+
+
 def test_entity_mode_bar_chart_create_reply_agrees_with_a_get_component_readback_on_coordinates(
     frame_store, revision_store, release_registry
 ):
@@ -1475,6 +1546,7 @@ def test_source_card_create_and_readback_both_carry_source_refs(
         "unit",
         "change",
         "source_refs",
+        "order",
         "defaults",
     }
     assert set(created.fact_summary) == expected_keys

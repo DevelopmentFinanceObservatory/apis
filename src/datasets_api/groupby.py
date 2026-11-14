@@ -18,7 +18,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from typing import cast
 
-from code_index.composites import component_of
+from code_index.composites import component_of, components_sum
 from code_index.query import CodeIndex
 from code_index.types import (
     CodeSystemDeclaration,
@@ -98,14 +98,14 @@ def levels_in_frame(
 
 
 def sums_components(*, by: Sequence[str], composite: CompositeDeclaration | None) -> bool:
-    """Return true when the groupby adds the components of the stacked composite `composite`,
-    the composite the frame's rows carry as their provenance or `None`, into one total: `by`
-    keeps no `stat_var`.
+    """Return true when the groupby adds the components of `composite`, the composite the
+    frame's rows carry as their provenance or `None`, into one total: the composite's
+    components sum (`code_index.composites.components_sum`) and `by` keeps no `stat_var`.
 
     A stacked composite's components are parts of one total by declaration, so their StatVars
     sum whether or not they decode a summable axis. DAC2a's total ODA and its imputed
     multilateral ODA differ only on the aid type, which is not summable."""
-    return composite is not None and composite.kind == "stacked" and _STAT_VAR_COLUMN not in by
+    return composite is not None and components_sum(composite) and _STAT_VAR_COLUMN not in by
 
 
 def sums_stat_vars(

@@ -98,8 +98,13 @@ from datasets_api.headers import no_store_headers
 from datasets_api.manifest import stored_manifest, stored_manifest_facts
 from datasets_api.manifest_models import CitationModel, Manifest
 from datasets_api.mint_models import MintOptions
+from datasets_api.party_totals import PartyTotalsCut
 from datasets_api.query_options import QueryOptionsInvalid, parse_query_options, pointer_for_key
-from datasets_api.recorded_rendering import recorded_minting, serving_frames
+from datasets_api.recorded_rendering import (
+    recorded_minting,
+    recorded_party_cut,
+    serving_frames,
+)
 from datasets_api.render import (
     artifact_rendering,
     artifact_rendering_keys,
@@ -311,9 +316,10 @@ def _render_from_stored_frame(
     subject_ids: tuple[str, ...],
     options: MintOptions,
     deps: DefinitionDeps,
+    recorded_cut: PartyTotalsCut | None = None,
 ) -> Manifest | None:
     """Render `options` of the version `source` from its stored frame through the definition
-    head path (`current.head_rendering`), and return the manifest that path gives, or `None`
+    head path (`current.head_rendering`), replaying `recorded_cut` when given, and return the manifest that path gives, or `None`
     when no frame bytes of `source` are left to render from or its frame renders nothing
     (`current.StoredRenderPlan.frame_mode` `None`, or a render that gives another version).
 
@@ -336,6 +342,7 @@ def _render_from_stored_frame(
         options=options,
         trace_id=None,
         revoked_under=subject_ids,
+        recorded_cut=recorded_cut,
     )
     if stored_frame_location(source.servable) is not None:
         rendered = render(coverage_snapshot=deps.coverage.snapshot())
@@ -384,17 +391,20 @@ def render_version_from_frame(
     the derived version's own minting options, which name the rendering. With no bytes of
     that frame left, or a frame that renders nothing, the derived version renders from its
     base version's frame, as its mint did, read under `subject_ids`, so a revoked base
-    refuses `snapshot_revoked`. That render derives again under the current declarations and
-    serves the version only when it gives the same content version, which the callers
-    check."""
+    refuses `snapshot_revoked`. That render replays the party-totals cut the version's trace
+    records (`recorded_rendering.recorded_party_cut`), so a cut minted under an earlier code
+    index or an earlier rule cuts the same rows, and derives any groupby again under the
+    current declarations. It serves the version only when it gives the same content version,
+    which the callers check."""
     frames = serving_frames(
         stored.version,
         renderings=[location.rendering for location in (*stored.servable, *stored.aged_out)],
     )
     for frame in frames:
+        own = frame.content_version == stored.version.content_version
         source = (
             stored
-            if frame.content_version == stored.version.content_version
+            if own
             else read_servable_version(
                 deps.snapshot_reader,
                 subject_id=stored.version.subject_id,
@@ -404,7 +414,11 @@ def render_version_from_frame(
             )
         )
         rendered = _render_from_stored_frame(
-            source, subject_ids=subject_ids, options=options, deps=deps
+            source,
+            subject_ids=subject_ids,
+            options=options,
+            deps=deps,
+            recorded_cut=None if own else recorded_party_cut(stored.version),
         )
         if rendered is not None:
             return rendered

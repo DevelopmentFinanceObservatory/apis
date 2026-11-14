@@ -200,6 +200,20 @@ class ResolvedStatVars(StrictModel):
             "serve, and the part carries membership_unverified"
         ),
     )
+    sums_components: bool = Field(
+        default=False,
+        exclude_if=_is_false,
+        description=(
+            "true when the definition binds a declared composite whose components sum: a "
+            "datasets door `groupby` whose `by` keeps no `stat_var` adds the members of its "
+            "different components into one series per cell, and a cell holding one "
+            "component's member serves that member. The mint sums by the same rule "
+            "(`code_index.composites.components_sum`). False, the default, is omitted: the "
+            "answer binds no composite, or one whose components no sum adds. It "
+            "says nothing about the slots: each slot's `summable` still governs a sum over "
+            "that slot. Spec identity does not hash it"
+        ),
+    )
     data_date_range: DateRange | None = Field(
         default=None,
         description=(

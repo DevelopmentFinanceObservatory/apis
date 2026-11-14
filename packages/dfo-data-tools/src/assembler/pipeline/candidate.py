@@ -81,6 +81,7 @@ from assembler.mint import (
     with_card_description,
 )
 from assembler.mint.provenance import LeftOut, _with_left_out_warning
+from assembler.order import order_series
 from assembler.ports import FrameRef, FrameStore, NamedSeries, ResolvedFrame, RevisionRecord
 from assembler.resolve import (
     COMPONENT_SERIES_LIMIT,
@@ -285,6 +286,7 @@ def _build_candidate(
             window=window,
             rolling=rolling,
             rendered_names=rendered_names,
+            is_render=stored_select is not None,
             release=release,
             clock=clock,
             described=described,
@@ -310,6 +312,7 @@ def _draw(
     window: Mapping[str, object] | None,
     rolling: ResolvedRolling | None,
     rendered_names: tuple[NamedSeries, ...],
+    is_render: bool,
     release: CatalogueRelease,
     clock: Callable[[], datetime.datetime],
     described: DescribedRevision | None,
@@ -317,7 +320,8 @@ def _draw(
     """Draws `member` from `series`, resolved on `resolved_frame` over `window` (completed,
     or `None` for the frame's default), and checks it: a bar chart's period mode, a stat
     card's one series, the window's points, a table's rows, the series a rolling intent or
-    a render leaves out, then minting, the release's constraints and the envelope size
+    a render leaves out, the series' order (`assembler.order`; a render never refuses on it,
+    `is_render`), then minting, the release's constraints and the envelope size
     (`_finish_candidate`). `drawn` is the intent with its relative periods resolved and
     `stored_intent` the one the candidate stores. A write draws its own member, and a line
     chart's refusal draws others to find which would draw its select
@@ -377,6 +381,14 @@ def _draw(
             series=rendered_names,
         )
 
+    series, bound = order_series(
+        member=member,
+        intent=drawn,
+        series=series,
+        bound_series=bound,
+        refuses=not is_render,
+        relative_period=rolling is not None,
+    )
     return _finish_candidate(
         member=member,
         merged_intent=drawn,
