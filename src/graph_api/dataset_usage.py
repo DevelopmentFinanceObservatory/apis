@@ -166,7 +166,7 @@ def build_usage(*, code_index: CodeIndex, coverage: ProvenanceCoverage) -> Datas
         declaration = code_index.datasets.get(provenance)
         provenances.append(
             ProvenanceUsage(
-                dcid=provenance,
+                ref=provenance,
                 label=declaration.label if declaration is not None else None,
                 description=declaration.description if declaration is not None else None,
                 stat_var_count=len(rows),

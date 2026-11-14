@@ -1,4 +1,4 @@
-The Graph API surface reads Data Commons Platform (DCP) graphs and the tables DFO holds beside them. It resolves free text to graph references, describes any node the graph holds under one envelope per kind, lists what belongs to a node (codes, datasets, variables, facets, group and region members), assembles a per-source documentation document rolled up from a Dataset's own Provenance children, and serves the instance's schema with a check for candidate StatVar definitions.
+The Graph API surface reads Data Commons Platform (DCP) graphs and the tables DFO holds beside them. It resolves free text to graph references, describes any node the graph holds under one envelope per kind, lists what belongs to a node (codes, datasets, variables, facets, group and region members), assembles a per-source documentation document rolled up from a Dataset's own Provenance children, and serves the deployment's schema with a check for candidate StatVar definitions.
 
 The surface mounts at `/api/graph` and operates as an independent composition root within `dfo-apis`.
 
@@ -858,37 +858,37 @@ The example is abridged. It shows four entries, cuts each `datasets` list to at 
 
 ### GET /api/graph/schema
 
-The instance's Data Commons schema as one document: every Class and Property it declares, with the nodes they point at, the nodes the code index's StatVar rows name, the members of enumerations, and the ancestors of all of these. The body is `{generation, nodes}`. `generation` is the graph generation token the document was built from, `null` when the token is unknown, and `nodes` holds one entry per member, sorted by `dcid`.
+The deployment's Data Commons schema as one document: every Class and Property DFO declares, with the nodes they point at, the nodes the code index's StatVar rows name, the members of enumerations, and the ancestors of all of these. The body is `{generation, nodes}`. `generation` is the graph generation token the document was built from, `null` when the token is unknown, and `nodes` holds one entry per member, sorted by `ref`.
 
-A node carries `dcid`, `name`, `description`, `types`, `alternate_name`, `sub_class_of`, `sub_property_of`, `specialization_of`, `domain_includes`, `range_includes`, `classification_code`, `other_properties`, `provenances`, `declared_by` and `enumeration`. The list members are the values of the Data Commons property of the same name in snake case (`types` is `typeOf`), each sorted. A dcid the graph does not hold, such as the literal range `Number`, is not a node. The arc that names it keeps the dcid.
+A node carries `ref`, `label`, `description`, `types`, `alternate_name`, `sub_class_of`, `sub_property_of`, `specialization_of`, `domain_includes`, `range_includes`, `classification_code`, `other_properties`, `provenances`, `declared_by` and `enumeration`. `ref` is the node's dcid and `label` its name, as on the node route's envelope. The list members are the values of the Data Commons property of the same name in snake case (`types` is `typeOf`), each sorted. A dcid the graph does not hold, such as the literal range `Number`, is not a node. The arc that names it keeps the dcid.
 
-- `name` follows `dc_graph.display_name`: the greatest `name` value by code point, with a name equal to the dcid counting as none. It is `null` when the graph gives no name.
+- `label` follows `dc_graph.display_name`: the greatest `name` value by code point, with a name equal to the dcid counting as none. It is `null` when the graph gives no name.
 - `description` is the smallest `description` value by code point, or `null`.
-- `provenances` lists the Provenances that declare the node's `typeOf` arcs, verbatim, read with the node's values in one live read of the node. `declared_by` is `"base"` when every one starts `dc/base/`, and `"instance"` otherwise. The Provenances are those the node's `typeOf` targets carry, so a target with none adds nothing. `declared_by` is `null` when the node has no `typeOf` arc or none of its `typeOf` targets carries a Provenance, and its `provenances` is then empty. The build logs one warning that counts the nodes with a `typeOf` target that carries no Provenance and the terms below whose listing entries carry none, naming the first ten of each. The check treats a property with a `null` `declared_by` as one the instance does not declare.
-- `other_properties` holds every other outgoing property the graph holds on the node, keyed by property dcid: `{"wbCode": [{"value": "DOD"}], "nationalCurrencyOf": [{"dcid": "country/KEN"}]}`. Each value has exactly one member: `{"dcid": <string>}` when it names a node and `{"value": <string>}` when it is a literal. A literal is the string the graph holds, never parsed to a number or boolean, so `iso4217NumericCode` reads `{"value": "404"}`. A value the graph repeats once per declaring Provenance appears once. Properties are sorted by dcid and values by their text, a node reference before a literal of the same text. A literal longer than 2,000 characters, such as a geometry, is left out, a property keeps its first 100 values in that order, and the build logs one warning counting the values left out and naming the first ten node and property pairs. A node with no other property holds `{}`. The named members are a closed set: they never appear in `other_properties`, and a property promoted to a named member later leaves the map. The set of other properties is open. On the dev graph 60 of 861 nodes carry one or more, among them `wbCode`, `dacCode`, `iso4217AlphaCode`, `iso4217NumericCode`, `currencyStatus`, `nationalCurrencyOf`, `combinesMethods`, `isProvisional`, and the StatVar properties of the few StatVar nodes the document holds. None reaches either bound: the longest literal holds 67 characters and the most values on one property is 27.
-- `enumeration` is `{members, complete}` on a Class whose `subClassOf` chain reaches `Enumeration`, and `null` on every other node. An instance-declared enumeration lists the members its `<-typeOf` listing read, up to 5,000. A base enumeration lists only the members StatVar rows use. `complete` is `true` only when the build listed the class from the graph and the listing read every member, so `members` is every member the graph holds. Where it is `false`, `members` holds some of them.
+- `provenances` lists the Provenances that declare the node's `typeOf` arcs, verbatim, read with the node's values in one live read of the node. `declared_by` names the origin that declares the node, with the origin ids the Graph surface uses elsewhere: `"dfo"` when any of its Provenances is DFO's, `"base"` when every one is base Data Commons', and `"un_system"` otherwise. A Provenance's origin is the one the origin catalogue's provenance table names for it, and for a Provenance the table does not list, its prefix decides: `dc/base/` is base, `undata/` the UN origin, and any other DFO. The table lists the data Provenances the catalogue admits and none of the ontology's, so `provenance/DFOOntology` takes the prefix rule. The Provenances are those the node's `typeOf` targets carry, so a target with none adds nothing. `declared_by` is `null` when the node has no `typeOf` arc or none of its `typeOf` targets carries a Provenance, and its `provenances` is then empty. The build logs one warning that counts the nodes with a `typeOf` target that carries no Provenance and the terms below whose listing entries carry none, naming the first ten of each. The check treats a property with a `null` `declared_by` as one DFO does not declare.
+- `other_properties` holds every other outgoing property the graph holds on the node, keyed by property dcid: `{"wbCode": [{"value": "DOD"}], "nationalCurrencyOf": [{"ref": "country/KEN"}]}`. Each value has exactly one member: `{"ref": <string>}` when it names a node and `{"value": <string>}` when it is a literal. A literal is the string the graph holds, never parsed to a number or boolean, so `iso4217NumericCode` reads `{"value": "404"}`. A value the graph repeats once per declaring Provenance appears once. Properties are sorted by dcid and values by their text, a node reference before a literal of the same text. A literal longer than 2,000 characters, such as a geometry, is left out, a property keeps its first 100 values in that order, and the build logs one warning counting the values left out and naming the first ten node and property pairs. A node with no other property holds `{}`. The named members are a closed set: they never appear in `other_properties`, and a property promoted to a named member later leaves the map. The set of other properties is open. On the dev graph 60 of 861 nodes carry one or more, among them `wbCode`, `dacCode`, `iso4217AlphaCode`, `iso4217NumericCode`, `currencyStatus`, `nationalCurrencyOf`, `combinesMethods`, `isProvisional`, and the StatVar properties of the few StatVar nodes the document holds. None reaches either bound: the longest literal holds 67 characters and the most values on one property is 27.
+- `enumeration` is `{members, complete}` on a Class whose `subClassOf` chain reaches `Enumeration`, and `null` on every other node. A DFO-declared enumeration lists the members its `<-typeOf` listing read, up to 5,000. A base enumeration lists only the members StatVar rows use. `complete` is `true` only when the build listed the class from the graph and the listing read every member, so `members` is every member the graph holds. Where it is `false`, `members` holds some of them.
 
-One build yields this body and the terms body. It runs as a single job on the DCP-read executor, holding one worker, and its result is kept in a single-flight cache of two entries keyed by the graph generation token and the content hash of the code index. A request stamped with an unknown generation therefore keeps the entry of the known one. A generation change clears the cache. Concurrent requests share one build. A request waits up to `GRAPH_NODE_TIMEOUT_SECONDS`. The build itself may run for 60 s (`graph_api.config.SCHEMA_FLIGHT_TIMEOUT_SECONDS`).
+One build yields this body and the terms body. It runs as a single job on the DCP-read executor, holding one worker, and its result is kept in a single-flight cache of two entries keyed by the graph generation token, the content hash of the code index and the origin catalogue's build. A request stamped with an unknown generation therefore keeps the entry of the known one. A generation change clears the cache. Concurrent requests share one build. A request waits up to `GRAPH_NODE_TIMEOUT_SECONDS`. The build itself may run for 60 s (`graph_api.config.SCHEMA_FLIGHT_TIMEOUT_SECONDS`).
 
 Each body is encoded once with its keys in the models' field order and every list sorted, so two builds of one graph give the same bytes. The route answers `public, max-age=300` with a strong `ETag` and a gzip representation, and honours `If-None-Match` with `304`.
 
 Failures:
 
-- `503 service_unavailable`, retryable with `Retry-After: 5`: the request's own wait passed while the build runs on. The build stores its result for the next request.
+- `503 service_unavailable`, retryable with `Retry-After: 5` and `cause: {"code": "schema_building"}`: the request's own wait passed while the build runs on. The build stores its result for the next request.
 - `504 timeout`: the build outlived its 60 s deadline and stored nothing, or a graph read passed its deadline.
-- `503 service_unavailable`, not retryable under a known generation and retryable under an unknown one: a Class or Property listing reached its cap, or the document holds no node whose `declared_by` is `"instance"`. A graph that stopped naming provenances would serve every node `declared_by: null`, and the check would judge no range or domain, so the build refuses instead.
+- `500 internal_error`, not retryable: a Class or Property listing reached its cap, or the document holds no node whose `declared_by` is `"dfo"`. A graph that stopped naming provenances would serve every node `declared_by: null`, and the check would judge no range or domain, so the build refuses instead. A retry does not clear either fault.
 - `502 upstream_error`: a DCP read answered 4xx.
 - `503 service_unavailable`, retryable: any other read failure, or every DCP-read worker busy.
 
-Under a known generation these two refusals cannot change until the generation does, so the cache keeps them and answers every request with the same `503` and no build until the generation changes. Under an unknown generation the cache keeps nothing, since no generation change would clear the entry, and the next request builds again. Any other failed build is not kept. The example keeps two nodes. A served document holds every node.
+Under a known generation these two refusals cannot change until the generation does, so the cache keeps them and answers every request with the same `500` and no build until the generation changes. Under an unknown generation the cache keeps nothing, since no generation change would clear the entry, and the next request builds again. Any other failed build is not kept. The example keeps two nodes. A served document holds every node.
 
 ```json
 {
   "generation": "graph_<token>",
   "nodes": [
     {
-      "dcid": "CRSPurposeCode12220",
-      "name": "basic health care (CRS Purpose)",
+      "ref": "CRSPurposeCode12220",
+      "label": "basic health care (CRS Purpose)",
       "description": "Basic and primary health care programmes; paramedical and nursing care programmes; supply of drugs, medicines, and vaccines related to basic health care; and activities aimed at achieving universal health coverage.",
       "types": [
         "CRSPurposeCodeEnum"
@@ -915,12 +915,12 @@ Under a known generation these two refusals cannot change until the generation d
       "provenances": [
         "provenance/DFOOntology"
       ],
-      "declared_by": "instance",
+      "declared_by": "dfo",
       "enumeration": null
     },
     {
-      "dcid": "crsPurpose",
-      "name": "CRS purpose",
+      "ref": "crsPurpose",
+      "label": "CRS purpose",
       "description": "The activity's purpose stated as a CRS purpose code. Narrows financing purpose.",
       "types": [
         "Property"
@@ -942,7 +942,7 @@ Under a known generation these two refusals cannot change until the generation d
       "provenances": [
         "provenance/DFOOntology"
       ],
-      "declared_by": "instance",
+      "declared_by": "dfo",
       "enumeration": null
     }
   ]
@@ -953,7 +953,7 @@ Under a known generation these two refusals cannot change until the generation d
 
 ### GET /api/graph/schema/terms
 
-Every Class and Property the DFO graph lists by `typeOf`, base Data Commons terms included, as `{generation, terms}`. The listing reads the mixer alone, so the UN origin's terms are absent even on a deployment that serves the UN origin. Each term is `{dcid, name, types, provenances, declared_by}`, sorted by `dcid`. `types` is `["Class"]`, `["Property"]` or both. `name`, `provenances` and `declared_by` follow the rules of the schema document. A term whose listing entries carry no Provenance has empty `provenances` and a `null` `declared_by`.
+Every Class and Property the DFO graph lists by `typeOf`, base Data Commons terms included, as `{generation, terms}`. The listing reads the mixer alone, so the UN origin's terms are absent even on a deployment that serves the UN origin. Each term is `{ref, label, types, provenances, declared_by}`, sorted by `ref`. `types` is `["Class"]`, `["Property"]` or both. `label`, `provenances` and `declared_by` follow the rules of the schema document. A term whose listing entries carry no Provenance has empty `provenances` and a `null` `declared_by`.
 
 The route reads the same cached build as `GET /api/graph/schema`, so its caching (`public, max-age=300`, a strong `ETag`, gzip, `304`) and its failures are the same as that route's, and a request that follows one for the document makes no graph read.
 
@@ -962,8 +962,8 @@ The route reads the same cached build as `GET /api/graph/schema`, so its caching
   "generation": "graph_<token>",
   "terms": [
     {
-      "dcid": "amount",
-      "name": null,
+      "ref": "amount",
+      "label": null,
       "types": [
         "Property"
       ],
@@ -973,15 +973,15 @@ The route reads the same cached build as `GET /api/graph/schema`, so its caching
       "declared_by": "base"
     },
     {
-      "dcid": "crsPurpose",
-      "name": "CRS purpose",
+      "ref": "crsPurpose",
+      "label": "CRS purpose",
       "types": [
         "Property"
       ],
       "provenances": [
         "provenance/DFOOntology"
       ],
-      "declared_by": "instance"
+      "declared_by": "dfo"
     }
   ]
 }
@@ -991,23 +991,23 @@ The route reads the same cached build as `GET /api/graph/schema`, so its caching
 
 ### GET /api/graph/schema/usage
 
-How each Provenance of the code index uses the model. The body is `{provenances}`, sorted by `dcid`, with one entry for each Provenance that at least one StatVar row of the index names. The route makes no graph read. It joins the code index with the served coverage index.
+How each Provenance of the code index uses the model. The body is `{provenances}`, sorted by `ref`, with one entry for each Provenance that at least one StatVar row of the index names. The route makes no graph read. It joins the code index with the served coverage index.
 
 An entry holds:
 
-- `dcid`, `label` and `description`: the Provenance and the dataset's name and prose from its declaration, each `null` where the declaration has none.
+- `ref`, `label` and `description`: the Provenance's dcid and the dataset's name and prose from its declaration, each `null` where the declaration has none.
 - `stat_var_count`: how many StatVars the Provenance publishes. A StatVar that two Provenances publish counts under both.
 - `patterns`: the distinct combinations of `population_type`, `measured_property`, `stat_type`, `measurement_qualifier`, `measurement_denominator`, `constraint_properties` and `observation_properties` over its StatVars, each with its `stat_var_count` and the first three of its StatVars' dcids as `examples`. They are sorted by `stat_var_count` descending, then by the fields.
 - `constraint_values`: for each constraint property the StatVars set, sorted by `property`, the `values` it takes, each `{value, stat_var_count}`, sorted by value.
 - `facets`: `units`, `scaling_factors`, `measurement_methods`, `observation_periods` (ISO 8601 durations such as `P1Y`) and `currencies` (ISO 4217 codes) read from the Provenance's coverage series, each list sorted and distinct, and empty where coverage holds nothing.
 
-The body is built once per code index and coverage build, by one build that concurrent first requests share, and kept until the generation changes or the generation stamp's maximum age passes. A request that finds another coverage build rebuilds it. A request whose wait passes 10 s while the build runs answers `503 service_unavailable`, retryable, with `Retry-After: 5`. A build past its 60 s deadline answers `504 timeout`. It answers `public, max-age=300` with a strong `ETag`, a gzip representation and `304` on `If-None-Match`. The example is abridged. It keeps the first pattern and the first two values of the first constraint property, and `...` marks each cut list.
+The body is built once per code index and coverage build, by one build that concurrent first requests share, and kept until the generation changes or the generation stamp's maximum age passes. A request that finds another coverage build rebuilds it. A request whose wait passes 10 s while the build runs answers `503 service_unavailable`, retryable, with `Retry-After: 5` and `cause: {"code": "schema_building"}`. A build past its 60 s deadline answers `504 timeout`. It answers `public, max-age=300` with a strong `ETag`, a gzip representation and `304` on `If-None-Match`. The example is abridged. It keeps the first pattern and the first two values of the first constraint property, and `...` marks each cut list.
 
 ```json
 {
   "provenances": [
     {
-      "dcid": "provenance/OECDDAC2B",
+      "ref": "provenance/OECDDAC2B",
       "label": "OECD DAC2b",
       "description": "Other official flows and officially supported export credits that providers report to the OECD, by recipient and type of flow.",
       "stat_var_count": 14,
@@ -1077,13 +1077,12 @@ The body is built once per code index and coverage build, by one build that conc
 
 ### POST /api/graph/schema/check
 
-Checks candidate StatVar definitions against the schema. The request is `{rows}`, 1 to 2,000 rows (`caps.max_check_rows`). The route checks rows in order from the first and answers the findings for the rows it checked, how many that is (`row_count`), and the index of the first row left (`next_row`, `null` when every row was checked). Send the rows from `next_row` in the next request until `next_row` is `null`. Every response checks at least one row.
+Checks candidate StatVar definitions against the schema. The request is `{rows}`, 1 to 2,000 rows (`caps.max_check_rows`). The route checks rows in order from the first and answers the findings for the rows it checked and how many that is (`rows_checked`). When `rows_checked` is less than the rows sent, send the rows from that index in the next request. Every response checks at least one row.
 
 A `400 request_invalid` means the envelope or a size bound is wrong: the body is not JSON, `rows` is missing, empty or longer than 2,000, a member is unknown, a row names more than 16 constraint properties (`caps.max_check_constraint_properties`) or 4 observation properties (`caps.max_check_observation_properties`), a string is longer than 512 characters, or a constraint value is a number past plus or minus 2**53 (9,007,199,254,740,992), `NaN` or an infinity. The pointer names the first member at fault, with its row: `/rows/37/constraint_properties`. Everything else about a row's content is a finding.
 
-A row holds:
+A row holds the StatVar's own definition fields, since it is a definition in sheet form:
 
-- `ref`: the caller's label, echoed on its findings.
 - `dcid`: the StatVar's dcid. When the code index serves it, the row is compared with the served definition.
 - `population_type`, `measured_property`, `stat_type`, `measurement_qualifier` and `measurement_denominator`.
 - `constraint_properties`: a map of constraint property to value node. A number, a boolean, a string outside dcid syntax or `null` is a fault.
@@ -1091,18 +1090,17 @@ A row holds:
 
 Every member is optional, and an empty string counts as absent. A row with no measured property gets `value_missing`.
 
-With the schema document in hand, the route decides before it submits any work how many rows it checks: it takes rows from the first while the distinct ids they read from the graph stay within an internal budget of 41. The ids counted are the shape fields, constraint properties, observation properties and constraint values the schema document does not hold, less the cells no read can decide and the constraint values under a document node that is no `Property`. One row names at most 41 such ids (5 shape fields, 16 constraint properties and their values, 4 observation properties), so the first row always fits. The check then stops before the row whose findings would take the total past 2,000, or the encoded response past 4 MB. One row yields at most 79 findings, which encode to at most 2.44 MB, so the first row always fits. The first request after a graph change builds the schema document, within its 60 s flight deadline, before it decides how many rows to take.
+With the schema document in hand, the route decides before it submits any work how many rows it checks: it takes rows from the first while the distinct ids they read from the graph stay within an internal budget of 41. The ids counted are the shape fields, constraint properties, observation properties and constraint values the schema document does not hold, less the cells no read can decide and the constraint values under a document node that is no `Property`. One row names at most 41 such ids (5 shape fields, 16 constraint properties and their values, 4 observation properties), so the first row always fits. The check then stops before the row whose findings would take the total past 2,000, or the encoded response past 4 MB. One row yields at most 79 findings, which encode to at most 2.20 MB, so the first row always fits. The first request after a graph change builds the schema document, within its 60 s flight deadline, before it decides how many rows to take.
 
-A cell names a node when it is in the node route's dcid syntax. A cell outside that syntax gets `node_not_held` with no read. An id of the UN origin (under `undata/`, or a UN property such as `undataAge`) on a deployment that does not serve that origin gets `origin_not_served` with no read, because no read can establish whether the graph holds it. The route answers each node a row names from the cached schema document and asks every other named id once for its `typeOf` and `name`, and reads no ancestry. An id the origin catalogue's arc tables hold is answered from those tables, a node they hold with no arc as absent, and every other id is read from the graph. The document reads its nodes live. The check answers an id the tables hold from those tables.
+A cell names a node when it is in the node route's dcid syntax. A cell outside that syntax gets `not_a_node` with no read. An id of the UN origin (under `undata/`, or a UN property such as `undataAge`) on a deployment that does not serve that origin gets `origin_not_served` with no read, because no read can establish whether the graph holds it. The route answers each node a row names from the cached schema document and asks every other named id once for its `typeOf` and `name`, and reads no ancestry. An id the origin catalogue's arc tables hold is answered from those tables, a node they hold with no arc as absent, and every other id is read from the graph. The document reads its nodes live. The check answers an id the tables hold from those tables.
 
-The check reads every planned id once, in one read: the shape fields, constraint properties, observation properties and constraint values outside the document. For each backend its ids go to (the mixer, and the UN deployment where the deployment serves the UN origin), the read sends its ids outside the arc tables in one POST to `/v2/node` (one chunk holds 50 ids), reads the empty answers again in one POST as a group, and reads each id still empty alone. A check reading k ids therefore sends at most k + 2 POSTs with one backend, 43 for 41 ids, and k + 4 with the UN origin served, 45. A front-door refusal splits a POST of several ids into two halves, so a batch or group retry of j ids costs at most 2j - 1 POSTs and a check at most 5k - 2, 203 for 41 ids. A continuation page adds one POST, and each POST is tried up to 3 times on a 5xx answer or a transport error, all within the route's 30 s deadline. A node read alone with neither a `typeOf` nor a `name` is `node_not_held`, and a node with a name and no `typeOf` is `node_untyped`. A constraint value whose property is not a held `Property` gets no finding of its own: the property's finding marks the cell. Such a value is read with the rest unless its property is outside dcid syntax or the served origins. A number or a boolean is `node_not_held` with no read. Every other constraint value outside the document is read, whatever its property's range: the document holds the ancestors of its classes and not their descendants, so a complete member listing does not prove that a value it lacks lies outside the range. The check waits on the same build as `GET /api/graph/schema` and refuses with the same `503` and `504` outcomes when the build is not ready or a read fails. A failed read yields no findings.
+The check reads every planned id once, in one read: the shape fields, constraint properties, observation properties and constraint values outside the document. For each backend its ids go to (the mixer, and the UN deployment where the deployment serves the UN origin), the read sends its ids outside the arc tables in one POST to `/v2/node` (one chunk holds 50 ids), reads the empty answers again in one POST as a group, and reads each id still empty alone. A check reading k ids therefore sends at most k + 2 POSTs with one backend, 43 for 41 ids, and k + 4 with the UN origin served, 45. A front-door refusal splits a POST of several ids into two halves, so a batch or group retry of j ids costs at most 2j - 1 POSTs and a check at most 5k - 2, 203 for 41 ids. A continuation page adds one POST, and each POST is tried up to 3 times on a 5xx answer or a transport error, all within the route's 30 s deadline. A node read alone with neither a `typeOf` nor a `name` is `node_not_held`, and a node with a name and no `typeOf` is `node_untyped`. A constraint value whose property is not a held `Property` gets no finding of its own: the property's finding marks the cell. Such a value is read with the rest unless its property is outside dcid syntax or the served origins. A number or a boolean is `not_a_node` with no read. Every other constraint value outside the document is read, whatever its property's range: the document holds the ancestors of its classes and not their descendants, so a complete member listing does not prove that a value it lacks lies outside the range. The check waits on the same build as `GET /api/graph/schema` and refuses with the same `503` and `504` outcomes when the build is not ready or a read fails. A failed read yields no findings.
 
-A constraint value, `stat_type`, `measurement_qualifier` and `measurement_denominator` must each name a held node typed beyond `ProvisionalNode`, the test the code index export applies to a constraint value in a release. Range and domain rules apply only to a property whose `declared_by` is `"instance"`, and judge only through the document, which holds every `subClassOf` ancestor of each class it holds. A value is outside the range when every one of its types is a document node and none reaches a `rangeIncludes` class by `subClassOf`. A value with any type outside the document gets no range finding. A property is outside the domain when the population type is a document node that reaches no `domainIncludes` class the same way. A population type outside the document gets no domain finding. A property with no `rangeIncludes` or `domainIncludes` admits anything. The domain rule covers the measured property and the constraint properties, and is skipped when the row names no population type. A row's `dcid` outside dcid syntax gets `node_not_held`, and the row is then compared with nothing.
+A constraint value, `stat_type`, `measurement_qualifier` and `measurement_denominator` must each name a held node typed beyond `ProvisionalNode`, the test the code index export applies to a constraint value in a release. Range and domain rules apply only to a property whose `declared_by` is `"dfo"`, and judge only through the document, which holds every `subClassOf` ancestor of each class it holds. A value is outside the range when every one of its types is a document node and none reaches a `rangeIncludes` class by `subClassOf`. A value with any type outside the document gets no range finding. A property is outside the domain when the population type is a document node that reaches no `domainIncludes` class the same way. A population type outside the document gets no domain finding. A property with no `rangeIncludes` or `domainIncludes` admits anything. The domain rule covers the measured property and the constraint properties, and is skipped when the row names no population type. A row's `dcid` outside dcid syntax gets `not_a_node`, and the row is then compared with nothing.
 
-The response is `{generation, row_count, next_row, findings}`. `generation` is the graph generation the rows were checked against, `null` when its token is unknown. `row_count` counts the rows checked from the first row of the request. `next_row` equals `row_count` when rows are left and is `null` otherwise. Findings come in row order and are empty when none of the rows checked has a fault. A finding is `{row, ref, field, property, subject, value, served, code, severity}`:
+The response is `{generation, rows_checked, findings}`. `generation` is the graph generation the rows were checked against, `null` when its token is unknown. `rows_checked` counts the rows checked from the first row of the request. Findings come in row order and are empty when none of the rows checked has a fault. A finding is `{row, field, property, subject, value, served, code, severity}`:
 
 - `row`: the row's index in the request's `rows`.
-- `ref`: the row's `ref`, or `null`.
 - `field`: the row member, one of `dcid`, `population_type`, `measured_property`, `stat_type`, `measurement_qualifier`, `measurement_denominator`, `constraint_properties` and `observation_properties`.
 - `property`: the constraint or observation property the finding is about, `null` for the other members.
 - `subject`: `property` when the finding judges a constraint or observation property itself, `value` otherwise.
@@ -1113,24 +1111,25 @@ The route sets no cache headers.
 
 | Code | Severity | Meaning |
 | :--- | :------- | :------ |
-| `node_not_held` | `error` | The graph holds no node for the cell, the cell is outside dcid syntax, or a constraint value is a number or a boolean. |
+| `node_not_held` | `error` | The cell is a well-formed dcid the graph holds no node for. |
+| `not_a_node` | `error` | A node belongs in the cell, which holds a number, a boolean or a string outside dcid syntax. |
 | `node_untyped` | `error` | The node of a constraint value, `stat_type`, `measurement_qualifier` or `measurement_denominator` has no `typeOf`. |
 | `node_provisional` | `error` | The node of a constraint value, `stat_type`, `measurement_qualifier` or `measurement_denominator` has only the type `ProvisionalNode`. |
 | `origin_not_served` | `error` | The cell is an id of the UN origin, which this deployment does not serve. |
 | `value_missing` | `error` | The row has no measured property, or a constraint property has a `null` value. |
 | `not_a_property` | `error` | A constraint property, the measured property or an observation property is not typed `Property`. |
 | `not_a_class` | `error` | The population type is not typed `Class`. |
-| `value_outside_range` | `error` | Every type of the value is a document node and none reaches the instance property's `rangeIncludes` by `subClassOf`. |
-| `property_outside_domain` | `warning` | The population type is a document node that reaches none of the instance property's `domainIncludes` by `subClassOf`. |
+| `value_outside_range` | `error` | Every type of the value is a document node and none reaches the DFO-declared property's `rangeIncludes` by `subClassOf`. |
+| `property_outside_domain` | `warning` | The population type is a document node that reaches none of the DFO-declared property's `domainIncludes` by `subClassOf`. |
 | `definition_differs` | `warning` | The code index serves the row's `dcid` with another value in that cell. |
 
 Within a row, a finding on `dcid` comes first, then the shape fields, in the order `population_type`, `measured_property`, `stat_type`, `measurement_qualifier` and `measurement_denominator`. The constraint properties follow sorted, each property's finding before its value's, then the observation properties in row order, then the `definition_differs` findings in the same field order.
 
-The route's deadline is `GRAPH_SCHEMA_CHECK_TIMEOUT_SECONDS` (30 s) from its start, covering its wait for the build and its own reads. Failures beyond `400`: `503 service_unavailable` with `Retry-After: 5` while the build runs on past that deadline, `504 timeout` when the build outlives its 60 s deadline or a read passes the route's, a non-retryable `503` for a listing at its cap, `502 upstream_error` for a DCP 4xx and a retryable `503` for any other read failure or a saturated executor, as for `GET /api/graph/schema`.
+The route's deadline is `GRAPH_SCHEMA_CHECK_TIMEOUT_SECONDS` (30 s) from its start, covering its wait for the build and its own reads. Failures beyond `400`: `503 service_unavailable` with `Retry-After: 5` and `cause: {"code": "schema_building"}` while the build runs on past that deadline, `504 timeout` when the build outlives its 60 s deadline or a read passes the route's, a non-retryable `500 internal_error` for a listing at its cap or a document with no DFO declaration, `502 upstream_error` for a DCP 4xx and a retryable `503` for any other read failure or a saturated executor, as for `GET /api/graph/schema`.
 
-Every check runs as one job on its own executor of two workers (`graph_api.config.GRAPH_SCHEMA_CHECK_CONCURRENCY`), apart from the four shared DCP-read workers, so at most two checks run at once in a process and a check takes no shared worker. The job reads, checks and encodes the response. A worker stays held until its job returns, even after its request is cancelled or times out, and the reads of a job end by the 30 s deadline. The request answers `504 timeout` at that deadline even while its job runs on. A third check answers retryable `503 service_unavailable` with `Retry-After: 5`. The graph can therefore see reads from the four shared workers and the two check workers at once.
+Every check runs as one job on its own executor of two workers (`graph_api.config.GRAPH_SCHEMA_CHECK_CONCURRENCY`), apart from the four shared DCP-read workers, so at most two checks run at once in a process and a check takes no shared worker. The job reads, checks and encodes the response. A worker stays held until its job returns, even after its request is cancelled or times out, and the reads of a job end by the 30 s deadline. The request answers `504 timeout` at that deadline even while its job runs on. A third check answers retryable `503 service_unavailable` with `Retry-After: 5` and `cause: {"code": "check_busy"}`. The graph can therefore see reads from the four shared workers and the two check workers at once.
 
-A response holds at most 2,000 findings and encodes to at most 4 MB (4,000,000 bytes). The check measures each finding as it encodes it and stops before the row whose findings would take the body past either bound, and `next_row` names that row. The first row is always checked, and fits: a finding carries at most a 512-character `ref` and `property` and four 512-character strings in each of `value` and `served`, 30,910 bytes when every character JSON-escapes to six bytes, so one row's at most 79 findings come to 2.44 MB.
+A response holds at most 2,000 findings and encodes to at most 4 MB (4,000,000 bytes). The check measures each finding as it encodes it and stops before the row whose findings would take the body past either bound, and `rows_checked` counts the rows before it. The first row is always checked, and fits: a finding carries at most a 512-character `property` and four 512-character strings in each of `value` and `served`, 27,829 bytes when every character JSON-escapes to six bytes, so one row's at most 79 findings come to 2.20 MB.
 
 The example sends two rows. `DAC1AidType1010` lies outside the range of `crsPurpose`, and the constraint property `crsPurpos` names no node.
 
@@ -1138,7 +1137,6 @@ The example sends two rows. `DAC1AidType1010` lies outside the range of `crsPurp
 {
   "rows": [
     {
-      "ref": "wrong-list",
       "population_type": "FinancialFlow",
       "measured_property": "amount",
       "constraint_properties": {
@@ -1147,7 +1145,6 @@ The example sends two rows. `DAC1AidType1010` lies outside the range of `crsPurp
       "observation_properties": []
     },
     {
-      "ref": "no-such-property",
       "population_type": "FinancialFlow",
       "measured_property": "amount",
       "constraint_properties": {
@@ -1162,12 +1159,10 @@ The example sends two rows. `DAC1AidType1010` lies outside the range of `crsPurp
 ```json
 {
   "generation": "graph_<token>",
-  "row_count": 2,
-  "next_row": null,
+  "rows_checked": 2,
   "findings": [
     {
       "row": 0,
-      "ref": "wrong-list",
       "field": "constraint_properties",
       "property": "crsPurpose",
       "subject": "value",
@@ -1178,7 +1173,6 @@ The example sends two rows. `DAC1AidType1010` lies outside the range of `crsPurp
     },
     {
       "row": 1,
-      "ref": "no-such-property",
       "field": "constraint_properties",
       "property": "crsPurpos",
       "subject": "property",
@@ -1300,8 +1294,8 @@ Errors use RFC 9457 problem detail envelopes:
 | `503`       | `service_unavailable` | `GET /api/graph/documentation/{dcid}`'s own Dataset children read came back truncated (more than 256 children, or a surviving `nextToken`).            | None                                                                                        | No        |
 | `404`       | `not_found`           | Unmatched route or empty DCID path parameter (`/api/graph/node/`).                                                                                     | None                                                                                        | No        |
 | `400`       | `request_invalid`     | `POST /api/graph/schema/check` that is not JSON, with `rows` missing, empty or over 2,000 entries, an unknown member, a row over 16 constraint properties or 4 observation properties, a string over 512 characters, or a constraint value that is a number past plus or minus 2**53, `NaN` or an infinity. A row's content is never refused; its faults are findings. | The offending body field, naming the row (e.g. `/rows`, `/rows/37/constraint_properties`). | No        |
-| `503`       | `service_unavailable` | A schema route's own wait passed while the build runs on, or two schema checks already run in the process (`Retry-After: 5`).                                                                        | None                                                                                        | Yes       |
-| `503`       | `service_unavailable` | A schema build's Class or Property listing reached its cap, or its document holds no node the instance declares. Under a known generation the schema, terms and check routes answer it until the graph changes. Under an unknown generation the next request builds again. | None                                                                                        | No under a known generation, yes under an unknown one |
+| `503`       | `service_unavailable` | A schema route's own wait passed while the build runs on (`cause.code` `schema_building`), or two schema checks already run in the process (`cause.code` `check_busy`). Both send `Retry-After: 5`. | None                                                                                        | Yes       |
+| `500`       | `internal_error`      | A schema build's Class or Property listing reached its cap, or its document holds no node DFO declares. Under a known generation the schema, terms and check routes answer it until the graph changes. Under an unknown generation the next request builds again. | None                                                                                        | No        |
 | `502`       | `upstream_error`      | DCP read failure with a 4xx upstream response status.                                                                                                  | None                                                                                        | Yes       |
 | `503`       | `service_unavailable` | Upstream 5xx or network errors, every DCP-read worker busy, the surface still starting or shutting down, no membership policy published, or a `facets` request whose node types were not read by the deadline. | None                                                                                        | Yes       |
 | `504`       | `timeout`             | Resolution, node lookup (single or batch), source documentation read, a schema build past its 60 s deadline, or a schema check's reads past `GRAPH_SCHEMA_CHECK_TIMEOUT_SECONDS`. | None                                                                                        | Yes       |

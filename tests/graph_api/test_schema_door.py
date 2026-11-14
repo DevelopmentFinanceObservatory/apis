@@ -18,7 +18,7 @@ from graph_api.routing import DCID_MAX_LENGTH
 from graph_api.schema_check import SchemaLookup
 from graph_api.schema_document import (
     SchemaListingTruncatedError,
-    SchemaNoInstanceDeclarationError,
+    SchemaNoDfoDeclarationError,
 )
 from graph_api.schema_models import (
     CHECK_MAX_CONSTRAINT_PROPERTIES,
@@ -29,7 +29,8 @@ from graph_api.schema_models import (
 )
 from graph_generation import FakeGeneration
 from materialise.graph import GraphDeadlineExceededError, GraphReadError
-from tests.origin_catalogue.fake_catalogue import FakeCatalogue
+from origin_catalogue import BASE
+from tests.origin_catalogue.fake_catalogue import FakeCatalogue, provenance_row
 
 from .conftest import FakeGraphNodeReader, make_client, wait_until
 from .schema_fixture import STAMP, index_of, index_row, node_targets
@@ -192,6 +193,30 @@ class TestCache:
         assert [first.status_code, second.status_code] == [200, 200]
         assert _builds(graph) == 2
 
+    def test_an_origin_catalogue_change_rebuilds_with_its_origins(
+        self, generation, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The catalogue's provenance table names the origin of each provenance it lists, so a
+        catalogue that lists the ontology provenance as base rebuilds and declares no DFO node."""
+        graph = _graph()
+        catalogues = [
+            FakeCatalogue(),
+            FakeCatalogue(provenances={_DFO: provenance_row(_DFO, BASE)}),
+        ]
+        bound = [catalogues[0]]
+        monkeypatch.setattr(schema_door, "current_catalogue", lambda: bound[0])
+
+        with make_client(graph=graph) as client:
+            first = client.get(_DOCUMENT)
+            bound[0] = catalogues[1]
+            second = client.get(_DOCUMENT)
+
+        assert first.status_code == 200, first.text
+        flow = next(node for node in first.json()["nodes"] if node["ref"] == "FinancialFlow")
+        assert flow["declared_by"] == "dfo"
+        assert second.status_code == 500, second.text
+        assert _builds(graph) == 2
+
 
 class TestWaits:
     def test_a_build_slower_than_the_request_answers_503_and_lands_for_the_next(
@@ -209,6 +234,7 @@ class TestWaits:
         assert pending.status_code == 503, pending.text
         assert pending.json()["code"] == "service_unavailable"
         assert pending.json()["retryable"] is True
+        assert pending.json()["cause"]["code"] == "schema_building"
         assert pending.headers["Retry-After"] == "5"
         assert landed.status_code == 200, landed.text
         assert _builds(graph) == 1
@@ -292,16 +318,18 @@ def test_a_failed_build_answers_its_problem_and_is_not_kept(
     "error",
     [
         pytest.param(SchemaListingTruncatedError("Class listing capped"), id="truncated"),
-        pytest.param(SchemaNoInstanceDeclarationError(3), id="no-instance-declaration"),
+        pytest.param(SchemaNoDfoDeclarationError(3), id="no-dfo-declaration"),
     ],
 )
 @pytest.mark.parametrize(
-    ("known", "retryable", "builds"),
-    [pytest.param(True, False, 1, id="known-kept"), pytest.param(False, True, 2, id="unknown")],
+    ("known", "builds"),
+    [pytest.param(True, 1, id="known-kept"), pytest.param(False, 2, id="unknown")],
 )
-def test_a_refusal_is_kept_only_under_a_known_generation(
-    generation, error: Exception, known: bool, retryable: bool, builds: int
+def test_a_refusal_answers_500_and_is_kept_only_under_a_known_generation(
+    generation, error: Exception, known: bool, builds: int
 ):
+    """A truncated listing and a document with no DFO declaration are server faults a retry
+    does not clear: each answers non-retryable 500, kept for a known generation."""
     graph = _RaisingReader(error)
     if not known:
         generation.set_unknown()
@@ -310,9 +338,10 @@ def test_a_refusal_is_kept_only_under_a_known_generation(
         responses = [client.get(_TERMS), client.get(_DOCUMENT)]
 
     for response in responses:
-        assert response.status_code == 503, response.text
-        assert response.json()["code"] == "service_unavailable"
-        assert response.json()["retryable"] is retryable
+        assert response.status_code == 500, response.text
+        assert response.json()["code"] == "internal_error"
+        assert response.json()["retryable"] is False
+        assert "Retry-After" not in response.headers
     assert graph.raised == builds
 
 
@@ -342,21 +371,36 @@ class TestFrozenBody:
 
         assert bodies[0] == bodies[1]
 
+    def test_nodes_and_terms_name_a_node_by_ref_and_label(self, generation):
+        with make_client(graph=_graph()) as client:
+            document = client.get(_DOCUMENT).json()
+            terms = client.get(_TERMS).json()
 
-def _check_row(value: str) -> dict[str, object]:
+        flow = next(node for node in document["nodes"] if node["ref"] == "FinancialFlow")
+        assert list(flow)[:2] == ["ref", "label"]
+        assert "dcid" not in flow and "name" not in flow
+        assert (flow["label"], flow["declared_by"]) == ("Financial flow", "dfo")
+        assert terms["terms"][0] == {
+            "ref": "FinancialFlow",
+            "label": "Financial flow",
+            "types": ["Class"],
+            "provenances": [_DFO],
+            "declared_by": "dfo",
+        }
+
+
+def _check_row(value: str | int) -> dict[str, object]:
     """A row the document answers except for its constraint value, which the check reads."""
     return {
-        "ref": value,
         "population_type": "FinancialFlow",
         "measured_property": "crsPurpose",
         "constraint_properties": {"crsPurpose": value},
     }
 
 
-def _nine_findings_row(ref: str) -> dict[str, object]:
+def _nine_findings_row() -> dict[str, object]:
     """A row with nine findings, each decided by the document with no read."""
     return {
-        "ref": ref,
         "population_type": "crsPurpose",
         "measured_property": "FinancialFlow",
         "constraint_properties": {"crsPurpose": None, "FinancialFlow": "x", "Thing": "x"},
@@ -414,12 +458,10 @@ class TestCheck:
         assert response.status_code == 200, response.text
         assert response.json() == {
             "generation": "gen-a",
-            "row_count": 2,
-            "next_row": None,
+            "rows_checked": 2,
             "findings": [
                 {
                     "row": 1,
-                    "ref": "NoSuchCode",
                     "field": "constraint_properties",
                     "property": "crsPurpose",
                     "subject": "value",
@@ -431,20 +473,19 @@ class TestCheck:
             ],
         }
 
-    def test_every_finding_member_and_next_row_is_encoded_with_nulls(self, generation):
-        no_ref = {**_check_row("CRSPurposeCode120"), "measured_property": "", "ref": None}
-        rows = [no_ref, *(_check_row(f"NoSuchCode{i}") for i in range(CHECK_MAX_READ_IDS + 1))]
+    def test_every_finding_member_and_rows_checked_is_encoded_with_nulls(self, generation):
+        blank = {**_check_row("CRSPurposeCode120"), "measured_property": ""}
+        rows = [blank, *(_check_row(f"NoSuchCode{i}") for i in range(CHECK_MAX_READ_IDS + 1))]
 
         with make_client(graph=_graph()) as client:
             partial = client.post(_CHECK, json={"rows": rows})
-            whole = client.post(_CHECK, json={"rows": [no_ref]})
+            whole = client.post(_CHECK, json={"rows": [blank]})
 
         assert partial.status_code == whole.status_code == 200, partial.text
-        members = ["row", "ref", "field", "property", "subject", "value", "served", "code"]
+        members = ["row", "field", "property", "subject", "value", "served", "code"]
         first = json.loads(partial.content)["findings"][0]
         assert {key: first[key] for key in members} == {
             "row": 0,
-            "ref": None,
             "field": "measured_property",
             "property": None,
             "subject": "value",
@@ -453,11 +494,11 @@ class TestCheck:
             "code": "value_missing",
         }
         for body in (json.loads(partial.content), json.loads(whole.content)):
-            assert list(body) == ["generation", "row_count", "next_row", "findings"]
+            assert list(body) == ["generation", "rows_checked", "findings"]
             for finding in body["findings"]:
                 assert list(finding) == [*members, "severity"]
-        assert json.loads(partial.content)["next_row"] == 1 + CHECK_MAX_READ_IDS
-        assert b'"next_row":null' in whole.content
+        assert json.loads(partial.content)["rows_checked"] == 1 + CHECK_MAX_READ_IDS
+        assert json.loads(whole.content)["rows_checked"] == 1
 
     def test_clean_rows_answer_no_findings(self, generation):
         with make_client(graph=_graph()) as client:
@@ -465,8 +506,7 @@ class TestCheck:
 
         assert response.status_code == 200, response.text
         assert response.json()["findings"] == []
-        assert response.json()["row_count"] == 1
-        assert response.json()["next_row"] is None
+        assert response.json()["rows_checked"] == 1
 
     @pytest.mark.parametrize(
         "body",
@@ -511,8 +551,7 @@ class TestCheck:
                 id="constraint-value-past-the-dcid-ceiling",
             ),
             pytest.param(
-                {"rows": [{**_check_row("CRSPurposeCode120"), "ref": "r" * (DCID_MAX_LENGTH + 1)}]},
-                id="ref-past-the-dcid-ceiling",
+                {"rows": [{**_check_row("CRSPurposeCode120"), "ref": "r1"}]}, id="ref-member"
             ),
             *(
                 pytest.param(
@@ -579,6 +618,7 @@ class TestCheck:
         rows = [
             {**_check_row("CRSPurposeCode120"), "measured_property": "bad code"},
             {**_check_row("CRSPurposeCode120"), "measured_property": ""},
+            _check_row(12),
         ]
 
         with make_client(graph=_graph()) as client:
@@ -589,11 +629,12 @@ class TestCheck:
             (finding["row"], finding["field"], finding["value"], finding["code"])
             for finding in response.json()["findings"]
         ] == [
-            (0, "measured_property", "bad code", "node_not_held"),
+            (0, "measured_property", "bad code", "not_a_node"),
             (1, "measured_property", None, "value_missing"),
+            (2, "constraint_properties", 12, "not_a_node"),
         ]
 
-    def test_rows_past_the_read_budget_answer_a_prefix_and_the_next_row(self, generation):
+    def test_rows_past_the_read_budget_answer_a_prefix(self, generation):
         graph = _graph()
         rows = [_check_row(f"NoSuchCode{i}") for i in range(CHECK_MAX_READ_IDS + 3)]
 
@@ -602,20 +643,20 @@ class TestCheck:
 
         assert response.status_code == 200, response.text
         body = response.json()
-        assert (body["row_count"], body["next_row"]) == (CHECK_MAX_READ_IDS, CHECK_MAX_READ_IDS)
+        assert body["rows_checked"] == CHECK_MAX_READ_IDS
         assert [finding["row"] for finding in body["findings"]] == list(range(CHECK_MAX_READ_IDS))
         assert graph.calls["node_arcs_many"] == 1
 
-    def test_findings_past_the_cap_answer_the_rows_before_and_the_next_row(self, generation):
+    def test_findings_past_the_cap_answer_the_rows_before(self, generation):
         fit = CHECK_MAX_FINDINGS // 9
-        rows = [_nine_findings_row(str(i)) for i in range(fit + 3)]
+        rows = [_nine_findings_row() for _ in range(fit + 3)]
 
         with make_client(graph=_graph()) as client:
             response = client.post(_CHECK, json={"rows": rows})
 
         assert response.status_code == 200, response.text
         body = response.json()
-        assert (body["row_count"], body["next_row"]) == (fit, fit)
+        assert body["rows_checked"] == fit
         assert len(body["findings"]) == 9 * fit
         assert body["findings"][-1]["row"] == fit - 1
 
@@ -648,7 +689,6 @@ class TestCheck:
         monkeypatch.setattr(schema_door, "get_index", lambda: bound[0])
         served = built_with.statvars[0]
         row = {
-            "ref": "x",
             "dcid": served.dcid,
             "population_type": served.population_type,
             "measured_property": served.measured_property,
@@ -708,6 +748,7 @@ class TestCheck:
 
         assert pending.status_code == 503, pending.text
         assert pending.json()["code"] == "service_unavailable"
+        assert pending.json()["cause"]["code"] == "schema_building"
         assert pending.headers["Retry-After"] == "5"
         assert "findings" not in pending.json()
 
@@ -756,6 +797,7 @@ class TestCheck:
             hold.set()
 
         assert refused.status_code == 503, refused.text
+        assert refused.json()["cause"]["code"] == "check_busy"
         assert node.status_code == 200, node.text
 
     def test_a_check_past_its_deadline_answers_504_and_holds_its_worker(
@@ -807,5 +849,6 @@ class TestCheck:
         assert refused.status_code == 503, refused.text
         assert refused.json()["code"] == "service_unavailable"
         assert refused.json()["retryable"] is True
+        assert refused.json()["cause"]["code"] == "check_busy"
         assert refused.headers["Retry-After"] == "5"
         assert admitted.status_code == 200, admitted.text

@@ -6,11 +6,16 @@ from collections.abc import Mapping, Sequence
 
 from code_index import CodeIndex, IndexStamp, StatVarRow
 from dc_graph import ArcSubject, ArcTarget
+from tests.origin_catalogue.fake_catalogue import FakeCatalogue
 
 from .conftest import FakeGraphNodeReader
 
 DFO = "provenance/DFOOntology"
 SCHEMA = "dc/base/Schema"
+
+CATALOGUE = FakeCatalogue()
+"""A catalogue whose provenance table lists none of the fixture's provenances, as the served
+catalogue lists none of the ontology's, so each takes its origin from its prefix."""
 
 # Each term: (kind, declaring provenances).
 TERMS: dict[str, tuple[str, tuple[str, ...]]] = {

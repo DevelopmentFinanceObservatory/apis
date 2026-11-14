@@ -1,21 +1,21 @@
-"""Build the instance's schema document and the terms list from live graph reads.
+"""Build the deployment's schema document and the terms list from live graph reads.
 
 `build_schema` reads `Class <-typeOf` and `Property <-typeOf` once each, and every subject is a
-term. The document's seed is every term the instance declares plus every node a StatVar row of
+term. The document's seed is every term DFO declares plus every node a StatVar row of
 the code index names. One `node_all_arc_targets_many` reads every outgoing property of the
 seed's nodes with the provenances that declare each value, and each further level reads the
-nodes not yet read that the instance's terms name in `subClassOf`, `subPropertyOf`,
+nodes not yet read that DFO's terms name in `subClassOf`, `subPropertyOf`,
 `domainIncludes` or `rangeIncludes`, the `typeOf` targets of every node read that is neither a
 Class nor a Property, and the `subClassOf` and `subPropertyOf` parents, so the class of every
 value is present and every ancestor is too. One `node_arc_subjects_many` lists the members of
-every instance-declared enumeration, and each enumeration that listing omits or answers with no
+every DFO-declared enumeration, and each enumeration that listing omits or answers with no
 member is listed again alone with `node_arc_subjects`, whose answer stands. The members not yet
 read join the document with the same closure over their types and ancestors. Each node read
 probes every empty answer: it reads the empties together once more, then each remaining empty
 alone, and a dcid empty after that is absent from the document. The node reads are uncached,
 since no other caller reads every property of these nodes. So the number of reads grows with
 the depth of the class and property hierarchy, plus a group read per level with an empty answer,
-one read per dcid the graph does not hold, and one listing per instance enumeration the batched
+one read per dcid the graph does not hold, and one listing per DFO enumeration the batched
 listing leaves empty. Each node read sends one request per chunk of the client's `->*` chunk
 size, and halves a chunk the mixer answers with a continuation.
 
@@ -24,14 +24,19 @@ Each node's values and provenances come from that one read of the node. The ten 
 `other_properties`, each target a node reference or a literal, less any literal past
 `OTHER_LITERAL_MAX_CHARS` and the values past the first `OTHER_VALUES_MAX` of a property, which
 one warning per build counts. Its provenances are
-those its `typeOf` targets carry, and `declared_by` follows from them. A node with no `typeOf`
-arc, or whose `typeOf` targets carry no provenance, is served with none and declared by
-neither. A term's provenances come from its listing entries by the same rule. One warning per
+those its `typeOf` targets carry, and `declared_by` follows from them by the origin each
+belongs to: the origin catalogue's provenance table names it where it lists the provenance, and
+the id's prefix decides otherwise, `dc/base/` for base Data Commons, `undata/` for the UN
+origin and any other for DFO. The table lists the data provenances the catalogue admits and none
+of the ontology's, such as `provenance/DFOOntology`, so those take the prefix rule. A node
+declared by any DFO provenance is `"dfo"`, one whose provenances are all base is `"base"`, and
+any other is `"un_system"`. A node with no `typeOf` arc, or whose `typeOf` targets carry no
+provenance, is served with none and `declared_by` null. A term's provenances come from its listing entries by the same rule. One warning per
 build counts the terms served with none and the nodes with a `typeOf` target that carries none,
-and names the first ten of each. A build whose document holds no node the instance declares
-refuses with `SchemaNoInstanceDeclarationError`.
+and names the first ten of each. A build whose document holds no node DFO declares refuses with
+`SchemaNoDfoDeclarationError`.
 
-An instance-declared enumeration's members are its `<-typeOf` listing, `complete` when the
+A DFO-declared enumeration's members are its `<-typeOf` listing, `complete` when the
 listing read every subject. A base enumeration lists the members StatVar rows use and is
 always `complete: false`.
 
@@ -61,6 +66,8 @@ from graph_api.schema_models import (
     SchemaTerm,
     SchemaTerms,
 )
+from origin_catalogue import Catalogue, OriginId
+from origin_catalogue.origins import UN_ID_PREFIX
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +76,7 @@ TERM_LISTING_CAP: Final[int] = 20_000
 reaches it raises `SchemaListingTruncatedError`."""
 
 ENUMERATION_MEMBER_CAP: Final[int] = 5_000
-"""The most members read for one instance-declared enumeration. An enumeration with more is
+"""The most members read for one DFO-declared enumeration. An enumeration with more is
 served with the members read and `complete: false`."""
 
 OTHER_LITERAL_MAX_CHARS: Final[int] = 2_000
@@ -109,13 +116,13 @@ class SchemaListingTruncatedError(GraphReadError):
     """A `Class` or `Property` listing reached `TERM_LISTING_CAP`, so the terms are incomplete."""
 
 
-class SchemaNoInstanceDeclarationError(GraphReadError):
-    """No node of the built document is declared by the instance, so the graph named no
-    instance provenance for any of them and the check would judge no range or domain."""
+class SchemaNoDfoDeclarationError(GraphReadError):
+    """No node of the built document is declared by DFO, so the graph named no DFO provenance
+    for any of them and the check would judge no range or domain."""
 
     def __init__(self, node_count: int) -> None:
         super().__init__(
-            f"none of the {node_count} nodes of the schema document is declared by the instance"
+            f"none of the {node_count} nodes of the schema document is declared by DFO"
         )
         self.node_count = node_count
 
@@ -135,23 +142,41 @@ class _ListedTerm:
     provenances: set[str] = field(default_factory=set)
 
 
-def declared_by(provenances: Collection[str]) -> DeclaredBy:
-    """`"base"` when every declaring provenance starts `dc/base/`, `"instance"` otherwise.
+def provenance_origin(provenance: str, catalogue: Catalogue) -> OriginId:
+    """The origin `provenance` belongs to: the one `catalogue`'s provenance table names, else
+    `"base"` for an id under `dc/base/`, `"un_system"` for one under `undata/` and `"dfo"` for
+    any other."""
+    if (row := catalogue.provenance(provenance)) is not None:
+        return row.data_commons.id
+    if provenance.startswith(_BASE_PREFIX):
+        return "base"
+    if provenance.startswith(UN_ID_PREFIX):
+        return "un_system"
+    return "dfo"
+
+
+def declared_by(provenances: Collection[str], *, catalogue: Catalogue) -> DeclaredBy:
+    """`"dfo"` when any declaring provenance is DFO's, `"base"` when every one is base Data
+    Commons', `"un_system"` otherwise, each by `provenance_origin`.
 
     Raises:
-        ValueError: `provenances` is empty, which labels nothing.
+        ValueError: `provenances` is empty, which names no origin.
     """
     if not provenances:
-        raise ValueError("a term with no declaring provenance is neither base nor instance")
-    if all(provenance.startswith(_BASE_PREFIX) for provenance in provenances):
+        raise ValueError("a term with no declaring provenance has no origin")
+    origins = {provenance_origin(provenance, catalogue) for provenance in provenances}
+    if "dfo" in origins:
+        return "dfo"
+    if origins == {"base"}:
         return "base"
-    return "instance"
+    return "un_system"
 
 
 def build_schema(
     *,
     reader: GraphNodeReader,
     code_index: CodeIndex,
+    catalogue: Catalogue,
     generation: str | None,
     deadline: float,
 ) -> Schema:
@@ -160,20 +185,21 @@ def build_schema(
     Args:
         reader: the graph reads.
         code_index: the bound code index, whose StatVar rows name nodes the document holds.
+        catalogue: the origin catalogue whose provenance table names the origin of the
+            provenances it lists.
         generation: the graph generation token both bodies carry, `None` where it is unknown.
         deadline: the absolute monotonic deadline passed to every read.
 
     Raises:
         SchemaListingTruncatedError: a `Class` or `Property` listing reached its cap.
-        SchemaNoInstanceDeclarationError: no node of the document is declared by the
-            instance.
+        SchemaNoDfoDeclarationError: no node of the document is declared by DFO.
         GraphReadError: a read failed.
     """
     listed = _read_terms(reader, deadline=deadline)
-    instance_terms = {
+    dfo_terms = {
         dcid
         for dcid, term in listed.items()
-        if term.provenances and declared_by(term.provenances) == "instance"
+        if term.provenances and declared_by(term.provenances, catalogue=catalogue) == "dfo"
     }
     index_named = _index_named(code_index)
 
@@ -196,18 +222,18 @@ def build_schema(
         unsourced=unsourced,
         deadline=deadline,
     )
-    read.nodes(instance_terms | index_named)
-    read.close(_named(arcs, instance_terms, _SCHEMA_ARCS) | _next_level(arcs, arcs.keys(), listed))
+    read.nodes(dfo_terms | index_named)
+    read.close(_named(arcs, dfo_terms, _SCHEMA_ARCS) | _next_level(arcs, arcs.keys(), listed))
 
-    instance_enumerations = sorted(
+    dfo_enumerations = sorted(
         dcid
-        for dcid in instance_terms
+        for dcid in dfo_terms
         if dcid in arcs and _CLASS in listed[dcid].kinds and _reaches_enumeration(dcid, arcs)
     )
     members: dict[str, SchemaEnumeration] = {}
     listed_members: set[str] = set()
     for enumeration, (subjects, complete) in _list_members(
-        reader, instance_enumerations, deadline=deadline
+        reader, dfo_enumerations, deadline=deadline
     ).items():
         listed_members.update(subject.dcid for subject in subjects)
         members[enumeration] = SchemaEnumeration(
@@ -252,18 +278,20 @@ def build_schema(
             sorted(left_out)[:_LOGGED_DCIDS],
         )
     nodes = [
-        _node(dcid, arcs[dcid], others[dcid], provenances[dcid], members.get(dcid))
+        _node(dcid, arcs[dcid], others[dcid], provenances[dcid], members.get(dcid), catalogue)
         for dcid in sorted(arcs)
     ]
-    if not any(node.declared_by == "instance" for node in nodes):
-        raise SchemaNoInstanceDeclarationError(len(nodes))
+    if not any(node.declared_by == "dfo" for node in nodes):
+        raise SchemaNoDfoDeclarationError(len(nodes))
     terms = [
         SchemaTerm(
-            dcid=dcid,
-            name=display_name(term.names, dcid),
+            ref=dcid,
+            label=display_name(term.names, dcid),
             types=sorted(term.kinds),
             provenances=sorted(term.provenances),
-            declared_by=declared_by(term.provenances) if term.provenances else None,
+            declared_by=(
+                declared_by(term.provenances, catalogue=catalogue) if term.provenances else None
+            ),
         )
         for dcid, term in sorted(listed.items())
     ]
@@ -437,7 +465,7 @@ def _other_properties(
             others[prop] = [
                 SchemaLiteral(value=target.value)
                 if target.literal
-                else SchemaNodeReference(dcid=target.value)
+                else SchemaNodeReference(ref=target.value)
                 for target in kept[:OTHER_VALUES_MAX]
             ]
     return others
@@ -449,10 +477,11 @@ def _node(
     other_properties: _OtherProperties,
     provenances: Collection[str],
     enumeration: SchemaEnumeration | None,
+    catalogue: Catalogue,
 ) -> SchemaNode:
     return SchemaNode(
-        dcid=dcid,
-        name=display_name(arcs["name"], dcid),
+        ref=dcid,
+        label=display_name(arcs["name"], dcid),
         description=min(arcs["description"], default=None),
         types=sorted(arcs[_TYPE_OF]),
         alternate_name=sorted(arcs["alternateName"]),
@@ -464,6 +493,6 @@ def _node(
         classification_code=sorted(arcs["classificationCode"]),
         other_properties=other_properties,
         provenances=sorted(provenances),
-        declared_by=declared_by(provenances) if provenances else None,
+        declared_by=declared_by(provenances, catalogue=catalogue) if provenances else None,
         enumeration=enumeration,
     )

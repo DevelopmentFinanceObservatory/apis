@@ -113,7 +113,7 @@ def _built(index: CodeIndex | None = None, coverage=_COVERAGE) -> dict[str, dict
     if index is None:
         index = _index(*_ROWS)
     built = build_usage(code_index=index, coverage=coverage).model_dump(mode="json")
-    return {entry["dcid"]: entry for entry in built["provenances"]}
+    return {entry["ref"]: entry for entry in built["provenances"]}
 
 
 def test_one_entry_per_provenance_with_its_declaration() -> None:

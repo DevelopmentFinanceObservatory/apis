@@ -26,6 +26,7 @@ from graph_api.schema_models import (
 
 from .conftest import FakeGraphNodeReader
 from .schema_fixture import (
+    CATALOGUE,
     DFO,
     INDEX,
     NODES,
@@ -90,13 +91,13 @@ _CHECK_NODES = {
         "domainIncludes": ("FinancingEvent",),
         "rangeIncludes": ("CRSPurposeCodeEnum", "Place"),
     },
-    # An instance property ranged on the base enumeration, whose member list is incomplete.
+    # A DFO property ranged on the base enumeration, whose member list is incomplete.
     "recipientGender": {
         "typeOf": ("Property",),
         "domainIncludes": ("FinancingEvent",),
         "rangeIncludes": ("GenderType",),
     },
-    # A complete instance enumeration (it has no member of its own) above the base one.
+    # A complete DFO enumeration (it has no member of its own) above the base one.
     "BeneficiaryGroupEnum": {"typeOf": ("Class",), "subClassOf": ("Enumeration",)},
     "GenderType": {"typeOf": ("Class",), "subClassOf": ("BeneficiaryGroupEnum",)},
     "beneficiaryGroup": {
@@ -145,7 +146,9 @@ class _RecordingReader(FakeGraphNodeReader):
 @cache
 def _schema() -> Schema:
     graph = schema_graph(terms=_CHECK_TERMS, nodes=_CHECK_NODES)
-    return build_schema(reader=graph, code_index=INDEX, generation="g1", deadline=_DEADLINE)
+    return build_schema(
+        reader=graph, code_index=INDEX, catalogue=CATALOGUE, generation="g1", deadline=_DEADLINE
+    )
 
 
 @cache
@@ -156,7 +159,6 @@ def _lookup() -> SchemaLookup:
 def _row(**fields: Any) -> SchemaCheckRow:
     return SchemaCheckRow.model_validate(
         {
-            "ref": "r1",
             "population_type": "FinancialFlow",
             "measured_property": "amount",
             "stat_type": "measuredValue",
@@ -168,7 +170,6 @@ def _row(**fields: Any) -> SchemaCheckRow:
 def _as_row(served: StatVarRow, **fields: Any) -> SchemaCheckRow:
     return SchemaCheckRow.model_validate(
         {
-            "ref": served.dcid,
             "dcid": served.dcid,
             "population_type": served.population_type,
             "measured_property": served.measured_property,
@@ -216,7 +217,7 @@ def _check(
 ) -> list[_Finding]:
     """The findings over every row, as `(field, property, subject, value, served, code)`."""
     checked = _checked(rows, reader, lookup, un_served=un_served)
-    assert checked.row_count == len(rows)
+    assert checked.rows_checked == len(rows)
     return [
         (
             finding.field,
@@ -275,7 +276,7 @@ _SERVED = INDEX.statvars[0]
         pytest.param(
             _row(constraint_properties={"beneficiaryGender": "NoSuchGender"}),
             [_value("beneficiaryGender", "NoSuchGender", "node_not_held")],
-            id="value-not-held-on-an-instance-property-with-no-range",
+            id="value-not-held-on-a-dfo-property-with-no-range",
         ),
         pytest.param(
             _row(population_type="Person", constraint_properties={"gender": "NoSuchGender"}),
@@ -291,9 +292,9 @@ _SERVED = INDEX.statvars[0]
                 }
             ),
             [
-                _value("amount", 5, "node_not_held"),
-                _value("beneficiaryGender", "two words", "node_not_held"),
-                _value("gender", True, "node_not_held"),
+                _value("amount", 5, "not_a_node"),
+                _value("beneficiaryGender", "two words", "not_a_node"),
+                _value("gender", True, "not_a_node"),
             ],
             id="literal-value",
         ),
@@ -384,7 +385,7 @@ _SERVED = INDEX.statvars[0]
             _row(constraint_properties={"crsPurpose": "CRSPurposeCode120"}), [], id="parent-code"
         ),
         pytest.param(
-            _row(constraint_properties={"beneficiaryGender": "Male"}), [], id="instance-no-range"
+            _row(constraint_properties={"beneficiaryGender": "Male"}), [], id="dfo-no-range"
         ),
         pytest.param(
             _row(constraint_properties={"financingPurpose": "CRSPurposeCode120"}),
@@ -433,7 +434,7 @@ _SERVED = INDEX.statvars[0]
                 constraint_properties={"crsPurpose": "CRSPurposeCode120"},
             ),
             [_prop("crsPurpose", "property_outside_domain")],
-            id="instance-property-outside-domain",
+            id="dfo-property-outside-domain",
         ),
         pytest.param(
             _row(
@@ -445,12 +446,12 @@ _SERVED = INDEX.statvars[0]
         pytest.param(
             _row(measured_property="grantEquivalent", population_type="FinancingEvent"),
             [_cell("measured_property", "grantEquivalent", "property_outside_domain")],
-            id="instance-measured-property-outside-domain",
+            id="dfo-measured-property-outside-domain",
         ),
         pytest.param(
             _row(population_type="Person", observation_properties=["crsPurpose"]),
             [],
-            id="instance-observation-property-outside-domain",
+            id="dfo-observation-property-outside-domain",
         ),
         pytest.param(
             _row(population_type="Person", constraint_properties={"gender": "Female"}),
@@ -531,27 +532,27 @@ _SERVED = INDEX.statvars[0]
         ),
         pytest.param(
             _row(population_type="Financial Flow"),
-            [_cell("population_type", "Financial Flow", "node_not_held")],
+            [_cell("population_type", "Financial Flow", "not_a_node")],
             id="population-type-outside-dcid-syntax",
         ),
         pytest.param(
             _row(measured_property="dcid:amount"),
-            [_cell("measured_property", "dcid:amount", "node_not_held")],
+            [_cell("measured_property", "dcid:amount", "not_a_node")],
             id="measured-property-outside-dcid-syntax",
         ),
         pytest.param(
             _row(constraint_properties={"crs purpose": "CRSPurposeCode120"}),
-            [_prop("crs purpose", "node_not_held")],
+            [_prop("crs purpose", "not_a_node")],
             id="key-outside-dcid-syntax",
         ),
         pytest.param(
             _row(observation_properties=["financing recipient"]),
-            [_observation("financing recipient", "node_not_held")],
+            [_observation("financing recipient", "not_a_node")],
             id="observation-property-outside-dcid-syntax",
         ),
         pytest.param(
             _row(dcid="Amount CRS"),
-            [_cell("dcid", "Amount CRS", "node_not_held")],
+            [_cell("dcid", "Amount CRS", "not_a_node")],
             id="dcid-outside-dcid-syntax",
         ),
     ],
@@ -560,20 +561,20 @@ def test_check_rules(row: SchemaCheckRow, expected: list[_Finding]) -> None:
     assert _check([row]) == expected
 
 
-def test_findings_come_in_row_then_field_order_with_the_row_index_and_ref() -> None:
+def test_findings_come_in_row_then_field_order_with_the_row_index() -> None:
     rows = [
-        _row(ref="a", stat_type="noSuchStatType", population_type="crsPurpose"),
-        _row(ref=None, constraint_properties={"crsPurpose": None}),
-        _row(ref="a", measurement_qualifier="noSuchQualifier"),
+        _row(stat_type="noSuchStatType", population_type="crsPurpose"),
+        _row(constraint_properties={"crsPurpose": None}),
+        _row(measurement_qualifier="noSuchQualifier"),
     ]
 
     findings = _checked(rows).findings
 
-    assert [(finding.row, finding.ref, finding.field) for finding in findings] == [
-        (0, "a", "population_type"),
-        (0, "a", "stat_type"),
-        (1, None, "constraint_properties"),
-        (2, "a", "measurement_qualifier"),
+    assert [(finding.row, finding.field) for finding in findings] == [
+        (0, "population_type"),
+        (0, "stat_type"),
+        (1, "constraint_properties"),
+        (2, "measurement_qualifier"),
     ]
 
 
@@ -581,6 +582,7 @@ def test_findings_come_in_row_then_field_order_with_the_row_index_and_ref() -> N
     ("code", "severity"),
     [
         pytest.param("node_not_held", "error", id="error"),
+        pytest.param("not_a_node", "error", id="not-a-node"),
         pytest.param("property_outside_domain", "warning", id="domain"),
         pytest.param("definition_differs", "warning", id="differs"),
     ],
@@ -588,6 +590,7 @@ def test_findings_come_in_row_then_field_order_with_the_row_index_and_ref() -> N
 def test_a_finding_carries_its_code_severity(code: str, severity: str) -> None:
     rows = [
         _row(stat_type="noSuchStatType"),
+        _row(measured_property="no such property"),
         _row(
             population_type="EconomicActivity",
             constraint_properties={"crsPurpose": "CRSPurposeCode120"},
@@ -609,7 +612,7 @@ def test_every_served_statvar_sent_back_has_no_finding() -> None:
 
 def test_an_id_outside_the_document_is_read_once_for_every_row() -> None:
     reader = _RecordingReader()
-    rows = [_row(ref=str(i), constraint_properties={"beneficiaryGender": "Male"}) for i in range(3)]
+    rows = [_row(constraint_properties={"beneficiaryGender": "Male"}) for _ in range(3)]
 
     assert _check(rows, reader) == []
     assert reader.batches == [["Male"]]
@@ -620,11 +623,8 @@ def test_an_id_named_in_two_roles_is_read_once() -> None:
     document is read once, in the check's one read."""
     reader = _RecordingReader()
     rows = [
-        *(
-            _row(ref=f"v{i}", constraint_properties={"baseProperty0": f"NoSuchX{i}"})
-            for i in range(40)
-        ),
-        *(_row(ref=f"o{i}", observation_properties=[f"NoSuchX{i}"]) for i in range(40)),
+        *(_row(constraint_properties={"baseProperty0": f"NoSuchX{i}"}) for i in range(40)),
+        *(_row(observation_properties=[f"NoSuchX{i}"]) for i in range(40)),
     ]
 
     _check(rows, reader)
@@ -635,9 +635,7 @@ def test_an_id_named_in_two_roles_is_read_once() -> None:
 
 def test_a_value_typed_outside_the_document_is_read_with_no_ancestry() -> None:
     reader = _RecordingReader()
-    rows = [
-        _row(ref=str(i), constraint_properties={"recipientPlace": "country/UGA"}) for i in range(2)
-    ]
+    rows = [_row(constraint_properties={"recipientPlace": "country/UGA"}) for _ in range(2)]
 
     assert _check(rows, reader) == []
     assert reader.batches == [["country/UGA"]]
@@ -697,7 +695,7 @@ def test_no_read_where_the_document_or_the_value_decides(constraints: dict[str, 
                 _value("crsPurpose", "CRSPurposeCode99999", "node_not_held"),
             ],
             [["CRSPurposeCode99999"]],
-            id="one-type-sourced-by-the-instance",
+            id="one-type-sourced-by-dfo",
         ),
     ],
 )
@@ -707,12 +705,14 @@ def test_a_property_is_judged_by_the_provenances_its_types_carry(
     batches: list[list[str]],
 ) -> None:
     """`crsPurpose` with no sourced type is served `declared_by` null, so neither its range nor
-    its domain is judged and its value is read. With one type sourced by the instance it stays
-    an instance property, and both rules apply."""
+    its domain is judged and its value is read. With one type sourced by DFO it stays a
+    DFO-declared property, and both rules apply."""
     targets = {"crsPurpose": {**node_targets(_CHECK_NODES, _CHECK_TERMS)["crsPurpose"]}}
     targets["crsPurpose"]["typeOf"] = types
     graph = schema_graph(terms=_CHECK_TERMS, nodes=_CHECK_NODES, arc_targets=targets)
-    document = build_schema(reader=graph, code_index=INDEX, generation="g1", deadline=_DEADLINE)
+    document = build_schema(
+        reader=graph, code_index=INDEX, catalogue=CATALOGUE, generation="g1", deadline=_DEADLINE
+    )
     reader = _RecordingReader()
     row = _row(
         population_type="EconomicActivity",
@@ -733,7 +733,9 @@ def test_a_value_typed_below_a_complete_enumeration_outside_the_document_is_read
     nodes = {k: v for k, v in _CHECK_NODES.items() if k not in ("gender", "recipientGender")}
     index = index_of(index_row("Amount_CRS12220", {"crsPurpose": "CRSPurposeCode12220"}))
     graph = schema_graph(terms=terms, nodes=nodes)
-    document = build_schema(reader=graph, code_index=index, generation="g1", deadline=_DEADLINE)
+    document = build_schema(
+        reader=graph, code_index=index, catalogue=CATALOGUE, generation="g1", deadline=_DEADLINE
+    )
     lookup = SchemaLookup.of(document.document)
     reader = _RecordingReader()
 
@@ -746,8 +748,7 @@ def test_a_value_typed_below_a_complete_enumeration_outside_the_document_is_read
 
 def _absent_rows(count: int) -> list[SchemaCheckRow]:
     return [
-        _row(ref=str(i), constraint_properties={"beneficiaryGender": f"NoSuchGender{i}"})
-        for i in range(count)
+        _row(constraint_properties={"beneficiaryGender": f"NoSuchGender{i}"}) for i in range(count)
     ]
 
 
@@ -801,7 +802,7 @@ def test_a_single_row_naming_the_most_ids_a_row_can_is_read_within_the_budget() 
         pytest.param(lambda: [_maximal_row(), *_absent_rows(1)], 1, id="every-field-of-a-row"),
         pytest.param(
             lambda: [
-                _row(ref=str(i), constraint_properties={"crsPurpose": f"CRSPurposeCode9{i:04d}"})
+                _row(constraint_properties={"crsPurpose": f"CRSPurposeCode9{i:04d}"})
                 for i in range(CHECK_MAX_READ_IDS + 1)
             ],
             CHECK_MAX_READ_IDS,
@@ -823,7 +824,7 @@ def test_rows_past_the_read_budget_stop_before_the_row_that_passes_it(
     plan = plan_reads(sent, lookup=_lookup(), un_served=True)
     checked = _checked(sent, reader)
 
-    assert plan.row_count == checked.row_count == taken
+    assert plan.row_count == checked.rows_checked == taken
     assert len(plan.ids) <= CHECK_MAX_READ_IDS
     assert reader.batches == [sorted(plan.ids)]
     assert {finding.row for finding in checked.findings} <= set(range(taken))
@@ -903,10 +904,9 @@ def test_a_held_node_with_neither_a_type_nor_a_name_reads_as_absent() -> None:
     assert findings == [_value("beneficiaryGender", "DescribedCode", "node_not_held")]
 
 
-def _many_findings_row(ref: str) -> SchemaCheckRow:
-    """A row with one `node_not_held` finding on each constraint property."""
+def _many_findings_row() -> SchemaCheckRow:
+    """A row with one `not_a_node` finding on each constraint property."""
     return _row(
-        ref=ref,
         constraint_properties={
             f"baseProperty{i}": f"not a dcid {i}" for i in range(CHECK_MAX_CONSTRAINT_PROPERTIES)
         },
@@ -915,21 +915,20 @@ def _many_findings_row(ref: str) -> SchemaCheckRow:
 
 def test_findings_past_the_cap_stop_before_the_row_that_passes_it() -> None:
     fit = CHECK_MAX_FINDINGS // CHECK_MAX_CONSTRAINT_PROPERTIES
-    rows = [_many_findings_row(str(i)) for i in range(fit + 2)]
+    rows = [_many_findings_row() for _ in range(fit + 2)]
 
     checked = _checked(rows)
 
-    assert checked.row_count == fit
+    assert checked.rows_checked == fit
     assert len(checked.findings) == fit * CHECK_MAX_CONSTRAINT_PROPERTIES <= CHECK_MAX_FINDINGS
     assert checked.findings[-1].row == fit - 1
 
 
 def _escaped_row() -> SchemaCheckRow:
-    """A row of 16 `node_not_held` findings, each echoing a 512-character `ref` and value whose
-    every character JSON escapes to six bytes."""
+    """A row of 16 `not_a_node` findings, each echoing a 512-character value whose every
+    character JSON escapes to six bytes."""
     escaped = "\x01" * 512
     return _row(
-        ref=escaped,
         constraint_properties={
             f"baseProperty{i}": escaped for i in range(CHECK_MAX_CONSTRAINT_PROPERTIES)
         },
@@ -939,10 +938,7 @@ def _escaped_row() -> SchemaCheckRow:
 def _encoded(checked: CheckedRows) -> bytes:
     return (
         SchemaCheckResponse(
-            generation="g1",
-            row_count=checked.row_count,
-            next_row=checked.row_count,
-            findings=checked.findings,
+            generation="g1", rows_checked=checked.rows_checked, findings=checked.findings
         )
         .model_dump_json()
         .encode()
@@ -950,14 +946,14 @@ def _encoded(checked: CheckedRows) -> bytes:
 
 
 def test_findings_past_the_body_budget_stop_before_the_row_that_passes_it() -> None:
-    rows = [_escaped_row() for _ in range(60)]
+    rows = [_escaped_row() for _ in range(100)]
 
     checked = _checked(rows)
 
     body = _encoded(checked)
-    last_row = [finding for finding in checked.findings if finding.row == checked.row_count - 1]
+    last_row = [finding for finding in checked.findings if finding.row == checked.rows_checked - 1]
     next_row_size = sum(len(finding.model_dump_json().encode()) + 1 for finding in last_row)
-    assert 1 < checked.row_count < len(rows)
+    assert 1 < checked.rows_checked < len(rows)
     assert len(checked.findings) < CHECK_MAX_FINDINGS
     assert len(body) <= CHECK_MAX_BODY_BYTES < len(body) + next_row_size
 
@@ -967,7 +963,7 @@ def test_the_first_row_is_taken_past_the_body_budget(monkeypatch: pytest.MonkeyP
 
     checked = _checked([_escaped_row(), _escaped_row()])
 
-    assert checked.row_count == 1
+    assert checked.rows_checked == 1
     assert len(checked.findings) == CHECK_MAX_CONSTRAINT_PROPERTIES
 
 

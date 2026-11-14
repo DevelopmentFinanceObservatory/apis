@@ -11,14 +11,18 @@ from dc_graph import ArcSubject, ArcSubjectPage, ArcTarget
 from graph_api import schema_document
 from graph_api.schema_document import (
     SchemaListingTruncatedError,
-    SchemaNoInstanceDeclarationError,
+    SchemaNoDfoDeclarationError,
     build_schema,
     declared_by,
 )
 from graph_api.schema_models import SchemaLiteral, SchemaNode, SchemaNodeReference
+from origin_catalogue import BASE, UN_SYSTEM
+from origin_catalogue import DFO as DFO_ORIGIN
+from tests.origin_catalogue.fake_catalogue import FakeCatalogue, provenance_row
 
 from .conftest import FakeGraphNodeReader
 from .schema_fixture import (
+    CATALOGUE,
     CRS_MEMBERS,
     DFO,
     INDEX,
@@ -38,8 +42,20 @@ _OTHER = "provenance/Other"
 
 
 def _nodes(graph: FakeGraphNodeReader, index: CodeIndex = INDEX) -> dict[str, SchemaNode]:
-    schema = build_schema(reader=graph, code_index=index, generation="g1", deadline=_DEADLINE)
-    return {node.dcid: node for node in schema.document.nodes}
+    schema = build_schema(
+        reader=graph, code_index=index, catalogue=CATALOGUE, generation="g1", deadline=_DEADLINE
+    )
+    return {node.ref: node for node in schema.document.nodes}
+
+
+_LISTED = FakeCatalogue(
+    provenances={
+        "provenance/BaseListed": provenance_row("provenance/BaseListed", BASE),
+        "dc/base/DfoListed": provenance_row("dc/base/DfoListed", DFO_ORIGIN),
+        "undata/p/ILO": provenance_row("undata/p/ILO", UN_SYSTEM, segment="ILO"),
+    }
+)
+"""A provenance table whose rows name origins their ids' prefixes would not."""
 
 
 @pytest.mark.parametrize(
@@ -47,22 +63,44 @@ def _nodes(graph: FakeGraphNodeReader, index: CodeIndex = INDEX) -> dict[str, Sc
     [
         ((SCHEMA,), "base"),
         (("dc/base/Census", SCHEMA), "base"),
-        ((SCHEMA, DFO), "instance"),
-        ((DFO,), "instance"),
+        ((SCHEMA, DFO), "dfo"),
+        ((DFO,), "dfo"),
+        (("undata/p/SDG",), "un_system"),
+        ((SCHEMA, "undata/p/SDG"), "un_system"),
+        ((DFO, "undata/p/SDG"), "dfo"),
+        # The provenance table's row decides over the prefix.
+        (("provenance/BaseListed",), "base"),
+        (("dc/base/DfoListed",), "dfo"),
+        (("undata/p/ILO", SCHEMA), "un_system"),
     ],
 )
-def test_declared_by_is_base_only_when_every_provenance_is_base(
+def test_declared_by_names_the_origin_of_the_declaring_provenances(
     provenances: tuple[str, ...], expected: str
 ) -> None:
-    assert declared_by(provenances) == expected
+    assert declared_by(provenances, catalogue=_LISTED) == expected
 
 
 def test_declared_by_refuses_no_provenance() -> None:
     with pytest.raises(ValueError):
-        declared_by(())
+        declared_by((), catalogue=CATALOGUE)
 
 
-def test_document_holds_instance_terms_their_references_index_names_and_ancestors() -> None:
+def test_a_provenance_the_catalogue_lists_as_base_declares_base_nodes() -> None:
+    """A DFO-prefixed provenance the catalogue lists as base declares no DFO node, so the build
+    of a graph whose only non-base provenance it is refuses."""
+    catalogue = FakeCatalogue(provenances={DFO: provenance_row(DFO, BASE)})
+
+    with pytest.raises(SchemaNoDfoDeclarationError):
+        build_schema(
+            reader=schema_graph(),
+            code_index=INDEX,
+            catalogue=catalogue,
+            generation="g1",
+            deadline=_DEADLINE,
+        )
+
+
+def test_document_holds_dfo_terms_their_references_index_names_and_ancestors() -> None:
     # The listed member CRSPurposeCode120, read after the closure, carries a second type.
     terms = {**TERMS, "SectorCode": ("Class", (SCHEMA,)), "CodeKind": ("Class", (SCHEMA,))}
     graph_nodes = {
@@ -85,7 +123,7 @@ def test_document_holds_instance_terms_their_references_index_names_and_ancestor
     nodes = _nodes(schema_graph(terms=terms, nodes=graph_nodes, arc_targets=arc_targets))
 
     assert sorted(nodes) == [
-        "CRSPurposeCode120",  # listed member of an instance enumeration
+        "CRSPurposeCode120",  # listed member of a DFO enumeration
         "CRSPurposeCode12220",  # constraint value
         "CRSPurposeCodeEnum",
         "CodeKind",  # SectorCode's subClassOf
@@ -123,14 +161,14 @@ def test_node_fields_and_declaring_provenances() -> None:
 
     crs = nodes["crsPurpose"]
     # The greatest name by code point; the name equal to the dcid is no name.
-    assert crs.name == "Crs purpose"
+    assert crs.label == "Crs purpose"
     assert crs.description == "The CRS purpose code of a flow."
     assert crs.types == ["Property"]
     assert crs.alternate_name == ["CRS sector", "purpose"]
     assert crs.domain_includes == ["FinancingEvent"]
     assert crs.range_includes == ["CRSPurposeCodeEnum"]
     assert crs.provenances == [DFO]
-    assert crs.declared_by == "instance"
+    assert crs.declared_by == "dfo"
     assert nodes["FinancialFlow"].sub_class_of == ["FinancingEvent"]
     assert nodes["CRSPurposeCode12220"].specialization_of == ["CRSPurposeCode120"]
     assert nodes["CRSPurposeCode12220"].classification_code == ["12220"]
@@ -152,9 +190,9 @@ def test_enumerations_are_marked_and_list_members() -> None:
     crs = nodes["CRSPurposeCodeEnum"].enumeration
     assert crs is not None
     assert (crs.members, crs.complete) == (["CRSPurposeCode120", "CRSPurposeCode12220"], True)
-    assert nodes["CRSPurposeCode120"].name == "Education"
+    assert nodes["CRSPurposeCode120"].label == "Education"
     assert nodes["CRSPurposeCode120"].provenances == [DFO]
-    # An instance enumeration with no members of its own lists none.
+    # A DFO enumeration with no members of its own lists none.
     assert nodes["FinancingPurposeEnum"].enumeration is not None
     assert nodes["FinancingPurposeEnum"].enumeration.members == []
 
@@ -162,7 +200,7 @@ def test_enumerations_are_marked_and_list_members() -> None:
 def test_a_base_enumeration_lists_only_members_the_index_uses() -> None:
     nodes = _nodes(schema_graph())
 
-    # No instance term names GenderType; it joins as the typeOf of the used value Female.
+    # No DFO term names GenderType; it joins as the typeOf of the used value Female.
     assert not any(
         "GenderType" in values
         for dcid in TERMS
@@ -204,11 +242,12 @@ def test_a_listing_subject_with_no_provenance_is_served_undeclared(
         schema = build_schema(
             reader=schema_graph(terms=terms),
             code_index=INDEX,
+            catalogue=CATALOGUE,
             generation="g1",
             deadline=_DEADLINE,
         )
 
-    term = {term.dcid: term for term in schema.terms.terms}["educationalAttainment"]
+    term = {term.ref: term for term in schema.terms.terms}["educationalAttainment"]
     assert (term.provenances, term.declared_by) == ([], None)
     assert '"declared_by":null' in term.model_dump_json()
     assert [record.args for record in caplog.records] == [(1, ["educationalAttainment"], 0, [])]
@@ -222,11 +261,12 @@ def test_a_held_node_with_no_type_is_served_with_no_provenance() -> None:
     schema = build_schema(
         reader=graph,
         code_index=index_of(*INDEX.statvars, row),
+        catalogue=CATALOGUE,
         generation="g1",
         deadline=_DEADLINE,
     )
 
-    untyped = {node.dcid: node for node in schema.document.nodes}["UntypedValue"]
+    untyped = {node.ref: node for node in schema.document.nodes}["UntypedValue"]
     assert (untyped.types, untyped.provenances, untyped.declared_by) == ([], [], None)
     assert '"declared_by":null' in untyped.model_dump_json()
     # Every node read is the all-properties read, which confirms each empty answer alone.
@@ -257,8 +297,8 @@ def test_every_other_property_a_node_holds_is_served_typed_and_sorted() -> None:
     nodes = _nodes(schema_graph(arc_targets=arc_targets))
 
     assert nodes["CRSPurposeCode120"].model_dump(mode="json")["other_properties"] == {
-        "combinesMethods": [{"dcid": "MethodA"}, {"dcid": "sameText"}, {"value": "sameText"}],
-        "isProvisional": [{"dcid": "True"}],
+        "combinesMethods": [{"ref": "MethodA"}, {"ref": "sameText"}, {"value": "sameText"}],
+        "isProvisional": [{"ref": "True"}],
         "iso4217NumericCode": [{"value": "404"}],
         "wbCode": [{"value": "DOD"}, {"value": "EDU"}],
     }
@@ -277,11 +317,15 @@ def test_an_other_property_value_is_one_string_member() -> None:
         (member["required"], member["properties"], member["additionalProperties"])
         for member in members
     ] == [
-        (["dcid"], {"dcid": {"title": "Dcid", "type": "string"}}, False),
+        (
+            ["ref"],
+            {"ref": {"description": "the node's dcid", "title": "Ref", "type": "string"}},
+            False,
+        ),
         (["value"], {"value": {"title": "Value", "type": "string"}}, False),
     ]
     # A literal stays the graph's string, never a number or a boolean.
-    for model, key in ((SchemaLiteral, "value"), (SchemaNodeReference, "dcid")):
+    for model, key in ((SchemaLiteral, "value"), (SchemaNodeReference, "ref")):
         for parsed in (404, True):
             with pytest.raises(ValueError):
                 model.model_validate({key: parsed})
@@ -343,11 +387,11 @@ def test_a_node_with_one_unsourced_type_is_declared_by_its_sourced_types(
         nodes = _nodes(schema_graph(arc_targets=arc_targets))
 
     crs = nodes["crsPurpose"]
-    assert (crs.provenances, crs.declared_by) == ([DFO], "instance")
+    assert (crs.provenances, crs.declared_by) == ([DFO], "dfo")
     assert [record.args for record in caplog.records] == [(0, [], 1, ["crsPurpose"])]
 
 
-def test_a_document_no_instance_provenance_declares_refuses() -> None:
+def test_a_document_no_dfo_provenance_declares_refuses() -> None:
     base_terms = {dcid: (kind, (SCHEMA,)) for dcid, (kind, _) in TERMS.items()}
     base_targets = {
         dcid: {
@@ -360,7 +404,7 @@ def test_a_document_no_instance_provenance_declares_refuses() -> None:
         for dcid, arcs in node_targets(NODES, base_terms).items()
     }
 
-    with pytest.raises(SchemaNoInstanceDeclarationError):
+    with pytest.raises(SchemaNoDfoDeclarationError):
         _nodes(schema_graph(terms=base_terms, arc_targets=base_targets))
 
 
@@ -428,7 +472,7 @@ def test_an_enumeration_the_batched_listing_leaves_empty_is_listed_alone(
 
 
 def test_a_term_that_is_also_a_member_is_declared_by_its_node_read_and_its_listing() -> None:
-    # amount is a base Property and an instance member of CRSPurposeCodeEnum.
+    # amount is a base Property and a DFO-declared member of CRSPurposeCodeEnum.
     graph_nodes = {
         **NODES,
         "amount": {**NODES["amount"], "typeOf": ("Property", "CRSPurposeCodeEnum")},
@@ -447,14 +491,15 @@ def test_a_term_that_is_also_a_member_is_declared_by_its_node_read_and_its_listi
     schema = build_schema(
         reader=schema_graph(nodes=graph_nodes, members=members, arc_targets={"amount": amount}),
         code_index=INDEX,
+        catalogue=CATALOGUE,
         generation="g1",
         deadline=_DEADLINE,
     )
 
-    node = {node.dcid: node for node in schema.document.nodes}["amount"]
-    term = {term.dcid: term for term in schema.terms.terms}["amount"]
+    node = {node.ref: node for node in schema.document.nodes}["amount"]
+    term = {term.ref: term for term in schema.terms.terms}["amount"]
     # The node's provenances come from its own read, the term's from its Property listing.
-    assert (node.provenances, node.declared_by) == ([SCHEMA, DFO], "instance")
+    assert (node.provenances, node.declared_by) == ([SCHEMA, DFO], "dfo")
     assert (term.provenances, term.declared_by) == ([SCHEMA], "base")
 
 
@@ -471,25 +516,27 @@ def test_terms_list_every_class_and_property() -> None:
         },
     )
 
-    terms = build_schema(reader=graph, code_index=INDEX, generation="g1", deadline=_DEADLINE).terms
+    terms = build_schema(
+        reader=graph, code_index=INDEX, catalogue=CATALOGUE, generation="g1", deadline=_DEADLINE
+    ).terms
 
     assert terms.generation == "g1"
-    by_dcid = {term.dcid: term for term in terms.terms}
+    by_dcid = {term.ref: term for term in terms.terms}
     assert sorted(by_dcid) == sorted(TERMS)
     attainment = by_dcid["educationalAttainment"]
     assert attainment.declared_by == "base"
     assert attainment.provenances == sorted(TERMS["educationalAttainment"][1])
     crs = by_dcid["crsPurpose"]
-    assert (crs.name, crs.types, crs.declared_by) == ("CRS purpose", ["Property"], "instance")
+    assert (crs.label, crs.types, crs.declared_by) == ("CRS purpose", ["Property"], "dfo")
     # A listing name equal to the dcid is no name.
-    assert by_dcid["amount"].name is None
+    assert by_dcid["amount"].label is None
     # A dcid in both listings is one term with both kinds and every provenance.
     flow = by_dcid["FinancialFlow"]
-    assert (flow.name, flow.types, flow.provenances, flow.declared_by) == (
+    assert (flow.label, flow.types, flow.provenances, flow.declared_by) == (
         "Financial flow",
         ["Class", "Property"],
         [SCHEMA, DFO],
-        "instance",
+        "dfo",
     )
 
 
@@ -500,7 +547,9 @@ def test_two_builds_from_reordered_graphs_serialise_to_the_same_bytes() -> None:
         for dcid, arcs in reversed(NODES.items())
     }
     builds = [
-        build_schema(reader=graph, code_index=INDEX, generation="g1", deadline=_DEADLINE)
+        build_schema(
+            reader=graph, code_index=INDEX, catalogue=CATALOGUE, generation="g1", deadline=_DEADLINE
+        )
         for graph in (
             schema_graph(),
             schema_graph(terms=reordered_terms, nodes=reordered_nodes, members=CRS_MEMBERS[::-1]),
@@ -510,7 +559,7 @@ def test_two_builds_from_reordered_graphs_serialise_to_the_same_bytes() -> None:
     documents = {build.document.model_dump_json() for build in builds}
     terms = {build.terms.model_dump_json() for build in builds}
     assert len(documents) == len(terms) == 1
-    dcids = [node.dcid for node in builds[0].document.nodes]
+    dcids = [node.ref for node in builds[0].document.nodes]
     assert dcids == sorted(dcids)
 
 
@@ -522,7 +571,7 @@ def test_reads_are_bounded_by_hierarchy_depth_not_node_count() -> None:
     small = schema_graph()
     _nodes(small)
 
-    # Fifty more instance properties, each used by an index row with its own value.
+    # Fifty more DFO properties, each used by an index row with its own value.
     extra = {f"extraProperty{i}": ("Property", (DFO,)) for i in range(50)}
     extra_nodes = {
         **NODES,
@@ -537,7 +586,7 @@ def test_reads_are_bounded_by_hierarchy_depth_not_node_count() -> None:
     expected = {
         # Class and Property listings, and FinancingPurposeEnum's empty listing read alone
         "node_arc_subjects": 3,
-        "node_arc_subjects_many": 1,  # members of every instance enumeration
+        "node_arc_subjects_many": 1,  # members of every DFO enumeration
         # Each node's values and provenances: the seed, three ancestor levels
         # (EconomicActivity, Intangible, Thing) and the unread members.
         "node_all_arc_targets_many": 5,
@@ -567,7 +616,9 @@ def test_every_read_carries_the_deadline() -> None:
     fake = schema_graph()
     graph = _DeadlineRecorder(fake)
 
-    build_schema(reader=graph, code_index=INDEX, generation="g1", deadline=_DEADLINE)  # type: ignore[arg-type]
+    build_schema(
+        reader=graph, code_index=INDEX, catalogue=CATALOGUE, generation="g1", deadline=_DEADLINE
+    )  # type: ignore[arg-type]
 
     assert len(graph.deadlines) == sum(fake.calls.values()) == 9
     assert set(graph.deadlines) == {_DEADLINE}

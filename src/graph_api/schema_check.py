@@ -1,4 +1,4 @@
-"""Check candidate StatisticalVariable definitions against the instance's schema.
+"""Check candidate StatisticalVariable definitions against the deployment's schema.
 
 `SchemaLookup` holds the schema document's nodes as the check reads them, built once per
 document. `plan_reads` decides, before any read, how many rows from the first the check takes
@@ -32,7 +32,7 @@ POST is tried up to 3 times on a 5xx answer or a transport error. Every read car
 check's deadline, `GRAPH_SCHEMA_CHECK_TIMEOUT_SECONDS` (30 s) from the request's start.
 
 No read can decide three kinds of cell, so each gets its finding with no read: a string outside
-dcid syntax, a number or a boolean gets `node_not_held`, and an id of the UN origin on a
+dcid syntax, a number or a boolean gets `not_a_node`, and an id of the UN origin on a
 deployment that does not serve it (`origin_catalogue.graph.is_un_dcid`) gets
 `origin_not_served`. Every other id outside the document is read, whatever the range of its
 property: the document holds the ancestors of the classes it holds and none of their
@@ -42,7 +42,7 @@ names at most `CHECK_MAX_READ_IDS` ids, so the first row always fits.
 `check_rows` stops before the row whose findings would take the total past
 `CHECK_MAX_FINDINGS`, or the encoded response past `CHECK_MAX_BODY_BYTES`. It measures each
 finding as `SchemaCheckResponse` encodes it, plus a separating comma, over the encoded response
-with no finding and the widest `row_count` and `next_row`. One row yields at most 79 findings
+with no finding and the widest `rows_checked`. One row yields at most 79 findings
 (`CHECK_MAX_FINDINGS` counts them), so the first row fits the findings cap, and the first row is
 taken whatever its size.
 
@@ -50,7 +50,7 @@ Every row gets existence and kind checks. A row with no measured property gets `
 A constraint value, `stat_type`, `measurement_qualifier` and `measurement_denominator` must each
 name a resolved node, by `code_index.constraint_values.constraint_value_fault`, the test the
 code index export refuses a release on for a constraint value. Range and domain rules apply
-only to a property the document declares `declared_by == "instance"`, and judge only through
+only to a property the document holds with `declared_by == "dfo"`, and judge only through
 the document, which holds every `subClassOf` ancestor of each class it holds. A value is
 outside the range when every one of its types is a document node and none reaches a
 `rangeIncludes` class by `subClassOf`. A value with any type outside the document gets no
@@ -59,7 +59,7 @@ node that reaches no `domainIncludes` class by `subClassOf`; a population type o
 document gets no domain finding. A property with no `rangeIncludes` or no `domainIncludes`
 admits anything. The domain rule covers the measured property and the constraint properties,
 and is skipped when the row names no population type. A row's `dcid` outside dcid syntax gets
-`node_not_held`. A row whose `dcid` the code index serves is compared with the served
+`not_a_node`. A row whose `dcid` the code index serves is compared with the served
 definition cell by cell.
 """
 
@@ -104,7 +104,7 @@ _OBSERVATION: Final = "observation_properties"
 class _Node:
     types: frozenset[str]
     parents: tuple[str, ...] = ()
-    instance: bool = False
+    dfo: bool = False
     domain: tuple[str, ...] = ()
     range: tuple[str, ...] = ()
 
@@ -118,10 +118,10 @@ class SchemaLookup:
     @classmethod
     def of(cls, document: SchemaDocument) -> SchemaLookup:
         nodes = {
-            node.dcid: _Node(
+            node.ref: _Node(
                 types=frozenset(node.types),
                 parents=tuple(node.sub_class_of),
-                instance=node.declared_by == "instance",
+                dfo=node.declared_by == "dfo",
                 domain=tuple(node.domain_includes),
                 range=tuple(node.range_includes),
             )
@@ -155,10 +155,10 @@ class _Unread:
     un_served: bool
 
     def fault(self, dcid: str) -> FindingCode | None:
-        """`node_not_held` for `dcid` outside dcid syntax, `origin_not_served` for an id of the
-        UN origin outside the document while the deployment does not serve it, else `None`."""
+        """`not_a_node` for `dcid` outside dcid syntax, `origin_not_served` for an id of the UN
+        origin outside the document while the deployment does not serve it, else `None`."""
         if _DCID.fullmatch(dcid) is None:
-            return "node_not_held"
+            return "not_a_node"
         if not self.un_served and dcid not in self.lookup.nodes and is_un_dcid(dcid):
             return "origin_not_served"
         return None
@@ -254,7 +254,7 @@ def _held(arcs: Mapping[str, tuple[str, ...]] | None) -> _Node | None:
 class CheckedRows:
     """The rows one check took, from the first, and their findings."""
 
-    row_count: int
+    rows_checked: int
     findings: list[SchemaFinding]
 
 
@@ -310,18 +310,16 @@ def check_rows(
             len(findings) + len(found) > CHECK_MAX_FINDINGS
             or size + found_size > CHECK_MAX_BODY_BYTES
         ):
-            return CheckedRows(row_count=index, findings=findings)
+            return CheckedRows(rows_checked=index, findings=findings)
         findings.extend(found)
         size += found_size
-    return CheckedRows(row_count=len(rows), findings=findings)
+    return CheckedRows(rows_checked=len(rows), findings=findings)
 
 
 def _envelope_bytes(generation: str | None) -> int:
-    """The encoded response carrying `generation` and no finding, at its widest `row_count`
-    and `next_row`."""
-    envelope = SchemaCheckResponse(
-        generation=generation, row_count=CHECK_MAX_ROWS, next_row=CHECK_MAX_ROWS, findings=[]
-    )
+    """The encoded response carrying `generation` and no finding, at its widest
+    `rows_checked`."""
+    envelope = SchemaCheckResponse(generation=generation, rows_checked=CHECK_MAX_ROWS, findings=[])
     return len(envelope.model_dump_json().encode())
 
 
@@ -345,7 +343,7 @@ def _is_property(node: _Node | None) -> bool:
 
 
 def _ranged(node: _Node | None) -> bool:
-    return node is not None and node.instance and _is_property(node) and bool(node.range)
+    return node is not None and node.dfo and _is_property(node) and bool(node.range)
 
 
 def _outside_range(value: _Node, prop: _Node, lookup: SchemaLookup) -> bool:
@@ -373,7 +371,6 @@ _WARNINGS: Final[frozenset[FindingCode]] = frozenset(
 
 def _finding(
     index: int,
-    row: SchemaCheckRow,
     field: FindingField,
     value: ConstraintValue | list[str],
     code: FindingCode,
@@ -384,7 +381,6 @@ def _finding(
 ) -> SchemaFinding:
     return SchemaFinding(
         row=index,
-        ref=row.ref,
         field=field,
         property=prop,
         subject=subject,
@@ -409,10 +405,10 @@ def _check_row(
         prop: str | None = None,
         subject: Literal["property", "value"] = "value",
     ) -> None:
-        findings.append(_finding(index, row, field, value, code, prop=prop, subject=subject))
+        findings.append(_finding(index, field, value, code, prop=prop, subject=subject))
 
     if row.dcid is not None and _DCID.fullmatch(row.dcid) is None:
-        find("dcid", row.dcid, "node_not_held")
+        find("dcid", row.dcid, "not_a_node")
 
     population: set[str] | None = None
     if row.population_type is not None:
@@ -447,7 +443,7 @@ def _check_row(
             return False
         if (
             population is not None
-            and held.instance
+            and held.dfo
             and held.domain
             and population.isdisjoint(held.domain)
         ):
@@ -472,7 +468,7 @@ def _check_row(
             find(_CONSTRAINT, value, "value_missing", prop=prop)
             continue
         if not isinstance(value, str):
-            find(_CONSTRAINT, value, "node_not_held", prop=prop)
+            find(_CONSTRAINT, value, "not_a_node", prop=prop)
             continue
         if fault := unread.fault(value):
             find(_CONSTRAINT, value, fault, prop=prop)
@@ -504,7 +500,7 @@ def _differences(index: int, row: SchemaCheckRow, served: StatVarRow) -> list[Sc
     """One `definition_differs` warning per cell where the row departs from `served`, carrying
     what the row sent and what the code index serves."""
     differs = [
-        _finding(index, row, field, sent, "definition_differs", served=getattr(served, field))
+        _finding(index, field, sent, "definition_differs", served=getattr(served, field))
         for field in SHAPE_FIELDS
         if (sent := getattr(row, field)) != getattr(served, field)
     ]
@@ -513,7 +509,6 @@ def _differences(index: int, row: SchemaCheckRow, served: StatVarRow) -> list[Sc
     differs.extend(
         _finding(
             index,
-            row,
             _CONSTRAINT,
             sent_constraints.get(prop),
             "definition_differs",
@@ -529,7 +524,6 @@ def _differences(index: int, row: SchemaCheckRow, served: StatVarRow) -> list[Sc
         differs.append(
             _finding(
                 index,
-                row,
                 _OBSERVATION,
                 sorted(row.observation_properties),
                 "definition_differs",

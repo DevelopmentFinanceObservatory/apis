@@ -75,7 +75,7 @@ class CapabilityCaps(BaseModel):
         description="the most dcids one POST /api/graph/nodes request names; a longer list is refused 400 request_invalid"
     )
     max_check_rows: int = Field(
-        description="the most rows one POST /api/graph/schema/check request carries; a request with more is refused 400 request_invalid. A request within it may be answered for its first rows only, with next_row naming the first row left"
+        description="the most rows one POST /api/graph/schema/check request carries; a request with more is refused 400 request_invalid. A request within it may be answered for its first rows only, rows_checked counting them"
     )
     max_check_constraint_properties: int = Field(
         description="the most entries in one POST /api/graph/schema/check row's constraint_properties; a row with more is refused 400 request_invalid"

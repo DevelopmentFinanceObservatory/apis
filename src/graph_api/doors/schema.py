@@ -1,12 +1,13 @@
-"""Serve the instance's schema document and the list of the DFO graph's Classes and
+"""Serve the deployment's schema document and the list of the DFO graph's Classes and
 Properties.
 
 `GET /api/graph/schema` serves `SchemaDocument` and `GET /api/graph/schema/terms`
 serves `SchemaTerms`, every Class and Property the mixer lists by `typeOf` and none of the UN
 deployment's. One build (`graph_api.schema_document.build_schema`) yields both,
 and `GraphDeps.schema` holds its result in a single-flight cache of two entries, keyed by
-the graph generation token and the content hash of the code index the build read, beside the
-cache's own generation stamp. Two entries let a request stamped with an unknown generation
+the graph generation token, the content hash of the code index the build read and the build of
+the origin catalogue whose provenance table names origins for `declared_by`, beside the cache's
+own generation stamp. Two entries let a request stamped with an unknown generation
 keep the entry of the known one. The lifespan registers it as `graph_api.schema`, so a
 generation change clears it.
 
@@ -15,16 +16,18 @@ A request refreshes a stale generation stamp, then waits for the entry until
 DCP-read executor, holding one worker, under a flight deadline of
 `SCHEMA_FLIGHT_TIMEOUT_SECONDS` from submission. Concurrent requests share the flight, and a
 request whose own deadline passes first answers retryable 503 `service_unavailable` with
-`Retry-After: 5` while the flight runs on and stores its result for the next request. A flight
+`Retry-After: 5` and `cause: {"code": "schema_building"}` while the flight runs on and stores
+its result for the next request. A flight
 that outlives its deadline stores nothing, and its waiters answer 504 `timeout`. An executor
 with every worker busy refuses the build with `DcpExecutorSaturated`, which the surface answers
 as retryable 503. A read past its deadline answers 504 `timeout`. A listing that reached its
-cap, or a document with no node the instance declares, answers 503 `service_unavailable`. A
-DCP 4xx answers 502 `upstream_error` and any other read failure retryable 503. Under a known
-generation the two refusals cannot change while the generation holds, so the entry keeps them
-as `RefusedSchema` and every request for the key answers the same non-retryable 503 with no
-build. Under an unknown generation nothing would clear a kept refusal, so the build raises it
-unkept and the request answers it retryable. Any other failed build is not kept.
+cap, or a document with no node DFO declares, is a server fault a retry does not clear and
+answers non-retryable 500 `internal_error`. A DCP 4xx answers 502 `upstream_error` and any other
+read failure retryable 503. Under a known generation the two refusals cannot change while the
+generation holds, so the entry keeps them as `RefusedSchema` and every request for the key
+answers the same 500 with no build. Under an unknown generation nothing would clear a kept
+refusal, so the build raises it unkept and the next request builds again. Any other failed
+build is not kept.
 
 The cached value holds each body encoded once in the models' field order, so two builds of one
 graph give the same bytes. Each answers `public, max-age=300` with a strong `ETag` over those
@@ -33,8 +36,8 @@ bytes and a gzip representation, and answers `If-None-Match` with 304
 
 `POST /api/graph/schema/check` takes 1 to `CHECK_MAX_ROWS` candidate StatVar definitions,
 checks them in order from the first, and answers the faults `graph_api.schema_check.check_rows`
-finds in the rows it checked, how many rows that is, the index of the first row left, and the
-generation of the build it checked against. The entry keeps, beside its frozen bodies, the build's
+finds in the rows it checked, how many rows that is (`rows_checked`), and the generation of the
+build it checked against. The entry keeps, beside its frozen bodies, the build's
 `SchemaLookup`, built once per entry. The check compares served definitions against the code
 index the request computed the entry's key from, which is the index the build read. The
 check's deadline is `GRAPH_SCHEMA_CHECK_TIMEOUT_SECONDS` from its start. It waits on the same
@@ -57,13 +60,13 @@ Every check runs as one job on `GraphDeps.check_executor`, whose
 shared DCP-read workers. The job reads, checks and encodes the response, and the event loop
 only wraps its bytes. A worker stays held until its job returns, even after its request is
 cancelled or times out, so at most two checks run at once in the process. One more is refused at
-submit and answers retryable 503 `service_unavailable` with `Retry-After: 5`
-(`SchemaCheckBusy`). A read past the check's deadline or a failed read answers as the GET
+submit and answers retryable 503 `service_unavailable` with `Retry-After: 5` and
+`cause: {"code": "check_busy"}` (`SchemaCheckBusy`). A read past the check's deadline or a failed read answers as the GET
 routes answer it, with no findings. The request stops waiting at the check's deadline and
 answers 504 `timeout` while its job runs on, so a read that answers late yields no 200. The job
 stops before the row whose findings would pass `CHECK_MAX_FINDINGS`, or take the encoded
-response past `CHECK_MAX_BODY_BYTES` (4 MB), and always takes the first row. A response that
-checked fewer rows than were sent names the first row left in `next_row`.
+response past `CHECK_MAX_BODY_BYTES` (4 MB), and always takes the first row. A caller resumes at
+`rows_checked` when it is less than the rows it sent.
 
 `GET /api/graph/schema/usage` serves `DatasetUsage`, built by
 `graph_api.dataset_usage.build_usage` from the bound code index and the served coverage index
@@ -72,7 +75,8 @@ code index's content hash and the coverage build (`CoverageManifest.build_id`), 
 frozen body, and the lifespan registers it as `graph_api.dataset_usage`, so a generation change
 clears it too. A miss builds the body
 on the cache's own one-worker executor, and concurrent misses share that build. A request whose
-wait passes `GRAPH_NODE_TIMEOUT_SECONDS` answers retryable 503 with `Retry-After: 5`, and a build
+wait passes `GRAPH_NODE_TIMEOUT_SECONDS` answers retryable 503 with `Retry-After: 5` and
+`cause: {"code": "schema_building"}`, and a build
 past its flight deadline answers 504, as for the other two routes.
 """
 
@@ -92,7 +96,8 @@ from code_index import CodeIndex
 from code_index.shared import get_index
 from dfo_platform import ProblemSpec
 from dfo_platform.doors import DoorContribution
-from dfo_platform.refusal import TIMEOUT_DEFAULT
+from dfo_platform.problem import Cause
+from dfo_platform.refusal import SERVER_ERROR_FALLBACK_CODE, TIMEOUT_DEFAULT
 from dfo_platform.single_flight_cache import SingleFlightCache, WaitTimeout
 from dfo_platform.static_response import FrozenJSON, freeze_public_json
 from graph_api.config import (
@@ -114,7 +119,7 @@ from graph_api.reader import GraphNodeReader
 from graph_api.schema_check import SchemaLookup, check_rows, plan_reads
 from graph_api.schema_document import (
     SchemaListingTruncatedError,
-    SchemaNoInstanceDeclarationError,
+    SchemaNoDfoDeclarationError,
     build_schema,
 )
 from graph_api.schema_models import (
@@ -128,7 +133,7 @@ from graph_api.schema_models import (
 from graph_generation import GenerationProvider
 from graph_generation.stamp import UNKNOWN_KEY
 from materialise.graph import GraphDeadlineExceededError, GraphReadError
-from origin_catalogue import current_catalogue
+from origin_catalogue import Catalogue, current_catalogue
 
 SCHEMA_RETRY_AFTER_SECONDS = 5
 """The `Retry-After` a request sends when its deadline passes while the build runs on."""
@@ -137,11 +142,13 @@ _MAX_AGE_SECONDS = 300
 
 
 class SchemaKey(NamedTuple):
-    """The graph generation token, `UNKNOWN_KEY` where it is unknown, and the content hash of
-    the code index whose StatVar rows the build read."""
+    """The graph generation token, `UNKNOWN_KEY` where it is unknown, the content hash of the
+    code index whose StatVar rows the build read, and the build of the origin catalogue whose
+    provenance table names the origins of `declared_by`."""
 
     generation: str
     code_index: str
+    origin_catalogue: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,7 +165,7 @@ class FrozenSchema:
 @dataclass(frozen=True, slots=True)
 class RefusedSchema:
     """A build refusal that cannot change while the generation holds: a truncated term listing,
-    or a document with no node the instance declares. `error` makes a fresh exception for each
+    or a document with no node DFO declares. `error` makes a fresh exception for each
     request it answers."""
 
     error: Callable[[], GraphReadError]
@@ -191,13 +198,11 @@ class SchemaCheckBusy(Exception):
 
 
 class SchemaReadFailed(Exception):
-    """A graph read of the build or of the check failed with `error`. `kept` is true when the
-    cache holds `error` as the generation's `RefusedSchema`."""
+    """A graph read of the build or of the check failed with `error`."""
 
-    def __init__(self, error: GraphReadError, *, kept: bool = False) -> None:
+    def __init__(self, error: GraphReadError) -> None:
         super().__init__(f"a schema graph read failed: {error}")
         self.error = error
-        self.kept = kept
 
 
 class UsageKey(NamedTuple):
@@ -232,23 +237,32 @@ def _request_deadline(seconds: float | None = None) -> float:
 
 
 def _build_entry(
-    deps: GraphDeps, *, code_index: CodeIndex, generation: str | None, deadline: float
+    deps: GraphDeps,
+    *,
+    code_index: CodeIndex,
+    catalogue: Catalogue,
+    generation: str | None,
+    deadline: float,
 ) -> SchemaEntry:
     """Build and freeze the bodies, or keep a refusal that cannot change within the
     generation. Under an unknown generation, `generation` `None`, nothing would clear a kept
     refusal before the stamp's age runs out, so the refusal is raised and not kept."""
     try:
         schema = build_schema(
-            reader=deps.graph, code_index=code_index, generation=generation, deadline=deadline
+            reader=deps.graph,
+            code_index=code_index,
+            catalogue=catalogue,
+            generation=generation,
+            deadline=deadline,
         )
     except SchemaListingTruncatedError as exc:
         if generation is None:
             raise
         return RefusedSchema(error=partial(SchemaListingTruncatedError, str(exc)))
-    except SchemaNoInstanceDeclarationError as exc:
+    except SchemaNoDfoDeclarationError as exc:
         if generation is None:
             raise
-        return RefusedSchema(error=partial(SchemaNoInstanceDeclarationError, exc.node_count))
+        return RefusedSchema(error=partial(SchemaNoDfoDeclarationError, exc.node_count))
     return FrozenSchema(
         document=_freeze(schema.document),
         terms=_freeze(schema.terms),
@@ -269,14 +283,20 @@ async def _frozen_schema(
     """
     await deps.generation.refresh_if_stale()
     token = deps.generation.stamp().token
+    catalogue = current_catalogue()
     key = SchemaKey(
         generation=token if token is not None else UNKNOWN_KEY,
         code_index=code_index.stamp.content_hash,
+        origin_catalogue=catalogue.build_id,
     )
 
     def build(_keys: list[SchemaKey], flight_deadline: float) -> dict[SchemaKey, SchemaEntry]:
         entry = _build_entry(
-            deps, code_index=code_index, generation=token, deadline=flight_deadline
+            deps,
+            code_index=code_index,
+            catalogue=catalogue,
+            generation=token,
+            deadline=flight_deadline,
         )
         return {key: entry}
 
@@ -292,19 +312,24 @@ async def _frozen_schema(
         raise SchemaReadFailed(exc) from exc
     entry = found[key]
     if isinstance(entry, RefusedSchema):
-        raise SchemaReadFailed(entry.error(), kept=True)
+        raise SchemaReadFailed(entry.error())
     return entry
 
 
 def classify_schema_exception(exc: BaseException) -> ProblemSpec | None:
     """Classify the build's waits and read failures, which this door raises as its own types,
-    and the check's concurrency limit."""
+    and the check's concurrency limit. The two retryable waits carry `cause.code`
+    `schema_building` or `check_busy`, so a caller can tell a build in progress from a full
+    check pool."""
     if isinstance(exc, SchemaBuildPending | SchemaCheckBusy):
         return ProblemSpec(
             status=503,
             code="service_unavailable",
             detail=str(exc),
             retryable=True,
+            cause=Cause(
+                code="check_busy" if isinstance(exc, SchemaCheckBusy) else "schema_building"
+            ),
             headers={"Retry-After": str(SCHEMA_RETRY_AFTER_SECONDS)},
         )
     if isinstance(exc, SchemaBuildExpired):
@@ -320,19 +345,19 @@ def classify_schema_exception(exc: BaseException) -> ProblemSpec | None:
     error = exc.error
     if isinstance(error, SchemaListingTruncatedError):
         return ProblemSpec(
-            status=503,
-            code="service_unavailable",
+            status=500,
+            code=SERVER_ERROR_FALLBACK_CODE,
             detail=str(error),
-            retryable=not exc.kept,
+            retryable=False,
             log=f"Graph schema door refused a truncated term listing: {error}",
         )
-    if isinstance(error, SchemaNoInstanceDeclarationError):
+    if isinstance(error, SchemaNoDfoDeclarationError):
         return ProblemSpec(
-            status=503,
-            code="service_unavailable",
+            status=500,
+            code=SERVER_ERROR_FALLBACK_CODE,
             detail=str(error),
-            retryable=not exc.kept,
-            log=f"Graph schema door refused a document no instance provenance declares: {error}",
+            retryable=False,
+            log=f"Graph schema door refused a document no DFO provenance declares: {error}",
         )
     if isinstance(error, GraphDeadlineExceededError):
         return ProblemSpec(
@@ -395,7 +420,6 @@ async def get_schema_terms(deps: GraphDepsDep, request: Request) -> Response:
 def _check_body(
     rows: Sequence[SchemaCheckRow],
     *,
-    sent: int,
     reads: frozenset[str],
     lookup: SchemaLookup,
     reader: GraphNodeReader,
@@ -404,8 +428,8 @@ def _check_body(
     generation: str | None,
     deadline: float,
 ) -> bytes:
-    """The encoded response of one check of `rows`, the first of the `sent` rows of the
-    request, from `check_rows` and `SchemaCheckResponse`'s JSON."""
+    """The encoded response of one check of `rows`, the first rows of the request, from
+    `check_rows` and `SchemaCheckResponse`'s JSON."""
     checked = check_rows(
         rows,
         reads=reads,
@@ -417,10 +441,7 @@ def _check_body(
         deadline=deadline,
     )
     response = SchemaCheckResponse(
-        generation=generation,
-        row_count=checked.row_count,
-        next_row=checked.row_count if checked.row_count < sent else None,
-        findings=checked.findings,
+        generation=generation, rows_checked=checked.rows_checked, findings=checked.findings
     )
     return response.model_dump_json().encode()
 
@@ -437,7 +458,6 @@ async def post_schema_check(deps: GraphDepsDep, body: SchemaCheckRequest) -> Res
                 deps.check_executor,
                 _check_body,
                 body.rows[: plan.row_count],
-                sent=len(body.rows),
                 reads=plan.ids,
                 lookup=frozen.lookup,
                 reader=deps.graph,
@@ -499,7 +519,7 @@ def build_schema_door() -> DoorContribution:
             SchemaBuildPending(),
             SchemaBuildExpired(),
             SchemaReadFailed(SchemaListingTruncatedError("exemplar")),
-            SchemaReadFailed(SchemaNoInstanceDeclarationError(0)),
+            SchemaReadFailed(SchemaNoDfoDeclarationError(0)),
             SchemaReadFailed(GraphDeadlineExceededError("exemplar")),
             SchemaReadFailed(GraphReadError("exemplar", upstream_status=400)),
             SchemaReadFailed(GraphReadError("exemplar", upstream_status=503)),

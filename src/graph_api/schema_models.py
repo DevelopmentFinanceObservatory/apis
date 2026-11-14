@@ -1,8 +1,10 @@
-"""Wire models for the instance's schema: the document and the terms list.
+"""Wire models for the deployment's schema: the document and the terms list.
 
 `SchemaDocument` holds `generation`, the graph generation token the document was built
 from, null where the token is unknown, and `nodes`, one `SchemaNode` per member of the
-document, sorted by dcid. The document holds every Class and Property the instance declares, every node those name in
+document, sorted by `ref`. A node, a term and a usage entry name a node by `ref`, its dcid,
+and `label`, its name, as the node route's envelope does. The document holds every Class and
+Property DFO declares, every node those name in
 `subClassOf`, `subPropertyOf`, `domainIncludes` or `rangeIncludes`, every node a StatVar row
 of the code index names, every listed member of an enumeration, the `typeOf` targets of
 every node that is neither a Class nor a Property, and every `subClassOf` and
@@ -17,33 +19,34 @@ Members named after a Data Commons property carry that property's values in snak
 `other_properties` holds every other outgoing property the graph holds on the node, keyed by the
 property's dcid. The ten named properties are a closed set and never appear in it; a property
 promoted to a named member later leaves the map. Each value has exactly one member:
-`{"dcid": <string>}` for a node of the graph or `{"value": <string>}` for a literal, kept as the
+`{"ref": <string>}` for a node of the graph or `{"value": <string>}` for a literal, kept as the
 string the graph holds and never parsed to a number or boolean. A value the graph repeats once
 per declaring provenance appears once. Properties are sorted by dcid and values by their text, a
 node reference before a literal of the same text. A literal longer than 2,000 characters, such
 as a geometry, is left out, and a property keeps its first 100 values in that order. A node with
 no other property holds `{}`.
 
-`name` is `dc_graph.display_name` over the node's `name` values: the greatest by code point,
+`label` is `dc_graph.display_name` over the node's `name` values: the greatest by code point,
 with a name equal to the dcid counting as no name, so the Graph surface names a node one way.
-A term's `name` follows the same rule over the names its listing entries carry.
+A term's `label` follows the same rule over the names its listing entries carry.
 `description` is the smallest of the node's `description` values by code point.
 
 `provenances` holds the dcids of the Provenances that a node's `typeOf` targets carry, verbatim
-and sorted. A term's are those its listing entries carry. `declared_by` is `"base"` when every
-one starts `dc/base/`, and `"instance"` otherwise. It is null when the graph names no declaring
-Provenance, which happens when a node has no `typeOf` arc, when none of its `typeOf` targets
+and sorted. A term's are those its listing entries carry. `declared_by` is the origin that
+declares the node, by `graph_api.schema_document.declared_by`: `"dfo"` when any of its
+provenances is DFO's, `"base"` when every one is base Data Commons', and `"un_system"`
+otherwise. It is null when the graph names no declaring Provenance, which happens when a node has no `typeOf` arc, when none of its `typeOf` targets
 carries one, or when a term's listing entries carry none. Its `provenances` is then empty.
 
 `enumeration` is set on a Class whose `subClassOf` chain reaches `Enumeration`, and null on
-every other node. An instance-declared enumeration lists the members its `<-typeOf` listing
+every other node. A DFO-declared enumeration lists the members its `<-typeOf` listing
 read, up to a cap; a base enumeration lists only the members StatVar rows use. `complete` is
 true only when the build listed the class from the graph and the listing read every member,
 so `members` is every member the graph holds. A list where it is false holds some of them.
 
 `SchemaTerms` holds `generation`, null where the token is unknown, and `terms`, every Class
-and Property on the graph with its `name`, `types` (`Class`, `Property` or both),
-`provenances` and `declared_by`, sorted by dcid.
+and Property on the graph with its `ref`, `label`, `types` (`Class`, `Property` or both),
+`provenances` and `declared_by`, sorted by `ref`.
 
 `DatasetUsage` says how each Provenance of the code index uses the model
 (`graph_api.dataset_usage`): its dataset label and description, its StatVar count, the distinct
@@ -60,8 +63,9 @@ observation properties. A constraint value is a string, a finite number within p
 everything else about a row's content as a finding.
 
 `SchemaCheckResponse` answers with the generation the rows were checked against, null where
-its token is unknown, the count of rows checked from the first, the index of the first row not
-checked, and every finding in the rows checked. The check stops before the row that would take
+its token is unknown, `rows_checked`, the count of rows checked from the first, and every
+finding in the rows checked. A caller resumes at `rows_checked` when it is less than the rows
+sent. The check stops before the row that would take
 its reads from the graph past `CHECK_MAX_READ_IDS` distinct ids, its findings past
 `CHECK_MAX_FINDINGS` or its encoded body past `CHECK_MAX_BODY_BYTES`; the first row is always
 taken, so every response checks at least one row.
@@ -82,6 +86,7 @@ from pydantic import (
 
 from dfo_platform.wire import ResponseModel
 from graph_api.routing import DCID_MAX_LENGTH
+from origin_catalogue import OriginId
 
 CHECK_MAX_ROWS = 2_000
 """The most rows one `POST /api/graph/schema/check` request carries."""
@@ -121,12 +126,11 @@ CHECK_MAX_BODY_BYTES = 4_000_000
 """The most bytes one check response encodes to, an internal budget the wire does not publish.
 The check stops before the row whose findings would take the response past it and answers where
 to resume. The first row is always taken, and fits: its at most 79 findings would encode to
-2.44 MB even if each carried a 512-character `ref` and `property` and four 512-character
-strings in both `value` and `served`, every character escaped to six bytes (30,910 bytes a
-finding)."""
+2.20 MB even if each carried a 512-character `property` and four 512-character strings in
+both `value` and `served`, every character escaped to six bytes (27,829 bytes a finding)."""
 
-DeclaredBy = Literal["instance", "base"]
-"""Who declares a node: `"base"` when every declaring provenance is a base Data Commons one."""
+type DeclaredBy = OriginId
+"""The origin that declares a node: `"dfo"`, `"base"` or `"un_system"`."""
 
 
 class SchemaEnumeration(ResponseModel):
@@ -144,7 +148,7 @@ class SchemaNodeReference(ResponseModel):
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    dcid: str
+    ref: str = Field(description="the node's dcid")
 
 
 class SchemaLiteral(ResponseModel):
@@ -159,8 +163,8 @@ class SchemaLiteral(ResponseModel):
 class SchemaNode(ResponseModel):
     """One node of the schema document."""
 
-    dcid: str
-    name: str | None = Field(description="the node's name; null when the graph gives none")
+    ref: str = Field(description="the node's dcid")
+    label: str | None = Field(description="the node's name; null when the graph gives none")
     description: str | None = Field(
         description="the node's prose in the graph; null when it has none"
     )
@@ -175,7 +179,7 @@ class SchemaNode(ResponseModel):
     other_properties: dict[str, list[SchemaNodeReference | SchemaLiteral]] = Field(
         description="every other outgoing property the graph holds on the node, by property "
         "dcid, sorted; the named members are a closed set, and a property promoted to one "
-        "leaves this map. Each value has exactly one member, {dcid: string} for a node or "
+        "leaves this map. Each value has exactly one member, {ref: string} for a node or "
         "{value: string} for a literal, never parsed to a number or boolean, sorted by its "
         "text. A literal longer than 2,000 characters is left out, and a property keeps its "
         "first 100 values. {} when the node holds none"
@@ -185,8 +189,10 @@ class SchemaNode(ResponseModel):
         "declared_by is null"
     )
     declared_by: DeclaredBy | None = Field(
-        description="null when the graph names no declaring Provenance for the node: it has no "
-        "typeOf arc, or none of its typeOf targets carries one"
+        description="the origin declaring the node: dfo when any of its provenances is DFO's, "
+        "base when every one is base Data Commons', un_system otherwise; null when the graph "
+        "names no declaring Provenance for the node: it has no typeOf arc, or none of its "
+        "typeOf targets carries one"
     )
     enumeration: SchemaEnumeration | None = Field(
         description="the members when the node is an enumeration Class; null otherwise"
@@ -194,7 +200,7 @@ class SchemaNode(ResponseModel):
 
 
 class SchemaDocument(ResponseModel):
-    """The instance's model as one document."""
+    """The deployment's model as one document."""
 
     generation: str | None = Field(
         description="the graph generation the document was built from; null when unknown"
@@ -205,8 +211,8 @@ class SchemaDocument(ResponseModel):
 class SchemaTerm(ResponseModel):
     """One Class or Property on the graph."""
 
-    dcid: str
-    name: str | None = Field(description="the term's name; null when the graph gives none")
+    ref: str = Field(description="the term's dcid")
+    label: str | None = Field(description="the term's name; null when the graph gives none")
     types: list[Literal["Class", "Property"]] = Field(
         description="whether the term is typed Class, Property or both"
     )
@@ -215,8 +221,8 @@ class SchemaTerm(ResponseModel):
         "declared_by is null"
     )
     declared_by: DeclaredBy | None = Field(
-        description="null when the graph names no declaring Provenance for the term: its "
-        "listing entries carry none"
+        description="the origin declaring the term, by the node's rule; null when the graph "
+        "names no declaring Provenance for the term: its listing entries carry none"
     )
 
 
@@ -277,7 +283,7 @@ class SchemaFacets(ResponseModel):
 class ProvenanceUsage(ResponseModel):
     """How one Provenance's StatVars use the model."""
 
-    dcid: str
+    ref: str = Field(description="the Provenance's dcid")
     label: str | None = Field(
         description="the dataset's name, from its declaration; null when it has none"
     )
@@ -299,7 +305,7 @@ class ProvenanceUsage(ResponseModel):
 class DatasetUsage(ResponseModel):
     """How each Provenance of the code index uses the model."""
 
-    provenances: list[ProvenanceUsage] = Field(description="sorted by dcid")
+    provenances: list[ProvenanceUsage] = Field(description="sorted by ref")
 
 
 CONSTRAINT_NUMBER_BOUND = 2**53
@@ -332,6 +338,7 @@ plus or minus `CONSTRAINT_NUMBER_BOUND`."""
 
 FindingCode = Literal[
     "node_not_held",
+    "not_a_node",
     "node_provisional",
     "node_untyped",
     "origin_not_served",
@@ -344,8 +351,9 @@ FindingCode = Literal[
 ]
 """What a finding says about the cell it names.
 
-- `node_not_held`: the graph holds no node for it, or it is outside dcid syntax, or a
-  constraint value is a number or a boolean.
+- `node_not_held`: it is a well-formed dcid the graph holds no node for.
+- `not_a_node`: a node belongs in the cell, which holds a number, a boolean or a string outside
+  dcid syntax.
 - `node_provisional`: the node of a constraint value, `stat_type`, `measurement_qualifier` or
   `measurement_denominator` has only the type `ProvisionalNode`.
 - `node_untyped`: the node of a constraint value, `stat_type`, `measurement_qualifier` or
@@ -357,9 +365,9 @@ FindingCode = Literal[
   is not typed `Property`.
 - `not_a_class`: the population type is not typed `Class`.
 - `value_outside_range`: every type of the value is a document node and none reaches the
-  instance property's `rangeIncludes` by `subClassOf`.
+  DFO-declared property's `rangeIncludes` by `subClassOf`.
 - `property_outside_domain`: the population type is a document node that reaches none of the
-  instance property's `domainIncludes` by `subClassOf`.
+  DFO-declared property's `domainIncludes` by `subClassOf`.
 - `definition_differs`: the code index serves the row's dcid with another value in that cell,
   and `served` is the served value.
 
@@ -402,9 +410,6 @@ class SchemaCheckRow(BaseModel):
 
     model_config = ConfigDict(extra="forbid", title="GraphSchemaCheckRow")
 
-    ref: _OptionalText = Field(
-        default=None, description="the caller's label, echoed on findings; at most 512 characters"
-    )
     dcid: _OptionalText = Field(
         default=None,
         description="the StatVar's dcid; when the code index serves it, the row is compared",
@@ -432,7 +437,6 @@ class SchemaFinding(ResponseModel):
     """One fault in one checked row."""
 
     row: int = Field(description="the row's index in the request's `rows`")
-    ref: str | None = Field(description="the row's `ref`; null when it has none")
     field: FindingField = Field(description="the row member the finding is about")
     property: str | None = Field(
         description="the constraint or observation property the finding is about; null for the "
@@ -470,13 +474,9 @@ class SchemaCheckResponse(ResponseModel):
     generation: str | None = Field(
         description="the graph generation the rows were checked against; null when unknown"
     )
-    row_count: int = Field(
+    rows_checked: int = Field(
         description="how many rows were checked, counted from the first row of the request; at "
-        "least 1"
-    )
-    next_row: int | None = Field(
-        description="the index of the first row not checked, equal to `row_count`; null when "
-        "every row was checked"
+        "least 1. A caller resumes at this index when it is less than the rows sent"
     )
     findings: list[SchemaFinding] = Field(
         description="one finding per fault in the rows checked, in row order; empty when none of "
