@@ -229,8 +229,10 @@ def test_a_held_node_with_no_type_is_served_with_no_provenance() -> None:
     untyped = {node.dcid: node for node in ontology.document.nodes}["UntypedValue"]
     assert (untyped.types, untyped.provenances, untyped.declared_by) == ([], [], None)
     assert '"declared_by":null' in untyped.model_dump_json()
-    # The client confirms every empty answer, so the build reads a node held as held.
-    assert graph.confirm_empty and all(graph.confirm_empty)
+    # Every node read probes each empty answer, so the build reads a node held as held, and
+    # skips the client's arc-targets cache.
+    assert graph.arc_target_reads
+    assert set(graph.arc_target_reads) == {(None, False)}
 
 
 def test_a_node_with_one_unsourced_type_is_declared_by_its_sourced_types(

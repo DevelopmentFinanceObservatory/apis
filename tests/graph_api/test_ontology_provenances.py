@@ -13,8 +13,10 @@ import pytest
 
 from code_index import CodeIndex, DatasetDeclaration, IndexStamp, StatVarRow
 from code_index.shared import get_index
+from graph_api import app as app_module
 from graph_api.doors import ontology as ontology_door
 from graph_api.ontology_provenances import SHAPE_FIELDS, build_provenances
+from graph_generation import FakeGeneration
 from series_coverage.schema import FacetMetadata
 from statvar_members import FiveTuple
 
@@ -297,6 +299,41 @@ def test_the_body_is_built_once_per_coverage_build(monkeypatch: pytest.MonkeyPat
     assert ["CurrencyUSD"] in _units(first)
     assert ["CurrencyEUR"] in _units(changed)
     assert changed.headers["ETag"] != first.headers["ETag"]
+
+
+def test_a_request_refreshes_a_stale_generation_before_it_reads_the_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A generation change only a refresh discovers clears the entry before the request
+    looks it up, so the second request builds again."""
+
+    class _Stale(FakeGeneration):
+        pending: str | None = None
+
+        async def refresh_if_stale(self, *, timeout_s: float = 1.0) -> None:
+            if self.pending is not None:
+                self.advance(self.pending)
+                self.pending = None
+
+    generation = _Stale(token="gen-a")
+    monkeypatch.setattr(app_module, "acquire_shared_generation", lambda **_kwargs: generation)
+    monkeypatch.setattr(app_module, "release_shared_generation", lambda _shared: None)
+    builds: list[object] = []
+    real = ontology_door.build_provenances
+
+    def counted(**kwargs):
+        builds.append(kwargs["coverage"])
+        return real(**kwargs)
+
+    monkeypatch.setattr(ontology_door, "build_provenances", counted)
+
+    with make_client(coverage=_FakeCoverage(_coverage_of("CurrencyUSD"))) as client:
+        first = client.get(_ROUTE, headers=_IDENTITY)
+        generation.pending = "gen-b"
+        second = client.get(_ROUTE, headers=_IDENTITY)
+
+    assert [first.status_code, second.status_code] == [200, 200]
+    assert len(builds) == 2
 
 
 def test_a_miss_builds_the_body_off_the_event_loop(monkeypatch: pytest.MonkeyPatch) -> None:

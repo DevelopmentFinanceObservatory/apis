@@ -79,7 +79,6 @@ from graph_api.doors.node import NODE_MEMBERSHIP_SLOT, build_node_door
 from graph_api.doors.ontology import (
     build_ontology_door,
     new_ontology_cache,
-    new_provenances_cache,
 )
 from graph_api.doors.resolve import build_resolve_door
 from graph_api.doors.schema import build_schema_door
@@ -355,7 +354,9 @@ def graph_surface(
             node_entries_registration = resolved_generation.register(
                 "graph_api.node_entries", stats=node_entries.stats, clear=node_entries.clear
             )
-            ontology = new_ontology_cache(executor=dcp_executor, generation=resolved_generation)
+            ontology = new_ontology_cache(
+                entries=2, executor=dcp_executor, generation=resolved_generation
+            )
             ontology_registration = resolved_generation.register(
                 "graph_api.ontology", stats=ontology.stats, clear=ontology.clear
             )
@@ -363,8 +364,8 @@ def graph_surface(
             provenances_executor = ThreadPoolExecutor(
                 max_workers=1, thread_name_prefix="graph-ontology-provenances"
             )
-            ontology_provenances = new_provenances_cache(
-                executor=provenances_executor, generation=resolved_generation
+            ontology_provenances = new_ontology_cache(
+                entries=1, executor=provenances_executor, generation=resolved_generation
             )
             provenances_registration = resolved_generation.register(
                 "graph_api.ontology_provenances",

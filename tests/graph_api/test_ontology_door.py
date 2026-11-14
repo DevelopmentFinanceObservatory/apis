@@ -659,6 +659,25 @@ class TestCheck:
         assert refused.status_code == 503, refused.text
         assert node.status_code == 200, node.text
 
+    def test_a_check_past_its_deadline_answers_504_and_holds_its_worker(
+        self, generation, monkeypatch: pytest.MonkeyPatch
+    ):
+        graph = _BlockingCheckReader()
+
+        with make_client(graph=graph) as client:
+            checks = client.app.state.graph_deps.check_executor
+            assert client.get(_DOCUMENT).status_code == 200
+            monkeypatch.setattr(ontology_door, "GRAPH_ONTOLOGY_CHECK_TIMEOUT_SECONDS", 0.05)
+            late = client.post(_CHECK, json={"rows": [_check_row("NoSuchCode")]})
+            held = checks._in_flight
+            graph.release.release()
+            wait_until(lambda: checks._in_flight == 0)
+
+        assert late.status_code == 504, late.text
+        assert late.json()["code"] == "timeout"
+        assert "findings" not in late.json()
+        assert held == 1
+
     def test_a_cancelled_check_holds_its_worker_until_its_job_returns(self, generation):
         graph = _BlockingCheckReader()
 

@@ -107,35 +107,38 @@ def test_node_arcs_many_dcid_omitted_from_retry_raises(monkeypatch) -> None:
 
 
 def test_node_arcs_many_group_retry_false_empty_caught_by_individual_probe(monkeypatch) -> None:
-    """A second empty response triggers an individual probe."""
+    """Empties a group retry of several dcids answers empty again get an individual probe."""
     calls: list[list[str]] = []
+    typed = {"arcs": {"typeOf": {"nodes": [{"dcid": "Country"}]}}}
 
     def fake_post(self, path, payload, *, deadline=None):
         calls.append(payload["nodes"])
-
         if len(calls) == 1:
-            return {
-                "data": {
-                    "country/KEN": {"arcs": {"typeOf": {"nodes": [{"dcid": "Country"}]}}},
-                    "country/ETH": {},
-                }
-            }
+            return {"data": {"country/KEN": typed, "country/ETH": {}, "country/NGA": {}}}
         if len(calls) == 2:
-            return {"data": {"country/ETH": {}}}
-        return {"data": {"country/ETH": {"arcs": {"typeOf": {"nodes": [{"dcid": "Country"}]}}}}}
+            return {"data": {"country/ETH": {}, "country/NGA": {}}}
+        return {"data": {dcid: dict(typed) for dcid in payload["nodes"]}}
 
     client = GraphClient(base_url="http://fake/core/api")
     monkeypatch.setattr(GraphClient, "post", fake_post)
-    result = client.node_arcs_many(["country/KEN", "country/ETH"], properties=("typeOf",))
+    result = client.node_arcs_many(
+        ["country/KEN", "country/ETH", "country/NGA"], properties=("typeOf",)
+    )
     assert result == {
         "country/KEN": {"typeOf": ("Country",)},
         "country/ETH": {"typeOf": ("Country",)},
+        "country/NGA": {"typeOf": ("Country",)},
     }
-    assert calls == [["country/KEN", "country/ETH"], ["country/ETH"], ["country/ETH"]]
+    assert calls == [
+        ["country/KEN", "country/ETH", "country/NGA"],
+        ["country/ETH", "country/NGA"],
+        ["country/ETH"],
+        ["country/NGA"],
+    ]
 
 
 def test_node_arcs_many_still_empty_after_individual_probe_resolves_to_none(monkeypatch) -> None:
-    """Three empty responses resolve the suspect to `None`."""
+    """A group retry of the one suspect, read alone and still empty, resolves it to `None`."""
     calls: list[list[str]] = []
 
     def fake_post(self, path, payload, *, deadline=None):
@@ -157,7 +160,7 @@ def test_node_arcs_many_still_empty_after_individual_probe_resolves_to_none(monk
         "country/KEN": {"typeOf": ("Country",)},
         "country/ETH": None,
     }
-    assert calls == [["country/KEN", "country/ETH"], ["country/ETH"], ["country/ETH"]]
+    assert calls == [["country/KEN", "country/ETH"], ["country/ETH"]]
 
 
 def test_node_arcs_many_multi_page_response_stitched(monkeypatch) -> None:

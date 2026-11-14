@@ -436,8 +436,8 @@ class OriginGraphClient:
 
     Reads raise `CatalogueNotBound` when no catalogue is bound to the
     caller's context. Where both backends are read in one call, `max_bytes`
-    caps each backend's read separately, and `node_arcs_many` gives each
-    backend the whole `individual_probe_budget`.
+    caps each backend's read separately, and `node_arcs_many` and
+    `node_arc_targets_many` give each backend the whole `individual_probe_budget`.
     """
 
     def __init__(
@@ -593,16 +593,22 @@ class OriginGraphClient:
         dcids: Sequence[str],
         *,
         properties: Sequence[str],
-        confirm_empty: bool = False,
+        individual_probe_budget: int | None = 0,
+        cached: bool = True,
         deadline: float | None = None,
     ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
-        """Each backend's `node_arc_targets_many` of its dcids. The catalogue's tables carry no
-        target names, so every dcid is read live."""
+        """Each backend's `node_arc_targets_many` of its dcids, each backend given the whole
+        `individual_probe_budget`. The catalogue's tables carry no target names, so every dcid
+        is read live."""
         return self._route_many(
             current_catalogue(),
             dcids,
             lambda backend, part: backend.node_arc_targets_many(
-                part, properties=properties, confirm_empty=confirm_empty, deadline=deadline
+                part,
+                properties=properties,
+                individual_probe_budget=individual_probe_budget,
+                cached=cached,
+                deadline=deadline,
             ),
             disabled=lambda: None,
         )
@@ -667,13 +673,13 @@ class OriginGraphClient:
         """`node_subjects` with each subject's names and declaring provenances, routed
         on every name the read carries as `node_subjects` routes a read its tables do not
         answer. The catalogue's tables carry no subject names or provenances, so every read is
-        live, and one that needs the UN deployment with the UN off returns an empty page marked
-        truncated, since nothing read it."""
+        live, and one that needs the UN deployment with the UN off returns an empty page, as
+        `node_subjects` does, since the UN origin off holds nothing to list."""
         backend = self._subjects_backend(
             current_catalogue(), _subject_arcs(dcid, property, filters)
         )
         if backend is None:
-            return ArcSubjectPage(subjects=(), truncated=True)
+            return ArcSubjectPage(subjects=(), truncated=False)
         return backend.node_arc_subjects(
             dcid, property=property, filters=filters, max_results=max_results, deadline=deadline
         )
@@ -729,8 +735,8 @@ class OriginGraphClient:
         """`node_subjects_many` with each subject's names and declaring provenances,
         with leads routed as `node_subjects_many` routes its live reads. The catalogue's tables
         carry no subject names or provenances, so every lead is read live, and a lead that needs
-        the UN deployment with the UN off answers no subjects, `"capped"`, since nothing read
-        it."""
+        the UN deployment with the UN off answers no subjects, `"complete"`, as
+        `node_subjects_many` does."""
 
         def read(
             backend: GraphClient, part: list[str]
@@ -740,7 +746,7 @@ class OriginGraphClient:
             )
 
         def disabled() -> tuple[tuple[ArcSubject, ...], SubjectsCoverageFlag]:
-            return ((), "capped")
+            return ((), "complete")
 
         return self._route_subjects_many(
             current_catalogue(), dcids, property=property, read=read, disabled=disabled

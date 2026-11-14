@@ -25,13 +25,21 @@ from graph_api.ontology_models import (
     CHECK_MAX_OBSERVATION_PROPERTIES,
     CHECK_MAX_READ_IDS,
     OntologyCheckRow,
-    OntologyDocument,
-    OntologyEnumeration,
 )
 from graph_api.reader import NodeArcsByDcid
 
 from .conftest import FakeGraphNodeReader
-from .ontology_fixture import DFO, INDEX, NODES, SCHEMA, TERMS, node_targets, ontology_graph
+from .ontology_fixture import (
+    DFO,
+    INDEX,
+    NODES,
+    SCHEMA,
+    TERMS,
+    index_of,
+    index_row,
+    node_targets,
+    ontology_graph,
+)
 
 _DEADLINE = 1_000.0
 
@@ -215,8 +223,8 @@ _GENDER = "constraint_properties.beneficiaryGender"
         ),
         pytest.param(
             _row(constraint_properties={"crsPurpose": "CRSPurposeCode99999"}),
-            [(_CRS, "CRSPurposeCode99999", "value_outside_range", "error")],
-            id="value-outside-a-fully-listed-enumeration",
+            [(_CRS, "CRSPurposeCode99999", "node_not_held", "error")],
+            id="value-not-held-on-a-fully-listed-enumeration",
         ),
         pytest.param(
             _row(constraint_properties={"recipientPlace": "country/XYZ"}),
@@ -358,18 +366,6 @@ _GENDER = "constraint_properties.beneficiaryGender"
             _row(constraint_properties={"recipientPlace": "country/UGA"}),
             [],
             id="value-typed-outside-the-document",
-        ),
-        pytest.param(
-            _row(constraint_properties={"financingPurpose": "CRSPurposeCode99999"}),
-            [
-                (
-                    "constraint_properties.financingPurpose",
-                    "CRSPurposeCode99999",
-                    "value_outside_range",
-                    "error",
-                )
-            ],
-            id="value-outside-a-full-enumeration-and-its-full-sub-enumeration",
         ),
         pytest.param(
             _row(constraint_properties={"purposeOrPlace": "CRSPurposeCode99999"}),
@@ -549,8 +545,6 @@ def test_a_value_under_a_property_not_held_is_read_and_gets_no_finding() -> None
     "constraints",
     [
         pytest.param({"crsPurpose": "CRSPurposeCode12220"}, id="document-holds-every-id"),
-        pytest.param({"crsPurpose": "CRSPurposeCode99999"}, id="fully-listed-enumeration"),
-        pytest.param({"crsPurpose": "DAC1AidType1010"}, id="member-of-another-enumeration"),
         pytest.param({"FinancialFlow": "NoSuchValue"}, id="value-under-a-class"),
         pytest.param(
             {
@@ -585,9 +579,9 @@ def test_no_read_where_the_document_or_the_value_decides(constraints: dict[str, 
             (ArcTarget(value="Property", provenances=(DFO,)), ArcTarget(value="Thing")),
             [
                 (_CRS, "crsPurpose", "property_outside_domain", "warning"),
-                (_CRS, "CRSPurposeCode99999", "value_outside_range", "error"),
+                (_CRS, "CRSPurposeCode99999", "node_not_held", "error"),
             ],
-            [],
+            [["CRSPurposeCode99999"]],
             id="one-type-sourced-by-the-instance",
         ),
     ],
@@ -616,51 +610,23 @@ def test_a_property_is_judged_by_the_provenances_its_types_carry(
     assert reader.batches == batches
 
 
-def _truncated(dcid: str) -> OntologyDocument:
-    """The check document with `dcid`'s member listing marked truncated."""
-    document = _ontology().document
-    return document.model_copy(
-        update={
-            "nodes": [
-                node.model_copy(
-                    update={
-                        "enumeration": OntologyEnumeration(
-                            members=node.enumeration.members, complete=False
-                        )
-                    }
-                )
-                if node.dcid == dcid and node.enumeration is not None
-                else node
-                for node in document.nodes
-            ]
-        }
-    )
-
-
-@pytest.mark.parametrize(
-    ("prop", "truncated"),
-    [
-        pytest.param("crsPurpose", "CRSPurposeCodeEnum", id="range-enumeration-truncated"),
-        pytest.param(
-            "financingPurpose", "CRSPurposeCodeEnum", id="sub-enumeration-truncated-under-full"
-        ),
-    ],
-)
-def test_a_truncated_enumeration_at_or_below_the_range_reads_the_value(
-    prop: str, truncated: str
-) -> None:
+def test_a_value_typed_below_a_complete_enumeration_outside_the_document_is_read() -> None:
+    """`Male` is typed `GenderType`, a subclass of the complete `BeneficiaryGroupEnum`. With no
+    reference bringing `GenderType` into the document, the check reads `Male` and finds no
+    fault, because its type lies outside the document."""
+    terms = {k: v for k, v in _CHECK_TERMS.items() if k not in ("gender", "recipientGender")}
+    nodes = {k: v for k, v in _CHECK_NODES.items() if k not in ("gender", "recipientGender")}
+    index = index_of(index_row("Amount_CRS12220", {"crsPurpose": "CRSPurposeCode12220"}))
+    graph = ontology_graph(terms=terms, nodes=nodes)
+    document = build_ontology(reader=graph, code_index=index, generation="g1", deadline=_DEADLINE)
+    lookup = OntologyLookup.of(document.document)
     reader = _RecordingReader()
 
-    findings = _check(
-        [_row(constraint_properties={prop: "CRSPurposeCode99999"})],
-        reader,
-        OntologyLookup.of(_truncated(truncated)),
-    )
+    findings = _check([_row(constraint_properties={"beneficiaryGroup": "Male"})], reader, lookup)
 
-    assert findings == [
-        (f"constraint_properties.{prop}", "CRSPurposeCode99999", "node_not_held", "error")
-    ]
-    assert reader.batches == [["CRSPurposeCode99999"]]
+    assert "GenderType" not in lookup.nodes
+    assert findings == []
+    assert reader.batches == [["Male"]]
 
 
 def _absent_rows(count: int) -> list[OntologyCheckRow]:
@@ -716,6 +682,13 @@ def test_a_single_row_naming_the_most_ids_a_row_can_is_read_within_the_cap() -> 
             lambda: _absent_rows(CHECK_MAX_READ_IDS + 1), id="values-under-document-properties"
         ),
         pytest.param(lambda: [_maximal_row(), *_absent_rows(1)], id="every-field-of-a-row"),
+        pytest.param(
+            lambda: [
+                _row(ref=str(i), constraint_properties={"crsPurpose": f"CRSPurposeCode9{i:04d}"})
+                for i in range(CHECK_MAX_READ_IDS + 1)
+            ],
+            id="values-under-a-complete-enumeration",
+        ),
     ],
 )
 def test_rows_naming_one_id_past_the_cap_are_refused_with_no_read(
@@ -746,19 +719,6 @@ def test_a_un_id_to_read_is_refused_while_the_un_origin_is_off(
 
     assert raised.value.dcid == read
     assert plan_reads([row], lookup=_lookup(), un_served=True) == {read}
-
-
-def test_values_the_document_decides_count_against_no_cap() -> None:
-    reader = _RecordingReader()
-    rows = [
-        _row(ref=str(i), constraint_properties={"crsPurpose": f"CRSPurposeCode9{i:04d}"})
-        for i in range(CHECK_MAX_READ_IDS + 1)
-    ]
-
-    findings = _check(rows, reader)
-
-    assert {code for _, _, code, _ in findings} == {"value_outside_range"}
-    assert reader.batches == []
 
 
 def test_every_read_asks_the_type_and_name_and_probes_every_empty_answer() -> None:

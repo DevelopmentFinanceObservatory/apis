@@ -211,17 +211,20 @@ def test_empty_dcids_returns_empty_dict_no_call():
                         "data": {
                             "country/KEN": {"arcs": {"typeOf": {"nodes": [{"dcid": "Country"}]}}},
                             "country/ZZZ": {},
+                            "country/YYY": {},
                         }
                     }
                 ),
-                json.dumps({"data": {"country/ZZZ": {}}}),
+                json.dumps({"data": {"country/ZZZ": {}, "country/YYY": {}}}),
                 json.dumps({"data": {"country/ZZZ": {"arcs": {"typeOf": {"nodes": [{}]}}}}}),
+                json.dumps({"data": {"country/YYY": {}}}),
             ],
-            ["country/KEN", "country/ZZZ"],
+            ["country/KEN", "country/ZZZ", "country/YYY"],
             ("typeOf",),
             {
                 "country/KEN": {"typeOf": ("Country",)},
                 "country/ZZZ": {"typeOf": (graph_module.UNRESOLVED_NODE,)},
+                "country/YYY": None,
             },
             id="individual-probe",
         ),

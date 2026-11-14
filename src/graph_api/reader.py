@@ -104,9 +104,12 @@ class GraphNodeReader(Protocol):
         dcids: Sequence[str],
         *,
         properties: Sequence[str],
-        confirm_empty: bool = False,
+        individual_probe_budget: int | None = 0,
+        cached: bool = True,
         deadline: float | None = None,
     ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
         """Read selected arcs' targets with names, types and provenances, or `None` for an absent dcid.
-        `confirm_empty` reads an empty answer again until the dcid is read alone."""
+        The default budget 0 returns the first read's answer; any other budget probes an empty
+        answer as `node_arcs_many` does. `cached=False` leaves the client's arc-targets cache
+        untouched."""
         ...

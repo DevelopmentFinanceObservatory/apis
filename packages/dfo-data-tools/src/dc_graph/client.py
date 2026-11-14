@@ -1231,9 +1231,12 @@ class GraphClient:
         `node_arc_many_total_concurrency`.
 
         Empty results from multi-dcid batches get one group retry, then individual probes up to
-        `individual_probe_budget` (`None` probes all). The budget covers the whole call. Missing
+        `individual_probe_budget` (`None` probes all). A budget of 0 sends neither: the first
+        read's answer stands, and a dcid it omits maps to `None`. The budget covers the whole
+        call. Missing
         retry or probe entries raise the read error. Unprobed entries map to `None` and are counted
-        in one log message. A single-dcid empty result is trusted.
+        in one log message. A single-dcid empty result is trusted, and a group retry of one dcid
+        is that dcid read alone, so it gets no probe.
 
         One absolute `deadline` bounds every request. An entry without `dcid` or `value` contributes
         `UNRESOLVED_NODE`, distinct from an absent arc. This method is uncached.
@@ -1252,20 +1255,26 @@ class GraphClient:
         dcids: Sequence[str],
         *,
         properties: Sequence[str],
-        confirm_empty: bool = False,
+        individual_probe_budget: int | None = 0,
+        cached: bool = True,
         deadline: float | None = None,
     ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
         """Each distinct dcid's `properties` with their targets (`parse_arc_targets`), so a
         target's name and types need no read of their own, or `None` for a node the graph
-        answers with none of them. The dcids the optional cache (sized `label_cache_size`) does
-        not hold under the generation stamp are read in `node_arcs_many`'s initial chunks and
-        pages, bounded by `deadline`. An empty answer is returned as read. With `confirm_empty`
-        it is read again as `node_arcs_many` does, in a group and then alone, every one
-        probed, so `None` is the graph's answer for that dcid read alone. A node answered with
-        arcs is cached. An empty answer is not, since a batch can empty an entry depending on
-        which other dcids share it."""
+        answers with none of them. The dcids are read as `node_arcs_many` reads them, in its
+        chunks and pages bounded by `deadline`, and `individual_probe_budget` has its meaning
+        there. The default 0 returns the first read's answer, an empty one included. `None`
+        reads an empty answer again in a group and then alone, so `None` for a dcid is the
+        graph's answer for that dcid read alone.
+
+        With `cached`, the cache (sized `label_cache_size`) answers the dcids it holds under the
+        generation stamp, and a node answered with arcs joins it. An empty answer does not,
+        since a batch can empty an entry depending on which other dcids share it. A caller
+        whose reads no other caller repeats passes `cached=False`, which leaves the cache
+        untouched."""
         if not dcids:
             return {}
+        cache = self._arc_targets_cache if cached else None
         stamp = self._generation.stamp()
         wanted = tuple(sorted(properties))
         result: dict[str, dict[str, tuple[ArcTarget, ...]] | None] = {}
@@ -1273,28 +1282,28 @@ class GraphClient:
         with self._cache_lock:
             for dcid in dict.fromkeys(dcids):
                 key = (stamp.key, dcid, wanted)
-                if self._arc_targets_cache is not None and key in self._arc_targets_cache:
+                if cache is not None and key in cache:
                     self._arc_targets_counters.hits += 1
-                    result[dcid] = self._arc_targets_cache[key]
+                    result[dcid] = cache[key]
                 else:
-                    self._arc_targets_counters.misses += 1
+                    if cache is not None:
+                        self._arc_targets_counters.misses += 1
                     misses.append(dcid)
         if not misses:
             return result
-        if confirm_empty:
-            read = self._confirmed_node_arcs(
-                misses, properties=properties, individual_probe_budget=None, deadline=deadline
-            )
-        else:
-            data = self._post_node_arcs_chunked(misses, properties=properties, deadline=deadline)
-            read = {dcid: (data.get(dcid) or {}).get("arcs") for dcid in misses}
+        read = self._confirmed_node_arcs(
+            misses,
+            properties=properties,
+            individual_probe_budget=individual_probe_budget,
+            deadline=deadline,
+        )
         for dcid in misses:
             arcs = read[dcid]
             targets = parse_arc_targets(arcs, properties) if arcs else None
             result[dcid] = targets
-            if targets is not None and self._arc_targets_cache is not None:
+            if targets is not None and cache is not None:
                 with self._cache_lock:
-                    self._arc_targets_cache[(stamp.key, dcid, wanted)] = targets
+                    cache[(stamp.key, dcid, wanted)] = targets
         return {dcid: result[dcid] for dcid in dict.fromkeys(dcids)}
 
     def node_names_many(
@@ -1349,11 +1358,14 @@ class GraphClient:
         """Each of `dcids`' wire `arcs` for `properties`, `None` for none. The dcids are read in
         `_post_node_arcs_chunked`'s chunks. An empty answer from a batch of several dcids is
         read again with the other empties as a group, then each still empty alone, up to
-        `individual_probe_budget` (`None` probes all). Only an empty answer for a dcid read
-        alone is kept as `None`, beside the unprobed ones, which one log message counts. A dcid
-        a retry or probe omits raises the read error. Each read carries `deadline`, so a read
-        past it raises and stops the probes."""
+        `individual_probe_budget` (`None` probes all). A group of one is that read alone. Only
+        an empty answer for a dcid read alone is kept as `None`, beside the unprobed ones, which
+        one log message counts. A dcid a retry or probe omits raises the read error. A budget of
+        0 sends no retry or probe and returns the first read's answers, `None` for a dcid it
+        omits. Each read carries `deadline`, so a read past it raises and stops the probes."""
         data = self._post_node_arcs_chunked(dcids, properties=properties, deadline=deadline)
+        if individual_probe_budget == 0:
+            return {dcid: (data.get(dcid) or {}).get("arcs") or None for dcid in dcids}
         result: dict[str, dict | None] = {}
         suspects: list[str] = []
         single_dcid = len(dcids) == 1
@@ -1383,6 +1395,9 @@ class GraphClient:
                 retry_arcs = (retry_data.get(dcid) or {}).get("arcs", {})
                 if retry_arcs:
                     result[dcid] = retry_arcs
+                elif len(suspects) == 1:
+                    # The group retry read this dcid alone, as a probe would.
+                    result[dcid] = None
                 else:
                     still_empty.append(dcid)
 
@@ -1611,9 +1626,11 @@ class GraphClient:
         """Return distinct subjects pointing to `dcid` via `property`, in first-occurrence order.
         Follow `nextToken` until exhaustion or the `(max_results + 1)`th subject confirms
         truncation.
-        More than `_NODE_SUBJECTS_MAX_PAGES` pages raises the read error. A repeated token or
-        `_NODE_SUBJECTS_STUCK_PAGE_LIMIT` fresh-token pages with no new dcids raises
-        `GraphNotAdvancingError`. `filters` narrows subjects by value-bound arcs. One absolute
+        More than `_NODE_SUBJECTS_MAX_PAGES` pages raises the read error. A token the walk has
+        already followed, or `_NODE_SUBJECTS_STUCK_PAGE_LIMIT` consecutive fresh-token pages with
+        no entry, raises `GraphNotAdvancingError`. A page of entries advances the walk even when
+        every entry repeats a subject read before, as a listing that names a subject once per
+        declaring provenance does. `filters` narrows subjects by value-bound arcs. One absolute
         `deadline` bounds every page. The walk holds only the subjects' dcids.
         """
         dcids, truncated = self._walk_subjects(
@@ -1666,8 +1683,9 @@ class GraphClient:
         spec = _reverse_arc_spec(property, filters)
         dcids: list[str] = []
         seen: set[str] = set()
+        tokens: set[str] = set()
         token: str | None = None
-        stuck_pages = 0
+        empty_pages = 0
         for _ in range(_NODE_SUBJECTS_MAX_PAGES):
             payload: dict = {"nodes": [dcid], "property": spec}
             if token is not None:
@@ -1675,36 +1693,38 @@ class GraphClient:
             body = self.post(NODE_PATH, payload, deadline=deadline)
             node_data = body.get("data", {}).get(dcid) or {}
             arcs = node_data.get("arcs", {})
-            distinct_before = len(dcids)
+            entries = 0
             for entry in arcs.get(property, {}).get("nodes", []):
                 entry_dcid = entry.get("dcid")
                 if entry_dcid is None:
                     continue
+                entries += 1
                 if entry_dcid not in seen:
                     seen.add(entry_dcid)
                     dcids.append(entry_dcid)
                 if fold is not None:
                     fold(entry_dcid, entry)
             next_token = body.get("nextToken")
-            if next_token is not None and next_token == token:
+            if next_token is not None and next_token in tokens:
                 raise GraphNotAdvancingError(
-                    f"graph repeated the same nextToken paging subjects for {dcid!r} via "
+                    f"graph repeated a nextToken paging subjects for {dcid!r} via "
                     f"{property!r} instead of making progress",
                     dcid=dcid,
                     property=property,
                 )
-            if next_token is not None and len(dcids) == distinct_before:
-                stuck_pages += 1
-                if stuck_pages >= _NODE_SUBJECTS_STUCK_PAGE_LIMIT:
+            if next_token is not None and not entries:
+                empty_pages += 1
+                if empty_pages >= _NODE_SUBJECTS_STUCK_PAGE_LIMIT:
                     raise GraphNotAdvancingError(
                         f"graph reported a fresh nextToken paging subjects for {dcid!r} via "
-                        f"{property!r} without contributing a new distinct dcid across "
-                        f"{stuck_pages} consecutive pages",
+                        f"{property!r} without an entry across {empty_pages} consecutive pages",
                         dcid=dcid,
                         property=property,
                     )
             else:
-                stuck_pages = 0
+                empty_pages = 0
+            if next_token is not None:
+                tokens.add(next_token)
             token = next_token
             if len(dcids) > max_results or token is None:
                 break

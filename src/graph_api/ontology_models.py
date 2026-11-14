@@ -78,7 +78,8 @@ served code index carries (2 on the dev graph)."""
 CHECK_MAX_READ_IDS = 5 + 2 * CHECK_MAX_CONSTRAINT_PROPERTIES + CHECK_MAX_OBSERVATION_PROPERTIES
 """The most distinct ids one check request may read from the graph, 41. They are the ids its
 rows name that the ontology document does not hold, counted before any read, each constraint
-value counted unless the value or the document decides it (`graph_api.ontology_check.plan_reads`).
+value counted unless it is a literal or its property a document node that is no Property
+(`graph_api.ontology_check.plan_reads`).
 One row names at most this many (its 5 shape fields, each constraint property and its value,
 each observation property), so a single row always fits. The check reads each once, in one
 `node_arcs_many` call: at most 43 POSTs to `/v2/node` when the graph answers every POST, 45
@@ -166,7 +167,8 @@ class OntologyTerm(ResponseModel):
 
 
 class OntologyTerms(ResponseModel):
-    """Every Class and Property on the graph."""
+    """Every Class and Property the DFO graph lists by `typeOf`, base Data Commons terms
+    included. The UN origin's terms are not listed, even where the deployment serves it."""
 
     generation: str | None = Field(
         description="the graph generation the list was built from; null when unknown"
@@ -298,8 +300,7 @@ FindingCode = Literal[
   is not typed `Property`.
 - `not_a_class`: the population type is not typed `Class`.
 - `value_outside_range`: every type of the value is a document node and none reaches the
-  instance property's `rangeIncludes` by `subClassOf`, or the value is outside the document
-  while the document lists every instance of every `rangeIncludes` class.
+  instance property's `rangeIncludes` by `subClassOf`.
 - `property_outside_domain`: the population type is a document node that reaches none of the
   instance property's `domainIncludes` by `subClassOf`.
 - `definition_differs`: the code index serves the row's dcid with another value in that field,

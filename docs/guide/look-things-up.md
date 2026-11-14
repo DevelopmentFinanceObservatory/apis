@@ -109,7 +109,7 @@ The documentation record includes source details, licence, scope and units, meth
 
 ## Read the model
 
-`GET /api/v1/graph/ontology` serves every Class and Property the instance declares, with their ranges, domains and enumeration members. `GET /api/v1/graph/ontology/terms` lists every Class and Property on the graph, base Data Commons included, with name, types and declaring Provenances.
+`GET /api/v1/graph/ontology` serves every Class and Property the instance declares, with their ranges, domains and enumeration members. `GET /api/v1/graph/ontology/terms` lists every Class and Property of the DFO graph, base Data Commons included and the UN origin's terms excluded, with name, types and declaring Provenances.
 
 ```bash
 curl -fsS "$DFO_API/api/v1/graph/ontology" \

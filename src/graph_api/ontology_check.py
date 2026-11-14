@@ -14,10 +14,10 @@ no `typeOf` is untyped. A read error propagates, so no node is reported absent b
 failed. The check reads no ancestry.
 
 The check reads every planned id in one `node_arcs_many` call: the shape fields, constraint
-properties and observation properties the document does not hold, and the constraint values
-outside the document that neither the value nor the document decides. A constraint value whose
-property is not a held Property gets no finding of its own, because the property's finding marks
-the cell.
+properties, observation properties and constraint values the document does not hold, less the
+literal values and the values under a document node that is no Property. A constraint value
+whose property is not a held Property gets no finding of its own, because the property's
+finding marks the cell.
 
 A request reads at most `CHECK_MAX_READ_IDS` (41) ids, each once. It reads fewer from the
 graph when the arc tables answer some. The `node_arcs_many` call sends, for each backend its ids
@@ -30,12 +30,11 @@ halves, so a batch or group retry of j ids costs at most 2j - 1 POSTs, and a che
 POST is tried up to 3 times on a 5xx answer or a transport error. Every read carries the
 check's deadline, `GRAPH_ONTOLOGY_CHECK_TIMEOUT_SECONDS` (30 s) from the request's start.
 
-Some constraint values need no read. A value that is a number, a boolean, or a string outside
-dcid syntax names no node, so it gets `node_not_held`. A value outside the document, on an
-instance property whose range the document decides (`OntologyLookup.decides`), is no member of
-the range and gets `value_outside_range`. Every other id outside the document is read.
-`plan_reads` counts and reads every value under a property outside the document. One row
-names at most `CHECK_MAX_READ_IDS` ids, so a single row always fits.
+A value that is a number, a boolean, or a string outside dcid syntax names no node, so it
+gets `node_not_held` with no read. Every other id outside the document is read, whatever the
+range of its property: the document holds the ancestors of the classes it holds and none of
+their descendants, so no member listing proves that a value it lacks lies outside a range. One
+row names at most `CHECK_MAX_READ_IDS` ids, so a single row always fits.
 
 The findings stop at `CHECK_MAX_FINDINGS`. `check_rows` raises `OntologyCheckTooManyFindings`
 at the row that passes it. One row yields at most 79 findings (`CHECK_MAX_FINDINGS` counts
@@ -134,13 +133,9 @@ class _Node:
 
 @dataclass(frozen=True)
 class OntologyLookup:
-    """The ontology document's nodes as the check reads them, and the classes whose instances
-    the document lists in full: enumerations whose `complete` member list is every member the
-    graph holds, and whose every enumeration below them in the document by `subClassOf` is
-    complete too."""
+    """The ontology document's nodes as the check reads them."""
 
     nodes: Mapping[str, _Node]
-    listed_in_full: frozenset[str]
 
     @classmethod
     def of(cls, document: OntologyDocument) -> OntologyLookup:
@@ -154,27 +149,7 @@ class OntologyLookup:
             )
             for node in document.nodes
         }
-        enumerations = [node for node in document.nodes if node.enumeration is not None]
-        full = {
-            node.dcid
-            for node in enumerations
-            if node.enumeration is not None and node.enumeration.complete
-        }
-        for node in enumerations:
-            if node.dcid not in full:
-                full -= _ancestry(nodes, [node.dcid])
-        return cls(nodes=MappingProxyType(nodes), listed_in_full=frozenset(full))
-
-    def decides(self, prop: str) -> bool:
-        """Whether a value outside the document is outside `prop`'s range with no read: `prop`
-        is an instance property whose every `rangeIncludes` class the document lists in full,
-        with every enumeration below it."""
-        node = self.nodes.get(prop)
-        return (
-            node is not None
-            and _ranged(node)
-            and all(target in self.listed_in_full for target in node.range)
-        )
+        return cls(nodes=MappingProxyType(nodes))
 
     def ancestry(self, dcids: Iterable[str]) -> set[str]:
         """`dcids` and every `subClassOf` ancestor of them the document holds."""
@@ -199,7 +174,8 @@ def plan_reads(
 ) -> frozenset[str]:
     """The ids outside the document `rows` name that the check reads, decided with no read:
     every shape field, constraint property and observation property outside the document, and
-    every constraint value outside it that neither the value nor the document decides.
+    every constraint value outside it that is a dcid, less the values under a document node
+    that is no Property.
 
     Args:
         rows: the candidate definitions.
@@ -320,13 +296,10 @@ def _is_dcid(value: ConstraintValue) -> bool:
 
 def _read_value(prop: str, value: ConstraintValue, lookup: OntologyLookup) -> str | None:
     """`value` when the check answers it from a node, `None` when the value or the property
-    alone decides: a literal, a value under a document node that is no Property, or a value
-    outside the document whose range the document decides."""
+    alone decides: a literal, or a value under a document node that is no Property."""
     if not isinstance(value, str) or not _is_dcid(value):
         return None
     if prop in lookup.nodes and not _is_property(lookup.nodes[prop]):
-        return None
-    if value not in lookup.nodes and lookup.decides(prop):
         return None
     return value
 
@@ -416,14 +389,10 @@ def _check_row(
         if value is None:
             find(field, value, "value_missing")
             continue
-        if not _is_dcid(value):
+        if not isinstance(value, str) or not _is_dcid(value):
             find(field, value, "node_not_held")
             continue
-        read = _read_value(prop, value, lookup)
-        if read is None:
-            find(field, value, "value_outside_range")
-            continue
-        held_value = nodes.get(read)
+        held_value = nodes.get(value)
         if fault := _node_fault(held_value):
             find(field, value, fault)
         elif (

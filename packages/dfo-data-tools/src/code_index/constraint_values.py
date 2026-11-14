@@ -20,16 +20,21 @@ def constraint_value_fault(types: Collection[str] | None) -> ConstraintValueFaul
     """Why a constraint value's node is not a resolved node, or `None` when it is.
 
     Args:
-        types: the value node's `typeOf` values, or `None` when the graph holds no node.
+        types: the value node's `typeOf` values as a batched read answers them, or `None`
+            when the graph holds no node. `dc_graph.UNRESOLVED_NODE`, a target the graph
+            could not resolve, counts as no type, so a caller may pass the values filtered
+            or not.
 
     Returns:
         `"not_held"` when the graph holds no node, `"untyped"` when the node carries no
-        `typeOf`, `"provisional"` when its only type is `ProvisionalNode`, and `None`
+        resolved `typeOf`, `"provisional"` when its only type is `ProvisionalNode`, and `None`
         otherwise. A `ProvisionalNode` type beside a real type is resolved.
     """
+    from dc_graph import UNRESOLVED_NODE
+
     if types is None:
         return "not_held"
-    distinct = set(types)
+    distinct = set(types) - {UNRESOLVED_NODE}
     if not distinct:
         return "untyped"
     if distinct == {PROVISIONAL_NODE}:

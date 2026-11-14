@@ -44,35 +44,35 @@ def shared_resolver(_register_dfo_graph_pack: SharedResolver) -> SharedResolver:
 class FakeGraphNodeReader:
     """Fake graph reads shared by the graph API and entity resolver tests.
 
-    `nodes` maps dcids to arcs; absent dcids return `None`, absent properties
-    return `()`, and `node_arcs_many` answers `None` for a node holding none of the properties
-    it names, as the graph does. `arcs`, `contained`, and `subjects` map lookup keys to results,
+    `nodes` maps dcids to arcs; absent dcids return `None` and absent properties return `()`, so
+    `node_arcs_many` answers a held node holding none of the properties it names with `()` for
+    each, as the served `OriginGraphClient` answers a node its catalogue tables hold. `arcs`, `contained`, and `subjects` map lookup keys to results,
     with empty results for missing keys. `arc_subjects` maps `(dcid, property)`
     to every subject `node_arc_subjects` and `node_arc_subjects_many` serve,
     capped at `max_results` with `truncated` or `"capped"` set past it. `arc_targets` maps dcids to
     `{property: targets}` for `node_arc_targets_many`, with absent dcids and
     properties as in `nodes`. Names combine `name` then `alternateName`,
-    deduplicated. `calls` counts calls by method, and `confirm_empty` records the flag of
-    each `node_arc_targets_many` call.
+    deduplicated. `calls` counts calls by method, and `arc_target_reads` records the
+    `(individual_probe_budget, cached)` of each `node_arc_targets_many` call.
     """
 
     def __init__(
         self,
         *,
-        nodes: Mapping[str, Mapping[str, tuple[str, ...]]] = {},
-        arcs: Mapping[tuple[str, str], list[str]] = {},
-        contained: Mapping[tuple[str, str], list[str]] = {},
-        subjects: Mapping[tuple[str, str], SubjectPage] = {},
-        arc_subjects: Mapping[tuple[str, str], Sequence[ArcSubject]] = {},
-        arc_targets: Mapping[str, Mapping[str, Sequence[ArcTarget]]] = {},
+        nodes: Mapping[str, Mapping[str, tuple[str, ...]]] | None = None,
+        arcs: Mapping[tuple[str, str], list[str]] | None = None,
+        contained: Mapping[tuple[str, str], list[str]] | None = None,
+        subjects: Mapping[tuple[str, str], SubjectPage] | None = None,
+        arc_subjects: Mapping[tuple[str, str], Sequence[ArcSubject]] | None = None,
+        arc_targets: Mapping[str, Mapping[str, Sequence[ArcTarget]]] | None = None,
     ) -> None:
-        self._nodes = nodes
-        self._arcs = arcs
-        self._contained = contained
-        self._subjects = subjects
-        self._arc_subjects = arc_subjects
-        self._arc_targets = arc_targets
-        self.confirm_empty: list[bool] = []
+        self._nodes = nodes or {}
+        self._arcs = arcs or {}
+        self._contained = contained or {}
+        self._subjects = subjects or {}
+        self._arc_subjects = arc_subjects or {}
+        self._arc_targets = arc_targets or {}
+        self.arc_target_reads: list[tuple[int | None, bool]] = []
         self.calls: dict[str, int] = {
             "node_arcs_many": 0,
             "node_names_many": 0,
@@ -96,10 +96,11 @@ class FakeGraphNodeReader:
         result: NodeArcsByDcid = {}
         for dcid in dcids:
             entry = self._nodes.get(dcid)
-            if entry is None or not any(entry.get(prop) for prop in properties):
-                result[dcid] = None
-                continue
-            result[dcid] = {prop: tuple(dict.fromkeys(entry.get(prop, ()))) for prop in properties}
+            result[dcid] = (
+                None
+                if entry is None
+                else {prop: tuple(dict.fromkeys(entry.get(prop, ()))) for prop in properties}
+            )
         return result
 
     def resolve_by_arc(
@@ -173,11 +174,12 @@ class FakeGraphNodeReader:
         dcids: Sequence[str],
         *,
         properties: Sequence[str],
-        confirm_empty: bool = False,
+        individual_probe_budget: int | None = 0,
+        cached: bool = True,
         deadline: float | None = None,
     ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
         self.calls["node_arc_targets_many"] += 1
-        self.confirm_empty.append(confirm_empty)
+        self.arc_target_reads.append((individual_probe_budget, cached))
         result: dict[str, dict[str, tuple[ArcTarget, ...]] | None] = {}
         for dcid in dict.fromkeys(dcids):
             entry = self._arc_targets.get(dcid)

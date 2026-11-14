@@ -1,7 +1,9 @@
-"""Serve the instance's ontology document and the list of every Class and Property.
+"""Serve the instance's ontology document and the list of the DFO graph's Classes and
+Properties.
 
 `GET /api/graph/ontology` serves `OntologyDocument` and `GET /api/graph/ontology/terms`
-serves `OntologyTerms`. One build (`graph_api.ontology_document.build_ontology`) yields both,
+serves `OntologyTerms`, every Class and Property the mixer lists by `typeOf` and none of the UN
+deployment's. One build (`graph_api.ontology_document.build_ontology`) yields both,
 and `GraphDeps.ontology` holds its result in a single-flight cache of two entries, keyed by
 the graph generation token and the content hash of the code index the build read, beside the
 cache's own generation stamp. Two entries let a request stamped with an unknown generation
@@ -53,8 +55,10 @@ only wraps its bytes. A worker stays held until its job returns, even after its 
 cancelled or times out, so at most two checks run at once in the process. One more is refused at
 submit and answers retryable 503 `service_unavailable` with `Retry-After: 5`
 (`OntologyCheckBusy`). A read past the check's deadline or a failed read answers as the GET
-routes answer it, with no findings. A check whose findings pass `CHECK_MAX_FINDINGS` stops and
-is refused 400 `request_invalid` with pointer `/rows`.
+routes answer it, with no findings. The request stops waiting at the check's deadline and
+answers 504 `timeout` while its job runs on, so a read that answers late yields no 200. A
+check whose findings pass `CHECK_MAX_FINDINGS` stops and is refused 400 `request_invalid` with
+pointer `/rows`.
 
 `GET /api/graph/ontology/provenances` serves `OntologyProvenances`, built by
 `graph_api.ontology_provenances.build_provenances` from the bound code index and the served
@@ -69,6 +73,7 @@ past its flight deadline answers 504, as for the other two routes.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Callable, Sequence
 from concurrent.futures import Executor
@@ -205,27 +210,15 @@ class ProvenancesKey(NamedTuple):
     coverage_build: str
 
 
-def new_provenances_cache(
-    *, executor: Executor, generation: GenerationProvider
-) -> SingleFlightCache[ProvenancesKey, FrozenJSON]:
-    """The cache of the provenances body: one entry, whose build runs on `executor` and whose
-    key carries `generation`'s stamp."""
+def new_ontology_cache[K, V](
+    *, entries: int, executor: Executor, generation: GenerationProvider
+) -> SingleFlightCache[K, V]:
+    """A cache of this door's bodies holding `entries` entries, each built on `executor` within
+    `ONTOLOGY_FLIGHT_TIMEOUT_SECONDS`, with a key that carries `generation`'s stamp.
+    `GraphDeps.ontology` holds two, so a request stamped with an unknown generation keeps the
+    entry of the known one, and `GraphDeps.ontology_provenances` holds one."""
     return SingleFlightCache(
-        maxsize=1,
-        flight_timeout_s=ONTOLOGY_FLIGHT_TIMEOUT_SECONDS,
-        executor=executor,
-        generation=generation,
-    )
-
-
-def new_ontology_cache(
-    *, executor: Executor, generation: GenerationProvider
-) -> SingleFlightCache[OntologyKey, OntologyEntry]:
-    """The cache of the built bodies: two entries, so a request stamped with an unknown
-    generation keeps the entry of the known one, each built on `executor`, with a key that
-    carries `generation`'s stamp."""
-    return SingleFlightCache(
-        maxsize=2,
+        maxsize=entries,
         flight_timeout_s=ONTOLOGY_FLIGHT_TIMEOUT_SECONDS,
         executor=executor,
         generation=generation,
@@ -372,7 +365,8 @@ def _freeze_provenances(code_index: CodeIndex, coverage: ProvenanceCoverage) -> 
 
 async def _frozen_provenances(deps: GraphDeps) -> FrozenJSON:
     """The provenances body of the bound code index and the served coverage build, from
-    `deps.ontology_provenances`. A miss builds and encodes the body on the cache's executor,
+    `deps.ontology_provenances`. Refresh the generation first, as `_frozen_ontology` does, so
+    the cache's stamp is fresh after an idle gap. A miss builds and encodes the body on the cache's executor,
     and concurrent misses share that one build. A request waits until `GRAPH_NODE_TIMEOUT_SECONDS`
     from its start.
 
@@ -380,6 +374,7 @@ async def _frozen_provenances(deps: GraphDeps) -> FrozenJSON:
         OntologyBuildPending: the request's wait passed while the build runs on.
         OntologyBuildExpired: the build outlived its flight deadline.
     """
+    await deps.generation.refresh_if_stale()
     code_index = get_index()
     snapshot = deps.coverage.snapshot()
     key = ProvenancesKey(
@@ -438,21 +433,25 @@ async def post_ontology_check(deps: GraphDepsDep, body: OntologyCheckRequest) ->
         body.rows, lookup=frozen.lookup, un_served=current_catalogue().un_system_enabled
     )
     try:
-        encoded = await run_dcp_read(
-            deps.check_executor,
-            _check_body,
-            body.rows,
-            reads=reads,
-            lookup=frozen.lookup,
-            reader=deps.graph,
-            code_index=code_index,
-            generation=frozen.generation,
-            deadline=deadline,
-        )
+        async with asyncio.timeout(max(0.0, deadline - time.monotonic())):
+            encoded = await run_dcp_read(
+                deps.check_executor,
+                _check_body,
+                body.rows,
+                reads=reads,
+                lookup=frozen.lookup,
+                reader=deps.graph,
+                code_index=code_index,
+                generation=frozen.generation,
+                deadline=deadline,
+            )
     except DcpExecutorSaturated:
         raise OntologyCheckBusy() from None
     except GraphReadError as exc:
         raise OntologyReadFailed(exc) from exc
+    except TimeoutError:
+        error = GraphDeadlineExceededError("the ontology check passed its deadline")
+        raise OntologyReadFailed(error) from None
     return Response(content=encoded, media_type="application/json")
 
 

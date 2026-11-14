@@ -23,6 +23,7 @@ from dc_graph import (
     GraphClient,
     GraphDeadlineExceededError,
     GraphReadError,
+    SubjectPage,
     parse_arcs,
 )
 from graph_generation import FakeGeneration
@@ -553,15 +554,18 @@ def test_un_disabled_answers_un_dcids_empty_and_sends_them_nowhere(
     assert client.node_subjects_many(["country/KEN"], property=_UN_AGE, max_results=5) == {
         "country/KEN": ((), "complete")
     }
-    # A read with subjects and provenances that nothing answered is never complete.
+    # The subject reads with names and provenances agree: the UN origin off lists nothing.
     assert client.node_arc_subjects_many(["country/KEN"], property=_UN_AGE, max_results=5) == {
-        "country/KEN": ((), "capped")
+        "country/KEN": ((), "complete")
     }
     assert client.node_arc_subjects_many([_UN_AGE], property="typeOf", max_results=5) == {
-        _UN_AGE: ((), "capped")
+        _UN_AGE: ((), "complete")
     }
     assert client.node_arc_subjects(_UN_AGE, property="typeOf", max_results=5) == ArcSubjectPage(
-        subjects=(), truncated=True
+        subjects=(), truncated=False
+    )
+    assert client.node_subjects(_UN_AGE, property="typeOf", max_results=5) == SubjectPage(
+        dcids=(), truncated=False
     )
     facets = client.observation_facets_batch([_UN_MORTALITY], ["country/KEN"])
     assert facets == {_UN_MORTALITY: {"country/KEN": []}}

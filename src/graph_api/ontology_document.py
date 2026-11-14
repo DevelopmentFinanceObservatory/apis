@@ -1,22 +1,21 @@
 """Build the instance's ontology document and the terms list from live graph reads.
 
-`build_ontology` reads `Class <-typeOf` and `Property <-typeOf` once each, and every subject is
-a term. The document's seed is every term the instance declares plus every node a StatVar row
-of the code index names. One `node_arc_targets_many` with `confirm_empty` reads the seed's node
-properties with the provenances that declare each value, and each further level reads the
-nodes not yet read that the instance's terms name in `subClassOf`,
-`subPropertyOf`, `domainIncludes` or `rangeIncludes`, the `typeOf` targets of every node
-read that is neither a Class nor a Property, and the `subClassOf` and `subPropertyOf`
-parents, so the class of every value is present and every ancestor is too. One
+`build_ontology` reads `Class <-typeOf` and `Property <-typeOf` once each, and every subject is a
+term. The document's seed is every term the instance declares plus every node a StatVar row of the
+code index names. One `node_arc_targets_many` reads the seed's node properties with the provenances
+that declare each value, and each further level reads the nodes not yet read that the instance's
+terms name in `subClassOf`, `subPropertyOf`, `domainIncludes` or `rangeIncludes`, the `typeOf`
+targets of every node read that is neither a Class nor a Property, and the `subClassOf` and
+`subPropertyOf` parents, so the class of every value is present and every ancestor is too. One
 `node_arc_subjects_many` lists the members of every instance-declared enumeration, and each
 enumeration that listing omits or answers with no member is listed again alone with
-`node_arc_subjects`, whose answer stands. The members not yet read join the document with the
-same closure over their types and ancestors. `confirm_empty` confirms an empty answer before
-returning it. It reads the empties together once more, then each remaining empty alone, and a
-dcid empty after that is absent from the document. So the number of reads grows with the depth
-of the class and property hierarchy, plus a group read per level with an empty answer, one read
-per dcid the graph does not hold, and one listing per instance enumeration the batched listing
-leaves empty.
+`node_arc_subjects`, whose answer stands. The members not yet read join the document with the same
+closure over their types and ancestors. Each node read probes every empty answer: it reads the
+empties together once more, then each remaining empty alone, and a dcid empty after that is absent
+from the document. The node reads skip the client's arc-targets cache, since nothing else asks for
+these properties. So the number of reads grows with the depth of the class and property hierarchy,
+plus a group read per level with an empty answer, one read per dcid the graph does not hold, and
+one listing per instance enumeration the batched listing leaves empty.
 
 Each node's values and provenances come from that one read of the node. Its provenances are
 those its `typeOf` targets carry, and `declared_by` follows from them. A node with no `typeOf`
@@ -313,13 +312,17 @@ class _NodeReads:
 
     def nodes(self, dcids: Collection[str]) -> set[str]:
         """Read `dcids`' node properties and the provenances declaring each value in one
-        `node_arc_targets_many` with `confirm_empty`, so an answer of none is the graph's
-        answer for the dcid read alone and the dcid joins `absent`. A dcid's provenances are
+        `node_arc_targets_many` that probes every empty answer, so an answer of none is the
+        graph's answer for the dcid read alone and the dcid joins `absent`. A dcid's provenances are
         those its `typeOf` targets carry, and a dcid with a target that carries none joins
         `unsourced`. Returns the dcids held.
         """
         read = self.reader.node_arc_targets_many(
-            sorted(dcids), properties=_NODE_PROPERTIES, confirm_empty=True, deadline=self.deadline
+            sorted(dcids),
+            properties=_NODE_PROPERTIES,
+            individual_probe_budget=None,
+            cached=False,
+            deadline=self.deadline,
         )
         held: set[str] = set()
         for dcid in dcids:
