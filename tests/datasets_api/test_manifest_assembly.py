@@ -5,6 +5,7 @@ version-record bodies.
 from __future__ import annotations
 
 import io
+import json
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -12,6 +13,7 @@ from pathlib import Path
 import httpx
 import pyarrow.parquet as pq
 import pytest
+from pydantic import ValidationError
 
 from code_index.query import CodeIndex
 from code_index.shared import get_index
@@ -510,6 +512,46 @@ def _documented_wdi() -> CatalogueSnapshot:
     )
 
 
+_LICENCE_LABEL = "Creative Commons Attribution License"
+
+
+@pytest.mark.parametrize(
+    "spellings",
+    [
+        pytest.param({"licence": _LICENCE_LABEL}, id="served-alone"),
+        pytest.param({"license": _LICENCE_LABEL}, id="older-alone"),
+        pytest.param({"licence": _LICENCE_LABEL, "license": _LICENCE_LABEL}, id="both-agreeing"),
+    ],
+)
+def test_a_citation_source_reads_either_licence_spelling(spellings: dict[str, str]):
+    source = CitationSource.model_validate({"ref": "dc/s", "label": "S", **spellings})
+
+    assert (source.license, source.licence) == (_LICENCE_LABEL, _LICENCE_LABEL)
+
+
+@pytest.mark.parametrize(
+    ("spellings", "member"),
+    [
+        pytest.param(
+            {"licence": _LICENCE_LABEL, "license": "Other"}, "licence", id="values-differ"
+        ),
+        pytest.param({"licence_type": None, "license_type": "dc/l"}, "licence_type", id="null"),
+        pytest.param(
+            {"licence_url": "https://a", "license_url": None}, "licence_url", id="older-null"
+        ),
+    ],
+)
+def test_a_citation_source_refuses_licence_spellings_that_differ(
+    spellings: dict[str, str | None], member: str
+):
+    with pytest.raises(ValidationError) as raised:
+        CitationSource.model_validate({"ref": "dc/s", "label": "S", **spellings})
+
+    [error] = raised.value.errors()
+    assert error["type"] == "licence_spellings_differ"
+    assert error["ctx"]["member"] == member
+
+
 def test_healed_citation_fills_an_old_body_with_what_a_fresh_mint_stores():
     """A body stored before the citation carried a licence, url, source and Data Commons heals to
     the source a first mint builds from the same catalogue."""
@@ -721,7 +763,8 @@ def test_a_first_mint_s_catalogued_citation_is_the_wire_the_graph_reads_gave():
         retrieved=_RETRIEVED,
     )
 
-    assert citation.model_dump_json(indent=2) + "\n" == _CATALOGUED_CITATION.read_text()
+    stored = json.dumps(citation.stored_json(), indent=2, ensure_ascii=False)
+    assert stored + "\n" == _CATALOGUED_CITATION.read_text()
 
 
 def test_a_first_mint_s_catalogued_citation_reads_no_graph():

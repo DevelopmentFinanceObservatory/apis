@@ -444,6 +444,40 @@ def test_a_ref_member_off_the_id_grammar_refuses_the_request(
     assert response.json()["code"] == "request_invalid"
 
 
+_CONTRADICTING_CUT = {"party_totals": True, "without_party_totals": True}
+
+
+def _ref_contradicting_the_cut() -> dict[str, Any]:
+    ref = ref_of((AID, AID_V1))
+    ref["members"][0]["artifact"]["rendering"].update(_CONTRADICTING_CUT)
+    return {"ref": ref}
+
+
+@pytest.mark.parametrize(
+    ("root", "pointer_tail"),
+    [
+        pytest.param(
+            {**dataset(AID, AID_V1), "rendering": _CONTRADICTING_CUT},
+            "/rendering/party_totals",
+            id="dataset-root",
+        ),
+        pytest.param(
+            _ref_contradicting_the_cut(), "/artifact/rendering/party_totals", id="ref-member"
+        ),
+    ],
+)
+def test_a_root_whose_party_totals_contradicts_without_party_totals_refuses(
+    monkeypatch: pytest.MonkeyPatch, root: dict[str, Any], pointer_tail: str
+) -> None:
+    stores = Stores()
+    with _client(stores, source(stores), monkeypatch) as client:
+        response = client.post(_PATH, json={"tree": step("aggregate", root, aggregation="sum")})
+
+    assert response.status_code == 400, response.text
+    assert response.json()["code"] == "request_invalid"
+    assert response.json()["pointer"].endswith(pointer_tail)
+
+
 @pytest.mark.parametrize("path", [_PATH, f"{_PATH}/anchor"])
 def test_a_wrong_method_on_an_analysis_route_answers_405(
     monkeypatch: pytest.MonkeyPatch, path: str

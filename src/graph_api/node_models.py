@@ -18,9 +18,9 @@ from __future__ import annotations
 from datetime import date
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, computed_field
 
-from dfo_platform.wire import ResponseModel
+from dfo_platform.wire import ResponseModel, optional_in_schema
 from entity_resolution.membership import DEFAULT_PROJECTION, Projection
 from graph_api import routing
 from graph_api.availability import Availability
@@ -230,9 +230,13 @@ class UnitBlock(ResponseModel):
 
 class SourceBlock(ResponseModel):
     """A Source, Dataset or Provenance's detail block. `documentation` is the path of the
-    node's source document on this API."""
+    node's source document on this API. `licence` and `licence_type` are the preferred
+    spellings of `license` and `license_type`, which hold the same values."""
 
-    model_config = ConfigDict(title="GraphSourceBlock")
+    model_config = ConfigDict(
+        title="GraphSourceBlock",
+        json_schema_extra=optional_in_schema("licence", "licence_type"),
+    )
 
     publisher: NodeRef | None = Field(
         description="the source arc's target; null when the node carries no source arc"
@@ -240,8 +244,14 @@ class SourceBlock(ResponseModel):
     parent: NodeRef | None = Field(
         description="the isPartOf arc's target; null when the node has no parent Dataset"
     )
-    license: str | None
-    license_type: str | None
+    license: str | None = Field(
+        description="deprecated: the same value as `licence`, kept for clients that read it",
+        json_schema_extra={"deprecated": True},
+    )
+    license_type: str | None = Field(
+        description="deprecated: the same value as `licence_type`, kept for clients that read it",
+        json_schema_extra={"deprecated": True},
+    )
     url: str | None
     source_data_url: str | None = Field(description="the sourceDataUrl arc's value")
     description_url: str | None = Field(description="the descriptionUrl arc's value")
@@ -262,6 +272,16 @@ class SourceBlock(ResponseModel):
         )
     )
     documentation: str = Field(description="the path of the node's source document")
+
+    @computed_field(description="the license arc's value, the licence's terms page")
+    @property
+    def licence(self) -> str | None:
+        return self.license
+
+    @computed_field(description="the licenseType arc's target dcid")
+    @property
+    def licence_type(self) -> str | None:
+        return self.license_type
 
 
 class _Envelope(ResponseModel):

@@ -138,3 +138,18 @@ def test_published_manifest_admits_every_field_a_fully_populated_definition_mani
     )
 
     published_schema.Manifest.model_validate(runtime_manifest.model_dump(mode="json"))
+
+
+def test_a_served_citation_names_each_licence_member_in_both_spellings_and_stores_one():
+    citation = _fully_populated_citation()
+
+    [served] = citation.model_dump(mode="json")["sources"]
+    [stored] = citation.stored_json()["sources"]
+
+    for preferred, deprecated in manifest_models.LICENCE_SPELLINGS.items():
+        assert served[preferred] == served[deprecated] == stored[deprecated] is not None
+        assert preferred not in stored
+    # A served body validates back to the citation it was dumped from.
+    assert (
+        manifest_models.CitationModel.model_validate(citation.model_dump(mode="json")) == citation
+    )

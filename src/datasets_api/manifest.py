@@ -691,7 +691,8 @@ def manifest_facts(
 ) -> ManifestFacts:
     """The facts a definition version stores for `manifest`: every manifest member but
     `artifacts`, `output_options` and `content_version` (the record's own column), with
-    `output_profile` in place of options.
+    `output_profile` in place of options. The citation is stored as
+    `CitationModel.stored_json` gives it.
 
     `series_conversions`, when non-empty, stores one entry per converted series
     (`materialise.series_conversion.encode_series_conversions`), and an unconverted version
@@ -700,13 +701,13 @@ def manifest_facts(
     the worldwide total alone and a bound place store `False`; `None` stores `None`.
     """
     dumped = manifest.model_dump(
-        mode="json", include={"definition", "coverage", "citation", "trace", "warnings"}
+        mode="json", include={"definition", "coverage", "trace", "warnings"}
     )
     return ManifestFacts(
         prepared_at=manifest.prepared_at,
         definition=dumped["definition"],
         coverage=dumped["coverage"],
-        citation=dumped["citation"],
+        citation=manifest.citation.stored_json(),
         trace=dumped["trace"],
         warnings=dumped["warnings"],
         series_count=manifest.series_count,
@@ -819,7 +820,9 @@ def version_document(stored: StoredVersion) -> dict[str, object]:
     published frame's `op_spec_hash` (its subject id), `input_content_versions` and
     `continuations` (`FrameLineage.continuations`): its entries when it stores any, `null` while
     they are unknown, on a version recorded before versions stored them until
-    `backfill-descriptions` fills them, and left out when nothing continues its series."""
+    `backfill-descriptions` fills them, and left out when nothing continues its series. Its
+    `citation` is the served form, `licence*` members included. `version_body` stores the
+    citation through `CitationModel.stored_json`, which drops them."""
     if isinstance(stored.facts, FrameLineage):
         document: dict[str, object] = {
             "op_spec_hash": stored.subject_id,
@@ -839,8 +842,9 @@ def version_document(stored: StoredVersion) -> dict[str, object]:
 def version_body(record: VersionRecord) -> dict[str, object]:
     """The `immutable_body` `record`'s facts encode, the JSON an image reading bodies reads.
 
-    A dataset version's body is its `version_document` with `output_profile` and a non-null
-    `default_scope_plural` added. The `series_conversions` column alone holds the per-series
+    A dataset version's body is its `version_document` with its citation as stored
+    (`CitationModel.stored_json`), and `output_profile` and a non-null `default_scope_plural`
+    added. The `series_conversions` column alone holds the per-series
     conversion records, which run to tens of megabytes on a wide converted mint. A published
     frame's body is its `version_document`, which holds its `continuations` when they are known and some continue
     its series, with a non-empty `composed_stat_vars` added. An absent fact omits its key. Nothing in this image reads the
@@ -855,6 +859,7 @@ def version_body(record: VersionRecord) -> dict[str, object]:
         if facts.composed_stat_vars:
             body["composed_stat_vars"] = [dict(entry) for entry in facts.composed_stat_vars]
         return body
+    body["citation"] = CitationModel.model_validate(body["citation"]).stored_json()
     if facts.output_profile is not None:
         body["output_profile"] = dict(facts.output_profile)
     if facts.default_scope_plural is not None:

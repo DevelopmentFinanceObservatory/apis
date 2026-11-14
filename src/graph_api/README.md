@@ -211,7 +211,7 @@ The kind comes from `entity_resolution.kinds.classify`, which resolve calls too,
 | `dataset`, `provenance` | the source block                                               | `variables`                                                       |
 | `other`             | none                                                               | none                                                              |
 
-The source block holds `publisher` (the `source` arc's target), `parent` (the `isPartOf` arc's target), `license`, `license_type`, `url`, `source_data_url`, `description_url`, `transformation_logic_url`, `last_data_refresh_date`, `next_data_refresh_date`, `earliest_observation_date`, `latest_observation_date`, `freshness` (`release_frequency`, `release_frequency_label`, `refresh_type`), `data_commons` and `documentation` (the path of the node's source document). `data_commons` is `{id, label}` for the Data Commons that serves an admitted provenance, from the request's origin catalogue with no graph read, and `null` for a provenance the catalogue does not admit, a Dataset or a Source. `id` is `dfo`, `base` or `un_system`. A dcid under `undata/` is read from the UN System Data Commons.
+The source block holds `publisher` (the `source` arc's target), `parent` (the `isPartOf` arc's target), `license`, `license_type`, `url`, `source_data_url`, `description_url`, `transformation_logic_url`, `last_data_refresh_date`, `next_data_refresh_date`, `earliest_observation_date`, `latest_observation_date`, `freshness` (`release_frequency`, `release_frequency_label`, `refresh_type`), `data_commons` and `documentation` (the path of the node's source document). `data_commons` is `{id, label}` for the Data Commons that serves an admitted provenance, from the request's origin catalogue with no graph read, and `null` for a provenance the catalogue does not admit, a Dataset or a Source. `id` is `dfo`, `base` or `un_system`. A dcid under `undata/` is read from the UN System Data Commons. The block also carries `licence` and `licence_type`, the preferred spellings, with the same values as `license` and `license_type`. The schema marks `license` and `license_type` deprecated and keeps them for clients that read them.
 
 A membership block (a group's `group`, a region's `membership`) holds `authority` (`name`, `version`), `as_of` (the date asked for, `null` for today), `effective_date` (the latest membership change on or before that date, `null` for an undated membership) and `projections`: one `{projection, count, complete}` entry for each of `countries`, `other_states`, `territories`, `former_states` and `institutions`. `count` is `null` and the projection is named in `gaps` when the authority does not record it, which holds for `institutions` everywhere. `complete` is `false` when the authority does not record the projection, and when it holds the projection only in part (`membership_incomplete`): for a region that covers `territories` and `former_states`, because resolvekit holds 18 territories as no country and places almost no former state in a region.
 
@@ -615,6 +615,8 @@ Assembles one source's documentation document, in the field names below. `dcid` 
 
 The response answers `public, max-age=300` with an `ETag` over its body, or `no-store` when it asked for coverage facts while the coverage index was unreadable. An unreadable index can answer on a later read.
 
+`licence` is the source's licence block, the preferred spelling. `license` holds the same block, and the schema marks it deprecated and keeps it for clients that read it. `gaps` names the block's paths as `license.*`, and the rules below name them the same way.
+
 The graph's own three-level chain is **Source** (the publishing organisation) -> **Dataset** (the publication, e.g. "World Development Indicators") -> **Provenance** (one import). Several Provenance nodes often share one Dataset (two ACS subject tables, two GeoBoundaries country imports), so the catalogue this door serves lists Dataset nodes, and the documentation document is assembled by rolling up the Provenance nodes beneath one.
 
 #### Roll-up rules
@@ -735,7 +737,14 @@ A document costs at most five bounded reads: the node's identity arcs, its paren
       "line": 1,
       "reason": "missing_release_title"
     }
-  ]
+  ],
+  "licence": {
+    "type": "OECD Terms and Conditions",
+    "url": "https://www.oecd.org/en/about/terms-conditions.html",
+    "update_cadence": "Quarterly",
+    "last_update": "2026-09-11",
+    "next_expected_update": null
+  }
 }
 ```
 
@@ -755,7 +764,7 @@ The index joins two things. The origin registry (`origin_catalogue/data/registry
 
 Each entry lists `datasets`, each `{ ref, label, provenances: [{ ref, label }] }`, in first-seen order. A provenance groups under its first `isPartOf` parent typed `Dataset`; a provenance with no Dataset forms its own group, keyed and labelled by itself, so `datasets[].ref` is then the provenance dcid. A registry entry the loaded catalogue lists no provenance under serves `datasets: []`, as when the registry is newer than the catalogue build. `provenances[].label` is the provenance table's name.
 
-Each dataset also carries five card facts, the same values `GET /api/graph/documentation/{ref}` serves for it: `description` (`details.description`), `license_type` (`license.type`), `update_cadence` (`license.update_cadence`), `years_covered` (`scope_and_units.years_covered`) and `source_url` (`details.source_url`). The catalogue job computes them at build time from the graph (`origin_catalogue.card_facts`) and stores the licence's label and the raw `sourceReleaseFrequency` token, which this route maps to its label as the documentation route does. They follow that route's roll-up rules over the Dataset's admitted children, and an orphan provenance is its own sole child. Each is `null` where the documentation page serves `null`, and all five are `null` on UN System Data Commons entries. A card and its page agree for the graph the loaded build read. The build refreshes them at each identity change, at least weekly, so a card can lag a graph edit the page already shows. An empty `exclusions` list states that the entry was reviewed for overlap with DFO.
+Each dataset also carries five card facts, the same values `GET /api/graph/documentation/{ref}` serves for it: `description` (`details.description`), `licence_type` (`licence.type`), `update_cadence` (`licence.update_cadence`), `years_covered` (`scope_and_units.years_covered`) and `source_url` (`details.source_url`). The catalogue job computes them at build time from the graph (`origin_catalogue.card_facts`) and stores the licence's label and the raw `sourceReleaseFrequency` token, which this route maps to its label as the documentation route does. They follow that route's roll-up rules over the Dataset's admitted children, and an orphan provenance is its own sole child. Each is `null` where the documentation page serves `null`, and all five are `null` on UN System Data Commons entries. `license_type` holds the same value as `licence_type`, and the schema marks it deprecated. A card and its page agree for the graph the loaded build read. The build refreshes them at each identity change, at least weekly, so a card can lag a graph edit the page already shows. An empty `exclusions` list states that the entry was reviewed for overlap with DFO.
 
 A base source's `exclusions` lists the provenances it holds that the deployment does not admit, each `{ ref, reason }`. `reason` is `superseded_by_dfo` for an upstream copy of a dataset DFO imports, and `superseded_by_un_system` for a provenance whose data the UN System Data Commons serves (`dc/base/UN_SDG`). The index names no successor: each answer names its own provenance and Data Commons. DFO sources and UN agencies list no exclusions, including a series a UN agency's registry entry excludes.
 
@@ -784,7 +793,8 @@ A provenance a base source excludes is never also listed under that source's `da
           "license_type": "OECD Terms and Conditions",
           "update_cadence": "Quarterly",
           "years_covered": "1973-2024",
-          "source_url": "https://data-explorer.oecd.org/vis?tm=crs&pg=0&snb=30&df[ds]=dsDisseminateFinalDMZ&df[id]=DSD_CRS%40DF_CRS&df[ag]=OECD.DCD.FSD&df[vs]=1.6&isAvailabilityDisabled=false&page=0"
+          "source_url": "https://data-explorer.oecd.org/vis?tm=crs&pg=0&snb=30&df[ds]=dsDisseminateFinalDMZ&df[id]=DSD_CRS%40DF_CRS&df[ag]=OECD.DCD.FSD&df[vs]=1.6&isAvailabilityDisabled=false&page=0",
+          "licence_type": "OECD Terms and Conditions"
         }
       ],
       "exclusions": []
@@ -806,7 +816,8 @@ A provenance a base source excludes is never also listed under that source's `da
           "license_type": "Creative Commons Attribution License",
           "update_cadence": "Monthly",
           "years_covered": null,
-          "source_url": "https://datacatalog.worldbank.org/search/dataset/003771"
+          "source_url": "https://datacatalog.worldbank.org/search/dataset/003771",
+          "licence_type": "Creative Commons Attribution License"
         }
       ],
       "exclusions": [
@@ -831,7 +842,8 @@ A provenance a base source excludes is never also listed under that source's `da
           "license_type": null,
           "update_cadence": null,
           "years_covered": null,
-          "source_url": null
+          "source_url": null,
+          "licence_type": null
         }
       ],
       "exclusions": []
