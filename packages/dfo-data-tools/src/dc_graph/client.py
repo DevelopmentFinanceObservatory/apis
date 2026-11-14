@@ -1341,6 +1341,7 @@ class GraphClient:
             read_all=lambda part: self._post_node_arcs_batch(list(part), deadline=deadline),
             read_again=lambda part: self._post_node_arcs_batch(list(part), deadline=deadline),
             individual_probe_budget=None,
+            deadline=deadline,
         )
         result: dict[str, dict[str, tuple[ArcTarget, ...]] | None] = {}
         for dcid in unique:
@@ -1409,6 +1410,7 @@ class GraphClient:
                 part, properties=properties, deadline=deadline
             ),
             individual_probe_budget=individual_probe_budget,
+            deadline=deadline,
         )
 
     def _confirmed_arcs(
@@ -1418,6 +1420,7 @@ class GraphClient:
         read_all: Callable[[Sequence[str]], dict],
         read_again: Callable[[Sequence[str]], dict],
         individual_probe_budget: int | None,
+        deadline: float | None,
     ) -> dict[str, dict | None]:
         """Each of `dcids`' wire `arcs`, `None` for none. `read_all` reads the dcids, and
         `read_again` each retry and probe. An empty answer from a batch of several dcids is
@@ -1429,7 +1432,8 @@ class GraphClient:
         or probe omits raises the read error, and a failed probe raises its error after
         cancelling the probes not yet sent. A budget of 0 sends no retry or probe and returns
         the first read's answers, `None` for a dcid it omits. Each read carries the caller's
-        deadline, so a read past it raises and stops the probes."""
+        deadline, and the wait for the probes ends at it (`_probe_alone`), so a read past it
+        raises and stops the probes."""
         data = read_all(dcids)
         if individual_probe_budget == 0:
             return {dcid: (data.get(dcid) or {}).get("arcs") or None for dcid in dcids}
@@ -1451,7 +1455,7 @@ class GraphClient:
 
         if individual_probe_budget is None:
             # Every empty is read alone, so a group retry would decide nothing.
-            self._probe_alone(suspects, read_again=read_again, result=result)
+            self._probe_alone(suspects, read_again=read_again, result=result, deadline=deadline)
             return result
 
         retry_data = read_again(suspects)
@@ -1476,7 +1480,7 @@ class GraphClient:
 
         to_probe = still_empty[:individual_probe_budget]
         unprobed = still_empty[individual_probe_budget:]
-        self._probe_alone(to_probe, read_again=read_again, result=result)
+        self._probe_alone(to_probe, read_again=read_again, result=result, deadline=deadline)
         for dcid in unprobed:
             result[dcid] = None
         if unprobed:
@@ -1493,10 +1497,14 @@ class GraphClient:
         *,
         read_again: Callable[[Sequence[str]], dict],
         result: dict[str, dict | None],
+        deadline: float | None,
     ) -> None:
         """Read each of `dcids` alone, on the process-wide probe pool, into `result`:
         its arcs, or `None` when the read answers it empty. A read that omits its dcid raises
-        the read error. The first failure cancels the reads not yet sent and raises."""
+        the read error. The first failure cancels the reads not yet sent and raises. The wait
+        ends at `deadline`, narrowed by a bound request deadline, whether the probes still
+        queue behind other callers' or are in flight: it cancels the probes not yet sent and
+        raises the deadline error. Each probe's read carries the same deadline."""
 
         def probe(dcid: str) -> dict | None:
             probe_data = read_again([dcid])
@@ -1513,10 +1521,19 @@ class GraphClient:
             for dcid in dcids:
                 result[dcid] = probe(dcid)
             return
+        deadline = bounded_deadline(deadline)
         found: dict[str, dict | None] = {}
         futures = {submit_with_context(_PROBES, probe, dcid): dcid for dcid in dcids}
         try:
-            for future in as_completed(futures):
+            timeout = None if deadline is None else max(0.0, deadline - time.monotonic())
+            completed = as_completed(futures, timeout=timeout)
+            while True:
+                try:
+                    future = next(completed)
+                except StopIteration:
+                    break
+                except TimeoutError as exc:
+                    raise self._deadline_error_cls(_DEADLINE_EXCEEDED_DETAIL) from exc
                 found[futures[future]] = future.result()
         except BaseException:
             for future in futures:

@@ -105,19 +105,33 @@ CHECK_MAX_OBSERVATION_PROPERTIES = 4
 """The most observation properties one check row names, twice the most a StatVar row of the
 served code index carries (2 on the dev graph)."""
 
-CHECK_MAX_ROW_READ_IDS = 5 + 2 * CHECK_MAX_CONSTRAINT_PROPERTIES + CHECK_MAX_OBSERVATION_PROPERTIES
-"""The most distinct ids one check row reads from the graph, 41: its 5 shape fields, each
+CHECK_MAX_ROW_NAMED_IDS = 5 + 2 * CHECK_MAX_CONSTRAINT_PROPERTIES + CHECK_MAX_OBSERVATION_PROPERTIES
+"""The most distinct ids one check row names for a read, 41: its 5 shape fields, each
 constraint property and its value, and each observation property."""
+
+CHECK_MAX_ROW_ANCESTRY_IDS = 40
+"""The most `subClassOf` ancestors outside the schema document one check row reads for the
+types of its values: room for two outside ancestors under each of 16 values, with 8 to spare.
+On the dev graph `CHF`'s chain holds two, `Currency` and `CurrencyUnitOfMeasure`. A row whose
+chains hold more is checked only as the first row of a check, and the types whose chains it
+leaves unread get no range verdict."""
+
+CHECK_MAX_ROW_READ_IDS = CHECK_MAX_ROW_NAMED_IDS + CHECK_MAX_ROW_ANCESTRY_IDS
+"""The most distinct ids one check row reads from the graph, 81: the ids it names and the
+ancestors of its values' types."""
 
 CHECK_MAX_READ_IDS = 200
 """The most distinct ids one check reads from the graph, an internal budget the wire does not
 publish. It counts the ids the rows name that the schema document does not hold, each
 constraint value counted unless it is a literal or its property a document node that is no
 Property, before any read (`graph_api.schema_check.plan_reads`), and the `subClassOf`
-parents the range rule then reads for value types outside the document. The check takes rows
-from the first while their ids stay within the budget, stops before the first row whose
-ancestry would pass it, and answers where to resume. The budget is at least
-`CHECK_MAX_ROW_READ_IDS`, so every check takes at least one row.
+ancestors outside the document that the range rule then reads for the rows' value types. The
+check takes rows from the first while their named ids, plus `CHECK_MAX_ROW_ANCESTRY_IDS` held
+back once a row taken may read ancestry, stay within the budget. It then reads ancestry in row
+order and stops before the first row whose ancestry passes what is left or
+`CHECK_MAX_ROW_ANCESTRY_IDS`, and answers where to resume. A row counts as checked only when
+every read it needs was done. The budget is at least `CHECK_MAX_ROW_READ_IDS`, so the first
+row always gets its reads and every check takes at least one row.
 
 The check reads its planned ids in one `node_arcs_many` call, and each level of ancestry in
 one more (`graph_api.schema_check` counts the POSTs): a batch POST per 50 ids, then each id
@@ -384,8 +398,9 @@ FindingCode = Literal[
 - `not_a_property`: a constraint property, the measured property or an observation property
   is not typed `Property`.
 - `not_a_class`: the population type is not typed `Class`.
-- `value_outside_range`: every type of the value is a document node and none reaches the
-  DFO-declared property's `rangeIncludes` by `subClassOf`.
+- `value_outside_range`: the ancestry of every type of the value is known, from the schema
+  document or read from the graph, and none reaches the DFO-declared property's
+  `rangeIncludes` by `subClassOf`.
 - `property_outside_domain`: the population type is a document node that reaches none of the
   DFO-declared property's `domainIncludes` by `subClassOf`.
 - `definition_differs`: the code index serves the row's dcid with another value in that cell,

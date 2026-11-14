@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from code_index import StatVarRow
-from dc_graph import ArcTarget, GraphReadError
+from dc_graph import UNRESOLVED_NODE, ArcTarget, GraphReadError
 from graph_api import schema_check
 from graph_api.reader import NodeArcsByDcid
 from graph_api.schema_check import CheckedRows, SchemaLookup, check_rows, plan_reads
@@ -20,7 +20,8 @@ from graph_api.schema_models import (
     CHECK_MAX_FINDINGS,
     CHECK_MAX_OBSERVATION_PROPERTIES,
     CHECK_MAX_READ_IDS,
-    CHECK_MAX_ROW_READ_IDS,
+    CHECK_MAX_ROW_ANCESTRY_IDS,
+    CHECK_MAX_ROW_NAMED_IDS,
     SchemaCheckResponse,
     SchemaCheckRow,
 )
@@ -691,35 +692,149 @@ def test_a_type_read_with_the_row_ids_is_not_read_again() -> None:
     assert reader.batches == [["CHF", "Currency"], ["MeasureKind"]]
 
 
+_CHF = {"currencyOfDenomination": "CHF"}
+_UGA = {"recipientPlace": "country/UGA"}
+
+
+def _absent_observations(count: int) -> list[SchemaCheckRow]:
+    return [
+        _row(observation_properties=[f"NoSuch{i}a", f"NoSuch{i}b", f"NoSuch{i}c"])
+        for i in range(count)
+    ]
+
+
+def _outside(checked: CheckedRows) -> list[int]:
+    return [finding.row for finding in checked.findings if finding.code == "value_outside_range"]
+
+
+def test_the_first_rows_range_verdict_survives_the_rows_after_it() -> None:
+    """`CHF`'s chain is read before the rows after it spend the budget on their own ids."""
+    reader = _RecordingReader()
+
+    first = _row(constraint_properties=_CHF)
+
+    checked = _checked([first, *_absent_observations(300)], reader)
+
+    assert _outside(_checked([first])) == _outside(checked) == [0]
+    assert checked.rows_checked > 1
+    read = [dcid for batch in reader.batches for dcid in batch]
+    assert len(read) == len(set(read)) <= CHECK_MAX_READ_IDS
+
+
+@pytest.mark.parametrize("new_ids", [0, 2])
+def test_a_sheet_of_rows_sharing_a_chain_checks_many_rows(new_ids: int) -> None:
+    """Every row names `CHF`, and `new_ids` absent observation properties of its own."""
+    reader = _RecordingReader()
+    rows = [
+        _row(
+            constraint_properties=_CHF,
+            observation_properties=[f"NoSuch{i}_{j}" for j in range(new_ids)],
+        )
+        for i in range(300)
+    ]
+
+    checked = _checked(rows, reader)
+
+    taken = 300 if not new_ids else (CHECK_MAX_READ_IDS - CHECK_MAX_ROW_ANCESTRY_IDS - 1) // 2
+    assert checked.rows_checked == taken
+    assert _outside(checked) == list(range(taken))
+    assert reader.batches[1:] == [["Currency"], ["MeasureKind"]]
+
+
 @pytest.mark.parametrize(
-    ("budget", "taken"),
+    ("budget", "ancestry", "taken", "outside"),
     [
-        # The first row's ids take the budget, so no chain is read and CHF gets no verdict.
-        pytest.param(1, 1, id="first-row"),
-        # The second row's chain passes the budget a level up, so it is not taken.
-        pytest.param(3, 1, id="later-row"),
-        pytest.param(4, 2, id="within"),
+        # Two ids are left for ancestry, and the room the first row may still need leaves
+        # none for `Country`, so the second row is not taken.
+        pytest.param(4, 2, 1, [0], id="later-row-past-the-room"),
+        pytest.param(6, 2, 2, [0], id="within"),
+        # `CHF`'s chain passes the first row's cap, so it gets no verdict; the second row's
+        # passes it too, so it is not taken.
+        pytest.param(200, 1, 1, [], id="first-row-past-its-cap"),
     ],
 )
 def test_ancestry_reads_count_in_the_read_budget(
-    budget: int, taken: int, monkeypatch: pytest.MonkeyPatch
+    budget: int, ancestry: int, taken: int, outside: list[int], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(schema_check, "CHECK_MAX_READ_IDS", budget)
-    first = (
-        _row(constraint_properties={"currencyOfDenomination": "CHF"})
-        if budget == 1
-        else _row(constraint_properties={"currencyOfDenomination": "CurrencyCHF"})
-    )
-    rows = [first, _row(constraint_properties={"currencyOfDenomination": "CHF"})]
+    monkeypatch.setattr(schema_check, "CHECK_MAX_ROW_ANCESTRY_IDS", ancestry)
+    rows = [_row(constraint_properties=_CHF), _row(constraint_properties=_UGA)]
     reader = _RecordingReader()
 
     checked = _checked(rows, reader)
 
     assert checked.rows_checked == taken
+    assert _outside(checked) == outside
+    assert _outside(_checked(rows[:1])) == outside[:1]
     read = [dcid for batch in reader.batches for dcid in batch]
     assert len(read) == len(set(read)) <= budget
-    outside = [finding.row for finding in checked.findings if finding.code == "value_outside_range"]
-    assert outside == ([1] if taken == 2 else [])
+
+
+def _without_row(checked: CheckedRows) -> list[tuple[object, ...]]:
+    return [
+        (f.field, f.property, f.subject, f.value, f.served, f.code, f.severity)
+        for f in checked.findings
+    ]
+
+
+@pytest.mark.parametrize(
+    ("budget", "ancestry"),
+    [(CHECK_MAX_READ_IDS, CHECK_MAX_ROW_ANCESTRY_IDS), (8, 3), (6, 2), (4, 1)],
+)
+def test_each_row_checked_gets_the_findings_it_gets_alone(
+    budget: int, ancestry: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sheet mixing values judged by read ancestry, by the document, and absent ids, checked
+    request by request from where each stops."""
+    monkeypatch.setattr(schema_check, "CHECK_MAX_READ_IDS", budget)
+    monkeypatch.setattr(schema_check, "CHECK_MAX_ROW_ANCESTRY_IDS", ancestry)
+    kinds = [
+        {"currencyOfDenomination": "CHF"},
+        {"recipientPlace": "country/UGA"},
+        {"currencyOfDenomination": "CurrencyCHF"},
+        {"currencyOfDenomination": "country/UGA"},
+        {"recipientPlace": "CHF", "currencyOfDenomination": "CHF"},
+        {"beneficiaryGender": "NoSuchGender"},
+        {"crsPurpose": "CRSPurposeCode12220"},
+    ]
+    rows = [
+        _row(constraint_properties=kinds[i % len(kinds)], observation_properties=[f"NoSuch{i}"])
+        for i in range(30)
+    ]
+
+    start, requests = 0, 0
+    while start < len(rows):
+        checked = _checked(rows[start:])
+        requests += 1
+        for row in range(checked.rows_checked):
+            alone = _checked([rows[start + row]])
+            assert _without_row(alone) == [
+                finding
+                for finding, sent in zip(_without_row(checked), checked.findings, strict=True)
+                if sent.row == row
+            ]
+        start += checked.rows_checked
+
+    assert requests < len(rows)
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        pytest.param(_row(constraint_properties=_CHF), id="ancestry-read"),
+        pytest.param(_row(population_type="Currency", constraint_properties=_CHF), id="named"),
+    ],
+)
+def test_an_unresolved_parent_leaves_the_chain_without_a_verdict(row: SchemaCheckRow) -> None:
+    nodes = {
+        **_CHECK_NODES,
+        "Currency": {"typeOf": ("Class",), "subClassOf": ("MeasureKind", UNRESOLVED_NODE)},
+    }
+
+    checked = _checked([row], FakeGraphNodeReader(nodes=nodes))
+
+    assert _outside(checked) == []
+    assert _outside(_checked([row])) == [0]
 
 
 def test_a_value_under_a_property_not_held_is_read_and_gets_no_finding() -> None:
@@ -866,10 +981,10 @@ def test_a_single_row_naming_the_most_ids_a_row_can_is_read_within_the_budget() 
     findings = _check([_maximal_row()], reader)
 
     asked = {dcid for batch in reader.batches for dcid in batch}
-    assert len(asked) == CHECK_MAX_ROW_READ_IDS
+    assert len(asked) == CHECK_MAX_ROW_NAMED_IDS
     assert len(reader.batches) == 1
     assert {finding[-1] for finding in findings} == {"node_not_held"}
-    assert len(findings) == CHECK_MAX_ROW_READ_IDS - CHECK_MAX_CONSTRAINT_PROPERTIES
+    assert len(findings) == CHECK_MAX_ROW_NAMED_IDS - CHECK_MAX_CONSTRAINT_PROPERTIES
 
 
 @pytest.mark.parametrize(
@@ -882,10 +997,10 @@ def test_a_single_row_naming_the_most_ids_a_row_can_is_read_within_the_budget() 
         ),
         pytest.param(
             lambda: [
-                *_absent_rows(CHECK_MAX_READ_IDS - CHECK_MAX_ROW_READ_IDS + 1),
+                *_absent_rows(CHECK_MAX_READ_IDS - CHECK_MAX_ROW_NAMED_IDS + 1),
                 _maximal_row(),
             ],
-            CHECK_MAX_READ_IDS - CHECK_MAX_ROW_READ_IDS + 1,
+            CHECK_MAX_READ_IDS - CHECK_MAX_ROW_NAMED_IDS + 1,
             id="every-field-of-a-row",
         ),
         pytest.param(
@@ -893,7 +1008,8 @@ def test_a_single_row_naming_the_most_ids_a_row_can_is_read_within_the_budget() 
                 _row(constraint_properties={"crsPurpose": f"CRSPurposeCode9{i:04d}"})
                 for i in range(CHECK_MAX_READ_IDS + 1)
             ],
-            CHECK_MAX_READ_IDS,
+            # The values may need ancestry, so the plan holds back the room for it.
+            CHECK_MAX_READ_IDS - CHECK_MAX_ROW_ANCESTRY_IDS,
             id="values-under-a-complete-enumeration",
         ),
         pytest.param(

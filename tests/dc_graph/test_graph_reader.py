@@ -1054,6 +1054,49 @@ def test_probes_of_simultaneous_reads_share_one_pool_of_16():
     assert len(threads_seen) <= 16
 
 
+@pytest.mark.parametrize("queued", [True, False], ids=["queued", "in_flight"])
+def test_probes_end_at_the_callers_deadline(queued):
+    """A read whose probes queue behind 16 held probes of another caller, or whose own probes
+    hang in flight, raises the deadline error at its deadline and reports no dcid absent."""
+    release = threading.Event()
+    held_in_flight = threading.Semaphore(0)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nodes = json.loads(request.content)["nodes"]
+        if len(nodes) > 1:
+            return httpx.Response(200, json={"data": {dcid: {} for dcid in nodes}})
+        if nodes[0].startswith("held/"):
+            held_in_flight.release()
+            release.wait(timeout=10)
+        return httpx.Response(200, json={"data": {nodes[0]: {}}})
+
+    reader = _reader(httpx.MockTransport(handler))
+    holder = threading.Thread(
+        target=reader.node_arcs_many,
+        args=([f"held/{i:02d}" for i in range(16)],),
+        kwargs={"properties": ("typeOf",)},
+    )
+    try:
+        if queued:
+            holder.start()
+            for _ in range(16):
+                assert held_in_flight.acquire(timeout=5)
+        dcids = ["absent/a", "absent/b"] if queued else ["held/a", "held/b"]
+        started = time.monotonic()
+        with pytest.raises(GraphDeadlineExceededError):
+            reader.node_arcs_many(
+                dcids,
+                properties=("typeOf",),
+                individual_probe_budget=None,
+                deadline=started + 0.3,
+            )
+        assert time.monotonic() - started < 2
+    finally:
+        release.set()
+        if queued:
+            holder.join(timeout=10)
+
+
 def test_node_arcs_many_default_budget_probes_every_suspect_individually():
     # With no `individual_probe_budget` passed, the default reads every empty answer alone,
     # however many there are, and sends no group retry.

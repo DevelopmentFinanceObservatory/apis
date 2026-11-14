@@ -29,8 +29,11 @@ generation and code index, held in a cache the lifespan registers beside the sou
 and node-envelope caches. `GET /schema/usage` reads no graph and keeps its body per code
 index and coverage build in a cache registered the same way. A live surface builds the schema
 document in its lifespan, before the instance takes traffic, waiting at most
-`SCHEMA_WARM_TIMEOUT_SECONDS` (20 s); a failed or unfinished build logs and leaves the first
-request to build or join it. An injected graph builds on the first request.
+`SCHEMA_WARM_TIMEOUT_SECONDS` (20 s). An unfinished build logs and the first request joins
+it. A failed build logs, and the first request builds again, unless the build refused under a
+known generation with a truncated term listing or a document with no DFO node: the entry keeps
+that refusal, and every request answers it 500 with no build. An injected graph builds on the
+first request.
 
 Door classifiers return `ProblemSpec`. The door whose route raised classifies
 first (`dfo_platform.doors.classify_by_door`), so a graph read failure is logged

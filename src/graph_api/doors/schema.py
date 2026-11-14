@@ -54,7 +54,9 @@ infinity. The pointer names the first such member, `/rows/37/constraint_properti
 in row 37. Everything else about a row's content is a finding. With the document in hand,
 `plan_reads` decides on the event loop, before anything is submitted, how many rows the check
 takes and which ids they read: rows from the first while their ids stay within
-`CHECK_MAX_READ_IDS`. Whether the bound catalogue serves the UN origin decides whether a UN id
+`CHECK_MAX_READ_IDS`, less the room held back for ancestry once a row may need it. The job
+may take fewer rows when their ancestry does not fit (`graph_api.schema_check.check_rows`).
+Whether the bound catalogue serves the UN origin decides whether a UN id
 is read or gets `origin_not_served`.
 
 Every check runs as one job on `GraphDeps.check_executor`, whose
@@ -85,8 +87,9 @@ After each build the door logs one line timing the encoding of the document and 
 and giving their sizes, beside the build's own per-phase line.
 
 `warm_schema` builds the entry for the current generation and the bound code index before an
-instance takes traffic. The Graph lifespan awaits it for its live reader, and a failed or
-unfinished build logs and leaves the first request to build or join it.
+instance takes traffic. The Graph lifespan awaits it for its live reader. An unfinished build
+logs and the first request joins it. A failed build logs and the first request builds again,
+except a refusal the entry keeps, which the first request answers 500 with no build.
 """
 
 from __future__ import annotations
@@ -446,7 +449,9 @@ async def warm_schema(deps: GraphDeps, *, timeout_s: float) -> None:
     """Build the entry `GET /api/graph/schema` would build now, under the bound origin
     catalogue and served release, waiting at most `timeout_s`. A build still running then
     runs on under its flight deadline and lands for the request that joins it. A failure or
-    an unfinished build logs and returns, leaving the first request to build."""
+    an unfinished build logs and returns. The first request after a failure builds again,
+    unless the entry kept the build's refusal (`RefusedSchema`), which it answers with no
+    build."""
     started = time.monotonic()
     try:
         async with asyncio.timeout(timeout_s):
@@ -457,7 +462,7 @@ async def warm_schema(deps: GraphDeps, *, timeout_s: float) -> None:
             timeout_s,
         )
     except Exception:
-        logger.warning("Graph schema warm-up failed; the first request builds", exc_info=True)
+        logger.warning("Graph schema warm-up failed", exc_info=True)
     else:
         logger.info("Graph schema warm-up built in %.2f s", time.monotonic() - started)
 

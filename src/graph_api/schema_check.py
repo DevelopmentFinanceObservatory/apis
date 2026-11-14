@@ -3,7 +3,8 @@
 `SchemaLookup` holds the schema document's nodes as the check reads them, built once per
 document. `plan_reads` decides, before any read, how many rows from the first the check takes
 and which ids outside the document they read: it adds rows while their distinct ids stay within
-`CHECK_MAX_READ_IDS`. `check_rows` answers each node a row names from the document and asks
+`CHECK_MAX_READ_IDS`, less `CHECK_MAX_ROW_ANCESTRY_IDS` held back for ancestry once a row taken
+may need it. `check_rows` answers each node a row names from the document and asks
 every other named id once of the reader's `node_arcs_many`, for its `typeOf`, `name` and
 `subClassOf`, with no probe budget. The served reader,
 `origin_catalogue.graph.OriginGraphClient`, answers an id the origin catalogue's arc tables hold
@@ -22,9 +23,12 @@ the served origins is not read. It then reads, one `node_arcs_many` call a level
 `subClassOf` parents of each type the range rule judges that lies outside the document, then
 of each parent outside it, until every chain reaches the document or ends. Each id is read
 once, and an id the first call read needs no second read, since that call asked its
-`subClassOf` too. These reads share the budget of `CHECK_MAX_READ_IDS`, taken in the order of
-the first row that needs each id, and when a level would pass it the check stops before the
-first row whose chain it leaves unread (`_read_ancestry`).
+`subClassOf` too. Rows claim these ids in row order within what the planned ids leave of
+`CHECK_MAX_READ_IDS`, each row at most `CHECK_MAX_ROW_ANCESTRY_IDS`, and the check stops before
+the first row after the first whose chains do not fit (`_read_ancestry`). A row counts in
+`rows_checked` only with every read it needs done, so it gets the findings it would get
+alone. The first row always gets its reads: the plan holds back room for its ancestry, and past
+`CHECK_MAX_ROW_ANCESTRY_IDS` ids its chains are cut the same way whatever rows follow it.
 
 A check reads at most `CHECK_MAX_READ_IDS` (200) ids, each once. It reads fewer from the
 graph when the arc tables answer some. Each `node_arcs_many` call sends, for each backend its
@@ -44,8 +48,8 @@ deployment that does not serve it (`origin_catalogue.graph.is_un_dcid`) gets
 `origin_not_served`. Every other id outside the document is read, whatever the range of its
 property: the document holds the ancestors of the classes it holds and none of their
 descendants, so no value list proves that a value it lacks lies outside a range. One row
-names at most `CHECK_MAX_ROW_READ_IDS` (41) ids, fewer than `CHECK_MAX_READ_IDS`, so the
-first row always fits.
+reads at most `CHECK_MAX_ROW_READ_IDS` (81) ids, the 41 it names and 40 ancestors, fewer than
+`CHECK_MAX_READ_IDS`, so the first row always fits.
 
 `check_rows` stops before the row whose findings would take the total past
 `CHECK_MAX_FINDINGS`, or the encoded response past `CHECK_MAX_BODY_BYTES`. It measures each
@@ -63,7 +67,8 @@ through the document, which holds every `subClassOf` ancestor of each class it h
 through the parents read for the types outside it. A value is outside the range when it has a
 type, the ancestry of every type is known, and none reaches a `rangeIncludes` class by
 `subClassOf`. A type whose chain reaches an id neither the document nor the reads hold, left
-unread by the budget or an id of an origin not served, gives no range verdict. A property is
+unread past the first row's cap or an id of an origin not served, or an id whose parents the
+graph answers with an unresolved target, gives no range verdict. A property is
 outside its domain when the row's population type is a document
 node that reaches no `domainIncludes` class by `subClassOf`; a population type outside the
 document gets no domain finding. A property with no `rangeIncludes` or no `domainIncludes`
@@ -75,7 +80,6 @@ definition cell by cell.
 
 from __future__ import annotations
 
-import heapq
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -92,6 +96,7 @@ from graph_api.schema_models import (
     CHECK_MAX_BODY_BYTES,
     CHECK_MAX_FINDINGS,
     CHECK_MAX_READ_IDS,
+    CHECK_MAX_ROW_ANCESTRY_IDS,
     CHECK_MAX_ROWS,
     ConstraintValue,
     FindingCode,
@@ -193,7 +198,9 @@ def plan_reads(
     `CHECK_MAX_READ_IDS`, decided with no read. A row reads every shape field, constraint
     property and observation property outside the document, and every constraint value outside
     it that is a dcid, less the cells no read can decide and the values under a property no read
-    can decide or under a document node that is no Property. The first row is always taken.
+    can decide or under a document node that is no Property. Once a row taken may read
+    ancestry (`_may_read_ancestry`), `CHECK_MAX_ROW_ANCESTRY_IDS` of the budget is held back
+    for it. The first row is always taken.
 
     Args:
         rows: the candidate definitions, at least one.
@@ -203,12 +210,28 @@ def plan_reads(
     """
     unread = _Unread(lookup, un_served)
     ids: set[str] = set()
+    held_back = 0
     for count, row in enumerate(rows):
         taken = ids | _row_reads(row, unread)
-        if count and len(taken) > CHECK_MAX_READ_IDS:
+        held = held_back or (CHECK_MAX_ROW_ANCESTRY_IDS if _may_read_ancestry(row, unread) else 0)
+        if count and len(taken) + held > CHECK_MAX_READ_IDS:
             return ReadPlan(row_count=count, ids=frozenset(ids))
-        ids = taken
+        ids, held_back = taken, held
     return ReadPlan(row_count=len(rows), ids=frozenset(ids))
+
+
+def _may_read_ancestry(row: SchemaCheckRow, unread: _Unread) -> bool:
+    """Whether the range rule may read ancestry for a value of `row`: a value under a ranged
+    DFO Property of the document that is outside the document, or a document node with a type
+    outside it."""
+    nodes = unread.lookup.nodes
+    for prop, value in row.constraint_properties.items():
+        if not isinstance(value, str) or unread.fault(value) or not _ranged(nodes.get(prop)):
+            continue
+        held = nodes.get(value)
+        if held is None or not held.types <= nodes.keys():
+            return True
+    return False
 
 
 def _row_reads(row: SchemaCheckRow, unread: _Unread) -> set[str]:
@@ -225,12 +248,13 @@ def _row_reads(row: SchemaCheckRow, unread: _Unread) -> set[str]:
 
 class _Nodes:
     """The nodes the rows name: document nodes free, the rest read once each, and the
-    `subClassOf` parents of every id read."""
+    `subClassOf` parents of every id read, `None` for an id whose parents the read left
+    unresolved."""
 
     def __init__(self, lookup: SchemaLookup, *, reader: GraphNodeReader, deadline: float) -> None:
         self.lookup = lookup
         self._read: dict[str, _Node | None] = {}
-        self.parents: dict[str, tuple[str, ...]] = {}
+        self.parents: dict[str, tuple[str, ...] | None] = {}
         self._reader = reader
         self._deadline = deadline
 
@@ -255,7 +279,7 @@ class _Nodes:
         )
         answers = {dcid: arcs.get(dcid) for dcid in unknown}
         for dcid, answer in answers.items():
-            self.parents[dcid] = _resolved(answer, _SUB_CLASS_OF)
+            self.parents[dcid] = _parents(answer)
         return answers
 
     def get(self, dcid: str) -> _Node | None:
@@ -263,11 +287,14 @@ class _Nodes:
             return node
         return self._read[dcid]
 
-    def ancestry(self, dcids: Iterable[str]) -> set[str] | None:
+    def ancestry(
+        self, dcids: Iterable[str], *, within: frozenset[str] | None = None
+    ) -> set[str] | None:
         """`dcids` and every `subClassOf` ancestor of them, over the document and the parents
-        read, or `None` when the chain of one reaches an id neither holds. A parent a document
-        node names that the document lacks ends its chain, since the document holds every
-        ancestor the graph holds of each class it holds."""
+        read, or `None` when the chain of one reaches an id neither holds, an id whose parents
+        were left unresolved, or, with `within`, an id outside the document and `within`. A
+        parent a document node names that the document lacks ends its chain, since the
+        document holds every ancestor the graph holds of each class it holds."""
         seen: set[str] = set()
         stack = [(dcid, False) for dcid in dcids]
         while stack:
@@ -277,11 +304,22 @@ class _Nodes:
             seen.add(dcid)
             if (node := self.lookup.nodes.get(dcid)) is not None:
                 stack.extend((parent, True) for parent in node.parents)
-            elif dcid in self.parents:
-                stack.extend((parent, False) for parent in self.parents[dcid])
+            elif dcid in self.parents and (within is None or dcid in within):
+                if (parents := self.parents[dcid]) is None:
+                    return None
+                stack.extend((parent, False) for parent in parents)
             elif not named_by_document:
                 return None
         return seen
+
+
+def _parents(arcs: Mapping[str, tuple[str, ...]] | None) -> tuple[str, ...] | None:
+    """The `subClassOf` parents in `arcs`, `None` when one is unresolved, since a chain through
+    it cannot be read in full."""
+    parents = _resolved(arcs, _SUB_CLASS_OF)
+    if arcs is not None and len(parents) < len(arcs[_SUB_CLASS_OF]):
+        return None
+    return parents
 
 
 def _resolved(arcs: Mapping[str, tuple[str, ...]] | None, prop: str) -> tuple[str, ...]:
@@ -350,12 +388,14 @@ def check_rows(
     nodes = _Nodes(lookup, reader=reader, deadline=deadline)
     nodes.read(reads)
     unread = _Unread(lookup, un_served)
-    rows = rows[: _read_ancestry(rows, nodes, unread, budget=CHECK_MAX_READ_IDS - len(reads))]
+    ancestry = _read_ancestry(rows, nodes, unread, budget=CHECK_MAX_READ_IDS - len(reads))
+    rows = rows[: ancestry.taken]
 
     findings: list[SchemaFinding] = []
     size = _envelope_bytes(generation)
     for index, row in enumerate(rows):
-        found = _check_row(index, row, nodes, unread)
+        within = ancestry.first_row_within if index == 0 else None
+        found = _check_row(index, row, nodes, unread, within=within)
         if row.dcid is not None and (served := code_index.statvar_by_dcid(row.dcid)) is not None:
             found.extend(_differences(index, row, served))
         found_size = sum(len(finding.model_dump_json().encode()) + 1 for finding in found)
@@ -414,55 +454,105 @@ def _range_judged(
     return held, prop_node
 
 
-def _outside_range(value: _Node, prop: _Node, nodes: _Nodes) -> bool:
-    """`value` has a type, the ancestry of every one is known, and none reaches `prop`'s
-    range."""
-    if not value.types or (ancestry := nodes.ancestry(value.types)) is None:
+def _outside_range(
+    value: _Node, prop: _Node, nodes: _Nodes, *, within: frozenset[str] | None
+) -> bool:
+    """`value` has a type, the ancestry of every one is known, through `within` where given,
+    and none reaches `prop`'s range."""
+    if not value.types or (ancestry := nodes.ancestry(value.types, within=within)) is None:
         return False
     return ancestry.isdisjoint(prop.range)
 
 
+@dataclass(frozen=True)
+class _Ancestry:
+    """How many rows from the first the ancestry reads leave whole, and, when the first row's
+    chains hold more than `CHECK_MAX_ROW_ANCESTRY_IDS` ids, the ids outside the document its
+    range verdicts may pass through."""
+
+    taken: int
+    first_row_within: frozenset[str] | None
+
+
 def _read_ancestry(
     rows: Sequence[SchemaCheckRow], nodes: _Nodes, unread: _Unread, *, budget: int
-) -> int:
+) -> _Ancestry:
     """Read the `subClassOf` chains of the types the range rule judges that lie outside the
-    document, one `node_arcs_many` call per level of the chains, within `budget` ids, and
-    return how many rows from the first to take.
+    document, one `node_arcs_many` call per level of the chains, and return how many rows from
+    the first are taken.
 
-    Each id to read carries the first row that needs it, and a level reads its ids in that
-    order. When a level's ids pass `budget`, the rows from the first row of an id left unread
-    are not taken, but the first row is always taken, and a type of it whose chain is left
-    unread gets no range verdict.
+    A row's ancestry is every id outside the document that its value types' chains pass
+    through, found a level at a time and sorted within a level. Within a level, rows claim
+    their new ids in row order, and an id counts once against `budget` whichever rows claim it
+    and whether or not an earlier read holds its parents. The level then reads the parents of
+    the ids claimed that no read holds. While the first row's chains may still grow, the other
+    rows leave room for the rest of its `CHECK_MAX_ROW_ANCESTRY_IDS`. A row after the first
+    whose ancestry would pass that room or its own `CHECK_MAX_ROW_ANCESTRY_IDS` is not taken,
+    nor any row after it, so each row taken but the first has its chains read in full, as it
+    would alone, and a row cut leads the next check. The first row is always taken: past
+    `CHECK_MAX_ROW_ANCESTRY_IDS` it keeps the first ids of its ancestry in that order, the same
+    whatever rows follow, and a type whose chain leaves them gets no range verdict.
     """
-    queue: list[tuple[int, str]] = []
-    for index, row in enumerate(rows):
+    document = nodes.lookup.nodes
+    frontiers: list[set[str]] = []
+    for row in rows:
+        types: set[str] = set()
         for prop, value in row.constraint_properties.items():
             if (judged := _range_judged(prop, value, nodes, unread)) is not None:
-                queue.extend((index, dcid) for dcid in judged[0].types)
-    heapq.heapify(queue)
+                types.update(judged[0].types)
+        frontiers.append(types)
+    claimed: list[set[str]] = [set() for _ in rows]
+    spent: set[str] = set()
     taken = len(rows)
-    first_row: dict[str, int] = {}
-    while queue:
-        level: list[tuple[int, str]] = []
-        while queue:
-            index, dcid = heapq.heappop(queue)
-            if index >= taken or first_row.get(dcid, taken) <= index:
-                continue
-            first_row[dcid] = index
-            if dcid in nodes.lookup.nodes or unread.fault(dcid) is not None:
-                continue
-            if dcid in nodes.parents:
-                queue.extend((index, parent) for parent in nodes.parents[dcid])
-            else:
-                level.append((index, dcid))
-        if len(level) > budget:
-            taken = max(1, level[budget][0])
-            level = level[:budget]
-        nodes.read_parents(dcid for _, dcid in level)
-        budget -= len(level)
-        queue = [(index, parent) for index, dcid in level for parent in nodes.parents[dcid]]
-        heapq.heapify(queue)
-    return taken
+    first_row_full = True
+    while any(frontiers[index] for index in range(taken)):
+        for index in range(taken):
+            new = sorted(
+                dcid
+                for dcid in frontiers[index]
+                if dcid not in claimed[index]
+                and dcid not in document
+                and unread.fault(dcid) is None
+            )
+            room = budget - len(spent)
+            if index and frontiers[0]:
+                room -= CHECK_MAX_ROW_ANCESTRY_IDS - len(claimed[0])
+            kept = _first_fitting(
+                new,
+                spent=spent,
+                room=room,
+                row_room=CHECK_MAX_ROW_ANCESTRY_IDS - len(claimed[index]),
+            )
+            if len(kept) < len(new):
+                if index:
+                    taken = index
+                    break
+                first_row_full = False
+            claimed[index].update(kept)
+            spent.update(kept)
+            frontiers[index] = set(kept)
+        nodes.read_parents(
+            dcid for dcid in sorted(set().union(*frontiers[:taken])) if dcid not in nodes.parents
+        )
+        for index in range(taken):
+            frontiers[index] = {
+                parent for dcid in frontiers[index] for parent in nodes.parents[dcid] or ()
+            }
+    within = None if first_row_full else frozenset(claimed[0])
+    return _Ancestry(taken=taken, first_row_within=within)
+
+
+def _first_fitting(new: list[str], *, spent: set[str], room: int, row_room: int) -> list[str]:
+    """The ids of `new` from the first while they number at most `row_room` and those not in
+    `spent` at most `room`."""
+    kept: list[str] = []
+    fresh = 0
+    for dcid in new:
+        fresh += dcid not in spent
+        if len(kept) == row_room or fresh > room:
+            break
+        kept.append(dcid)
+    return kept
 
 
 _NODE_FAULTS: Final[Mapping[ConstraintValueFault, FindingCode]] = MappingProxyType(
@@ -504,7 +594,12 @@ def _finding(
 
 
 def _check_row(
-    index: int, row: SchemaCheckRow, nodes: _Nodes, unread: _Unread
+    index: int,
+    row: SchemaCheckRow,
+    nodes: _Nodes,
+    unread: _Unread,
+    *,
+    within: frozenset[str] | None,
 ) -> list[SchemaFinding]:
     findings: list[SchemaFinding] = []
     lookup = unread.lookup
@@ -588,7 +683,7 @@ def _check_row(
         if fault := _node_fault(nodes.get(value)):
             find(_CONSTRAINT, value, fault, prop=prop)
         elif (judged := _range_judged(prop, value, nodes, unread)) is not None and _outside_range(
-            *judged, nodes
+            *judged, nodes, within=within
         ):
             find(_CONSTRAINT, value, "value_outside_range", prop=prop)
 

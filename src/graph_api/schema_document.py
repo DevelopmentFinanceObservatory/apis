@@ -18,7 +18,8 @@ once the nodes read make it one. The nodes read follow from the graph alone,
 so the order the answers arrive in changes nothing in the document. Each node read probes every
 empty answer: it reads each empty dcid again alone, and a dcid empty after that is absent from
 the document. The node reads are uncached, since no other
-caller reads every property of these nodes. A read that fails ends the build with its error. One
+caller reads every property of these nodes. A read that fails ends the build with its error at
+once, while the reads already in flight finish on their own threads and land nowhere. One
 log line per build gives each phase's read count and when its first read started and last read
 ended: the term listings, the seed, each closure level, the instance listings and the
 instances.
@@ -103,7 +104,8 @@ OTHER_VALUES_MAX: Final[int] = 100
 BUILD_CONCURRENCY: Final[int] = 24
 """The most reads one build runs at once. Each node read is one request, or one at a time when
 the mixer answers a continuation, and each listing is one, so the build has at most this many
-requests in flight beside the confirmation probes, which the client's `->*` pool bounds."""
+requests in flight beside the confirmation probes, which the process-wide pool of 16 probe
+threads bounds (`dc_graph.client._PROBES`)."""
 
 _NODE_READ_CHUNK: Final[int] = 12
 """The most dcids one node read names: `dc_graph.GraphClient`'s default `->*` chunk, so each
@@ -227,11 +229,16 @@ def build_schema(
     """
     started = time.monotonic()
     index_named = _index_named(code_index)
-    with ContextCarryingExecutor(
+    executor = ContextCarryingExecutor(
         max_workers=BUILD_CONCURRENCY, thread_name_prefix="schema-build"
-    ) as executor:
-        reads = _Reads(reader, executor=executor, catalogue=catalogue, deadline=deadline)
+    )
+    reads = _Reads(reader, executor=executor, catalogue=catalogue, deadline=deadline)
+    try:
         reads.run(index_named)
+    finally:
+        # A failed read raises at once: the reads still in flight finish on their own threads,
+        # and their answers land nowhere, since only `run` lands them.
+        executor.shutdown(wait=False, cancel_futures=True)
     read_at = time.monotonic()
     listed, arcs = reads.listed, reads.arcs
 
@@ -334,7 +341,8 @@ class _Reads:
     `_NODE_READ_CHUNK` dcids, and the reads end when none is left to start. The successor rule
     depends only on a node's own read and the listings, and `lists_in_full` only grows as nodes
     land, so the nodes read are the same whatever order the answers arrive in. The first
-    read that raises cancels the reads not yet started and its error propagates.
+    read that raises cancels the reads not yet started and its error propagates at once, with
+    no wait for the reads in flight.
     """
 
     def __init__(

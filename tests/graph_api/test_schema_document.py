@@ -819,6 +819,35 @@ def test_a_read_failing_mid_pipeline_ends_the_build_with_its_error(
     assert graph.started
 
 
+def test_a_failed_read_ends_the_build_without_waiting_for_the_reads_in_flight() -> None:
+    error = GraphReadError("the mixer answered 400")
+    release = threading.Event()
+
+    def hold_node_reads(call: tuple[str, object]) -> float:
+        if call[0] == "node_all_arc_targets_many":
+            release.wait(timeout=10)
+        return 0.0
+
+    def fail_listing(call: tuple[str, object]) -> Exception | None:
+        return error if call == ("node_arc_subjects", "Property") else None
+
+    graph = _Recorder(schema_graph(), delay=hold_node_reads, fail=fail_listing)
+    started = time.monotonic()
+    try:
+        with pytest.raises(GraphReadError) as raised:
+            _build(graph)
+        elapsed = time.monotonic() - started
+        # The next build runs while the abandoned reads still hang.
+        rebuilt = _build(schema_graph())
+    finally:
+        release.set()
+
+    assert raised.value is error
+    assert elapsed < 2
+    assert graph.started.count(("node_arc_subjects", "Property")) == 1
+    assert rebuilt == _build(schema_graph())
+
+
 def test_every_read_carries_the_deadline() -> None:
     fake = schema_graph()
     graph = _Recorder(fake)
