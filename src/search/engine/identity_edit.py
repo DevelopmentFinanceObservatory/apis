@@ -9,11 +9,25 @@ a Spec holds. A composite provenance is read as the identity its option was set 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import cast
 
 from dfo_spec_kit import identity as _identity
 
-from code_index.composites import CompositeNotServable, composite_ref, table_identity
+from code_index.composites import (
+    DECLARED_COMPOSITES,
+    CompositeNotServable,
+    PopulationUnavailable,
+    UnclassifiedDestinations,
+    composite_ref,
+    destination_population,
+    population_check,
+    table_identity,
+)
+from code_index.query import CodeIndex
+from code_index.scope_conventions import RolePopulation
 from code_index.shared import get_index
+from dfo_platform import Alternative, Cause
 from dfo_platform.named import cut
 from dfo_platform.roles import role_key_axis
 from search.engine.config import settings
@@ -23,7 +37,18 @@ from search.models import (
     IdentityBindingExact,
     IdentityShape,
     IdentityShapePin,
+    RoleAxis,
+    ScopeReasonCode,
 )
+from series_coverage.shared import CoverageSnapshot, get_coverage_service
+
+_MULTILATERAL_DESTINATION: ScopeReasonCode = "multilateral_destination"
+"""The cause a composite posted with a destination off its population's side refuses
+under (`composite_table_identity`)."""
+_PROVIDER_NOT_OFFERED: ScopeReasonCode = "provider_not_offered"
+"""The cause a composite whose population is unavailable refuses under
+(`composite_table_identity`), as its scope option reads (`scope.provider._bilateral_option`,
+why `destination_unclassified`)."""
 
 
 def check_no_exact_bindings(identity: BaseIdentity, *, pointer: str) -> None:
@@ -93,6 +118,38 @@ def open_requested_role(identity: BaseIdentity, *, role: str) -> BaseIdentity:
     )
 
 
+def population_members(
+    populations: Mapping[str, RolePopulation],
+) -> dict[RoleAxis, frozenset[str]]:
+    """The members each role `populations` binds is open within, by the flow axis its key
+    names (`RolePopulation.members`)."""
+    return {
+        axis: frozenset(population.members)
+        for key, population in populations.items()
+        if (axis := role_key_axis(key)) is not None
+    }
+
+
+def open_within(
+    identity: BaseIdentity, populations: Mapping[str, RolePopulation]
+) -> tuple[BaseIdentity, dict[RoleAxis, frozenset[str]]]:
+    """`identity` with each `entities` key `populations` lists moved to `open_roles`, and the
+    members each such role is open within, by flow axis: a role bound to a population
+    (`TableRead.populations`) read as the open role the caller posted, over the parties an
+    open read of the composite reads. `identity` itself, and no members, when `populations`
+    lists none of its keys."""
+    keys = [key for key in identity.entities if key in populations]
+    if not keys:
+        return identity, {}
+    within = population_members({key: populations[key] for key in keys})
+    document = identity.model_dump(exclude_none=True)
+    document["entities"] = {
+        key: dcids for key, dcids in identity.entities.items() if key not in populations
+    }
+    document["open_roles"] = sorted({*(identity.open_roles or ()), *within})
+    return BaseIdentity.model_validate(document), within
+
+
 def refuse_over_place_bound(
     entities: Mapping[str, Sequence[str]], *, pointer: str = "/input/identity/entities"
 ) -> None:
@@ -122,21 +179,152 @@ def refuse_over_place_bound(
         )
 
 
-def composite_table_identity(identity: BaseIdentity, *, pointer: str) -> BaseIdentity:
+@dataclass(frozen=True)
+class TableRead:
+    """The identity a Search door reads for a posted identity (`composite_table_identity`).
+
+    `populations` maps each `entities` key of `identity` that binds a population in place of
+    names the caller posted (`code_index.composites.TableIdentity.populations`): a reader of
+    the caller's names reads such a role as open within the population's members. `sides`
+    holds the population of each flow axis the composite reads on one side alone
+    (`ComponentRecipe.destinations`), whether the posted identity names that axis, opens it
+    or leaves it out, so an options read of the axis offers that side's destinations alone.
+    Both are empty for an identity that binds no such composite."""
+
+    identity: BaseIdentity
+    populations: Mapping[str, RolePopulation] = field(default_factory=dict)
+    sides: Mapping[RoleAxis, RolePopulation] = field(default_factory=dict)
+
+
+def composite_table_identity(
+    identity: BaseIdentity, *, pointer: str, coverage: CoverageSnapshot | None
+) -> TableRead:
     """The identity a Search door reads for `identity`. For a composite
     (`code_index.composites`) that is the identity its option was set on
     (`code_index.composites.table_identity`), whose one table every graph and index read
-    names, and otherwise `identity` itself. Refuses a composite whose components cannot be derived
-    (`CompositeNotServable`) as `request_invalid`, at `pointer`, the posted identity, joined
-    with the member at fault."""
+    names, with the populations its roles bind, and otherwise `identity` itself.
+
+    Refuses a composite that reads a population of destinations that is unavailable, in the
+    code index (`code_index.composites.PopulationUnavailable`) or in `coverage`, the
+    request's coverage snapshot, or the release's where the door holds none
+    (`code_index.composites.population_check`), with 422 `requested_option_unavailable`,
+    cause `provider_not_offered`, the destinations no side declaration places, at `pointer`
+    joined with the provenance facet; the alternative names the dataset whose total ODA reads
+    every destination (`_population_unavailable`), as a fresh search reads it then. Refuses a
+    composite that reads one side of its destinations and is posted naming a destination off
+    that side, an agency or the total spanning both sides, with 422
+    `requested_option_unavailable`, cause `multilateral_destination`, at `pointer`, the posted
+    identity, joined with the role at fault; the alternative names the dataset whose total
+    ODA reads the destination (`_multilateral_destination`). Refuses any other composite whose
+    components cannot be derived (`CompositeNotServable`) as `request_invalid`, at `pointer`
+    joined with the member at fault."""
     document = identity.model_dump(mode="json", exclude_none=True)
+    index = get_index()
     try:
-        read = table_identity(get_index(), document)
+        table = table_identity(index, document)
+    except PopulationUnavailable as exc:
+        raise _population_unavailable(index, exc.ref, exc.unclassified, pointer=pointer) from exc
     except CompositeNotServable as exc:
-        raise EngineInputError(
-            str(exc), code="request_invalid", pointer=f"{pointer}{exc.pointer}"
-        ) from exc
-    return identity if read is document else BaseIdentity.model_validate(read)
+        refused = _multilateral_destination(index, document, exc, pointer=pointer)
+        raise (refused or _request_invalid(exc, pointer=pointer)) from exc
+    if table.identity is document:
+        return TableRead(identity=identity)
+    ref = cast(str, composite_ref(document))
+    if any(recipe.destinations is not None for recipe in DECLARED_COMPOSITES[ref].components):
+        held = (coverage or get_coverage_service().snapshot()).index
+        if (unclassified := population_check(index, held).refusal(ref)) is not None:
+            raise _population_unavailable(index, ref, unclassified, pointer=pointer)
+    return TableRead(
+        identity=BaseIdentity.model_validate(table.identity),
+        populations=table.populations,
+        sides=_sides(index, document),
+    )
+
+
+def population_refusal(exc: PopulationUnavailable, *, pointer: str) -> EngineInputError:
+    """The refusal of a posted composite whose population is unavailable in the code index
+    (`exc`), at `pointer` joined with the provenance facet, as `composite_table_identity`
+    refuses it, for a reader of the composite's table that runs before or without that
+    check."""
+    return _population_unavailable(get_index(), exc.ref, exc.unclassified, pointer=pointer)
+
+
+def _population_unavailable(
+    index: CodeIndex, ref: str, unclassified: UnclassifiedDestinations, *, pointer: str
+) -> EngineInputError:
+    """The refusal of composite `ref`, whose population of `unclassified.dataset`'s
+    destinations is unavailable: the side declarations have drifted from the graph, so the
+    composite is not offered (`provider_not_offered`, why `destination_unclassified`), and
+    the dataset's own total ODA, which reads every destination, is the alternative."""
+    dataset = unclassified.dataset
+    label = index.datasets[dataset].label if dataset in index.datasets else dataset
+    destinations = list(unclassified.destinations)
+    return EngineInputError(
+        f"composite {ref!r} is not offered (provider_not_offered, why "
+        f"destination_unclassified): {unclassified.message()}; total ODA to every "
+        f"destination reads from {label}: post this identity with facets.provenance bound to "
+        f"{dataset!r} in place of {ref!r}",
+        code="requested_option_unavailable",
+        status=422,
+        pointer=f"{pointer}/facets/provenance",
+        alternatives=[Alternative(ref=dataset, label=label)],
+        cause=Cause(
+            code=_PROVIDER_NOT_OFFERED,
+            entities=destinations[:10],
+            truncated=len(destinations) > 10,
+        ),
+    )
+
+
+def _request_invalid(exc: CompositeNotServable, *, pointer: str) -> EngineInputError:
+    return EngineInputError(str(exc), code="request_invalid", pointer=f"{pointer}{exc.pointer}")
+
+
+def _sides(index: CodeIndex, document: Mapping[str, object]) -> dict[RoleAxis, RolePopulation]:
+    """The population of each flow axis the composite `document` binds reads on one side
+    alone: its first component's destinations (`ComponentRecipe.destinations`), the
+    component `table_identity` reads. Empty for a document binding no such composite."""
+    ref = composite_ref(document)
+    if ref is None:
+        return {}
+    first = DECLARED_COMPOSITES[ref].components[0]
+    if first.destinations is None:
+        return {}
+    return {"destination": destination_population(index, first.dataset, composite=ref)}
+
+
+def _multilateral_destination(
+    index: CodeIndex, document: Mapping[str, object], exc: CompositeNotServable, *, pointer: str
+) -> EngineInputError | None:
+    """The refusal of composite `document` naming destinations off the side its population
+    reads (`RolePopulation.named`): agencies, or the total spanning both sides. Its message
+    and alternative name the dataset whose total ODA reads them, the population's own
+    (`BilateralSource.dataset`), which the identity can bind in place of the composite.
+    `None` when `exc` refuses anything else."""
+    key = exc.key
+    if key is None:
+        return None
+    population = _sides(index, document).get("destination")
+    if population is None:
+        return None
+    dataset = population.source.dataset
+    refused = list(exc.refs)
+    label = index.datasets[dataset].label if dataset in index.datasets else dataset
+    return EngineInputError(
+        f"composite {exc.ref!r} reads {population.side} destinations alone, and "
+        f"{', '.join(refused)} {'is' if len(refused) == 1 else 'are'} not on that side; total ODA "
+        f"to {'it' if len(refused) == 1 else 'them'} reads from {label}: post this identity "
+        f"with facets.provenance bound to {dataset!r} in place of {exc.ref!r}",
+        code="requested_option_unavailable",
+        status=422,
+        pointer=f"{pointer}/entities/{key}",
+        alternatives=[Alternative(ref=dataset, label=label)],
+        cause=Cause(
+            code=_MULTILATERAL_DESTINATION,
+            entities=refused[:10],
+            truncated=len(refused) > 10,
+        ),
+    )
 
 
 def check_not_composite(identity: BaseIdentity, *, pointer: str) -> None:

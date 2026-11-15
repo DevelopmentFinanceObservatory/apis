@@ -33,6 +33,8 @@ from assembler.pipeline.export_component import (
 )
 from assembler.ports import FrameRef, ResolvedFrame
 from assembler.testing import FIXTURE_RETRIEVED_ON, build_resolved_frame
+from code_index.composites import DECLARED_COMPOSITES
+from code_index.declarations import DAC2A_BILATERAL
 from dfo_analysis_engine.place_type import UNTYPED
 from materialise.bundle_naming import card_slug
 from tests.presentation_store.test_frame_store import (
@@ -1517,3 +1519,67 @@ def test_a_table_row_of_a_continued_series_names_its_own_method(
         *(("Ethiopia", str(year), "Estimated") for year in range(2022, 2024)),
         *(("Ghana", str(year), "Reported") for year in range(2019, 2024)),
     ]
+
+
+def test_a_card_over_a_composite_frame_cites_its_tables_and_names_the_composite(
+    frame_store, revision_store, release_registry
+):
+    """A composite's rows carry its own provenance, which its citation does not list: the
+    citation names its component tables. The bundle cites those tables by their own label,
+    names the composite by its label and measure noun in the codes table, the README,
+    SOURCES.md and the datapackage description, so the two read apart, and states there what
+    it reads and the destinations it keeps."""
+    composite = DECLARED_COMPOSITES[DAC2A_BILATERAL]
+    (table,) = {recipe.dataset for recipe in composite.components}
+    rows = [
+        _row(recipient=recipient, period=str(year), value=float(year), provenance=DAC2A_BILATERAL)
+        for recipient in ("country/ETH", "country/KEN")
+        for year in range(2019, 2024)
+    ]
+    resolved = build_resolved_frame(
+        frame_ref=_FRAME_REF,
+        role_keys=("recipient",),
+        rows=rows,
+        labels={"country/ETH": "Ethiopia", "country/KEN": "Kenya"},
+        manifest={
+            "schema_version": 1,
+            "citation": {
+                "text": "exemplar",
+                "sources": [{"ref": table, "label": "OECD DAC2a", "license": "OECD terms"}],
+            },
+        },
+    )
+    frame_store.put(resolved_frame=resolved)
+    intent = {
+        **_INTENTS["line_chart"],
+        "select": {
+            "stat_var": _STAT_VAR,
+            "recipient": ["country/ETH", "country/KEN"],
+            "provenance": DAC2A_BILATERAL,
+        },
+        "frame_ref": _frame_ref_body(_FRAME_REF),
+    }
+    created = write_component(
+        intent=intent,
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+
+    files = _unzip(
+        _export(created, frame_store=frame_store, revision_store=revision_store, bundle=True).data
+    )
+
+    descriptor = json.loads(files["datapackage.json"])
+    assert [source["title"] for source in descriptor["sources"]] == ["OECD DAC2a"]
+    codes = {row["code"]: row["label"] for row in _csv_rows(files["data/codes.csv"])}
+    assert codes[DAC2A_BILATERAL] == "OECD DAC2a (bilateral flows)"
+    cut = "counting bilateral flows to countries and regions, without core contributions"
+    for text in (
+        files["README.md"].decode("utf-8"),
+        files["SOURCES.md"].decode("utf-8"),
+        descriptor["description"],
+    ):
+        assert "OECD DAC2a (bilateral flows)" in text
+        assert DAC2A_BILATERAL in text
+        assert cut in text

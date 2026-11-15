@@ -97,6 +97,7 @@ def test_served_gross_rows_publish_a_composed_label_not_either_members_own_name(
     netting_slot = value_slot("how", "nettingBasis", "netting basis", "Gross", "gross")
 
     spec = build_spec(
+        composite=None,
         open_roles=(),
         measure_elected_properties=frozenset(),
         shape=shape,
@@ -169,6 +170,7 @@ def test_a_reading_with_no_partition_is_labelled_by_the_one_series_it_serves(
     )
 
     spec = build_spec(
+        composite=None,
         open_roles=(),
         measure_elected_properties=frozenset(),
         shape=shape,
@@ -218,6 +220,7 @@ def test_an_unlabelled_partition_with_nothing_to_compose_falls_back_to_a_served_
         values=(("measuredProperty", "grams"),), members=("SV_grams",)
     )
     spec = build_spec(
+        composite=None,
         open_roles=(),
         measure_elected_properties=frozenset(),
         shape=shape,
@@ -260,6 +263,7 @@ def test_a_group_agreeing_on_an_open_axis_names_it_but_never_a_varying_one():
     donor_slot = value_slot("what", "syntheticDonor", "donor", "syntheticDonorValue")
 
     spec = build_spec(
+        composite=None,
         open_roles=(),
         measure_elected_properties=frozenset(),
         shape=shape,
@@ -317,6 +321,7 @@ def test_a_unit_request_keeps_the_native_price_basis_in_the_axis_values():
     )
 
     spec = build_spec(
+        composite=None,
         open_roles=(),
         measure_elected_properties=frozenset(),
         shape=shape,
@@ -367,6 +372,7 @@ def test_a_served_member_name_never_moves_spec_id():
 
     def spec_serving(name: str | None):
         return build_spec(
+            composite=None,
             open_roles=(),
             measure_elected_properties=frozenset(),
             shape=shape,

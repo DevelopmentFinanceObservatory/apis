@@ -24,12 +24,25 @@ import cachetools
 import httpx
 import pyarrow as pa
 
-from dc_sdmx import ContainedIn, EntityFilter, SdmxClient
+from dc_sdmx import Among, ContainedIn, EntityFilter, SdmxClient
 from graph_generation import UNKNOWN_GENERATION, GenerationProvider
 from graph_generation.stamp import ttu_from_stamp_key
 from search.engine.heap_weight import heap_bytes
 
 type _EntitiesKey = tuple[tuple[str, tuple[str, ...] | ContainedIn], ...]
+
+
+def _entities_key(dcids: EntityFilter) -> tuple[str, ...] | ContainedIn:
+    """One role's binding as a read key: a containment filter itself, and the dcids a list or
+    a population (`Among.members`) reads, so a population and a list naming its members
+    read, and key, the same rows."""
+    if isinstance(dcids, ContainedIn):
+        return dcids
+    if isinstance(dcids, Among):
+        return dcids.members
+    return tuple(dcids)
+
+
 type _ReadKey = tuple[
     str,
     tuple[str, ...],
@@ -146,10 +159,7 @@ class CachingMaterialiseSdmxClient(SdmxClient):
         key: _ReadKey = (
             self._generation.stamp().key,
             tuple(variables),
-            tuple(
-                (role, dcids if isinstance(dcids, ContainedIn) else tuple(dcids))
-                for role, dcids in entities.items()
-            ),
+            tuple((role, _entities_key(dcids)) for role, dcids in entities.items()),
             None if facet_ids is None else tuple(facet_ids),
             time_period
             if time_period is None or isinstance(time_period, str)

@@ -42,7 +42,7 @@ from .test_mint_composite import (
     _mint,
 )
 
-_HEADLINE = COMPOSITES[2].provenance
+_HEADLINE = COMPOSITES[3].provenance
 _DAC1 = "provenance/OECDDAC1"
 _DAC1_FACET = "facet_dac1"
 _NET = "Amount_FinancialFlow_Net_Disbursement_DAC1AidType1010_Nominal"

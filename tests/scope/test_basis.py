@@ -1463,7 +1463,7 @@ def test_candidates_sharing_a_spec_id_offer_the_conversion_of_the_kept_one(
     offers: list[tuple[tuple[str, ...], UnitConversion | None, UnitConversion | None]] = []
     stated = pipeline._with_scope_choices
 
-    def captured(result: RegionResult, state: ResolveState) -> RegionResult:
+    def captured(result: RegionResult) -> RegionResult:
         assert result.status == "definite", result.status
         # The offer a merge restates, read under the request's conversion catalogue.
         bare = result.spec.resolved.model_copy(update={"unit_conversion": None})
@@ -1483,7 +1483,7 @@ def test_candidates_sharing_a_spec_id_offer_the_conversion_of_the_kept_one(
                 restated.resolved.unit_conversion,
             )
         )
-        return stated(result, state)
+        return stated(result)
 
     monkeypatch.setattr(candidate_collapse, "ground_candidates", sharing)
     monkeypatch.setattr(candidate_grounding, "_finish_candidate", counted)

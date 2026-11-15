@@ -24,6 +24,7 @@ from fastapi.testclient import TestClient
 
 import graph_release.service as service_module
 from artifact_publication.uri import write_uri_bytes
+from code_index.composites import PopulationCheck, UnclassifiedDestinations, population_check
 from code_index.shared import get_index
 from datasets_api.admission import MaterialisePermits
 from datasets_api.app import datasets_surface
@@ -795,3 +796,32 @@ class TestWorker:
         _recheck(service, clock)
 
         assert self._bound_release(service) == [second.release_id]
+
+
+def test_opening_a_release_checks_its_destination_populations_against_its_coverage(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    """A population missing a destination coverage serves is logged as the release opens, and
+    the release still serves; the session release's own populations hold every destination."""
+    loaded = current_release().loaded
+    views = current_release().views
+    assert population_check(views.code_index, views.coverage).unclassified == {}
+    drift = UnclassifiedDestinations(
+        dataset="provenance/OECDDAC2A", destinations=("SomeNewAgency",), found_in="coverage"
+    )
+    checked: list[tuple[object, object]] = []
+
+    def check(index, coverage):
+        checked.append((index, coverage))
+        return PopulationCheck(unclassified={drift.dataset: drift})
+
+    monkeypatch.setattr(service_module, "population_check", check)
+    caplog.set_level(logging.INFO, logger=service_module.__name__)
+
+    opened = service_module.build_release_views(loaded)
+
+    assert checked == [(opened.code_index, opened.coverage)]
+    (event,) = _events(caplog, "destination_population_unavailable")
+    assert event["dataset"] == drift.dataset
+    assert event["found_in"] == "coverage"
+    assert event["destinations"] == ["SomeNewAgency"]

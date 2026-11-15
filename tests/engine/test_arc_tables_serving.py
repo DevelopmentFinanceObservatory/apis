@@ -111,6 +111,7 @@ from search.engine.retrieval.standard import (
 )
 from search.engine.shape import ShapeDraft
 from search.models import GraphRef
+from search.scope.state import ScopeState
 from statvar_members import MultiValuedConstraint
 from tests.engine._binders import elected_reply
 from tests.engine._builders import subject_place_roles
@@ -726,7 +727,7 @@ def _flagged_member_constraint_properties(shape: ShapeDraft) -> list[list[str] |
         coverage_judged=True,
     )
     with held_family_memo():
-        spec = asyncio.run(_elected_flagged_match(state, members=[_IMF_GG]))
+        spec = asyncio.run(_elected_flagged_match(state, members=[_IMF_GG])).spec
     return [member.constraint_properties for member in spec.resolved.members]
 
 
@@ -1514,6 +1515,8 @@ def test_an_alternate_whose_presence_read_after_unbinding_fails_is_unevaluated(
         sdmx=FakeSdmxClient(observations={}, availability={}),
         date_request=None,
         coverage=empty_coverage_snapshot(),
+        selection=ScopeState(),
+        operations=(),
     )
     state = SimpleNamespace(
         capped_shapes=[shape],
@@ -1572,6 +1575,8 @@ def test_after_one_alternate_s_top_up_fails_no_other_is_tried(
         sdmx=FakeSdmxClient(observations={}, availability={}),
         date_request=None,
         coverage=empty_coverage_snapshot(),
+        selection=ScopeState(),
+        operations=(),
     )
 
     assert len(reads) == 1
@@ -1606,6 +1611,8 @@ def test_an_offered_alternate_on_a_countries_fallback_is_a_lost_read(
         sdmx=FakeSdmxClient(observations={}, availability={}),
         date_request=None,
         coverage=empty_coverage_snapshot(),
+        selection=ScopeState(),
+        operations=(),
     )
 
     # The alternate's reading consulted its top-up's countries fallback into its own record,

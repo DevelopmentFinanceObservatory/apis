@@ -1013,6 +1013,42 @@ _CASES: list[tuple[DepartureFact, str | None, str]] = [
         "You named Korea without a direction. OECD DAC2a lists Korea among its providers, so "
         "this reads it as the creditor.",
     ),
+    # A DAC2a answer naming a multilateral recipient reads the donor's core contributions to
+    # it, worded by what the recipient is: an agency, the DAC's total over agencies, or the
+    # DAC's line for agencies it does not name.
+    (
+        DepartureFact(
+            code="core_contribution_read",
+            binding_ref="where:",
+            shown="European Commission",
+            recipient="party",
+        ),
+        "aid",
+        "European Commission is a multilateral organisation, so these figures are core "
+        "contributions to it, counted in total ODA.",
+    ),
+    (
+        DepartureFact(
+            code="core_contribution_read",
+            binding_ref="where:",
+            shown="Multilateral Organisations, Total",
+            recipient="total",
+        ),
+        "aid",
+        "Multilateral Organisations, Total is the DAC's total over multilateral agencies, so "
+        "these figures are core contributions to them, counted in total ODA.",
+    ),
+    (
+        DepartureFact(
+            code="core_contribution_read",
+            binding_ref="where:",
+            shown="Other UN",
+            recipient="residual",
+        ),
+        "aid",
+        "Other UN is the DAC's line for multilateral agencies it does not name, so these "
+        "figures are core contributions to them, counted in total ODA.",
+    ),
     # crs-010: the check covered only the ODA default the engine chose.
     (
         DepartureFact(code="scope_limited", binding_ref="how:crsTypeOfFlow", limits=("ODA",)),
@@ -1290,6 +1326,14 @@ _NO_DATA_CASES: list[tuple[DepartureFact, str | None, str]] = [
         "aid",
         "You named Kenya without a direction. Only the data with Kenya as the recipient "
         "holds values, so this reads it as the recipient.",
+    ),
+    (
+        DepartureFact(
+            code="core_contribution_read", binding_ref="where:", shown="European Commission"
+        ),
+        "aid",
+        "European Commission is a multilateral organisation, so its figures would be core "
+        "contributions to it, counted in total ODA.",
     ),
     (
         DepartureFact(code="scope_limited", binding_ref="how:crsTypeOfFlow", limits=("ODA",)),

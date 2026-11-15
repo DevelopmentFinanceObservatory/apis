@@ -188,6 +188,7 @@ def test_graph_confirm_resolve_specificity_sort() -> None:
                 },
             )
         ).snapshot(),
+        within=None,
     )
     assert isinstance(result, Materialised), f"Expected Materialised but got {result!r}"
     # sv/Specific must appear before sv/General (more specific first)

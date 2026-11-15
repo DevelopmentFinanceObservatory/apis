@@ -84,6 +84,7 @@ from search.engine.shape import (
 )
 from search.engine.spec_build import (
     NamedGroup,
+    answer_identity,
     bind_when_slot,
     build_shape_model,
     build_slot,
@@ -102,6 +103,7 @@ from search.models import (
     GraphRef,
     IdentityUnitRequest,
     NearestRealSpec,
+    Operation,
     ProvenanceRef,
     Relaxation,
     RequestedWindow,
@@ -114,10 +116,13 @@ from search.models import (
     Warning,
 )
 from search.observations import provenance_refs
+from search.scope.state import ScopeState
 
 if TYPE_CHECKING:
+    from origin_catalogue import Catalogue
     from search.engine.place import ConsultedPresence
     from search.engine.region.place_context import PlaceContext, UnsettledPlace
+    from search.engine.region.reading import ElectionFacts, ReadBinding
     from search.engine.retrieval.read_plan import ReadPlan
     from search.engine.retrieval.retrieve import Materialised
     from search.engine.retrieval.role_scope import DiscoveredScope
@@ -293,14 +298,24 @@ def _role_scope_defaulted_base(axis: EntityRoleKey) -> str:
     return f"{_role_scope_axis_clause(axis)}, so the answer covers every {noun} with data"
 
 
+def _role_scope_counted_base(axis: EntityRoleKey, member_count: int) -> str:
+    """The clause of a `role_scope_defaulted` warning on `axis` that states `member_count`."""
+    noun = axis_noun(axis)
+    counted = {1: f"the one {noun}", 2: f"both {noun}s"}.get(
+        member_count, f"all {member_count} {noun}s"
+    )
+    return f"{_role_scope_axis_clause(axis)}, so the answer covers {counted} with data"
+
+
 def role_scope_defaulted_message(
-    discovered: DiscoveredScope,
+    axis: EntityRoleKey,
     *,
     member_count: int | None,
     bound_dcids: Sequence[str],
     label_of: Callable[[Sequence[str]], Sequence[str]],
 ) -> str:
-    """Build the defaulted-scope warning with member count and any bound opposite-role entities.
+    """Build the defaulted-scope warning on open `axis` with member count and any bound
+    opposite-role entities.
 
     `member_count` is how many parties of the open axis the materialised read plan serves
     (`Materialised.scope_member_dcids`, counted by `enrichment.party_count`), or None for a
@@ -310,21 +325,15 @@ def role_scope_defaulted_message(
     more, report the count and opposite-axis noun without label lookup. `label_of` returns
     labels in the input order.
     """
-    noun = axis_noun(discovered.axis)
     if member_count is None:
-        base = _role_scope_defaulted_base(discovered.axis)
+        base = _role_scope_defaulted_base(axis)
     else:
-        counted = {1: f"the one {noun}", 2: f"both {noun}s"}.get(
-            member_count, f"all {member_count} {noun}s"
-        )
-        base = (
-            f"{_role_scope_axis_clause(discovered.axis)}, so the answer covers {counted} with data"
-        )
+        base = _role_scope_counted_base(axis, member_count)
     if not bound_dcids:
         return f"{base}."
-    preposition = "from" if discovered.axis == "destination" else "to"
+    preposition = "from" if axis == "destination" else "to"
     if len(bound_dcids) > _ROLE_SCOPE_MAX_NAMED_LABELS:
-        opposite_noun = axis_noun("origin" if discovered.axis == "destination" else "destination")
+        opposite_noun = axis_noun("origin" if axis == "destination" else "destination")
         named = f"any of the {len(bound_dcids)} {opposite_noun}s"
     else:
         labels = label_of(bound_dcids)
@@ -335,6 +344,15 @@ def role_scope_defaulted_message(
         else:
             named = f"{', '.join(labels[:-1])}, or {labels[-1]}"
     return f"{base} {preposition} {named}."
+
+
+def role_scope_defaulted_warning(axis: EntityRoleKey, message: str) -> Warning:
+    """The `role_scope_defaulted` warning on open `axis` stating `message`, carrying its axis
+    in `params`, by which a composite counts the warning it states in place of the table's
+    (`scope.composite.CompositeMint.role_scope_warnings`)."""
+    return Warning(
+        code=ROLE_SCOPE_DEFAULTED, severity="warn", message=message, params={"axis": axis}
+    )
 
 
 def role_scope_defaulted_message_for_axis(axis: EntityRoleKey) -> str:
@@ -389,11 +407,10 @@ def role_scope_defaulted_warnings(
     if discovered is not None:
         if discovered.axis not in unnamed_wholes:
             warnings.append(
-                Warning(
-                    code=ROLE_SCOPE_DEFAULTED,
-                    severity="warn",
-                    message=role_scope_defaulted_message(
-                        discovered,
+                role_scope_defaulted_warning(
+                    discovered.axis,
+                    role_scope_defaulted_message(
+                        discovered.axis,
                         member_count=_scope_party_count(
                             mat,
                             members if members is not None else mat.scope_member_dcids,
@@ -410,20 +427,15 @@ def role_scope_defaulted_warnings(
             # Both flow axes were unbound. The axis above is the one actually
             # discovered, and this companion axis defaulted right alongside it.
             warnings.append(
-                Warning(
-                    code=ROLE_SCOPE_DEFAULTED,
-                    severity="warn",
-                    message=role_scope_defaulted_message_for_axis(mat.also_defaulted_axis),
+                role_scope_defaulted_warning(
+                    mat.also_defaulted_axis,
+                    role_scope_defaulted_message_for_axis(mat.also_defaulted_axis),
                 )
             )
         return warnings
     if mat.open_origin_dcids is not None and "origin" not in unnamed_wholes:
         warnings.append(
-            Warning(
-                code=ROLE_SCOPE_DEFAULTED,
-                severity="warn",
-                message=role_scope_defaulted_message_for_axis("origin"),
-            )
+            role_scope_defaulted_warning("origin", role_scope_defaulted_message_for_axis("origin"))
         )
     return warnings
 
@@ -456,10 +468,12 @@ def restate_role_scope_warnings(
     `mat` so it counts `members`, the scope the answer lists under the request's facet
     filter (`scope.stated_scope_members`), or with `state_count` false names every member
     with data, for a response whose answers list different scopes. The warning is the
-    `role_scope_defaulted` one opening with the same axis clause ("No recipient was named"),
-    whatever count it states, so a response restates it once its candidates are grounded
-    and again once they are filtered. It keeps its position, and `label_of`, the memoised
-    lookup that built it (`memoised_labels`), makes no new request.
+    `role_scope_defaulted` one on the same axis that no Spec is keyed to, found by its code
+    and `params` axis (`role_scope_defaulted_warning`), whatever count it states, so a
+    response restates it once its candidates are grounded and again once they are
+    filtered. One keyed to a flagged match or a suggestion beside the answer speaks for that
+    reading and stands. The restated warning keeps its position, and `label_of`, the
+    memoised lookup that built it (`memoised_labels`), makes no new request.
 
     An empty `members` is an answer that lists no member on the axis: it covers none, so
     the warning is removed. An axis in `unnamed_wholes` built no warning
@@ -481,9 +495,13 @@ def restate_role_scope_warnings(
     # The discovered axis's warning leads. A companion axis's warning states no count, so it
     # stands as built.
     restated: Warning | None = fresh[0] if members or not state_count else None
-    axis_clause = f"{_role_scope_axis_clause(mat.discovered_scope.axis)},"
+    axis = mat.discovered_scope.axis
     for index, old in enumerate(warnings):
-        if old.code == ROLE_SCOPE_DEFAULTED and old.message.startswith(axis_clause):
+        if (
+            old.code == ROLE_SCOPE_DEFAULTED
+            and old.spec_id is None
+            and (old.params or {}).get("axis") == axis
+        ):
             if restated is None:
                 del warnings[index]
             else:
@@ -517,11 +535,7 @@ def carrier_flag_warnings(
         # whole Materialised and would re-run its discovered-scope arm's label
         # read for every alternate. This arm needs neither.
         warnings.append(
-            Warning(
-                code=ROLE_SCOPE_DEFAULTED,
-                severity="warn",
-                message=role_scope_defaulted_message_for_axis("origin"),
-            )
+            role_scope_defaulted_warning("origin", role_scope_defaulted_message_for_axis("origin"))
         )
     if membership_unverified:
         warnings.append(membership_unverified_warning())
@@ -1030,9 +1044,17 @@ class _RelaxationProbeContext:
     defaulted_properties: frozenset[str]
     # The groups the request named, kept because a relaxation keeps their entities.
     named_groups: tuple[NamedGroup, ...]
+    # The scope facts every relaxation's provider election shares (`reading.ElectionFacts`),
+    # over `coverage` and `operations`.
+    election_facts: ElectionFacts
     # Whether the part posted source mentions, so a suggestion's identity binds the
     # provenances that serve it (`spec_build.build_spec`).
     pin_served_provenance: bool = False
+    # What each relaxation elects its provider reading from (`reading.elect_reading`), and
+    # the catalogue its composite is minted under (`reading.decide_read_scope`).
+    scope_selection: ScopeState = dataclasses.field(default_factory=ScopeState)
+    operations: Sequence[Operation] = ()
+    request_catalogue: Catalogue | None = None
 
 
 @dataclasses.dataclass(slots=True, frozen=True)
@@ -1045,6 +1067,11 @@ class SuggestionRead:
     plan: ReadPlan | None
     place: PlaceContext
     member_facts: Mapping[str, MemberFacts] | None
+    # Whether the suggestion is minted as a composite (`reading.decide_read_scope`), whose
+    # rows are its components', not the table this read holds.
+    composite: bool = False
+    # The suggestion's own warnings, keyed to its spec_id (`reading.ReadScope.warnings`).
+    warnings: tuple[Warning, ...] = ()
 
 
 def _relaxation_place(
@@ -1190,43 +1217,65 @@ def _relaxed_binding_suggestion(
     resolved response intact.
     """
     from search.engine.region.place_context import settle_sets, settled_shape, with_where
+    from search.engine.region.reading import (
+        ElectedReads,
+        decide_read_scope,
+        named_entity_data,
+        roles_read,
+    )
     from search.engine.retrieval.retrieve import Materialised
     from search.engine.retrieval.role_resolve import graph_confirm_resolve
 
     ground_warnings: list[Warning] | None = None
     probe_warning: Warning | None = None
 
-    def read(place: PlaceContext, facet_batch: FacetBatch | None) -> object:
-        """The relaxed query's own resolve in `place`. A standard shape resolves as the
-        standard route answers it, over the context's entities and places or its
-        default-scope presence read; a role-bearing shape confirms against coverage."""
+    def read(
+        read_at: PlaceContext, facet_batch: FacetBatch | None, read_binding: ReadBinding
+    ) -> object:
+        """The relaxed query's own resolve at `read_at`, the context the provider reading the
+        relaxed bindings elect reads in (`reading.ElectedReads`), as the answer's read does:
+        a composite reads within its population, binding its totals on the axes the part
+        leaves out (`reading.ReadBinding`), where a standard shape resolves as the standard route
+        answers it, over the context's entities with those totals and its places or its
+        default-scope presence read, and a role-bearing shape confirms against coverage."""
         if is_role_bearing(shape):
             return graph_confirm_resolve(
                 shape=shape,
                 bindings=relaxed,
-                subject_dcids=_relaxation_places(place),
-                origin_dcids=place.roles.origin_dcids,
+                subject_dcids=read_binding.places("destination", _relaxation_places(read_at)),
+                origin_dcids=read_binding.places("origin", read_at.roles.origin_dcids),
                 graph=ctx.graph,
                 sdmx=ctx.sdmx,
                 date_request=ctx.date_request,
                 deadline=ctx.deadline,
-                open_axes=place.roles.open_axes,
+                open_axes=read_at.roles.open_axes,
                 coverage_snapshot=ctx.coverage,
+                within=read_binding.within,
             )
         return standard_resolve(
             shape=shape,
             bindings=relaxed,
-            entities=place.roles.resolved_entities,
+            entities=read_binding.entities(shape, read_at),
             graph=ctx.graph,
             date_request=ctx.date_request,
-            place_dcids=place.probe_places,
-            default_presence=place.presence_for(ctx.presence),
+            place_dcids=read_at.probe_places,
+            default_presence=read_at.presence_for(ctx.presence),
             facet_batch=facet_batch,
         )
 
+    reads = ElectedReads(
+        shape,
+        relaxed,
+        date_request=ctx.date_request,
+        selection=ctx.scope_selection,
+        facts=ctx.election_facts,
+        read=read,
+    )
+
     try:
         with fail_open_reads("nearest-real suggestion", budget_s=settings().nearest_real_budget_s):
-            bound, mat = settle_sets(_relaxation_place(ctx, shape), read)
+            bound, mat = settle_sets(_relaxation_place(ctx, shape), reads)
+            reading = reads.settled(bound)
             if not isinstance(mat, Materialised):
                 return None, None, None, None
             # A flagged-unavailable carrier represents the original binding.
@@ -1242,7 +1291,8 @@ def _relaxed_binding_suggestion(
                 shape,
                 relaxed,
                 mat.sv_dcids,
-                roles.roles,
+                # The suggestion lists the totals its read bound, as the answer does.
+                roles_read(roles.roles, reading),
                 ctx.graph,
                 mat.read_plan,
                 ctx.query_entity_text_by_dcid,
@@ -1298,6 +1348,11 @@ def _relaxed_binding_suggestion(
                 member_facts=mat.member_facts or {},
             )
             entities_list = [_build_entity(rd, er, etr, role_refs) for rd, er, etr in entity_data]
+            # Hash the entities listed, but the totals the read bound, which the relaxed
+            # query did not name.
+            identity_entities = build_identity_entities(
+                named_entity_data(entity_data, reading), role_refs
+            )
             slots = bind_when_slot(slots, window=mat.coverage.window)
             slots = apply_slot_expansions(slots, slot_expansions(relaxed))
 
@@ -1369,7 +1424,52 @@ def _relaxed_binding_suggestion(
                             ),
                         )
 
+            facets = answer_facets(
+                mat.read_plan,
+                labels,
+                bound_axes={},
+                request_basis=None,
+                unit_request=None,
+                currency_of=functools.partial(unit_currency, ctx.graph, deadline=ctx.deadline),
+            )
+            open_axis_facts = served_open_axes(
+                relaxed,
+                mat.sv_dcids,
+                mat.member_facts or {},
+                value_labels=shape.value_labels or {},
+            )
+            requested_window = requested_window_from_date_request(ctx.date_request)
+            answer = answer_identity(
+                shape_model,
+                slots,
+                stat_vars_list,
+                entities_list,
+                identity_entities=identity_entities,
+                open_roles=mat.open_axes,
+                requested_window=requested_window,
+                facet_bindings=None,
+                facets=facets,
+                resolved_sources=source_refs,
+                plan=mat.read_plan,
+                pin_served_provenance=ctx.pin_served_provenance,
+                named_groups=ctx.named_groups,
+            )
+            scoped = decide_read_scope(
+                answer,
+                reading,
+                selection=ctx.scope_selection,
+                operations=ctx.operations,
+                coverage=ctx.coverage,
+                catalogue=ctx.request_catalogue,
+            )
+            if scoped.decision is None:
+                # Rows read within a composite's population belong to no table, so a
+                # relaxation whose scope compiles no composite has no label to state them under.
+                return None, None, ground_warnings, None
+            mint = None if scoped.minted is None else scoped.minted.mint
             spec = build_spec(
+                composite=mint,
+                answer=answer,
                 shape=shape_model,
                 slots=slots,
                 stat_vars=stat_vars_list,
@@ -1378,27 +1478,15 @@ def _relaxed_binding_suggestion(
                 plan=mat.read_plan,
                 # The relaxed query's own answer states this headline and these axes.
                 headline=mat.headline,
-                open_axis_facts=served_open_axes(
-                    relaxed,
-                    mat.sv_dcids,
-                    mat.member_facts or {},
-                    value_labels=shape.value_labels or {},
-                ),
+                open_axis_facts=open_axis_facts,
                 coverage_index=ctx.coverage.index,
                 pin_served_provenance=ctx.pin_served_provenance,
                 resolved_sources=source_refs,
-                facets=answer_facets(
-                    mat.read_plan,
-                    labels,
-                    bound_axes={},
-                    request_basis=None,
-                    unit_request=None,
-                    currency_of=functools.partial(unit_currency, ctx.graph, deadline=ctx.deadline),
-                ),
+                facets=facets,
                 slot_options=slot_opts,
                 available_at_place=available_at_place,
                 confidence=confidence,
-                requested_window=requested_window_from_date_request(ctx.date_request),
+                requested_window=requested_window,
                 open_roles=mat.open_axes,
                 inapplicable_slots=inapplicable_slots,
                 unresolved_slots=unresolved_slots,
@@ -1417,6 +1505,20 @@ def _relaxed_binding_suggestion(
                 walked=walked,
             )
             spec = apply_declaration_version(spec, relaxed)
+            # A suggestion minted as a composite counts its own read's defaulted scope over
+            # the composite's parties (`ReadScope.warnings`), and no other suggestion does.
+            labels = {entity.ref: entity.label or entity.ref for entity in spec.resolved.entities}
+            defaulted = (
+                []
+                if scoped.minted is None
+                else role_scope_defaulted_warnings(
+                    mat,
+                    boundary_roles=roles.roles,
+                    label_of=lambda dcids: [labels.get(dcid, dcid) for dcid in dcids],
+                    unnamed_wholes=place.roles.unnamed_wholes,
+                )
+            )
+            own_warnings = scoped.warnings(spec, defaulted)
             return (
                 NearestRealSpec(
                     spec_id=spec.spec_id,
@@ -1424,7 +1526,13 @@ def _relaxed_binding_suggestion(
                     resolved=spec.resolved,
                     relaxation=relaxation,
                 ),
-                SuggestionRead(plan=mat.read_plan, place=place, member_facts=mat.member_facts),
+                SuggestionRead(
+                    plan=mat.read_plan,
+                    place=place,
+                    member_facts=mat.member_facts,
+                    composite=mint is not None,
+                    warnings=own_warnings,
+                ),
                 ground_warnings,
                 probe_warning,
             )
@@ -1459,6 +1567,9 @@ def _suggest_nearest_real(
     unsettled: UnsettledPlace | None = None,
     pin_served_provenance: bool = False,
     level: tuple[ShapeDraft, Relaxation] | None = None,
+    scope_selection: ScopeState,
+    operations: Sequence[Operation],
+    request_catalogue: Catalogue | None,
 ) -> tuple[
     list[NearestRealSpec], list[Warning], dict[str, SuggestionRead], ConsultedPresence | None
 ]:
@@ -1503,10 +1614,22 @@ def _suggest_nearest_real(
     exactly their members. With `pin_served_provenance` each suggestion's identity binds
     the provenances that serve it, as the part's answer would.
 
+    Each relaxation elects its provider reading for its relaxed bindings from
+    `scope_selection` and `operations` (`reading.elect_reading`) and reads within the
+    population the reading binds, as the part's answer does. A suggestion whose scope
+    compiles to a composite is minted as it, under `request_catalogue`
+    (`reading.decide_read_scope`, `spec_build.build_spec`), with no table preview
+    (`SuggestionRead.composite`). Each suggestion carries its own reading's warnings keyed
+    to its spec_id (`SuggestionRead.warnings`). These are a composite's
+    `role_scope_defaulted` count over its parties and the `bilateral_reading_unavailable` of
+    a reading the bilateral default could not reach.
+
     With `level`, a shape and the relaxation that reaches it, the one relaxation probed is
     that shape under the same bindings: the level reading of a shape that divides by a
     denominator (`phase_place_materialise._level_relaxation`).
     """
+    from search.engine.region.reading import ElectionFacts
+
     ctx = _RelaxationProbeContext(
         graph=graph,
         sdmx=sdmx,
@@ -1526,7 +1649,11 @@ def _suggest_nearest_real(
         measure_elected_properties=measure_elected_properties,
         defaulted_properties=defaulted_properties,
         named_groups=named_groups,
+        election_facts=ElectionFacts(coverage=coverage, operations=operations),
         pin_served_provenance=pin_served_provenance,
+        scope_selection=scope_selection,
+        operations=operations,
+        request_catalogue=request_catalogue,
     )
     suggestions: list[NearestRealSpec] = []
     reads: dict[str, SuggestionRead] = {}
@@ -1591,6 +1718,7 @@ def _suggest_nearest_real(
             suggestions.append(suggestion)
             unverified = unverified or walk.unverified
             reads[suggestion.spec_id] = read
+            probe_warnings.extend(read.warnings)
 
     if _entity_warnings:
         probe_warnings.extend(_entity_warnings)

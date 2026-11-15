@@ -87,6 +87,7 @@ def _spec_with(
     equivalent_readings: list[Spec] | None = None,
 ) -> Spec:
     return build_spec(
+        composite=None,
         open_roles=(),
         measure_elected_properties=frozenset(),
         shape=shape,

@@ -22,6 +22,7 @@ from dfo_frame_grammar import array_kernel
 
 from dc_sdmx import (
     DEFAULT_PLANNING_LANES,
+    Among,
     ContainedIn,
     EntityFilter,
     SdmxCapExceededError,
@@ -3509,12 +3510,13 @@ def _flatten_bound_entities(role_bindings: Mapping[str, EntityFilter]) -> tuple[
     """Every plain dcid across every `Sequence[str]`-bound role, deduped
     (first-seen order). A `ContainedIn`-bound role is skipped entirely (its
     expansion isn't known upfront), a documented limitation shared with
-    `probe_facets`' own note.
+    `probe_facets`' own note. An `Among`-bound role is skipped too: its members are a
+    population no caller named.
     """
     seen: set[str] = set()
     entities: list[str] = []
     for filt in role_bindings.values():
-        if isinstance(filt, ContainedIn):
+        if isinstance(filt, ContainedIn | Among):
             continue
         for dcid in filt:
             if dcid not in seen:

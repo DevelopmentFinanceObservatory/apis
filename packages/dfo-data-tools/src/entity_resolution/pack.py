@@ -15,6 +15,10 @@ from importlib.resources.abc import Traversable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+# `pack.organisation_dcids` is the reader `code_index.multilaterals` defines, so the code index
+# and the mint read the organisation records without loading resolvekit.
+from code_index.multilaterals import organisation_dcids as organisation_dcids
+
 if TYPE_CHECKING:
     from resolvekit.core.model.result import CandidateSummary
 
@@ -241,17 +245,6 @@ def _organisation_forms() -> dict[str, tuple[str, ...]]:
 def longest_name_words() -> int:
     """The most words any name or alias the pack stores has, in its normal form."""
     return max((len(key.split()) for key in _committed_alias_index().owners), default=0)
-
-
-@functools.cache
-def organisation_dcids() -> frozenset[str]:
-    """The dcids of the committed records of kind `organisation`: the nodes the graph types
-    `Organization`, multilaterals and private foundations alike."""
-    return frozenset(
-        record["dcid"]
-        for record in _load_records(records_path())
-        if record["kind"] == "organisation"
-    )
 
 
 def build_pack(

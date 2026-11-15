@@ -154,6 +154,7 @@ class TestBuildSpecStatVars:
 
     def _build(self, stat_vars: list[StatVar], **kwargs) -> Spec:
         return build_spec(
+            composite=None,
             open_roles=(),
             measure_elected_properties=frozenset(),
             shape=self._shape(),
@@ -522,6 +523,7 @@ class TestBuildSpecEntityGroups:
         entities = [Entity(ref=GraphRef(ref=d, label=d), role=origin) for d in origin_dcids]
         entities.append(Entity(ref=GraphRef(ref="country/ETH", label="Ethiopia"), role=destination))
         return build_spec(
+            composite=None,
             open_roles=(),
             measure_elected_properties=frozenset(),
             shape=build_shape_model(

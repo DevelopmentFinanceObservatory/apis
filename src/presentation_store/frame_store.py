@@ -199,6 +199,7 @@ from assembler.ports import (
     RollingAnchor,
     StructuralView,
 )
+from code_index.composites import provenance_datasets
 from code_index.labels import family_label
 from code_index.query import CodeIndex
 from code_index.shared import get_index, get_measure_index
@@ -1721,10 +1722,12 @@ class LiveFrameStore:
         deadline: float,
     ) -> tuple[Mapping[str, object], dict[str, SourceDocumentFacts], bool]:
         """`stored_manifest` with the citation of a derived frame's distinct `provenance` refs,
-        in row order, shaped as a dataset version manifest's `citation`, each source with its
-        documentation and the text written for the `retrieved` date; what each source's document
-        says; and whether every read behind them completed. The line routes through the DFO as
-        the steps its description record knows (`steps`) decide
+        in row order, a declared composite's cited by its component tables
+        (`code_index.composites.provenance_datasets`) as a version of it is, shaped as a dataset
+        version manifest's `citation`, each source with its documentation and the text written
+        for the `retrieved` date; what each source's document says; and whether every read
+        behind them completed. The line routes through the DFO as the steps its description
+        record knows (`steps`) decide
         (`description.citation.figures_processed`). The read covers the first
         `_CITATION_READ_CAP` refs. With no graph, and for refs beyond the cap, each source is
         named by its ref alone. A failed or overdue citation read leaves the citation out and
@@ -1737,7 +1740,14 @@ class LiveFrameStore:
         if PROVENANCE_COLUMN in columns:
             index = columns.index(PROVENANCE_COLUMN)
             rows = cast("Sequence[Sequence[object]]", doc["rows"])
-            refs = list(dict.fromkeys(cast(str, row[index]) for row in rows if row[index]))
+            refs = list(
+                dict.fromkeys(
+                    dataset
+                    for row in rows
+                    if row[index]
+                    for dataset in provenance_datasets(cast(str, row[index]))
+                )
+            )
         live: dict[str, SourceCitation] = {}
         if self._graph is not None and refs:
             read = self._source_citations(

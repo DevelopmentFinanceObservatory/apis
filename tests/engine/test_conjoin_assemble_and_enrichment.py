@@ -858,6 +858,7 @@ def test_window_refusal_keeps_original_enrichment_tasks_joinable_to_visible_part
     async def _body():
         call_log: list[str] = []
         spec_a = build_spec(
+            composite=None,
             open_roles=(),
             measure_elected_properties=frozenset(),
             shape=_PERSON_SHAPE,
@@ -875,6 +876,7 @@ def test_window_refusal_keeps_original_enrichment_tasks_joinable_to_visible_part
             requested_window=TimeWindow(start_year=2015, end_year=2020),
         )
         spec_b = build_spec(
+            composite=None,
             open_roles=(),
             measure_elected_properties=frozenset(),
             shape=_PERSON_SHAPE,

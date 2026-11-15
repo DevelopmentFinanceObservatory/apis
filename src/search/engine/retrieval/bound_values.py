@@ -44,7 +44,7 @@ from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING, Literal, NamedTuple, cast
 
-from code_index.composites import table_identity
+from code_index.composites import PopulationUnavailable, table_identity
 from code_index.labels import PRICE_BASIS_AXIS, is_price_basis, rows_held_codes
 from code_index.members import (
     DatasetFamily,
@@ -106,6 +106,7 @@ from search.engine.errors import (
     MembershipTooBroadError,
     RoleSignatureError,
 )
+from search.engine.identity_edit import population_refusal
 from search.engine.reading_coverage import covers
 from search.engine.retrieval.code_reads import carried_values, reads_code
 from search.engine.retrieval.facts import (
@@ -1788,8 +1789,13 @@ def slot_expansions(bindings: Sequence[SlotBindingDraft]) -> dict[str, Expansion
 def _identity_document(identity: BaseIdentity) -> Mapping[str, object]:
     """Return `identity` as the document a reader of one table's family reads: the document
     the Datasets mint reads, or for a composite the identity its option was set on
-    (`code_index.composites.table_identity`)."""
-    return table_identity(get_index(), identity.model_dump(mode="json", exclude_none=True))
+    (`code_index.composites.table_identity`). Refuses a composite whose population is
+    unavailable as Search's doors refuse it (`identity_edit.population_refusal`)."""
+    document = identity.model_dump(mode="json", exclude_none=True)
+    try:
+        return table_identity(get_index(), document).identity
+    except PopulationUnavailable as exc:
+        raise population_refusal(exc, pointer="/input/identity") from exc
 
 
 def identity_query(identity: BaseIdentity) -> FamilyQuery:

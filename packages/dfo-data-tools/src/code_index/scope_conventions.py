@@ -9,7 +9,9 @@ systems besides the sector whose admitted code makes a part a restricted one.
 `REDISTRIBUTED_PROVIDERS` the providers no pool takes a scope counting multilateral aid with,
 and the group whose members fund each, `PUBLISHED_PROVIDER_SCOPES` the provider scope a
 published donor total counts, `INCLUSIVE_SOURCES` the composite the inclusive scope binds on
-each table that offers it, and `DONOR_ORGANISATIONS` the organisations a published donor
+each table that offers it, `BILATERAL_SOURCES` the composite the bilateral scope binds on a
+published total that counts core contributions as recipients and the population of
+destinations its components read, and `DONOR_ORGANISATIONS` the organisations a published donor
 total counts as donors. `OPTION_LABELS` words the options the rules build from code and group
 labels, and `REGION_READINGS` names the graph regions a DAC dataset counts as the OECD's
 region. `search.scope` reads them all, and `graph_release.declarations` hashes the tables
@@ -19,7 +21,7 @@ rule version.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -36,9 +38,13 @@ from code_index.declarations import (
     DAC1_MULTILATERAL_ODA,
     DAC1_TOTAL_ODA,
     DAC2A,
+    DAC2A_BILATERAL,
     DAC2A_INCLUSIVE,
     DAC2A_TOTAL_ODA,
+    TOTAL_GROUPS,
 )
+from code_index.multilaterals import COUNTRY_PREFIX, organisation_dcids, party_facts
+from code_index.types import ComponentDestinations, PartyRow
 
 MeasureBasis = Literal["gross", "net", "grant_equivalent", "commitments", "oecd_headline"]
 """Every measure basis a part can be counted on. `oecd_headline` is the OECD's headline
@@ -135,6 +141,39 @@ class InclusiveSource:
     composite: str
     bases: tuple[MeasureBasis, ...]
     note: str
+
+
+@dataclass(frozen=True)
+class BilateralSource:
+    """The stacked composite (`code_index.declarations.COMPOSITES`) the bilateral scope binds
+    on a part counting the published total `code` on `code_system` of `dataset`
+    (`PUBLISHED_PROVIDER_SCOPES`), which counts a donor's bilateral flows to countries and
+    its core contributions to the multilateral agencies it lists as recipients. A component
+    of `dataset` that binds its destinations to the bilateral side
+    (`ComponentRecipe.destinations`) reads the population this row declares
+    (`RolePopulation`).
+
+    `rebound` is the dataset's published total of the bilateral side, which a component
+    binds when the identity leaves its destination out, and `spanning` the total of both
+    sides, which no such component reads; `rebound_words` and `spanning_words` name the two
+    for a reader. `rule` names the default a fresh part counting the total settles on, and
+    `note` says what the composite counts. `label` names the bilateral option in place of
+    `OptionLabels.provider_bilateral`, and `total_label` the option holding the total itself
+    in place of `OptionLabels.provider_contributions`, since the total counts every
+    destination the table lists."""
+
+    dataset: str
+    code_system: str
+    code: str
+    composite: str
+    spanning: str
+    rebound: str
+    spanning_words: str
+    rebound_words: str
+    rule: str
+    note: str
+    label: str
+    total_label: str
 
 
 @dataclass(frozen=True)
@@ -257,7 +296,9 @@ class OptionLabels:
     provider scopes, `provider_inclusive_net` the inclusive scope on a part counted on net
     flows, which adds the imputed line as published, and `provider_years` a scope's `label`
     followed by the `years` its option serves ("2011 to 2024", "2023") where they set the
-    part's window."""
+    part's window. `provider_rebound` names a scope's `label` read at the total of the
+    bilateral side in place of the total of both sides the part names
+    (`BilateralSource.rebound_words`, `BilateralSource.spanning_words`)."""
 
     sector_code: str
     sector_code_alone: str
@@ -274,6 +315,7 @@ class OptionLabels:
     provider_contributions: str
     provider_multilateral: str
     provider_inclusive_net: str
+    provider_rebound: str
 
 
 OPTION_LABELS = OptionLabels(
@@ -293,6 +335,7 @@ OPTION_LABELS = OptionLabels(
     provider_contributions="bilateral plus core contributions to multilaterals",
     provider_multilateral="core contributions to multilaterals",
     provider_inclusive_net="net bilateral plus imputed multilateral as published, by convention",
+    provider_rebound="{label}, to {rebound} in place of {spanning}",
 )
 
 CONVENTION_CURRENCY = "USD"
@@ -411,9 +454,10 @@ MEASURE_BASIS_CONVENTIONS: tuple[BasisConvention, ...] = (
 # which attributes the multilateral organisations' own spending in the sector to the donors in
 # proportion to their core contributions. Every other part counts bilateral flows. DAC1 donor
 # totals already count core contributions to multilaterals, so they take no inclusive scope.
-# DAC2a offers it from its own imputed line (`INCLUSIVE_SOURCES`), which it publishes on a
-# gross basis alone, so a DAC2a total keeps the bilateral flows it counts unless a switch or
-# the request's words ask for the imputed share.
+# DAC2a's total ODA counts core contributions too, wherever it lists a multilateral agency as a
+# recipient, so a fresh DAC2a part reads the bilateral destinations alone (`BILATERAL_SOURCES`)
+# and keeps them unless a switch or the request's words ask for the imputed share
+# (`INCLUSIVE_SOURCES`) or the total itself.
 PROVIDER_CONVENTIONS: tuple[ProviderConvention, ...] = (
     ProviderConvention(
         rule="named_donor_total",
@@ -470,8 +514,11 @@ PROVIDER_SCOPE_RULES: tuple[ProviderScopeRule, ...] = (
 # timing and in amount. DAC1's bilateral ODA counts the bilateral flows alone, and its
 # multilateral ODA the core contributions alone. A part reading one row is offered every other
 # row of its dataset and code system as an option that binds that row's code. DAC2a's total
-# ODA to a recipient counts the donor's bilateral flows, and offers the inclusive scope from
-# DAC2a's own imputed line (`INCLUSIVE_SOURCES`).
+# ODA counts the donor's bilateral flows to countries and regions and its core contributions to
+# the multilateral agencies it lists as recipients, so over every destination it is DAC1's
+# total ODA by recipient. Its bilateral scope binds the composite that reads the bilateral
+# destinations alone (`BILATERAL_SOURCES`), and its inclusive scope DAC2a's own imputed line
+# (`INCLUSIVE_SOURCES`).
 PUBLISHED_PROVIDER_SCOPES: tuple[PublishedProviderScope, ...] = (
     PublishedProviderScope(
         dataset=DAC1,
@@ -501,9 +548,12 @@ PUBLISHED_PROVIDER_SCOPES: tuple[PublishedProviderScope, ...] = (
         dataset=DAC2A,
         code_system="dac2aAidType",
         code=DAC2A_TOTAL_ODA,
-        scope="bilateral",
-        rule="bilateral_recipient_total",
-        note="DAC2a ODA to a recipient counts the donor's bilateral flows",
+        scope="contributions",
+        rule="contribution_recipient_total",
+        note=(
+            "DAC2a total ODA counts bilateral flows to countries and regions plus core "
+            "contributions to the multilateral agencies it lists as recipients"
+        ),
     ),
 )
 
@@ -533,6 +583,182 @@ INCLUSIVE_SOURCES: tuple[InclusiveSource, ...] = (
 # DAC's total of the multilaterals among them, counts multilateral outflows, so the part has
 # no provider record.
 DONOR_ORGANISATIONS: tuple[str, ...] = (_EU_INSTITUTIONS,)
+
+# The DAC2a recipients that are no named organisation but stand for the multilaterals as a
+# group. The DAC lists them as unspecified parties, so the graph types them as residuals and
+# `party_facts` reads none of them as a multilateral. Each holds a donor's core contributions.
+DAC_MULTILATERAL_RECIPIENTS: tuple[str, ...] = (
+    # Core contributions to multilateral agencies the DAC does not itemise.
+    "DACOtherMultilateralRecipient",
+    # Core contributions to United Nations agencies other than those the DAC itemises.
+    "DACOtherUnitedNations",
+    # Core contributions to regional development banks other than those the DAC itemises.
+    "DACOtherRegionalDevelopmentBanks",
+    # Core contributions to World Bank Group members other than those the DAC itemises.
+    "DACOtherWorldBank",
+    # Core contributions to EU institutions other than those the DAC itemises.
+    "DACOtherEUInstitutions",
+)
+
+# The organisations the DAC counts as bilateral recipients: DACDevelopingCountries holds them
+# in 206, though the graph types them `Organization` and `party_facts` reads them as
+# multilaterals on the origin axis. Read on the destination axis only, ahead of `party_facts`.
+DAC_BILATERAL_ORGANISATIONS: tuple[str, ...] = (
+    # A regional union of partner states the DAC lists among developing-country recipients.
+    "EastAfricanCommunity",
+    # A river-basin fund between India and Pakistan that the DAC lists as a country recipient.
+    "IndusBasinDevelopmentFund",
+)
+
+# The DAC2a recipient total of every multilateral recipient: its named organisations and the
+# unspecified ones in `DAC_MULTILATERAL_RECIPIENTS`.
+DAC_ALL_MULTILATERAL_RECIPIENTS = "DACAllMultilateralRecipients"
+
+# The DAC2a total of all recipients, "Developing Countries, Total" plus the multilateral
+# agencies, so it spans both sides.
+DAC_ALL_RECIPIENTS = "DACAllRecipients"
+
+# The DAC2a total of every developing-country recipient: the countries, regions and the DAC's
+# unallocated lines, the bilateral side of `DAC_ALL_RECIPIENTS`.
+DAC_DEVELOPING_COUNTRIES = "DACDevelopingCountries"
+
+# The DAC2a recipient totals on the bilateral side that `REGION_NAMES` does not name: groups of
+# developing countries by income, by the DAC's or the UN's lists, or by the World Bank's income
+# group. Each counts countries alone, and none counts a multilateral agency.
+DAC_BILATERAL_GROUP_TOTALS: tuple[str, ...] = (
+    "DACACPCountries",
+    "DACCentralAndEasternEuropeanCountries",
+    "DACClubDuSahelCountries",
+    "DACFragileStates",
+    "DACLowerMiddleIncomeCountries",
+    "DACMoreAdvancedDevelopingCountriesAndTerritories",
+    "DACNewIndependentStates",
+    "DACNorthernAmerica",
+    "DACOtherLowIncomeCountries",
+    "DACSmallIslandStates",
+    "DACUnallocatedByIncome",
+    "DACUpperMiddleIncomeCountries",
+    "HeavilyIndebtedPoorCountries",
+    "UNLandlockedDevelopingCountries",
+    "UNLeastDevelopedCountries",
+    "WorldBankHighIncome",
+    "WorldBankLowIncome",
+    "WorldBankLowerMiddleIncome",
+    "WorldBankNotClassifiedByIncome",
+    "WorldBankUpperMiddleIncome",
+)
+
+# The DAC2a residual of bilateral flows the donor allocates to no country or region, which
+# `DAC_DEVELOPING_COUNTRIES` counts beside the regional residuals `TOTAL_GROUPS` lists.
+DAC_BILATERAL_UNALLOCATED = "DACBilateralUnallocated"
+
+# The DAC2a recipient totals on the bilateral side: `DAC_DEVELOPING_COUNTRIES`, the DAC regions
+# (`REGION_NAMES`) and `DAC_BILATERAL_GROUP_TOTALS`.
+_BILATERAL_TOTALS = frozenset(
+    (DAC_DEVELOPING_COUNTRIES, *(dcid for dcid, _ in REGION_NAMES), *DAC_BILATERAL_GROUP_TOTALS)
+)
+
+# The DAC2a residuals on the bilateral side: the unallocated lines each regional total counts
+# beside its members (`TOTAL_GROUPS`) and `DAC_BILATERAL_UNALLOCATED`.
+_BILATERAL_RESIDUALS = frozenset(
+    (
+        DAC_BILATERAL_UNALLOCATED,
+        *(residual for group in TOTAL_GROUPS.values() for residual in group.residuals),
+    )
+)
+
+# The composite each published total counting core contributions over every destination binds
+# for its bilateral scope, and the population every composite component binding the dataset's
+# destinations reads (`RolePopulation`), the bilateral and the inclusive composite's alike.
+# DAC2a's total ODA lists the multilateral agencies among its recipients, so an open
+# destination binds the bilateral-side parties and residuals alone, and a named agency, the
+# DAC's total of them or its total of all recipients, which holds both sides, is refused
+# (`code_index.composites.component_identities`). An identity naming no destination binds the
+# DAC's total of developing countries, the bilateral side of all recipients.
+BILATERAL_SOURCES: tuple[BilateralSource, ...] = (
+    BilateralSource(
+        dataset=DAC2A,
+        code_system="dac2aAidType",
+        code=DAC2A_TOTAL_ODA,
+        composite=DAC2A_BILATERAL,
+        spanning=DAC_ALL_RECIPIENTS,
+        rebound=DAC_DEVELOPING_COUNTRIES,
+        spanning_words="all recipients",
+        rebound_words="developing countries",
+        rule="bilateral_destinations",
+        note="DAC2a total ODA to countries, regions and the DAC's unallocated lines alone",
+        label=(
+            "bilateral flows to countries and regions, without core contributions to "
+            "multilateral agencies"
+        ),
+        total_label="total ODA, including core contributions to multilateral agencies",
+    ),
+)
+
+DestinationSide = Literal["bilateral", "multilateral", "spanning"]
+"""Which side of a donor's aid a DAC2a destination is on: a country or a group of countries
+(`bilateral`), a multilateral agency (`multilateral`), or `DACAllRecipients`, the total of both
+(`spanning`)."""
+
+
+def destination_side(row: PartyRow, *, datasets: Collection[str]) -> DestinationSide | None:
+    """The side of `row` as a recipient in `datasets`, or `None` when it is unclassified: no
+    dataset publishes it as a recipient, they give it different kinds, or the classifier
+    cannot place it.
+
+    A total is `spanning` when `DAC_ALL_RECIPIENTS`, `multilateral` when
+    `DAC_ALL_MULTILATERAL_RECIPIENTS`, and `bilateral` when declared on that side
+    (`DAC_DEVELOPING_COUNTRIES`, `REGION_NAMES`, `DAC_BILATERAL_GROUP_TOTALS`). A residual is
+    `multilateral` when in `DAC_MULTILATERAL_RECIPIENTS` and `bilateral` when declared on that
+    side (`TOTAL_GROUPS` residuals, `DAC_BILATERAL_UNALLOCATED`). A party is `bilateral` when
+    in `DAC_BILATERAL_ORGANISATIONS`, `multilateral` where `party_facts` says so, `bilateral`
+    when a country or an organisation the entity resolver knows, and unclassified otherwise.
+    """
+    kind = row.kind_over("destination", datasets)
+    if kind is None:
+        return None
+    if kind == "total":
+        if row.dcid == DAC_ALL_RECIPIENTS:
+            return "spanning"
+        if row.dcid == DAC_ALL_MULTILATERAL_RECIPIENTS:
+            return "multilateral"
+        return "bilateral" if row.dcid in _BILATERAL_TOTALS else None
+    if kind == "residual":
+        if row.dcid in DAC_MULTILATERAL_RECIPIENTS:
+            return "multilateral"
+        return "bilateral" if row.dcid in _BILATERAL_RESIDUALS else None
+    if row.dcid in DAC_BILATERAL_ORGANISATIONS:
+        return "bilateral"
+    if party_facts(row, axis="destination", datasets=datasets).multilateral:
+        return "multilateral"
+    if row.dcid.startswith(COUNTRY_PREFIX) or row.dcid in organisation_dcids():
+        return "bilateral"
+    return None
+
+
+@dataclass(frozen=True)
+class RolePopulation:
+    """The destinations a composite component reads where it binds its destinations to one
+    side (`ComponentRecipe.destinations`), derived from one code index
+    (`code_index.composites.destination_population`) and declared by `source`.
+
+    `members` is what an open destination reads: the sorted dcids of the `side` parties and
+    residuals the dataset publishes as destinations, its totals left out as an open read
+    leaves them out. `named` is what a named destination may be: every destination the
+    dataset publishes on `side`, its totals included. `total` is the dataset's published
+    total of `side` (`BilateralSource.rebound`), which an identity naming no destination
+    reads."""
+
+    side: ComponentDestinations
+    members: tuple[str, ...]
+    named: frozenset[str]
+    source: BilateralSource
+
+    @property
+    def total(self) -> str:
+        """The dataset's published total of `side`."""
+        return self.source.rebound
+
 
 ODA_FLOW_SYSTEM = "crsTypeOfFlow"
 """The code system an ODA flow binding binds."""

@@ -214,9 +214,13 @@ def family_label(
     with no provenance pin (`code_index.composites.without_composite`), and is named by its
     declaration (`CompositeDeclaration.label`): after the measure label for a stacked
     composite, whose components share the measure, and in its place for a spliced one, whose
-    measure changes between its periods (the OECD headline). Returns `None` when neither part
-    has a label. The presentation door labels a collapsed family's `dcid:<spec_id>` ref with
-    this, and the datasets door's `stat_vars_summed` warning carries the same string as `stat_var_label`.
+    measure changes between its periods (the OECD headline). A stacked composite of one
+    component reads a cut of one table's rows, so its measure label names the cut by the
+    declaration's `measure_noun`, as a sentence does ("... (bilateral flows)" for DAC2a's
+    bilateral destinations), and its declaration label, the table's own, adds nothing
+    unless no measure label leads. Returns `None` when neither part has a label. The
+    presentation door labels a collapsed family's `dcid:<spec_id>` ref with this, and the
+    datasets door's `stat_vars_summed` warning carries the same string as `stat_var_label`.
     """
     shape = cast("Mapping[str, object]", identity.get("shape", {}))
     slots = cast("Sequence[Mapping[str, object]]", identity.get("slots", ()))
@@ -240,7 +244,13 @@ def family_label(
     ref = composite_ref(identity)
     composite = index.composite(ref) if ref is not None else None
     if composite is not None:
-        parts = [*(parts if composite.kind == "stacked" else []), composite.label]
+        if composite.kind == "spliced":
+            parts = [composite.label]
+        elif len(composite.components) > 1:
+            parts = [*parts, composite.label]
+        else:
+            lead = parts or [composite.label]
+            parts = [f"{label} {composite.measure_noun}" for label in lead]
 
     pinned = elected_pins(index, identity_family_query(index, without_composite(identity)))
     named = frozenset(match.named_values) if match is not None else frozenset()

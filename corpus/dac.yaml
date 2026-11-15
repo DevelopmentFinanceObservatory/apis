@@ -156,6 +156,7 @@
   expect:
     definite:
       measure: {family: [dac2a.oda_net_received, dac2a.oda_gross_received]}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KOR, role: destination}]
       window: {kind: range, start: 1980, end: 1980}
 
@@ -317,6 +318,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/ETH, role: destination}]
       window: {kind: range, start: 1965, end: 1965}
 
@@ -338,6 +340,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
       window: {kind: range, start: 2022, end: 2022}
 
@@ -469,6 +472,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: GroupOfSeven, role: origin}, {dcid: DACAfrica, role: destination}]
 
 - id: dq-dac-036
@@ -487,6 +491,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_gross_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: country/FRA, role: origin}, {dcid: DACAsia, role: destination}]
 
 - id: dq-dac-038
@@ -496,6 +501,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_gross_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: DACFarEastAsia, role: destination}]
 
 - id: dq-dac-039
@@ -516,6 +522,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_gross_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: DACAsia, role: destination}]
       window: {kind: range, start: 1990, end: 1999}
 

@@ -20,8 +20,9 @@ depends on which half of `compute_options` will run: for `for.role ==
 (so a Kenya-anchored ask and a Ghana-anchored ask -- both Country -- share
 one entry) or the single bound anchor's own dcid for a `children` ask (which
 has no anchor-invariant answer, unlike peers); for a directional role
-(`origin`/`destination`), the opposite axis's own bound-entity set
-(`options.surface._directional_opposite_bound`'s own return value) -- reused
+(`origin`/`destination`), the coverage roles its read lists under, the
+opposite axis's own bound-entity set and any population a composite reads
+(`options.surface._directional_bound`'s own return value) -- reused
 rather than re-derived, since it is already the exact fact
 `_directional_options_set`'s own coverage lookup filters by.
 
@@ -82,7 +83,7 @@ from search.engine.options.resolve import ResolvedOptionsTarget
 from search.engine.options.surface import (
     _DEFAULT_PEER_TYPE,
     ComputedOptions,
-    _directional_opposite_bound,
+    _directional_bound,
     _entities_with_role,
 )
 from search.models import OptionsRequest
@@ -118,9 +119,10 @@ def _observation_about_key_component(req: OptionsRequest, target: ResolvedOption
 def _directional_key_component(
     target: ResolvedOptionsTarget, *, axis: RoleAxis
 ) -> dict[str, list[str]] | None:
-    """The `origin`/`destination` slice of the cache key: the opposite
-    axis's own bound-entity set, exactly as `options.surface.
-    _directional_opposite_bound` computes it for `_directional_options_set`'s
+    """The `origin`/`destination` slice of the cache key: the coverage roles
+    the read lists under, the opposite axis's own bound-entity set and any
+    population a composite reads, exactly as `options.surface.
+    _directional_bound` computes it for `_directional_options_set`'s
     own `series_coverage.CoverageIndex.open_axis` lookup -- reused rather
     than re-derived so this can never drift from what the surface half
     actually filters by. Keyed by coverage's own "donor"/"recipient" label
@@ -131,11 +133,10 @@ def _directional_key_component(
     reads. Every dcid set is sorted here: two requests naming the same
     opposite-axis dcids in a different order denote the identical filter
     and must share one key, mirroring the identity core's own
-    order-invariant entity buckets. None (no component) when the opposite
-    axis carries no bound entity, matching `_directional_opposite_bound`'s
-    own empty-mapping case.
+    order-invariant entity buckets. None (no component) when the read lists
+    under no role, matching `_directional_bound`'s own empty-mapping case.
     """
-    bound = _directional_opposite_bound(target, axis=axis)
+    bound = _directional_bound(target, axis=axis)
     if not bound:
         return None
     return {coverage_role: sorted(dcids) for coverage_role, dcids in bound.items()}

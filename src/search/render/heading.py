@@ -260,6 +260,16 @@ def _normalize_entities(entities: list[Entity] | list[ResolvedEntity]) -> list[_
     return result
 
 
+def _asks_latest(spec: Spec) -> bool:
+    """Whether `spec` answers a request for the latest year: its identity requests it, or,
+    for a composite, whose identity holds the latest year it elected
+    (`provider.elect_latest_window`), the request did (`ResolutionTrace.requested_window`)."""
+    return (
+        spec.definition.identity.requested_window.kind == "latest"
+        or spec.resolved.trace.requested_window == "latest"
+    )
+
+
 def heading_for(
     spec: Spec,
     *,
@@ -275,7 +285,8 @@ def heading_for(
     sibling-distinguishing constraints visible. The slots the identity's five-tuple pins
     (`identity_pinned_properties`) state no how clause. The byline states the
     measurement method the identity binds (`_bound_method_text`), and a unit converted to
-    constant prices whose prices deflated it (`UnitConversion.deflation_basis`).
+    constant prices whose prices deflated it (`UnitConversion.deflation_basis`). It states
+    the latest-year label where the request asked for the latest year (`_asks_latest`).
     """
     resolved = spec.resolved
     plan = heading_from_parts(
@@ -283,7 +294,7 @@ def heading_for(
         resolved.entities,
         resolved.shape,
         resolved.coverage.window,
-        latest=spec.definition.identity.requested_window.kind == "latest",
+        latest=_asks_latest(spec),
         facts=resolved.sentence_facts,
         served=resolved.stat_vars.data_date_range,
         resolved_sources=resolved.trace.resolved_sources,

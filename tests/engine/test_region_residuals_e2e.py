@@ -398,7 +398,7 @@ def test_the_scope_builds_off_the_event_loop(monkeypatch: pytest.MonkeyPatch) ->
 
         return wrapper
 
-    for module in (scope_decision, dataset_resubmit):
+    for module in (scope_decision.scope_build, dataset_resubmit):
         monkeypatch.setattr(module, "build_part_scope", recording(module.build_part_scope))
 
     first = _ask({}).spec

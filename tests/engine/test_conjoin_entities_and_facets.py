@@ -78,6 +78,7 @@ def _spec_with_facet(
     """Like _spec, but with a door-posted facet binding (definition.identity.facets) and
     open roles, the concrete cases a same-shape merge must compare and carry forward."""
     return build_spec(
+        composite=None,
         open_roles=open_roles,
         measure_elected_properties=frozenset(),
         shape=shape,
@@ -105,6 +106,7 @@ def _spec_with_resolved_facets(
     State `unit_lexicon_version` after `build_spec`.
     """
     spec = build_spec(
+        composite=None,
         open_roles=(),
         measure_elected_properties=frozenset(),
         shape=shape,
@@ -175,6 +177,7 @@ def _where_bound_spec(shape: Shape, recipient_dcid: str, sv_dcid: str):
         binding=BindingValue(value=SlotValue(ref=_gr(recipient_dcid), value_kind="entity")),
     )
     return build_spec(
+        composite=None,
         open_roles=(),
         measure_elected_properties=frozenset(),
         shape=shape,
@@ -202,6 +205,7 @@ def _where_bound_spec_with_provider(
         binding=BindingValue(value=SlotValue(ref=_gr(recipient_dcid), value_kind="entity")),
     )
     return build_spec(
+        composite=None,
         open_roles=(),
         measure_elected_properties=frozenset(),
         shape=shape,
@@ -508,6 +512,7 @@ def test_collapse_same_shape_reversed_provider_recipient_stays_distinct():
 
     def _place_constraint_off_spec(constraint_val, sv_dcid, identity_entities):
         return build_spec(
+            composite=None,
             open_roles=(),
             measure_elected_properties=frozenset(),
             shape=_PERSON_SHAPE,
@@ -571,6 +576,7 @@ def test_collapse_same_shape_divergent_entities_on_non_where_axis_stays_residual
 
     def _place_constraint_off_spec(constraint_val, sv_dcid, identity_entities):
         return build_spec(
+            composite=None,
             open_roles=(),
             measure_elected_properties=frozenset(),
             shape=_PERSON_SHAPE,
@@ -605,6 +611,7 @@ def test_collapse_same_shape_window_survives_merge():
     """The merged spec keeps the requested window in its identity and trace."""
     window = TimeWindow(start_year=2015, end_year=2020)
     spec_a = build_spec(
+        composite=None,
         open_roles=(),
         measure_elected_properties=frozenset(),
         shape=_PERSON_SHAPE,
@@ -622,6 +629,7 @@ def test_collapse_same_shape_window_survives_merge():
         requested_window=window,
     )
     spec_b = build_spec(
+        composite=None,
         open_roles=(),
         measure_elected_properties=frozenset(),
         shape=_PERSON_SHAPE,
@@ -661,6 +669,7 @@ def test_collapse_same_shape_refuses_merge_on_window_disagreement():
     window_a = TimeWindow(start_year=2015, end_year=2020)
     window_b = TimeWindow(start_year=2018, end_year=2020)
     spec_a = build_spec(
+        composite=None,
         open_roles=(),
         measure_elected_properties=frozenset(),
         shape=_PERSON_SHAPE,
@@ -678,6 +687,7 @@ def test_collapse_same_shape_refuses_merge_on_window_disagreement():
         requested_window=window_a,
     )
     spec_b = build_spec(
+        composite=None,
         open_roles=(),
         measure_elected_properties=frozenset(),
         shape=_PERSON_SHAPE,
@@ -714,6 +724,7 @@ def test_combine_regions_keeps_window_refusal_parts_and_effective_regions_distin
     window_a = TimeWindow(start_year=2015, end_year=2020)
     window_b = TimeWindow(start_year=2018, end_year=2020)
     spec_a = build_spec(
+        composite=None,
         open_roles=(),
         measure_elected_properties=frozenset(),
         shape=_PERSON_SHAPE,
@@ -731,6 +742,7 @@ def test_combine_regions_keeps_window_refusal_parts_and_effective_regions_distin
         requested_window=window_a,
     )
     spec_b = build_spec(
+        composite=None,
         open_roles=(),
         measure_elected_properties=frozenset(),
         shape=_PERSON_SHAPE,

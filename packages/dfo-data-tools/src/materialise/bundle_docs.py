@@ -25,6 +25,7 @@ if TYPE_CHECKING:
         CodeEntry,
         ColumnDoc,
         ComponentExport,
+        CompositeNote,
         Licence,
         MemberProvenance,
         ReproducingCall,
@@ -132,6 +133,15 @@ def _query_url(base: str, options: Mapping[str, object]) -> str:
     return f"{base}?{urlencode(encoded, safe=',')}"
 
 
+def composite_line(composite: CompositeNote) -> str:
+    """A composite named by its label, then its summary and its provenance code, on one
+    line."""
+    return (
+        f"{_inline(composite.label)}: {_inline(composite.summary)} "
+        f"Its `provenance` code is {_code(composite.ref)}."
+    )
+
+
 def site_path(context: BundleContext, path: str) -> str:
     """`path` on the bundle's public site, an absolute URL."""
     return context.site_url.rstrip("/") + path
@@ -149,6 +159,7 @@ def build_readme(
     codes: Sequence[CodeEntry],
     codes_path: str | None,
     definition_id: str | None,
+    composites: Sequence[CompositeNote] = (),
     reproducing_call: ReproducingCall | None,
     export: ComponentExport | None,
 ) -> str:
@@ -157,12 +168,14 @@ def build_readme(
     is.
 
     `sources` are the distinct sources across `members`, and `codes_path` is the codes table's
-    bundle path, `None` when the bundle has none. `definition_id` is the spec id the Version
-    section names. A card export (`export` set)
+    bundle path, `None` when the bundle has none. `composites` are the distinct composites
+    the members' rows carry, each named with what it adds or reads (`_composites_section`).
+    `definition_id` is the spec id the Version section names. A card export (`export` set)
     names the card revision and its frame's identity in place of a Version section.
     """
     sections = [
         _readme_heading(context, export),
+        _composites_section(composites),
         _files_section(members, codes=codes, codes_path=codes_path),
         _variables_section(codes, codes_path=codes_path, files=len(members)),
         _columns_section(members, codes_path=codes_path),
@@ -194,6 +207,21 @@ def _readme_heading(context: BundleContext, export: ComponentExport | None) -> s
         ]
     if context.summary:
         lines += ["", _inline(context.summary)]
+    return "\n".join(lines)
+
+
+def _composites_section(composites: Sequence[CompositeNote]) -> str:
+    """The composites the data's `provenance` column names, each with what it adds or reads.
+    Empty for data that names none."""
+    if not composites:
+        return ""
+    intro = (
+        "The DFO composes these figures from the tables in SOURCES.md:"
+        if len(composites) > 1
+        else "The DFO composes this figure from the tables in SOURCES.md:"
+    )
+    lines = ["## How the figures are composed", "", intro, ""]
+    lines += [f"- {composite_line(composite)}" for composite in composites]
     return "\n".join(lines)
 
 
@@ -483,11 +511,18 @@ def _version_section(context: BundleContext, *, definition_id: str | None) -> st
 # SOURCES.md
 
 
-def build_sources(*, sources: Sequence[SourceProvenance], context: BundleContext) -> str:
-    """The bundle's SOURCES.md: one section per source with its publisher, description, links,
-    licence, attribution, coverage, the steps the DFO applied, the DFO pipeline's releases, and
-    links to the full documentation. Absent fields are left out. A source with no documentation
-    snapshot gets its name, publisher, licence and source page only."""
+def build_sources(
+    *,
+    sources: Sequence[SourceProvenance],
+    context: BundleContext,
+    composites: Sequence[CompositeNote] = (),
+) -> str:
+    """The bundle's SOURCES.md: one section per composite the data names, with its
+    provenance code and what it adds or reads from the sources below, then one section per
+    source with its publisher, description, links, licence, attribution, coverage, the steps
+    the DFO applied, the DFO pipeline's releases, and links to the full documentation. Absent
+    fields are left out. A source with no documentation snapshot gets its name, publisher,
+    licence and source page only."""
     intro = (
         "# Sources\n\n"
         "Who publishes the data in this download, the terms for its reuse, and each step the "
@@ -495,8 +530,20 @@ def build_sources(*, sources: Sequence[SourceProvenance], context: BundleContext
     )
     if not sources:
         return f"{intro}\n\nThe data names no source.\n"
-    blocks = [intro, *(_source_block(source, context=context) for source in sources)]
+    blocks = [
+        intro,
+        *(_composite_block(composite) for composite in composites),
+        *(_source_block(source, context=context) for source in sources),
+    ]
     return "\n\n".join(blocks) + "\n"
+
+
+def _composite_block(composite: CompositeNote) -> str:
+    return (
+        f"## {_inline(composite.label)}\n\n"
+        f"{_inline(composite.summary)} The DFO composes it from the sources below, and the "
+        f"`provenance` column names it {_code(composite.ref)}."
+    )
 
 
 def _source_block(source: SourceProvenance, *, context: BundleContext) -> str:

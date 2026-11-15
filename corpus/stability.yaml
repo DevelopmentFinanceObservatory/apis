@@ -140,6 +140,7 @@
   expect:
     definite:
       measure: { family: dac2a.oda_net_received }
+      provenance: { origin: dfo, dataset: provenance/ONEDAC2aBilateral }
       entities:
         [
           { dcid: country/KOR, role: origin },

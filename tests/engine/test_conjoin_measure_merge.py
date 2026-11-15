@@ -95,6 +95,7 @@ def _where_bound_spec(
         role=EntityRoleDirectional(role=_gr(_RECIPIENT_PROP), axis="destination"),
     )
     return build_spec(
+        composite=None,
         open_roles=(),
         measure_elected_properties=frozenset(),
         shape=shape,

@@ -181,11 +181,13 @@ def _minimal_build_spec_kwargs() -> dict:
 def test_scope_is_never_folded_into_identity_or_spec_id():
     """Scope belongs to resolved data and does not change `spec_id` or identity."""
     kwargs = _minimal_build_spec_kwargs()
-    bare = build_spec(measure_elected_properties=frozenset(), **kwargs)
+    bare = build_spec(composite=None, measure_elected_properties=frozenset(), **kwargs)
     scope = build_scope(
         "observationAbout", ["country/A1", "country/A2"], {"country/A1": "Testland One"}, {}
     )
-    scoped = build_spec(measure_elected_properties=frozenset(), **kwargs, scope=scope)
+    scoped = build_spec(
+        composite=None, measure_elected_properties=frozenset(), **kwargs, scope=scope
+    )
 
     assert scoped.spec_id == bare.spec_id
     assert scoped.definition.identity == bare.definition.identity

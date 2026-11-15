@@ -16,7 +16,7 @@ import pytest
 
 import search.engine.retrieval.bound_values as bound_values_module
 from code_index import CodeIndex
-from code_index.declarations import COMPOSITES
+from code_index.declarations import COMPOSITES, DAC2A_BILATERAL
 from code_index.shared import get_index
 from datasets_api.adapter import resolve_definition_members
 from datasets_api.config import DatasetsBuildSettings
@@ -227,6 +227,13 @@ def _composite_case(identity: dict, populated: download._Populated):
 _COMPOSITE_CASES = [
     _composite_case(_identity(), download._stacked_crs()),
     _composite_case(_dac2a_oda_identity("Net"), download._stacked_dac2a()),
+    _composite_case(
+        {
+            **_dac2a_oda_identity("Net"),
+            "facets": {"provenance": {"state": "value", "ref": DAC2A_BILATERAL}},
+        },
+        download._stacked_dac2a(),
+    ),
     _composite_case(download._headline_identity(), download._spliced_headline()),
 ]
 
@@ -269,7 +276,6 @@ def test_search_sums_components_equals_the_mints_time_sum_outcome(
     served = _stat_vars(
         served_components(identity, facts=facts),
         ResolvedStatVars(member_count=0),
-        identity,
         declaration,
         facts=facts,
     )

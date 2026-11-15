@@ -73,6 +73,7 @@ def _bound_destination_open_origin_result(monkeypatch) -> Materialised:
         sdmx=FakeSdmxClient(observations={}),  # never read on this branch
         discover_scope=True,
         coverage_snapshot=FakeCoverageService(_auto_coverage_index_1).snapshot(),
+        within=None,
     )
     assert isinstance(result, Materialised)
     return result
@@ -134,6 +135,7 @@ def test_bound_destination_open_origin_makes_no_extra_sdmx_call(monkeypatch):
         sdmx=sdmx,
         discover_scope=True,
         coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
+        within=None,
     )
 
     assert isinstance(result, Materialised)
@@ -173,6 +175,7 @@ def test_both_axes_open_derives_the_same_fact_from_role_index_by_sv(monkeypatch)
         sdmx=sdmx,
         discover_scope=True,
         coverage_snapshot=FakeCoverageService(_auto_coverage_index_1).snapshot(),
+        within=None,
     )
 
     assert isinstance(result, Materialised)

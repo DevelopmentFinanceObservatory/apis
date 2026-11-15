@@ -120,9 +120,10 @@ class FamilyValues:
 class ScopeFacts:
     """The engine state the axis rules read: the release's code index, the request's
     coverage snapshot and the part's own facts (`PartFacts`), all in memory. Passed
-    explicitly, so a rule reads no global. One `ScopeFacts` serves one build of one part's
-    scope, and memoises the family scans its rules share (`family_values`) and the years a
-    composite's components hold (`remembered`)."""
+    explicitly, so a rule reads no global. One `ScopeFacts` serves the scope builds of one
+    part over these facts, the elections of its reads included (`reading.ElectionFacts`),
+    and memoises the family scans its rules share (`family_values`) and the years a
+    composite's components hold (`remembered`), each keyed by what it reads."""
 
     index: CodeIndex
     coverage: CoverageSnapshot

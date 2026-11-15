@@ -226,6 +226,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: country/NOR, role: origin}, {dcid: country/KEN, role: destination}]
 
 - id: dq-mls-023
@@ -268,6 +269,7 @@
     parts:
       - definite:
           measure: {family: dac2a.oda_net_received}
+          provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
           entities: [{dcid: country/NOR, role: origin}, {dcid: country/KEN, role: destination}]
           window: {kind: range, start: 2022, end: 2022}
       - definite:
@@ -283,6 +285,7 @@
     parts:
       - definite:
           measure: {family: dac2a.oda_net_received}
+          provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
           entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/ETH, role: destination}]
       - definite:
           measure: {family: dac2a.imputed_multilateral}

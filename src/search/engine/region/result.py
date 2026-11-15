@@ -67,6 +67,7 @@ if TYPE_CHECKING:
     from search.engine.region.observations.dispatch import PreviewRead
     from search.engine.region.option_coverage import RoleServedFilter
     from search.engine.region.promote_relaunch import PromoteRelaunch
+    from search.engine.region.scope_decision import ScopeDecision
     from search.engine.retrieval.coverage import CoverageForm
     from search.engine.retrieval.read_plan import ReadPlan
 
@@ -300,6 +301,12 @@ class RegionResult:
     # whose request posted scope entries or whose binders settled a scope axis. Its definite
     # part attaches it to its own Spec; a part folded into a same-shape merge does not.
     scope_choices: PartScope | None = None
+    # The scope a fresh pass's definite answer states (`phase_answer.finished_scope`), which
+    # each producer of one, `phase_answer._assemble_definite_answer` and
+    # `candidate_collapse._assemble_definite`, carries from the check it makes before the
+    # answer launches anything, and which `pipeline._with_scope_choices` states as
+    # `scope_choices`. None on every other result and door.
+    scope_decision: ScopeDecision | None = None
     # The assumptions each reading of a dataset resubmit candidates entry echoed back
     # (`ResubmitCandidate.assumptions`), keyed by the rebuilt reading's spec_id. Its
     # candidates part reads each reading with its echo (`render.assumptions.assumptions_for`);
@@ -562,45 +569,6 @@ def answered_roles(shape: ShapeDraft) -> tuple[str, ...]:
     """Return the roles a Spec built from `shape` answers under
     (`RegionResult.answered_roles`)."""
     return shape.declared_roles or ("observationAbout",)
-
-
-def with_composite_answer(
-    region: RegionResult,
-    spec: Spec,
-    *,
-    observations_relaunch: Callable[[str], asyncio.Task[_ObsProbeResult]],
-) -> RegionResult:
-    """`region` answering `spec`, the composite its definite answer was restated as
-    (`scope.composite.assemble_composite`). Its trailing slot options, place options and
-    observation preview read the one table the region resolved, under that answer's spec_id,
-    so the composite carries none of their tasks and no slot or place options. Its preview
-    is read per component by `observations_relaunch` (`composite_answer.CompositeRelaunch`),
-    which the caller launches on the event loop where the request streams observations
-    (`enrichment._launch_trailing_tasks`).
-
-    The restatement touches no task, so it runs on any thread. A task `region` held belongs
-    to the request's event loop, and the caller cancels it there
-    (`cancel_dropped_tasks`)."""
-    return dataclasses.replace(
-        region,
-        specs=(spec, *region.specs[1:]),
-        slot_options_task=None,
-        slot_options_relaunch=None,
-        place_options_task=None,
-        place_options_relaunch=None,
-        observations_task=None,
-        observations_relaunch=observations_relaunch,
-    )
-
-
-def cancel_dropped_tasks(before: RegionResult, after: RegionResult) -> None:
-    """Cancel each trailing task `before` holds that `after`, its restatement, does not
-    (`with_composite_answer`). `Task.cancel` is not thread-safe, so the caller runs this on
-    the event loop the tasks belong to."""
-    held = (after.slot_options_task, after.place_options_task, after.observations_task)
-    for task in (before.slot_options_task, before.place_options_task, before.observations_task):
-        if task is not None and all(task is not kept for kept in held):
-            task.cancel()
 
 
 def with_runnable_operations(region: RegionResult, operations: Sequence[Operation]) -> RegionResult:

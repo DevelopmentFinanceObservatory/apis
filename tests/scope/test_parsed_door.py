@@ -102,7 +102,7 @@ def _write_records(
     assemble = phase_answer._assemble_definite_answer
     seen: list[ScopeState] = []
 
-    async def recording(state):
+    async def recording(state, *args):
         selection = state.scope_selection
         seen.append(selection)
         sector = next(
@@ -134,7 +134,7 @@ def _write_records(
                     entry=entries[0] if entries else None,
                 )
             )
-        return await assemble(state)
+        return await assemble(state, *args)
 
     monkeypatch.setattr(phase_answer, "_assemble_definite_answer", recording)
     return seen

@@ -1,9 +1,9 @@
 """The observation preview of a composite answer, read per component as the Datasets mint
 reads a composite.
 
-A composite answer is resolved for its table identity and restated as the composite
-(`scope.composite.assemble_composite`), so the one table that resolve read previews nothing of
-the composite. Its preview reads each component identity
+A composite answer is minted as the composite (`spec_build.build_spec(composite=)`,
+`scope.composite.CompositeMint`) over the read its elected reading names, so the one table that
+read resolved previews nothing of the composite. Its preview reads each component identity
 (`code_index.composites.component_identities`) with `resolve_spec_resubmit`, which elects
 its members as the mint does and scopes its reads to the provenance it binds, in worker threads
 that run together. Each component read embeds its preview
@@ -15,15 +15,15 @@ its own pin alone (`ComponentReads.catalogue`), as the mint reads a component
 composed under the composite's rules (`scope.composite.compose_observations`).
 
 A streamed request reads the preview in a trailing task (`CompositeRelaunch`),
-launched once the answer is restated, so it adds nothing before the `response` event. A
+launched once the answer is minted, so it adds nothing before the `response` event. A
 buffered request reads it inline (`with_composite_observations`).
 
 A same-shape merged answer previews the read of its merged identity
-(`same_shape._with_merged_preview`). A merge of composite answers is restated as the
-composite over that identity (`as_merged_composite`) and reads its components
-(`CompositeRelaunch`). Any other merge whose read plan the merge rebuilds in memory reads that
-plan (`PlanPreview`), so its preview and its download come from one plan, and the rest take
-one resubmit of the merged identity (`IdentityPreview`). A component read and a resubmitted
+(`same_shape._with_merged_preview`). A merge of composite answers is minted as the
+composite over that identity and reads its components (`CompositeRelaunch`). Any other merge
+whose read plan the merge rebuilds in memory reads that plan (`PlanPreview`), so its preview and
+its download come from one plan, and the rest take one resubmit of the merged identity
+(`IdentityPreview`). A component read and a resubmitted
 merged read are both `_resubmit_preview`, so they elect, cap and fail alike.
 """
 
@@ -45,7 +45,10 @@ from materialise.rate_tables import RateTableCache
 from origin_catalogue import Catalogue, bound_catalogue, recording_un_blocked_places
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.sdmx import EngineSdmxClient
-from search.engine.concurrency import bounded_semaphore, create_owned_task
+from search.engine.concurrency import (
+    bounded_semaphore,
+    create_owned_task,
+)
 from search.engine.degraded_reads import (
     LOST_READ_ERRORS,
     note_degraded_read,
@@ -76,11 +79,12 @@ from search.engine.region.observations.dispatch import (
     _deflator_projected_warning,
 )
 from search.engine.region.resubmit import resolve_spec_resubmit
-from search.engine.region.result import RegionResult, with_composite_answer
+from search.engine.region.result import (
+    RegionResult,
+)
 from search.engine.region.state import EngineOptions
 from search.engine.region.un_system import un_unavailable_warning
 from search.engine.response_cache_keys import is_region_storable
-from search.engine.spec_id import identity_spec_id
 from search.models import (
     BaseIdentity,
     EntityGroup,
@@ -98,7 +102,6 @@ from search.observations import (
 )
 from search.scope.composite import (
     ServedComponent,
-    assemble_composite,
     compose_observations,
     served_components,
 )
@@ -109,6 +112,7 @@ from series_coverage.shared import CoverageSnapshot
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from code_index.scope_conventions import RolePopulation
     from search.engine.response_cache_flow import PartMemoScope
 
 logger = logging.getLogger(__name__)
@@ -177,7 +181,7 @@ def composite_served(identity: BaseIdentity, *, reads: ComponentReads) -> list[S
     """Each component of composite `identity` with the years it serves
     (`scope.composite.served_components`), read through `reads.catalogue` with facts of its
     own, so no source scope a part's own reads ran under narrows them. The answer the
-    composite is restated as (`assemble_composite`) and its preview read these same
+    composite is minted as (`scope.composite.CompositeMint`) and its preview read these same
     components."""
     facts = ScopeFacts(index=get_index(), coverage=reads.coverage)
     document = identity.model_dump(mode="json", exclude_none=True)
@@ -238,7 +242,12 @@ async def _read_component(
     was lost (`_missing`)."""
     identity = BaseIdentity.model_validate(dict(item.component.identity))
     read = await _resubmit_preview(
-        identity, groups, reads=reads, semaphore=semaphore, about=f"component {item.component.role}"
+        identity,
+        groups,
+        reads=reads,
+        semaphore=semaphore,
+        about=f"component {item.component.role}",
+        populations=item.component.populations,
     )
     if isinstance(read, _LostRead):
         return None, (_missing(item, read),)
@@ -273,11 +282,15 @@ async def _resubmit_preview(
     reads: ComponentReads,
     semaphore: asyncio.Semaphore | None,
     about: str,
+    populations: Mapping[str, RolePopulation] | None = None,
 ) -> tuple[SpecObservations, tuple[Warning, ...]] | _LostRead:
     """The preview a resubmit of `identity` posting `groups` embeds, read with
     `resolve_spec_resubmit` in a worker thread through `reads.catalogue` under `reads.options`,
     holding a permit of `semaphore` when one is given, and the answer's warnings under
     `PREVIEW_WARNING_CODES`. A part memo hit reads nothing, and a miss stores the answer.
+    Each role `populations` lists, the roles a component binds to a population
+    (`ComponentIdentity.populations`), reads as open within it
+    (`ResubmitIdentityPayload.populations`).
 
     A read lost to `degraded_reads.LOST_READ_ERRORS` is noted (`note_lost_read`, so a read cut
     by its enclosing budget is noted as cut and leaves the request unstorable), logged under `about`, and is lost
@@ -293,6 +306,7 @@ async def _resubmit_preview(
         entity_groups=None
         if groups is None
         else region_groups(groups, identity, index=get_index()),
+        populations=dict(populations or {}),
     )
     options = reads.options
     memo = reads.memo if reads.memo is not None and reads.memo.active else None
@@ -373,7 +387,7 @@ class CompositeRelaunch:
     composed preview, each keyed to it.
 
     It reads `spec`'s identity and entity groups alone, so an answer the part memo held
-    builds it as a fresh resolve does. `served` holds the components the answer was restated
+    builds it as a fresh resolve does. `served` holds the components the answer was minted
     over (`composite_served`), so the preview filters by the years the answer states. With
     `served` None the preview reads `spec`'s components itself."""
 
@@ -521,67 +535,6 @@ async def _preview_events(
         warnings.append(projected)
     event = ObservationsEvent(spec_id=spec_id, observations=observations)
     return (event.stating_degraded(lost.degraded),), tuple(warnings)
-
-
-def as_merged_composite(
-    region: RegionResult, group: Sequence[RegionResult], *, reads: ComponentReads
-) -> RegionResult:
-    """`region`, the same-shape merge of `group`, composite answers each, restated as the
-    composite over the merged identity, as a resubmit of that composite answers it
-    (`dataset_resubmit._as_composite`).
-
-    The merge rebuilds the merged Spec from its members' slots, which bind no composite, so
-    its identity is the table identity over every member's entities. The composite's
-    identity binds there the members' facets, the composite provenance among them, which the
-    merge gate holds every member to. Its served components (`composite_served`), years,
-    counts, headline and download facts (`assemble_composite`) and its preview
-    (`CompositeRelaunch`) read that identity over `reads`, the request's component reads,
-    to the later of their deadline and the latest any member's reads ran to
-    (`RegionResult.reads_deadline`). The headline names the request's window as the members'
-    do, since the gate holds every member to that window. The warnings the merge keyed to
-    the table identity's spec_id are keyed to the composite's; the caller has dropped the
-    members' own preview warnings (`same_shape._with_merged_preview`). The observation task the merge carried over from its first member is left to
-    the combiner's reconciliation (`enrichment._reconcile_after_collapse`), which cancels
-    the members' tasks and launches the composite's where the request streams
-    observations."""
-    member = group[0].spec
-    deadlines = [
-        deadline
-        for deadline in (reads.deadline, *(r.reads_deadline for r in group))
-        if deadline is not None
-    ]
-    if deadlines:
-        reads = dataclasses.replace(reads, deadline=max(deadlines))
-    merged = region.spec
-    identity = merged.definition.identity.model_copy(
-        update={"facets": member.definition.identity.facets}
-    )
-    spec_id = identity_spec_id(identity)
-    served = composite_served(identity, reads=reads)
-    table = merged.model_copy(
-        update={
-            "resolved": merged.resolved.model_copy(update={"headline": member.resolved.headline})
-        }
-    )
-    with bound_catalogue(reads.catalogue):
-        spec, _ = assemble_composite(
-            table,
-            identity,
-            spec_id,
-            served=served,
-            facts=ScopeFacts(index=get_index(), coverage=reads.coverage),
-        )
-    warnings = tuple(
-        warning.model_copy(update={"spec_id": spec_id})
-        if warning.spec_id == merged.spec_id
-        else warning
-        for warning in region.warnings
-    )
-    return with_composite_answer(
-        dataclasses.replace(region, warnings=warnings, observations_task=None),
-        spec,
-        observations_relaunch=CompositeRelaunch(spec=spec, reads=reads, served=served),
-    )
 
 
 async def with_composite_observations(

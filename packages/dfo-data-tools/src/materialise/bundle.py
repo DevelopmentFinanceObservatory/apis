@@ -28,7 +28,13 @@ from typing import cast
 from dfo_platform.codes import CodeCatalogue
 from dfo_platform.publisher import DFO_NAME
 from materialise.bundle_citation import build_citation_cff
-from materialise.bundle_docs import blank_to_none, build_readme, build_sources, site_path
+from materialise.bundle_docs import (
+    blank_to_none,
+    build_readme,
+    build_sources,
+    composite_line,
+    site_path,
+)
 from materialise.cell_safety import spreadsheet_safe
 from materialise.errors import MaterialisationUsageError
 from materialise.license_type import licence_ids, licence_title
@@ -188,6 +194,20 @@ class SourceProvenance:
 
 
 @dataclass(frozen=True)
+class CompositeNote:
+    """A composite provenance (`code_index.composites`) a member's rows carry in their
+    `provenance` column. Its component tables are the member's `sources`."""
+
+    ref: str
+    """The composite's provenance dcid, as the `provenance` column holds it."""
+    label: str
+    """The composite's bundle name (`bundle_sources.composite_bundle_label`): its declared
+    label, followed by its measure noun where a component table shares the label."""
+    summary: str
+    """One sentence on what the composite adds or reads (`bundle_sources.composite_summary`)."""
+
+
+@dataclass(frozen=True)
 class ColumnDoc:
     """The meaning of one column of a member's data file."""
 
@@ -232,6 +252,8 @@ class MemberProvenance:
     """One entry per documented column, in file order."""
     description: str | None = None
     """What one row of the member's data holds, written as the resource `description`."""
+    composites: tuple[CompositeNote, ...] = ()
+    """The composite provenances the member's rows carry, in first-seen order."""
 
 
 @dataclass(frozen=True)
@@ -269,7 +291,9 @@ class BundleContext:
     """The bundle title, from `bundle_naming.heading` or a card's title."""
     summary: str
     """One line of coverage facts, such as "1,382 rows · 309 variables · 1 donor".
-    Written as the package `description` and CFF `abstract`. Empty omits both."""
+    Written as the CFF `abstract` and as the package `description`, which goes on to name
+    each composite the members' rows carry (`bundle_docs.composite_line`). Empty omits the
+    abstract, and the description where no composite follows."""
     slug: str
     """The package `name`, from `bundle_naming.sources_slug` or `card_slug`."""
     version: str
@@ -397,9 +421,11 @@ def _assemble(
         members=members, context=context, codes_csv=codes_csv, dfo_property=dfo_property
     )
     sources = _distinct_sources(members)
+    composites = distinct_composites(members)
     readme = build_readme(
         members=members,
         sources=sources,
+        composites=composites,
         context=context,
         codes=codes,
         codes_path=CODES_PATH if codes_csv is not None else None,
@@ -415,7 +441,9 @@ def _assemble(
             sources=sources, context=context, dfo_entity=_dfo_entity(context)
         ),
         "README.md": readme.encode("utf-8"),
-        "SOURCES.md": build_sources(sources=sources, context=context).encode("utf-8"),
+        "SOURCES.md": build_sources(sources=sources, composites=composites, context=context).encode(
+            "utf-8"
+        ),
     }
     if codes_csv is not None:
         files[CODES_PATH] = codes_csv
@@ -470,6 +498,15 @@ def _reproducing_call_entry(call: ReproducingCall, context: BundleContext) -> di
     }
 
 
+def distinct_composites(members: Sequence[MemberProvenance]) -> list[CompositeNote]:
+    """Every member's composites, first-seen by `ref`."""
+    seen: dict[str, CompositeNote] = {}
+    for member in members:
+        for composite in member.composites:
+            seen.setdefault(composite.ref, composite)
+    return list(seen.values())
+
+
 def _distinct_sources(members: Sequence[MemberProvenance]) -> list[SourceProvenance]:
     """Every member's sources, first-seen by `ref`."""
     seen: dict[str | None, SourceProvenance] = {}
@@ -511,8 +548,16 @@ def _build_datapackage(
         "id": context.links.version,
         "title": context.heading,
     }
-    if context.summary:
-        descriptor["description"] = context.summary
+    description = "\n\n".join(
+        part
+        for part in (
+            context.summary,
+            *(composite_line(composite) for composite in distinct_composites(members)),
+        )
+        if part
+    )
+    if description:
+        descriptor["description"] = description
     descriptor |= {
         "version": context.version,
         "created": _rfc3339(context.prepared_at),

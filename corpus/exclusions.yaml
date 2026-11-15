@@ -10,6 +10,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
 
 - id: exclusion-oda-kenya-not-united-states
@@ -19,6 +20,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
 
 - id: exclusion-oda-africa-except-kenya
@@ -28,6 +30,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: DACAfrica, role: destination}]
 
 - id: exclusion-oda-france-except-recipients
@@ -46,6 +49,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
 
 - id: exclusion-gross-not-net
@@ -55,6 +59,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_gross_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
 
 - id: exclusion-not-net-leading
@@ -64,6 +69,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
 
 - id: exclusion-no-humanitarian-aid
@@ -73,6 +79,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
 
 - id: exclusion-everything-but-humanitarian
@@ -107,6 +114,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
 
 - id: exclusion-oda-france-standard-grants
@@ -126,6 +134,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: DACAfrica, role: destination}]
 
 - id: exclusion-bilateral-oda-bilateral-loans
@@ -135,6 +144,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
 
 - id: exclusion-education-multilateral-donors
@@ -169,6 +179,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
 
 - id: exclusion-control-only-grants
@@ -187,6 +198,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
 
 - id: exclusion-not-including-multilateral-aid
@@ -196,6 +208,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
 
 - id: exclusion-control-bilateral-not-including-multilateral
@@ -205,4 +218,5 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]

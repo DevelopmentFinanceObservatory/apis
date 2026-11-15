@@ -34,6 +34,7 @@ from search.engine.retrieval.retrieve import Materialised
 from search.engine.shape import ShapeDraft, SlotKeyDraft, is_role_bearing
 from search.engine.spec_build import NamedGroup
 from search.models import CoverageBare, EntityGroup, EntityRoleKey, TimeWindow
+from search.scope.state import ScopeState
 from series_coverage.schema import FacetMetadata, RoleNames
 from series_coverage.shared import CoverageSnapshot
 from tests.engine import _answer_invariants_world as fixture_world
@@ -167,6 +168,9 @@ def _obs_graph(*, a_has_data: bool, b_has_data: bool) -> FakeGraph:
 def test_relaxation_names_the_dropped_binding_when_a_relaxes():
     graph = _obs_graph(a_has_data=True, b_has_data=False)
     suggestions, warnings, _reads, _presence = _suggest_nearest_real(
+        scope_selection=ScopeState(),
+        operations=(),
+        request_catalogue=None,
         graph=graph,
         sdmx=FakeSdmxClient(
             observations={}, availability={}, scope_availability=graph.scope_availability
@@ -202,6 +206,9 @@ def test_relaxation_moves_to_the_other_binding_when_data_moves():
     """
     graph = _obs_graph(a_has_data=False, b_has_data=True)
     suggestions, warnings, _reads, _presence = _suggest_nearest_real(
+        scope_selection=ScopeState(),
+        operations=(),
+        request_catalogue=None,
         graph=graph,
         sdmx=FakeSdmxClient(
             observations={}, availability={}, scope_availability=graph.scope_availability
@@ -233,6 +240,9 @@ def test_untouched_binding_keeps_the_caller_supplied_provenance():
     """
     graph = _obs_graph(a_has_data=True, b_has_data=False)
     suggestions, _, _reads, _presence = _suggest_nearest_real(
+        scope_selection=ScopeState(),
+        operations=(),
+        request_catalogue=None,
         graph=graph,
         sdmx=FakeSdmxClient(
             observations={}, availability={}, scope_availability=graph.scope_availability
@@ -260,6 +270,9 @@ def test_untouched_binding_keeps_the_caller_supplied_provenance():
 def test_no_suggestions_when_neither_relaxation_finds_data():
     graph = _obs_graph(a_has_data=False, b_has_data=False)
     suggestions, warnings, _reads, _presence = _suggest_nearest_real(
+        scope_selection=ScopeState(),
+        operations=(),
+        request_catalogue=None,
         graph=graph,
         sdmx=FakeSdmxClient(
             observations={}, availability={}, scope_availability=graph.scope_availability
@@ -321,6 +334,9 @@ def _region_suggestions(held_at: str):
         admitted=frozenset({("observationAbout", "Continent"), ("observationAbout", "Country")}),
     )
     suggestions, _warnings, _reads, _presence = _suggest_nearest_real(
+        scope_selection=ScopeState(),
+        operations=(),
+        request_catalogue=None,
         graph=graph,
         sdmx=FakeSdmxClient(
             observations={}, availability={}, scope_availability=graph.scope_availability
@@ -376,6 +392,9 @@ def test_label_miss_warning_is_deduped_across_two_surviving_suggestions():
     }
     graph = FakeGraph(nodes=label_miss_nodes, obs=obs, detect={}, resolve={})
     suggestions, warnings, _reads, _presence = _suggest_nearest_real(
+        scope_selection=ScopeState(),
+        operations=(),
+        request_catalogue=None,
         graph=graph,
         sdmx=FakeSdmxClient(
             observations={}, availability={}, scope_availability=graph.scope_availability
@@ -406,6 +425,9 @@ def test_label_miss_warning_is_deduped_across_two_surviving_suggestions():
 def test_suggestion_carries_confidence():
     graph = _obs_graph(a_has_data=True, b_has_data=False)
     suggestions, _, _reads, _presence = _suggest_nearest_real(
+        scope_selection=ScopeState(),
+        operations=(),
+        request_catalogue=None,
         graph=graph,
         sdmx=FakeSdmxClient(
             observations={}, availability={}, scope_availability=graph.scope_availability
@@ -443,6 +465,9 @@ def test_option_coverage_probe_failure_is_fail_open(monkeypatch):
     )
     graph = _obs_graph(a_has_data=True, b_has_data=False)
     suggestions, warnings, _reads, _presence = _suggest_nearest_real(
+        scope_selection=ScopeState(),
+        operations=(),
+        request_catalogue=None,
         graph=graph,
         sdmx=FakeSdmxClient(
             observations={}, availability={}, scope_availability=graph.scope_availability
@@ -479,6 +504,9 @@ def test_real_materialise_transport_failure_is_fail_open():
 
     graph = _obs_graph(a_has_data=True, b_has_data=False)
     suggestions, warnings, _reads, _presence = _suggest_nearest_real(
+        scope_selection=ScopeState(),
+        operations=(),
+        request_catalogue=None,
         graph=graph,
         sdmx=FakeSdmxClient(
             observations={}, availability={}, scope_availability=graph.scope_availability
@@ -507,6 +535,9 @@ def test_option_coverage_off_by_default_is_a_no_op(monkeypatch):
     )
     graph = _obs_graph(a_has_data=True, b_has_data=False)
     suggestions, warnings, _reads, _presence = _suggest_nearest_real(
+        scope_selection=ScopeState(),
+        operations=(),
+        request_catalogue=None,
         graph=graph,
         sdmx=FakeSdmxClient(
             observations={}, availability={}, scope_availability=graph.scope_availability
@@ -598,6 +629,9 @@ def test_relaxation_suggests_what_the_relaxed_first_answer_serves(
     }
     graph = FakeGraph(nodes=nodes, obs=obs, detect={}, resolve={})
     suggestions, warnings, _reads, _presence = _suggest_nearest_real(
+        scope_selection=ScopeState(),
+        operations=(),
+        request_catalogue=None,
         graph=graph,
         sdmx=FakeSdmxClient(
             observations={}, availability={}, scope_availability=graph.scope_availability
@@ -678,6 +712,9 @@ def test_role_bearing_probe_entities_are_keyed_by_the_declared_names(monkeypatch
     )
 
     suggestions, warnings, _reads, _presence = _suggest_nearest_real(
+        scope_selection=ScopeState(),
+        operations=(),
+        request_catalogue=None,
         graph=FakeGraph(nodes=_NODES, obs={}, detect={}, resolve={}),
         sdmx=FakeSdmxClient(observations={}),
         shape_draft=_shape_role_bearing(("creditor", "debtor")),
@@ -716,6 +753,9 @@ def test_role_bearing_nearest_real_uses_every_provider_and_second_provider_data(
         role_names={_SV_RELAX_A: _CREDITOR_DEBTOR_ROLE_NAMES},
     )
     suggestions, warnings, _reads, _presence = _suggest_nearest_real(
+        scope_selection=ScopeState(),
+        operations=(),
+        request_catalogue=None,
         graph=FakeGraph(
             nodes={
                 **_NODES,
@@ -769,6 +809,9 @@ def test_role_bearing_probe_degrades_on_an_entity_this_shape_has_no_role_for(mon
     monkeypatch.setattr(grounding_module, "standard_option_coverage", _fail_if_called)
 
     suggestions, warnings, _reads, _presence = _suggest_nearest_real(
+        scope_selection=ScopeState(),
+        operations=(),
+        request_catalogue=None,
         graph=FakeGraph(nodes=_NODES, obs={}, detect={}, resolve={}),
         sdmx=FakeSdmxClient(observations={}),
         shape_draft=shape,
@@ -810,6 +853,9 @@ def test_relaxation_probe_uses_every_named_destination_not_just_the_first(monkey
         role_names={_SV_RELAX_A: _CREDITOR_DEBTOR_ROLE_NAMES},
     )
     suggestions, warnings, _reads, _presence = _suggest_nearest_real(
+        scope_selection=ScopeState(),
+        operations=(),
+        request_catalogue=None,
         graph=FakeGraph(nodes=_NODES, obs={}, detect={}, resolve={}),
         sdmx=FakeSdmxClient(observations={}),
         shape_draft=_shape_role_bearing(("creditor", "debtor")),
@@ -849,6 +895,9 @@ def test_a_role_suggestion_cites_the_sources_its_plan_serves(monkeypatch):
         },
     )
     suggestions, warnings, reads, _presence = _suggest_nearest_real(
+        scope_selection=ScopeState(),
+        operations=(),
+        request_catalogue=None,
         graph=FakeGraph(
             nodes={**_NODES, ids: {"label": "IDS"}, alt: {"label": "Alternative"}},
             obs={},
@@ -904,6 +953,9 @@ def test_a_relaxation_with_no_point_in_the_window_is_not_suggested():
     )
     since = DateRequest(window=TimeWindow(start_year=2021, end_year=None), latest=False)
     suggestions, _warnings, _reads, _presence = _suggest_nearest_real(
+        scope_selection=ScopeState(),
+        operations=(),
+        request_catalogue=None,
         graph=graph,
         sdmx=FakeSdmxClient(
             observations={}, availability={}, scope_availability=graph.scope_availability
@@ -986,6 +1038,9 @@ def _suggest_over_walked_shape(walks: RoleClassWalks | None):
         for sv in (_SV_RELAX_A, _SV_RELAX_B)
     }
     return _suggest_nearest_real(
+        scope_selection=ScopeState(),
+        operations=(),
+        request_catalogue=None,
         graph=FakeGraph(nodes=nodes, obs=obs, detect={}, resolve={}),
         sdmx=FakeSdmxClient(observations={}, availability={}),
         shape_draft=_walked_shape(),
@@ -1109,6 +1164,9 @@ def test_a_placeless_relaxation_reads_the_presence_of_the_members_its_walk_adds(
 
     with recording_degraded_reads() as lost:
         suggestions, _warnings, reads, _presence = _suggest_nearest_real(
+            scope_selection=ScopeState(),
+            operations=(),
+            request_catalogue=None,
             graph=graph,
             sdmx=FakeSdmxClient(
                 observations={}, availability={}, scope_availability=graph.scope_availability
@@ -1160,6 +1218,9 @@ def test_a_suggestion_whose_walk_settles_nothing_warns_membership_unverified(
         for sv in (_SV_RELAX_A, _SV_RELAX_B)
     }
     suggestions, warnings, _reads, _presence = _suggest_nearest_real(
+        scope_selection=ScopeState(),
+        operations=(),
+        request_catalogue=None,
         graph=FakeGraph(nodes=_walked_nodes(), obs=obs, detect={}, resolve={}),
         sdmx=FakeSdmxClient(observations={}, availability={}),
         shape_draft=_shape(),
@@ -1195,6 +1256,9 @@ def test_every_relaxation_is_walked_in_one_round_and_the_first_suggestions_are_k
     def suggest(with_data: tuple[str, ...]):
         with fixture_world._recorded() as recorder:
             found = _suggest_nearest_real(
+                scope_selection=ScopeState(),
+                operations=(),
+                request_catalogue=None,
                 graph=FakeGraph(
                     nodes=_walked_nodes(),
                     obs={
@@ -1264,6 +1328,9 @@ def test_a_place_less_suggestion_reads_its_own_members_default_scope():
 
     def suggest(place: PlaceContext, presence: DefaultPresence | None):
         return _suggest_nearest_real(
+            scope_selection=ScopeState(),
+            operations=(),
+            request_catalogue=None,
             graph=graph,
             sdmx=FakeSdmxClient(
                 observations={}, availability={}, scope_availability=graph.scope_availability
@@ -1314,6 +1381,9 @@ def test_the_relaxed_queries_read_no_scope_their_requests_presence_holds():
     scope = presence.consulted_union([])
 
     suggestions, _warnings, reads, _presence = _suggest_nearest_real(
+        scope_selection=ScopeState(),
+        operations=(),
+        request_catalogue=None,
         graph=graph,
         sdmx=FakeSdmxClient(
             observations={}, availability={}, scope_availability=graph.scope_availability
@@ -1379,6 +1449,9 @@ def test_a_failed_presence_read_for_the_members_a_walk_adds_gives_no_suggestion(
     scope = presence.consulted_union([_SV_BOTH])
 
     suggestions, warnings, reads, _presence = _suggest_nearest_real(
+        scope_selection=ScopeState(),
+        operations=(),
+        request_catalogue=None,
         graph=graph,
         sdmx=FakeSdmxClient(
             observations={}, availability={}, scope_availability=graph.scope_availability

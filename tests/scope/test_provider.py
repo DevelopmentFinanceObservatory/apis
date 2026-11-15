@@ -17,8 +17,9 @@ from collections.abc import Sequence
 
 import pytest
 
-from code_index.composites import component_identities
+from code_index.composites import CompositeNotServable, component_identities
 from code_index.scope_conventions import (
+    BILATERAL_SOURCES,
     INCLUSIVE_SOURCES,
     OPTION_LABELS,
     PROVIDER_CONVENTIONS,
@@ -26,13 +27,18 @@ from code_index.scope_conventions import (
     PUBLISHED_PROVIDER_SCOPES,
 )
 from code_index.shared import get_index
+from origin_catalogue import bound_catalogue
+from search.engine import departures
+from search.engine.region.scope_decision import decide_scope
 from search.engine.spec_id import identity_spec_id
+from search.heading.departure_fact import DepartureFact
 from search.models import (
     BaseIdentity,
     ChoiceOrigin,
     DatasetResubmitInput,
     DefinitePart,
     Entry,
+    IdentityBindingSet,
     IdentityBindingValue,
     IdentityWindowRange,
     ParsedEntity,
@@ -48,20 +54,23 @@ from search.models import (
     SlotBinding,
     Spec,
 )
+from search.render.departures import departure_text
 from search.scope import provider
+from search.scope.basis import BASIS_RULE
 from search.scope.build import build_part_scope
 from search.scope.compile import Refusal
 from search.scope.edits import ScopeTableError, apply_binding
 from search.scope.provider import (
     _not_offered,
     _settled,
+    elect_latest_window,
     inclusive_reach,
     provider_rule,
     settle_provider,
 )
 from search.scope.rules import AXIS_RULES
 from search.scope.state import AxisRecord, ScopeState
-from search.scope.tables import ScopeFacts
+from search.scope.tables import AxisTable, ScopeFacts
 from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from tests.engine._fake_coverage import (
     FakeCoverageService,
@@ -72,6 +81,7 @@ from tests.engine._fake_coverage import (
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import offline_resolve
 from tests.fixtures import FakeGraph
+from tests.origin_catalogue.fake_catalogue import listing
 from tests.scope import test_basis as basis
 from tests.scope._axes import carried, explicit, switch
 from tests.scope.test_basis import _crs_member, _graph, _PickingLLM
@@ -756,17 +766,19 @@ def _total() -> ScopeState:
 
 
 @pytest.mark.parametrize(
-    ("slots", "why"),
+    ("slots", "slot"),
     [
         pytest.param(
-            {"crsCooperationModality": "CRSCooperationModalityA01"}, "modality", id="modality"
+            {"crsCooperationModality": "CRSCooperationModalityA01"},
+            "crsCooperationModality",
+            id="modality",
         ),
         pytest.param(
-            {"crsTypeOfFinance": "CRSTypeOfFinance110"}, "finance_type", id="finance-type"
+            {"crsTypeOfFinance": "CRSTypeOfFinance110"}, "crsTypeOfFinance", id="finance-type"
         ),
     ],
 )
-def test_a_bound_modality_or_instrument_keeps_a_total_bilateral_with_the_reason(slots, why):
+def test_a_bound_modality_or_instrument_keeps_a_total_bilateral_with_the_reason(slots, slot):
     facts = _facts()
     identity = _bilateral_identity(**slots)
     table = provider_rule(identity, None, facts)
@@ -779,7 +791,7 @@ def test_a_bound_modality_or_instrument_keeps_a_total_bilateral_with_the_reason(
         "unavailable",
         "provider_not_offered",
     )
-    assert inclusive.availability.detail == {"why": why}
+    assert inclusive.availability.detail == {"why": "slot_not_served", "slot": slot}
     assert (record.active, record.provenance, record.rule) == (
         "provider:bilateral",
         "default",
@@ -2182,6 +2194,12 @@ def test_a_record_of_the_bilateral_scope_strips_the_composite_the_part_holds():
 # years both lines hold for the part.
 _DAC2A = "provenance/OECDDAC2A"
 _DAC2A_INCLUSIVE = "provenance/ONEDAC2aBilateralAndImputedMultilateral"
+_DAC2A_BILATERAL = "provenance/ONEDAC2aBilateral"
+_EC = "EuropeanCommission"
+(_DAC2A_SPLIT,) = BILATERAL_SOURCES
+_SEN = "country/SEN"
+_ALL_RECIPIENTS = "DACAllRecipients"
+_DEVELOPING = "DACDevelopingCountries"
 _DAC2A_ODA = {
     "Gross": "Amount_FinancialFlow_Gross_Disbursement_DAC2aAidType206_Nominal",
     "Net": "Amount_FinancialFlow_Net_Disbursement_DAC2aAidType206_Nominal",
@@ -2190,11 +2208,22 @@ _DAC2A_IMPUTED = "AttributedAmount_FinancialFlow_Gross_Disbursement_DAC2aAidType
 
 
 def _dac2a_identity(
-    netting: str, *, window: tuple[int, int] = (2015, 2020), donor: str = _USA
+    netting: str,
+    *,
+    window: tuple[int, int] = (2015, 2020),
+    donor: str | None = _USA,
+    destination: str | None = _KEN,
 ) -> BaseIdentity:
-    """DAC2a ODA from `donor` to Kenya on the `netting` basis over `window`."""
+    """DAC2a ODA from `donor`, every donor where it is None, to `destination`, an open
+    destination where it is None, on the `netting` basis over `window`."""
+    entities = {
+        role: [dcid]
+        for role, dcid in (("origin", donor), ("destination", destination))
+        if dcid is not None
+    }
     return BaseIdentity.model_validate(
         {
+            **({"open_roles": ["destination"]} if destination is None else {}),
             "identity_version": "spec1",
             "shape": {
                 "kind": "statvar_schema",
@@ -2214,20 +2243,30 @@ def _dac2a_identity(
                 },
                 {"property": "nettingBasis", "binding": {"state": "value", "ref": netting}},
             ],
-            "entities": {"origin": [donor], "destination": [_KEN]},
+            "entities": entities,
             "requested_window": {"kind": "range", "start_year": window[0], "end_year": window[1]},
         }
     )
 
 
-def _dac2a_facts(imputed_years: Sequence[int], *, donor: str = _USA) -> ScopeFacts:
+def _dac2a_facts(
+    imputed_years: Sequence[int], *, donor: str = _USA, destinations: Sequence[str] = (_KEN,)
+) -> ScopeFacts:
     """The fixture code index and a coverage snapshot holding DAC2a's gross and net ODA from
-    `donor` to Kenya in every year from 2005 to 2024, and its imputed multilateral ODA in
-    `imputed_years`."""
+    `donor` to each of `destinations` in every year from 2005 to 2024, and its imputed
+    multilateral ODA in `imputed_years`."""
     members = (*_DAC2A_ODA.values(), _DAC2A_IMPUTED)
     rows = [
-        *((dcid, "dac2a", donor, _KEN, list(_ALL_YEARS)) for dcid in _DAC2A_ODA.values()),
-        *([(_DAC2A_IMPUTED, "dac2a", donor, _KEN, list(imputed_years))] if imputed_years else []),
+        *(
+            (dcid, "dac2a", donor, destination, list(_ALL_YEARS))
+            for dcid in _DAC2A_ODA.values()
+            for destination in destinations
+        ),
+        *(
+            (_DAC2A_IMPUTED, "dac2a", donor, destination, list(imputed_years))
+            for destination in destinations
+            if imputed_years
+        ),
     ]
     index = build_coverage_index(
         rows,
@@ -2247,18 +2286,26 @@ def _dac2a_facts(imputed_years: Sequence[int], *, donor: str = _USA) -> ScopeFac
 def test_a_dac2a_total_offers_bilateral_plus_its_own_imputed_line_on_gross_and_net(
     netting: str, label: str
 ):
-    """A donor's DAC2a ODA holds the bilateral scope by default and offers the inclusive
-    scope from DAC2a's own imputed line on gross and on net flows, a net part adding the
-    gross imputed line as published under a label that says so. A switch binds the DAC2a
-    composite and keeps the part's basis, and a switch back compiles to the part's spec_id."""
+    """A donor's DAC2a ODA bound to no composite holds total ODA, the contributions scope,
+    and offers the inclusive scope from DAC2a's own imputed line on gross and on net flows, a
+    net part adding the gross imputed line as published under a label that says so. A switch
+    binds the DAC2a composite and keeps the part's basis. A switch back to the bilateral
+    scope reads the bilateral destinations, and one to total ODA compiles to the part's
+    spec_id."""
     facts = _dac2a_facts(_ALL_YEARS)
-    identity = _dac2a_identity(netting)
+    # An open destination: over Kenya alone total ODA reads the bilateral figures, so the
+    # composite offers no switch to it (`test_a_dac2a_composite_over_bilateral_destinations_
+    # offers_no_total_oda`).
+    identity = _dac2a_identity(netting, destination=None)
 
     table = provider_rule(identity, None, facts)
     record = settle_provider(identity, _total(), facts)
 
     assert table is not None and record is not None
-    assert (record.active, record.rule) == ("provider:bilateral", "bilateral_recipient_total")
+    assert (record.active, record.rule) == (
+        "provider:contributions",
+        "contribution_recipient_total",
+    )
     inclusive = table.option("provider:inclusive")
     assert inclusive is not None
     assert inclusive.availability.status == "available"
@@ -2273,12 +2320,19 @@ def test_a_dac2a_total_offers_bilateral_plus_its_own_imputed_line_on_gross_and_n
     assert (compiled.facets or {})["provenance"] == IdentityBindingValue(ref=_DAC2A_INCLUSIVE)
     assert _slot_ref(compiled, "nettingBasis") == netting
     held = build_part_scope(base=compiled, entries=[], records={}, facts=facts)
-    back = build_part_scope(
+    bilateral = build_part_scope(
         base=compiled, entries=[switch("provider:bilateral")], records={}, facts=facts
     )
-    assert isinstance(held, PartScope) and isinstance(back, PartScope)
+    back = build_part_scope(
+        base=compiled, entries=[switch("provider:contributions")], records={}, facts=facts
+    )
+    assert isinstance(held, PartScope)
+    assert isinstance(bilateral, PartScope) and isinstance(back, PartScope)
     (choice,) = (c for c in held.choices if c.axis == "provider")
     assert choice.active == "provider:inclusive"
+    assert (bilateral.compiled.identity.facets or {})["provenance"] == IdentityBindingValue(
+        ref=_DAC2A_BILATERAL
+    )
     assert back.compiled.spec_id == identity_spec_id(identity)
 
 
@@ -2393,7 +2447,7 @@ def test_the_dac2a_inclusive_scope_serves_no_donor_total_holding_a_multilateral(
 
 
 _RULE_OF = {
-    "provider:bilateral": "bilateral_recipient_total",
+    "provider:bilateral": "bilateral_destinations",
     "provider:inclusive": "bilateral_plus_imputed",
 }
 
@@ -2401,7 +2455,7 @@ _RULE_OF = {
 @pytest.mark.parametrize(
     ("message", "active", "source"),
     [
-        pytest.param(None, "provider:bilateral", None, id="default"),
+        pytest.param(None, "provider:bilateral", _DAC2A_BILATERAL, id="default"),
         pytest.param(
             "aid from the United States to Kenya in 2019 including imputed multilateral",
             "provider:inclusive",
@@ -2413,9 +2467,9 @@ _RULE_OF = {
 def test_a_dac2a_recipient_answer_serves_its_own_inclusive_composite_when_asked(
     monkeypatch, message: str | None, active: str, source: str | None
 ):
-    """A donor's aid to a recipient, which DAC2a serves on net flows, holds the bilateral
-    scope by default. Asked to include imputed multilateral aid, the fresh search answers
-    DAC2a's own composite on the same net basis, not ONE's imputed table."""
+    """A donor's aid to a recipient, which DAC2a serves on net flows, reads its bilateral
+    destinations by default. Asked to include imputed multilateral aid, the fresh search
+    answers DAC2a's own composite on the same net basis, not ONE's imputed table."""
     members = (*basis._DAC2A_MEMBERS, _DAC2A_IMPUTED)
     patch_coverage(
         monkeypatch,
@@ -2504,6 +2558,11 @@ def test_a_crs_answer_states_its_components_sum_only_on_the_composite(
 
 def _resubmitted(identity: BaseIdentity, scope_entries: list[Entry] | None) -> Spec:
     """`identity` posted on a dataset resubmit with `scope_entries`."""
+    return _resubmitted_part(identity, scope_entries).spec
+
+
+def _resubmitted_part(identity: BaseIdentity, scope_entries: list[Entry] | None) -> DefinitePart:
+    """The part answering `identity` posted on a dataset resubmit with `scope_entries`."""
     row = basis._CELLS["recipient-all-sectors"]
     members = basis._ALL_MEMBERS
     graph = FakeGraph(
@@ -2511,6 +2570,14 @@ def _resubmitted(identity: BaseIdentity, scope_entries: list[Entry] | None) -> S
             _USA: {"label": "United States", "type": "Country"},
             _KEN: {"label": "Kenya", "type": "Country"},
             _OFFICIAL_DONORS: {"label": "Official Donors, Total", "type": "Organization"},
+            _ALL_RECIPIENTS: {"label": "All Recipients, Total", "type": "Organization"},
+            _DEVELOPING: {"label": "Developing Countries, Total", "type": "Organization"},
+            "DACAllMultilateralRecipients": {
+                "label": "Multilateral Organisations, Total",
+                "type": "Organization",
+            },
+            "DACOtherUnitedNations": {"label": "Other UN", "type": "Organization"},
+            "EuropeanCommission": {"label": "European Commission", "type": "Organization"},
             **{dcid: basis._member_node(dcid) for dcid in members},
         },
         detect={row.variable: {"svs": list(members), "cosine_scores": [0.9] * len(members)}},
@@ -2533,7 +2600,27 @@ def _resubmitted(identity: BaseIdentity, scope_entries: list[Entry] | None) -> S
     assert isinstance(response, Resolution), response
     (part,) = response.parts
     assert isinstance(part, DefinitePart), part
-    return part.spec
+    return part
+
+
+def _posted_dac2a(monkeypatch: pytest.MonkeyPatch, source: str, destination: str) -> DefinitePart:
+    """The part answering DAC2a ODA from the United States to `destination`, bound to the
+    composite `source` and posted on a dataset resubmit with no scope entries."""
+    members = (*basis._DAC2A_MEMBERS, _DAC2A_IMPUTED)
+    patch_coverage(
+        monkeypatch,
+        [
+            (dcid, "dac2a", _USA, held, list(range(2015, 2021)))
+            for dcid in members
+            for held in (destination, _DEVELOPING)
+        ],
+        role_names=dict.fromkeys(members, _FLOW),
+        facet_metadata={"dac2a": FacetMetadata(provenance_id=_DAC2A, unit="USD")},
+    )
+    identity = _pinned(
+        _dac2a_identity("Gross", destination=destination), {"state": "value", "ref": source}
+    )
+    return _resubmitted_part(identity, None)
 
 
 @pytest.mark.parametrize(
@@ -2553,8 +2640,9 @@ def test_an_inclusive_composite_over_providers_it_counts_twice_serves_the_bilate
 ):
     """DAC2a's inclusive composite adds the named donors' imputed share of multilateral
     spending. Posted over a total that holds the multilaterals, or over every donor, it would
-    count their outflows twice, so the resubmit serves the bilateral line and reports the
-    inclusive scope dropped as a carried entry the part cannot take."""
+    count their outflows twice, so the resubmit serves the bilateral line, DAC2a's bilateral
+    destinations as a fresh search reads them, and reports the inclusive scope dropped as a
+    carried entry the part cannot take."""
     spec = _dac2a_inclusive_answer(monkeypatch)
     base = _scope(spec).base.identity
     others = {role: refs for role, refs in base.entities.items() if role != "origin"}
@@ -2585,7 +2673,7 @@ def test_an_inclusive_composite_over_providers_it_counts_twice_serves_the_bilate
 
     served = _resubmitted(posted, entries)
 
-    assert _source(served) is None
+    assert _source(served) == _DAC2A_BILATERAL
     assert served.definition.identity.entities.get("origin") == origin
     scope = served.resolved.scope_choices
     assert scope is not None
@@ -2607,13 +2695,14 @@ def test_an_inclusive_composite_over_a_donor_keeps_it_on_resubmit(monkeypatch):
 
 def test_a_switch_to_the_dac2a_inclusive_scope_states_its_components_sum(monkeypatch):
     """A plan switch posts the bilateral answer's scope base with the inclusive option as an
-    explicit entry. The resubmit answers DAC2a's composite and states that a groupby sum adds
-    its two lines, as the fresh answer does."""
+    explicit entry. The fresh answer reads DAC2a's bilateral destinations, a stacked
+    composite of one line, which a groupby sum serves as that line. The resubmit answers
+    DAC2a's inclusive composite and states that a groupby sum adds its two lines."""
     _dac2a_inclusive_answer(monkeypatch)
     row = basis._CELLS["recipient-all-sectors"]
     bilateral = basis._ask(row.variable, time=row.time, recipient=row.recipient)
-    assert _source(bilateral) is None
-    assert bilateral.resolved.stat_vars.sums_components is False
+    assert _source(bilateral) == _DAC2A_BILATERAL
+    assert bilateral.resolved.stat_vars.sums_components is True
     scope = _scope(bilateral)
     # The default bilateral scope holds no entry, so the switch adds the provider's.
     assert all(entry.axis != "provider" for entry in scope.entries)
@@ -2624,3 +2713,793 @@ def test_a_switch_to_the_dac2a_inclusive_scope_states_its_components_sum(monkeyp
     assert _source(served) == _DAC2A_INCLUSIVE
     assert served.resolved.stat_vars.served_count == 2
     assert served.resolved.stat_vars.sums_components is True
+
+
+# DAC2a's total ODA (aid type 206) counts a donor's bilateral flows to countries and regions and
+# its core contributions to the multilateral agencies DAC2a lists as recipients. A fresh part
+# reads the bilateral destinations alone (`provenance/ONEDAC2aBilateral`) where it names no
+# destination or only bilateral ones; a part naming an agency or all recipients reads total ODA.
+
+
+def _fresh_scope(identity: BaseIdentity, facts: ScopeFacts, *entries: Entry) -> PartScope | None:
+    """The scope a fresh search states for an answer of `identity` whose request stated
+    `entries` and asked for a total."""
+    return decide_scope(
+        identity_spec_id(identity),
+        identity,
+        selection=ScopeState(entries=entries, total=True),
+        facts=facts,
+    ).scope
+
+
+def _provenance(identity: BaseIdentity) -> str | None:
+    pin = (identity.facets or {}).get("provenance")
+    return pin.ref if isinstance(pin, IdentityBindingValue) else None
+
+
+def test_a_fresh_dac2a_part_switched_to_gross_from_its_base_keeps_its_bilateral_reading():
+    """A fresh part of France's DAC2a ODA over every recipient settles on the bilateral
+    destinations by default. A switch from net to gross posted over the scope's base with
+    its entries still reads the composite, so the agencies stay out: the default is not an
+    entry, so the base must carry the composite."""
+    facts = _dac2a_facts(_ALL_YEARS, donor=_FRA)
+    identity = _dac2a_identity("Net", donor=_FRA, destination=None)
+
+    scope = _fresh_scope(identity, facts)
+    assert scope is not None
+    assert _provenance(scope.compiled.identity) == _DAC2A_BILATERAL
+    entries = [e for e in scope.entries if e.axis != "measure_basis"]
+
+    switched = build_part_scope(
+        base=scope.base.identity,
+        entries=[*entries, switch("measure_basis:gross")],
+        records={},
+        facts=facts,
+    )
+
+    assert isinstance(switched, PartScope)
+    assert _provenance(switched.compiled.identity) == _DAC2A_BILATERAL
+    assert _slot_ref(switched.compiled.identity, "nettingBasis") == "Gross"
+
+
+def test_a_fresh_dac2a_part_at_a_country_offers_no_switch_to_total_oda():
+    """Over a country DAC2a's total ODA holds no core contribution, so a fresh part settled
+    on its bilateral destinations offers no switch to it."""
+    facts = _dac2a_facts(_ALL_YEARS)
+    identity = _dac2a_identity("Net")
+
+    scope = _fresh_scope(identity, facts)
+
+    assert scope is not None
+    assert _provenance(scope.compiled.identity) == _DAC2A_BILATERAL
+    (choice,) = (c for c in scope.choices if c.axis == "provider")
+    total = next(o for o in choice.options if o.option_id == "provider:contributions")
+    assert (total.availability.code, total.availability.detail) == (
+        "provider_not_offered",
+        {"why": "destination_bilateral"},
+    )
+
+
+@pytest.mark.parametrize("destination", [_KEN, None], ids=["kenya", "open"])
+def test_bilateral_plus_multilateral_on_dac2a_reads_the_inclusive_composite(
+    destination: str | None,
+):
+    """Words summing the bilateral and multilateral lines read DAC2a's inclusive composite,
+    its bilateral destinations plus its imputed multilateral line, at a country and over
+    every recipient alike. DAC2a's total ODA holds the contributions scope too, but its
+    core contributions are recipients' rows, so the words do not name it, as they name
+    DAC1's total ODA."""
+    facts = _dac2a_facts(_ALL_YEARS)
+    identity = _dac2a_identity("Net", destination=destination)
+
+    scope = decide_scope(
+        identity_spec_id(identity),
+        identity,
+        selection=ScopeState(
+            entries=(explicit("provider:inclusive"),), total=True, sums_providers=True
+        ),
+        facts=facts,
+    ).scope
+
+    assert scope is not None
+    assert _provenance(scope.compiled.identity) == _DAC2A_INCLUSIVE
+    (choice,) = (c for c in scope.choices if c.axis == "provider")
+    assert (choice.active, choice.provenance) == ("provider:inclusive", "explicit")
+    assert scope.dropped_entries == []
+
+
+@pytest.mark.parametrize(
+    ("donor", "destination", "entries", "source", "choice"),
+    [
+        pytest.param(
+            _USA,
+            None,
+            (),
+            _DAC2A_BILATERAL,
+            ("provider:bilateral", "bilateral_destinations"),
+            id="top-recipients",
+        ),
+        pytest.param(
+            _USA,
+            _SEN,
+            (),
+            _DAC2A_BILATERAL,
+            ("provider:bilateral", "bilateral_destinations"),
+            id="senegal",
+        ),
+        pytest.param(None, None, (), _DAC2A_BILATERAL, None, id="all-donors"),
+        # With no provider axis no table settles a stated entry, so the default serves it.
+        pytest.param(
+            None,
+            None,
+            (explicit("provider:contributions"),),
+            None,
+            None,
+            id="all-donors-stated-contributions",
+        ),
+        pytest.param(
+            None,
+            None,
+            (carried("provider:contributions"),),
+            None,
+            None,
+            id="all-donors-carried-contributions",
+        ),
+        pytest.param(
+            None,
+            None,
+            (explicit("provider:bilateral"),),
+            _DAC2A_BILATERAL,
+            None,
+            id="all-donors-stated-bilateral",
+        ),
+        pytest.param(
+            _USA,
+            None,
+            (explicit("provider:contributions"),),
+            None,
+            ("provider:contributions", "contribution_recipient_total"),
+            id="stated-contributions",
+        ),
+        pytest.param(
+            _USA,
+            None,
+            (explicit("provider:inclusive"),),
+            _DAC2A_INCLUSIVE,
+            ("provider:inclusive", "bilateral_plus_imputed"),
+            id="stated-inclusive",
+        ),
+        pytest.param(
+            _USA,
+            _EC,
+            (),
+            None,
+            ("provider:contributions", "contribution_recipient_total"),
+            id="european-commission",
+        ),
+        pytest.param(
+            _USA,
+            _ALL_RECIPIENTS,
+            (),
+            None,
+            ("provider:contributions", "contribution_recipient_total"),
+            id="all-recipients",
+        ),
+    ],
+)
+def test_a_fresh_dac2a_total_reads_its_bilateral_destinations_unless_it_names_an_agency(
+    donor: str | None,
+    destination: str | None,
+    entries: tuple[Entry, ...],
+    source: str | None,
+    choice: tuple[str, str] | None,
+):
+    """A fresh DAC2a ODA part naming no recipient, or a country, reads the composite that
+    keeps the bilateral destinations alone, with or without a provider axis, as for a
+    ranking over every donor; a stated inclusive scope still reads DAC2a's own imputed line.
+    A part naming a multilateral agency, or all recipients, holds total ODA, and so does a
+    part whose stated or carried entry asks for it. On a part with no provider axis such an
+    entry, and a stated bilateral one the default serves, is not reported as dropped."""
+    facts = _dac2a_facts(_ALL_YEARS, destinations=(destination or _KEN,))
+    identity = _dac2a_identity("Net", donor=donor, destination=destination)
+    # A binder settled the basis, so an explicit entry on an axis the part lacks is the
+    # part's own, and is reported where it is not applied (`ScopeState.attached`).
+    measure_basis = AxisRecord(
+        axis="measure_basis",
+        rule=BASIS_RULE,
+        active="measure_basis:net",
+        provenance="default",
+    )
+
+    scope = decide_scope(
+        identity_spec_id(identity),
+        identity,
+        selection=ScopeState(entries=entries, records={"measure_basis": measure_basis}, total=True),
+        facts=facts,
+    ).scope
+
+    # A part that reads total ODA with no axis to state a choice on states no scope.
+    assert scope is not None or (source, choice) == (None, None)
+    compiled = identity if scope is None else scope.compiled.identity
+    assert _provenance(compiled) == source
+    assert compiled.entities == identity.entities
+    held = (
+        [] if scope is None else [(c.active, c.rule) for c in scope.choices if c.axis == "provider"]
+    )
+    assert held == ([] if choice is None else [choice])
+    assert scope is None or scope.dropped_entries == []
+
+
+@pytest.mark.parametrize("netting", ["Gross", "Net"])
+def test_a_dac2a_total_to_an_agency_offers_no_bilateral_reading_and_says_why(netting: str):
+    """DAC2a ODA to the European Commission is the donor's core contribution to it: the
+    part holds total ODA, and the bilateral and inclusive scopes are unavailable under a
+    code naming the agency, so a stated bilateral scope settles on total ODA."""
+    facts = _dac2a_facts(_ALL_YEARS, destinations=(_EC,))
+    identity = _dac2a_identity(netting, destination=_EC)
+
+    table = provider_rule(identity, None, facts)
+    record = settle_provider(
+        identity, ScopeState(entries=(explicit("provider:bilateral"),), total=True), facts
+    )
+
+    assert table is not None and record is not None
+    assert table.held == "provider:contributions"
+    assert record.active == "provider:contributions"
+    for option_id in ("provider:bilateral", "provider:inclusive"):
+        option = table.option(option_id)
+        assert option is not None
+        assert (
+            option.availability.status,
+            option.availability.code,
+            option.availability.detail,
+        ) == ("unavailable", "multilateral_destination", {"destination": _EC})
+
+
+def test_a_dac2a_total_to_all_recipients_reads_developing_countries_when_cut():
+    """DAC2a ODA to all recipients holds total ODA. Its bilateral and inclusive scopes read
+    the DAC's total of developing countries in its place, the bilateral side of all
+    recipients, as their labels say, and a switch back reads all recipients again."""
+    facts = _dac2a_facts(_ALL_YEARS, destinations=(_ALL_RECIPIENTS, _DEVELOPING))
+    identity = _dac2a_identity("Gross", destination=_ALL_RECIPIENTS)
+
+    table = provider_rule(identity, None, facts)
+
+    assert table is not None and table.held == "provider:contributions"
+    for option_id, source, label in (
+        ("provider:bilateral", _DAC2A_BILATERAL, _DAC2A_SPLIT.label),
+        ("provider:inclusive", _DAC2A_INCLUSIVE, OPTION_LABELS.provider_inclusive),
+    ):
+        option = table.option(option_id)
+        assert option is not None
+        assert option.availability.status == "available"
+        assert option.label == OPTION_LABELS.provider_rebound.format(
+            label=label, rebound="developing countries", spanning="all recipients"
+        )
+        switched = build_part_scope(
+            base=identity, entries=[switch(option_id)], records={}, facts=facts
+        )
+        assert isinstance(switched, PartScope)
+        compiled = switched.compiled.identity
+        assert (_provenance(compiled), compiled.entities["destination"]) == (source, [_DEVELOPING])
+        back = build_part_scope(
+            base=switched.base.identity,
+            entries=[switch("provider:contributions")],
+            records={},
+            facts=facts,
+        )
+        assert isinstance(back, PartScope)
+        assert back.compiled.spec_id == identity_spec_id(identity)
+
+
+@pytest.mark.parametrize("destination", [None, _KEN])
+def test_a_resubmitted_bare_dac2a_total_reads_as_total_oda(destination: str | None):
+    """A stored DAC2a ODA identity binding no composite reads back as total ODA, the
+    contributions scope, under its own spec_id, and offers the bilateral destinations and
+    the inclusive scope as switches."""
+    facts = _dac2a_facts(_ALL_YEARS)
+    identity = _dac2a_identity("Net", destination=destination)
+
+    built = build_part_scope(base=identity, entries=[], records={}, facts=facts)
+
+    assert isinstance(built, PartScope)
+    (choice,) = (c for c in built.choices if c.axis == "provider")
+    assert (choice.active, choice.rule) == (
+        "provider:contributions",
+        "contribution_recipient_total",
+    )
+    assert built.compiled.spec_id == identity_spec_id(identity)
+    bilateral = next(o for o in choice.options if o.option_id == "provider:bilateral")
+    assert (bilateral.availability.status, bilateral.binding) == (
+        "available",
+        ProviderBinding(scope="bilateral", provenance=_DAC2A_BILATERAL),
+    )
+
+
+@pytest.mark.parametrize(
+    ("destination", "recipient"),
+    [
+        pytest.param(_EC, "party", id="agency"),
+        pytest.param("DACAllMultilateralRecipients", "total", id="total-of-agencies"),
+        pytest.param("DACOtherUnitedNations", "residual", id="unnamed-agencies"),
+    ],
+)
+def test_a_dac2a_answer_to_an_agency_says_its_figures_are_core_contributions(
+    monkeypatch, destination: str, recipient: str
+):
+    """US aid to a multilateral recipient reads total ODA, and the answer says the figures are
+    core contributions, worded by what the recipient is: an agency, the DAC's total over the
+    agencies, or its line for the agencies it does not name."""
+    patch_coverage(
+        monkeypatch,
+        [(dcid, "dac2a", _USA, destination, list(_ALL_YEARS)) for dcid in basis._DAC2A_MEMBERS],
+        role_names=dict.fromkeys(basis._DAC2A_MEMBERS, _FLOW),
+        facet_metadata={"dac2a": FacetMetadata(provenance_id=_DAC2A, unit="USD")},
+    )
+
+    part = _resubmitted_part(_dac2a_identity("Net", destination=destination), [])
+
+    assert _source(part.spec) is None
+    shown = get_index().parties[destination].label
+    fact = DepartureFact(
+        code="core_contribution_read", binding_ref="where:", shown=shown, recipient=recipient
+    )
+    assert [(d.code, d.shown, d.text) for d in part.departures] == [
+        (
+            "core_contribution_read",
+            shown,
+            departure_text(fact, family=None, shows_data=True),
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("destination", "recipient"),
+    [
+        pytest.param(_EC, "party", id="agency"),
+        pytest.param("DACAllMultilateralRecipients", "total", id="total-of-agencies"),
+    ],
+)
+def test_every_donor_s_dac2a_aid_to_an_agency_says_its_figures_are_core_contributions(
+    monkeypatch, destination: str, recipient: str
+):
+    """DAC2a ODA from every donor to a multilateral recipient, as in "top donors to UNICEF",
+    has no provider axis, since it names no donor, and still says its figures are core
+    contributions: the departure reads the destination's side, not a provider option."""
+    patch_coverage(
+        monkeypatch,
+        [(dcid, "dac2a", _USA, destination, list(_ALL_YEARS)) for dcid in basis._DAC2A_MEMBERS],
+        role_names=dict.fromkeys(basis._DAC2A_MEMBERS, _FLOW),
+        facet_metadata={"dac2a": FacetMetadata(provenance_id=_DAC2A, unit="USD")},
+    )
+
+    part = _resubmitted_part(_dac2a_identity("Net", donor=None, destination=destination), [])
+
+    assert _source(part.spec) is None
+    assert part.spec.resolved.scope_choices is None or not any(
+        c.axis == "provider" for c in part.spec.resolved.scope_choices.choices
+    )
+    shown = get_index().parties[destination].label
+    fact = DepartureFact(
+        code="core_contribution_read", binding_ref="where:", shown=shown, recipient=recipient
+    )
+    assert [(d.code, d.shown, d.text) for d in part.departures] == [
+        (
+            "core_contribution_read",
+            shown,
+            departure_text(fact, family=None, shows_data=True),
+        )
+    ]
+
+
+_SAU = "country/SAU"
+
+
+@pytest.mark.parametrize(
+    ("countries", "status", "active", "source"),
+    [
+        # Saudi Arabia reports its total ODA with no breakdown by recipient: its rows sit at
+        # the DAC's totals alone, so its recipients cannot be ranked without the agencies.
+        pytest.param((), "unavailable", "provider:contributions", None, id="no-breakdown"),
+        pytest.param(
+            (2015, 2016, 2017, 2018, 2019, 2020),
+            "available",
+            "provider:bilateral",
+            _DAC2A_BILATERAL,
+            id="breakdown-every-year",
+        ),
+    ],
+)
+def test_a_donor_with_no_breakdown_by_recipient_keeps_total_oda(
+    countries: tuple[int, ...], status: str, active: str, source: str | None
+):
+    """A donor's top recipients read the bilateral destinations only in years where a
+    country, region or unallocated line holds the donor's rows. A donor whose rows sit at the
+    DAC's totals alone keeps total ODA, and the bilateral option is unavailable for want of
+    coverage."""
+    members = (*_DAC2A_ODA.values(), _DAC2A_IMPUTED)
+    rows = [
+        *(
+            (dcid, "dac2a", _SAU, total, list(_ALL_YEARS))
+            for dcid in _DAC2A_ODA.values()
+            for total in (_DEVELOPING, _ALL_RECIPIENTS)
+        ),
+        *(
+            (dcid, "dac2a", _SAU, _KEN, list(countries))
+            for dcid in _DAC2A_ODA.values()
+            if countries
+        ),
+    ]
+    index = build_coverage_index(
+        rows,
+        role_names=dict.fromkeys(members, _FLOW),
+        facet_metadata={"dac2a": FacetMetadata(provenance_id=_DAC2A, unit="USD")},
+    )
+    facts = ScopeFacts(index=get_index(), coverage=FakeCoverageService(index).snapshot())
+    identity = _dac2a_identity("Net", donor=_SAU, destination=None)
+
+    scope = _fresh_scope(identity, facts)
+
+    assert scope is not None
+    assert _provenance(scope.compiled.identity) == source
+    (choice,) = (c for c in scope.choices if c.axis == "provider")
+    assert choice.active == active
+    bilateral = next(o for o in choice.options if o.option_id == "provider:bilateral")
+    assert bilateral.availability.status == status
+    assert bilateral.availability.code == (None if status == "available" else "option_not_covered")
+
+
+@pytest.mark.parametrize(
+    ("country_years", "status", "year"),
+    [
+        # 2023 is held by the DAC's total of developing countries alone, which an open read of
+        # the composite leaves out, so the composite's latest year is 2022.
+        pytest.param(range(2015, 2023), "partial", 2022, id="totals-alone-newest"),
+        pytest.param(range(2015, 2024), "available", 2023, id="country-newest"),
+    ],
+)
+def test_the_latest_bilateral_reading_elects_the_year_its_composite_reads(
+    country_years: range, status: str, year: int
+):
+    """The bilateral option of a part asking for the latest year elects its year over the
+    rows the composite's population holds, as a `latest` read of the composite does
+    (`provider.elect_latest_window`), so the two name one year. A year the DAC's totals
+    alone hold is no year of the composite, so the option is partial over the year before."""
+    members = (*_DAC2A_ODA.values(), _DAC2A_IMPUTED)
+    rows = [
+        *(
+            (dcid, "dac2a", _USA, _DEVELOPING, list(range(2015, 2024)))
+            for dcid in _DAC2A_ODA.values()
+        ),
+        *((dcid, "dac2a", _USA, _KEN, list(country_years)) for dcid in _DAC2A_ODA.values()),
+    ]
+    index = build_coverage_index(
+        rows,
+        role_names=dict.fromkeys(members, _FLOW),
+        facet_metadata={"dac2a": FacetMetadata(provenance_id=_DAC2A, unit="USD")},
+    )
+    facts = ScopeFacts(index=get_index(), coverage=FakeCoverageService(index).snapshot())
+    document = _dac2a_identity("Net", destination=None).model_dump(mode="json", exclude_none=True)
+    identity = BaseIdentity.model_validate({**document, "requested_window": {"kind": "latest"}})
+    composite = _pinned(identity, {"state": "value", "ref": _DAC2A_BILATERAL})
+
+    table = provider_rule(identity, None, facts)
+    elected = elect_latest_window(composite, facts).requested_window
+
+    assert table is not None
+    option = table.option("provider:bilateral")
+    assert option is not None
+    assert elected == IdentityWindowRange(start_year=year, end_year=year)
+    assert option.availability.status == status
+    assert option.binding == ProviderBinding(
+        scope="bilateral", provenance=_DAC2A_BILATERAL, window=(year, year)
+    )
+
+
+_UNCLASSIFIED = "DACRecipientOnNoSide"
+"""A DAC2a destination the code index holds no row for, so no side holds it."""
+
+
+def test_a_dac2a_total_naming_a_destination_on_no_side_keeps_total_oda():
+    """A donor's DAC2a rows at a destination no side declaration places leave the bilateral
+    population unavailable (`code_index.composites.population_check`): its members would
+    leave the destination out without a word, and the mint refuses the composite. A fresh
+    part keeps total ODA, and its bilateral option is not offered for that reason."""
+    facts = _dac2a_facts(_ALL_YEARS, destinations=(_KEN, _UNCLASSIFIED))
+    identity = _dac2a_identity("Net", destination=None)
+
+    scope = _fresh_scope(identity, facts)
+
+    assert scope is not None
+    assert _provenance(scope.compiled.identity) is None
+    (choice,) = (c for c in scope.choices if c.axis == "provider")
+    assert choice.active == "provider:contributions"
+    bilateral = next(o for o in choice.options if o.option_id == "provider:bilateral")
+    assert (
+        bilateral.availability.status,
+        bilateral.availability.code,
+        bilateral.availability.detail,
+    ) == ("unavailable", "provider_not_offered", {"why": "destination_unclassified"})
+
+
+# The shape of France's 2023 DAC2a answer: total ODA at two countries and an unallocated line
+# (bilateral), at an agency and the DAC's unnamed multilateral recipient (multilateral), and
+# at the DAC's totals of all recipients and of all multilateral recipients.
+_FRANCE_SHAPED_DESTINATIONS = (
+    _SEN,
+    _KEN,
+    "DACAfricaUnallocated",
+    _EC,
+    "DACOtherMultilateralRecipient",
+    _ALL_RECIPIENTS,
+    "DACAllMultilateralRecipients",
+)
+
+
+@pytest.mark.parametrize(
+    ("source", "recipients", "rows", "series"),
+    [
+        # Total ODA counts every destination but the two totals.
+        pytest.param(None, 5, 42, 7, id="contributions"),
+        # The bilateral destinations alone: the two countries and the unallocated line.
+        pytest.param(_DAC2A_BILATERAL, 3, 18, 3, id="bilateral"),
+    ],
+)
+def test_a_dac2a_bilateral_answer_counts_the_recipients_its_file_holds(
+    monkeypatch, source: str | None, recipients: int, rows: int, series: int
+):
+    """An open-destination DAC2a answer read to its bilateral destinations counts, in its
+    sentence, its destination fact and its download estimate, the recipients and rows the
+    mint keeps, leaving out the agencies and totals that total ODA still counts."""
+    patch_coverage(
+        monkeypatch,
+        [
+            (dcid, "dac2a", _USA, destination, list(range(2015, 2021)))
+            for dcid in basis._DAC2A_MEMBERS
+            for destination in _FRANCE_SHAPED_DESTINATIONS
+        ],
+        role_names=dict.fromkeys(basis._DAC2A_MEMBERS, _FLOW),
+        facet_metadata={"dac2a": FacetMetadata(provenance_id=_DAC2A, unit="USD")},
+    )
+    identity = _dac2a_identity("Net", destination=None)
+    if source is not None:
+        document = identity.model_dump(mode="json", exclude_none=True)
+        document["facets"] = {"provenance": {"state": "value", "ref": source}}
+        identity = BaseIdentity.model_validate(document)
+
+    # The deployed catalogue lists DAC2a as "OECD DAC2A"; a sentence names its declared label.
+    with bound_catalogue(listing({_DAC2A: "OECD DAC2A"})):
+        spec = _resubmitted(identity, [])
+    resolved = spec.resolved
+
+    assert _source(spec) == source
+    assert [(f.role, f.member_count) for f in resolved.role_axis_facts or ()] == [
+        ("destination", recipients)
+    ]
+    assert f"to {recipients} recipients" in (resolved.rendered_sentence or "")
+    assert resolved.download is not None
+    assert (resolved.download.rows, resolved.download.series) == (rows, series)
+    # The bilateral reading cites DAC2a as total ODA does, by its declared label.
+    assert (resolved.rendered_sentence or "").endswith("OECD DAC2a.")
+
+
+def test_each_table_names_its_provider_options_by_what_they_count():
+    """The CRS and DAC1 name the bilateral and contributions scopes in their general words.
+    DAC2a's bilateral option names the destinations it keeps and the core contributions it
+    leaves out, and its own total reads as total ODA, since it counts every destination."""
+    crs = provider_rule(_bilateral_identity(), None, _facts())
+    dac1 = provider_rule(
+        _dac1_identity(_DAC1_TOTAL_ODA, (_USA,)), None, _dac1_facts(*_DAC1_MEMBERS_BY_CODE)
+    )
+    dac2a = provider_rule(_dac2a_identity("Net", destination=None), None, _dac2a_facts(_ALL_YEARS))
+
+    def labels(table: AxisTable | None) -> dict[str, str]:
+        assert table is not None
+        return {option.option_id: option.label for option in table.options}
+
+    general = {
+        "provider:bilateral": OPTION_LABELS.provider_bilateral,
+        "provider:contributions": OPTION_LABELS.provider_contributions,
+    }
+    assert labels(crs)["provider:bilateral"] == general["provider:bilateral"]
+    assert {k: v for k, v in labels(dac1).items() if k in general} == general
+    assert {k: v for k, v in labels(dac2a).items() if k in general} == {
+        "provider:bilateral": _DAC2A_SPLIT.label,
+        "provider:contributions": _DAC2A_SPLIT.total_label,
+    }
+    assert _DAC2A_SPLIT.label != OPTION_LABELS.provider_bilateral
+
+
+@pytest.mark.parametrize(
+    ("destination", "held", "status"),
+    [
+        # Over Kenya alone total ODA holds no core contribution: it reads the bilateral
+        # figures, so a composite reading offers no switch to it.
+        pytest.param(_KEN, _DAC2A_BILATERAL, "unavailable", id="country-bilateral"),
+        pytest.param(_KEN, _DAC2A_INCLUSIVE, "unavailable", id="country-inclusive"),
+        # An open destination still holds the agencies' rows.
+        pytest.param(None, _DAC2A_BILATERAL, "available", id="open"),
+        pytest.param(None, _DAC2A_INCLUSIVE, "available", id="open-inclusive"),
+        # A bare total holds the option itself.
+        pytest.param(_KEN, None, "available", id="country-total-held"),
+    ],
+)
+def test_a_dac2a_composite_over_bilateral_destinations_offers_no_total_oda(
+    destination: str | None, held: str | None, status: str
+):
+    """The total ODA switch from a DAC2a composite is not offered where every destination the
+    part names is on the bilateral side, since its figures equal the bilateral ones; a part
+    holding total ODA keeps it, and an open destination offers it."""
+    facts = _dac2a_facts(_ALL_YEARS)
+    identity = _dac2a_identity("Net", destination=destination)
+    if held is not None:
+        identity = _pinned(identity, {"state": "value", "ref": held})
+
+    table = provider_rule(identity, None, facts)
+
+    assert table is not None
+    option = table.option("provider:contributions")
+    assert option is not None
+    assert option.availability.status == status
+    if status == "unavailable":
+        assert (option.availability.code, option.availability.detail) == (
+            "provider_not_offered",
+            {"why": "destination_bilateral"},
+        )
+
+
+def test_a_dac2a_total_naming_a_destination_on_no_side_offers_neither_cut_reading():
+    """The inclusive composite's bilateral line is cut as the bilateral composite is, so a
+    destination on no side withholds both readings for the same reason."""
+    facts = _dac2a_facts(_ALL_YEARS, destinations=(_KEN, _UNCLASSIFIED))
+
+    table = provider_rule(_dac2a_identity("Gross", destination=None), None, facts)
+
+    assert table is not None
+    for option_id in ("provider:bilateral", "provider:inclusive"):
+        option = table.option(option_id)
+        assert option is not None
+        assert (
+            option.availability.status,
+            option.availability.code,
+            option.availability.detail,
+        ) == ("unavailable", "provider_not_offered", {"why": "destination_unclassified"})
+
+
+def test_a_bilateral_composite_that_refuses_its_part_is_not_offered_for_that_reason(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A bilateral composite whose components cannot serve what the part binds is not
+    offered, naming the slot at fault, as the inclusive option names it; it does not read as
+    a composite serving no year (`option_not_covered`)."""
+    served_components = provider.served_components
+
+    def refusing(document, *, facts):
+        pin = document.get("facets", {}).get("provenance", {})
+        if pin.get("ref") == _DAC2A_BILATERAL:
+            raise CompositeNotServable("refused", ref=_DAC2A_BILATERAL, pointer="/slots/0")
+        return served_components(document, facts=facts)
+
+    monkeypatch.setattr(provider, "served_components", refusing)
+    identity = _dac2a_identity("Net", destination=None)
+
+    table = provider_rule(identity, None, _dac2a_facts(_ALL_YEARS))
+
+    assert table is not None
+    option = table.option("provider:bilateral")
+    assert option is not None
+    assert (
+        option.availability.status,
+        option.availability.code,
+        option.availability.detail,
+    ) == (
+        "unavailable",
+        "provider_not_offered",
+        {"why": "slot_not_served", "slot": "dac2aAidType"},
+    )
+
+
+@pytest.mark.parametrize("pointer", ["/entities/destination", "/facets/provenance", "/shape"])
+@pytest.mark.parametrize("failing", ["bilateral", "inclusive"])
+def test_a_composite_refusal_at_a_member_naming_no_slot_marks_only_its_option(
+    monkeypatch: pytest.MonkeyPatch, failing: str, pointer: str
+):
+    """An option whose composite refuses the part at an entity, provenance or shape member is
+    not offered (`composite_not_servable`, naming the pointer); the scope builds and the
+    other option is read as before."""
+    refused = _DAC2A_BILATERAL if failing == "bilateral" else _INCLUSIVE_SOURCE
+    served_components, component_identities_ = provider.served_components, component_identities
+
+    def refuses(document) -> bool:
+        return document.get("facets", {}).get("provenance", {}).get("ref") == refused
+
+    def refusing_served(document, *, facts):
+        if refuses(document):
+            raise CompositeNotServable("refused", ref=refused, pointer=pointer)
+        return served_components(document, facts=facts)
+
+    def refusing_components(index, document):
+        if refuses(document):
+            raise CompositeNotServable("refused", ref=refused, pointer=pointer)
+        return component_identities_(index, document)
+
+    monkeypatch.setattr(provider, "served_components", refusing_served)
+    monkeypatch.setattr(provider, "component_identities", refusing_components)
+    if failing == "bilateral":
+        identity, facts = _dac2a_identity("Net", destination=None), _dac2a_facts(_ALL_YEARS)
+    else:
+        identity, facts = _bilateral_identity(), _facts()
+
+    table = provider_rule(identity, None, facts)
+
+    assert table is not None
+    option = table.option(f"provider:{failing}")
+    assert option is not None
+    assert (
+        option.availability.status,
+        option.availability.code,
+        option.availability.detail,
+    ) == (
+        "unavailable",
+        "provider_not_offered",
+        {"why": "composite_not_servable", "pointer": pointer},
+    )
+
+
+def test_a_bilateral_option_with_no_registered_reason_is_withheld_as_scope_undecided(caplog):
+    """`composite_not_servable` has no reason in the spec-kit registry: the warning states
+    `scope_undecided` and logs the state instead of raising."""
+    availability = provider._unavailable(
+        "provider_not_offered", {"why": "composite_not_servable", "pointer": "/shape"}
+    )
+
+    withheld = provider._withheld(availability)
+
+    assert withheld.params == {"why": "scope_undecided"}
+    assert "/shape" in caplog.text
+
+
+def test_a_fresh_dac2a_scope_reads_its_bilateral_option_once(monkeypatch: pytest.MonkeyPatch):
+    """The default and the provider table of one fresh part read the same bilateral option
+    and destination rule, once per scope build."""
+    reads: list[str] = []
+    read_option, read_rule = provider._read_bilateral_option, provider._destination_rule
+
+    def counted_option(*args):
+        reads.append("option")
+        return read_option(*args)
+
+    def counted_rule(*args):
+        reads.append("rule")
+        return read_rule(*args)
+
+    monkeypatch.setattr(provider, "_read_bilateral_option", counted_option)
+    monkeypatch.setattr(provider, "_destination_rule", counted_rule)
+
+    scope = _fresh_scope(_dac2a_identity("Net", destination=None), _dac2a_facts(_ALL_YEARS))
+
+    assert scope is not None
+    assert sorted(reads) == ["option", "rule"]
+
+
+def test_a_dac2a_answer_whose_provenance_set_names_a_composite_states_no_core_contribution(
+    monkeypatch,
+):
+    """A definition naming a composite in a provenance set cannot be read as a published
+    total (`code_index.composites.composite_ref` refuses it), so the core-contribution
+    departure reads none rather than raising while the answer's departures are stated."""
+    patch_coverage(
+        monkeypatch,
+        [(dcid, "dac2a", _USA, _EC, list(_ALL_YEARS)) for dcid in basis._DAC2A_MEMBERS],
+        role_names=dict.fromkeys(basis._DAC2A_MEMBERS, _FLOW),
+        facet_metadata={"dac2a": FacetMetadata(provenance_id=_DAC2A, unit="USD")},
+    )
+    spec = _resubmitted_part(_dac2a_identity("Net", destination=_EC), []).spec
+    pinned = spec.definition.identity.model_copy(
+        update={"facets": {"provenance": IdentityBindingSet(refs=[_DAC2A, _DAC2A_BILATERAL])}}
+    )
+    spec = spec.model_copy(
+        update={"definition": spec.definition.model_copy(update={"identity": pinned})}
+    )
+
+    assert departures._core_contribution_facts(spec) == []

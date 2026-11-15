@@ -674,6 +674,34 @@ def _organisation_read_as_party(
             raise ValueError("organisation_read_as_party needs the reason for the reading")
 
 
+def _core_contribution_read(
+    fact: DepartureFact, _family: FlowFamily | None, shows_data: bool
+) -> str:
+    """The multilateral recipient the answer reads (`shown`), whose figures are the donor's
+    core contributions to it, worded by what it is (`recipient`): a multilateral
+    organisation, the DAC's total over multilateral agencies, or the DAC's line for the
+    agencies it does not name."""
+    if fact.shown is None:
+        raise ValueError("core_contribution_read needs the recipient the answer reads")
+    figures = "these figures are" if shows_data else "its figures would be"
+    match fact.recipient:
+        case "party" | None:
+            return (
+                f"{fact.shown} is a multilateral organisation, so {figures} core "
+                "contributions to it, counted in total ODA."
+            )
+        case "total":
+            return (
+                f"{fact.shown} is the DAC's total over multilateral agencies, so {figures} "
+                "core contributions to them, counted in total ODA."
+            )
+        case "residual":
+            return (
+                f"{fact.shown} is the DAC's line for multilateral agencies it does not name, "
+                f"so {figures} core contributions to them, counted in total ODA."
+            )
+
+
 def _scope_limited(fact: DepartureFact, _family: FlowFamily | None, _shows_data: bool) -> str:
     return no_data_limit_text(fact.limits)
 
@@ -702,6 +730,7 @@ _TEXT_BY_CODE: Final[Mapping[DepartureCode, _TextWriter]] = MappingProxyType(
         "organisation_read_as_source": _organisation_read_as_source,
         "direction_inferred": _direction_inferred,
         "organisation_read_as_party": _organisation_read_as_party,
+        "core_contribution_read": _core_contribution_read,
         "scope_limited": _scope_limited,
     }
 )

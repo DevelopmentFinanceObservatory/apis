@@ -148,7 +148,7 @@ def _materialised() -> Materialised:
 
 def _carve_out(state: ResolveState, spec: Spec) -> RegionResult | None:
     """The definite door's carve-outs on `spec`, with the departures the part emits."""
-    result = asyncio.run(_assemble_carve_outs(state, _materialised(), spec))
+    result = asyncio.run(_assemble_carve_outs(state, _materialised(), spec, decision=None))
     if result is None:
         return None
     return with_requirement_departures(result, state.requirements, state.judgement)

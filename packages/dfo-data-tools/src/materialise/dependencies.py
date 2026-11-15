@@ -37,11 +37,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, cast
 
-from code_index.composites import declared_composite_digest
+from code_index.composites import PopulationUnavailable, declared_composite_digest
 from graph_release.context import bound_release_or_none
 from materialise.content_version import recipe_dependency_fingerprint
 from materialise.convert import ConversionRecord
@@ -53,6 +54,7 @@ from origin_catalogue import current_catalogue
 from origin_catalogue.origins import DFO
 
 if TYPE_CHECKING:
+    from code_index.query import CodeIndex
     from materialise.pipeline import MaterialisationRequest
     from series_coverage.index import CoverageIndex
 
@@ -71,6 +73,8 @@ _PAIR_FIELDS: tuple[tuple[str, str, str], ...] = (
 
 # A `latest` member that elected no year, over no facet.
 _NO_ELECTION = LatestYear(elected=None, served=None)
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -343,6 +347,7 @@ def refreshed_dependencies(
     *,
     graph: GraphReader,
     coverage: CoverageIndex | None,
+    code_index: CodeIndex,
 ) -> Dependencies:
     """The fingerprint a run over `requests` would record now against the refs and election
     arguments `stored` names, without materialising.
@@ -362,8 +367,12 @@ def refreshed_dependencies(
     `stored` lacks and so differs in `latest_years`. If it elects none, as a StatVar outside
     the index or a subject-only request does, it gains none and matches.
 
-    Each stored composite takes the digest of the declaration deployed now
-    (`declared_composite_digest`), `None` for one no longer declared. `imported_data`
+    Each stored composite takes the digest of the declaration deployed now under
+    `code_index` (`declared_composite_digest`), `None` for one no longer declared or one
+    reading a population of destinations `code_index` cannot place
+    (`code_index.composites.PopulationUnavailable`), which is logged as
+    `composite_digest_unavailable`. Either differs from the stored digest, so the head
+    rebuilds and the mint answers the refusal. `imported_data`
     keeps `stored`'s. The head rule compares it with the bound release's
     (`datasets_api.current`), and `dependency_changes` never does.
     """
@@ -409,10 +418,25 @@ def refreshed_dependencies(
         ),
         imported_data=stored.imported_data,
         composites=tuple(
-            (provenance, declared_composite_digest(provenance))
+            (provenance, _composite_digest_now(provenance, code_index=code_index))
             for provenance, _ in stored.composites
         ),
     )
+
+
+def _composite_digest_now(provenance: str, *, code_index: CodeIndex) -> str | None:
+    """The digest of the composite `provenance` as deployed now under `code_index`
+    (`declared_composite_digest`), or `None` where it is no longer declared or its population
+    is unavailable."""
+    try:
+        return declared_composite_digest(provenance, index=code_index)
+    except PopulationUnavailable as exc:
+        logger.warning(
+            "composite_digest_unavailable: %s reads a population that is unavailable; %s",
+            provenance,
+            exc.unclassified.message(),
+        )
+        return None
 
 
 # The pair fields whose tokens are refresh dates. A current `None` date says nothing about the

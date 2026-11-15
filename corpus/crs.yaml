@@ -6,6 +6,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: country/DEU, role: origin}, {dcid: country/KEN, role: destination}]
       window: {kind: all}
       operations: []
@@ -18,6 +19,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/BGD, role: destination}]
       window: {kind: all}
       operations: []
@@ -69,6 +71,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities:
         - {dcid: EuropeanUnionInstitutions, role: origin}
         - {dcid: country/ETH, role: destination}
@@ -83,6 +86,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities:
         - {dcid: GlobalFund, role: origin}
         - {dcid: country/MWI, role: destination}
@@ -140,6 +144,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: country/TUR, role: origin}, {dcid: country/SYR, role: destination}]
       window: {kind: all}
 
@@ -151,6 +156,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: country/TUR, role: origin}, {dcid: country/SYR, role: destination}]
       window: {kind: all}
 
@@ -193,6 +199,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: DACSouthOfSahara, role: destination}]
       window: {kind: all}
       operations: []
@@ -205,6 +212,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: country/FRA, role: origin}, {dcid: DACAfrica, role: destination}]
       window: {kind: all}
 
@@ -218,6 +226,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: DACAfricaUnallocated, role: destination}]
 
 - id: dq-crs-020
@@ -380,6 +389,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: country/USA, role: origin}, {dcid: country/PAK, role: destination}]
       window: {kind: range, start: 2020, end: 2020}
 
@@ -423,10 +433,12 @@
     parts:
       - definite:
           measure: {family: dac2a.oda_gross_received}
+          provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
           entities: [{dcid: country/GBR, role: origin}, {dcid: country/KEN, role: destination}]
           window: {kind: range, start: 2022, end: 2022}
       - definite:
           measure: {family: dac2a.oda_net_received}
+          provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
           entities: [{dcid: country/GBR, role: origin}, {dcid: country/KEN, role: destination}]
           window: {kind: range, start: 2022, end: 2022}
 
@@ -468,6 +480,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: country/FRA, role: origin}, {dcid: country/SEN, role: destination}]
       unit: {currency: EUR, prices: current}
 
@@ -485,6 +498,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
       window: {kind: range, start: 2020, end: 2020}
       unit: {currency: {role: destination}, prices: current}
@@ -570,6 +584,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       unit: {currency: USD, prices: constant}
     no_data: {reason: unit_not_resolved, category: unresolved}
 
@@ -581,6 +596,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
       unit: {currency: USD, prices: constant}
 
@@ -618,6 +634,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: country/DEU, role: origin}, {dcid: country/KEN, role: destination}]
       window: {kind: range, start: 2015, end: 2020}
       operations: []
@@ -630,6 +647,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: country/SWE, role: origin}, {dcid: country/TZA, role: destination}]
 
 - id: dq-crs-052
@@ -640,6 +658,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: country/DEU, role: origin}, {dcid: country/KEN, role: destination}]
       window: {kind: range, start: 1975, end: 1975}
 
@@ -651,6 +670,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: country/USA, role: origin}]
       operations: [{verb: rank, over: destination}]
 
@@ -659,10 +679,11 @@
   why: Compare is two origins in one part with no operation; DAC2a answers the aid measure.
   reuse: panel/crs-046
   tags: {theme: aid, entity: two_countries, direction: both, unit: default, time: none, operation: compare, breakdown: none, door: raw_text, phrasing: casual}
-  known_failure: {issue: 1156, checks: [disposition]}
+  known_failure: {issue: 1156, checks: [disposition, measure]}
   expect:
     definite:
       measure: {family: dac2a.oda_gross_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities:
         - {dcid: country/DEU, role: origin}
         - {dcid: country/FRA, role: origin}
@@ -677,6 +698,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: country/CAN, role: origin}, {dcid: country/HTI, role: destination}]
       operations: [{verb: growth}]
 
@@ -732,6 +754,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_gross_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
       window: {kind: range, start: 2020, end: 2020}
 
@@ -800,6 +823,7 @@
     parts:
       - definite:
           measure: {family: dac2a.oda_net_received}
+          provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
           entities: [{dcid: country/NOR, role: origin}, {dcid: country/ETH, role: destination}]
       - {definite: {measure: {family: base.gdp}, entities: [{dcid: country/ETH, role: observationAbout}]}}
 

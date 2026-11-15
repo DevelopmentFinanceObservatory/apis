@@ -324,6 +324,7 @@ def materialise(
     open_axes: frozenset[RoleAxis] = frozenset(),
     coverage: CoverageSnapshot,
     facet_batch: FacetBatch | None = None,
+    within: Mapping[RoleAxis, frozenset[str]] | None,
 ) -> Materialised | NoDataDraft | MaterialisedCandidates | UnsupportedDraft:
     """Resolve a shape through the standard or role-bearing path.
 
@@ -335,7 +336,8 @@ def materialise(
     destination, or an unbound origin on an origin-only shape, is discovered
     only when ``discover_scope`` is true. A bound origin with no destination
     remains ``role_not_resolved``.
-    ``open_axes`` are the role path's open flow axes (`graph_confirm_resolve`).
+    ``open_axes`` are the role path's open flow axes, and ``within`` the members an open
+    axis is discovered within (`graph_confirm_resolve`).
 
     Returns a materialised result, surviving candidates, an unsupported-scope
     refusal, or a named no-data outcome. ``coverage`` is the request's snapshot
@@ -371,6 +373,7 @@ def materialise(
                 discover_scope=discover_scope,
                 open_axes=open_axes,
                 coverage_snapshot=coverage,
+                within=within,
             )
         except RoleEntityUnplaced:
             return NoDataDraft(reason="role_incompatible")

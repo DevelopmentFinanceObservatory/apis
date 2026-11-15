@@ -13,6 +13,7 @@ from __future__ import annotations
 from dc_sdmx.client import (
     DATA_HEDGE_AFTER_SECONDS,
     DEFAULT_PLANNING_LANES,
+    Among,
     ContainedIn,
     EntityFilter,
     SdmxClient,
@@ -59,6 +60,7 @@ __all__ = [
     "DIMENSION_COLUMNS",
     "VALUE_COLUMN",
     "VARIABLE_COLUMN",
+    "Among",
     "ContainedIn",
     "EntityFilter",
     "SdmxAvailabilityResult",
