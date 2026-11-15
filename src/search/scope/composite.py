@@ -478,9 +478,9 @@ class CompositeMint:
 
     def member_count(self, axis: RoleAxis) -> int | None:
         """How many parties `parties(axis)` lists, as `enrichment.party_count` counts them
-        in the components' datasets. It is the count of each `RoleAxisFact` `open_axes` states
-        and of the `role_scope_defaulted` warning (`role_scope_warnings`). None where they
-        cannot be listed."""
+        in the components' datasets. It is the count of each `RoleAxisFact` `open_axes` states,
+        which the `role_scope_defaulted` warning states (`role_scope_warnings`). None where
+        they cannot be listed."""
         held = self._held_parties
         if held is None:
             return None
@@ -604,18 +604,19 @@ class CompositeMint:
         """`warnings`, with each `role_scope_defaulted` warning about `spec`, the Spec minted
         from this composite, worded to count the `parties` of its `params["axis"]`, as a
         fresh answer's warning states its count (`grounding.role_scope_defaulted_message`).
-        A warning on an axis whose parties cannot be listed states no count. A warning is
-        about `spec` where it is keyed to `spec` or to no Spec. One keyed to another reading,
-        such as a flagged match or a suggestion beside the answer, counts that reading's
-        parties and keeps its words. An axis on which `spec` has no counted role axis fact
-        keeps its warning, as does every other warning."""
+        The count is the one `spec`'s role axis fact states (`open_axes`), so the warning
+        and the Spec agree where the snapshot cannot list the parties and the fact keeps the
+        table's count. A warning is about `spec` where it is keyed to `spec` or to no Spec.
+        One keyed to another reading, such as a flagged match or a suggestion beside the
+        answer, counts that reading's parties and keeps its words. An axis on which `spec`
+        has no counted role axis fact keeps its warning, as does every other warning."""
         # Deferred: grounding imports this module while it loads.
         from search.engine.region.codes import ROLE_SCOPE_DEFAULTED
         from search.engine.region.grounding import role_scope_defaulted_message
 
         counted = {
-            fact.role
-            for fact in spec.resolved.role_axis_facts or ()
+            fact.role: fact.member_count
+            for fact in reversed(spec.resolved.role_axis_facts or ())
             if fact.member_count is not None
         }
         labels = {entity.ref: entity.label or entity.ref for entity in spec.resolved.entities}
@@ -632,7 +633,7 @@ class CompositeMint:
             opposite: EntityRoleKey = "origin" if role == "destination" else "destination"
             message = role_scope_defaulted_message(
                 role,
-                member_count=self.member_count(role),
+                member_count=counted[role],
                 bound_dcids=list(dict.fromkeys(self.identity.entities.get(opposite, ()))),
                 label_of=lambda dcids: [labels.get(dcid, dcid) for dcid in dcids],
             )

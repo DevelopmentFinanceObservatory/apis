@@ -1131,7 +1131,8 @@ def restate_scope_warning(state: ResolveState, entries: Sequence[_GroundedCandid
     over every kept candidate, and the collapse over the candidates the unit filter keeps,
     so a lone survivor's warning counts its own scope, as its resubmit does. Where the
     elected candidate's Spec is minted as a composite, the count is the composite's parties
-    (`CompositeMint.role_scope_warnings`), as the definite answer's is."""
+    (`CompositeMint.role_scope_warnings`), as the definite answer's is, and a scope that
+    lists no member removes the warning, as it does for any candidate."""
     if state.opposite_labels is None or not isinstance(state.mat_result, Materialised):
         return
     axis = scope_axis(state.mat_result)
@@ -1148,15 +1149,14 @@ def restate_scope_warning(state: ResolveState, entries: Sequence[_GroundedCandid
         axis=axis,
     )
     own = next((entry for entry in entries if entry.candidate.mat is state.mat_result), None)
-    if own is not None and own.minted is not None and len(distinct) <= 1:
+    members = own.scope_members if own is not None and own.scope_members is not None else on_axis[0]
+    if own is not None and own.minted is not None and len(distinct) <= 1 and members:
         state.warnings[:] = own.minted.mint.role_scope_warnings(state.warnings, own.spec)
         return
     restate_role_scope_warnings(
         state.warnings,
         state.mat_result,
-        members=own.scope_members
-        if own is not None and own.scope_members is not None
-        else on_axis[0],
+        members=members,
         boundary_roles=state.place.roles.roles,
         label_of=state.opposite_labels,
         unnamed_wholes=state.place.roles.unnamed_wholes,

@@ -8,7 +8,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -24,8 +25,11 @@ from search.engine.region import (
 )
 from search.engine.region.codes import ROLE_SCOPE_DEFAULTED
 from search.engine.retrieval.bound_values import served_members
+from search.engine.retrieval.retrieve import Materialised
+from search.engine.retrieval.role_scope import DiscoveredScope
 from search.engine.spec_id import identity_spec_id
-from search.models import BaseIdentity, Spec, Warning
+from search.models import BaseIdentity, CoverageBare, Spec, Warning
+from search.scope import composite
 from series_coverage.schema import RoleNames
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 from tests.engine._harness import offline_resolve
@@ -128,14 +132,19 @@ def test_a_minted_dac2a_composite_states_the_composite_s_identity_and_components
         assert len(mint.components()) == len(mint.served)
 
 
+@pytest.mark.parametrize("listed", [True, False], ids=["listed", "unlisted"])
 @pytest.mark.usefixtures("_dac2a_coverage")
 def test_the_mint_states_the_defaulted_scope_count_its_role_axis_fact_counts(
-    monkeypatch: pytest.MonkeyPatch,
+    listed: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A `role_scope_defaulted` warning on the composite's open axis, keyed to the minted
-    Spec or to none, states the count of the parties the mint lists there, found by its code
-    and axis whatever its text says. A warning on an axis the composite counts nothing on
-    stands, as does one keyed to another reading beside the answer."""
+    Spec or to none, states the count the Spec's role axis fact states there, found by its
+    code and axis whatever its text says, also where the snapshot cannot list the
+    composite's parties and the fact keeps the table's count. A warning on an axis the
+    composite counts nothing on stands, as does one keyed to another reading beside the
+    answer."""
+    if not listed:
+        monkeypatch.setattr(composite, "_lists_parties", lambda *_args: False)
     (first, *_rest) = _minted(monkeypatch, _fresh("H2"))
     minted = first.spec
     mint = first.kwargs["composite"]
@@ -152,6 +161,46 @@ def test_the_mint_states_the_defaulted_scope_count_its_role_axis_fact_counts(
 
     stated = mint.role_scope_warnings((on_axis, keyed, off_axis, other, elsewhere), minted)
 
-    assert stated[0].message != on_axis.message
+    assert stated[0].message == grounding.stated_role_scope_message(minted, "destination")
     assert stated[1].message == stated[0].message
     assert stated[2:] == (off_axis, other, elsewhere)
+
+
+@pytest.mark.usefixtures("_dac2a_coverage")
+def test_a_composite_candidate_listing_no_member_drops_the_defaulted_scope_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Grounding a candidate minted as a composite whose Spec lists no member on the open
+    axis removes the `role_scope_defaulted` warning, as it does for any candidate
+    (`grounding.restate_role_scope_warnings`)."""
+    (first, *_rest) = _minted(monkeypatch, _fresh("H2"))
+    mat = Materialised(
+        sv_dcids=[],
+        has_data=True,
+        coverage=CoverageBare(has_data=True),
+        discovered_scope=DiscoveredScope(
+            axis="destination", role_name="recipient", member_dcids=[], filters={}
+        ),
+    )
+    warning = Warning(
+        code=ROLE_SCOPE_DEFAULTED,
+        severity="info",
+        message="anything",
+        params={"axis": "destination"},
+    )
+    state = SimpleNamespace(
+        opposite_labels=lambda dcids: list(dcids),
+        mat_result=mat,
+        place=SimpleNamespace(roles=SimpleNamespace(roles={}, unnamed_wholes=frozenset())),
+        warnings=[warning],
+    )
+    entry = SimpleNamespace(
+        candidate=SimpleNamespace(mat=mat),
+        scope_members=(),
+        minted=SimpleNamespace(mint=first.kwargs["composite"]),
+        spec=first.spec,
+    )
+
+    candidate_grounding.restate_scope_warning(cast(Any, state), [cast(Any, entry)])
+
+    assert state.warnings == []
