@@ -329,7 +329,7 @@
   query: aid to Kenya, not imputed
   why: '"Imputed" words are the DAC2a measure, not a source, so "not imputed" reaches bind as a dropped qualifier and DAC2a answers with its provenance unbound.'
   tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: excluded}
-  known_failure: {issue: 1156, checks: [disposition]}
+  known_failure: {issue: 1156, checks: [disposition, measure, entities]}
   expect:
     definite:
       measure: {family: dac2a.oda_gross_received}

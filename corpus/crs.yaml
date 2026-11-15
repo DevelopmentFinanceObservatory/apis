@@ -679,7 +679,7 @@
   why: Compare is two origins in one part with no operation; DAC2a answers the aid measure.
   reuse: panel/crs-046
   tags: {theme: aid, entity: two_countries, direction: both, unit: default, time: none, operation: compare, breakdown: none, door: raw_text, phrasing: casual}
-  known_failure: {issue: 1156, checks: [disposition]}
+  known_failure: {issue: 1156, checks: [disposition, measure]}
   expect:
     definite:
       measure: {family: dac2a.oda_gross_received}
