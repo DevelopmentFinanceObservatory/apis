@@ -223,6 +223,35 @@ def test_a_flagged_match_whose_composite_refuses_its_read_says_it_reads_total_od
     assert withheld == [{"why": "scope_undecided"}]
 
 
+def test_a_discarded_flagged_match_leaves_its_election_s_degraded_read_behind(
+    fresh_state: Callable[[], ResolveState], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A flagged match whose part read nothing and whose composite cannot be minted is
+    minted as none, so no answer stands on its election: a degraded read the election noted
+    is dropped with the match, as its scope's own are."""
+    state = fresh_state()
+    state.reading = None
+    elect = phase_shared.elect_at_read
+
+    def noting(*args: Any, **kwargs: Any) -> Any:
+        decided = elect(*args, **kwargs)
+        reading.note_degraded_read("reading election")
+        return decided
+
+    def raising(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("mint failed")
+
+    monkeypatch.setattr(phase_shared, "elect_at_read", noting)
+    monkeypatch.setattr(resubmit, "composite_mint", raising)
+
+    with recording_degraded_reads() as record:
+        match = asyncio.run(phase_shared._elected_flagged_match(state))
+
+    assert isinstance(match, phase_shared.FlaggedMatch)
+    assert match.minted is None
+    assert record.reads == []
+
+
 def test_a_flagged_match_whose_composite_cannot_be_minted_fails_closed(
     fresh_state: Callable[[], ResolveState], monkeypatch: pytest.MonkeyPatch
 ) -> None:

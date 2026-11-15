@@ -17,9 +17,10 @@ from materialise.rate_tables import RateTableCache
 from search.engine import spec_build
 from search.engine.concurrency import scoped_concurrency
 from search.engine.errors import GraphInfraError
-from search.engine.events import DoneEvent, ResponseEvent
+from search.engine.events import DoneEvent, ResponseEvent, SlotOptionsEvent
 from search.engine.region import (
     candidate_collapse,
+    candidate_options,
     phase_answer,
     reading,
     scope_decision,
@@ -489,3 +490,49 @@ def test_a_candidates_survivor_minted_as_a_composite_reads_no_table_preview(monk
     assert result.observations_task is None
     assert isinstance(result.observations_relaunch, CompositeRelaunch)
     assert reads == []
+
+
+@pytest.mark.parametrize("stream", [False, True], ids=["buffered", "streamed"])
+@pytest.mark.parametrize("door", ["definite", "candidates"])
+def test_a_composite_answer_probes_its_slot_options_on_every_door(monkeypatch, door, stream):
+    """An answer minted as a composite with option coverage asked for probes its uncounted
+    slot menus once (`_maybe_enrich_slot_options`) when buffered, and streams no option
+    event of the table it read, whether the answer phase mints it (`phase_answer._finalize_definite_result`) or
+    a candidate set's survivor is minted as it (`candidate_grounding._finish_candidate`).
+    The set is the one `test_a_candidates_survivor_minted_as_a_composite_reads_no_table_preview`
+    reads."""
+    probes: list[str] = []
+    for module in (phase_answer, candidate_options):
+        enrich = module._maybe_enrich_slot_options
+
+        def recording(*args: Any, _enrich: Any = enrich, **kwargs: Any) -> Any:
+            probes.append("slot_options")
+            return _enrich(*args, **kwargs)
+
+        monkeypatch.setattr(module, "_maybe_enrich_slot_options", recording)
+    coverage = ResolveOptions(include_option_coverage=True)
+    if door == "definite":
+        _components(monkeypatch)
+        request = _fresh(_QUESTION).model_copy(update={"response_options": coverage})
+        clients = _clients()
+        provider = None
+    else:
+        patch_india_coverage(monkeypatch)
+        refuse_the_recipient_reading_s_mint(monkeypatch)
+        request = india_request(open_role="recipient").model_copy(
+            update={"response_options": coverage}
+        )
+        clients = india_clients()
+        provider = _DAC2A_BILATERAL
+
+    events = offline_events(request, stream_slot_options=stream, **clients)
+
+    spec = _answered(events)
+    assert spec.resolved.scope_choices is not None
+    assert spec.resolved.scope_choices.compiled.spec_id == spec.spec_id
+    if provider is not None:
+        pin = (spec.definition.identity.facets or {}).get("provenance")
+        assert pin is not None and pin.ref == provider
+    # A streamed request reads its option coverage from the trailing events alone.
+    assert probes == ([] if stream else ["slot_options"])
+    assert not [event for event in events if isinstance(event, SlotOptionsEvent)]

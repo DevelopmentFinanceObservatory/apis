@@ -111,7 +111,7 @@ from search.engine.region.reading import (
     ReadingDecision,
     ReadScope,
     decide_read_scope,
-    read_totals,
+    named_entity_data,
     roles_read,
 )
 from search.engine.region.related_read import (
@@ -699,10 +699,8 @@ async def _ground_elected_answer(state: ResolveState) -> RegionResult | None:
     state.entity_objects = entity_objects
     # Hash the same role-dispatched entities presented in the response, but the totals the
     # read bound, which the request did not name.
-    totals = read_totals(state.reading)
     identity_entities = build_identity_entities(
-        [entity for entity in entity_objects_data if (entity[1].ref, entity[0]) not in totals],
-        role_refs,
+        named_entity_data(entity_objects_data, state.reading), role_refs
     )
     state.identity_entities = identity_entities
 

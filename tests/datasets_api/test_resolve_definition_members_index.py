@@ -687,6 +687,8 @@ def test_a_scope_naming_another_datasets_provenance_refuses():
             **resolve,
         )
     assert refusal.value.facet_pointer == "/facets/provenance"
+    # The refusal's own pointer is the facet's, not the `spec_id` input's.
+    assert refusal.value.pointer is None
 
 
 def _debt_service_identity(**facets: object) -> dict:

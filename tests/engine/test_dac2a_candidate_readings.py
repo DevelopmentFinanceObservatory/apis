@@ -30,6 +30,7 @@ from search.engine.region import (
     reading,
     resubmit,
 )
+from search.engine.region.grounding import carrier_flag_warnings
 from search.engine.region.scope_decision import _withheld_warning
 from search.engine.region.state import ResolveState
 from search.engine.spec_id import identity_spec_id
@@ -44,6 +45,7 @@ from search.models import (
     Resolution,
     ResolveOptions,
     ResolveRequest,
+    Warning,
 )
 from search.scope.provider import Withheld
 from series_coverage.schema import FacetMetadata
@@ -365,6 +367,45 @@ def test_a_set_left_with_one_composite_reading_answers_it_as_its_resubmit_does(
     (component,) = choices.compiled.components or ()
     population = destination_population(get_index(), _DAC2A)
     assert component.identity.entities["destination"] == list(population.members)
+
+
+def test_a_reading_dropped_unminted_raises_no_warning_of_its_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The recipient reading's composite cannot be minted, so it is dropped and the donor
+    reading answers. Each reading's reads are made to raise an observation warning and
+    every carrier flag (`candidate_grounding._carrier_flags`); the answer states the donor
+    reading's observation warning and none of the dropped reading's, and no carrier flag,
+    since the elected donor reading's flags warned at binding."""
+    refuse_the_recipient_reading_s_mint(monkeypatch)
+    observed = candidate_grounding._candidate_observation_entities
+
+    def warning_of(cand: Any) -> Any:
+        entities, _warning = observed(cand)
+        role = "recipient" if cand.place.roles.obs_destination_dcid == _IND else "donor"
+        return entities, Warning(code=f"observed_{role}", severity="info", message=role)
+
+    monkeypatch.setattr(candidate_grounding, "_candidate_observation_entities", warning_of)
+    flags = candidate_grounding._CarrierFlags(True, True, True)
+    monkeypatch.setattr(
+        candidate_grounding,
+        "_carrier_flags",
+        lambda _cand, *, elected: (
+            candidate_grounding._CarrierFlags(False, False, False) if elected else flags
+        ),
+    )
+
+    part = _india(india_request(open_role="recipient"))
+
+    assert isinstance(part, DefinitePart), part
+    codes = [warning.code for warning in part.warnings]
+    assert "observed_donor" in codes
+    assert "observed_recipient" not in codes
+    flagged = carrier_flag_warnings(
+        role_declaration_unverified=True, open_origin_defaulted=True, membership_unverified=True
+    )
+    stated = {(warning.code, str(warning.params)) for warning in part.warnings}
+    assert stated.isdisjoint((warning.code, str(warning.params)) for warning in flagged)
 
 
 def test_a_survivor_no_scope_states_fails_closed_launching_no_task(

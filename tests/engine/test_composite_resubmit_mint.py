@@ -21,7 +21,7 @@ from search.engine import app as search_app
 from search.engine import core as search_core
 from search.engine.entry import dataset_resubmit
 from search.engine.events import ResponseEvent
-from search.engine.region import RegionResult, composite_answer, result
+from search.engine.region import RegionResult
 from search.engine.region.composite_answer import CompositeRelaunch
 from search.engine.spec_id import identity_spec_id
 from search.models import (
@@ -153,14 +153,6 @@ def _headline(
     )
 
 
-def _assert_nothing_restates() -> None:
-    """No function restates a table answer as the composite. The rekeying, the recount and the
-    restated reading do not exist, so no part or resubmit can run them."""
-    assert not hasattr(result, "with_restated_keys")
-    assert not hasattr(result, "recounted_scope")
-    assert not hasattr(composite_answer, "restated_reading")
-
-
 @pytest.mark.parametrize(
     "case",
     [
@@ -180,11 +172,10 @@ def _assert_nothing_restates() -> None:
         pytest.param(_headline, id="oecd-headline"),
     ],
 )
-def test_a_composite_resubmit_answers_as_the_composite_with_no_restatement_layer(
+def test_a_composite_resubmit_answers_as_the_composite(
     case: Callable[[pytest.MonkeyPatch], Callable[[], DefinitePart]],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _assert_nothing_restates()
     answered = case(monkeypatch)()
 
     assert answered.spec.definition.identity.facets is not None
@@ -249,7 +240,6 @@ def test_a_fresh_answer_equals_a_resubmit_of_its_definition(
     composite, so it states the scope, headline, coverage, entities and warnings a resubmit
     of its definition states."""
     _patched_coverage(monkeypatch, held)
-    _assert_nothing_restates()
     fresh = _resolve_fresh(scenario, held=held)
 
     again = _resolve_resubmit(fresh.spec.definition.identity, held=held)

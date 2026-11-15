@@ -409,7 +409,8 @@ def test_a_scope_warning_naming_every_member_is_restated_to_count_the_answers_sc
 def test_a_scope_warning_is_found_by_its_code_and_axis_whatever_its_text():
     """The warning on the discovered axis is restated whatever its text says, and the
     companion axis's warning, whose text another reader could have worded like the
-    discovered axis's, stays as it was."""
+    discovered axis's, stays as it was, as does one on the same axis keyed to a flagged
+    match beside the answer, which speaks for that reading."""
     discovered = _discovered_scope("destination", 3)
     mat = _materialised(
         discovered_scope=discovered,
@@ -421,7 +422,8 @@ def test_a_scope_warning_is_found_by_its_code_and_axis_whatever_its_text():
     )
     reworded = on_axis.model_copy(update={"message": "Recipients were counted elsewhere."})
     lookalike = companion.model_copy(update={"message": on_axis.message})
-    warnings = [lookalike, reworded]
+    flagged = reworded.model_copy(update={"spec_id": "spec_flagged_match"})
+    warnings = [flagged, lookalike, reworded]
 
     restate_role_scope_warnings(
         warnings,
@@ -432,6 +434,7 @@ def test_a_scope_warning_is_found_by_its_code_and_axis_whatever_its_text():
     )
 
     assert [w.message for w in warnings] == [
+        flagged.message,
         on_axis.message,
         "No recipient was named, so the answer covers the one recipient with data.",
     ]

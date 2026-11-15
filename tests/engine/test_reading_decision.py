@@ -781,19 +781,35 @@ def test_a_place_set_settling_on_its_members_reads_with_their_election(
     assert settled.outcome == read_within[-1]
 
 
-@pytest.mark.parametrize("elections", [1, 2], ids=["read-once", "read-twice"])
+@pytest.mark.parametrize(
+    ("elections", "identities"),
+    [
+        pytest.param(1, 1, id="read-once"),
+        pytest.param(2, 1, id="read-twice"),
+        # The members of a place set, or other windows or shapes, each elect the composite
+        # under an identity of their own.
+        pytest.param(2, 2, id="read-twice-under-two-identities"),
+    ],
+)
 def test_a_composite_that_refuses_its_table_read_answers_facet_not_available(
-    elections: int, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    elections: int,
+    identities: int,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A composite the part's scope compiles to that refuses its table read is logged at
     ERROR and noted as a degraded read, so no cache stores the answer, and the part reads
     nothing and answers no_data, `facet_not_available`. A part whose reads elect the refused
-    composite twice logs and notes it once (`reading.noting_refusals_once`)."""
+    composite twice logs and notes it once (`reading.noting_refusals_once`), also where
+    each read elects it under its own identity."""
 
     def refusing(*_args: object, **_kwargs: object) -> object:
         raise EngineInputError("refused", code="requested_option_unavailable", status=422)
 
     monkeypatch.setattr(reading, "composite_table_identity", refusing)
+    if identities > 1:
+        minted = iter(range(elections))
+        monkeypatch.setattr(reading, "identity_spec_id", lambda _identity: f"spec_{next(minted)}")
     elect = reading.elect_reading
 
     def electing(*args: Any, **kwargs: Any) -> Any:

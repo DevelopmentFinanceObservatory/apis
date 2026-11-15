@@ -138,14 +138,17 @@ def test_the_mint_states_the_defaulted_scope_count_its_role_axis_fact_counts(
     listed: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A `role_scope_defaulted` warning on the composite's open axis, keyed to the minted
-    Spec or to none, states the count the Spec's role axis fact states there, found by its
-    code and axis whatever its text says, also where the snapshot cannot list the
-    composite's parties and the fact keeps the table's count. A warning on an axis the
-    composite counts nothing on stands, as does one keyed to another reading beside the
-    answer."""
+    Spec or to none, states what the fresh answer's response states there, the count the
+    Spec's role axis fact states, found by its code and axis whatever its text says, also
+    where the snapshot cannot list the composite's parties and the fact keeps the table's
+    count. A warning on an axis the composite counts nothing on stands, as does one keyed
+    to another reading beside the answer."""
     if not listed:
         monkeypatch.setattr(composite, "_lists_parties", lambda *_args: False)
-    (first, *_rest) = _minted(monkeypatch, _fresh("H2"))
+    responses: list[Any] = []
+    (first, *_rest) = _minted(monkeypatch, lambda: responses.append(_fresh("H2")()))
+    (part,) = responses[0].parts
+    (answered,) = [w for w in part.warnings if w.code == ROLE_SCOPE_DEFAULTED]
     minted = first.spec
     mint = first.kwargs["composite"]
     on_axis = Warning(
@@ -161,7 +164,7 @@ def test_the_mint_states_the_defaulted_scope_count_its_role_axis_fact_counts(
 
     stated = mint.role_scope_warnings((on_axis, keyed, off_axis, other, elsewhere), minted)
 
-    assert stated[0].message == grounding.stated_role_scope_message(minted, "destination")
+    assert stated[0].message == answered.message
     assert stated[1].message == stated[0].message
     assert stated[2:] == (off_axis, other, elsewhere)
 

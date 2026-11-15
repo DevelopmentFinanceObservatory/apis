@@ -363,31 +363,6 @@ def role_scope_defaulted_message_for_axis(axis: EntityRoleKey) -> str:
     return f"{_role_scope_defaulted_base(axis)}."
 
 
-def stated_role_scope_message(spec: Spec, axis: RoleAxis) -> str | None:
-    """The `role_scope_defaulted` message `spec` states for its open `axis`, built from its
-    own facts by the builder a fresh answer's warning is built by
-    (`role_scope_defaulted_message`): the parties its role axis fact counts there
-    (`RoleAxisFact.member_count`), and the entities its identity binds on the opposite axis,
-    in binding order, labelled as `resolved.entities` labels them. None where `spec` counts
-    no party on `axis`."""
-    counted = [
-        fact.member_count
-        for fact in spec.resolved.role_axis_facts or ()
-        if fact.role == axis and fact.member_count is not None
-    ]
-    if not counted:
-        return None
-    opposite: EntityRoleKey = "origin" if axis == "destination" else "destination"
-    bound = list(dict.fromkeys(spec.definition.identity.entities.get(opposite, ())))
-    labels = {entity.ref: entity.label or entity.ref for entity in spec.resolved.entities}
-    return role_scope_defaulted_message(
-        axis,
-        member_count=counted[0],
-        bound_dcids=bound,
-        label_of=lambda dcids: [labels.get(dcid, dcid) for dcid in dcids],
-    )
-
-
 def memoised_labels(
     label_of: Callable[[Sequence[str]], Sequence[str]],
 ) -> Callable[[Sequence[str]], Sequence[str]]:
@@ -493,11 +468,12 @@ def restate_role_scope_warnings(
     `mat` so it counts `members`, the scope the answer lists under the request's facet
     filter (`scope.stated_scope_members`), or with `state_count` false names every member
     with data, for a response whose answers list different scopes. The warning is the
-    `role_scope_defaulted` one on the same axis, found by its code and `params` axis
-    (`role_scope_defaulted_warning`), whatever count it states, so a response restates it
-    once its candidates are grounded and again once they are filtered. It keeps its
-    position, and `label_of`, the memoised lookup that built it (`memoised_labels`), makes
-    no new request.
+    `role_scope_defaulted` one on the same axis that no Spec is keyed to, found by its code
+    and `params` axis (`role_scope_defaulted_warning`), whatever count it states, so a
+    response restates it once its candidates are grounded and again once they are
+    filtered. One keyed to a flagged match or a suggestion beside the answer speaks for that
+    reading and stands. The restated warning keeps its position, and `label_of`, the
+    memoised lookup that built it (`memoised_labels`), makes no new request.
 
     An empty `members` is an answer that lists no member on the axis: it covers none, so
     the warning is removed. An axis in `unnamed_wholes` built no warning
@@ -521,7 +497,11 @@ def restate_role_scope_warnings(
     restated: Warning | None = fresh[0] if members or not state_count else None
     axis = mat.discovered_scope.axis
     for index, old in enumerate(warnings):
-        if old.code == ROLE_SCOPE_DEFAULTED and (old.params or {}).get("axis") == axis:
+        if (
+            old.code == ROLE_SCOPE_DEFAULTED
+            and old.spec_id is None
+            and (old.params or {}).get("axis") == axis
+        ):
             if restated is None:
                 del warnings[index]
             else:
@@ -1240,7 +1220,7 @@ def _relaxed_binding_suggestion(
     from search.engine.region.reading import (
         ElectedReads,
         decide_read_scope,
-        read_totals,
+        named_entity_data,
         roles_read,
     )
     from search.engine.retrieval.retrieve import Materialised
@@ -1370,10 +1350,8 @@ def _relaxed_binding_suggestion(
             entities_list = [_build_entity(rd, er, etr, role_refs) for rd, er, etr in entity_data]
             # Hash the entities listed, but the totals the read bound, which the relaxed
             # query did not name.
-            totals = read_totals(reading)
             identity_entities = build_identity_entities(
-                [entity for entity in entity_data if (entity[1].ref, entity[0]) not in totals],
-                role_refs,
+                named_entity_data(entity_data, reading), role_refs
             )
             slots = bind_when_slot(slots, window=mat.coverage.window)
             slots = apply_slot_expansions(slots, slot_expansions(relaxed))

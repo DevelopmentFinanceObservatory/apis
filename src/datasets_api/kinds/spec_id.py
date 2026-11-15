@@ -175,8 +175,14 @@ def _resolve_members(
     except MemberNotResolvable as exc:
         exc.issue_pointer = _POINTER
         raise
-    except (CompositeUnservable, CompositeWindowUnsupported, FacetNotAvailableError) as exc:
+    except (CompositeUnservable, CompositeWindowUnsupported) as exc:
         exc.pointer = _POINTER
+        raise
+    except FacetNotAvailableError as exc:
+        # Only the composite's off-side refusal carries issues; `adapter._resolve_index_members`'s
+        # refusal of a provenance outside the five-tuple's publishers keeps its facet pointer.
+        if exc.issues is not None:
+            exc.pointer = _POINTER
         raise
     return resolved.shapes
 

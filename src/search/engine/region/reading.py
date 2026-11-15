@@ -65,6 +65,7 @@ from search.engine.spec_id import _requested_window_member, identity_spec_id
 from search.models import (
     BaseIdentity,
     EntityRoleKey,
+    GraphRef,
     IdentityWindow,
     Operation,
     Spec,
@@ -97,10 +98,14 @@ cover every year the read reads (`provider.bilateral_default_withheld`)."""
 
 _BILATERAL_CODE_SYSTEMS = frozenset(row.code_system for row in BILATERAL_SOURCES)
 
-_REFUSALS: ContextVar[set[str] | None] = ContextVar("search_refused_composites", default=None)
-"""The spec_ids of the composites whose table read refused in the bound resolution
-(`noting_refusals_once`), each logged and noted once. The set is shared by the threads the
-resolution starts, so `_refusals_lock` guards it."""
+_REFUSALS: ContextVar[set[tuple[str | None, str | None, str | None]] | None] = ContextVar(
+    "search_refused_composites", default=None
+)
+"""The refusals of composites' table reads met in the bound resolution
+(`noting_refusals_once`), each the composite's ref with the refusal's code and pointer, so
+a refusal is logged and noted once however many places, windows and shapes elect the
+composite. The set is shared by the threads the resolution starts, so `_refusals_lock`
+guards it."""
 
 _refusals_lock = threading.Lock()
 
@@ -120,16 +125,17 @@ def noting_refusals_once() -> Iterator[None]:
         _REFUSALS.reset(token)
 
 
-def _first_refusal(composite: str) -> bool:
-    """Whether `composite`'s refusal is the first the bound resolution meets, recording it.
-    True outside a binding (`noting_refusals_once`)."""
+def _first_refusal(composite: str | None, refusal: EngineInputError) -> bool:
+    """Whether `refusal` of composite `composite`'s table read is the first such the bound
+    resolution meets, recording it. True outside a binding (`noting_refusals_once`)."""
     refused = _REFUSALS.get()
     if refused is None:
         return True
     with _refusals_lock:
-        if composite in refused:
+        key = (composite, refusal.code, refusal.pointer)
+        if key in refused:
             return False
-        refused.add(composite)
+        refused.add(key)
         return True
 
 
@@ -253,7 +259,7 @@ def elect_reading(
             )
         except EngineInputError as exc:
             composite_id = identity_spec_id(composite)
-            if _first_refusal(composite_id):
+            if _first_refusal(_composite_of(decision), exc):
                 logger.error(
                     "reading election of %s: the composite refuses its table read (%s): %s",
                     composite_id,
@@ -378,6 +384,17 @@ def read_totals(reading: ReadingDecision | None) -> frozenset[tuple[str, str]]:
     if reading is None or reading.table is None:
         return frozenset()
     return frozenset((dcid, key) for key, dcids in reading.totals.items() for dcid in dcids)
+
+
+def named_entity_data(
+    entity_data: Sequence[tuple[EntityRoleKey, GraphRef, GraphRef | None]],
+    reading: ReadingDecision | None,
+) -> list[tuple[EntityRoleKey, GraphRef, GraphRef | None]]:
+    """`entity_data`, a read's grounded entities by role, without the totals the read
+    elected as `reading` binds (`read_totals`): the entities its identity is built from
+    (`grounding.build_identity_entities`), which name what the request named."""
+    totals = read_totals(reading)
+    return [entity for entity in entity_data if (entity[1].ref, entity[0]) not in totals]
 
 
 def roles_read(

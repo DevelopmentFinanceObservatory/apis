@@ -491,9 +491,8 @@ def _flagged_scope(state: ResolveState, answer: AnswerIdentity) -> ReadScope:
     the scope without a decision, as for rows read within the population, but the match is
     then minted as none and its scope's degraded-read note is dropped: no rows went
     unlabelled and no answer stands on the lost mint."""
-    reading = _flagged_reading(state)
 
-    def decide() -> ReadScope:
+    def decide(reading: ReadingDecision | None) -> ReadScope:
         return decide_read_scope(
             answer,
             reading,
@@ -504,9 +503,9 @@ def _flagged_scope(state: ResolveState, answer: AnswerIdentity) -> ReadScope:
         )
 
     if state.reading is not None:
-        return decide()
+        return decide(state.reading)
     with recording_degraded_reads(detached=True) as record:
-        scoped = decide()
+        scoped = decide(_flagged_reading(state))
     if scoped.decision is not None:
         carry(record)
     return scoped

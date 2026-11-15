@@ -74,7 +74,7 @@ from search.engine.region.option_coverage import (
     role_served_filter,
 )
 from search.engine.region.place_roles import request_named_groups
-from search.engine.region.reading import decide_read_scope, read_totals, roles_read
+from search.engine.region.reading import decide_read_scope, named_entity_data, roles_read
 from search.engine.region.requirements import answer_terms
 from search.engine.region.result import FacetAxisFilter, answered_roles
 from search.engine.region.scope import (
@@ -580,10 +580,8 @@ def _ground_one_candidate(
     cand_entities = [_build_entity(rd, er, etr, role_refs) for rd, er, etr in cand_entity_data]
     # Hash the same role-dispatched entities presented in the response, but the totals the
     # read bound, which the request did not name.
-    totals = read_totals(cand.reading)
     cand_identity_entities = build_identity_entities(
-        [entity for entity in cand_entity_data if (entity[1].ref, entity[0]) not in totals],
-        role_refs,
+        named_entity_data(cand_entity_data, cand.reading), role_refs
     )
     cand_slots = bind_when_slot(cand_slots, window=_cand_coverage.window)
     cand_slots = apply_slot_expansions(cand_slots, slot_expansions(cand_bindings))
@@ -753,6 +751,15 @@ class _GroundedCandidate:
             list(self.probe_slot_options),
             _flat_obs_entities(self.probe_entities),
         )
+
+    @property
+    def streamed_probe_inputs(
+        self,
+    ) -> tuple[ShapeDraft, list[SlotBindingDraft], list[SlotOptions], list[str]] | None:
+        """The probe inputs (`probe_inputs`) the streamed slot-option events read, None for a
+        Spec minted as a composite, which streams no option of the table it read, as the
+        definite answer's does (`phase_answer._finalize_definite_result`)."""
+        return None if self.minted is not None else self.probe_inputs
 
 
 class _CarrierFlags(NamedTuple):
@@ -1036,10 +1043,11 @@ def _finish_candidate(
         confirmed_facets=tuple(groundwork.confirmed_facets),
         obs_entities=prep.obs_entities[cand_index][0],
         probe_entities=groundwork.probe_entities,
-        # Retain inputs for both buffered and SSE probes.
+        # Retain inputs for both buffered and SSE probes. A Spec minted as a composite
+        # streams none (`streamed_probe_inputs`), as the definite answer's does.
         probe_slot_options=(
             tuple(groundwork.slot_options_raw)
-            if minted is None and (state.stream_slot_options or state.include_option_coverage)
+            if state.stream_slot_options or state.include_option_coverage
             else None
         ),
         role_axis_facts=tuple(cand_role_axis_facts),
@@ -1199,19 +1207,23 @@ def ground_candidates(state: ResolveState, candidates: list[_Candidate]) -> _Gro
 
     groundworks = _ground_each_candidate(state, candidates, prep)
     entries: dict[str, _GroundedCandidate] = {}
-    # The identities of the candidates whose scopes were decided.
-    decided: set[str] = set()
+    # Whether each candidate whose scope was decided grounded, by its identity's spec_id.
+    decided: dict[str, bool] = {}
+    # Whether each candidate grounded, in candidate order, which decides whose reads warn.
+    grounded: list[bool] = []
     for cand_index, (cand, groundwork) in enumerate(zip(candidates, groundworks, strict=True)):
         identity, facet_bindings = _candidate_identity(state, cand_index, cand, groundwork, prep)
         # A candidate whose identity or Spec an earlier one holds adds no Spec or record: its
         # scope is not decided again, its composite not minted again, and its Spec not
         # assembled. It follows the candidate it repeats, so it is never the elected one.
         if identity.spec_id in decided:
+            grounded.append(decided[identity.spec_id])
             continue
-        decided.add(identity.spec_id)
         answer = _candidate_answer(state, cand, identity, facet_bindings)
         if answer.decision is None and _is_elected(state, cand_index):
             return _GroundedCandidates(entries={}, answer_t0=answer_t0, failed=cand)
+        decided[identity.spec_id] = answer.decision is not None
+        grounded.append(answer.decision is not None)
         if answer.decision is None or answer.spec_id in entries:
             continue
         entry = _finish_candidate(
@@ -1233,26 +1245,35 @@ def ground_candidates(state: ResolveState, candidates: list[_Candidate]) -> _Gro
             state.family_total_absent[entry.spec_id] = cand.mat.family_total_absent
 
     restate_scope_warning(state, list(entries.values()))
-    _warn_for_candidates(state, prep, groundworks)
+    _warn_for_candidates(state, prep, groundworks, grounded)
     return _GroundedCandidates(entries=entries, answer_t0=answer_t0, failed=None)
 
 
 def _warn_for_candidates(
-    state: ResolveState, prep: _CandidatePrep, groundworks: Sequence[_CandidateGroundwork]
+    state: ResolveState,
+    prep: _CandidatePrep,
+    groundworks: Sequence[_CandidateGroundwork],
+    grounded: Sequence[bool],
 ) -> None:
     """Add the warnings the candidates' own reads raise, once each, over every candidate
-    that survives its unit election, a duplicate of a kept Spec included, since its reads
-    speak for the answer too: each observation warning in candidate order, the first
-    candidate's entity warnings, and one warning per carrier flag any candidate raises
-    (`_carrier_flags`)."""
+    that survives its unit election and grounds (`grounded`, in candidate order), a
+    duplicate of a kept Spec included, since its reads speak for the answer too: each
+    observation warning in candidate order, the first grounded candidate's entity warnings,
+    and one warning per carrier flag any grounded candidate raises (`_carrier_flags`). A
+    candidate left out because no scope could be decided for it (`_candidate_answer`)
+    answers nothing, so its reads warn nothing."""
     state.warnings.extend(
-        warning for _entities, warning in prep.obs_entities if warning is not None
+        warning
+        for (_entities, warning), kept in zip(prep.obs_entities, grounded, strict=True)
+        if kept and warning is not None
     )
-    if groundworks:
-        state.warnings.extend(groundworks[0].entity_warnings)
+    first = next((gw for gw, kept in zip(groundworks, grounded, strict=True) if kept), None)
+    if first is not None:
+        state.warnings.extend(first.entity_warnings)
     flags = [
         _carrier_flags(cand, elected=_is_elected(state, cand_index))
-        for cand_index, cand in enumerate(prep.candidates)
+        for cand_index, (cand, kept) in enumerate(zip(prep.candidates, grounded, strict=True))
+        if kept
     ]
     state.warnings.extend(
         carrier_flag_warnings(

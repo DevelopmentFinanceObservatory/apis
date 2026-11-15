@@ -34,7 +34,8 @@ def composite_bundle_label(index: CodeIndex, composite: CompositeDeclaration) ->
     """The name a bundle gives `composite`: its label, followed by its `measure_noun` where
     the label is one of its component tables' labels in `index`, so the composite and the
     table read apart in one bundle ("OECD DAC2a (bilateral flows)" beside "OECD DAC2a").
-    Citations keep the composite's label."""
+    The Search provenance facet (`search.observations.composite_facet_ref`) and a bundle's
+    provenance cells carry this name."""
     tables = {
         declared.label
         for recipe in composite.components
