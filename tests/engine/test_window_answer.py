@@ -951,6 +951,7 @@ def test_a_trailing_answer_states_the_years_its_words_cover_once(
     monkeypatch.setattr(phase_answer, "deflator_omission_departure", lambda *_a, **_k: None)
     departed: list[DepartureFact] = []
     state = SimpleNamespace(
+        from_request=lambda *_warnings: None,
         unit_request=object(),
         unit_elected_selections={},
         date_request=settled.date_request,
@@ -988,6 +989,7 @@ def test_a_narrowed_answer_starts_one_related_read_over_its_final_years(monkeypa
     monkeypatch.setattr(related_read_module, "_elected_measure_family", lambda *_a: (None, ()))
     monkeypatch.setattr(related_read_module, "start_related_read", start)
     state = SimpleNamespace(
+        from_request=lambda *_warnings: None,
         unit_request=object(),
         unit_elected_selections={},
         date_request=_trailing("the last five years"),
@@ -1035,7 +1037,10 @@ def test_an_answer_with_fixed_years_starts_its_related_read_before_the_unit_deci
         else DateRequest(window=TimeWindow(start_year=2015, end_year=2020), latest=False)
     )
     state = SimpleNamespace(
-        mat_result=_two_flows(range(2000, 2025)), date_request=request, related_read=None
+        from_request=lambda *_warnings: None,
+        mat_result=_two_flows(range(2000, 2025)),
+        date_request=request,
+        related_read=None,
     )
 
     assert asyncio.run(phase_answer._ground_elected_answer(cast(Any, state))) is stop
@@ -1074,6 +1079,7 @@ def test_a_refused_unit_decision_stops_the_related_read_the_pass_already_started
         related_read_module, "start_related_read", lambda *_a, **_k: started.append(_k)
     )
     state = SimpleNamespace(
+        from_request=lambda *_warnings: None,
         mat_result=dataclasses.replace(_two_flows(range(2000, 2025)), sv_dcids=[_FLOW]),
         date_request=request,
         related_read=held,

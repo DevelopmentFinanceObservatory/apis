@@ -141,6 +141,7 @@ def _relaxation_ctx(**changes: object) -> SimpleNamespace:
             "date_request": None,
             "deadline": None,
             "role_class_walks": object(),
+            "from_request": lambda *_warnings: None,
             **changes,
         }
     )
@@ -761,6 +762,7 @@ def _nearest_real(monkeypatch: pytest.MonkeyPatch, recorder: _NearestRealRecorde
         rate_cache=None,
         warnings=[],
         departure_facts={},
+        from_request=lambda *_warnings: None,
     )
     return materialise._nearest_real_for(cast(ResolveState, state))
 
