@@ -94,7 +94,7 @@
   tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: none, language: fr}
   # Extraction drops "imputée", and "multilateral" without "imputed" refuses qualifier_not_bound
   # on the CRS answer instead of answering from the imputed table.
-  known_failure: {issue: 1156, checks: [measure]}
+  known_failure: {issue: 1156, checks: [measure, provenance]}
   expect:
     definite:
       measure: {family: dac2a.imputed_multilateral}
@@ -163,6 +163,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: country/DEU, role: origin}, {dcid: country/KEN, role: destination}]
       operations: []
 
@@ -173,6 +174,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
       window: {kind: range, start: 2024, end: 2024}
 
@@ -190,6 +192,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: DACMultilaterals, role: origin}, {dcid: country/KEN, role: destination}]
       operations: []
 
@@ -330,7 +333,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_gross_received}
-      provenance: {bound: false}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral, bound: true}
       entities: [{dcid: country/KEN, role: destination}]
       operations: []
 
@@ -341,7 +344,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
-      provenance: {bound: true}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral, bound: true}
       entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
       operations: []
 
@@ -384,6 +387,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: DACMultilaterals, role: origin}, {dcid: country/KEN, role: destination}]
       operations: []
 
@@ -391,7 +395,7 @@
   query: inputed aid to Kenya
   why: '"Inputed" is a misspelling of "imputed", and imputed aid to Kenya names no sector, so DAC2a''s imputed multilateral line answers it.'
   tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: none, phrasing: misspelt}
-  known_failure: {issue: 1164, checks: [measure]}
+  known_failure: {issue: 1164, checks: [measure, provenance]}
   expect:
     definite:
       measure: {family: dac2a.imputed_multilateral}
@@ -417,7 +421,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
-      provenance: {bound: true}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral, bound: true}
       entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
       operations: []
 
@@ -492,7 +496,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
-      provenance: {bound: true}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral, bound: true}
       entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
       operations: []
 
