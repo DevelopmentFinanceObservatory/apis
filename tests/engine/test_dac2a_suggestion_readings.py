@@ -16,9 +16,12 @@ from typing import Any
 
 import pytest
 
+from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.errors import EngineInputError
+from search.engine.interpretation import Interpretation
 from search.engine.region import (
     RegionResult,
+    grounding,
     phase_place_materialise,
     phase_shared,
     reading,
@@ -244,6 +247,60 @@ def test_a_flagged_match_whose_composite_cannot_be_minted_fails_closed(
     assert state.warnings == before
 
 
+@pytest.mark.parametrize(
+    ("reason", "refuse"),
+    [
+        pytest.param(
+            "role_incompatible", phase_shared._role_incompatible_no_data, id="role-incompatible"
+        ),
+        pytest.param(
+            "denominator_not_available",
+            lambda state: phase_place_materialise._denominator_refusal(state, None),
+            id="denominator",
+        ),
+        pytest.param(
+            "qualifier_not_bound",
+            phase_place_materialise._declined_refusal,
+            id="pinned-code",
+        ),
+    ],
+)
+def test_a_refusal_that_read_nothing_keeps_its_own_reason_when_no_composite_can_be_minted(
+    reason: str,
+    refuse: Callable[[ResolveState], Any],
+    fresh_state: Callable[[], ResolveState],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refusal raised before the part reads (`ResolveState.reading` is None) labels no rows,
+    so where the composite its flagged match elects cannot be minted, the match is minted as
+    none and the refusal keeps its own reason and match, noting no degraded read."""
+    state = fresh_state()
+    state.reading = None
+    state.declined = Interpretation(
+        shape=state.shape_draft, reason="qualifier_not_bound", pinned_failure="pinned_code"
+    )
+
+    async def unsuggested(*_args: object, **_kwargs: object) -> None:
+        """No nearest-real suggestion, whose own read within the population would note its
+        lost mint."""
+
+    monkeypatch.setattr(phase_place_materialise, "_nearest_real_for", unsuggested)
+
+    def raising(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("mint failed")
+
+    monkeypatch.setattr(resubmit, "composite_mint", raising)
+
+    with recording_degraded_reads() as record:
+        refused = asyncio.run(refuse(state))
+
+    assert isinstance(refused, RegionResult)
+    assert (refused.status, refused.no_data_reason) == ("no_data", reason)
+    (flagged,) = refused.flagged_match or ()
+    assert _provenance(flagged) != _BILATERAL
+    assert record.reads == []
+
+
 def test_a_resubmit_refusal_s_flagged_match_is_the_composite() -> None:
     """A composite posted with a destination that holds no row in its population refuses
     `no_observations` with the composite as its flagged match."""
@@ -375,7 +432,8 @@ def test_a_part_naming_no_destination_reads_the_total_inside_its_read_alone(
     the where slot of its bindings name no destination, as before the read. A nearest-real
     suggestion read at that place elects there, reads at the total in its own read and mints
     an identity binding no destination, as the composite the answer is minted as binds
-    none."""
+    none, while it lists the total among its entities as the answer does
+    (`reading.roles_read`)."""
     _patched_coverage(monkeypatch, _AT_TOTAL)
     before: list[ResolveState] = []
     task = phase_place_materialise._materialise_task
@@ -417,3 +475,39 @@ def test_a_part_naming_no_destination_reads_the_total_inside_its_read_alone(
     assert _provenance(suggestion) == _BILATERAL
     assert "destination" not in suggestion.definition.identity.entities
     assert subjects == [[_DEVELOPING]]
+    listed = [(entity.ref, entity.role) for entity in suggestion.resolved.entities]
+    answered = [(entity.ref.ref, entity.role.axis) for entity in state.entity_objects]
+    assert (_DEVELOPING, "destination") in listed
+    assert listed == answered
+
+
+def test_a_standard_relaxation_reads_with_the_totals_its_reading_binds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A relaxation read through the standard route reads the totals the reading it elected
+    binds on the axes the part leaves out (`reading.ReadBinding.entities`), as the answer's
+    own read does (`phase_place_materialise._materialise_task`), so a suggestion minted as
+    the composite reads the rows it is labelled with."""
+    _patched_coverage(monkeypatch, _AT_TOTAL)
+    state = _ended_state(monkeypatch, "D2", sdmx=_sdmx(_AT_TOTAL))
+    assert state.reading is not None and state.reading.totals
+    state.unsettled_place = None
+    read = state.mat_result
+    entities: list[dict[str, list[str]]] = []
+
+    def standard(**kwargs: Any) -> Any:
+        entities.append(kwargs["entities"])
+        return read
+
+    monkeypatch.setattr(grounding, "is_role_bearing", lambda _shape: False)
+    monkeypatch.setattr(grounding, "standard_resolve", standard)
+    level = (
+        state.shape_draft,
+        Relaxation(axis="what", property_dcid="measurementDenominator", dropped_value_dcids=["x"]),
+    )
+    asyncio.run(phase_place_materialise._nearest_real_for(state, level=level))
+
+    assert entities
+    assert all(
+        _DEVELOPING in [dcid for dcids in bound.values() for dcid in dcids] for bound in entities
+    )

@@ -65,7 +65,9 @@ from tests.engine.test_dac2a_destination_populations import (
     _COMPOSITE_AHEAD,
     _COMPOSITE_BEHIND,
     _DAC2A,
+    _DEVELOPING,
     _ETH,
+    _FRA,
     _FRANCE,
     _HELD,
     _SCENARIOS,
@@ -290,14 +292,20 @@ def _degraded(monkeypatch: pytest.MonkeyPatch, module: Any) -> list[str]:
 
 
 @pytest.mark.parametrize(
-    ("withheld", "stated", "faulted"),
+    ("scenario", "withheld", "stated", "faulted"),
     [
-        pytest.param(True, [{"why": READ_WINDOW_NOT_COVERED}], False, id="option-not-covered"),
+        pytest.param(
+            "H6", True, [{"why": READ_WINDOW_NOT_COVERED}], False, id="option-not-covered"
+        ),
         # Withheld for no reason, the table election is no window gap, so it is a fault.
-        pytest.param(False, [], True, id="withheld-nothing"),
+        pytest.param("H6", False, [], True, id="withheld-nothing"),
+        # A part with a provider axis withholds nothing: its bilateral option states the
+        # composite's years, so the window gap reads the table with no warning and no fault.
+        pytest.param("H1", True, [], False, id="provider-axis"),
     ],
 )
 def test_a_reading_the_read_window_withholds_and_the_settled_range_allows_says_so(
+    scenario: str,
     withheld: bool,
     stated: list[dict[str, str]],
     faulted: bool,
@@ -317,7 +325,10 @@ def test_a_reading_the_read_window_withholds_and_the_settled_range_allows_says_s
     with caplog.at_level(logging.WARNING, logger=reading.__name__):
         part = _part(
             offline_resolve(
-                _trailing("H6"), graph=_graph_with_parties(), llm=_ScriptedLLM(_VARIABLE), sdmx=sdmx
+                _trailing(scenario),
+                graph=_graph_with_parties(),
+                llm=_ScriptedLLM(_VARIABLE),
+                sdmx=sdmx,
             )
         )
 
@@ -329,17 +340,25 @@ def test_a_reading_the_read_window_withholds_and_the_settled_range_allows_says_s
     assert degraded == (["reading election"] if faulted else [])
 
 
+@pytest.mark.parametrize(
+    "step",
+    [
+        pytest.param("_elected_dataset", id="electing-the-dataset"),
+        # Before the document exists, so the bilateral default's reach is read after the read.
+        pytest.param("_pre_read_identity", id="building-the-document"),
+    ],
+)
 def test_an_election_that_raises_building_its_document_reads_total_oda_saying_so(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    step: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """An election that raises before its choice, here electing the dataset its document
-    names, is logged at ERROR and noted as a degraded read, and the part reads the table as
-    total ODA saying its scope could not be decided."""
+    """An election that raises before its choice, building its document or electing the
+    dataset that document names, is logged at ERROR and noted as a degraded read, and the
+    part reads the table as total ODA saying its scope could not be decided."""
 
-    def raising(*_args: object) -> object:
+    def raising(*_args: object, **_kwargs: object) -> object:
         raise RuntimeError("index fault")
 
-    monkeypatch.setattr(reading, "_elected_dataset", raising)
+    monkeypatch.setattr(reading, step, raising)
     degraded = _degraded(monkeypatch, scope_decision)
 
     with caplog.at_level(logging.ERROR, logger=scope_decision.logger.name):
@@ -359,6 +378,40 @@ def test_an_election_that_raises_building_its_document_reads_total_oda_saying_so
         for record in caplog.records
     )
     assert "scope decision" in degraded
+
+
+def test_a_composite_elected_without_its_read_within_reads_as_the_table(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A reading whose choice names the bilateral composite but whose read was not made within
+    the composite's population (`ReadingDecision.table` None) read the whole table, so the
+    answer is the table's Spec, never minted as the composite. It says it reads total ODA,
+    and the election's fault is logged at ERROR and noted as a degraded read."""
+    elect = reading.elect_reading
+
+    def unread(*args: Any, **kwargs: Any) -> ReadingDecision | None:
+        elected = elect(*args, **kwargs)
+        assert elected is not None and elected.table is not None
+        return dataclasses.replace(elected, table=None, totals={})
+
+    monkeypatch.setattr(reading, "elect_reading", unread)
+    degraded = _degraded(monkeypatch, reading)
+
+    with caplog.at_level(logging.ERROR, logger=reading.__name__):
+        part = _part(
+            offline_resolve(
+                _SCENARIOS["H1"](),
+                graph=_graph_with_parties(),
+                llm=_ScriptedLLM(_VARIABLE),
+                sdmx=_sdmx(),
+            )
+        )
+
+    assert _pin(part) is None
+    assert part.spec.resolved.scope_choices is None
+    assert [params for _spec_id, params in _withheld(part)] == [{"why": "scope_undecided"}]
+    assert _faults(caplog)
+    assert degraded == ["reading election"]
 
 
 def _decided_as_the_table(monkeypatch: pytest.MonkeyPatch, *, spec_id: str | None) -> None:
@@ -978,3 +1031,43 @@ def test_the_elections_of_one_part_s_reads_share_one_set_of_scope_facts(
 
     assert len(read) == 4
     assert all(facts is read[0] for facts in read)
+
+
+@pytest.mark.parametrize(
+    ("roles", "listed"),
+    [
+        pytest.param(
+            [(_FRA, "origin")],
+            [(_DEVELOPING, "destination"), (_FRA, "origin")],
+            id="resubmit-order",
+        ),
+        pytest.param(
+            [(_ETH, "observationAbout"), (_FRA, "origin")],
+            [(_ETH, "observationAbout"), (_DEVELOPING, "destination"), (_FRA, "origin")],
+            id="subject-first",
+        ),
+        pytest.param(
+            [(_FRA, "origin"), (_ETH, "observationAbout")],
+            [(_DEVELOPING, "destination"), (_FRA, "origin"), (_ETH, "observationAbout")],
+            id="subject-last",
+        ),
+        pytest.param(
+            [(_ETH, "observationAbout")],
+            [(_ETH, "observationAbout"), (_DEVELOPING, "destination")],
+            id="no-flow-role",
+        ),
+    ],
+)
+def test_the_roles_a_read_lists_keep_every_context_role_and_add_its_totals(
+    roles: list[tuple[str, Any]], listed: list[tuple[str, str]]
+) -> None:
+    """A read that binds a total on an axis the part leaves out lists the context's roles,
+    every key in order, with the total before the first origin, as a resubmit of the
+    composite lists destinations first (`reading.roles_read`)."""
+    elected = ReadingDecision(
+        choice=cast(Any, None),
+        table=cast(Any, SimpleNamespace()),
+        totals={"destination": (_DEVELOPING,)},
+    )
+
+    assert reading.roles_read(roles, elected) == listed

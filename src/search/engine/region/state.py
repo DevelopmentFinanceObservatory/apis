@@ -943,8 +943,10 @@ class ResolveState:
     # (`reading.elect_reading`), set beside `mat_result` by
     # `phase_place_materialise._run_materialise_task`: the choice the definite answer's
     # scope is built from (`phase_answer._decide_answer_scope`) and the composite's table read
-    # the read read within. None where the part's identity counts no total with a bilateral
-    # source, and where a stand-in's read answers in place of the elected shape's.
+    # the read read within. A stand-in whose read answers in place of the elected shape's
+    # sets the reading its own read elected
+    # (`phase_place_materialise._reelect_zero_observation_sibling`). None where the part's
+    # identity counts no total with a bilateral source, and before the part reads.
     reading: ReadingDecision | None = None
     # The composite the definite answer's Spec is minted as (`spec_build.build_spec`), with
     # the identity its rows were read for and the populations its roles were read within,

@@ -166,12 +166,12 @@ _NET = "net"
 _CONSTANT = "RealValue"
 logger = logging.getLogger(__name__)
 _SLOT_NOT_SERVED = "slot_not_served"
+"""The `why` of `provider_not_offered` where a provider composite cannot serve a slot the part
+binds, whose property the detail's `slot` names (`_composite_fault`)."""
 _COMPOSITE_NOT_SERVED = "composite_not_servable"
 """The `why` of `provider_not_offered` where a provider composite refuses what the part binds
 at a member that names no slot (`/entities/<key>`, `/facets/provenance`, `/shape`), the
 member in the detail's `pointer` (`_composite_fault`)."""
-"""The `why` of `provider_not_offered` where a provider composite cannot serve a slot the part
-binds, whose property the detail's `slot` names (`_composite_fault`)."""
 
 WithheldWhy = Literal[
     "destination_unclassified",

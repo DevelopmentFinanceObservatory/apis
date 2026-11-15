@@ -17,6 +17,7 @@ from materialise.recipes import (
     cause_from_recipe_error,
 )
 from search.engine.bind import SlotBindingDraft
+from search.engine.degraded_reads import carry, recording_degraded_reads
 from search.engine.departures import measure_not_applied, price_basis_not_applied
 from search.engine.qualifier_match import match_qualifiers
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED, ROLE_SCOPE_DEFAULTED
@@ -349,11 +350,13 @@ async def _elected_flagged_match(
     Preserve an established entity mapping on materialise-stage refusals so the where slot,
     entities, trace, and identity agree. Early refusals have no mapping to retain.
 
-    A match read within a composite's population that no scope minting the composite states
-    has no label to stand under, so it fails closed as the definite answer does
-    (`reading.ReadScope`): the result returned is no_data `facet_not_available`
-    (`phase_answer.failed_closed`), which the caller returns in place of its refusal, with
-    what the match raised dropped."""
+    A match whose part read rows within a composite's population (`ResolveState.reading`)
+    that no scope minting the composite states has no label for those rows to stand under,
+    so it fails closed as the definite answer does (`reading.ReadScope`): the result
+    returned is no_data `facet_not_available` (`phase_answer.failed_closed`), which the
+    caller returns in place of its refusal, with what the match raised dropped. A match
+    whose part read nothing labels no rows, so where its composite cannot be minted it is
+    minted as none and the caller's refusal stands (`_flagged_scope`)."""
     await read_held_families((state.shape_draft,))
     await judge_coverage(state)
     # Everything the match raises from here is its own (`ResolveState.mark_answer`).
@@ -427,7 +430,7 @@ async def _elected_flagged_match(
     # The election and the scope read coverage and scan families, so they run off the
     # event loop.
     scoped = await asyncio.to_thread(_flagged_scope, state, answer)
-    if scoped.decision is None:
+    if scoped.decision is None and state.reading is not None:
         # Deferred: the answer phase imports this module.
         from search.engine.region.phase_answer import failed_closed
 
@@ -481,15 +484,32 @@ def _flagged_scope(state: ResolveState, answer: AnswerIdentity) -> ReadScope:
     (`reading.decide_read_scope`), under the reading its read elected (`_flagged_reading`).
     A composite that refused its table read elected an undecided reading's choice
     (`ReadingDecision.refused`), so the match is the table's Spec and says it reads total
-    ODA."""
-    return decide_read_scope(
-        answer,
-        _flagged_reading(state),
-        selection=state.scope_selection,
-        operations=state.operations,
-        coverage=state.coverage,
-        catalogue=state.request_catalogue,
-    )
+    ODA.
+
+    Where the part read nothing (`ResolveState.reading` is None), the reading is elected for
+    the match alone and labels no rows. A composite it names that cannot be minted leaves
+    the scope without a decision, as for rows read within the population, but the match is
+    then minted as none and its scope's degraded-read note is dropped: no rows went
+    unlabelled and no answer stands on the lost mint."""
+    reading = _flagged_reading(state)
+
+    def decide() -> ReadScope:
+        return decide_read_scope(
+            answer,
+            reading,
+            selection=state.scope_selection,
+            operations=state.operations,
+            coverage=state.coverage,
+            catalogue=state.request_catalogue,
+        )
+
+    if state.reading is not None:
+        return decide()
+    with recording_degraded_reads(detached=True) as record:
+        scoped = decide()
+    if scoped.decision is not None:
+        carry(record)
+    return scoped
 
 
 def _key_reading_warnings(

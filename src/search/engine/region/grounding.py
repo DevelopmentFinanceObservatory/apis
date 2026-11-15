@@ -1237,7 +1237,12 @@ def _relaxed_binding_suggestion(
     resolved response intact.
     """
     from search.engine.region.place_context import settle_sets, settled_shape, with_where
-    from search.engine.region.reading import ElectedReads, decide_read_scope
+    from search.engine.region.reading import (
+        ElectedReads,
+        decide_read_scope,
+        read_totals,
+        roles_read,
+    )
     from search.engine.retrieval.retrieve import Materialised
     from search.engine.retrieval.role_resolve import graph_confirm_resolve
 
@@ -1251,8 +1256,8 @@ def _relaxed_binding_suggestion(
         relaxed bindings elect reads in (`reading.ElectedReads`), as the answer's read does:
         a composite reads within its population, binding its totals on the axes the part
         leaves out (`reading.ReadBinding`), where a standard shape resolves as the standard route
-        answers it, over the context's entities and places or its default-scope presence
-        read, and a role-bearing shape confirms against coverage."""
+        answers it, over the context's entities with those totals and its places or its
+        default-scope presence read, and a role-bearing shape confirms against coverage."""
         if is_role_bearing(shape):
             return graph_confirm_resolve(
                 shape=shape,
@@ -1270,7 +1275,7 @@ def _relaxed_binding_suggestion(
         return standard_resolve(
             shape=shape,
             bindings=relaxed,
-            entities=read_at.roles.resolved_entities,
+            entities=read_binding.entities(shape, read_at),
             graph=ctx.graph,
             date_request=ctx.date_request,
             place_dcids=read_at.probe_places,
@@ -1306,7 +1311,8 @@ def _relaxed_binding_suggestion(
                 shape,
                 relaxed,
                 mat.sv_dcids,
-                roles.roles,
+                # The suggestion lists the totals its read bound, as the answer does.
+                roles_read(roles.roles, reading),
                 ctx.graph,
                 mat.read_plan,
                 ctx.query_entity_text_by_dcid,
@@ -1362,6 +1368,13 @@ def _relaxed_binding_suggestion(
                 member_facts=mat.member_facts or {},
             )
             entities_list = [_build_entity(rd, er, etr, role_refs) for rd, er, etr in entity_data]
+            # Hash the entities listed, but the totals the read bound, which the relaxed
+            # query did not name.
+            totals = read_totals(reading)
+            identity_entities = build_identity_entities(
+                [entity for entity in entity_data if (entity[1].ref, entity[0]) not in totals],
+                role_refs,
+            )
             slots = bind_when_slot(slots, window=mat.coverage.window)
             slots = apply_slot_expansions(slots, slot_expansions(relaxed))
 
@@ -1453,7 +1466,7 @@ def _relaxed_binding_suggestion(
                 slots,
                 stat_vars_list,
                 entities_list,
-                identity_entities=None,
+                identity_entities=identity_entities,
                 open_roles=mat.open_axes,
                 requested_window=requested_window,
                 facet_bindings=None,

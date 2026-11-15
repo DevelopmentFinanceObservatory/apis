@@ -61,8 +61,15 @@ from search.engine.region.state import MintedComposite
 from search.engine.retrieval.bound_values import bound_source
 from search.engine.retrieval.retrieve import NoDataDraft
 from search.engine.shape import entities_by_role, identity_shape_for
-from search.engine.spec_id import identity_spec_id
-from search.models import BaseIdentity, EntityRoleKey, Operation, Spec, TimeWindow, Warning
+from search.engine.spec_id import _requested_window_member, identity_spec_id
+from search.models import (
+    BaseIdentity,
+    EntityRoleKey,
+    IdentityWindow,
+    Operation,
+    Spec,
+    Warning,
+)
 from search.scope.provider import Withheld, counted_source
 from search.scope.state import ScopeState
 from search.scope.tables import PartFacts, ScopeFacts
@@ -151,6 +158,14 @@ class ReadingDecision:
     # reading's (`scope_decision.undecided_choice`), so a flagged match built over the part,
     # which reads nothing, is the table's Spec and says it reads total ODA.
     refused: bool = False
+    # Whether the election raised (`elect_reading`), so it chose nothing and the part reads
+    # the table. The answer's scope then judges over the answer's own identity whether the
+    # bilateral default reaches it (`decide_read_scope`, `scope_decision.undecided_choice`).
+    undecided: bool = False
+    # The window of the document the election read (`_pre_read_identity`): the years the
+    # read reads, which a trailing request's answer narrows (`_window_explains`). None where
+    # the election refused or raised.
+    window: IdentityWindow | None = None
 
 
 class ElectionFacts:
@@ -205,9 +220,10 @@ def elect_reading(
     (`ReadingDecision.totals`).
 
     An election that raises anywhere, building the document included, is logged as a scope
-    decision is (`scope_decision.note_undecided`), and the part reads the table as total
-    ODA, saying so where the bilateral default reaches it (`_undecided_election`). A
-    composite that refuses its table read is elected as refused, with an undecided reading's
+    decision is (`scope_decision.note_undecided`) and elected as undecided
+    (`ReadingDecision.undecided`): the part reads the table as total ODA, saying so where the
+    bilateral default reaches the answer's identity (`decide_read_scope`). A composite that
+    refuses its table read is elected as refused, with an undecided reading's
     choice (`ReadingDecision.refused`), and logged at ERROR and noted as a degraded read, so
     no cache stores the answer, once per region's resolution (`noting_refusals_once`).
 
@@ -216,7 +232,6 @@ def elect_reading(
     if not _declares_bilateral_code_system(shape):
         return None
     identity: BaseIdentity | None = None
-    scope_facts: ScopeFacts | None = None
     try:
         index = get_index()
         identity = _pre_read_identity(
@@ -224,14 +239,12 @@ def elect_reading(
         )
         if counted_source(identity, index) is None:
             return None
-        # The facts of a part serving no dataset yet, which an election that raises past here
-        # reads the bilateral default's reach in (`_undecided_election`).
-        scope_facts = facts.facts(index, None)
         scope_facts = facts.facts(index, _elected_dataset(identity, index))
         choice = choose_provider(identity, _snapshot(selection), scope_facts)
         decision = build_part_scope(identity, choice, spec_id=_ELECTION, facts=scope_facts)
+        window = identity.requested_window
         if not decision.composite:
-            return ReadingDecision(choice=choice, table=None)
+            return ReadingDecision(choice=choice, table=None, window=window)
         assert decision.scope is not None
         composite = decision.scope.compiled.identity
         try:
@@ -255,16 +268,18 @@ def elect_reading(
                 table=None,
                 refused=True,
             )
-        return ReadingDecision(choice=choice, table=table, totals=_totals(identity, table))
+        return ReadingDecision(
+            choice=choice, table=table, totals=_totals(identity, table), window=window
+        )
     except Exception as exc:
         if identity is None and isinstance(exc, EngineInputError) and exc.code == "request_invalid":
             # A reversed window, refused building the document (`_read_window`).
             raise
         note_undecided(_ELECTION, exc)
-        return ReadingDecision(
-            choice=_undecided_election(identity, selection=selection, facts=scope_facts),
-            table=None,
+        unchosen = ProviderChoice(
+            states_scope=False, bilateral=None, withheld=None, selection=selection, provider=None
         )
+        return ReadingDecision(choice=unchosen, table=None, undecided=True)
 
 
 def _totals(identity: BaseIdentity, table: TableRead) -> dict[str, tuple[str, ...]]:
@@ -279,21 +294,6 @@ def _totals(identity: BaseIdentity, table: TableRead) -> dict[str, tuple[str, ..
         for key, dcids in opened.entities.items()
         if (axis := role_key_axis(key)) is not None and axis not in asked
     }
-
-
-def _undecided_election(
-    identity: BaseIdentity | None, *, selection: ScopeState, facts: ScopeFacts | None
-) -> ProviderChoice:
-    """The provider choice of a part whose election raised (`elect_reading`): the table as
-    total ODA, withheld with `why` `scope_undecided` where the bilateral default reaches
-    `identity` (`scope_decision.undecided_choice`). Where the election raised before its
-    document was built, the reach cannot be read, so it withholds nothing, as a reach check
-    that raises withholds nothing."""
-    if identity is None or facts is None:
-        return ProviderChoice(
-            states_scope=False, bilateral=None, withheld=None, selection=selection, provider=None
-        )
-    return undecided_choice(identity, selection=selection, facts=facts, subject=_ELECTION)
 
 
 def elect_at_read(
@@ -383,22 +383,24 @@ def read_totals(reading: ReadingDecision | None) -> frozenset[tuple[str, str]]:
 def roles_read(
     roles: Sequence[tuple[str, EntityRoleKey]], reading: ReadingDecision | None
 ) -> list[tuple[str, EntityRoleKey]]:
-    """`roles`, a context's wire roles, with the totals the read elected as `reading` binds
-    (`read_totals`), destinations first, as a resubmit of the composite binds the places of
-    its table identity (`promote_places._posted_place_roles`): the entities the reading's
-    Spec lists. `roles` itself where the read binds no total."""
-    totals = read_totals(reading)
-    if not totals:
-        return list(roles)
-    by_axis: dict[RoleAxis, list[str]] = {"destination": [], "origin": []}
-    for dcid, key in [*roles, *sorted(totals)]:
+    """`roles`, a context's wire roles, each kept in order, with each total the read elected
+    as `reading` binds (`read_totals`) that `roles` does not hold: the entities the
+    reading's Spec lists. A destination total goes before the first origin, as a resubmit of
+    the composite lists the places of its table identity destinations first
+    (`promote_places._posted_place_roles`), and an origin total goes last. A total binds on
+    an axis the part leaves out, so this lists destinations first wherever `roles` holds
+    flow roles alone. Each total binds on a flow axis (`ReadingDecision.totals`)."""
+    listed = list(roles)
+    for dcid, key in sorted(read_totals(reading)):
         axis = role_key_axis(key)
-        assert axis is not None, f"{key!r} names no flow axis"
-        if dcid not in by_axis[axis]:
-            by_axis[axis].append(dcid)
-    return [(dcid, "destination") for dcid in by_axis["destination"]] + [
-        (dcid, "origin") for dcid in by_axis["origin"]
-    ]
+        assert axis is not None, f"total {dcid!r} binds {key!r}, no flow axis"
+        if (dcid, axis) in listed:
+            continue
+        at = len(listed)
+        if axis == "destination":
+            at = next((i for i, (_dcid, role) in enumerate(listed) if role == "origin"), at)
+        listed.insert(at, (dcid, axis))
+    return listed
 
 
 type WithinRead[T] = Callable[[PlaceContext, FacetBatch | None, ReadBinding], T]
@@ -511,7 +513,9 @@ def decide_read_scope(
     The scope applies the provider choice `reading` elected (`scope_decision.build_part_scope`)
     and chooses nothing, so the reading that labels the Spec is the one that read its rows.
     A reading that elected none applies the choice its own identity makes
-    (`_unelected_choice`). The scope is built over the reading's own identity, which names
+    (`_unelected_choice`). A reading whose election raised (`ReadingDecision.undecided`)
+    reads the table as total ODA, saying so where the bilateral default reaches `answer`'s
+    identity (`scope_decision.undecided_choice`). The scope is built over the reading's own identity, which names
     what the request named, and checked against the scope decided over it (`_checked`). A
     scope that compiles a composite mints the Spec as it (`MintedComposite`), with the
     composite's components listed on its compiled scope and the identity its rows were read
@@ -537,11 +541,14 @@ def decide_read_scope(
             operations=operations,
             coverage=coverage,
         )
-        choice = (
-            _unelected_choice(answer.spec_id, identity, selection=selection, facts=facts)
-            if reading is None
-            else reading.choice
-        )
+        if reading is None:
+            choice = _unelected_choice(answer.spec_id, identity, selection=selection, facts=facts)
+        elif reading.undecided:
+            choice = undecided_choice(
+                identity, selection=selection, facts=facts, subject=answer.spec_id
+            )
+        else:
+            choice = reading.choice
         decision = build_part_scope(identity, choice, spec_id=answer.spec_id, facts=facts)
         if reading is not None:
             decision = _checked(decision, identity, reading, selection=selection, facts=facts)
@@ -588,12 +595,13 @@ def decide_read_scope(
 
 
 def _unminted(answer: AnswerIdentity, exc: Exception | None) -> ReadScope:
-    """The scope of the reading `answer` names, read within a composite's population, whose
-    scope minting that composite raised `exc` or, with `exc` None, compiled no composite: no
-    decision (`decide_read_scope`)."""
+    """The scope of the reading `answer` names, elected to read within a composite's
+    population, whose scope minting that composite raised `exc` or, with `exc` None,
+    compiled no composite: no decision (`decide_read_scope`). A flagged match whose part read
+    nothing reaches here too and drops the degraded-read note
+    (`phase_shared._flagged_scope`), so the log states the election alone."""
     logger.error(
-        "reading %s was read within a composite's population, but %s; it has no label and "
-        "is not cached",
+        "reading %s was elected within a composite's population, but %s, so it has no label",
         answer.spec_id,
         "its scope compiles no composite" if exc is None else "the composite could not be minted",
         exc_info=exc,
@@ -646,21 +654,25 @@ def _checked(
     """`decision`, built from the choice `reading` elected before the read, checked against
     the scope decided over `identity`, the reading's own identity, itself under `selection`
     (`scope_decision.decide_scope`). The check decides nothing the reading states but one
-    thing: the reading was elected over the years the read reads (`extract.read_window`), and
-    where the election withheld the composite because it does not cover every year read
-    (`option_not_covered`) and the range the answer settled on reads it, its
-    `bilateral_reading_unavailable` warning names `read_window_not_covered`. A part with a
-    provider axis states that on its bilateral option. Any other difference, or a check that
-    raises, is a fault in the election: it is logged at ERROR and noted as a degraded read,
-    so no cache stores the answer, and the reading keeps `decision`, whose label matches the
-    rows it read.
+    thing: the reading was elected over the years the read reads (`extract.read_window`), so
+    where the election kept the table and the range the answer settled on reads a composite,
+    the read window explains it when `identity` over those years chooses as the election
+    chose (`_window_explains`). The answer then reads the table it read. Where the election
+    withheld the composite because it does not cover every year read (`option_not_covered`),
+    its `bilateral_reading_unavailable` warning names `read_window_not_covered`; a part with
+    a provider axis states the composite's years on its bilateral option.
 
-    A refused reading (`ReadingDecision.refused`) is not checked: the election logged its
-    refusal and chose an undecided reading on purpose, so its choice differs from the
-    identity's by design and is no fault of the election."""
-    if reading.refused:
+    Any other difference, or a check that raises, is a fault in the election: it is logged at
+    ERROR and noted as a degraded read, so no cache stores the answer, and the reading keeps
+    the label that matches the rows it read (`_as_read`).
+
+    A refused reading (`ReadingDecision.refused`) or an undecided one
+    (`ReadingDecision.undecided`) is not checked: the election logged its refusal or fault
+    and chose no reading, so its choice differs from the identity's by design."""
+    if reading.refused or reading.undecided:
         return decision
     spec_id = decision.spec_id
+    read_within = reading.table is not None
     try:
         choice = choose_provider(identity, selection, facts)
         # `decision` is `build_part_scope` over this identity, spec_id and facts, so where the
@@ -671,38 +683,72 @@ def _checked(
             if choice == reading.choice
             else build_part_scope(identity, choice, spec_id=spec_id, facts=facts)
         )
+        elected, settled = _composite_of(decision), _composite_of(checked)
+        if elected == settled and decision.composite == read_within:
+            return decision
+        explained = (
+            elected is None
+            and settled is not None
+            and not read_within
+            and _window_explains(identity, reading, selection=selection, facts=facts)
+        )
     except Exception:
         logger.exception("reading check of %s raised; the answer is not cached", spec_id)
         note_degraded_read("reading check")
-        return decision
-    elected, settled = _composite_of(decision), _composite_of(checked)
-    read_within = reading.table is not None
-    if elected == settled and decision.composite == read_within:
-        return decision
-    if (
-        elected is None
-        and settled is not None
-        and not read_within
-        and reading.choice.withheld == _OPTION_NOT_COVERED
-    ):
+        return _as_read(decision, identity, read_within=read_within, selection=selection)
+    if explained:
         logger.warning(
             "answer %s reads total ODA: the bilateral reading %s covers the range it settled "
             "on, not every year it read",
             spec_id,
             settled,
         )
+        if reading.choice.withheld != _OPTION_NOT_COVERED:
+            return decision
         unread = dataclasses.replace(reading.choice, withheld=Withheld(why=READ_WINDOW_NOT_COVERED))
         return build_part_scope(identity, unread, spec_id=spec_id, facts=facts)
     logger.error(
         "answer %s elected %s before its read%s, but its identity decides %s; it keeps the "
-        "reading it read and is not cached",
+        "label of the rows it read and is not cached",
         spec_id,
         elected or "the table",
         " within the composite's population" if read_within else "",
         settled or "the table",
     )
     note_degraded_read(_ELECTION)
-    return decision
+    return _as_read(decision, identity, read_within=read_within, selection=selection)
+
+
+def _window_explains(
+    identity: BaseIdentity, reading: ReadingDecision, *, selection: ScopeState, facts: ScopeFacts
+) -> bool:
+    """Whether the years the read reads explain why `reading` kept the table where
+    `identity`, the answer's own identity over the narrower range it settled on, reads a
+    composite: `identity` over the election's window (`ReadingDecision.window`) withholds
+    what the election withheld and compiles no composite."""
+    if reading.window is None:
+        return False
+    read = identity.model_copy(update={"requested_window": reading.window})
+    choice = choose_provider(read, selection, facts)
+    if choice.withheld != reading.choice.withheld:
+        return False
+    return _composite_of(build_part_scope(read, choice, spec_id=_ELECTION, facts=facts)) is None
+
+
+def _as_read(
+    decision: ScopeDecision, identity: BaseIdentity, *, read_within: bool, selection: ScopeState
+) -> ScopeDecision:
+    """`decision`, the scope of the reading of `identity`, where its label matches the rows
+    read. A decision compiling a composite over rows read without the composite's population
+    (`read_within` false) would state the whole table's rows, total ODA, as the composite's,
+    so the reading reads as the table it read, saying it reads total ODA where the bilateral
+    default reaches it (`scope_decision.undecided_choice`). A read within a population that
+    compiles no composite has no label, which `decide_read_scope` refuses (`_unminted`)."""
+    if not decision.composite or read_within:
+        return decision
+    spec_id, facts = decision.spec_id, decision.facts
+    choice = undecided_choice(identity, selection=selection, facts=facts, subject=spec_id)
+    return build_part_scope(identity, choice, spec_id=spec_id, facts=facts)
 
 
 def _composite_of(decision: ScopeDecision) -> str | None:
@@ -786,31 +832,14 @@ def _pre_read_identity(
     return BaseIdentity.model_validate(canonical_identity(index, document))
 
 
-def _read_window(date_request: DateRequest | None) -> dict[str, object]:
+def _read_window(date_request: DateRequest | None) -> dict:
     """The identity's `requested_window` member for the years the part's read reads
     (`extract.read_window`): for a trailing span, every range it can settle on; otherwise
     the window the answer's identity requests (`grounding.requested_window_from_date_request`,
     which refuses a reversed window), the latest year, or every year."""
     if date_request is not None and date_request.trailing is not None:
-        window = read_window(date_request)
-        assert window is not None
-        return _range(window)
-    requested = requested_window_from_date_request(date_request)
-    if requested is None:
-        return {"kind": "all"}
-    if requested == "latest":
-        return {"kind": "latest"}
-    return _range(requested)
-
-
-def _range(window: TimeWindow) -> dict[str, object]:
-    """The `range` member of `window`, with the bounds it sets."""
-    member: dict[str, object] = {"kind": "range"}
-    if window.start_year is not None:
-        member["start_year"] = window.start_year
-    if window.end_year is not None:
-        member["end_year"] = window.end_year
-    return member
+        return _requested_window_member(read_window(date_request))
+    return _requested_window_member(requested_window_from_date_request(date_request))
 
 
 def _elected_dataset(identity: BaseIdentity, index: CodeIndex) -> str | None:
