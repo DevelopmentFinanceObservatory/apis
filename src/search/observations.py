@@ -30,6 +30,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from code_index.composites import DECLARED_COMPOSITES
 from code_index.query import CodeIndex
+from code_index.types import CompositeDeclaration
 from description.blocks import documentation_link
 from materialise.enrichment import read_party_kinds
 from materialise.provenance_doc import ProvenanceNameReader, provenance_names
@@ -161,7 +162,7 @@ def provenance_facet_ref(dcid: str, labels: Mapping[str, str]) -> SeriesFacetRef
     nor the catalogue holds, takes its declared label and no document route."""
     composite = DECLARED_COMPOSITES.get(dcid)
     if composite is not None:
-        return SeriesFacetRef(ref=dcid, label=composite.label)
+        return composite_facet_ref(composite)
     row = current_catalogue().provenance(dcid)
     documentation = documentation_link(dcid)
     if row is None:
@@ -169,6 +170,28 @@ def provenance_facet_ref(dcid: str, labels: Mapping[str, str]) -> SeriesFacetRef
     source, origin = _source_and_origin(row)
     return SeriesFacetRef(
         ref=dcid, label=row.name, source=source, data_commons=origin, documentation=documentation
+    )
+
+
+def composite_facet_ref(composite: CompositeDeclaration) -> SeriesFacetRef:
+    """The provenance-axis facet ref of a declared composite, which neither the graph nor the
+    catalogue holds: its declared label, and the source and Data Commons its component tables'
+    catalogue rows give when every row names the same one. A component table the catalogue
+    does not list, or rows that name different sources or Data Commons, leave that field out.
+    It carries no document route, since the Graph API documents each component table and no
+    composite."""
+    rows = [current_catalogue().provenance(recipe.dataset) for recipe in composite.components]
+    listed = [row for row in rows if row is not None]
+    if len(listed) < len(rows):
+        return SeriesFacetRef(ref=composite.provenance, label=composite.label)
+    sources = {(row.source.ref, row.source.label) for row in listed}
+    origins = {(row.data_commons.id, row.data_commons.label) for row in listed}
+    source, origin = _source_and_origin(listed[0])
+    return SeriesFacetRef(
+        ref=composite.provenance,
+        label=composite.label,
+        source=source if len(sources) == 1 else None,
+        data_commons=origin if len(origins) == 1 else None,
     )
 
 

@@ -68,7 +68,7 @@ from search.models import (
     TimeWindow,
     omitted_observations,
 )
-from search.observations import provenance_refs
+from search.observations import composite_facet_ref, provenance_refs
 from search.render.labels import join_labels
 from search.scope.tables import ScopeFacts
 from series_coverage.coverage_types import BoundRoles, Role
@@ -425,8 +425,9 @@ def assemble_composite(
     headline counts the latest of those years over every component serving it
     (`_headline`); its StatVar counts are the components' summed, and it states whether a
     groupby sum adds the components (`_stat_vars`); its
-    provenance facet names the composite, with the composite's label and the account its
-    component tables give; its sources are its component tables, whose labels its
+    provenance facet names the composite, with the composite's label, the source and Data
+    Commons its component tables share (`search.observations.composite_facet_ref`) and the
+    account they give; its sources are its component tables, whose labels its
     `published_tables` joins, and its measure label reads the declaration's `measure_noun`
     (`_measure_label`), so its sentence cites both tables and names the composite's measure;
     its open role axes (`ResolvedSpec.scope`, `role_axis_facts`) list and count the parties
@@ -446,12 +447,15 @@ def assemble_composite(
     observations = sum(item.years.counts.get(year, 0) for item in served for year in item.served)
     window = TimeWindow(start_year=years[0], end_year=years[-1]) if years else None
     sources = _component_sources(index, declaration)
+    provenance = composite_facet_ref(declaration)
     facets = {
         **spec.resolved.facets,
         "provenance": ResolvedFacet(
             basis="bound",
-            ref=declaration.provenance,
-            label=declaration.label,
+            ref=provenance.ref,
+            label=provenance.label,
+            source=provenance.source,
+            data_commons=provenance.data_commons,
             account=provenance_account(index, declaration.provenance),
         ),
     }

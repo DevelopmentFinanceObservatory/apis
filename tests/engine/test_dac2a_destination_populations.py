@@ -25,7 +25,7 @@ from code_index.composites import CompositeNotServable, destination_population
 from code_index.declarations import DAC2A_INCLUSIVE
 from code_index.shared import get_index
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
-from origin_catalogue import current_catalogue
+from origin_catalogue import DFO, current_catalogue
 from search.engine.clients.graph import Facet
 from search.engine.concurrency import scoped_concurrency
 from search.engine.core import ResolveRecord
@@ -94,6 +94,7 @@ from tests.engine.test_whole_total_bind_e2e import (
     _graph,
 )
 from tests.materialise.conftest import FakeGraphReader
+from tests.origin_catalogue.fake_catalogue import FakeCatalogue, provenance_row
 
 _BILATERAL = "provenance/ONEDAC2aBilateral"
 _AGENCY = "EuropeanCommission"
@@ -508,6 +509,34 @@ def test_a_fresh_dac2a_answer_reads_the_composite_its_destinations_allow(
 
     pin = (part.spec.definition.identity.facets or {}).get("provenance")
     assert (pin.ref if isinstance(pin, IdentityBindingValue) else None) == source
+
+
+def test_a_total_read_as_the_bilateral_composite_keeps_its_table_s_origin_and_source(
+    bind_catalogue: Callable[[FakeCatalogue], None],
+) -> None:
+    bind_catalogue(FakeCatalogue(provenances={_DAC2A: provenance_row(_DAC2A, DFO)}))
+
+    def answer(scenario: str) -> DefinitePart:
+        return _part(
+            offline_resolve(
+                _SCENARIOS[scenario](),
+                graph=_graph_with_parties(),
+                llm=_ScriptedLLM(_VARIABLE),
+                sdmx=_sdmx(),
+            )
+        )
+
+    plain = answer("H5").spec.resolved.facets["provenance"]
+    fresh = answer("H1")
+    resubmitted = _resolve_resubmit(fresh.spec.definition.identity)
+
+    assert plain.ref == _DAC2A
+    assert plain.data_commons is not None
+    assert plain.source is not None
+    for part in (fresh, resubmitted):
+        facet = part.spec.resolved.facets["provenance"]
+        assert facet.ref == _BILATERAL
+        assert (facet.data_commons, facet.source) == (plain.data_commons, plain.source)
 
 
 @pytest.mark.parametrize("scenario", ["H1", "H2"])
