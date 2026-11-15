@@ -18,7 +18,7 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import nullcontext
 from typing import TYPE_CHECKING, NamedTuple
 
-from code_index.composites import composite_ref
+from code_index.composites import binds_composite
 from code_index.shared import get_index
 from dfo_platform.request_deadline import bounded_deadline, request_deadline
 from search.engine.config import settings
@@ -715,9 +715,9 @@ def _collapse_group(
 
 
 def _binds_composite(spec: Spec) -> bool:
-    """Whether `spec`'s identity binds a declared composite provenance (`composite_ref`)."""
-    facets = spec.definition.identity.model_dump(mode="json", include={"facets"})
-    return composite_ref(facets) is not None
+    """Whether `spec`'s identity binds a declared composite provenance
+    (`code_index.composites.binds_composite`)."""
+    return binds_composite(spec.definition.identity.model_dump(mode="json", include={"facets"}))
 
 
 def _check_merge_gates(group: list[RegionResult], base_spec: Spec) -> None:

@@ -2100,7 +2100,9 @@ async def _phase_materialise(state: ResolveState) -> RegionResult | None:
         mat_result = await _reelect_zero_observation_sibling(state, mat_result)
 
     # Classify terminal outcomes and append the answering result's warnings, after any
-    # re-election, so they describe the shape in ``state.shape_draft``.
+    # re-election, so they describe the shape in ``state.shape_draft``. Every warning raised
+    # so far is the request's: from here on they derive from the rows the read holds.
+    state.request_warnings = tuple(state.warnings)
     state.opposite_labels = memoised_labels(state.label_dcids)
     outcome = interpret_materialised(
         mat_result,
@@ -2201,14 +2203,16 @@ def note_denominator_unverified(
     named = state.named_denominator
     if named is not None and check_denominator(shape, named) == "unverified":
         arc = stated_denominator(shape)
-        state.warnings.append(
-            denominator_unverified_warning(
-                named,
-                divides=arc is not None,
-                arc_name=_denominator_name(state, arc) if arc is not None else None,
-                spec_id=spec_id,
-            )
+        warning = denominator_unverified_warning(
+            named,
+            divides=arc is not None,
+            arc_name=_denominator_name(state, arc) if arc is not None else None,
+            spec_id=spec_id,
         )
+        state.warnings.append(warning)
+        # The question's words name the base, and the shape states its own: no row read
+        # decides it, so it stands on an answer read again within a population.
+        state.from_request(warning)
 
 
 # The words for the base a schema-term denominator names (`quantity.schema_denominator_kind`).
@@ -2428,11 +2432,14 @@ async def _nearest_real_for(
     if not probe.specs:
         return None
     near_specs = probe.specs
+    before = len(state.warnings)
     stamp_offered_place_warnings(
         state.warnings,
         [(spec.spec_id, probe.reads[spec.spec_id].place) for spec in near_specs],
         departure_facts=state.departure_facts,
     )
+    # Each suggestion's places are read from the request's words.
+    state.from_request(*state.warnings[before:])
     entity_warnings, previews = await _suggestion_previews(state, near_specs, probe.reads)
     for warning in entity_warnings:
         if warning not in state.warnings:

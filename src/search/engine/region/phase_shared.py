@@ -250,16 +250,18 @@ def withdraw_typed_unit(state: ResolveState, exc: UnitConversionRefusal) -> bool
     state.unit_elected_selections = None
     if stated:
         return True
+    warning = Warning(
+        code=QUERY_QUALIFIER_DROPPED,
+        severity="degraded",
+        message=f'The requested qualifier "{state.unit_text}" was not applied.',
+    )
     state.depart(
-        Warning(
-            code=QUERY_QUALIFIER_DROPPED,
-            severity="degraded",
-            message=f'The requested qualifier "{state.unit_text}" was not applied.',
-        ),
+        warning,
         measure_not_applied(asked=state.unit_text, property_dcid=None)
         if isinstance(exc, NonCurrencyUnitError)
         else price_basis_not_applied(asked=state.unit_text, shown=None),
     )
+    state.from_request(warning)
     return True
 
 

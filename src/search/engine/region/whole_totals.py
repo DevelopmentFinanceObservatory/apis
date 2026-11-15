@@ -29,6 +29,7 @@ from collections.abc import Collection, Mapping, Sequence
 from typing import TYPE_CHECKING, cast
 
 from code_index.declarations import CONTAINING_TOTALS
+from code_index.scope_conventions import RolePopulation
 from code_index.shared import get_index
 from code_index.types import (
     POPULATION_CLASS,
@@ -288,7 +289,12 @@ def population_totals(axes: Collection[RoleAxis]) -> tuple[str, ...]:
     return tuple(sorted(dcid for axis in set(axes) for dcid in by_axis.get(axis, ())))
 
 
-def whole_total_warnings(spec: Spec, *, coverage: CoverageIndex) -> list[Warning]:
+def whole_total_warnings(
+    spec: Spec,
+    *,
+    coverage: CoverageIndex,
+    populations: Mapping[str, RolePopulation] | None = None,
+) -> list[Warning]:
     """`whole_total_available` for each flow side `spec` lists member by member, opened by
     `open_roles` or defaulted (`ResolvedSpec.role_axis_facts`), where the dataset elected
     for its identity (`bound_values.identity_dataset`) publishes the total of that side's
@@ -299,6 +305,12 @@ def whole_total_warnings(spec: Spec, *, coverage: CoverageIndex) -> list[Warning
     total binding would not serve. The warning names the total in `params`, so a caller
     that sums the members sees the published figure first, and is stamped with `spec`'s
     id: it holds for that reading alone, in a candidate set as in a definite answer.
+
+    A side the answer reads open within a population (`populations`, the roles a composite
+    binds to one, `ResubmitIdentityPayload.populations`) is offered the population's own
+    total (`RolePopulation.total`, "Developing Countries, Total" for DAC2a's bilateral side)
+    in place of the side's whole totals, since those count destinations off the population
+    ("All Recipients, Total" counts the agencies too) (`_population_reading`).
 
     An answer that reads the other side whole states none: the source publishes no figure
     between two whole totals ("Official Donors, Total" to "All Recipients, Total"), so no
@@ -326,18 +338,37 @@ def whole_total_warnings(spec: Spec, *, coverage: CoverageIndex) -> list[Warning
         )
         return held is True
 
+    datasets = (dataset,)
+    within = {
+        axis: population
+        for key, population in (populations or {}).items()
+        if (axis := role_key_axis(key)) is not None
+    }
+
+    def readings_of(axis: RoleAxis) -> list[WholeReading]:
+        if (population := within.get(axis)) is not None:
+            return [_population_reading(axis, population)]
+        return [
+            reading
+            for dcid in population_totals((axis,))
+            if (reading := whole_reading((dcid,), datasets=datasets, years=years)) is not None
+        ]
+
     readings = [
         reading
         for fact in spec.resolved.role_axis_facts or ()
-        for dcid in population_totals((fact.role,))
-        if (reading := whole_reading((dcid,), datasets=(dataset,), years=years)) is not None
-        and served(reading)
+        for reading in readings_of(fact.role)
+        if served(reading)
     ]
     return [
         Warning(
             code=WHOLE_TOTAL_AVAILABLE,
             severity="info",
-            message=_available_message(reading, dataset=dataset),
+            message=(
+                _population_message(reading, within[reading.axis])
+                if reading.axis in within
+                else _available_message(reading, dataset=dataset)
+            ),
             spec_id=spec.spec_id,
             params={
                 "total": reading.members[0],
@@ -347,6 +378,25 @@ def whole_total_warnings(spec: Spec, *, coverage: CoverageIndex) -> list[Warning
         )
         for reading in readings
     ]
+
+
+def _population_reading(axis: RoleAxis, population: RolePopulation) -> WholeReading:
+    """The total of `population`, the side an answer reads open within it, as the reading a
+    `whole_total_available` warning names: the dataset's published total of that side
+    (`RolePopulation.total`), labelled as the code index labels it, covering no class."""
+    row = get_index().parties.get(population.total)
+    label = row.label if row is not None and row.label else population.total
+    return WholeReading(
+        axis=axis, members=(population.total,), total=population.total, label=label, whole_of=()
+    )
+
+
+def _population_message(reading: WholeReading, population: RolePopulation) -> str:
+    """The `whole_total_available` message for a side read open within `population`: the
+    total of the side it names."""
+    return (
+        f"The source publishes the total of {population.source.rebound_words} as {reading.label}."
+    )
 
 
 def _identity_window(window: IdentityWindow) -> TimeWindow | None:

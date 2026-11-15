@@ -61,7 +61,7 @@ from datasets_api.codes_materialise import ExcludedByRegistry, UnSystemUnavailab
 from datasets_api.manifest_models import CountedRefsModel, WarningModel
 from datasets_api.warnings import DATASETS_WARNING_CATALOGUE
 from dc_graph import GraphCapExceededError, GraphReadError
-from dc_sdmx import ContainedIn
+from dc_sdmx import Among, ContainedIn
 from materialise import MaterialisationRequest
 from materialise.facets import binds_no_place
 from materialise.finish import MAX_COUNTED_REFS
@@ -389,7 +389,8 @@ def _subject_binding(request: MaterialisationRequest) -> tuple[str, list[str]] |
         or isinstance(bound, ContainedIn)
     ):
         return None
-    return request.stat_var.removeprefix(_DCID_REF_PREFIX), list(dict.fromkeys(bound))
+    refs = bound.members if isinstance(bound, Among) else bound
+    return request.stat_var.removeprefix(_DCID_REF_PREFIX), list(dict.fromkeys(refs))
 
 
 def _refusal_scopes(

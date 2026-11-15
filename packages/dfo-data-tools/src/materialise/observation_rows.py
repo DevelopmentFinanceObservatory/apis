@@ -25,6 +25,7 @@ import pyarrow as pa
 
 from dc_graph import Facet, GraphCapExceededError, GraphDeadlineExceededError, GraphReadError
 from dc_sdmx import (
+    Among,
     ContainedIn,
     EntityFilter,
     SdmxCapExceededError,
@@ -139,19 +140,20 @@ def _stream_place_slices(
     The first slice's stream supplies the roles. Each later slice opens once the one before it
     is exhausted, names those roles, and gets what is left of `max_rows`."""
     subject = entities.get(_SUBJECT_ROLE)
+    places = subject.members if isinstance(subject, Among) else subject
     slice_entities: list[Mapping[str, EntityFilter]] = (
         [
             {**entities, _SUBJECT_ROLE: place_slice}
             for place_slice in place_slices(
                 variables,
                 role=_SUBJECT_ROLE,
-                places=subject,
+                places=places,
                 facet_ids=facet_ids,
                 time_period=time_period,
                 url_budget_bytes=sdmx.url_budget_bytes,
             )
         ]
-        if subject and not isinstance(subject, ContainedIn)
+        if places and not isinstance(places, ContainedIn)
         else [entities]
     )
 
@@ -287,7 +289,7 @@ def _subject_places(entities: Mapping[str, EntityFilter]) -> list[str]:
             "a UN System Data Commons read names its places; a containment filter "
             f"({subject.parent!r}, {subject.child_type!r}) reached it"
         )
-    return list(dict.fromkeys(subject))
+    return list(dict.fromkeys(subject.members if isinstance(subject, Among) else subject))
 
 
 def _kept_series(

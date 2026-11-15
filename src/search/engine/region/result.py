@@ -8,6 +8,8 @@ from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
+from code_index.composites import DECLARED_COMPOSITES, composite_ref, destination_population
+from code_index.shared import get_index
 from dfo_platform import Cause
 from materialise.roles import axis_for_role, axis_noun
 from search.engine.clients.graph import Facet
@@ -21,6 +23,8 @@ from search.engine.events import PlaceOptionsEvent
 from search.engine.region.codes import (
     ALTERNATES_UNEVALUATED,
     QUERY_QUALIFIER_DROPPED,
+    ROLE_SCOPE_DEFAULTED,
+    WHOLE_TOTAL_AVAILABLE,
     _ObsProbeResult,
     _OptionProbeResult,
 )
@@ -40,6 +44,7 @@ from search.engine.spec_build import RoleAxisFactInput
 from search.heading.departure_fact import DepartureFact
 from search.models import (
     Assumption,
+    BaseIdentity,
     EntityRoleKey,
     GraphRef,
     NearestRealSpec,
@@ -576,13 +581,18 @@ def with_composite_answer(
     so the composite carries none of their tasks and no slot or place options. Its preview
     is read per component by `observations_relaunch` (`composite_answer.CompositeRelaunch`),
     which the caller launches on the event loop where the request streams observations
-    (`enrichment._launch_trailing_tasks`).
+    (`enrichment._launch_trailing_tasks`). The table answer's own warnings, unpublished-whole
+    facts and assumption echoes are keyed to the composite (`with_restated_keys`), and its
+    `role_scope_defaulted` warnings count the composite's open axes (`recounted_scope`).
 
     The restatement touches no task, so it runs on any thread. A task `region` held belongs
     to the request's event loop, and the caller cancels it there
     (`cancel_dropped_tasks`)."""
+    recounted = dataclasses.replace(
+        region, warnings=recounted_scope(region.warnings, region.spec, spec, own=True)
+    )
     return dataclasses.replace(
-        region,
+        with_restated_keys(recounted, {region.spec.spec_id: spec}),
         specs=(spec, *region.specs[1:]),
         slot_options_task=None,
         slot_options_relaunch=None,
@@ -590,6 +600,93 @@ def with_composite_answer(
         place_options_relaunch=None,
         observations_task=None,
         observations_relaunch=observations_relaunch,
+    )
+
+
+def recounted_scope(
+    warnings: Sequence[Warning], table: Spec, composite: Spec, *, own: bool
+) -> tuple[Warning, ...]:
+    """`warnings`, with each `role_scope_defaulted` warning about `table` on an axis
+    `composite` counts (its `params` axis, `grounding.role_scope_defaulted_warning`) stating
+    the composite's count in place of `table`'s, built from the composite's own facts by the
+    builder a fresh answer's warning is built by (`grounding.stated_role_scope_message`):
+    the composite counts the parties of every component, the table answer those of its one
+    table (`scope.composite.assemble_composite`). A warning is about `table` when keyed to
+    it, or keyed to none where `table` is the region's `own` reading. Every other warning
+    stands."""
+    # grounding imports region.facets, which imports this module.
+    from search.engine.region.grounding import stated_role_scope_message
+
+    restated = {
+        fact.role: message
+        for fact in composite.resolved.role_axis_facts or ()
+        if (message := stated_role_scope_message(composite, fact.role)) is not None
+    }
+    if not restated:
+        return tuple(warnings)
+
+    def recounted(warning: Warning) -> Warning:
+        about = warning.spec_id == table.spec_id or (own and warning.spec_id is None)
+        axis = (warning.params or {}).get("axis")
+        if not about or warning.code != ROLE_SCOPE_DEFAULTED or not isinstance(axis, str):
+            return warning
+        message = restated.get(axis)
+        return warning if message is None else warning.model_copy(update={"message": message})
+
+    return tuple(map(recounted, warnings))
+
+
+def with_restated_keys(region: RegionResult, renamed: Mapping[str, Spec]) -> RegionResult:
+    """`region` with what it keys by the spec_id of each reading `renamed` restates keyed to
+    the restated Spec's: its warnings, without those the restated Spec cannot stand beside
+    (`_stands_beside`), its unpublished-whole facts and its assumption echoes. A warning keyed
+    to another reading, or to none, stands as it is."""
+
+    def warning(held: Warning) -> Warning | None:
+        spec = renamed.get(held.spec_id) if held.spec_id is not None else None
+        if spec is None:
+            return held
+        if not _stands_beside(held, spec.definition.identity):
+            return None
+        return held.model_copy(update={"spec_id": spec.spec_id})
+
+    def key(spec_id: str) -> str:
+        spec = renamed.get(spec_id)
+        return spec_id if spec is None else spec.spec_id
+
+    return dataclasses.replace(
+        region,
+        warnings=tuple(kept for held in region.warnings if (kept := warning(held)) is not None),
+        unpublished_whole_facts={
+            key(spec_id): facts for spec_id, facts in region.unpublished_whole_facts.items()
+        },
+        reading_assumption_echoes={
+            key(spec_id): echo for spec_id, echo in region.reading_assumption_echoes.items()
+        },
+    )
+
+
+def _stands_beside(warning: Warning, identity: BaseIdentity) -> bool:
+    """Whether `warning`, read over a table answer restated as composite `identity`, holds
+    for the composite: every warning but a `whole_total_available` naming a destination
+    total that a component of the composite reading one side of its destinations leaves out
+    (`code_index.composites.destination_population`, `RolePopulation.named`). "All
+    Recipients, Total" counts the core contributions a bilateral reading leaves out."""
+    if warning.code != WHOLE_TOTAL_AVAILABLE:
+        return True
+    total = (warning.params or {}).get("total")
+    ref = composite_ref(identity.model_dump(mode="json", include={"facets"}))
+    composite = DECLARED_COMPOSITES.get(ref) if ref is not None else None
+    if composite is None or not isinstance(total, str):
+        return True
+    index = get_index()
+    party = index.parties.get(total)
+    return not any(
+        party is not None
+        and party.publishes("destination", (recipe.dataset,))
+        and total not in destination_population(index, recipe.dataset, composite=ref).named
+        for recipe in composite.components
+        if recipe.destinations is not None
     )
 
 

@@ -6,10 +6,13 @@ from typing import Annotated, Literal
 
 from pydantic import (
     Field,
+    InstanceOf,
     ValidationInfo,
     field_validator,
     model_validator,
 )
+
+from code_index.scope_conventions import RolePopulation
 
 from .assumption import Assumption
 from .base import StrictModel
@@ -614,6 +617,13 @@ class ResubmitIdentityPayload(StrictModel):
     `entity_groups` names the group a role's entities were asked for as. The engine
     keeps a group the graph confirms for the identity's entities on that role
     (`resubmit_request.resubmit_named_groups`).
+
+    `populations` maps each `entities` key of `identity` that binds a population in place
+    of names a caller posted (`code_index.composites.TableIdentity.populations`) to that
+    population. The resolver reads such a role as open within the population's members
+    (`region.resubmit.resolve_spec_resubmit`). Only the engine sets it, from a composite's
+    table or component identity, so it stays out of every dump; the part memo keys it by
+    the dataset whose population it is (`response_cache_keys.part_memo_key`).
     """
 
     identity: BaseIdentity = Field(
@@ -624,6 +634,14 @@ class ResubmitIdentityPayload(StrictModel):
         )
     )
     entity_groups: ResubmitEntityGroups
+    populations: dict[str, InstanceOf[RolePopulation]] = Field(
+        default_factory=dict,
+        exclude=True,
+        description=(
+            "the identity's entities keys that bind a population, each read as open within "
+            "the population's members; set by the engine alone"
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------

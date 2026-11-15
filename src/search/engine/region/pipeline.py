@@ -12,13 +12,13 @@ from contextlib import ExitStack
 from typing import Final
 
 import dc_graph
+from code_index.composites import binds_composite
 from code_index.shared import get_index
 from code_index.types import PartyWord
 from dc_sdmx import SdmxCapExceededError
 from entity_resolution import Admission, EntityResolver, Resolution
 from materialise.member_conversion import request_conversion_reader
 from origin_catalogue import (
-    bound_catalogue,
     current_catalogue,
     note_un_unserved,
     recording_un_blocked_places,
@@ -50,9 +50,12 @@ from search.engine.region.candidate_admission import alternates_unevaluated_warn
 from search.engine.region.codes import ALTERNATES_UNEVALUATED, UN_SYSTEM_UNAVAILABLE
 from search.engine.region.composite_answer import (
     ComponentReads,
-    CompositeRelaunch,
-    composite_served,
+    population_table_answer,
+    with_bilateral_readings,
     with_composite_observations,
+    with_decided_scope,
+    with_population_read,
+    without_restated_options,
 )
 from search.engine.region.decisions import PartyReadingWithdrawn
 from search.engine.region.phase_answer import _phase_outcome
@@ -94,7 +97,6 @@ from search.engine.region.result import (
     RegionResult,
     cancel_dropped_tasks,
     every_member_phrases,
-    with_composite_answer,
 )
 from search.engine.region.scope_decision import decide_guarded, scope_facts
 from search.engine.region.source_choice import (
@@ -116,8 +118,8 @@ from search.engine.source_scope import SourceScope
 from search.models import Entry, EntryPath, Operation, PartScope, RoleAxis, Warning
 from search.scope.basis import identity_basis_record
 from search.scope.build import build_part_scope
-from search.scope.composite import assemble_composite
 from search.scope.state import ScopeIntake
+from search.scope.tables import PartFacts, ScopeFacts
 from series_coverage.shared import CoverageSnapshot
 
 logger = logging.getLogger(__name__)
@@ -611,45 +613,92 @@ def _with_scope_choices(result: RegionResult, state: ResolveState) -> RegionResu
 
     When the binders settle a composite option (the inclusive provider scope, the OECD
     headline per year), the scope's base is the composite, and the answer is restated as it
-    (`composite.assemble_composite`), carrying the closure that reads its preview per
-    component (`composite_answer.CompositeRelaunch`) for
-    `_with_composite_preview` to launch on the event loop."""
+    (`composite_answer.with_decided_scope`), carrying the closure that reads its preview per
+    component (`composite_answer.CompositeRelaunch`) for `_with_composite_preview` to launch
+    on the event loop. A composite whose table read binds a population restates the answer
+    `_within_population` read within it. A DAC2a answer with no provider axis that reads
+    total ODA because the bilateral default could not apply carries the decision's
+    `bilateral_reading_unavailable` warning (`ScopeDecision.warning`).
+
+    A result that is not definite states no scope, and the readings it shows in place of a
+    definite answer, its candidates, the alternate a refusal offers and its flagged matches,
+    are read as the definite answer reads DAC2a's total ODA
+    (`composite_answer.with_bilateral_readings`), under the part's scope facts: the answer
+    phase's decision's where it decided one, else facts of the part's operations alone."""
     if result.status != "definite":
+        decided = state.scope_decision
+        return with_bilateral_readings(
+            result,
+            reads=_component_reads(state),
+            selection=state.scope_selection,
+            facts=decided.facts
+            if decided is not None
+            else ScopeFacts(
+                index=get_index(),
+                coverage=state.coverage,
+                part=PartFacts(operations=tuple(state.operations)),
+            ),
+            operations=state.operations,
+            request_warnings=state.request_warnings or (),
+        )
+    decision = state.scope_decision
+    if decision is None or decision.spec_id != result.spec.spec_id:
+        decision = decide_guarded(
+            result.spec,
+            selection=state.scope_selection,
+            operations=state.operations,
+            coverage=state.coverage,
+        )
+    return with_decided_scope(result, decision, reads=_component_reads(state))
+
+
+async def _within_population(result: RegionResult, state: ResolveState) -> RegionResult:
+    """`result`, the pass's terminal result, read again within the population its composite
+    binds, or at the population's total in place of a destination it leaves out, where its
+    definite answer settles on one (`composite_answer.population_table_answer`): the
+    answer's open roles were discovered over the whole table before its scope settled on
+    the composite, so the part answers what a resubmit of the composite's table identity
+    answers, no_data included, and no_data where the composite refuses the read, carrying
+    the request's words and the warnings raised before the read
+    (`composite_answer.with_population_read`). It runs before the pass states requirement
+    departures, so they are stated on that read; stated-word coverage was judged on the
+    whole table's read, whose StatVars the population read shares.
+    The scope decision it reads is the answer phase's, else decided here, and is kept for
+    `_with_scope_choices` as the decision of the read's answer: the scope is decided once,
+    on the request's own identity, so a read at the population's total, whose Spec names a
+    destination the request never named, states the scope and composite identity the
+    request's answer does. The trailing tasks of the whole-table answer are cancelled.
+    `result` itself for any other result."""
+    if result.status != "definite" or state.request_warnings is None:
         return result
     spec = result.spec
     decision = state.scope_decision
     if decision is None or decision.spec_id != spec.spec_id:
-        decision = decide_guarded(
+        decision = await asyncio.to_thread(
+            decide_guarded,
             spec,
             selection=state.scope_selection,
             operations=state.operations,
             coverage=state.coverage,
         )
-    built = decision.scope
-    if built is None:
+        state.scope_decision = decision
+    if not decision.composite or decision.scope is None:
         return result
-    if not decision.composite:
-        return dataclasses.replace(result, scope_choices=built)
-    reads = _component_reads(state)
-    # The composite follows its mint, which reads each component under its own pin alone, so
-    # its years, coverage, headline, download and compiled components read the catalogue its
-    # preview reads, and its served years are the ones its preview filters by. `facts`
-    # remembers the years its components hold under the part's source scope, so they are
-    # read afresh.
-    served = composite_served(built.compiled.identity, reads=reads)
-    with bound_catalogue(reads.catalogue):
-        composite, components = assemble_composite(
-            spec,
-            built.compiled.identity,
-            built.compiled.spec_id,
-            served=served,
-            facts=decision.facts,
-        )
-    compiled = built.compiled.model_copy(update={"components": components})
-    relaunch = CompositeRelaunch(spec=composite, reads=reads, served=served)
+    t0 = now_ms()
+    answered = await asyncio.to_thread(
+        population_table_answer,
+        spec,
+        decision.scope.compiled.identity,
+        reads=_component_reads(state),
+    )
+    if answered is None:
+        return result
+    grafted = with_population_read(result, answered, request_warnings=state.request_warnings)
+    cancel_dropped_tasks(result, grafted)
+    if grafted.status == "definite":
+        state.scope_decision = dataclasses.replace(decision, spec_id=grafted.spec.spec_id)
     return dataclasses.replace(
-        with_composite_answer(result, composite, observations_relaunch=relaunch),
-        scope_choices=built.model_copy(update={"compiled": compiled}),
+        grafted, timing_by_step={**grafted.timing_by_step, "population_read": now_ms() - t0}
     )
 
 
@@ -693,9 +742,11 @@ def merged_scope_choices(
     """The scope of `merged`, the region a same-shape merge folded `group` into, built as a
     resubmit of its identity builds it: over the merged identity, with the union of the
     members' applied entries and the basis record its identity reads
-    (`basis.identity_basis_record`). None when no member states a scope,
-    or the merged identity settles no axis. An entry the merged identity cannot take is
-    reported in `PartScope.dropped_entries`."""
+    (`basis.identity_basis_record`). None when no member states a scope, or the merged
+    identity settles no axis and compiles to no composite; a scope with no choice whose
+    compiled identity is a composite stands, as a single part's does
+    (`scope_decision.decide_scope`). An entry the merged identity cannot take is reported in
+    `PartScope.dropped_entries`."""
     scopes = [region.scope_choices for region in group if region.scope_choices is not None]
     if not scopes:
         return None
@@ -711,7 +762,8 @@ def merged_scope_choices(
         refuse=False,
     )
     assert isinstance(built, PartScope)
-    return built if built.choices else None
+    composite = binds_composite(built.compiled.identity.model_dump(mode="json", include={"facets"}))
+    return built if built.choices or composite else None
 
 
 def _union(entries: Iterable[Entry]) -> list[Entry]:
@@ -1052,6 +1104,7 @@ async def _run_phases(state: ResolveState) -> RegionResult:
                 if result is None:
                     settled = settled or phase is _phase_settle
                 else:
+                    result = await _within_population(result, state)
                     # Only a vetted election can report qualifier matches: earlier terminals
                     # may hold pre-bind candidates without a forced binding or elected shape.
                     every_member = (
@@ -1093,6 +1146,7 @@ async def _run_phases(state: ResolveState) -> RegionResult:
                     stated = _stating_unpublished_wholes(result, state)
                     answered = await asyncio.to_thread(_with_scope_choices, stated, state)
                     cancel_dropped_tasks(stated, answered)
+                    answered = without_restated_options(stated, answered)
                     return await _with_composite_preview(answered, state)
                 if state.capped_shapes and state.scope is not None and not scoped:
                     reads.enter_context(scoped_reads(state.scope.allowed))

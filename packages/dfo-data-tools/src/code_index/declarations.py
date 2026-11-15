@@ -110,6 +110,9 @@ CLIMATE_FINANCE = "ClimateChangePolicyObjective"
 CRS_INCLUSIVE = "provenance/ONEBilateralAndImputedMultilateral"
 DAC2A_INCLUSIVE = "provenance/ONEDAC2aBilateralAndImputedMultilateral"
 
+# DAC2a's total ODA read to its bilateral recipients alone (`COMPOSITES`).
+DAC2A_BILATERAL = "provenance/ONEDAC2aBilateral"
+
 # The DAC's published total of the multilateral organisations' own outflows, a provider of DAC1,
 # DAC2a and DAC2b.
 DAC_MULTILATERALS = "DACMultilaterals"
@@ -508,7 +511,10 @@ COMPOSITES: tuple[CompositeDeclaration, ...] = (
         kind="stacked",
         components=(
             ComponentRecipe(
-                role="bilateral", dataset=DAC2A, bind={"dac2aAidType": DAC2A_TOTAL_ODA}
+                role="bilateral",
+                dataset=DAC2A,
+                bind={"dac2aAidType": DAC2A_TOTAL_ODA},
+                destinations="bilateral",
             ),
             ComponentRecipe(
                 role="imputed",
@@ -516,6 +522,21 @@ COMPOSITES: tuple[CompositeDeclaration, ...] = (
                 provenance=DAC2A,
                 basis=("attributedAmount", "Gross"),
                 bind={"dac2aAidType": DAC2A_IMPUTED_MULTILATERAL_ODA},
+                destinations="bilateral",
+            ),
+        ),
+    ),
+    CompositeDeclaration(
+        provenance=DAC2A_BILATERAL,
+        label="OECD DAC2a",
+        measure_noun="(bilateral flows)",
+        kind="stacked",
+        components=(
+            ComponentRecipe(
+                role="bilateral",
+                dataset=DAC2A,
+                bind={"dac2aAidType": DAC2A_TOTAL_ODA},
+                destinations="bilateral",
             ),
         ),
     ),

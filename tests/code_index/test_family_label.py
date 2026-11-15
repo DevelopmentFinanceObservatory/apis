@@ -93,6 +93,33 @@ def test_a_composite_is_named_by_its_declaration(index, identity, plain):
     assert label == ", ".join([*lead, *([slots] if slots else [])])
 
 
+_DAC2A_IDENTITY = {
+    **_HEADLINE_IDENTITY,
+    "slots": [
+        {"property": "dac2aAidType", "binding": {"state": "value", "ref": "DAC2aAidType206"}},
+        {"property": "financialFlowType", "binding": {"state": "value", "ref": "Disbursement"}},
+        {"property": "nettingBasis", "binding": {"state": "value", "ref": "Net"}},
+    ],
+}
+
+
+def test_a_stacked_composite_of_one_table_names_its_cut(index):
+    """DAC2a's bilateral destinations are a cut of DAC2a's own rows, so the reading is named
+    as DAC2a's total ODA is, with the cut its sentence names after the measure."""
+    measures = get_measure_index()
+    cut = {
+        **_DAC2A_IDENTITY,
+        "facets": {"provenance": {"state": "value", "ref": "provenance/ONEDAC2aBilateral"}},
+    }
+    plain = family_label(_DAC2A_IDENTITY, index=index, measure_index=measures)
+    assert plain is not None
+    measure, *slots = plain.split(", ")
+
+    label = family_label(cut, index=index, measure_index=measures)
+
+    assert label == ", ".join([f"{measure} (bilateral flows)", *slots])
+
+
 def test_the_imputed_label_leaves_out_every_slot_its_five_tuple_pins(index):
     identity = imputed_education_aid_identity()
     pinned = index.dataset_pins[IMPUTED_PROVENANCE, five_tuple_from_identity(identity["shape"])]

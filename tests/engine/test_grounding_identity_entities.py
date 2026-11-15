@@ -113,7 +113,7 @@ def _dcids(count: int) -> list[str]:
 def _unqualified(discovered: DiscoveredScope) -> str:
     """The message for a query with no bound opposite entity."""
     return role_scope_defaulted_message(
-        discovered,
+        discovered.axis,
         member_count=len(discovered.member_dcids),
         bound_dcids=[],
         label_of=_RecordingLabels(),
@@ -161,7 +161,7 @@ _ORIGIN_BASE = "No provider was named, so the answer covers both providers with 
 def test_role_scope_defaulted_message_names_every_bound_origin(labels: list[str], named: str):
     """A discovered destination scope names bound origins, with counts above three."""
     message = role_scope_defaulted_message(
-        _discovered_scope("destination", 2),
+        "destination",
         member_count=2,
         bound_dcids=_dcids(len(labels)),
         label_of=_RecordingLabels(labels),
@@ -182,7 +182,7 @@ def test_role_scope_defaulted_message_names_every_bound_origin(labels: list[str]
 def test_role_scope_defaulted_message_names_every_bound_destination(labels: list[str], named: str):
     """A discovered origin scope names bound destinations."""
     message = role_scope_defaulted_message(
-        _discovered_scope("origin", 2),
+        "origin",
         member_count=2,
         bound_dcids=_dcids(len(labels)),
         label_of=_RecordingLabels(labels),
@@ -193,7 +193,7 @@ def test_role_scope_defaulted_message_names_every_bound_destination(labels: list
 def test_role_scope_defaulted_message_keeps_the_single_label_text():
     """The one-label sentence is the text corpus/standard.yaml quotes."""
     message = role_scope_defaulted_message(
-        _discovered_scope("destination", 2),
+        "destination",
         member_count=2,
         bound_dcids=["country/FRA"],
         label_of=_RecordingLabels(["France"]),
@@ -205,9 +205,7 @@ def test_role_scope_defaulted_message_keeps_the_single_label_text():
 
 def test_role_scope_defaulted_message_looks_up_no_label_without_a_bound_dcid():
     label_of = _RecordingLabels()
-    role_scope_defaulted_message(
-        _discovered_scope("destination", 2), member_count=2, bound_dcids=[], label_of=label_of
-    )
+    role_scope_defaulted_message("destination", member_count=2, bound_dcids=[], label_of=label_of)
     assert label_of.calls == []
 
 
@@ -216,7 +214,7 @@ def test_role_scope_defaulted_message_looks_up_no_label_for_four_or_more_dcids(c
     """Counts above three need no label lookup, so graph failures cannot break the warning."""
     label_of = _RecordingLabels()
     message = role_scope_defaulted_message(
-        _discovered_scope("destination", 2),
+        "destination",
         member_count=2,
         bound_dcids=_dcids(count),
         label_of=label_of,
@@ -230,7 +228,7 @@ def test_role_scope_defaulted_message_looks_up_labels_once_for_the_full_dcid_lis
     label_of = _RecordingLabels(["A", "B", "C"])
     dcids = _dcids(count)
     role_scope_defaulted_message(
-        _discovered_scope("destination", 2), member_count=2, bound_dcids=dcids, label_of=label_of
+        "destination", member_count=2, bound_dcids=dcids, label_of=label_of
     )
     assert label_of.calls == [dcids]
 

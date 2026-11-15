@@ -323,6 +323,9 @@ WARNING_CODES: frozenset[str] = frozenset(
         # An answer lists each member of a flow side whose dataset publishes the side's
         # whole total (region/codes.py).
         "whole_total_available",
+        # A fresh DAC2a part with no provider axis reads total ODA where the bilateral
+        # default could not apply (region/codes.py).
+        "bilateral_reading_unavailable",
         # A replayed selection collapsed to one definite candidate.
         "candidates_collapsed_definite",
         # A replayed selection has no surviving candidates.

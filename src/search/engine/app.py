@@ -554,6 +554,7 @@ async def list_options(body: OptionsRequest, deps: SearchDepsDep) -> Response:
             materialise_graph=materialise_graph,
             population_memo=deps.population_memo,
             deadline=deadline,
+            coverage=coverage_snapshot,
         ),
         deadline=deadline,
     )

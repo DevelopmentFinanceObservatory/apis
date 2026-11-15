@@ -22,6 +22,7 @@ composes it here (`compose_observations`, `search.engine.region.composite_answer
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import cast
@@ -37,7 +38,9 @@ from code_index.composites import (
 from code_index.members import SourceNotInFamily, identity_family_query, index_family
 from code_index.query import CodeIndex
 from code_index.types import CompositeDeclaration
+from dfo_platform.roles import role_key_axis
 from materialise.composite import spans, stacked_years, table_years
+from materialise.enrichment import party_count, party_kind_of
 from search.engine.retrieval.bound_values import served_members
 from search.models import (
     BaseIdentity,
@@ -53,8 +56,11 @@ from search.models import (
     ObservationsOmissionReason,
     PreviewOrder,
     ProvenanceRef,
+    ResolvedEntity,
     ResolvedFacet,
+    ResolvedSpec,
     ResolvedStatVars,
+    RoleAxis,
     SlotValue,
     Spec,
     SpecDefinition,
@@ -66,7 +72,11 @@ from search.observations import provenance_refs
 from search.render.labels import join_labels
 from search.scope.tables import ScopeFacts
 from series_coverage.coverage_types import BoundRoles, Role
+from series_coverage.coverage_types import Headline as CoverageHeadline
 from series_coverage.index import CoverageIndex, elected_year
+from series_coverage.schema import ABSENT_ENTITY
+
+logger = logging.getLogger(__name__)
 
 _ROLES: Mapping[str, Role] = {"origin": "donor", "destination": "recipient"}
 """The coverage role each flow role of an identity's entities reads."""
@@ -188,13 +198,17 @@ def _years_asked(window: Mapping[str, object], coverage: CoverageIndex) -> tuple
 
 
 def _bound(identity: Mapping[str, object]) -> BoundRoles:
-    """The places `identity` binds on each coverage role."""
+    """The places `identity` binds on each coverage role, every entities key read by the
+    flow axis it names (`role_key_axis`), as `code_index.composites` binds a component's
+    destinations."""
     entities = cast("Mapping[str, Sequence[str]]", identity.get("entities") or {})
-    return {
-        _ROLES[role]: frozenset(dcids)
-        for role, dcids in entities.items()
-        if role in _ROLES and dcids
-    }
+    bound: dict[Role, frozenset[str]] = {}
+    for key, dcids in entities.items():
+        axis = role_key_axis(key)
+        if axis is not None and dcids:
+            role = _ROLES[axis]
+            bound[role] = bound.get(role, frozenset()) | frozenset(dcids)
+    return bound
 
 
 def table_document(identity: BaseIdentity, index: CodeIndex) -> dict[str, object] | None:
@@ -202,7 +216,9 @@ def table_document(identity: BaseIdentity, index: CodeIndex) -> dict[str, object
     (`code_index.composites.table_identity`): itself, or the identity a composite's option was
     set on. None for a composite whose components cannot be derived."""
     try:
-        return dict(table_identity(index, identity.model_dump(mode="json", exclude_none=True)))
+        return dict(
+            table_identity(index, identity.model_dump(mode="json", exclude_none=True)).identity
+        )
     except CompositeNotServable:
         return None
 
@@ -413,6 +429,9 @@ def assemble_composite(
     component tables give; its sources are its component tables, whose labels its
     `published_tables` joins, and its measure label reads the declaration's `measure_noun`
     (`_measure_label`), so its sentence cites both tables and names the composite's measure;
+    its open role axes (`ResolvedSpec.scope`, `role_axis_facts`) list and count the parties
+    of every component's series in the years it serves (`_open_axes`), as the mint's frame
+    holds them, where the table identity's answer read the first component's table alone;
     its concept label stays the table identity's answer's, which names no basis; its download
     facts are the composite file's (`composite_download`); and it carries no observation
     preview, since the table identity's reads one table. The engine reads the composite's
@@ -443,10 +462,9 @@ def assemble_composite(
             ),
             "facets": facets,
             "observations": None,
-            "headline": _headline(served, document, spec.resolved.headline, facts=facts),
-            "stat_vars": _stat_vars(
-                served, spec.resolved.stat_vars, document, declaration, facts=facts
-            ),
+            "headline": _headline(served, spec.resolved.headline, facts=facts),
+            **_open_axes(spec.resolved, served, declaration, facts=facts),
+            "stat_vars": _stat_vars(served, spec.resolved.stat_vars, declaration, facts=facts),
             "slots": [
                 slot.model_copy(update={"binding": _window_binding(window)})
                 if slot.key.axis == "when" and window is not None
@@ -469,6 +487,117 @@ def assemble_composite(
     return restated, _components(served)
 
 
+def _open_axes(
+    stated: ResolvedSpec,
+    served: Sequence[ServedComponent],
+    declaration: CompositeDeclaration,
+    *,
+    facts: ScopeFacts,
+) -> dict[str, object]:
+    """`stated`'s open role axes, the table identity's answer's, restated over every
+    component of the composite `declaration`: its scope lists, and each role axis fact
+    counts (`enrichment.party_count`, in the components' datasets), the parties on the
+    axis's coverage role of the series every component writes in the years it serves, each
+    read under its own places (`_served_parties`). A stacked composite's imputed line can
+    hold recipients its bilateral line lacks, which the table identity's answer, reading
+    the bilateral table alone, leaves out. A scope member the answer listed keeps its label
+    and type, and one only another component holds is labelled from the code index. Empty
+    where the answer leaves no axis open, or where the snapshot cannot list the parties,
+    which is logged at WARNING with the components it cannot list, since the answer then
+    counts the table identity's parties alone."""
+    if stated.scope is None and not stated.role_axis_facts:
+        return {}
+    coverage = facts.coverage.index
+    unlisted = [item for item in served if item.served and not _lists_parties(item, coverage)]
+    if unlisted:
+        logger.warning(
+            "composite %s keeps the open axes of its table read: the snapshot cannot list "
+            "the parties of %s",
+            declaration.provenance,
+            ", ".join(item.component.recipe.dataset for item in unlisted),
+        )
+        return {}
+    held = _served_parties(served, coverage)
+    index = facts.index
+    datasets = [recipe.dataset for recipe in declaration.components]
+    restated: dict[str, object] = {}
+    if stated.role_axis_facts:
+        restated["role_axis_facts"] = [
+            fact.model_copy(
+                update={
+                    "member_count": party_count(
+                        held[_ROLES[fact.role]],
+                        axis=fact.role,
+                        parties=index.parties,
+                        datasets=datasets,
+                    )
+                }
+            )
+            if fact.member_count is not None
+            else fact
+            for fact in stated.role_axis_facts
+        ]
+    scope = stated.scope
+    if scope is not None and scope.axis != "observationAbout":
+        role = _ROLES[scope.axis]
+        listed = {member.ref: member for member in scope.members}
+        restated["scope"] = scope.model_copy(
+            update={
+                "members": [
+                    listed.get(dcid)
+                    or ResolvedEntity(
+                        ref=dcid,
+                        label=row.label if (row := index.parties.get(dcid)) else None,
+                        role=scope.axis,
+                    )
+                    for dcid in _parties(
+                        held[role], axis=scope.axis, index=index, datasets=datasets
+                    )
+                ]
+            }
+        )
+    return restated
+
+
+def _parties(
+    dcids: Iterable[str], *, axis: RoleAxis, index: CodeIndex, datasets: Sequence[str]
+) -> list[str]:
+    """`dcids`, members of a role on `axis`, without the totals `party_count` leaves out of
+    its count, in order: those the code index declares a `total` on `axis` in `datasets`
+    (`party_kind_of`), unless every member is one. The scope lists the parties its role axis
+    fact counts."""
+    ordered = sorted(dcids)
+    kept = [
+        dcid
+        for dcid in ordered
+        if party_kind_of(dcid, axis=axis, parties=index.parties, datasets=datasets) != "total"
+    ]
+    return kept or ordered
+
+
+def _lists_parties(item: ServedComponent, coverage: CoverageIndex) -> bool:
+    """Whether the snapshot lists the parties of the series `item` writes: it settles its
+    members and holds a row of each (`CoverageIndex.covers`), as `composite_download`
+    counts rows only there."""
+    return item.members is not None and all(coverage.covers(sv) for sv in item.members)
+
+
+def _served_parties(
+    served: Sequence[ServedComponent], coverage: CoverageIndex
+) -> dict[Role, frozenset[str]]:
+    """The donors and recipients of the series each of `served` writes in the years it
+    serves (`_served_series`), as the mint's frame holds them, for components whose parties
+    the snapshot lists (`_lists_parties`)."""
+    parties: dict[Role, set[str]] = {"recipient": set(), "donor": set()}
+    for item in served:
+        if not item.served:
+            continue
+        for (_variable, recipient, donor), _held in _served_series(item, coverage):
+            parties["recipient"].add(recipient)
+            parties["donor"].add(donor)
+    return {role: frozenset(held - {ABSENT_ENTITY}) for role, held in parties.items()}
+
+
 def _measure_label(declaration: CompositeDeclaration, measure: str | None) -> str | None:
     """The measure label a composite answer's sentence names: a stacked composite's
     `measure_noun` after `measure`, the label of the measure its components share, and a
@@ -481,11 +610,15 @@ def _measure_label(declaration: CompositeDeclaration, measure: str | None) -> st
 
 def _component_sources(index: CodeIndex, declaration: CompositeDeclaration) -> list[ProvenanceRef]:
     """The tables a composite is served from, in component order, once each, as the
-    provenance refs a sentence's byline and a citation name (`observations.provenance_refs`)."""
+    provenance refs a sentence's byline and a citation name (`observations.provenance_refs`),
+    each under its declared label, as a plain answer names its table
+    (`spec_build.elected_sources`)."""
     datasets = [recipe.dataset for recipe in declaration.components]
-    return provenance_refs(
-        datasets, {dataset: index.datasets[dataset].label for dataset in datasets}
-    )
+    labels = {dataset: index.datasets[dataset].label for dataset in datasets}
+    return [
+        ref.model_copy(update={"label": labels[ref.ref]})
+        for ref in provenance_refs(datasets, labels)
+    ]
 
 
 def _window_binding(window: TimeWindow) -> BindingValue:
@@ -536,22 +669,22 @@ def _with_data(
 def _stat_vars(
     served: Sequence[ServedComponent],
     stated: ResolvedStatVars,
-    identity: Mapping[str, object],
     declaration: CompositeDeclaration,
     *,
     facts: ScopeFacts,
 ) -> ResolvedStatVars:
     """`stated`, the table identity's StatVar counts, restated over every component of the
-    composite `declaration`. The member count is the StatVars holding a series in the years
-    their component serves, the served count sums the StatVars a mint of each component
-    serves (None where the index does not settle some component's members), the served date
+    composite `declaration`. The member count is the StatVars holding a series under their
+    component's own places (`_bound`) in the years it serves, the served count sums the
+    StatVars a mint of each component serves (None where the index does not settle some
+    component's members), the served date
     range spans the years the components serve, and `sums_components` states whether a
     groupby sum adds the components (`code_index.composites.components_sum`), the rule the
     mint sums by."""
     years = sorted({year for item in served for year in item.served})
-    bound = _bound(identity)
     confirmed = sum(
-        len(_with_data(item, bound, facts.coverage.index, item.served)) for item in served
+        len(_with_data(item, _bound(item.component.identity), facts.coverage.index, item.served))
+        for item in served
     )
     counts = [len(item.members) if item.members is not None else None for item in served]
     return stated.model_copy(
@@ -675,50 +808,29 @@ def _shared_licence(served: Sequence[ServedComponent]) -> DownloadLicence | None
 
 def _headline(
     served: Sequence[ServedComponent],
-    identity: Mapping[str, object],
     stated: Headline | None,
     *,
     facts: ScopeFacts,
 ) -> Headline | None:
     """The composite's headline: the latest year any component serves, counted over the
-    rows of every component serving it (`CoverageIndex.headline` over their StatVars, one
-    year at a time), with the same counts for it and the two years before it among those
-    the composite serves. The named window is `stated`'s, the request's. None when no
-    component serves a year or settles its members."""
+    rows of every component serving it, each under its own places (`_headline_year`), with
+    the same counts for it and the two years before it among those the composite serves. A
+    component reads its own places, so one that binds its destinations to a population
+    (`ComponentIdentity.populations`) counts that population alone. The named window is
+    `stated`'s, the request's. None when no component serves a year or settles its
+    members."""
     coverage = facts.coverage.index
-    bound = _bound(identity)
     years = sorted({year for item in served for year in item.served}, reverse=True)[:3]
     counted: list[HeadlineYear] = []
     for year in years:
-        variables = sorted(
-            {
-                variable
-                for item in served
-                if year in item.served and item.members is not None
-                for variable in item.members
-            }
-        )
-        found = (
-            coverage.headline(variables=variables, bound=bound, first_year=year, last_year=year)
-            if variables
-            else None
-        )
-        if found is None or found.year != year:
-            continue
-        names = coverage.role_names.get(variables[0])
-        role_dcids = {} if names is None else {"donor": names.donor, "recipient": names.recipient}
-        counted.append(
-            HeadlineYear(
-                year=year,
-                observations=found.observations,
-                series=found.series,
-                role_counts={
-                    dcid: count
-                    for role, count in found.role_counts.items()
-                    if (dcid := role_dcids.get(role)) is not None
-                },
-            )
-        )
+        reads: dict[tuple[tuple[Role, frozenset[str]], ...], set[str]] = {}
+        for item in served:
+            if year in item.served and item.members is not None:
+                bound = _bound(item.component.identity)
+                reads.setdefault(tuple(sorted(bound.items())), set()).update(item.members)
+        found = _headline_year(coverage, reads, year)
+        if found is not None:
+            counted.append(found)
     if not counted:
         return None
     head = counted[0]
@@ -731,3 +843,61 @@ def _headline(
         role_counts=head.role_counts,
         recent_years=counted,
     )
+
+
+def _headline_year(
+    coverage: CoverageIndex,
+    reads: Mapping[tuple[tuple[Role, frozenset[str]], ...], set[str]],
+    year: int,
+) -> HeadlineYear | None:
+    """The counts of `year` over `reads`, the StatVars of the components serving it grouped
+    by the places they bind (`_bound`, as sorted items): `CoverageIndex.headline` of one
+    group, or across several the summed observations and series of each group's, whose
+    StatVars differ, and the distinct parties on each role across all of their series in
+    the year. None when no row holds `year`."""
+    found: list[tuple[CoverageHeadline, BoundRoles, list[str]]] = []
+    for key, members in reads.items():
+        variables = sorted(members)
+        bound: BoundRoles = dict(key)
+        held = coverage.headline(variables=variables, bound=bound, first_year=year, last_year=year)
+        if held is not None and held.year == year:
+            found.append((held, bound, variables))
+    if not found:
+        return None
+    names = coverage.role_names.get(found[0][2][0])
+    role_dcids = {} if names is None else {"donor": names.donor, "recipient": names.recipient}
+    if len(found) == 1:
+        role_counts = found[0][0].role_counts
+    else:
+        role_counts = _distinct_parties(coverage, [(b, v) for _, b, v in found], year)
+    return HeadlineYear(
+        year=year,
+        observations=sum(held.observations for held, _, _ in found),
+        series=sum(held.series for held, _, _ in found),
+        role_counts={
+            dcid: count
+            for role, count in role_counts.items()
+            if (dcid := role_dcids.get(role)) is not None
+        },
+    )
+
+
+def _distinct_parties(
+    coverage: CoverageIndex, reads: Sequence[tuple[BoundRoles, list[str]]], year: int
+) -> dict[Role, int]:
+    """The distinct donors and recipients of the series `reads` hold in `year`, each read
+    under its own bound, by coverage role; a role no series carries a party on is left
+    out."""
+    parties: dict[Role, set[str]] = {"recipient": set(), "donor": set()}
+    for bound, variables in reads:
+        found = coverage.series_years(
+            variables=variables, bound=bound, first_year=year, last_year=year
+        )
+        if found is None:
+            continue
+        series = found.keys()
+        for _variable, recipient, donor in series:
+            parties["recipient"].add(recipient)
+            parties["donor"].add(donor)
+    counts = {role: len(held - {ABSENT_ENTITY}) for role, held in parties.items()}
+    return {role: count for role, count in counts.items() if count}

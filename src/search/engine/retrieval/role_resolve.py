@@ -517,6 +517,7 @@ def _confirm_role_bearing(
     date_request: DateRequest | None,
     coverage_snapshot: CoverageSnapshot,
     facet_label: str,
+    within: Mapping[RoleAxis, frozenset[str]],
 ) -> Materialised | NoDataDraft | UnsupportedDraft | _RoleBearingConfirmation:
     """Confirm members against coverage's fixed recipient/donor role labels.
 
@@ -548,6 +549,7 @@ def _confirm_role_bearing(
                 date_request=date_request,
                 coverage_snapshot=coverage_snapshot,
                 facet_label=facet_label,
+                within=within.get("origin"),
             )
         if subject_dcids or not origin_dcids:
             return NoDataDraft(reason="role_incompatible")
@@ -567,6 +569,7 @@ def _confirm_role_bearing(
             date_request=date_request,
             coverage_snapshot=coverage_snapshot,
             facet_label=facet_label,
+            within=within.get("destination"),
         )
         if companion_open_axis is not None and isinstance(destination_result, Materialised):
             destination_result.also_defaulted_axis = companion_open_axis
@@ -972,6 +975,7 @@ def graph_confirm_resolve(
     discover_scope: bool = False,
     open_axes: frozenset[RoleAxis] = frozenset(),
     coverage_snapshot: CoverageSnapshot,
+    within: Mapping[RoleAxis, frozenset[str]] | None = None,
 ) -> Materialised | NoDataDraft | UnsupportedDraft:
     """Filter a role-bearing shape's members by bound values, then confirm observations.
 
@@ -996,7 +1000,9 @@ def graph_confirm_resolve(
     answers with the twin, and one whose members all lack the axis elects as it would
     without it (`statvar_members.electing_role_keys`). The result's ``open_axes`` holds
     the identity's open roles (`_AdmittedPopulation.open_axes`), as does a no-data
-    outcome over the elected members (`NoDataDraft.open_axes`).
+    outcome over the elected members (`NoDataDraft.open_axes`). ``within`` holds, by flow
+    axis, the members an open axis is discovered within (`role_scope.discover_role_scope`):
+    the population a composite binds the role to, which the caller posted open.
 
     Returns ``Materialised``, ``NoDataDraft``, or ``UnsupportedDraft``. A bound
     destination with no observations returns an unavailable ``Materialised``
@@ -1092,6 +1098,7 @@ def graph_confirm_resolve(
         date_request=date_request,
         coverage_snapshot=coverage_snapshot,
         facet_label=facet_label,
+        within=within or {},
     )
     if not isinstance(confirmation, _RoleBearingConfirmation):
         # The elected members declare the open axes whether or not they hold data, so a

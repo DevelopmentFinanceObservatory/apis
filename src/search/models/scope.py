@@ -157,9 +157,10 @@ class ProviderBinding(StrictModel):
     provenance: str | None = Field(
         default=None,
         description=(
-            "the composite provenance the inclusive scope binds as the identity's source, "
-            "which stacks the part's bilateral flows on the imputed multilateral line of its "
-            "own table; None for every other scope"
+            "the composite provenance the option binds as the identity's source: for the "
+            "inclusive scope, the part's bilateral flows stacked on the imputed multilateral "
+            "line of its own table; for the bilateral scope on DAC2a's total ODA, its "
+            "bilateral destinations alone; None for every other option"
         ),
     )
 
@@ -185,8 +186,9 @@ class OptionAvailability(StrictModel):
         default_factory=dict,
         description=(
             "the code's parameters: `why` for provider_not_offered, `dataset` for "
-            "basis_not_published and contributions_counted, "
-            "`entry` and `cause` for conflicts_with"
+            "basis_not_published and contributions_counted, `destination` for "
+            "multilateral_destination, the multilateral agency the part names as recipient, "
+            "whose flows are core contributions, `entry` and `cause` for conflicts_with"
         ),
     )
 

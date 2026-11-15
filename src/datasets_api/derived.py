@@ -25,7 +25,10 @@ frame past retention `artifact_expired`.
 `render_derived_file` writes the frame in the format the file selector names
 (`doors.files.selector_options`): `csv`, `xlsx` or `parquet`, alone or in a bundle zip beside the
 Data Package documents a dataset bundle holds (`materialise.bundle.assemble_bundle`), citing the
-sources the frame's `provenance` column names from its roots' citations. A derived frame's files
+sources the frame's `provenance` column names from its roots' citations. A declared composite
+there is cited by its component tables (`code_index.composites.provenance_datasets`), as its
+root's citation names them, and named with what it adds or reads
+(`materialise.bundle_sources.composite_notes`). A derived frame's files
 hold the frame's own grammar columns, the frame layout, so `layout` takes only `frame`. Bare
 Parquet is the frame file the publish stored beside the canonical frame
 (`render.render_and_store_frame_file`), the file a format 2 ref's `artifact.digest` names, as a
@@ -51,6 +54,8 @@ from dfo_frame_grammar import Frame
 
 from artifact_store import ArtifactStore, Tier
 from artifact_store.errors import ArtifactNotFoundError
+from code_index.composites import provenance_datasets
+from code_index.shared import get_index
 from dataset_store.clock import Clock
 from dataset_store.snapshot import (
     ManifestFacts,
@@ -86,7 +91,7 @@ from materialise.bundle import (
 )
 from materialise.bundle_columns import TableScan, column_docs, summary_line
 from materialise.bundle_naming import bare_file_name, sources_slug, zip_file_name
-from materialise.bundle_sources import source_provenance
+from materialise.bundle_sources import composite_notes, source_provenance
 from materialise.formats import (
     Rendering,
     Table,
@@ -479,11 +484,14 @@ def render_derived_file(
     rows, columns = table.num_rows, len(table.columns)
     record = reads.recipe_reader.read_recipe(spec_id=spec_id, content_version=content_version)
     citation = recipe_citation(reads.snapshot_reader, record).sources_by_ref()
+    provenance_refs = _provenance_refs(table)
     sources = tuple(
         source_provenance(
             ref, cited.model_dump(mode="json") if (cited := citation.get(ref)) else None
         )
-        for ref in _provenance_refs(table)
+        for ref in dict.fromkeys(
+            dataset for ref in provenance_refs for dataset in provenance_datasets(ref)
+        )
     )
     slug = sources_slug([source.name for source in sources])
     tag = content_version.removeprefix("ocv_")[:_TAG_LENGTH]
@@ -524,6 +532,7 @@ def render_derived_file(
             ),
             sources=sources,
             columns=column_docs(scan, code_system_names={}),
+            composites=composite_notes(provenance_refs, index=get_index()),
         )
         origin = site.public_site_url
         documents = assemble_bundle(

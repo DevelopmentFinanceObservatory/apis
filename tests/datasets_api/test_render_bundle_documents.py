@@ -15,6 +15,7 @@ import frictionless
 import pytest
 
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
+from code_index.declarations import CRS_INCLUSIVE
 from code_index.shared import get_index
 from code_index.types import StatVarRow
 from datasets_api.manifest_models import (
@@ -31,6 +32,7 @@ from dc_graph.errors import GraphReadError
 from dfo_platform.config import PublicSiteSettings
 from materialise.bundle import ReproducingCall
 from materialise.enrichment import EnrichmentLookup
+from materialise.errors import MaterialisationUsageError
 
 from ._artifact_doubles import FakeArtifactStore
 from ._frame_chunks import frame_of_rows
@@ -154,14 +156,21 @@ class _FailingGraph(FakeMintGraphReader):
         raise GraphReadError("graph read past its deadline")
 
 
-def _render_crs(*, graph: FakeMintGraphReader | None = None) -> dict[str, bytes]:
+def _render_crs(
+    *,
+    graph: FakeMintGraphReader | None = None,
+    provenance: str = _CRS,
+    with_index: bool = True,
+) -> dict[str, bytes]:
+    """The bundle of `_CRS_TABLE`, its rows read as carrying `provenance`, rendered over the
+    bound release's code index, or none without `with_index`."""
     store = FakeArtifactStore()
     options = MintOptions(format="csv", bundle=True)
     rendered = render_and_store(
         frame_chunks=lambda: iter((_CRS_TABLE,)),
         options=options,
         spec=_CRS_SPEC,
-        provenance_refs=[_CRS],
+        provenance_refs=[provenance],
         citations={_CRS: _CRS_CITATION},
         reproducing_call=ReproducingCall(
             path=f"/api/datasets/{_CRS_SPEC_ID}", options={"format": "csv", "bundle": "true"}
@@ -174,7 +183,7 @@ def _render_crs(*, graph: FakeMintGraphReader | None = None) -> dict[str, bytes]
         enrichment=EnrichmentLookup(graph or FakeMintGraphReader(arcs=_GRAPH_ARCS)),
         pivot_max_output_cells=5_000_000,
         groupby_fold_max_rows=2_000_000,
-        code_index=get_index(),
+        code_index=get_index() if with_index else None,
         resolved_stat_var_refs=(),
     )
     return _unzip(store.fetch(rendered.artifact.url))
@@ -298,6 +307,13 @@ _PINNED_CRS_SPEC: dict[str, object] = {
     },
 }
 _SITE_LINK = f"https://site.example/data?spec={_CRS_SPEC_ID}&v={_CRS_VERSION}"
+
+
+def test_a_composite_render_without_a_code_index_refuses():
+    """A composite is named and described from its declaration over the code index, so a
+    render that has none refuses rather than write a bundle with no word of it."""
+    with pytest.raises(MaterialisationUsageError, match="provenance/ONEBilateral"):
+        _render_crs(provenance=CRS_INCLUSIVE, with_index=False)
 
 
 @pytest.mark.parametrize(

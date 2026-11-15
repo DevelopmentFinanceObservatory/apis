@@ -335,7 +335,9 @@ def _phase_finalize(state: _PromoteState) -> RegionResult:
     with timed_step(state, "finalize_wholes"):
         resubmit_warnings = (
             *resubmit_warnings,
-            *whole_total_warnings(spec, coverage=state.coverage.index),
+            *whole_total_warnings(
+                spec, coverage=state.coverage.index, populations=state.inp.populations
+            ),
         )
 
     relaunch_t0 = now_ms()

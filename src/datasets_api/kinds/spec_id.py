@@ -36,6 +36,7 @@ from typing import Protocol, cast
 
 from dfo_spec_kit.identity import IdentityError
 
+from code_index.composites import binds_composite
 from code_index.flow_family import flow_family
 from code_index.members import canonical_identity
 from code_index.query import CodeIndex
@@ -139,13 +140,17 @@ def _resolve_members(
     replaces the identity's own before resolution, as scope surgery does, and one that supplies
     `entities` supplies the role keys the role class is elected under, and the open roles
     the scope leaves open (`open_roles_left_open`), so the family is the one the surgered
-    identity resolves. `bounds` bounds the graph walk
+    identity resolves. A composite identity takes the whole scope before resolution, since
+    its components bind its entities and window (`adapter.composite_components`), so each
+    shape's component reads the surgered identity. `bounds` bounds the graph walk
     (`adapter.resolve_definition_members`). Returns the antichain-minimal shapes.
     """
     if scope is not None and scope.facets is not None:
         identity = apply_scope_surgery(
             identity, scope=scope.model_copy(update={"entities": None, "window": None})
         )
+    if scope is not None and binds_composite(identity):
+        identity = apply_scope_surgery(identity, scope=scope)
     try:
         resolved = resolve_definition_members(
             identity,

@@ -33,6 +33,7 @@ from typing import Final, cast
 import numpy as np
 import pyarrow as pa
 
+from code_index.multilaterals import COUNTRY_PREFIX
 from code_index.types import PartyRow
 from origin_catalogue.catalogue import CatalogueSnapshot, entry_ref
 from search.catalogue.artifact import AidCounts, Counts, PlaceCounts, YearRange
@@ -44,8 +45,6 @@ from series_coverage.schema import (
     FIRST_YEAR_COLUMN,
     LAST_YEAR_COLUMN,
 )
-
-COUNTRY_PREFIX: Final[str] = "country/"
 
 _ROLES: Final[tuple[Role, ...]] = ("donor", "recipient")
 

@@ -126,11 +126,14 @@ def _offer_place_warnings(
 ) -> None:
     """Stamp each spec in `offered`, in menu order, with the place warnings of its own
     context that the shape in play's do not hold (`stamp_offered_place_warnings`)."""
+    before = len(state.warnings)
     stamp_offered_place_warnings(
         state.warnings,
         [(spec.spec_id, grounded[spec.spec_id].candidate.place) for spec in offered],
         departure_facts=state.departure_facts,
     )
+    # Each reading's places are read from the request's words.
+    state.from_request(*state.warnings[before:])
 
 
 def _apply_bound_unit_filter(
@@ -236,9 +239,11 @@ def _handle_sparse_survivors(
         return unique_specs
     if served_twin is not None:
         # A registry twin reads the elected indicator itself (`_apply_twin_diversion`).
-        state.warnings.append(
-            _elected_no_data_twin_substituted_warning(state, served_twin.resolved.shape.label)
+        substituted = _elected_no_data_twin_substituted_warning(
+            state, served_twin.resolved.shape.label
         )
+        state.warnings.append(substituted)
+        state.from_request(substituted)
         return [served_twin]
     # The elected reading of a family with no total is one of its breakdowns, so the others
     # with data answer in its place: one alone, several as candidates.
@@ -256,11 +261,11 @@ def _handle_sparse_survivors(
         # One stand-in answers in the elected shape's place, as re-election installs one.
         # Definite assembly judges every requirement on its own shape and bindings
         # (`_assemble_definite`).
-        state.warnings.append(
-            _elected_sibling_warning(
-                no_data=[state.shape_draft.label], elected=[stand_ins[0].resolved.shape.label]
-            )
+        stand_in = _elected_sibling_warning(
+            no_data=[state.shape_draft.label], elected=[stand_ins[0].resolved.shape.label]
         )
+        state.warnings.append(stand_in)
+        state.from_request(stand_in)
         return stand_ins
     if stand_ins:
         return stand_ins
@@ -510,6 +515,8 @@ async def _assemble_definite(
         install_place_warnings(
             state.warnings, _survivor.place, departure_facts=state.departure_facts
         )
+        # The survivor's places are read from the request's words.
+        state.from_request(*_survivor.place.warnings)
     _survivor_unbound_qualifiers = settle_answer(
         state,
         _survivor.shape,
@@ -816,7 +823,9 @@ async def _assemble_candidate_set(
     ]
     _offer_place_warnings(state, grounded, unique_specs)
     if not state.elected_has_data:
-        state.warnings.append(_elected_no_data_warning(state, unique_specs))
+        elected_no_data = _elected_no_data_warning(state, unique_specs)
+        state.warnings.append(elected_no_data)
+        state.from_request(elected_no_data)
     await _record_unheld_values(
         state,
         [

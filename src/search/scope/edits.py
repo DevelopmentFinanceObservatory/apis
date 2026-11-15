@@ -17,7 +17,9 @@ from typing import Literal
 from code_index.composites import DECLARED_COMPOSITES, provenance_datasets
 from code_index.declarations import COMPOSITES
 from code_index.measure_basis import edit_basis
+from code_index.scope_conventions import BILATERAL_SOURCES, BilateralSource
 from code_index.types import CompositeKind
+from dfo_platform.roles import role_key_axis
 from search.models import (
     BaseIdentity,
     EntitiesBinding,
@@ -132,22 +134,66 @@ def _edit_shape(
 def _edit_provider(
     identity: BaseIdentity, binding: OptionBinding, siblings: Sequence[OptionBinding]
 ) -> BaseIdentity:
-    """Bind the stacked composite of bilateral and imputed multilateral spending the option
-    names (`ProviderBinding.provenance`) as the identity's source for the inclusive scope,
-    with the option's window when it sets one (`ProviderBinding.window`), or remove a stacked
-    composite for the bilateral scope, leaving the window as it is. The two are inverses on an
-    identity that binds no other provenance. The contributions and multilateral scopes are
-    held only by the published donor totals that count them, so they leave the identity as it
-    is. Raises `ScopeTableError` for an inclusive option that names no composite."""
+    """Bind the stacked composite the option names (`ProviderBinding.provenance`) as the
+    identity's source, with the option's window when it sets one (`ProviderBinding.window`):
+    the bilateral and imputed multilateral spending of the inclusive scope, or the bilateral
+    destinations alone of the bilateral scope on a published total that counts core
+    contributions (`code_index.scope_conventions.BILATERAL_SOURCES`). Such a composite reads
+    a destination total of both sides as the total of the bilateral side
+    (`rebound_destinations`). An option naming no composite removes a stacked composite,
+    leaving the window as it is: the bilateral scope on a part the CRS serves, and the
+    contributions and multilateral scopes, held by the published donor totals that count
+    them. Binding and removing are inverses on an identity that binds no other provenance
+    and names no destination total of both sides. Raises `ScopeTableError` for an inclusive
+    option that names no composite."""
     assert isinstance(binding, ProviderBinding)
-    if binding.scope == "bilateral":
-        return _with_source(identity, None, kind="stacked")
-    if binding.scope != "inclusive":
-        return identity
     if binding.provenance is None:
-        raise ScopeTableError("the inclusive option names no composite source")
+        if binding.scope == "inclusive":
+            raise ScopeTableError("the inclusive option names no composite source")
+        return _with_source(identity, None, kind="stacked")
     edited = _with_source(identity, binding.provenance, kind="stacked")
-    return _with_window(edited, binding.window)
+    return _with_window(rebound_destinations(edited, binding.provenance), binding.window)
+
+
+def rebound_destinations(identity: BaseIdentity, provenance: str) -> BaseIdentity:
+    """`identity`, whose source is the composite `provenance`, naming the total of the
+    bilateral side in place of the total of both sides (`BilateralSource.rebound` for
+    `BilateralSource.spanning`) where a component of `provenance` reads the bilateral
+    destinations of the dataset the row declares (`ComponentRecipe.destinations`), whose
+    population holds no row of the total of both sides. `identity` itself otherwise."""
+    composite = DECLARED_COMPOSITES.get(provenance)
+    if composite is None:
+        return identity
+    bound = {
+        recipe.dataset for recipe in composite.components if recipe.destinations == "bilateral"
+    }
+    rebound = {row.spanning: row.rebound for row in BILATERAL_SOURCES if row.dataset in bound}
+    entities = dict(identity.entities)
+    for key, held in identity.entities.items():
+        if role_key_axis(key) == "destination" and rebound.keys() & set(held):
+            entities[key] = list(dict.fromkeys(rebound.get(dcid, dcid) for dcid in held))
+    if entities == identity.entities:
+        return identity
+    return identity.model_copy(update={"entities": entities})
+
+
+def counted_bilateral_source(
+    identity: BaseIdentity, *, dataset_of: Callable[[BaseIdentity], str | None]
+) -> BilateralSource | None:
+    """The bilateral source (`BILATERAL_SOURCES`) whose published total `identity`'s bound
+    slots count: the row whose code a slot binds, declared for the dataset `dataset_of`
+    elects for `identity`. `dataset_of` runs only where a slot binds a row's code, since
+    electing a dataset reads the code index. None where no row is."""
+    bound = {
+        (slot.property, slot.binding.ref)
+        for slot in identity.slots
+        if isinstance(slot.binding, IdentityBindingValue)
+    }
+    sources = [row for row in BILATERAL_SOURCES if (row.code_system, row.code) in bound]
+    if not sources:
+        return None
+    dataset = dataset_of(identity)
+    return next((row for row in sources if row.dataset == dataset), None)
 
 
 def _with_window(identity: BaseIdentity, window: YearSpan | None) -> BaseIdentity:
@@ -202,7 +248,9 @@ EDITS: Mapping[BindingKind, Edit] = {
     "slot": Edit(members=frozenset({"slots", "requested_window"}), apply=_edit_slot),
     "entities": Edit(members=frozenset({"entities"}), apply=_edit_entities),
     "shape": Edit(members=frozenset({"shape", "slots", "facets"}), apply=_edit_shape),
-    "provider": Edit(members=frozenset({"facets", "requested_window"}), apply=_edit_provider),
+    "provider": Edit(
+        members=frozenset({"facets", "entities", "requested_window"}), apply=_edit_provider
+    ),
 }
 """The edit of each binding kind."""
 
@@ -210,9 +258,9 @@ EDITS: Mapping[BindingKind, Edit] = {
 def applies_in_pass(binding: OptionBinding) -> bool:
     """Whether a fresh search applies an option binding `binding` to the identity it
     resolved: it binds a declared composite as the identity's source, the OECD headline
-    basis (`ShapeBinding.provenance`) or the inclusive provider scope, or it sets a provider
-    scope on the identity's source, as the bilateral scope removes the inclusive composite.
-    Any other option reads another identity, which a switch or resubmit serves."""
+    basis (`ShapeBinding.provenance`) or a provider scope's composite, or it sets a provider
+    scope on the identity's source, as the bilateral scope on the CRS removes the inclusive
+    composite. Any other option reads another identity, which a switch or resubmit serves."""
     return isinstance(binding, ProviderBinding) or (
         isinstance(binding, ShapeBinding) and binding.provenance is not None
     )

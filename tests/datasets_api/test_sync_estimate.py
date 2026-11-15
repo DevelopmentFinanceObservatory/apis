@@ -25,7 +25,7 @@ from datasets_api.config import DatasetsBuildSettings
 from datasets_api.current import DefinitionDeps, plan_stored_render
 from datasets_api.manifest_models import Manifest
 from datasets_api.mint_models import MintOptions
-from dc_sdmx import ContainedIn
+from dc_sdmx import Among, ContainedIn
 from materialise.errors import MaterialisationError, OverCeilingError
 from materialise.facets import ElectedDataset, FacetBinding
 from materialise.formats import EXCEL_MAX_ROWS
@@ -66,7 +66,7 @@ def _request(
     *,
     stat_var: str,
     donor: str | ContainedIn | None = None,
-    recipient: str | ContainedIn | None = None,
+    recipient: str | ContainedIn | Among | None = None,
     declared_roles: tuple[str, ...] = ("financingProvider", "financingRecipient"),
     window: RequestedWindow = _ALL_WINDOW,
 ) -> MaterialisationRequest:
@@ -75,7 +75,7 @@ def _request(
         role_bindings[declared_roles[0]] = donor if isinstance(donor, ContainedIn) else [donor]
     if recipient is not None:
         role_bindings[declared_roles[1]] = (
-            recipient if isinstance(recipient, ContainedIn) else [recipient]
+            recipient if isinstance(recipient, ContainedIn | Among) else [recipient]
         )
     return MaterialisationRequest(
         stat_var=f"dcid:{stat_var}",
@@ -330,6 +330,20 @@ def test_contained_in_bound_role_is_treated_as_unbound_a_safe_over_estimate():
     # The unbound recipient includes all four DEU-donor rows, 3 for Kenya and 1 for Uganda.
     assert contained_estimate.rows >= bound_estimate.rows
     assert contained_estimate.rows == 4
+
+
+def test_a_population_bound_role_prices_only_its_members_rows():
+    """A role bound to a population (`Among`) is bound to its members: Uganda's row, outside
+    the population, is not charged."""
+    request = _request(
+        stat_var="Amount_Crs_A",
+        donor="country/DEU",
+        recipient=Among(members=("country/KEN",), side="bilateral"),
+    )
+    estimate = sync_estimate(
+        (request,), index=_INDEX, member_concurrency=_SETTINGS.mint_member_max_concurrency
+    )
+    assert estimate.rows == 3
 
 
 def test_within_sync_budget_at_and_over_the_boundary():

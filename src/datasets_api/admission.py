@@ -62,7 +62,7 @@ from datasets_api.doors.mint_errors import MintBackgroundDeclined, MintBackpress
 from datasets_api.mint_models import MintOptions
 from datasets_api.output_options import movable_totals_roles
 from datasets_api.timings import count, phase
-from dc_sdmx import ContainedIn
+from dc_sdmx import Among, ContainedIn
 from graph_release.context import current_release
 from materialise.errors import OverCeilingError
 from materialise.formats import EXCEL_MAX_ROWS, ExcelLimitError, check_excel_rows
@@ -337,7 +337,7 @@ def _bare_dcid(stat_var: str) -> str:
 def bound_roles(request: MaterialisationRequest, *, index: CoverageIndex) -> BoundRoles:
     """Map `request`'s bound declared roles to coverage's donor/recipient labels.
 
-    Omit unbound roles and `ContainedIn` filters.
+    Omit unbound roles and `ContainedIn` filters. An `Among` binds its members.
     """
     names = index.role_names.get(_bare_dcid(request.stat_var))
     if names is None:
@@ -347,7 +347,7 @@ def bound_roles(request: MaterialisationRequest, *, index: CoverageIndex) -> Bou
         refs = request.role_bindings.get(declared_role)
         if refs is None or isinstance(refs, ContainedIn):
             continue
-        bound[role] = frozenset(refs)
+        bound[role] = frozenset(refs.members if isinstance(refs, Among) else refs)
     return bound
 
 

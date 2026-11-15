@@ -288,6 +288,9 @@ def _over_conversion_period(
     if state.unit_request is None or state.unit_elected_selections is None:
         if stale is not None:
             state.depart(*stale)
+            # The years a trailing request's words asked, which the answer's identity no
+            # longer holds.
+            state.from_request(stale[0])
         return mat_result, filtered
     catalogue = current_conversion_catalogue()
     period = unit_request_period(
@@ -314,8 +317,10 @@ def _over_conversion_period(
             is not None
         ):
             state.depart(*passed)
+            state.from_request(passed[0])
     elif stale is not None:
         state.depart(*stale)
+        state.from_request(stale[0])
     omission = deflator_omission_departure(
         filtered.plan,
         state.unit_request,
@@ -388,6 +393,8 @@ def _narrowed_to_period(
     )
     warning, fact = conversion_period_departure(period, requested=requested, plan=filtered.plan)
     state.depart(warning, fact)
+    # The years asked, which the answer's identity, read over the period, no longer holds.
+    state.from_request(warning)
     assert fact.shown is not None
     return mat_result, filtered, fact.shown
 
@@ -897,7 +904,12 @@ def _decide_answer_scope(
         )
 
     decision = guarded_scope_decision(
-        answer.spec_id, decide, operations=state.operations, coverage=state.coverage
+        answer.spec_id,
+        decide,
+        identity=answer.identity,
+        selection=state.scope_selection,
+        operations=state.operations,
+        coverage=state.coverage,
     )
     return _AnswerScope(answer=answer, decision=decision)
 

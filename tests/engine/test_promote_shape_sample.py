@@ -44,7 +44,7 @@ from tests.fixtures import FakeGraph
 
 _USA = "country/USA"
 _KEN = "country/KEN"
-_CRS_INCLUSIVE, _DAC2A_INCLUSIVE, _HEADLINE = (c.provenance for c in COMPOSITES)
+_CRS_INCLUSIVE, _DAC2A_INCLUSIVE, _DAC2A_BILATERAL, _HEADLINE = (c.provenance for c in COMPOSITES)
 _YEARS = list(range(2005, 2025))
 _WINDOW = {"kind": "range", "start_year": 2015, "end_year": 2020}
 
@@ -105,7 +105,7 @@ def _recorded_identities() -> dict[str, dict]:
     index = get_index()
     identities: dict[str, dict] = {}
     for ref, document in _composites().items():
-        identities[f"{ref}:table"] = dict(table_identity(index, document))
+        identities[f"{ref}:table"] = dict(table_identity(index, document).identity)
         for component in component_identities(index, document) or ():
             identities[f"{ref}:{component.role}"] = dict(component.identity)
     return identities

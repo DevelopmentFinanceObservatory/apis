@@ -53,7 +53,6 @@ from dfo_frame_grammar import (
 )
 from dfo_frame_grammar.arrow import build_frame_from_arrow
 
-from code_index.composites import composite_digest
 from code_index.members import SourceNotInFamily, identity_family_query, index_family
 from code_index.types import ComponentRecipe, ComponentRole, CompositeDeclaration, PartyRow
 from dfo_platform.columns import PROVENANCE_COLUMN
@@ -228,10 +227,13 @@ def compose_components(
     role_columns: Sequence[str],
     enrichment: EnrichmentLookup,
     parties: Mapping[str, PartyRow],
+    digest: str,
 ) -> MaterialisationResult:
     """One result composed from `components`, each materialised under its own role, as the
-    module docstring states. `window` is the composite's requested window and `role_columns`
-    the role columns every component's frame holds.
+    module docstring states. `window` is the composite's requested window, `role_columns`
+    the role columns every component's frame holds, and `digest` the composite's digest under
+    the code index the run read (`code_index.composites.composite_digest`), which the
+    dependency fingerprint records.
 
     The frame's hash and `content_version` come from the composed chunks, in the one pass
     that composes them. The trace states
@@ -343,7 +345,9 @@ def compose_components(
             for component in components
             for stat_var, record in component.result.member_conversion_records.items()
         },
-        dependencies=_dependencies(components, composite=composite, requests=all_requests),
+        dependencies=_dependencies(
+            components, composite=composite, requests=all_requests, digest=digest
+        ),
         default_scope=tuple(
             dict.fromkeys(
                 place for component in components for place in component.result.default_scope
@@ -867,13 +871,14 @@ def _dependencies(
     *,
     composite: CompositeDeclaration,
     requests: Sequence[MaterialisationRequest],
+    digest: str,
 ) -> Dependencies:
     """Every component's fingerprint as one: its members over every component, and each
     source, conversion source, recipe and latest year any component recorded. The window
     is the first component's, as `dependencies.refreshed_dependencies` reads the first
     request's. `imported_data` is the components' when every one records the same key, and
     `None` when any records none or another. `composites` holds `composite`'s provenance and
-    the digest of the declaration it was composed by (`code_index.composites.composite_digest`)."""
+    `digest`, the digest of the declaration it was composed by."""
     fingerprints = [component.result.dependencies for component in components]
     imported = {fingerprint.imported_data for fingerprint in fingerprints}
 
@@ -891,7 +896,7 @@ def _dependencies(
         window=fingerprints[0].window,
         latest_years=cast("tuple", merged("latest_years")),
         imported_data=imported.pop() if len(imported) == 1 else None,
-        composites=((composite.provenance, composite_digest(composite)),),
+        composites=((composite.provenance, digest),),
     )
 
 

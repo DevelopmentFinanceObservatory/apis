@@ -772,6 +772,7 @@ def discover_role_scope(
     date_request: DateRequest | None,
     coverage_snapshot: CoverageSnapshot,
     facet_label: str = DEFAULT_FACET_LABEL,
+    within: frozenset[str] | None = None,
 ) -> Materialised | NoDataDraft | UnsupportedDraft:
     """Discover members on an open role axis and resolve them from coverage.
 
@@ -796,6 +797,11 @@ def discover_role_scope(
     reports and the headline are stated from the plan (`coverage.answer_coverage`). The
     lookup confirms only members holding a point in those years, so the plan always serves
     one.
+
+    ``within`` narrows the open axis to those parties: the population a composite binds the
+    role to (`code_index.composites.ComponentIdentity.populations`), which the caller posted
+    open. It joins the one bound every read below takes, so the members, the plan, the
+    coverage and the headline all count the population alone.
 
     Opposite-role and time filters narrow the lookup. Bound facet filters are
     recorded for echo only because coverage has no per-row facet metadata.
@@ -827,9 +833,10 @@ def discover_role_scope(
     coverage_index = coverage_snapshot.index
     discover_coverage_role = _COVERAGE_ROLE_FOR_AXIS[open_flow_axis]
     opposite_coverage_role = _COVERAGE_ROLE_FOR_AXIS[_opposite_flow_axis(open_flow_axis)]
-    bound: BoundRoles = (
-        {opposite_coverage_role: frozenset(opposite_dcids)} if opposite_dcids else {}
-    )
+    bound: BoundRoles = {
+        **({opposite_coverage_role: frozenset(opposite_dcids)} if opposite_dcids else {}),
+        **({discover_coverage_role: within} if within is not None else {}),
+    }
     check_minted_role_members(
         coverage_index, minted=surviving_svs, member_facts=member_facts, bound=bound
     )

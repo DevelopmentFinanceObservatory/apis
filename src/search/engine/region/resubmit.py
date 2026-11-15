@@ -15,7 +15,7 @@ from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.errors import EngineInputError
-from search.engine.identity_edit import check_described_arm, check_not_composite
+from search.engine.identity_edit import check_described_arm, check_not_composite, open_within
 from search.engine.region.resubmit_promote import _resolve_standard_promote
 from search.engine.region.resubmit_request import pinned_provenance_scope
 from search.engine.region.result import RegionResult
@@ -68,6 +68,11 @@ def resolve_spec_resubmit(
     member walk's full read of a deep-root family and every phase after it
     (`_resolve_standard_promote`).
 
+    A role `inp.populations` lists is read as the open role the caller posted, within the
+    population's members (`identity_edit.open_within`): the identity the promote reads opens
+    it, and its role-scope discovery reads only those members
+    (`role_scope.discover_role_scope`).
+
     Pinned StatVar identities and composite identities (`identity_edit.check_not_composite`)
     raise `request_invalid` (400). Missing graph
     nodes produce `no_data`, except absent observationAbout role refs, which
@@ -80,6 +85,9 @@ def resolve_spec_resubmit(
     check_described_arm(inp.identity.shape, pointer="/input/identity/shape")
     check_not_composite(inp.identity, pointer="/input/identity/facets/provenance")
     _options = options if options is not None else EngineOptions()
+    opened, _ = open_within(inp.identity, inp.populations)
+    if opened is not inp.identity:
+        inp = inp.model_copy(update={"identity": opened})
 
     # `_phase_materialise` checks origins after rebuilding the shape.
     # Role-bearing shapes bind origins on their origin axis. Standard shapes raise

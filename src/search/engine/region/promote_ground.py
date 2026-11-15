@@ -684,7 +684,9 @@ def _flagged_refusal(
         reason,
         warnings=(
             *state.refusal_warnings(),
-            *whole_total_warnings(spec, coverage=state.coverage.index),
+            *whole_total_warnings(
+                spec, coverage=state.coverage.index, populations=state.inp.populations
+            ),
         ),
         flagged_match=(spec,),
         gate=gate,

@@ -1560,7 +1560,10 @@ def _open_creditor_promote_state(
     )
     state = _PromoteState(
         inp=cast(
-            Any, SimpleNamespace(identity=SimpleNamespace(facets=None, open_roles=posted_open))
+            Any,
+            SimpleNamespace(
+                identity=SimpleNamespace(facets=None, open_roles=posted_open), populations={}
+            ),
         ),
         graph=cast(Any, FakeGraph(raise_on_call=True)),
         sdmx=cast(Any, None),

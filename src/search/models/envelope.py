@@ -36,8 +36,8 @@ class Warning(StrictModel):
     """A run-health signal. Note: this name shadows the Python builtin Warning.
 
     Only `observations_series_truncated`, `elected_shape_no_data`, `un_system_unavailable`,
-    `whole_total_available`, `currency_unmapped_omitted`, `deflator_missing_omitted` and
-    `deflator_projected` set `params`. A `None` `params` is left out of every dump, so other codes' warnings stay
+    `whole_total_available`, `bilateral_reading_unavailable`, `currency_unmapped_omitted`,
+    `deflator_missing_omitted`, `deflator_projected` and `role_scope_defaulted` set `params`. A `None` `params` is left out of every dump, so other codes' warnings stay
     exactly `{code, severity, message}` plus `spec_id` where one applies.
     """
 
@@ -74,7 +74,11 @@ class Warning(StrictModel):
             "unavailable. whole_total_available: {total, total_label, whole_of}, the dcid "
             "and label of the total the source publishes for the side the answer lists "
             "member by member, and the classes of party it covers, comma-joined (official, "
-            "private, residual). currency_unmapped_omitted: {count, entities, entity_labels}, "
+            "private, residual). bilateral_reading_unavailable: {why}, why a DAC2a total "
+            "ODA answer could not read its bilateral destinations alone: "
+            "destination_unclassified, option_not_covered, scope_undecided, or the slot "
+            "the bilateral composite cannot serve. "
+            "currency_unmapped_omitted: {count, entities, entity_labels}, "
             "how many entities the conversion left out, the dcids of the first ten, sorted, "
             "and each one's name, in entities order, '' where the conversion tables hold "
             "none, which is usual here, since an entity no currency names, such as a "
@@ -84,8 +88,9 @@ class Warning(StrictModel):
             "in entities order; a warning without params says the loaded tables cannot tell "
             "which entities. deflator_projected: {count, examples}, how many rows took a "
             "projected rate or deflator, and at most ten distinct entity@year keys among them, "
-            "sorted; count counts rows, not keys, and examples may leave keys out. Omitted "
-            "for every other code"
+            "sorted; count counts rows, not keys, and examples may leave keys out. "
+            "role_scope_defaulted: {axis}, the open role axis the answer covers in full, "
+            "origin or destination. Omitted for every other code"
         ),
     )
 

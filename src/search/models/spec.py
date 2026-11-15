@@ -974,9 +974,11 @@ class ResolvedSpec(StrictModel):
             "entries applied, and the identity they compile to (see PartScope). To switch "
             "an option, post base.identity as identity on a dataset_resubmit identity "
             "entry, with entries as scope_entries, the entry on the switched axis "
-            "replaced by the switch: one entry per axis. None when no axis was settled "
-            "and no scope entries were "
-            "posted. Never a member of BaseIdentity, never hashed."
+            "replaced by the switch: one entry per axis. Empty choices when no axis was "
+            "settled but the part is served from a composite, which compiled.identity and "
+            "compiled.components name (a DAC2a ranking read to its bilateral destinations). "
+            "None when no axis was settled, no composite serves the part and no scope "
+            "entries were posted. Never a member of BaseIdentity, never hashed."
         ),
     )
     # The named entities the answer's read plan serves no point at, each with the role it

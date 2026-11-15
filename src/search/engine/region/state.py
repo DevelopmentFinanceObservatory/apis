@@ -894,6 +894,13 @@ class ResolveState:
     # `spec_id`; a candidates answer sets it in `candidate_collapse._assemble_definite`. None
     # until then.
     scope_decision: ScopeDecision | None = None
+    # The warnings of the request's words, its places, its shapes and its bindings: every
+    # warning the pass raised before it interpreted the elected shape's read
+    # (`phase_place_materialise._phase_materialise`), and each one raised later from those
+    # alone (`from_request`). A definite answer read again within a composite's population
+    # keeps these and takes the read's own in place of the rest
+    # (`composite_answer.with_population_read`). None until the read is interpreted.
+    request_warnings: tuple[Warning, ...] | None = None
     # Shared warnings list; mutations here affect every stage holding the list.
     warnings: list[Warning]
     # The departure facts raised beside warnings, each under its warning's key
@@ -1664,6 +1671,14 @@ class ResolveState:
         return family_total_absent_departures(
             specs, self.family_total_absent, variable_text=self.variable, label_of=self.label_dcids
         )
+
+    def from_request(self, *warnings: Warning) -> None:
+        """Record `warnings`, raised once the read is interpreted from the request's words,
+        places or election and not from the rows read, among the request's warnings
+        (`request_warnings`). The caller raises them in `warnings` as before. Before the read
+        is interpreted every warning is the request's, so nothing is recorded."""
+        if self.request_warnings is not None:
+            self.request_warnings = (*self.request_warnings, *warnings)
 
     def settled_dataset(self, candidate: _Candidate | None = None) -> str | None:
         """The dataset the part's run has settled on for `candidate`, else for the elected

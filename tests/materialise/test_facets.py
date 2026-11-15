@@ -17,7 +17,7 @@ import pytest
 import materialise.facets as facets_module
 from dc_graph import earliest_date, latest_date
 from dc_graph.client import _build_facet, _parse_ordered_facets
-from dc_sdmx import SdmxCapExceededError
+from dc_sdmx import Among, SdmxCapExceededError
 from dfo_platform.problem import Alternative
 from materialise.errors import (
     CollectionProbeCeilingExceededError,
@@ -513,8 +513,21 @@ def test_probe_facets_role_bearing_with_no_bound_role_covers_every_coverage_row(
         coverage=coverage,
     )
 
+    # A population binds its members, as a list naming them does.
+    population = probe_facets(
+        availability=NO_SCOPE_READ,
+        stat_var="MalariaGrantDisbursements",
+        bound_entities=(),
+        settle=True,
+        graph=graph,
+        declared_roles=("financingProvider", "financingRecipient"),
+        role_bindings={"financingRecipient": Among(members=("country/KEN",), side="bilateral")},
+        coverage=coverage,
+    )
+
     assert [(c.facet_id, c.obs_count) for c in unbound.candidates] == [("facet1", 3)]
     assert [(c.facet_id, c.obs_count) for c in kenya.candidates] == [("facet1", 2)]
+    assert [(c.facet_id, c.obs_count) for c in population.candidates] == [("facet1", 2)]
     # Coverage rows serve unmasked, with a role bound or with none.
     assert unbound.admission == kenya.admission == CoverageAdmission()
     assert sum(graph.calls.values()) == 0

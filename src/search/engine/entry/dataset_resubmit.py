@@ -112,15 +112,13 @@ from search.engine.options.population_memo import OptionsPopulationMemo
 from search.engine.region import RegionResult, resolve_spec_resubmit
 from search.engine.region.composite_answer import (
     ComponentReads,
-    CompositeRelaunch,
-    composite_served,
+    as_composite_answer,
     with_composite_observations,
 )
 from search.engine.region.place_options import PlaceOptionsPool
 from search.engine.region.promote_relaunch import bind_relaunches
 from search.engine.region.result import (
     any_degraded,
-    with_composite_answer,
     with_runnable_operations,
 )
 from search.engine.region.sentence_events import answer_events, response_sentence_events
@@ -145,7 +143,6 @@ from search.models import (
 from search.scope.basis import identity_basis_record
 from search.scope.build import build_part_scope, refusal_error
 from search.scope.compile import Refusal
-from search.scope.composite import assemble_composite
 from search.scope.provider import elect_latest_window
 from search.scope.region import region_groups
 from search.scope.tables import PartFacts, ScopeFacts
@@ -234,7 +231,7 @@ def _as_composite(
     reads: ComponentReads,
 ) -> RegionResult:
     """`region`, resolved for composite `identity`'s table identity, answering the composite
-    (`scope.composite.assemble_composite`) under its own spec_id, which is the compiled
+    (`composite_answer.as_composite_answer`) under its own spec_id, which is the compiled
     scope's when `scope` compiled it. It carries the closure that reads the composite's
     preview per component over `reads` (`composite_answer.CompositeRelaunch`), over the
     components it was restated over (`composite_served`), which `_launch_trailing_tasks`
@@ -242,13 +239,7 @@ def _as_composite(
     The closure reads the composite's identity alone, so a table identity the part memo held
     answers with one too."""
     spec_id = scope.compiled.spec_id if scope is not None else identity_spec_id(identity)
-    served = composite_served(identity, reads=reads)
-    spec, _ = assemble_composite(region.spec, identity, spec_id, served=served, facts=facts)
-    return with_composite_answer(
-        region,
-        spec,
-        observations_relaunch=CompositeRelaunch(spec=spec, reads=reads, served=served),
-    )
+    return as_composite_answer(region, identity, spec_id, facts=facts, reads=reads)
 
 
 def _served_scope(scope: PartScope | None, region: RegionResult) -> PartScope | None:
@@ -446,7 +437,10 @@ async def handle(
         identity = (
             elect_latest_window(entry.identity, facts) if scope is None else scope.compiled.identity
         )
-        read = composite_table_identity(identity, pointer=f"/input/entries/{index}/identity")
+        table = composite_table_identity(
+            identity, pointer=f"/input/entries/{index}/identity", coverage=params.coverage
+        )
+        read = table.identity
         # A composite's preview reads its components (`_as_composite`), so the table identity
         # it is resolved for reads none.
         read_options = (
@@ -463,7 +457,9 @@ async def handle(
         payload = (
             spec_resubmit_input_for_identity(entry)
             if scope is None and read is identity
-            else ResubmitIdentityPayload(identity=read, entity_groups=groups)
+            else ResubmitIdentityPayload(
+                identity=read, entity_groups=groups, populations=dict(table.populations)
+            )
         )
         key = memo.key(payload, read_options) if memo is not None and memo.active else None
         stored = memo.lookup(key) if memo is not None and key is not None else None
@@ -502,7 +498,9 @@ async def handle(
 
     async def _resolve_one(index: int, entry: ResubmitIdentityEntry) -> RegionResult:
         # A composite its components cannot serve refuses before its scope compiles.
-        composite_table_identity(entry.identity, pointer=f"/input/entries/{index}/identity")
+        composite_table_identity(
+            entry.identity, pointer=f"/input/entries/{index}/identity", coverage=params.coverage
+        )
         async with sem:
             promoted = await asyncio.to_thread(_promote, index, entry)
         if promoted.stored:

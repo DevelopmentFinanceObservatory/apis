@@ -476,6 +476,11 @@ class YearPeriod:
         )
 
 
+ComponentDestinations = Literal["bilateral"]
+"""The side of a donor's aid a composite component binds its destinations to
+(`ComponentRecipe.destinations`)."""
+
+
 @dataclass(frozen=True, slots=True)
 class ComponentRecipe:
     """How one component's identity derives from its composite's identity.
@@ -498,7 +503,13 @@ class ComponentRecipe:
     writes a zero row for each of its members holding no row in a cell another component
     fills, inside the composite's years. A component without it contributes nothing where it
     holds no row. Only a stacked composite's component sets it: a spliced one's zeros would
-    fill years it does not cover, and the loader refuses it."""
+    fill years it does not cover, and the loader refuses it.
+
+    `destinations` binds the component's destination role to one side of a donor's aid.
+    `"bilateral"` reads the destinations whose `code_index.scope_conventions.destination_side`
+    is `bilateral`: countries, regions, groups of countries and the DAC's unallocated lines
+    (`code_index.composites.component_identities`). `None` reads the destinations the
+    identity binds or opens."""
 
     role: ComponentRole
     dataset: str
@@ -509,6 +520,7 @@ class ComponentRecipe:
     bind: Mapping[str, str] = field(default_factory=dict)
     drop_unbound: frozenset[str] = frozenset()
     zero_absent: bool = False
+    destinations: ComponentDestinations | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -40,6 +40,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from typing import Literal
 
+from code_index.composites import binds_composite
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from dfo_platform.build import build_commit
 from dfo_platform.executor import submit_with_context
@@ -234,6 +235,7 @@ async def build_place_options_events(
                     population_memo=population_memo,
                     deadline=deadline,
                     join_inflight=False,
+                    coverage=coverage,
                 )
             lost.merge_into(target_lost)
             return resolved
@@ -366,6 +368,11 @@ def place_options_task(
     )
 
 
+def _answers_composite(spec: Spec) -> bool:
+    """Whether `spec`'s identity binds a declared composite as its source."""
+    return binds_composite(spec.definition.identity.model_dump(mode="json", include={"facets"}))
+
+
 def replayed_place_options(
     *,
     stream: bool,
@@ -383,7 +390,9 @@ def replayed_place_options(
     materialise graph or pool.
 
     A fresh run launches one task per definite Spec (`place_options_task`), which the
-    response's part carries. Parts folded into one Spec share its task.
+    response's part carries, and none for a Spec that answers a composite, whose place
+    options would read its table under the composite's spec_id
+    (`result.with_composite_answer`). Parts folded into one Spec share its task.
     The tasks read `coverage`, the hit's own snapshot, which the bundle's key holds."""
     if not stream or materialise_graph is None or pool is None:
         return None
@@ -395,7 +404,7 @@ def replayed_place_options(
         specs = {
             part.spec.spec_id: part.spec
             for part in (response.parts if response.kind == "resolution" else [])
-            if isinstance(part, DefinitePart)
+            if isinstance(part, DefinitePart) and not _answers_composite(part.spec)
         }
         return [
             place_options_task(

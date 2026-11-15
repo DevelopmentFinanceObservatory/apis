@@ -293,14 +293,24 @@ def _role_scope_defaulted_base(axis: EntityRoleKey) -> str:
     return f"{_role_scope_axis_clause(axis)}, so the answer covers every {noun} with data"
 
 
+def _role_scope_counted_base(axis: EntityRoleKey, member_count: int) -> str:
+    """The clause of a `role_scope_defaulted` warning on `axis` that states `member_count`."""
+    noun = axis_noun(axis)
+    counted = {1: f"the one {noun}", 2: f"both {noun}s"}.get(
+        member_count, f"all {member_count} {noun}s"
+    )
+    return f"{_role_scope_axis_clause(axis)}, so the answer covers {counted} with data"
+
+
 def role_scope_defaulted_message(
-    discovered: DiscoveredScope,
+    axis: EntityRoleKey,
     *,
     member_count: int | None,
     bound_dcids: Sequence[str],
     label_of: Callable[[Sequence[str]], Sequence[str]],
 ) -> str:
-    """Build the defaulted-scope warning with member count and any bound opposite-role entities.
+    """Build the defaulted-scope warning on open `axis` with member count and any bound
+    opposite-role entities.
 
     `member_count` is how many parties of the open axis the materialised read plan serves
     (`Materialised.scope_member_dcids`, counted by `enrichment.party_count`), or None for a
@@ -310,21 +320,15 @@ def role_scope_defaulted_message(
     more, report the count and opposite-axis noun without label lookup. `label_of` returns
     labels in the input order.
     """
-    noun = axis_noun(discovered.axis)
     if member_count is None:
-        base = _role_scope_defaulted_base(discovered.axis)
+        base = _role_scope_defaulted_base(axis)
     else:
-        counted = {1: f"the one {noun}", 2: f"both {noun}s"}.get(
-            member_count, f"all {member_count} {noun}s"
-        )
-        base = (
-            f"{_role_scope_axis_clause(discovered.axis)}, so the answer covers {counted} with data"
-        )
+        base = _role_scope_counted_base(axis, member_count)
     if not bound_dcids:
         return f"{base}."
-    preposition = "from" if discovered.axis == "destination" else "to"
+    preposition = "from" if axis == "destination" else "to"
     if len(bound_dcids) > _ROLE_SCOPE_MAX_NAMED_LABELS:
-        opposite_noun = axis_noun("origin" if discovered.axis == "destination" else "destination")
+        opposite_noun = axis_noun("origin" if axis == "destination" else "destination")
         named = f"any of the {len(bound_dcids)} {opposite_noun}s"
     else:
         labels = label_of(bound_dcids)
@@ -337,12 +341,45 @@ def role_scope_defaulted_message(
     return f"{base} {preposition} {named}."
 
 
+def role_scope_defaulted_warning(axis: EntityRoleKey, message: str) -> Warning:
+    """The `role_scope_defaulted` warning on open `axis` stating `message`, carrying its axis
+    in `params`, by which a composite answer restates its count (`result.recounted_scope`)."""
+    return Warning(
+        code=ROLE_SCOPE_DEFAULTED, severity="warn", message=message, params={"axis": axis}
+    )
+
+
 def role_scope_defaulted_message_for_axis(axis: EntityRoleKey) -> str:
     """Build the unqualified warning for an open axis.
 
     This path has no discovered scope or member count.
     """
     return f"{_role_scope_defaulted_base(axis)}."
+
+
+def stated_role_scope_message(spec: Spec, axis: RoleAxis) -> str | None:
+    """The `role_scope_defaulted` message `spec` states for its open `axis`, built from its
+    own facts by the builder a fresh answer's warning is built by
+    (`role_scope_defaulted_message`): the parties its role axis fact counts there
+    (`RoleAxisFact.member_count`), and the entities its identity binds on the opposite axis,
+    in binding order, labelled as `resolved.entities` labels them. None where `spec` counts
+    no party on `axis`."""
+    counted = [
+        fact.member_count
+        for fact in spec.resolved.role_axis_facts or ()
+        if fact.role == axis and fact.member_count is not None
+    ]
+    if not counted:
+        return None
+    opposite: EntityRoleKey = "origin" if axis == "destination" else "destination"
+    bound = list(dict.fromkeys(spec.definition.identity.entities.get(opposite, ())))
+    labels = {entity.ref: entity.label or entity.ref for entity in spec.resolved.entities}
+    return role_scope_defaulted_message(
+        axis,
+        member_count=counted[0],
+        bound_dcids=bound,
+        label_of=lambda dcids: [labels.get(dcid, dcid) for dcid in dcids],
+    )
 
 
 def memoised_labels(
@@ -389,11 +426,10 @@ def role_scope_defaulted_warnings(
     if discovered is not None:
         if discovered.axis not in unnamed_wholes:
             warnings.append(
-                Warning(
-                    code=ROLE_SCOPE_DEFAULTED,
-                    severity="warn",
-                    message=role_scope_defaulted_message(
-                        discovered,
+                role_scope_defaulted_warning(
+                    discovered.axis,
+                    role_scope_defaulted_message(
+                        discovered.axis,
                         member_count=_scope_party_count(
                             mat,
                             members if members is not None else mat.scope_member_dcids,
@@ -410,20 +446,15 @@ def role_scope_defaulted_warnings(
             # Both flow axes were unbound. The axis above is the one actually
             # discovered, and this companion axis defaulted right alongside it.
             warnings.append(
-                Warning(
-                    code=ROLE_SCOPE_DEFAULTED,
-                    severity="warn",
-                    message=role_scope_defaulted_message_for_axis(mat.also_defaulted_axis),
+                role_scope_defaulted_warning(
+                    mat.also_defaulted_axis,
+                    role_scope_defaulted_message_for_axis(mat.also_defaulted_axis),
                 )
             )
         return warnings
     if mat.open_origin_dcids is not None and "origin" not in unnamed_wholes:
         warnings.append(
-            Warning(
-                code=ROLE_SCOPE_DEFAULTED,
-                severity="warn",
-                message=role_scope_defaulted_message_for_axis("origin"),
-            )
+            role_scope_defaulted_warning("origin", role_scope_defaulted_message_for_axis("origin"))
         )
     return warnings
 
@@ -517,11 +548,7 @@ def carrier_flag_warnings(
         # whole Materialised and would re-run its discovered-scope arm's label
         # read for every alternate. This arm needs neither.
         warnings.append(
-            Warning(
-                code=ROLE_SCOPE_DEFAULTED,
-                severity="warn",
-                message=role_scope_defaulted_message_for_axis("origin"),
-            )
+            role_scope_defaulted_warning("origin", role_scope_defaulted_message_for_axis("origin"))
         )
     if membership_unverified:
         warnings.append(membership_unverified_warning())
