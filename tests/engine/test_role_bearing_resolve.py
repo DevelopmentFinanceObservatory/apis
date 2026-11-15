@@ -16,6 +16,7 @@ from search.engine.retrieval.retrieve import Materialised, NoDataDraft, material
 from search.engine.retrieval.role_resolve import graph_confirm_resolve
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.models import CoverageBare, CoverageExact, GraphRef, TimeWindow
+from search.scope.state import ScopeState
 from series_coverage.schema import RoleNames
 from series_coverage.shared import CoverageSnapshot
 from tests.engine._builders import bound_place
@@ -1138,6 +1139,9 @@ def test_the_nearest_real_relaxation_probe_carries_the_caller_own_deadline(monke
     graph = _DeadlineRecordingGraph(nodes=nodes)
 
     suggestions, warnings, _reads, _presence = _suggest_nearest_real(
+        scope_selection=ScopeState(),
+        operations=(),
+        request_catalogue=None,
         graph=graph,
         sdmx=sdmx,
         shape_draft=shape,

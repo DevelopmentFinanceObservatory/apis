@@ -79,7 +79,9 @@ def _entry(
 
 def _grounded(*rows: tuple[Spec, str, ShapeDraft, CandidateBasis | None]) -> _GroundedCandidates:
     """Grounded candidates from (spec, StatVar, shape, basis) rows, in order."""
-    return _GroundedCandidates(entries={row[0].spec_id: _entry(*row) for row in rows}, answer_t0=0)
+    return _GroundedCandidates(
+        entries={row[0].spec_id: _entry(*row) for row in rows}, answer_t0=0, failed=None
+    )
 
 
 def _settle(

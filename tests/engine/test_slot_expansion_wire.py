@@ -37,6 +37,7 @@ from search.models import (
     SlotKey,
     StatVar,
 )
+from search.scope.state import ScopeState
 from series_coverage.schema import RoleNames
 from tests.code_index.aid_identity import education_aid_identity
 from tests.engine._builders import bound_place, gref, shape_five_tuple, unbound_slot, value_slot
@@ -372,6 +373,9 @@ class TestNearestRealWiresBothFields:
         """Relaxing prop_b leaves Health bound, so expansion and version metadata remain."""
         bindings = [_nr_prop_b_binding([_NR_VAL_B1]), _nr_crs_purpose_binding([_HEALTH])]
         suggestions, warnings, _reads, _presence = _suggest_nearest_real(
+            scope_selection=ScopeState(),
+            operations=(),
+            request_catalogue=None,
             graph=_nr_graph(crs_purpose=_HEALTH, prop_b=_NR_VAL_B_OTHER),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             shape_draft=_nr_shape(crs_purpose=_HEALTH, prop_b=_NR_VAL_B_OTHER),
@@ -408,6 +412,9 @@ class TestNearestRealWiresBothFields:
             _nr_prop_b_binding([_NR_VAL_B1]),
         ]
         suggestions, warnings, _reads, _presence = _suggest_nearest_real(
+            scope_selection=ScopeState(),
+            operations=(),
+            request_catalogue=None,
             graph=_nr_graph(crs_purpose=_NR_UNRELATED_PURPOSE, prop_b=_NR_VAL_B1),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             shape_draft=_nr_shape(crs_purpose=_NR_UNRELATED_PURPOSE, prop_b=_NR_VAL_B1),

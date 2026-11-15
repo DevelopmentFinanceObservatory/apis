@@ -48,6 +48,7 @@ every resubmit does.
 from __future__ import annotations
 
 import dataclasses
+import logging
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
@@ -163,7 +164,12 @@ _SCOPE_RULES: Mapping[ProviderScope, str] = {row.scope: row.rule for row in PROV
 _DONOR_ORGANISATIONS = frozenset(DONOR_ORGANISATIONS)
 _NET = "net"
 _CONSTANT = "RealValue"
+logger = logging.getLogger(__name__)
 _SLOT_NOT_SERVED = "slot_not_served"
+_COMPOSITE_NOT_SERVED = "composite_not_servable"
+"""The `why` of `provider_not_offered` where a provider composite refuses what the part binds
+at a member that names no slot (`/entities/<key>`, `/facets/provenance`, `/shape`), the
+member in the detail's `pointer` (`_composite_fault`)."""
 """The `why` of `provider_not_offered` where a provider composite cannot serve a slot the part
 binds, whose property the detail's `slot` names (`_composite_fault`)."""
 
@@ -748,9 +754,10 @@ def bilateral_default_withheld(
 def _withheld(availability: OptionAvailability) -> Withheld:
     """The reason an unavailable or partial bilateral option states (`_read_bilateral_option`):
     `destination_unclassified` or `slot_not_served`, with its slot, from a
-    `provider_not_offered` detail, and `option_not_covered` from that code. Raises
-    `ValueError` for any other: the option is unavailable with `multilateral_destination`
-    only on a part naming a multilateral destination, which the default does not reach."""
+    `provider_not_offered` detail, and `option_not_covered` from that code. Any other state
+    is `scope_undecided`, logged as an error: the fallback for an unreachable state,
+    since the default does not reach a part naming a multilateral destination
+    (`multilateral_destination`), and `composite_not_servable` has no registered reason."""
     detail = availability.detail
     match availability.code, detail.get("why"):
         case "provider_not_offered", "destination_unclassified":
@@ -759,7 +766,12 @@ def _withheld(availability: OptionAvailability) -> Withheld:
             return Withheld(why="slot_not_served", slot=detail["slot"])
         case "option_not_covered", None:
             return Withheld(why="option_not_covered")
-    raise ValueError(f"the bilateral option states no withheld reason: {availability!r}")
+    logger.error(
+        "bilateral option states no registered withheld reason: %s %s",
+        availability.code,
+        detail,
+    )
+    return Withheld(why="scope_undecided")
 
 
 def bilateral_default_reading(
@@ -1296,17 +1308,19 @@ def _composite_fault(
     unavailable population (`PopulationUnavailable`) and why `slot_not_served`, its `slot`
     the property at fault, for a slot the composite's components do not declare; unavailable
     with `uncovered`, the option's code for a composite serving no year, where the window
-    reaches none of the composite's component periods. Re-raises `exc` at any other member
-    (`/shape`, `/entities/<key>`, a provenance set or a composite the index does not serve),
-    which no part reaches here: the options bind the composite as a value over a described
-    identity whose named destinations are on the composite's side."""
+    reaches none of the composite's component periods. At any other member (`/shape`,
+    `/entities/<key>`, a provenance set or a composite the index does not serve) it is not
+    offered with why `composite_not_servable` and the `pointer` at fault, so one option's
+    refusal never aborts the scope build."""
     if isinstance(exc, PopulationUnavailable):
         return _unavailable("provider_not_offered", {"why": "destination_unclassified"})
     if exc.pointer == "/requested_window":
         return _unavailable(uncovered)
     slot = _slot_at(identity, exc.pointer)
     if slot is None:
-        raise exc
+        return _unavailable(
+            "provider_not_offered", {"why": _COMPOSITE_NOT_SERVED, "pointer": exc.pointer}
+        )
     return _unavailable("provider_not_offered", {"why": _SLOT_NOT_SERVED, "slot": slot})
 
 

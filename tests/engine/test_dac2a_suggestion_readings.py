@@ -17,9 +17,11 @@ import pytest
 
 from search.engine.errors import EngineInputError
 from search.engine.region import (
+    RegionResult,
     phase_place_materialise,
     phase_shared,
     reading,
+    resubmit,
 )
 from search.engine.region.state import ResolveState
 from search.engine.retrieval import role_resolve
@@ -212,6 +214,30 @@ def test_a_flagged_match_whose_composite_refuses_its_read_says_it_reads_total_od
         if w.spec_id == match.spec.spec_id
     ]
     assert withheld == [{"why": "scope_undecided"}]
+
+
+def test_a_flagged_match_whose_composite_cannot_be_minted_fails_closed(
+    fresh_state: Callable[[], ResolveState], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A flagged match read within the bilateral population whose composite cannot be
+    minted has no label for its rows to stand under, so the table's Spec, which would say
+    they are total ODA, is not built. The refusal fails closed as the definite answer does
+    (`phase_answer.failed_closed`): no_data `facet_not_available`, with nothing the match
+    raised left on the part."""
+    state = fresh_state()
+    before = list(state.warnings)
+
+    def raising(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("mint failed")
+
+    monkeypatch.setattr(resubmit, "composite_mint", raising)
+
+    refused = asyncio.run(phase_shared._elected_flagged_match(state))
+
+    assert isinstance(refused, RegionResult), refused
+    assert (refused.status, refused.no_data_reason) == ("no_data", "facet_not_available")
+    assert refused.flagged_match is None
+    assert state.warnings == before
 
 
 def test_a_resubmit_refusal_s_flagged_match_is_the_composite() -> None:

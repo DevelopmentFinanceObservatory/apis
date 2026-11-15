@@ -1018,6 +1018,9 @@ async def assemble_candidates(
     # Grounding reads the graph synchronously for every scope member, so it runs off the event
     # loop, where the request deadline and other requests keep running.
     grounded = await asyncio.to_thread(ground_candidates, state, candidates)
+    if grounded.failed is not None:
+        # A candidate read within a composite's population that no scope states.
+        return failed_closed(state, mark, candidate=grounded.failed)
     unique_specs = grounded.specs
     # The stand-in that re-election installed is the elected candidate here.
     for spec in unique_specs:

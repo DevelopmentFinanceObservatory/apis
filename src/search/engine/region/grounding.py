@@ -1571,9 +1571,9 @@ def _suggest_nearest_real(
     unsettled: UnsettledPlace | None = None,
     pin_served_provenance: bool = False,
     level: tuple[ShapeDraft, Relaxation] | None = None,
-    scope_selection: ScopeState | None = None,
-    operations: Sequence[Operation] = (),
-    request_catalogue: Catalogue | None = None,
+    scope_selection: ScopeState,
+    operations: Sequence[Operation],
+    request_catalogue: Catalogue | None,
 ) -> tuple[
     list[NearestRealSpec], list[Warning], dict[str, SuggestionRead], ConsultedPresence | None
 ]:
@@ -1652,7 +1652,7 @@ def _suggest_nearest_real(
         defaulted_properties=defaulted_properties,
         named_groups=named_groups,
         pin_served_provenance=pin_served_provenance,
-        scope_selection=ScopeState() if scope_selection is None else scope_selection,
+        scope_selection=scope_selection,
         operations=operations,
         request_catalogue=request_catalogue,
     )

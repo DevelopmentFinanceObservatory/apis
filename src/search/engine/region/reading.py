@@ -369,7 +369,11 @@ class ReadScope:
     over it (`decision`), and the composite the Spec is minted as where that scope compiles
     one (`minted`), as `decide_read_scope` decides them. `decision` is None where the
     reading was read within a composite's population and no scope minting that composite
-    could be decided, so its rows have no label to stand under."""
+    could be decided, so its rows have no label to stand under, and every producer answers
+    no_data `facet_not_available` in its place (`phase_answer.failed_closed`): the definite
+    answer (`phase_answer._gather_definite_coverage`), each candidate
+    (`candidate_grounding.ground_candidates`) and a flagged match
+    (`phase_shared._elected_flagged_match`)."""
 
     answer: AnswerIdentity
     decision: ScopeDecision | None

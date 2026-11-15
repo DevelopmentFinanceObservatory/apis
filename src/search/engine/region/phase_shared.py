@@ -329,7 +329,7 @@ async def _elected_flagged_match(
     *,
     members: Sequence[str] | None = None,
     open_roles: Collection[RoleAxis] = (),
-) -> FlaggedMatch:
+) -> FlaggedMatch | RegionResult:
     """Build the elected shape's flagged identity without probing availability, for a
     refusal that judges the shape itself: role incompatibility, or a quantity form or
     denominator the shape does not serve. The identity names `members`, the StatVars
@@ -346,9 +346,17 @@ async def _elected_flagged_match(
     before the read, on the shape's own names.
 
     Preserve an established entity mapping on materialise-stage refusals so the where slot,
-    entities, trace, and identity agree. Early refusals have no mapping to retain."""
+    entities, trace, and identity agree. Early refusals have no mapping to retain.
+
+    A match read within a composite's population that no scope minting the composite states
+    has no label to stand under, so it fails closed as the definite answer does
+    (`reading.ReadScope`): the result returned is no_data `facet_not_available`
+    (`phase_answer.failed_closed`), which the caller returns in place of its refusal, with
+    what the match raised dropped."""
     await read_held_families((state.shape_draft,))
     await judge_coverage(state)
+    # Everything the match raises from here is its own (`ResolveState.mark_answer`).
+    mark = state.mark_answer()
     sv_dcids = list(members) if members else list(state.shape_draft.sv_arc_facts or ())
     (
         five_tuple_refs,
@@ -418,6 +426,11 @@ async def _elected_flagged_match(
     # The election and the scope read coverage and scan families, so they run off the
     # event loop.
     scoped = await asyncio.to_thread(_flagged_scope, state, answer)
+    if scoped.decision is None:
+        # Deferred: the answer phase imports this module.
+        from search.engine.region.phase_answer import failed_closed
+
+        return failed_closed(state, mark)
     minted = scoped.minted
     spec = build_spec(
         composite=None if minted is None else minted.mint,
@@ -548,6 +561,8 @@ async def settle_unjudged_refusal(state: ResolveState, result: RegionResult) -> 
         mat_result = state.mat_result
         members = mat_result.sv_dcids if isinstance(mat_result, Materialised) else None
         flagged = await _elected_flagged_match(state, members=members)
+        if isinstance(flagged, RegionResult):
+            return flagged
         return state.no_data(
             "qualifier_not_bound",
             flagged_match=(flagged.spec,),
@@ -563,6 +578,8 @@ async def settle_unjudged_refusal(state: ResolveState, result: RegionResult) -> 
 async def _role_incompatible_no_data(state: ResolveState) -> RegionResult:
     """Return the common role-incompatibility outcome without a new probe."""
     flagged = await _elected_flagged_match(state)
+    if isinstance(flagged, RegionResult):
+        return flagged
     return state.no_data(
         "role_incompatible",
         flagged_match=(flagged.spec,),

@@ -2324,6 +2324,8 @@ async def _declined_refusal(state: ResolveState) -> RegionResult:
     if declined.pinned_failure != "pinned_code":
         return await _denominator_refusal(state, None, members=members, open_roles=open_roles)
     flagged = await _elected_flagged_match(state, members=members, open_roles=open_roles)
+    if isinstance(flagged, RegionResult):
+        return flagged
     return state.no_data(
         "qualifier_not_bound",
         flagged_match=(flagged.spec,),
@@ -2344,6 +2346,8 @@ async def refuse_unread_answer(state: ResolveState) -> RegionResult:
     names the terms its trace leaves unmet (`requirements.settle_answer`)."""
     members, open_roles = _unread_answer_members(state)
     flagged = await _elected_flagged_match(state, members=members, open_roles=open_roles)
+    if isinstance(flagged, RegionResult):
+        return flagged
     return state.no_data(
         "qualifier_not_bound",
         flagged_match=(flagged.spec,),
@@ -2395,6 +2399,8 @@ async def _denominator_refusal(
         members = mat_result.sv_dcids
         open_roles = mat_result.open_axes
     flagged = await _elected_flagged_match(state, members=members, open_roles=open_roles)
+    if isinstance(flagged, RegionResult):
+        return flagged
     named = state.named_denominator
     level = _level_relaxation(state)
     return state.no_data(

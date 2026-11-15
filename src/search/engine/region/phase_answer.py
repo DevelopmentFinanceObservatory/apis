@@ -1283,13 +1283,15 @@ async def _assemble_carve_outs(
     mat_result: Materialised,
     spec: Spec,
     *,
+    decision: ScopeDecision | None,
     minted: MintedComposite | None = None,
 ) -> RegionResult | None:
     """Apply the remaining no-data gates after Spec construction. ``None`` means definite.
 
     Qualifier refusal precedes missing-slice and observation checks. Bound-unit availability
     is already verified by ``bound_unit_gate_reason``. `spec`, the flagged match each gate
-    names, is minted as `minted` where it is a composite.
+    names, is minted as `minted` where it is a composite, and carries the warning of
+    `decision`, the scope decided for it (`_show_decision`).
     """
     matched = () if minted is None else (minted,)
     # Judge the final answer on every requirement (`requirements.settle_answer`). One it
@@ -1300,6 +1302,7 @@ async def _assemble_carve_outs(
         state, state.shape_draft, state.bindings, served=served_prices(spec)
     )
     if unbound_qualifiers:
+        _show_decision(state, decision)
         return state.no_data(
             "qualifier_not_bound",
             flagged_match=(spec,),
@@ -1313,6 +1316,7 @@ async def _assemble_carve_outs(
     # place. Read the materialised value directly. Confidence masks it when no place is
     # named. A defaulted country scope can establish ``False``.
     if mat_result.available_at_place is False:
+        _show_decision(state, decision)
         return state.no_data(
             "no_observations",
             flagged_match=(spec,),
@@ -1325,6 +1329,7 @@ async def _assemble_carve_outs(
     # Without a named place, ``has_data=False`` means no member asserted every bound
     # property. Report the matched Spec as ``flagged_match``.
     if state.destination_dcid is None and not mat_result.has_data:
+        _show_decision(state, decision)
         return state.no_data(
             "no_matching_slice",
             flagged_match=(spec,),
@@ -1337,6 +1342,16 @@ async def _assemble_carve_outs(
     if not state.stat_vars:
         return state.no_data("no_observations", llm_usage=state.var_usage)
     return None
+
+
+def _show_decision(state: ResolveState, decision: ScopeDecision | None) -> None:
+    """Add the warning of `decision`, the scope decided for the answer a carve-out refusal
+    shows as its flagged match, to the part's once (`ScopeDecision.warning`): a reading the
+    bilateral default cannot reach says it reads total ODA, as a candidate a refusal shows
+    does (`candidate_collapse._shown`)."""
+    warning = None if decision is None else decision.warning
+    if warning is not None and warning not in state.warnings:
+        state.warnings.append(warning)
 
 
 def _drop_related_read(state: ResolveState) -> None:
@@ -1593,7 +1608,7 @@ async def _assemble_definite_answer(state: ResolveState, mark: AnswerMark) -> Re
     state.state_reelected_reading(definite_spec.spec)
 
     early = await _assemble_carve_outs(
-        state, mat_result, definite_spec.spec, minted=coverage.minted
+        state, mat_result, definite_spec.spec, decision=coverage.decision, minted=coverage.minted
     )
     if early is not None:
         return early

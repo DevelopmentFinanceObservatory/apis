@@ -78,6 +78,7 @@ from tests.engine.test_dac2a_destination_populations import (
     _sdmx,
     _trailing,
     _withheld,
+    _years_short,
 )
 from tests.engine.test_whole_total_bind_e2e import _VARIABLE
 
@@ -867,3 +868,40 @@ def test_a_composite_that_cannot_be_minted_answers_no_data_not_the_table(
     assert isinstance(part, NoDataPart), part
     assert part.no_data.reason == "facet_not_available"
     assert _faults(caplog)
+
+
+def test_a_carve_out_flagging_a_reading_that_reads_total_oda_says_so(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Over every donor with bilateral destinations covering fewer years than the answer,
+    the part reads total ODA. A carve-out refusal that flags that answer
+    (`phase_answer._assemble_carve_outs`), here no member holding data at the place, carries
+    the decision's `bilateral_reading_unavailable` keyed to the flagged match, as a definite
+    answer of it does."""
+    _years_short(monkeypatch)
+    carve_outs = phase_answer._assemble_carve_outs
+
+    async def unavailable(state: Any, mat_result: Any, *args: Any, **kwargs: Any) -> Any:
+        unheld = dataclasses.replace(mat_result, available_at_place=False)
+        return await carve_outs(state, unheld, *args, **kwargs)
+
+    async def no_suggestion(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(phase_answer, "_assemble_carve_outs", unavailable)
+    monkeypatch.setattr(phase_answer, "_nearest_real_for", no_suggestion)
+
+    response = offline_resolve(
+        _SCENARIOS["H6"](), graph=_graph_with_parties(), llm=_ScriptedLLM(_VARIABLE), sdmx=_sdmx()
+    )
+
+    assert isinstance(response, Resolution), response
+    (part,) = response.parts
+    assert isinstance(part, NoDataPart), part
+    assert part.no_data.reason == "no_observations"
+    flagged = part.no_data.flagged_match
+    assert flagged is not None and not isinstance(flagged, list)
+    withheld = [
+        (w.spec_id, w.params) for w in part.warnings if w.code == "bilateral_reading_unavailable"
+    ]
+    assert withheld == [(flagged.spec_id, {"why": "option_not_covered"})]

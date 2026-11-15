@@ -796,21 +796,16 @@ class _CandidateAnswer(NamedTuple):
         return self.identity.spec_id if self.minted is None else self.minted.mint.spec_id
 
 
-def _candidate_answer(
+def _candidate_identity(
     state: ResolveState,
     cand_index: int,
     cand: _Candidate,
     groundwork: _CandidateGroundwork,
     prep: _CandidatePrep,
-) -> _CandidateAnswer:
-    """The identity candidate `cand_index`'s Spec will be minted from and the scope decided
-    for it, read before the rest of its Spec is assembled, so a candidate whose `spec_id` an
-    earlier one holds can be skipped at no further cost.
-
-    The scope applies the provider reading the candidate's own read elected
-    (`_Candidate.reading`), as the definite answer's applies its read's
-    (`reading.decide_read_scope`), so a candidate read within a composite's population
-    is minted as that composite and labelled by the reading that read its rows."""
+) -> tuple[AnswerIdentity, dict[str, IdentityFacetBinding] | None]:
+    """The identity candidate `cand_index`'s Spec will be minted from and the facet bindings
+    it holds, read before its scope is decided or the rest of its Spec is assembled, so a
+    candidate whose identity an earlier one holds can be skipped at no further cost."""
     facet_bindings: dict[str, IdentityFacetBinding] | None = (
         # A bound outcome guarantees a unit request. The type checker cannot carry that
         # attribute invariant through this access.
@@ -837,6 +832,22 @@ def _candidate_answer(
         pin_served_provenance=state.pin_served_provenance,
         named_groups=request_named_groups(state, cand.place.roles),
     )
+    return identity, facet_bindings
+
+
+def _candidate_answer(
+    state: ResolveState,
+    cand: _Candidate,
+    identity: AnswerIdentity,
+    facet_bindings: dict[str, IdentityFacetBinding] | None,
+) -> _CandidateAnswer:
+    """The scope decided for candidate `cand`, whose Spec is minted from `identity` holding
+    `facet_bindings` (`_candidate_identity`), and the composite its Spec is minted as.
+
+    The scope applies the provider reading the candidate's own read elected
+    (`_Candidate.reading`), as the definite answer's applies its read's
+    (`reading.decide_read_scope`), so a candidate read within a composite's population
+    is minted as that composite and labelled by the reading that read its rows."""
     scoped = decide_read_scope(
         identity,
         cand.reading,
@@ -1057,10 +1068,15 @@ def _listed_members(
 @dataclass(frozen=True)
 class _GroundedCandidates:
     """The kept candidates' records (`_GroundedCandidate`) by `spec_id`, one per Spec, in
-    candidate order. ``answer_t0`` excludes context preparation from answer timing."""
+    candidate order. ``answer_t0`` excludes context preparation from answer timing.
+    `failed` is the elected candidate where it was read within a composite's population that
+    no scope minting the composite states (`reading.decide_read_scope`), which grounding
+    stops at with no record kept, so the part fails closed describing it
+    (`phase_answer.failed_closed`); None otherwise."""
 
     entries: Mapping[str, _GroundedCandidate]
     answer_t0: int
+    failed: _Candidate | None
 
     def __getitem__(self, spec_id: str) -> _GroundedCandidate:
         return self.entries[spec_id]
@@ -1154,6 +1170,12 @@ def ground_candidates(state: ResolveState, candidates: list[_Candidate]) -> _Gro
     alternate's places beside a role-bearing candidate's recipients, is no part of the
     comparison. A ``family_total_absent`` fact names one Spec's member, so each is recorded
     on the state by ``spec_id`` for the terminal that holds that Spec.
+
+    A candidate read within a composite's population that no scope minting the composite
+    states has no label for its rows to stand under (`reading.decide_read_scope`). The
+    elected one stops grounding (`_GroundedCandidates.failed`), so the part fails closed as
+    the definite answer does, since leaving it out would let another reading answer in its
+    place. An alternate is left out, and the rest of the set stands.
     """
     prep = _prepare_candidate_context(state, candidates)
     candidates = prep.candidates
@@ -1171,12 +1193,19 @@ def ground_candidates(state: ResolveState, candidates: list[_Candidate]) -> _Gro
 
     groundworks = _ground_each_candidate(state, candidates, prep)
     entries: dict[str, _GroundedCandidate] = {}
+    # The identities of the candidates whose scopes were decided.
+    decided: set[str] = set()
     for cand_index, (cand, groundwork) in enumerate(zip(candidates, groundworks, strict=True)):
-        answer = _candidate_answer(state, cand_index, cand, groundwork, prep)
-        # A candidate whose Spec an earlier one holds adds no Spec or record, and its Spec is
-        # not assembled. It follows the candidate it repeats, so it is never the elected one.
-        # One read within a composite's population that cannot be minted as it is dropped,
-        # since the table's label would state the population's rows (`reading.decide_read_scope`).
+        identity, facet_bindings = _candidate_identity(state, cand_index, cand, groundwork, prep)
+        # A candidate whose identity or Spec an earlier one holds adds no Spec or record: its
+        # scope is not decided again, its composite not minted again, and its Spec not
+        # assembled. It follows the candidate it repeats, so it is never the elected one.
+        if identity.spec_id in decided:
+            continue
+        decided.add(identity.spec_id)
+        answer = _candidate_answer(state, cand, identity, facet_bindings)
+        if answer.decision is None and _is_elected(state, cand_index):
+            return _GroundedCandidates(entries={}, answer_t0=answer_t0, failed=cand)
         if answer.decision is None or answer.spec_id in entries:
             continue
         entry = _finish_candidate(
@@ -1199,7 +1228,7 @@ def ground_candidates(state: ResolveState, candidates: list[_Candidate]) -> _Gro
 
     restate_scope_warning(state, list(entries.values()))
     _warn_for_candidates(state, prep, groundworks)
-    return _GroundedCandidates(entries=entries, answer_t0=answer_t0)
+    return _GroundedCandidates(entries=entries, answer_t0=answer_t0, failed=None)
 
 
 def _warn_for_candidates(

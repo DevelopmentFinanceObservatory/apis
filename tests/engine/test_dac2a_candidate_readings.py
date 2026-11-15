@@ -32,6 +32,7 @@ from search.engine.region import (
 )
 from search.engine.region.scope_decision import _withheld_warning
 from search.engine.region.state import ResolveState
+from search.engine.spec_id import identity_spec_id
 from search.models import (
     BaseIdentity,
     CandidatesPart,
@@ -278,6 +279,38 @@ def refuse_the_recipient_reading_s_mint(monkeypatch: pytest.MonkeyPatch) -> None
         return mint(identity, **kwargs)
 
     monkeypatch.setattr(resubmit, "composite_mint", refusing)
+
+
+def test_a_set_whose_elected_reading_cannot_be_minted_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The donor reading, elected first, is read within the bilateral population, and its
+    composite cannot be minted, so its rows have no label to stand under. The part fails
+    closed as the definite answer does (`phase_answer.failed_closed`), describing the
+    donor reading, and the recipient reading does not answer in its place."""
+    mint = resubmit.composite_mint
+
+    def refusing(identity: BaseIdentity, **kwargs: Any) -> Any:
+        if identity.entities.get("destination") != [_IND]:
+            raise RuntimeError("mint failed")
+        return mint(identity, **kwargs)
+
+    monkeypatch.setattr(resubmit, "composite_mint", refusing)
+    closed: list[Any] = []
+    close = candidate_collapse.failed_closed
+
+    def closing(state: Any, mark: Any, *, candidate: Any = None) -> Any:
+        closed.append(candidate)
+        return close(state, mark, candidate=candidate)
+
+    monkeypatch.setattr(candidate_collapse, "failed_closed", closing)
+
+    part = _india(india_request(open_role="recipient"))
+
+    assert isinstance(part, NoDataPart), part
+    assert part.no_data.reason == "facet_not_available"
+    (candidate,) = closed
+    assert candidate.reading is not None and candidate.reading.table is not None
 
 
 def test_a_set_left_with_one_composite_reading_answers_it_as_its_resubmit_does(
@@ -571,6 +604,33 @@ def test_each_candidate_is_minted_under_the_request_s_catalogue(
     (state,) = states
     assert state.request_catalogue is not None
     assert scopes == [state.request_catalogue.scope] * 2
+
+
+def test_a_candidate_repeating_an_earlier_one_mints_no_composite(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A candidate whose identity an earlier one holds is skipped before its scope is
+    decided (`candidate_grounding.ground_candidates`), so its composite is not minted again
+    and the set keeps one Spec per reading."""
+    minted: list[str] = []
+    mint = resubmit.composite_mint
+
+    def recording(identity: BaseIdentity, **kwargs: Any) -> Any:
+        minted.append(identity_spec_id(identity))
+        return mint(identity, **kwargs)
+
+    monkeypatch.setattr(resubmit, "composite_mint", recording)
+    ground = candidate_collapse.ground_candidates
+
+    def repeated(state: Any, candidates: list[Any]) -> Any:
+        return ground(state, [*candidates, candidates[-1]])
+
+    monkeypatch.setattr(candidate_collapse, "ground_candidates", repeated)
+
+    part = _candidates()
+
+    assert len(part.candidates.specs) == 2
+    assert len(minted) == len(set(minted)) == 2
 
 
 def test_a_refusal_showing_a_composite_candidate_carries_its_mint_on_its_own(
