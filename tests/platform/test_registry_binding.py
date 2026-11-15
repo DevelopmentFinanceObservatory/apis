@@ -13,13 +13,11 @@ warnings must list every resolve door.
 
 from __future__ import annotations
 
-import json
-import os
 from collections.abc import Callable
 from typing import get_args
 
 import pytest
-from dfo_spec_kit.registry import load_registry
+from dfo_spec_kit.registry import WARNING_REASONS, load_registry
 
 import datasets_api.codes as datasets_codes
 import datasets_api.warnings as datasets_warnings
@@ -51,7 +49,6 @@ from search.engine.region.scope_decision import _withheld_warning
 from search.models import NoDataReason
 from search.scope.provider import WITHHELD_WHYS, Withheld, WithheldWhy
 from tests.code_registry import registered_endpoints, registered_status_codes
-from tests.spec_kit_bundle import spec_kit_dir
 
 _REGISTRY = load_registry()
 
@@ -370,25 +367,11 @@ def test_no_served_code_resolves_to_a_retired_registry_entry():
     assert not retired, f"served code(s) resolve to a retired registry entry: {retired}"
 
 
-def _registered_warning_reasons(code: str) -> frozenset[str]:
-    """The reasons dfo-spec-kit's warning-reason registry lists for `code`, read from the kit
-    checkout `DFO_SPEC_KIT_DIR` names, else the sibling checkout. A missing registry skips,
-    and fails when `DFO_SPEC_KIT_REQUIRED` is set."""
-    path = spec_kit_dir() / "registries" / "warning-reasons.json"
-    if not path.is_file():
-        if os.environ.get("DFO_SPEC_KIT_REQUIRED"):
-            raise RuntimeError(f"DFO_SPEC_KIT_REQUIRED is set but {path} does not exist")
-        pytest.skip("warning-reason registry not found -- set DFO_SPEC_KIT_DIR")
-    registry = json.loads(path.read_text())
-    assert registry["format_version"] == 1
-    return frozenset(entry["reason"] for entry in registry["entries"] if entry["code"] == code)
-
-
 def test_the_bilateral_reading_warning_states_the_registered_reasons_and_no_other():
     """Every `why` Search can put on `bilateral_reading_unavailable` (`WITHHELD_WHYS`) is a
     reason the registry lists for it, every listed reason is one Search can state, and each
     has a message, `slot_not_served` alone naming the slot in `params`."""
-    assert _registered_warning_reasons(BILATERAL_READING_UNAVAILABLE) == WITHHELD_WHYS
+    assert frozenset(WARNING_REASONS[BILATERAL_READING_UNAVAILABLE]) == WITHHELD_WHYS
     for why in get_args(WithheldWhy):
         slot = "crsTypeOfFinance" if why == "slot_not_served" else None
         warning = _withheld_warning("spec", Withheld(why=why, slot=slot))
