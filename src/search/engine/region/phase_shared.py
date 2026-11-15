@@ -38,6 +38,7 @@ from search.engine.region.place_roles import (
 )
 from search.engine.region.qualifier_readings import shape_carries_measure_match
 from search.engine.region.reading import (
+    ElectionFacts,
     ReadingDecision,
     ReadScope,
     decide_read_scope,
@@ -523,8 +524,7 @@ def _flagged_reading(state: ResolveState) -> ReadingDecision | None:
         state.place,
         date_request=state.date_request,
         selection=state.scope_selection,
-        coverage=state.coverage,
-        operations=state.operations,
+        facts=ElectionFacts(coverage=state.coverage, operations=state.operations),
     )
 
 

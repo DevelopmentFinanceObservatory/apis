@@ -8,7 +8,10 @@ from what the part holds before its read: its shape and bindings, the place the 
 tried at, the scope entries and records its binders hold, the coverage snapshot, and the
 years the read reads (`extract.read_window`). The read can then read the composite's table
 within its population (`ReadingDecision.table`), and the answer's scope applies the same
-choice to the identity minted after the read (`scope_decision.build_part_scope`).
+choice to the identity minted after the read (`scope_decision.build_part_scope`). What the
+composite's table read binds beyond the part's own places, the population's total in place
+of a destination the part leaves out, is bound inside the read alone (`ReadBinding`), so the
+part's place, bindings and minted identity stay as the request named them.
 
 The window is the read's own. A trailing request settles on a narrower range after the read
 (`trailing.settle_trailing`), always inside the read window (`trailing._assert_inside`), and
@@ -26,7 +29,12 @@ from contextvars import ContextVar
 from typing import TYPE_CHECKING
 
 from code_index.composites import composite_ref
-from code_index.members import SourceNotInFamily, identity_family_query, index_family
+from code_index.members import (
+    SourceNotInFamily,
+    canonical_identity,
+    identity_family_query,
+    index_family,
+)
 from code_index.query import CodeIndex
 from code_index.scope_conventions import BILATERAL_SOURCES
 from code_index.shared import get_index
@@ -54,8 +62,8 @@ from search.engine.retrieval.bound_values import bound_source
 from search.engine.retrieval.retrieve import NoDataDraft
 from search.engine.shape import entities_by_role, identity_shape_for
 from search.engine.spec_id import identity_spec_id
-from search.models import BaseIdentity, Operation, Spec, TimeWindow, Warning
-from search.scope.provider import Withheld
+from search.models import BaseIdentity, EntityRoleKey, Operation, Spec, TimeWindow, Warning
+from search.scope.provider import Withheld, counted_source
 from search.scope.state import ScopeState
 from search.scope.tables import PartFacts, ScopeFacts
 from series_coverage.shared import CoverageSnapshot
@@ -80,7 +88,7 @@ _OPTION_NOT_COVERED = Withheld(why="option_not_covered")
 """The reason of a reading the election withheld because the bilateral destinations do not
 cover every year the read reads (`provider.bilateral_default_withheld`)."""
 
-_BILATERAL_CODES = frozenset((row.code_system, row.code) for row in BILATERAL_SOURCES)
+_BILATERAL_CODE_SYSTEMS = frozenset(row.code_system for row in BILATERAL_SOURCES)
 
 _REFUSALS: ContextVar[set[str] | None] = ContextVar("search_refused_composites", default=None)
 """The spec_ids of the composites whose table read refused in the bound resolution
@@ -131,11 +139,11 @@ class ReadingDecision:
 
     choice: ProviderChoice
     table: TableRead | None
-    # The `entities` keys of `table.identity` on a flow axis the part neither names nor
-    # opens: the population's total a component binds in place of a destination the part
-    # leaves out (`RolePopulation.total`), which the read names as the composite's table
-    # read does and the composite's own identity leaves out.
-    left_out: frozenset[str] = frozenset()
+    # The entities of `table.identity`, by role key, on each flow axis the part neither
+    # names nor opens: the population's total a component binds in place of a destination
+    # the part leaves out (`RolePopulation.total`). The read binds them as the composite's
+    # table read does (`ReadBinding`), and the part's place and minted identity leave them out.
+    totals: Mapping[str, tuple[str, ...]] = dataclasses.field(default_factory=dict)
     # Whether the composite the part's scope compiles to refuses its table read
     # (`identity_edit.composite_table_identity`), so the part reads nothing and answers
     # no_data, `facet_not_available`: a fresh search does not refuse its scope, and the
@@ -145,6 +153,34 @@ class ReadingDecision:
     refused: bool = False
 
 
+class ElectionFacts:
+    """The scope facts the elections of one part's reads read (`elect_reading`): the
+    request's `coverage`, the part's `operations` and the dataset the code index elects for
+    each election's document. One `ScopeFacts` is held per dataset, so the elections of
+    every place a read tries (`ElectedReads`), of a part's alternates and of its nearest-real
+    relaxations share the family scans and coverage reads it memoises, each keyed by what it
+    reads. The elections run one at a time, as a part's reads do."""
+
+    def __init__(self, *, coverage: CoverageSnapshot, operations: Sequence[Operation]) -> None:
+        self.coverage = coverage
+        self._operations = tuple(operations)
+        self._held: dict[str | None, ScopeFacts] = {}
+
+    def facts(self, index: CodeIndex, dataset: str | None) -> ScopeFacts:
+        """The facts of a part served from `dataset`, read in `index`; a part serving no
+        dataset yet where it is None."""
+        held = self._held.get(dataset)
+        if held is None or held.index is not index:
+            datasets = () if dataset is None else (dataset,)
+            held = ScopeFacts(
+                index=index,
+                coverage=self.coverage,
+                part=PartFacts(operations=self._operations, datasets=datasets),
+            )
+            self._held[dataset] = held
+        return held
+
+
 def elect_reading(
     shape: ShapeDraft,
     bindings: Sequence[SlotBindingDraft],
@@ -152,20 +188,21 @@ def elect_reading(
     *,
     date_request: DateRequest | None,
     selection: ScopeState,
-    coverage: CoverageSnapshot,
-    operations: Sequence[Operation],
+    facts: ElectionFacts,
 ) -> ReadingDecision | None:
     """The provider reading of the part read for `shape` under `bindings` at `place`, one
     settled place the read tries, with the scope entries and records of `selection`, judged
-    in `coverage` over the years the read reads for `date_request` (`extract.read_window`).
-    None where no binding counts a published total with a bilateral source
-    (`BILATERAL_SOURCES`), such as DAC2a's aid type 206.
+    in `facts`' coverage over the years the read reads for `date_request`
+    (`extract.read_window`). None where the document the part's pre-read state names
+    (`_pre_read_identity`) counts no published total with a bilateral source, such as
+    DAC2a's aid type 206, by the rule the answer's scope reads after the read
+    (`provider.counted_source`).
 
-    The provider rules read an identity, so the election reads the document the part's
-    pre-read state names (`_pre_read_identity`). Its choice
+    The provider rules read an identity, so the election reads that document. Its choice
     (`scope_decision.choose_provider`) is built into a scope over that document to name the
     composite the scope compiles to, whose table read is elected here
-    (`ReadingDecision.table`).
+    (`ReadingDecision.table`), with the totals it binds on axes the part leaves out
+    (`ReadingDecision.totals`).
 
     An election that raises anywhere, building the document included, is logged as a scope
     decision is (`scope_decision.note_undecided`), and the part reads the table as total
@@ -176,31 +213,30 @@ def elect_reading(
 
     Raises `EngineInputError` (`request_invalid`) for a reversed window, as the answer's mint
     refuses it (`grounding.requested_window_from_date_request`)."""
-    if not binds_bilateral_total(bindings):
+    if not _declares_bilateral_code_system(shape):
         return None
     identity: BaseIdentity | None = None
-    facts: ScopeFacts | None = None
+    scope_facts: ScopeFacts | None = None
     try:
         index = get_index()
-        identity = _pre_read_identity(shape, bindings, place, date_request=date_request)
+        identity = _pre_read_identity(
+            shape, bindings, place, date_request=date_request, index=index
+        )
+        if counted_source(identity, index) is None:
+            return None
         # The facts of a part serving no dataset yet, which an election that raises past here
         # reads the bilateral default's reach in (`_undecided_election`).
-        facts = ScopeFacts(
-            index=index, coverage=coverage, part=PartFacts(operations=tuple(operations))
-        )
-        if (dataset := _elected_dataset(identity, index)) is not None:
-            facts = dataclasses.replace(
-                facts, part=dataclasses.replace(facts.part, datasets=(dataset,))
-            )
-        choice = choose_provider(identity, _snapshot(selection), facts)
-        decision = build_part_scope(identity, choice, spec_id=_ELECTION, facts=facts)
+        scope_facts = facts.facts(index, None)
+        scope_facts = facts.facts(index, _elected_dataset(identity, index))
+        choice = choose_provider(identity, _snapshot(selection), scope_facts)
+        decision = build_part_scope(identity, choice, spec_id=_ELECTION, facts=scope_facts)
         if not decision.composite:
             return ReadingDecision(choice=choice, table=None)
         assert decision.scope is not None
         composite = decision.scope.compiled.identity
         try:
             table = composite_table_identity(
-                composite, pointer="/input/identity", coverage=coverage
+                composite, pointer="/input/identity", coverage=facts.coverage
             )
         except EngineInputError as exc:
             composite_id = identity_spec_id(composite)
@@ -214,24 +250,35 @@ def elect_reading(
                 note_degraded_read(_ELECTION)
             return ReadingDecision(
                 choice=undecided_choice(
-                    identity, selection=selection, facts=facts, subject=_ELECTION
+                    identity, selection=selection, facts=scope_facts, subject=_ELECTION
                 ),
                 table=None,
                 refused=True,
             )
-        asked = {role_key_axis(key) for key in identity.entities} | set(identity.open_roles or ())
-        left_out = frozenset(
-            key for key in table.identity.entities if role_key_axis(key) not in asked
-        )
-        return ReadingDecision(choice=choice, table=table, left_out=left_out)
+        return ReadingDecision(choice=choice, table=table, totals=_totals(identity, table))
     except Exception as exc:
         if identity is None and isinstance(exc, EngineInputError) and exc.code == "request_invalid":
             # A reversed window, refused building the document (`_read_window`).
             raise
         note_undecided(_ELECTION, exc)
         return ReadingDecision(
-            choice=_undecided_election(identity, selection=selection, facts=facts), table=None
+            choice=_undecided_election(identity, selection=selection, facts=scope_facts),
+            table=None,
         )
+
+
+def _totals(identity: BaseIdentity, table: TableRead) -> dict[str, tuple[str, ...]]:
+    """The entities `table`, the composite's table read for the part of `identity`, binds on
+    a flow axis `identity` neither names nor opens, by role key, left as bound once each
+    population role is open within its members (`identity_edit.open_within`): the
+    population's total a component binds in place of a destination the part leaves out."""
+    asked = {role_key_axis(key) for key in identity.entities} | set(identity.open_roles or ())
+    opened, _within = open_within(table.identity, table.populations)
+    return {
+        key: tuple(dcids)
+        for key, dcids in opened.entities.items()
+        if (axis := role_key_axis(key)) is not None and axis not in asked
+    }
 
 
 def _undecided_election(
@@ -256,8 +303,7 @@ def elect_at_read(
     *,
     date_request: DateRequest | None,
     selection: ScopeState,
-    coverage: CoverageSnapshot,
-    operations: Sequence[Operation],
+    facts: ElectionFacts,
 ) -> ReadingDecision | None:
     """The provider reading a read of `shape` under `bindings` at `place` elects
     (`elect_reading`), as every read of a part elects it: the definite answer's, each
@@ -265,13 +311,7 @@ def elect_at_read(
     refuses it with `request_invalid`, where a read that reaches the mint refuses it."""
     try:
         return elect_reading(
-            shape,
-            bindings,
-            place,
-            date_request=date_request,
-            selection=selection,
-            coverage=coverage,
-            operations=operations,
+            shape, bindings, place, date_request=date_request, selection=selection, facts=facts
         )
     except EngineInputError as exc:
         if exc.code != "request_invalid":
@@ -279,46 +319,107 @@ def elect_at_read(
         return None
 
 
-def read_within(
-    shape: ShapeDraft, place: PlaceContext, reading: ReadingDecision | None
-) -> tuple[PlaceContext, Within]:
-    """The context a read of `shape` elected as `reading` at `place` reads in, and the
-    members each open axis is discovered within (`graph_confirm_resolve`): for a composite,
-    its table read (`ReadingDecision.table`) with each role bound to a population open within
-    its members (`identity_edit.open_within`), and the population's total a component binds
-    in place of a destination the part leaves out named on its axis
-    (`ReadingDecision.left_out`), as a resubmit of the composite reads it. `place` itself,
-    discovering no axis within members, for any other reading."""
-    if reading is None or reading.table is None:
-        return place, None
-    opened, within = open_within(reading.table.identity, reading.table.populations)
-    if not reading.left_out:
-        return place, within
-    return _naming(shape, place, {key: opened.entities[key] for key in reading.left_out}), within
-
-
 type Within = dict[RoleAxis, frozenset[str]] | None
-"""The members each open axis of a read is discovered within (`read_within`), None where it
+"""The members each open axis of a read is discovered within (`ReadBinding.within`), None where it
 discovers no axis within members."""
 
-type WithinRead[T] = Callable[[PlaceContext, FacetBatch | None, Within], T]
-"""A read of a part at the context it reads in, with its facet batch and the members each
-open axis is discovered within."""
+
+@dataclasses.dataclass(frozen=True)
+class ReadBinding:
+    """What a read of a part binds beyond the context it reads in, as the provider reading
+    it elected names it (`read_binding`): `within`, the members each open axis is discovered
+    within (`graph_confirm_resolve`), and `totals`, the population's total a component binds
+    on each flow axis the part leaves out (`ReadingDecision.totals`). A read of a composite
+    binds both, as a resubmit of the composite reads its table; a read of the table binds
+    neither. The totals enter the read's entities alone, so the part's place, bindings and
+    minted identity name what the request named."""
+
+    within: Within = None
+    totals: Mapping[RoleAxis, tuple[str, ...]] = dataclasses.field(default_factory=dict)
+
+    def places(self, axis: RoleAxis, dcids: Sequence[str]) -> list[str]:
+        """`dcids`, the places a read binds on `axis`, followed by the totals it binds there."""
+        return [*dcids, *(dcid for dcid in self.totals.get(axis, ()) if dcid not in dcids)]
+
+    def entities(self, shape: ShapeDraft, place: PlaceContext) -> dict[str, list[str]]:
+        """The entities by role name a read of `shape` at `place` binds: the context's own
+        (`PlaceRoles.resolved_entities`) and the totals, each on its axis."""
+        entities = place.roles.resolved_entities
+        if not self.totals:
+            return entities
+        bound = {name: list(dcids) for name, dcids in entities.items()}
+        for name, dcids in entities_by_role(shape=shape, by_axis=self.totals).items():
+            held = bound.setdefault(name, [])
+            held.extend(dcid for dcid in dcids if dcid not in held)
+        return bound
+
+
+def read_binding(reading: ReadingDecision | None) -> ReadBinding:
+    """What a read elected as `reading` binds beyond its context (`ReadBinding`): for a
+    composite, each role its table read (`ReadingDecision.table`) binds to a population open
+    within the population's members (`identity_edit.open_within`), and the totals it binds
+    on the axes the part leaves out (`ReadingDecision.totals`). Nothing for any other
+    reading."""
+    if reading is None or reading.table is None:
+        return ReadBinding()
+    _opened, within = open_within(reading.table.identity, reading.table.populations)
+    totals: dict[RoleAxis, tuple[str, ...]] = {}
+    for key, dcids in reading.totals.items():
+        axis = role_key_axis(key)
+        assert axis is not None, f"{key!r} names no flow axis"
+        totals[axis] = (*totals.get(axis, ()), *dcids)
+    return ReadBinding(within=within, totals=totals)
+
+
+def read_totals(reading: ReadingDecision | None) -> frozenset[tuple[str, str]]:
+    """Each total the read elected as `reading` binds on an axis the part leaves out
+    (`ReadingDecision.totals`), as a dcid and its role key. The reading's Spec lists them
+    among its entities (`roles_read`), and its identity leaves them out."""
+    if reading is None or reading.table is None:
+        return frozenset()
+    return frozenset((dcid, key) for key, dcids in reading.totals.items() for dcid in dcids)
+
+
+def roles_read(
+    roles: Sequence[tuple[str, EntityRoleKey]], reading: ReadingDecision | None
+) -> list[tuple[str, EntityRoleKey]]:
+    """`roles`, a context's wire roles, with the totals the read elected as `reading` binds
+    (`read_totals`), destinations first, as a resubmit of the composite binds the places of
+    its table identity (`promote_places._posted_place_roles`): the entities the reading's
+    Spec lists. `roles` itself where the read binds no total."""
+    totals = read_totals(reading)
+    if not totals:
+        return list(roles)
+    by_axis: dict[RoleAxis, list[str]] = {"destination": [], "origin": []}
+    for dcid, key in [*roles, *sorted(totals)]:
+        axis = role_key_axis(key)
+        assert axis is not None, f"{key!r} names no flow axis"
+        if dcid not in by_axis[axis]:
+            by_axis[axis].append(dcid)
+    return [(dcid, "destination") for dcid in by_axis["destination"]] + [
+        (dcid, "origin") for dcid in by_axis["origin"]
+    ]
+
+
+type WithinRead[T] = Callable[[PlaceContext, FacetBatch | None, ReadBinding], T]
+"""A read of a part at the context it reads in, with its facet batch and what it binds
+beyond that context (`ReadBinding`)."""
 
 
 class ElectedReads[T]:
     """The read of `shape` under `bindings` at each place a place-set settlement tries
     (`place_context.settle_sets`), the definite answer's, each alternate's and each
     nearest-real suggestion's. Each read elects its provider reading first, at the place it
-    tries (`elect_at_read`), and reads within the composite's population that reading names
-    (`read_within`) through `read`, so a part that settles on a composite is read once, as a
-    resubmit of the composite reads it. A composite that refuses its table read reads nothing
-    and answers no_data, `facet_not_available`.
+    tries (`elect_at_read`), with the scope facts the part's elections share (`facts`), and
+    reads within the composite's population that reading names (`read_binding`) through `read`,
+    so a part that settles on a composite is read once, as a resubmit of the composite reads
+    it. A composite that refuses its table read reads nothing and answers no_data,
+    `facet_not_available`.
 
-    Each place tried is held by identity with the context it was read in and its election,
-    so its identity is not reused while the settlement runs, and the place the sets settle on
-    gives both (`settled`). `bindings` is read at each call, so a caller that edits the list
-    between rounds reads the edited bindings."""
+    Each place tried is held by identity with its election, so its identity is not reused
+    while the settlement runs, and the place the sets settle on gives its election
+    (`settled`). `bindings` is read at each call, so a caller that edits the list between
+    rounds reads the edited bindings."""
 
     def __init__(
         self,
@@ -327,18 +428,16 @@ class ElectedReads[T]:
         *,
         date_request: DateRequest | None,
         selection: ScopeState,
-        coverage: CoverageSnapshot,
-        operations: Sequence[Operation],
+        facts: ElectionFacts,
         read: WithinRead[T],
     ) -> None:
         self._shape = shape
         self._bindings = bindings
         self._date_request = date_request
         self._selection = selection
-        self._coverage = coverage
-        self._operations = operations
+        self._facts = facts
         self._read = read
-        self._tried: dict[int, tuple[PlaceContext, PlaceContext, ReadingDecision | None]] = {}
+        self._tried: dict[int, tuple[PlaceContext, ReadingDecision | None]] = {}
 
     def __call__(self, place: PlaceContext, facet_batch: FacetBatch | None) -> T | NoDataDraft:
         reading = elect_at_read(
@@ -347,20 +446,16 @@ class ElectedReads[T]:
             place,
             date_request=self._date_request,
             selection=self._selection,
-            coverage=self._coverage,
-            operations=self._operations,
+            facts=self._facts,
         )
-        read_at, within = read_within(self._shape, place, reading)
-        self._tried[id(place)] = (place, read_at, reading)
+        self._tried[id(place)] = (place, reading)
         if reading is not None and reading.refused:
             return NoDataDraft(reason="facet_not_available")
-        return self._read(read_at, facet_batch, within)
+        return self._read(place, facet_batch, read_binding(reading))
 
-    def settled(self, place: PlaceContext) -> tuple[PlaceContext, ReadingDecision | None]:
-        """The context the read at `place`, a place this settlement tried, read in, and the
-        reading it elected."""
-        _place, read_at, reading = self._tried[id(place)]
-        return read_at, reading
+    def settled(self, place: PlaceContext) -> ReadingDecision | None:
+        """The reading the read at `place`, a place this settlement tried, elected."""
+        return self._tried[id(place)][1]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -416,12 +511,12 @@ def decide_read_scope(
     The scope applies the provider choice `reading` elected (`scope_decision.build_part_scope`)
     and chooses nothing, so the reading that labels the Spec is the one that read its rows.
     A reading that elected none applies the choice its own identity makes
-    (`_unelected_choice`). The scope is built over the identity the request names, without
-    the population's total the read named in place of a destination the part leaves out
-    (`request_identity`), and checked against the scope decided over it (`_checked`). A
+    (`_unelected_choice`). The scope is built over the reading's own identity, which names
+    what the request named, and checked against the scope decided over it (`_checked`). A
     scope that compiles a composite mints the Spec as it (`MintedComposite`), with the
-    composite's components listed on its compiled scope. A decision that raises leaves the
-    reading as a single table that states no scope (`scope_decision.guarded_scope_decision`).
+    composite's components listed on its compiled scope and the identity its rows were read
+    for (`_read_identity`). A decision that raises leaves the reading as a single table that
+    states no scope (`scope_decision.guarded_scope_decision`).
 
     A read made within a composite's population (`ReadingDecision.table`) holds that
     population's rows alone, so it fails closed: where its scope cannot be decided, the mint
@@ -431,7 +526,7 @@ def decide_read_scope(
     # Deferred: resubmit imports the answer phase, which imports this module.
     from search.engine.region.resubmit import composite_mint
 
-    identity = request_identity(answer.identity, reading)
+    identity = answer.identity
     minted: list[MintedComposite] = []
 
     def decide() -> ScopeDecision:
@@ -459,7 +554,7 @@ def decide_read_scope(
         minted.append(
             MintedComposite(
                 mint=mint,
-                read=answer.identity,
+                read=_read_identity(identity, reading),
                 populations=reading.table.populations
                 if reading is not None and reading.table is not None
                 else {},
@@ -507,16 +602,14 @@ def _unminted(answer: AnswerIdentity, exc: Exception | None) -> ReadScope:
     return ReadScope(answer=answer, decision=None, minted=None)
 
 
-def request_identity(identity: BaseIdentity, reading: ReadingDecision | None) -> BaseIdentity:
-    """`identity`, the identity minted from the read, without the entities the read named in
-    place of a destination the part leaves out (`ReadingDecision.left_out`): the identity the
-    request names, whose composite reads that destination at the population's total."""
-    if reading is None or not reading.left_out:
+def _read_identity(identity: BaseIdentity, reading: ReadingDecision | None) -> BaseIdentity:
+    """`identity`, the identity minted from the read elected as `reading`, with the totals
+    the read bound on the axes the part leaves out (`ReadingDecision.totals`): the identity
+    its rows were read for, as a resubmit of the composite reads its table identity."""
+    if reading is None or not reading.totals:
         return identity
     document = identity.model_dump(exclude_none=True)
-    document["entities"] = {
-        key: dcids for key, dcids in identity.entities.items() if key not in reading.left_out
-    }
+    document["entities"] = {**identity.entities, **{k: list(v) for k, v in reading.totals.items()}}
     return BaseIdentity.model_validate(document)
 
 
@@ -621,55 +714,17 @@ def _composite_of(decision: ScopeDecision) -> str | None:
     )
 
 
-def _naming(
-    shape: ShapeDraft, place: PlaceContext, named: Mapping[str, Sequence[str]]
-) -> PlaceContext:
-    """`place`, the context of role-bearing `shape`, with the places `named` maps by flow role
-    key bound on that role's axis after those it binds, its destinations as its where places,
-    as a posted identity's places bind (`promote_places._posted_place_roles`)."""
-    roles = place.roles
-    by_axis: dict[RoleAxis, list[str]] = {
-        "destination": list(roles.destination_dcids),
-        "origin": list(roles.origin_dcids),
-    }
-    for key, dcids in named.items():
-        axis = role_key_axis(key)
-        assert axis is not None, f"{key!r} names no flow axis"
-        by_axis[axis].extend(dcid for dcid in dcids if dcid not in by_axis[axis])
-    destinations, origins = by_axis["destination"], by_axis["origin"]
-    bound = dataclasses.replace(
-        roles,
-        destination_dcids=destinations,
-        origin_dcids=origins,
-        resolved_entities=entities_by_role(shape=shape, by_axis=by_axis),
-        roles=[(dcid, "destination") for dcid in destinations]
-        + [(dcid, "origin") for dcid in origins],
-        where_dcids=destinations,
-        obs_destination_dcid=destinations[0] if destinations else None,
-    )
-    probe = None if len(destinations) <= 1 else tuple(destinations)
-    return dataclasses.replace(place, roles=bound, probe_dcids=probe)
-
-
 def _snapshot(selection: ScopeState) -> ScopeState:
     """`selection` as it stands, so a record a binder writes after the election leaves the
     choice's selection as it was elected."""
     return dataclasses.replace(selection, records=dict(selection.records))
 
 
-def binds_bilateral_total(bindings: Sequence[SlotBindingDraft]) -> bool:
-    """Whether some binding of `bindings` binds a bilateral source's total as a value
-    (`BILATERAL_SOURCES`), the parts `elect_reading` elects a reading for."""
-    return any(_binds_bilateral_code(binding) for binding in bindings)
-
-
-def _binds_bilateral_code(binding: SlotBindingDraft) -> bool:
-    """Whether `binding` binds a bilateral source's total as a value (`BILATERAL_SOURCES`)."""
-    return (
-        binding.kind == "value"
-        and len(binding.value_dcids) == 1
-        and (binding.property_dcid, binding.value_dcids[0]) in _BILATERAL_CODES
-    )
+def _declares_bilateral_code_system(shape: ShapeDraft) -> bool:
+    """Whether `shape` declares a slot on a bilateral source's code system
+    (`BILATERAL_SOURCES`), as every part whose identity can count such a source's total
+    does, bound in its draft or by its dataset's invariants once canonical."""
+    return any(slot.property_dcid in _BILATERAL_CODE_SYSTEMS for slot in shape.slot_keys)
 
 
 def _pre_read_identity(
@@ -678,27 +733,32 @@ def _pre_read_identity(
     place: PlaceContext,
     *,
     date_request: DateRequest | None,
+    index: CodeIndex,
 ) -> BaseIdentity:
-    """The identity document the provider rules read for a part before its read: the
-    shape's five-tuple, each value, set or unbound binding on the what and how axes as a
-    slot, the entities `place` binds by role key and the axes it leaves open, the read window
-    (`_read_window`), and a provenance pin to the dataset the bindings or the shape name.
+    """The identity the read will mint for a part, as far as its pre-read state names it:
+    the shape's five-tuple, a slot for each what and how slot key of `shape` bound as its
+    draft in `bindings` binds a value or a set of two or more and unbound otherwise, as the
+    answer's identity states its slots (`spec_build.build_slot`), the entities `place` binds
+    by role key and the axes it leaves open, the read window (`_read_window`), and a
+    provenance pin to the dataset the bindings or the shape name. It is in canonical form
+    (`code_index.members.canonical_identity`), so each slot an invariant of that dataset
+    fixes binds the invariant's value, as in the minted identity.
 
-    It is no answer identity: the mint after the read binds invariant slots and settles the
-    window, and neither moves the provider choice."""
+    It is no answer identity: the mint after the read settles the window, which does not
+    move the provider choice."""
+    drafts = {binding.property_dcid: binding for binding in bindings if binding.property_dcid}
     slots = []
-    for binding in bindings:
-        if binding.axis not in ("what", "how") or not binding.property_dcid:
+    for key in shape.slot_keys:
+        if key.axis not in ("what", "how") or not key.property_dcid:
             continue
-        if binding.kind == "value" and len(binding.value_dcids) == 1:
-            member: dict[str, object] = {"state": "value", "ref": binding.value_dcids[0]}
-        elif binding.kind == "set" and binding.value_dcids:
-            member = {"state": "set", "refs": sorted(binding.value_dcids)}
-        elif binding.kind == "unbound":
-            member = {"state": "unbound"}
-        else:
-            continue
-        slots.append({"property": binding.property_dcid, "binding": member})
+        binding = drafts.get(key.property_dcid)
+        values = [] if binding is None else binding.value_dcids
+        member: dict[str, object] = {"state": "unbound"}
+        if binding is not None and binding.kind == "value" and values:
+            member = {"state": "value", "ref": values[0]}
+        elif binding is not None and binding.kind == "set" and len(values) >= 2:
+            member = {"state": "set", "refs": sorted(values)}
+        slots.append({"property": key.property_dcid, "binding": member})
     entities: dict[str, list[str]] = {}
     for dcid, key in place.roles.roles:
         held = entities.setdefault(key, [])
@@ -723,7 +783,7 @@ def _pre_read_identity(
         document["open_roles"] = sorted(place.roles.open_axes)
     if dataset := bound_source(bindings) or shape.named_dataset:
         document["facets"] = {"provenance": {"state": "value", "ref": dataset}}
-    return BaseIdentity.model_validate(document)
+    return BaseIdentity.model_validate(canonical_identity(index, document))
 
 
 def _read_window(date_request: DateRequest | None) -> dict[str, object]:

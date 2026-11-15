@@ -74,7 +74,7 @@ from search.engine.region.option_coverage import (
     role_served_filter,
 )
 from search.engine.region.place_roles import request_named_groups
-from search.engine.region.reading import decide_read_scope
+from search.engine.region.reading import decide_read_scope, read_totals, roles_read
 from search.engine.region.requirements import answer_terms
 from search.engine.region.result import FacetAxisFilter, answered_roles
 from search.engine.region.scope import (
@@ -509,7 +509,8 @@ def _ground_one_candidate(
         cand_shape,
         cand_bindings,
         cand_mat.sv_dcids,
-        cand.place.roles.roles,
+        # It lists the totals its read bound, as the answer does (`reading.roles_read`).
+        roles_read(cand.place.roles.roles, cand.reading),
         state.graph,
         # The candidate's filtered plan names its sources and dates its StatVars, as the
         # elected answer's does.
@@ -577,8 +578,13 @@ def _ground_one_candidate(
         member_facts=cand_mat.member_facts or {},
     )
     cand_entities = [_build_entity(rd, er, etr, role_refs) for rd, er, etr in cand_entity_data]
-    # Hash the same role-dispatched entities presented in the response.
-    cand_identity_entities = build_identity_entities(cand_entity_data, role_refs)
+    # Hash the same role-dispatched entities presented in the response, but the totals the
+    # read bound, which the request did not name.
+    totals = read_totals(cand.reading)
+    cand_identity_entities = build_identity_entities(
+        [entity for entity in cand_entity_data if (entity[1].ref, entity[0]) not in totals],
+        role_refs,
+    )
     cand_slots = bind_when_slot(cand_slots, window=_cand_coverage.window)
     cand_slots = apply_slot_expansions(cand_slots, slot_expansions(cand_bindings))
     # Count the menus over the candidate's own probe entities, as its probes read them. Its

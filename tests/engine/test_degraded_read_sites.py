@@ -15,7 +15,7 @@ from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import nullcontext
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pydantic
 import pytest
@@ -51,6 +51,7 @@ from search.engine.region import state as region_state
 from search.engine.region.availability import read_coverage
 from search.engine.region.codes import OBSERVATIONS_TIMED_OUT
 from search.engine.region.phase_rank_bind import _stray_requirements
+from search.engine.region.reading import ElectionFacts
 from search.engine.region.related_read import PendingRelated
 from search.engine.region.state import ResolveState
 from search.engine.retrieval import bound_values, derive
@@ -130,7 +131,7 @@ def _relaxation_ctx(**changes: object) -> SimpleNamespace:
         **{
             "graph": None,
             "sdmx": None,
-            "shape_draft": SimpleNamespace(sv_arc_facts={"Count_Person": {}}),
+            "shape_draft": SimpleNamespace(sv_arc_facts={"Count_Person": {}}, slot_keys=[]),
             "place": SimpleNamespace(
                 roles=roles,
                 default_scope="countries",
@@ -145,6 +146,7 @@ def _relaxation_ctx(**changes: object) -> SimpleNamespace:
             "coverage": None,
             "scope_selection": ScopeState(),
             "operations": (),
+            "election_facts": ElectionFacts(coverage=cast(Any, None), operations=()),
             **changes,
         }
     )

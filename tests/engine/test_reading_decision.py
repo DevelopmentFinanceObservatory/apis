@@ -20,6 +20,7 @@ from typing import Any, cast
 
 import pytest
 
+from code_index import members
 from code_index.composites import destination_population
 from code_index.declarations import DAC2A_INCLUSIVE
 from code_index.shared import get_index
@@ -36,7 +37,7 @@ from search.engine.region import (
 )
 from search.engine.region.candidates import _Candidate
 from search.engine.region.place_context import empty_place_context
-from search.engine.region.reading import ReadingDecision, elect_reading
+from search.engine.region.reading import ElectionFacts, ReadingDecision, elect_reading
 from search.engine.region.scope_decision import (
     READ_WINDOW_NOT_COVERED,
     ProviderChoice,
@@ -69,6 +70,7 @@ from tests.engine.test_dac2a_destination_populations import (
     _HELD,
     _SCENARIOS,
     _TOTAL_YEARS,
+    _ended_state,
     _fresh_request,
     _graph_with_parties,
     _identity,
@@ -120,8 +122,7 @@ def _elect_and_decide(
                 state.place,
                 date_request=state.date_request,
                 selection=copy.deepcopy(state.scope_selection),
-                coverage=state.coverage,
-                operations=state.operations,
+                facts=ElectionFacts(coverage=state.coverage, operations=state.operations),
             )
         )
         return task(state)
@@ -789,8 +790,7 @@ def test_a_reversed_window_elects_no_reading(
             empty_place_context(),
             date_request=None,
             selection=ScopeState(),
-            coverage=cast(Any, None),
-            operations=(),
+            facts=ElectionFacts(coverage=cast(Any, None), operations=()),
         )
 
     if raises:
@@ -905,3 +905,76 @@ def test_a_carve_out_flagging_a_reading_that_reads_total_oda_says_so(
         (w.spec_id, w.params) for w in part.warnings if w.code == "bilateral_reading_unavailable"
     ]
     assert withheld == [(flagged.spec_id, {"why": "option_not_covered"})]
+
+
+def test_a_part_whose_dataset_fixes_the_aid_type_elects_the_bilateral_composite(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A part whose draft leaves DAC2a's aid type unbound while the dataset it names fixes
+    206 as an invariant mints an identity binding 206 (`code_index.members.canonical_identity`),
+    which the bilateral default reaches after the read. The election reads that identity
+    before the read by the same rule (`provider.counted_source`), so it elects the bilateral
+    composite and reads within its population, as the part's answer is minted."""
+    state = _ended_state(monkeypatch, "H1")
+    elected_invariants = members.elected_invariants
+
+    def fixing_206(index: Any, query: Any) -> dict[str, str]:
+        if query.source == _DAC2A:
+            return {"dac2aAidType": _AID_TYPE_206.value_dcids[0]}
+        return elected_invariants(index, query)
+
+    monkeypatch.setattr(members, "elected_invariants", fixing_206)
+    bindings = [
+        binding.model_copy(update={"kind": "unbound", "value_dcids": []})
+        if binding.property_dcid == "dac2aAidType"
+        else binding
+        for binding in state.bindings
+    ]
+    assert not any(b.property_dcid == "dac2aAidType" and b.value_dcids for b in bindings)
+
+    elected = elect_reading(
+        dataclasses.replace(state.shape_draft, named_dataset=_DAC2A),
+        bindings,
+        state.place,
+        date_request=state.date_request,
+        selection=ScopeState(),
+        facts=ElectionFacts(coverage=state.coverage, operations=state.operations),
+    )
+
+    assert elected is not None and elected.table is not None
+    assert elected.choice.bilateral == _BILATERAL
+
+
+def test_the_elections_of_one_part_s_reads_share_one_set_of_scope_facts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each read of a part elects at the place it tries, a set's node and then its members,
+    and each nearest-real relaxation elects at its own read. All of them read one
+    `ScopeFacts` per dataset (`reading.ElectionFacts`), so its family scans and coverage
+    reads run once for the part."""
+    state = _ended_state(monkeypatch, "H1")
+    read: list[ScopeFacts] = []
+    choose = reading.choose_provider
+
+    def choosing(identity: Any, selection: Any, facts: ScopeFacts) -> Any:
+        read.append(facts)
+        return choose(identity, selection, facts)
+
+    monkeypatch.setattr(reading, "choose_provider", choosing)
+    facts = ElectionFacts(coverage=state.coverage, operations=state.operations)
+    node, members = state.place, dataclasses.replace(state.place)
+
+    for bindings in (list(state.bindings), list(state.bindings)):
+        reads = reading.ElectedReads(
+            state.shape_draft,
+            bindings,
+            date_request=state.date_request,
+            selection=ScopeState(),
+            facts=facts,
+            read=lambda *_args: "read",
+        )
+        assert [reads(place, None) for place in (node, members)] == ["read", "read"]
+        assert reads.settled(members) is not None
+
+    assert len(read) == 4
+    assert all(facts is read[0] for facts in read)

@@ -38,7 +38,7 @@ from search.engine.region.place_context import (
     unread_context,
     with_where,
 )
-from search.engine.region.reading import ElectedReads, ReadingDecision, Within
+from search.engine.region.reading import ElectedReads, ElectionFacts, ReadBinding, ReadingDecision
 from search.engine.region.result import RegionResult
 from search.engine.region.state import (
     AlternateUnevaluatedReason,
@@ -120,7 +120,8 @@ class _Candidate:
     `stale_departure` when that newest year is stale (`trailing.stale_departure`).
 
     `reading` is the provider reading its read elected at the place it settled on
-    (`reading.elect_at_read`), None where it binds no total with a bilateral source. A
+    (`reading.elect_at_read`), None where its identity counts no total with a bilateral
+    source. A
     reading that names a composite was read within the composite's population, and the
     candidate's Spec is minted as that composite (`candidate_grounding._candidate_answer`)."""
 
@@ -429,6 +430,7 @@ def _materialise_alt_shapes(
     Each read elects its provider reading first, at the place it tries, under the part's
     provider entries `selection` and `operations`, and reads the composite the reading names
     within its population, as the elected shape's read does (`reading.ElectedReads`). The
+    alternates' elections share one set of scope facts (`reading.ElectionFacts`). The
     candidate carries the election of the place it
     settled on (`_Candidate.reading`), and a reading whose composite refuses its table read
     reads nothing, so the alternate is dropped as one without data.
@@ -519,6 +521,7 @@ def _materialise_alt_shapes(
 
     results: list[_Candidate] = []
     unevaluated: list[tuple[_Alternate, AlternateUnevaluatedReason]] = []
+    facts = ElectionFacts(coverage=coverage, operations=operations)
     for alternate, unsettled, record in readable:
         with recording_degraded_reads(into=record):
             bindings = list(alternate.bindings)
@@ -528,7 +531,7 @@ def _materialise_alt_shapes(
             def read(
                 read_at: PlaceContext,
                 facet_batch: FacetBatch | None,
-                within: Within,
+                read_binding: ReadBinding,
                 alternate: _Alternate = alternate,
                 bindings: list[SlotBindingDraft] = bindings,
                 presences: list[ConsultedPresence | None] = presences,
@@ -536,7 +539,7 @@ def _materialise_alt_shapes(
                 return materialise(
                     alternate.shape,
                     with_where(bindings, read_at),
-                    read_at.roles.resolved_entities,
+                    read_binding.entities(alternate.shape, read_at),
                     graph=graph,
                     sdmx=sdmx,
                     date_request=date_request,
@@ -547,7 +550,7 @@ def _materialise_alt_shapes(
                     open_axes=read_at.roles.open_axes,
                     coverage=coverage,
                     facet_batch=facet_batch,
-                    within=within,
+                    within=read_binding.within,
                 )
 
             reads = ElectedReads(
@@ -555,8 +558,7 @@ def _materialise_alt_shapes(
                 bindings,
                 date_request=date_request,
                 selection=selection,
-                coverage=coverage,
-                operations=operations,
+                facts=facts,
                 read=read,
             )
             try:
@@ -614,16 +616,15 @@ def _materialise_alt_shapes(
             if isinstance(result, Materialised) and result.has_data:
                 if alternate.unverified:
                     result = dataclasses.replace(result, membership_unverified=True)
-                read_at, reading = reads.settled(place)
                 results.append(
                     _Candidate(
                         settled_shape(alternate.shape, result),
-                        with_where(bindings, read_at),
+                        with_where(bindings, place),
                         result,
-                        read_at.settled(result),
+                        place.settled(result),
                         alternate.walked,
                         date_request,
-                        reading=reading,
+                        reading=reads.settled(place),
                     )
                 )
     return _AlternatesRead(results, None, presence, tuple(unevaluated), consulted)

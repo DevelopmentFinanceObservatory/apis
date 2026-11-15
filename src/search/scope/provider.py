@@ -703,6 +703,16 @@ def _default_bilateral_option(
     return reached.source, _bilateral_option(identity, reached, facts)
 
 
+def counted_source(identity: BaseIdentity, index: CodeIndex) -> BilateralSource | None:
+    """The bilateral source whose published total `identity`'s bound slots count
+    (`edits.counted_bilateral_source`), declared for the dataset `index` elects for
+    `identity`'s family: the one rule deciding whether the bilateral default can reach a
+    reading, read by the default itself (`_default_rule`) and by the election that settles
+    a part's provider reading before its read (`reading.elect_reading`). None where no
+    source is counted."""
+    return counted_bilateral_source(identity, dataset_of=lambda held: _dataset(held, index))
+
+
 def bilateral_default_reaches(identity: BaseIdentity, facts: ScopeFacts) -> bool:
     """Whether the bilateral default reaches `identity` (`with_bilateral_default`), whether
     or not its option is available. It reads the code index alone, never coverage."""
@@ -716,7 +726,7 @@ def _default_rule(identity: BaseIdentity, facts: ScopeFacts) -> DestinationRule 
     otherwise."""
     if not isinstance(identity.shape, IdentityShapeSchema):
         return None
-    source = counted_bilateral_source(identity, dataset_of=lambda held: _dataset(held, facts.index))
+    source = counted_source(identity, facts.index)
     if source is None:
         return None
     pin = (identity.facets or {}).get("provenance")

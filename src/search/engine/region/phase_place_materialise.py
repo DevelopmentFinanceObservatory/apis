@@ -133,7 +133,7 @@ from search.engine.region.place_roles import (
     undirected_place_name,
     whole_total_candidates,
 )
-from search.engine.region.reading import ElectedReads, ReadingDecision, Within
+from search.engine.region.reading import ElectedReads, ElectionFacts, ReadBinding, ReadingDecision
 from search.engine.region.refs import provenance_labels
 from search.engine.region.requirements import record_reading, settle_answer, stray_values
 from search.engine.region.result import FacetAxisFilter, RegionResult
@@ -1641,7 +1641,7 @@ type _MaterialiseOutcome = Materialised | NoDataDraft | MaterialisedCandidates |
 class _ElectedRead:
     """The elected shape's read (`_materialise_task`): the place context it was read in, its
     outcome, and the provider reading elected before it (`reading.elect_reading`), None
-    where the part binds no total with a bilateral source."""
+    where the part's identity counts no total with a bilateral source."""
 
     place: PlaceContext
     outcome: _MaterialiseOutcome
@@ -1686,16 +1686,18 @@ def _elected_read(
     Each read elects its provider reading first, at the place it tries, and reads the
     composite the reading names within its population (`reading.ElectedReads`), so a part
     that settles on a composite is read once, as a resubmit of the composite reads it. The
-    read the sets settle on carries its own election.
+    read the sets settle on carries its own election, and the place it was read at stays as
+    the request named it: a total the composite binds on an axis the part leaves out enters
+    the read's entities alone (`reading.ReadBinding`).
     """
 
     def read(
-        read_at: PlaceContext, facet_batch: FacetBatch | None, within: Within
+        read_at: PlaceContext, facet_batch: FacetBatch | None, read_binding: ReadBinding
     ) -> _MaterialiseOutcome:
         return run_materialise(
             shape,
             with_where(bindings, read_at),
-            read_at.roles.resolved_entities,
+            read_binding.entities(shape, read_at),
             graph=state.graph,
             sdmx=state.sdmx,
             date_request=state.date_request,
@@ -1705,7 +1707,7 @@ def _elected_read(
             open_axes=read_at.roles.open_axes,
             coverage=state.coverage,
             facet_batch=facet_batch,
-            within=within,
+            within=read_binding.within,
         )
 
     reads = ElectedReads(
@@ -1713,13 +1715,11 @@ def _elected_read(
         bindings,
         date_request=state.date_request,
         selection=state.scope_selection,
-        coverage=state.coverage,
-        operations=state.operations,
+        facts=ElectionFacts(coverage=state.coverage, operations=state.operations),
         read=read,
     )
     place, outcome = settle_sets(target, reads)
-    read_at, reading = reads.settled(place)
-    return _ElectedRead(place=read_at, outcome=outcome, reading=reading)
+    return _ElectedRead(place=place, outcome=outcome, reading=reads.settled(place))
 
 
 class _RelaxedPartRefused(Exception):

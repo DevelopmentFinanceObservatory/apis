@@ -107,7 +107,13 @@ from search.engine.region.phase_shared import (
     withdraw_typed_unit,
 )
 from search.engine.region.place_roles import request_named_groups
-from search.engine.region.reading import ReadingDecision, ReadScope, decide_read_scope
+from search.engine.region.reading import (
+    ReadingDecision,
+    ReadScope,
+    decide_read_scope,
+    read_totals,
+    roles_read,
+)
 from search.engine.region.related_read import (
     cancel_related_reads,
     start_answer_related_read,
@@ -590,7 +596,9 @@ async def _ground_elected_answer(state: ResolveState) -> RegionResult | None:
         state.shape_draft,
         state.bindings,
         mat_result.sv_dcids,
-        state.place.roles.roles,
+        # The answer lists the totals its read bound on axes the part leaves out, as a
+        # resubmit of its composite lists them, and its identity leaves them out.
+        roles_read(state.place.roles.roles, state.reading),
         state.graph,
         # The filtered plan names the sources: under a unit request, the facets it serves
         # in the elected units. A conversion preview may read facets outside it.
@@ -689,8 +697,13 @@ async def _ground_elected_answer(state: ResolveState) -> RegionResult | None:
         for role_draft, entity_ref, entity_type_ref in entity_objects_data
     ]
     state.entity_objects = entity_objects
-    # Hash the same role-dispatched entities presented in the response.
-    identity_entities = build_identity_entities(entity_objects_data, role_refs)
+    # Hash the same role-dispatched entities presented in the response, but the totals the
+    # read bound, which the request did not name.
+    totals = read_totals(state.reading)
+    identity_entities = build_identity_entities(
+        [entity for entity in entity_objects_data if (entity[1].ref, entity[0]) not in totals],
+        role_refs,
+    )
     state.identity_entities = identity_entities
 
     state.timing["answer"] = now_ms() - t0

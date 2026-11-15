@@ -122,7 +122,7 @@ if TYPE_CHECKING:
     from origin_catalogue import Catalogue
     from search.engine.place import ConsultedPresence
     from search.engine.region.place_context import PlaceContext, UnsettledPlace
-    from search.engine.region.reading import Within
+    from search.engine.region.reading import ElectionFacts, ReadBinding
     from search.engine.retrieval.read_plan import ReadPlan
     from search.engine.retrieval.retrieve import Materialised
     from search.engine.retrieval.role_scope import DiscoveredScope
@@ -1064,6 +1064,9 @@ class _RelaxationProbeContext:
     defaulted_properties: frozenset[str]
     # The groups the request named, kept because a relaxation keeps their entities.
     named_groups: tuple[NamedGroup, ...]
+    # The scope facts every relaxation's provider election shares (`reading.ElectionFacts`),
+    # over `coverage` and `operations`.
+    election_facts: ElectionFacts
     # Whether the part posted source mentions, so a suggestion's identity binds the
     # provenances that serve it (`spec_build.build_spec`).
     pin_served_provenance: bool = False
@@ -1241,25 +1244,28 @@ def _relaxed_binding_suggestion(
     ground_warnings: list[Warning] | None = None
     probe_warning: Warning | None = None
 
-    def read(read_at: PlaceContext, facet_batch: FacetBatch | None, within: Within) -> object:
+    def read(
+        read_at: PlaceContext, facet_batch: FacetBatch | None, read_binding: ReadBinding
+    ) -> object:
         """The relaxed query's own resolve at `read_at`, the context the provider reading the
         relaxed bindings elect reads in (`reading.ElectedReads`), as the answer's read does:
-        a composite reads within its population, where a standard shape resolves as the
-        standard route answers it, over the context's entities and places or its
-        default-scope presence read, and a role-bearing shape confirms against coverage."""
+        a composite reads within its population, binding its totals on the axes the part
+        leaves out (`reading.ReadBinding`), where a standard shape resolves as the standard route
+        answers it, over the context's entities and places or its default-scope presence
+        read, and a role-bearing shape confirms against coverage."""
         if is_role_bearing(shape):
             return graph_confirm_resolve(
                 shape=shape,
                 bindings=relaxed,
-                subject_dcids=_relaxation_places(read_at),
-                origin_dcids=read_at.roles.origin_dcids,
+                subject_dcids=read_binding.places("destination", _relaxation_places(read_at)),
+                origin_dcids=read_binding.places("origin", read_at.roles.origin_dcids),
                 graph=ctx.graph,
                 sdmx=ctx.sdmx,
                 date_request=ctx.date_request,
                 deadline=ctx.deadline,
                 open_axes=read_at.roles.open_axes,
                 coverage_snapshot=ctx.coverage,
-                within=within,
+                within=read_binding.within,
             )
         return standard_resolve(
             shape=shape,
@@ -1277,15 +1283,14 @@ def _relaxed_binding_suggestion(
         relaxed,
         date_request=ctx.date_request,
         selection=ctx.scope_selection,
-        coverage=ctx.coverage,
-        operations=ctx.operations,
+        facts=ctx.election_facts,
         read=read,
     )
 
     try:
         with fail_open_reads("nearest-real suggestion", budget_s=settings().nearest_real_budget_s):
-            tried_place, mat = settle_sets(_relaxation_place(ctx, shape), reads)
-            bound, reading = reads.settled(tried_place)
+            bound, mat = settle_sets(_relaxation_place(ctx, shape), reads)
+            reading = reads.settled(bound)
             if not isinstance(mat, Materialised):
                 return None, None, None, None
             # A flagged-unavailable carrier represents the original binding.
@@ -1632,6 +1637,8 @@ def _suggest_nearest_real(
     that shape under the same bindings: the level reading of a shape that divides by a
     denominator (`phase_place_materialise._level_relaxation`).
     """
+    from search.engine.region.reading import ElectionFacts
+
     ctx = _RelaxationProbeContext(
         graph=graph,
         sdmx=sdmx,
@@ -1651,6 +1658,7 @@ def _suggest_nearest_real(
         measure_elected_properties=measure_elected_properties,
         defaulted_properties=defaulted_properties,
         named_groups=named_groups,
+        election_facts=ElectionFacts(coverage=coverage, operations=operations),
         pin_served_provenance=pin_served_provenance,
         scope_selection=scope_selection,
         operations=operations,

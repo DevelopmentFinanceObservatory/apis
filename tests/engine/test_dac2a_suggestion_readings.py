@@ -9,6 +9,7 @@ composite spec_id they carry is the one a resubmit of their definition answers u
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 from collections.abc import Callable
 from typing import Any
@@ -36,7 +37,9 @@ from search.models import (
 )
 from tests.engine._harness import offline_resolve
 from tests.engine.test_dac2a_destination_populations import (
+    _AT_TOTAL,
     _BILATERAL,
+    _DEVELOPING,
     _FRA,
     _KEN,
     _VARIABLE,
@@ -45,6 +48,7 @@ from tests.engine.test_dac2a_destination_populations import (
     _ended_state,
     _graph_with_parties,
     _identity,
+    _patched_coverage,
     _resolve_resubmit,
     _resubmit,
     _ScriptedLLM,
@@ -360,3 +364,56 @@ def test_a_netting_basis_relaxation_elects_the_bilateral_composite_as_its_resubm
     assert any(within for within in opened_within)
     monitor = [r for r in caplog.records if r.name == reading.__name__ and r.levelno >= 30]
     assert monitor == []
+
+
+@pytest.mark.parametrize("scenario", ["D2", "D2-ranking"])
+def test_a_part_naming_no_destination_reads_the_total_inside_its_read_alone(
+    scenario: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A part naming no destination reads the bilateral composite at the population's total
+    (`_DEVELOPING`) inside its read alone (`reading.ReadBinding`): its place after the read and
+    the where slot of its bindings name no destination, as before the read. A nearest-real
+    suggestion read at that place elects there, reads at the total in its own read and mints
+    an identity binding no destination, as the composite the answer is minted as binds
+    none."""
+    _patched_coverage(monkeypatch, _AT_TOTAL)
+    before: list[ResolveState] = []
+    task = phase_place_materialise._materialise_task
+
+    def reading_from(state: ResolveState) -> Any:
+        before.append(dataclasses.replace(state.place))
+        return task(state)
+
+    monkeypatch.setattr(phase_place_materialise, "_materialise_task", reading_from)
+    state = _ended_state(monkeypatch, scenario, sdmx=_sdmx(_AT_TOTAL))
+
+    assert state.reading is not None and state.reading.table is not None
+    (unread,) = before
+    for place in (unread, state.place):
+        assert place.roles.destination_dcids == []
+        assert place.roles.where_dcids == []
+        assert place.roles.obs_destination_dcid != _DEVELOPING
+    assert not [b for b in state.bindings if b.axis == "where" and b.value_dcids]
+
+    # The relaxation reads at the part's own place, as for a shape installed with its
+    # settled context alone (`grounding._relaxation_place`).
+    state.unsettled_place = None
+    read = state.mat_result
+    subjects: list[list[str]] = []
+
+    def confirmed(**kwargs: Any) -> Any:
+        subjects.append(list(kwargs["subject_dcids"]))
+        return read
+
+    monkeypatch.setattr(role_resolve, "graph_confirm_resolve", confirmed)
+    level = (
+        state.shape_draft,
+        Relaxation(axis="what", property_dcid="measurementDenominator", dropped_value_dcids=["x"]),
+    )
+    near = asyncio.run(phase_place_materialise._nearest_real_for(state, level=level))
+
+    assert near is not None
+    (suggestion,) = near
+    assert _provenance(suggestion) == _BILATERAL
+    assert "destination" not in suggestion.definition.identity.entities
+    assert subjects == [[_DEVELOPING]]
