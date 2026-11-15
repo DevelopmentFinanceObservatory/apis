@@ -324,7 +324,7 @@ def materialise(
     open_axes: frozenset[RoleAxis] = frozenset(),
     coverage: CoverageSnapshot,
     facet_batch: FacetBatch | None = None,
-    within: Mapping[RoleAxis, frozenset[str]] | None = None,
+    within: Mapping[RoleAxis, frozenset[str]] | None,
 ) -> Materialised | NoDataDraft | MaterialisedCandidates | UnsupportedDraft:
     """Resolve a shape through the standard or role-bearing path.
 

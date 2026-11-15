@@ -30,8 +30,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from code_index.composites import DECLARED_COMPOSITES
 from code_index.query import CodeIndex
+from code_index.shared import get_index
 from code_index.types import CompositeDeclaration
 from description.blocks import documentation_link
+from materialise.bundle_sources import composite_bundle_label
 from materialise.enrichment import read_party_kinds
 from materialise.provenance_doc import ProvenanceNameReader, provenance_names
 from materialise.roles import axis_for_role
@@ -159,10 +161,10 @@ def provenance_facet_ref(dcid: str, labels: Mapping[str, str]) -> SeriesFacetRef
     """A series' provenance-axis facet ref for `dcid`, with the catalogue row's members and the
     route of its document. A provenance the catalogue does not list takes its name from
     `labels`, if any. A declared composite (`code_index.composites`), which neither the graph
-    nor the catalogue holds, takes its declared label and no document route."""
+    nor the catalogue holds, takes its bundle name (`composite_facet_ref`) and no document route."""
     composite = DECLARED_COMPOSITES.get(dcid)
     if composite is not None:
-        return composite_facet_ref(composite)
+        return composite_facet_ref(composite, index=get_index())
     row = current_catalogue().provenance(dcid)
     documentation = documentation_link(dcid)
     if row is None:
@@ -173,23 +175,25 @@ def provenance_facet_ref(dcid: str, labels: Mapping[str, str]) -> SeriesFacetRef
     )
 
 
-def composite_facet_ref(composite: CompositeDeclaration) -> SeriesFacetRef:
+def composite_facet_ref(composite: CompositeDeclaration, *, index: CodeIndex) -> SeriesFacetRef:
     """The provenance-axis facet ref of a declared composite, which neither the graph nor the
-    catalogue holds: its declared label, and the source and Data Commons its component tables'
+    catalogue holds: its bundle name in `index` (`composite_bundle_label`), which reads apart
+    from a component table of the same label, and the source and Data Commons its component tables'
     catalogue rows give when every row names the same one. A component table the catalogue
     does not list, or rows that name different sources or Data Commons, leave that field out.
     It carries no document route, since the Graph API documents each component table and no
     composite."""
+    label = composite_bundle_label(index, composite)
     rows = [current_catalogue().provenance(recipe.dataset) for recipe in composite.components]
     listed = [row for row in rows if row is not None]
     if len(listed) < len(rows):
-        return SeriesFacetRef(ref=composite.provenance, label=composite.label)
+        return SeriesFacetRef(ref=composite.provenance, label=label)
     sources = {(row.source.ref, row.source.label) for row in listed}
     origins = {(row.data_commons.id, row.data_commons.label) for row in listed}
     source, origin = _source_and_origin(listed[0])
     return SeriesFacetRef(
         ref=composite.provenance,
-        label=composite.label,
+        label=label,
         source=source if len(sources) == 1 else None,
         data_commons=origin if len(origins) == 1 else None,
     )

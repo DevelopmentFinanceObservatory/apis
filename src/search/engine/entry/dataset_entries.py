@@ -21,7 +21,6 @@ from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from entity_resolution import Admission, EntityResolver
 from materialise import GraphReader
 from materialise.rate_tables import RateTableCache
-from origin_catalogue import current_catalogue
 from search.engine.binders import Binder
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
@@ -38,12 +37,10 @@ from search.engine.fanout import _FanOutResult, _run_variables_streaming
 from search.engine.identity_edit import composite_table_identity
 from search.engine.options.population_memo import OptionsPopulationMemo
 from search.engine.region import RegionResult, resolve_spec_resubmit
-from search.engine.region.composite_answer import ComponentReads, as_composite_answer
 from search.engine.region.place_options import PlaceOptionsPool
 from search.engine.region.result import any_degraded
 from search.engine.region.state import EngineOptions
 from search.engine.region.whole_totals import with_containing_total
-from search.engine.spec_id import identity_spec_id
 from search.models import (
     BaseIdentity,
     Entry,
@@ -284,22 +281,12 @@ async def resolve_candidates_entry(
     the configured candidate cap before scheduling this coroutine.
 
     A candidate posting a composite, as a fresh candidate set's reading of DAC2a's bilateral
-    destinations is (`composite_answer.with_bilateral_readings`), resolves its table identity
-    with the populations its roles bind (`identity_edit.composite_table_identity`) and
-    answers the composite (`composite_answer.as_composite_answer`), over the one year it
+    destinations is (`reading.decide_read_scope`), resolves its table identity
+    with the populations its roles bind (`identity_edit.composite_table_identity`) and mints
+    its Spec as the composite (`ResubmitIdentityPayload.composite`), over the one year it
     serves for a `latest` window (`scope.provider.elect_latest_window`), as an identity entry
     posting it does.
     """
-    reads = ComponentReads(
-        graph=graph,
-        sdmx=sdmx,
-        coverage=coverage,
-        materialise_graph=materialise_graph,
-        materialise_sdmx=materialise_sdmx,
-        rate_cache=rate_cache,
-        deadline=deadline,
-        catalogue=current_catalogue(),
-    )
     facts = ScopeFacts(index=get_index(), coverage=coverage)
 
     def _promote(candidate: ResubmitCandidate) -> RegionResult:
@@ -316,11 +303,13 @@ async def resolve_candidates_entry(
         # served bilateral line leave it unchanged.
         if identity != candidate.identity:
             table = composite_table_identity(identity, pointer="/input/identity", coverage=coverage)
-        region = resolve_spec_resubmit(
+        # A composite is minted as itself (`ResubmitIdentityPayload.composite`).
+        return resolve_spec_resubmit(
             inp=ResubmitIdentityPayload(
                 identity=table.identity,
                 entity_groups=candidate.entity_groups,
                 populations=dict(table.populations),
+                composite=None if table.identity == identity else identity,
             ),
             graph=graph,
             sdmx=sdmx,
@@ -334,15 +323,6 @@ async def resolve_candidates_entry(
                 deadline=deadline,
             ),
             full_read_deadline=full_read_deadline,
-        )
-        if table.identity == identity or region.status != "definite":
-            return region
-        # A candidate reads no preview, so the composite's is not read either.
-        return dataclasses.replace(
-            as_composite_answer(
-                region, identity, identity_spec_id(identity), facts=facts, reads=reads
-            ),
-            observations_relaunch=None,
         )
 
     async def _promote_one(candidate_index: int, candidate: ResubmitCandidate) -> RegionResult:

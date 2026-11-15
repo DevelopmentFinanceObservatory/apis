@@ -766,17 +766,19 @@ def _total() -> ScopeState:
 
 
 @pytest.mark.parametrize(
-    ("slots", "why"),
+    ("slots", "slot"),
     [
         pytest.param(
-            {"crsCooperationModality": "CRSCooperationModalityA01"}, "modality", id="modality"
+            {"crsCooperationModality": "CRSCooperationModalityA01"},
+            "crsCooperationModality",
+            id="modality",
         ),
         pytest.param(
-            {"crsTypeOfFinance": "CRSTypeOfFinance110"}, "finance_type", id="finance-type"
+            {"crsTypeOfFinance": "CRSTypeOfFinance110"}, "crsTypeOfFinance", id="finance-type"
         ),
     ],
 )
-def test_a_bound_modality_or_instrument_keeps_a_total_bilateral_with_the_reason(slots, why):
+def test_a_bound_modality_or_instrument_keeps_a_total_bilateral_with_the_reason(slots, slot):
     facts = _facts()
     identity = _bilateral_identity(**slots)
     table = provider_rule(identity, None, facts)
@@ -789,7 +791,7 @@ def test_a_bound_modality_or_instrument_keeps_a_total_bilateral_with_the_reason(
         "unavailable",
         "provider_not_offered",
     )
-    assert inclusive.availability.detail == {"why": why}
+    assert inclusive.availability.detail == {"why": "slot_not_served", "slot": slot}
     assert (record.active, record.provenance, record.rule) == (
         "provider:bilateral",
         "default",
@@ -3390,7 +3392,71 @@ def test_a_bilateral_composite_that_refuses_its_part_is_not_offered_for_that_rea
         option.availability.status,
         option.availability.code,
         option.availability.detail,
-    ) == ("unavailable", "provider_not_offered", {"why": "dac2aAidType"})
+    ) == (
+        "unavailable",
+        "provider_not_offered",
+        {"why": "slot_not_served", "slot": "dac2aAidType"},
+    )
+
+
+@pytest.mark.parametrize("pointer", ["/entities/destination", "/facets/provenance", "/shape"])
+@pytest.mark.parametrize("failing", ["bilateral", "inclusive"])
+def test_a_composite_refusal_at_a_member_naming_no_slot_marks_only_its_option(
+    monkeypatch: pytest.MonkeyPatch, failing: str, pointer: str
+):
+    """An option whose composite refuses the part at an entity, provenance or shape member is
+    not offered (`composite_not_servable`, naming the pointer); the scope builds and the
+    other option is read as before."""
+    refused = _DAC2A_BILATERAL if failing == "bilateral" else _INCLUSIVE_SOURCE
+    served_components, component_identities_ = provider.served_components, component_identities
+
+    def refuses(document) -> bool:
+        return document.get("facets", {}).get("provenance", {}).get("ref") == refused
+
+    def refusing_served(document, *, facts):
+        if refuses(document):
+            raise CompositeNotServable("refused", ref=refused, pointer=pointer)
+        return served_components(document, facts=facts)
+
+    def refusing_components(index, document):
+        if refuses(document):
+            raise CompositeNotServable("refused", ref=refused, pointer=pointer)
+        return component_identities_(index, document)
+
+    monkeypatch.setattr(provider, "served_components", refusing_served)
+    monkeypatch.setattr(provider, "component_identities", refusing_components)
+    if failing == "bilateral":
+        identity, facts = _dac2a_identity("Net", destination=None), _dac2a_facts(_ALL_YEARS)
+    else:
+        identity, facts = _bilateral_identity(), _facts()
+
+    table = provider_rule(identity, None, facts)
+
+    assert table is not None
+    option = table.option(f"provider:{failing}")
+    assert option is not None
+    assert (
+        option.availability.status,
+        option.availability.code,
+        option.availability.detail,
+    ) == (
+        "unavailable",
+        "provider_not_offered",
+        {"why": "composite_not_servable", "pointer": pointer},
+    )
+
+
+def test_a_bilateral_option_with_no_registered_reason_is_withheld_as_scope_undecided(caplog):
+    """`composite_not_servable` has no reason in the spec-kit registry: the warning states
+    `scope_undecided` and logs the state instead of raising."""
+    availability = provider._unavailable(
+        "provider_not_offered", {"why": "composite_not_servable", "pointer": "/shape"}
+    )
+
+    withheld = provider._withheld(availability)
+
+    assert withheld.params == {"why": "scope_undecided"}
+    assert "/shape" in caplog.text
 
 
 def test_a_fresh_dac2a_scope_reads_its_bilateral_option_once(monkeypatch: pytest.MonkeyPatch):

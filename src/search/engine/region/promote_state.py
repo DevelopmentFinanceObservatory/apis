@@ -73,6 +73,7 @@ if TYPE_CHECKING:
     from search.engine.region.requirements import Judgement
     from search.engine.region.state import Requirement
     from search.engine.retrieval.member_facts import MemberFacts
+    from search.scope.composite import CompositeMint
 
 
 @dataclasses.dataclass(slots=True, kw_only=True)
@@ -95,6 +96,9 @@ class _PromoteState:
     place_options_pool: PlaceOptionsPool | None = None
     # Shared coverage snapshot for materialise, unit decisions, and observations; required.
     coverage: CoverageSnapshot
+    # The composite the Spec is minted as (`ResubmitIdentityPayload.composite`), None when it
+    # answers its own identity.
+    composite: CompositeMint | None = None
 
     # --- (b) evolving state ----------------------------------------------------
     # Initial display text; the shape phase assigns the verified slug.

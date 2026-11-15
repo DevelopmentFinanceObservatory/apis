@@ -34,7 +34,8 @@ def composite_bundle_label(index: CodeIndex, composite: CompositeDeclaration) ->
     """The name a bundle gives `composite`: its label, followed by its `measure_noun` where
     the label is one of its component tables' labels in `index`, so the composite and the
     table read apart in one bundle ("OECD DAC2a (bilateral flows)" beside "OECD DAC2a").
-    Citations keep the composite's label."""
+    The Search provenance facet (`search.observations.composite_facet_ref`) and a bundle's
+    provenance cells carry this name."""
     tables = {
         declared.label
         for recipe in composite.components
@@ -61,8 +62,10 @@ def composite_summary(index: CodeIndex, composite: CompositeDeclaration) -> str:
     the codes it binds and the words of the declared basis it sets (`BASIS_MEASURES`), with
     the years its periods hold. A component binding its destinations to the bilateral side
     (`ComponentRecipe.destinations`) states what that reading counts
-    (`BILATERAL_SOURCES`), once for the whole composite where every component binds them."""
-    shared = all(recipe.destinations is not None for recipe in composite.components)
+    (`BILATERAL_SOURCES`) where it binds the source's published total, once for the whole
+    composite where its one component does, and beside its own component where there are
+    several, so a component that adds an imputed share is not worded as the bilateral total."""
+    shared = len(composite.components) == 1 and composite.components[0].destinations is not None
     phrases = [
         _component_phrase(index, recipe, reading=not shared) for recipe in composite.components
     ]
@@ -80,10 +83,18 @@ def composite_summary(index: CodeIndex, composite: CompositeDeclaration) -> str:
 
 def _destination_reading(recipe: ComponentRecipe) -> str | None:
     """What a component binding its destinations to the bilateral side counts, as the
-    `BILATERAL_SOURCES` row of its dataset words it."""
+    `BILATERAL_SOURCES` row of its dataset words it, where the component binds that row's
+    published total (`code` on `code_system`)."""
     if recipe.destinations is None:
         return None
-    return next((row.label for row in BILATERAL_SOURCES if row.dataset == recipe.dataset), None)
+    return next(
+        (
+            row.label
+            for row in BILATERAL_SOURCES
+            if row.dataset == recipe.dataset and recipe.bind.get(row.code_system) == row.code
+        ),
+        None,
+    )
 
 
 def _component_phrase(index: CodeIndex, recipe: ComponentRecipe, *, reading: bool) -> str:

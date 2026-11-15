@@ -35,6 +35,7 @@ from search.engine.degraded_reads import (
     note_degraded_read,
     recording_degraded_reads,
 )
+from search.engine.departures import warning_key
 from search.engine.envelope import now_ms
 from search.engine.errors import (
     RATE_TABLE_REFUSALS,
@@ -48,15 +49,7 @@ from search.engine.leg_phase import enter_phase
 from search.engine.qualifier_match import CodedQualifier
 from search.engine.region.candidate_admission import alternates_unevaluated_warning
 from search.engine.region.codes import ALTERNATES_UNEVALUATED, UN_SYSTEM_UNAVAILABLE
-from search.engine.region.composite_answer import (
-    ComponentReads,
-    population_table_answer,
-    with_bilateral_readings,
-    with_composite_observations,
-    with_decided_scope,
-    with_population_read,
-    without_restated_options,
-)
+from search.engine.region.composite_answer import with_composite_observations
 from search.engine.region.decisions import PartyReadingWithdrawn
 from search.engine.region.phase_answer import _phase_outcome
 from search.engine.region.phase_election import _phase_settle, judge_coverage, log_would_refuse
@@ -86,6 +79,7 @@ from search.engine.region.place_roles import (
     group_request_names,
     stated_party_words,
 )
+from search.engine.region.reading import noting_refusals_once
 from search.engine.region.related_read import cancel_related_reads, settle_related_reads
 from search.engine.region.requirements import (
     met_measure_phrases,
@@ -93,12 +87,8 @@ from search.engine.region.requirements import (
     unbinding_phrases,
     with_requirement_departures,
 )
-from search.engine.region.result import (
-    RegionResult,
-    cancel_dropped_tasks,
-    every_member_phrases,
-)
-from search.engine.region.scope_decision import decide_guarded, scope_facts
+from search.engine.region.result import RegionResult, every_member_phrases
+from search.engine.region.scope_decision import ScopeDecision, scope_facts
 from search.engine.region.source_choice import (
     allows_un_system,
     answer_provenances,
@@ -119,7 +109,6 @@ from search.models import Entry, EntryPath, Operation, PartScope, RoleAxis, Warn
 from search.scope.basis import identity_basis_record
 from search.scope.build import build_part_scope
 from search.scope.state import ScopeIntake
-from search.scope.tables import PartFacts, ScopeFacts
 from series_coverage.shared import CoverageSnapshot
 
 logger = logging.getLogger(__name__)
@@ -491,37 +480,41 @@ async def resolve_variable(
     # (`recording_llm_usage`), and carries the first's record: its lost reads always, and the
     # scopes it consulted when its answer was withdrawn for want of data, which those scopes
     # decided.
-    probe = new_state(
-        pool="ours", emit=None, deadline=_options.deadline, timing={}, party_words_off=False
-    )
-    named = stated_party_words(probe)
-    if not named:
-        result, _lost = await attempt(party_words_off=True, sink=emit)
-        return result
-    held: list[Event] = []
+    # A composite whose table read refuses is noted once in the region however many reads
+    # elect it, the party reading's and the reading without party words alike: the record
+    # of the first is always carried into the second.
+    with noting_refusals_once():
+        probe = new_state(
+            pool="ours", emit=None, deadline=_options.deadline, timing={}, party_words_off=False
+        )
+        named = stated_party_words(probe)
+        if not named:
+            result, _lost = await attempt(party_words_off=True, sink=emit)
+            return result
+        held: list[Event] = []
 
-    async def hold(event: Event) -> None:
-        held.append(event)
+        async def hold(event: Event) -> None:
+            held.append(event)
 
-    with recording_llm_usage() as spent:
-        try:
-            first, carried = await attempt(
-                party_words_off=False, sink=None if emit is None else hold
-            )
-        except PartyReadingWithdrawn as withdrawn:
-            carried, no_data = withdrawn.lost, False
-        else:
-            if binds_each_party(first, named):
-                if emit is not None:
-                    for event in held:
-                        await emit(event)
-                return first
-            no_data = first.status == "no_data"
-    result, _lost = await attempt(
-        party_words_off=True, sink=emit, carried=carried, carried_consulted=no_data
-    )
-    usage = functools.reduce(sum_usage, spent.calls, result.llm_usage)
-    return dataclasses.replace(result, llm_usage=usage)
+        with recording_llm_usage() as spent:
+            try:
+                first, carried = await attempt(
+                    party_words_off=False, sink=None if emit is None else hold
+                )
+            except PartyReadingWithdrawn as withdrawn:
+                carried, no_data = withdrawn.lost, False
+            else:
+                if binds_each_party(first, named):
+                    if emit is not None:
+                        for event in held:
+                            await emit(event)
+                    return first
+                no_data = first.status == "no_data"
+        result, _lost = await attempt(
+            party_words_off=True, sink=emit, carried=carried, carried_consulted=no_data
+        )
+        usage = functools.reduce(sum_usage, spent.calls, result.llm_usage)
+        return dataclasses.replace(result, llm_usage=usage)
 
 
 def binds_each_party(result: RegionResult, named: Sequence[PartyWord]) -> bool:
@@ -600,126 +593,54 @@ def _stating_unpublished_wholes(result: RegionResult, state: ResolveState) -> Re
     return dataclasses.replace(result, unpublished_whole_facts=facts) if facts else result
 
 
-def _with_scope_choices(result: RegionResult, state: ResolveState) -> RegionResult:
+def _with_scope_choices(result: RegionResult) -> RegionResult:
     """`result` stating how its definite answer was counted (`RegionResult.scope_choices`),
-    the scope the answer phase or the candidates path decided for it before its preview
-    launched (`ResolveState.scope_decision`), else one decided here from the answer
-    (`scope_decision.decide_guarded`), so a decision that raises leaves the answer as one
-    table. A result
-    that is not definite states none. The scope is built in memory, and the rules read the
-    bound release's code index, the request's coverage snapshot and the part's operations,
-    groups and served datasets (`scope_facts`). Only a dataset_resubmit's posted
-    `scope_entries` refuse 422.
+    the scope decision it carries (`RegionResult.scope_decision`). Both producers of a
+    definite answer, `phase_answer._assemble_definite_answer` and
+    `candidate_collapse._assemble_definite`, check that decision once before the answer
+    launches anything (`phase_answer.finished_scope`), answer no_data where none states the
+    Spec, and carry the one they checked. A definite result carrying none is a producer's
+    fault and raises `TypeError`. A result that is not definite states none and is returned
+    as it is.
+    The rules read the bound release's code index, the request's coverage snapshot and the
+    part's operations, groups and served datasets (`scope_facts`). Only a dataset_resubmit's
+    posted `scope_entries` refuse 422.
 
     When the binders settle a composite option (the inclusive provider scope, the OECD
-    headline per year), the scope's base is the composite, and the answer is restated as it
-    (`composite_answer.with_decided_scope`), carrying the closure that reads its preview per
-    component (`composite_answer.CompositeRelaunch`) for `_with_composite_preview` to launch
-    on the event loop. A composite whose table read binds a population restates the answer
-    `_within_population` read within it. A DAC2a answer with no provider axis that reads
-    total ODA because the bilateral default could not apply carries the decision's
+    headline per year), the scope's base is the composite. The answer phase mints the
+    answer's Spec as it, read within the population its table read binds, with the closure
+    that reads its preview per component (`composite_answer.CompositeRelaunch`) for
+    `_with_composite_preview` to launch on the event loop (`state.MintedComposite`), so the
+    scope is stated as decided. A DAC2a answer with no provider axis that reads total ODA
+    because the bilateral default could not apply carries the decision's
     `bilateral_reading_unavailable` warning (`ScopeDecision.warning`).
 
-    A result that is not definite states no scope, and the readings it shows in place of a
-    definite answer, its candidates, the alternate a refusal offers and its flagged matches,
-    are read as the definite answer reads DAC2a's total ODA
-    (`composite_answer.with_bilateral_readings`), under the part's scope facts: the answer
-    phase's decision's where it decided one, else facts of the part's operations alone."""
+    Each reading a result that is not definite shows in place of a definite answer (its
+    candidates, the alternate a refusal offers, its flagged matches and its nearest real
+    suggestions) elected its provider reading at its own read and was minted as the
+    composite that reading names where it names one (`reading.decide_read_scope`)."""
     if result.status != "definite":
-        decided = state.scope_decision
-        return with_bilateral_readings(
-            result,
-            reads=_component_reads(state),
-            selection=state.scope_selection,
-            facts=decided.facts
-            if decided is not None
-            else ScopeFacts(
-                index=get_index(),
-                coverage=state.coverage,
-                part=PartFacts(operations=tuple(state.operations)),
-            ),
-            operations=state.operations,
-            request_warnings=state.request_warnings or (),
-        )
-    decision = state.scope_decision
-    if decision is None or decision.spec_id != result.spec.spec_id:
-        decision = decide_guarded(
-            result.spec,
-            selection=state.scope_selection,
-            operations=state.operations,
-            coverage=state.coverage,
-        )
-    return with_decided_scope(result, decision, reads=_component_reads(state))
-
-
-async def _within_population(result: RegionResult, state: ResolveState) -> RegionResult:
-    """`result`, the pass's terminal result, read again within the population its composite
-    binds, or at the population's total in place of a destination it leaves out, where its
-    definite answer settles on one (`composite_answer.population_table_answer`): the
-    answer's open roles were discovered over the whole table before its scope settled on
-    the composite, so the part answers what a resubmit of the composite's table identity
-    answers, no_data included, and no_data where the composite refuses the read, carrying
-    the request's words and the warnings raised before the read
-    (`composite_answer.with_population_read`). It runs before the pass states requirement
-    departures, so they are stated on that read; stated-word coverage was judged on the
-    whole table's read, whose StatVars the population read shares.
-    The scope decision it reads is the answer phase's, else decided here, and is kept for
-    `_with_scope_choices` as the decision of the read's answer: the scope is decided once,
-    on the request's own identity, so a read at the population's total, whose Spec names a
-    destination the request never named, states the scope and composite identity the
-    request's answer does. The trailing tasks of the whole-table answer are cancelled.
-    `result` itself for any other result."""
-    if result.status != "definite" or state.request_warnings is None:
         return result
-    spec = result.spec
-    decision = state.scope_decision
-    if decision is None or decision.spec_id != spec.spec_id:
-        decision = await asyncio.to_thread(
-            decide_guarded,
-            spec,
-            selection=state.scope_selection,
-            operations=state.operations,
-            coverage=state.coverage,
-        )
-        state.scope_decision = decision
-    if not decision.composite or decision.scope is None:
-        return result
-    t0 = now_ms()
-    answered = await asyncio.to_thread(
-        population_table_answer,
-        spec,
-        decision.scope.compiled.identity,
-        reads=_component_reads(state),
-    )
-    if answered is None:
-        return result
-    grafted = with_population_read(result, answered, request_warnings=state.request_warnings)
-    cancel_dropped_tasks(result, grafted)
-    if grafted.status == "definite":
-        state.scope_decision = dataclasses.replace(decision, spec_id=grafted.spec.spec_id)
-    return dataclasses.replace(
-        grafted, timing_by_step={**grafted.timing_by_step, "population_read": now_ms() - t0}
-    )
+    if result.scope_decision is None:
+        raise TypeError(f"definite answer {result.spec.spec_id} carries no scope decision")
+    return _with_decided_scope(result, result.scope_decision)
 
 
-def _component_reads(state: ResolveState) -> ComponentReads:
-    """The request clients a composite answer's component reads run on, with the request's
-    catalogue as the part found it, before its source scope narrowed it."""
-    return ComponentReads(
-        graph=state.graph,
-        sdmx=state.sdmx,
-        coverage=state.coverage,
-        materialise_graph=state.materialise_graph,
-        materialise_sdmx=state.materialise_sdmx,
-        rate_cache=state.rate_cache,
-        deadline=state.deadline,
-        catalogue=state.request_catalogue or current_catalogue(),
-    )
+def _with_decided_scope(result: RegionResult, decision: ScopeDecision) -> RegionResult:
+    """`result`, a definite answer, stating the scope `decision` decided for it
+    (`RegionResult.scope_choices`), which states its Spec (`scope_decision.states_answer`),
+    and carrying the decision's warning once (`ScopeDecision.warning`)."""
+    warning = decision.warning
+    if warning is not None and warning_key(warning) not in set(map(warning_key, result.warnings)):
+        result = dataclasses.replace(result, warnings=(*result.warnings, warning))
+    if decision.scope is None:
+        return result
+    return dataclasses.replace(result, scope_choices=decision.scope)
 
 
 async def _with_composite_preview(result: RegionResult, state: ResolveState) -> RegionResult:
     """`result` with the preview of the composite it answers, which `_with_scope_choices`
-    leaves unlaunched (`with_composite_answer`). It launches as a trailing task where
+    leaves unlaunched. It launches as a trailing task where
     the request streams observations, so the `response` event waits on nothing new, and reads
     inline where the request embeds them. Any other result returns unchanged.
 
@@ -1104,7 +1025,6 @@ async def _run_phases(state: ResolveState) -> RegionResult:
                 if result is None:
                     settled = settled or phase is _phase_settle
                 else:
-                    result = await _within_population(result, state)
                     # Only a vetted election can report qualifier matches: earlier terminals
                     # may hold pre-bind candidates without a forced binding or elected shape.
                     every_member = (
@@ -1140,13 +1060,7 @@ async def _run_phases(state: ResolveState) -> RegionResult:
                         ),
                         state,
                     )
-                    # The scope build reads coverage and scans families, so it runs off
-                    # the event loop, and the tasks a composite restatement drops are
-                    # cancelled back on it.
-                    stated = _stating_unpublished_wholes(result, state)
-                    answered = await asyncio.to_thread(_with_scope_choices, stated, state)
-                    cancel_dropped_tasks(stated, answered)
-                    answered = without_restated_options(stated, answered)
+                    answered = _with_scope_choices(_stating_unpublished_wholes(result, state))
                     return await _with_composite_preview(answered, state)
                 if state.capped_shapes and state.scope is not None and not scoped:
                     reads.enter_context(scoped_reads(state.scope.allowed))

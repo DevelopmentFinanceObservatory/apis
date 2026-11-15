@@ -643,11 +643,22 @@ class PopulationCheck:
         )
 
 
+class _Checks(dict[int, PopulationCheck]):
+    """The population checks of one code index built so far, by the `id` of the coverage index
+    each was built against (`population_check`). A subclass, since a plain `dict` cannot be
+    weakly referenced."""
+
+
 @per_index
-def _checks(index: CodeIndex) -> dict[int, PopulationCheck]:
-    """The population checks of `index` built so far, by the `id` of the coverage index each
-    was built against (`population_check`)."""
-    return {}
+def _checks(index: CodeIndex) -> _Checks:
+    """The population checks of `index` built so far (`_Checks`)."""
+    return _Checks()
+
+
+def _forget(checks: weakref.ReferenceType[_Checks], key: int) -> None:
+    """Drop the entry `key` from `checks`, unless its code index has gone with it."""
+    if (held := checks()) is not None:
+        held.pop(key, None)
 
 
 def population_check(index: CodeIndex, coverage: CoverageIndex) -> PopulationCheck:
@@ -664,7 +675,7 @@ def population_check(index: CodeIndex, coverage: CoverageIndex) -> PopulationChe
     Built once per pair of indexes: memoised per code index (`per_index`), then per coverage
     index within it by `id`. Each coverage index carries one finalizer per code index it was
     checked against, which drops its entry when the coverage index is collected; the code
-    index's own memo goes with the code index. The release
+    index's own memo goes with the code index, which the finalizer holds weakly. The release
     service builds it when a release opens (`graph_release.service.build_release_views`), so
     a request reads it from the memo. The mint and Search refuse a composite reading an
     unavailable population (`PopulationCheck.refusal`)."""
@@ -674,7 +685,7 @@ def population_check(index: CodeIndex, coverage: CoverageIndex) -> PopulationChe
     if found is None:
         found = _population_check(index, coverage)
         checks[key] = found
-        weakref.finalize(coverage, checks.pop, key, None)
+        weakref.finalize(coverage, _forget, weakref.ref(checks), key)
     return found
 
 

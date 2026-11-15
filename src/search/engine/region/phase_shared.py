@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from collections.abc import Collection, Sequence
 from typing import TYPE_CHECKING
 
@@ -16,9 +17,10 @@ from materialise.recipes import (
     cause_from_recipe_error,
 )
 from search.engine.bind import SlotBindingDraft
+from search.engine.degraded_reads import carry, recording_degraded_reads
 from search.engine.departures import measure_not_applied, price_basis_not_applied
 from search.engine.qualifier_match import match_qualifiers
-from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
+from search.engine.region.codes import QUERY_QUALIFIER_DROPPED, ROLE_SCOPE_DEFAULTED
 from search.engine.region.convertibility import served_units
 from search.engine.region.grounding import (
     _build_entity,
@@ -36,9 +38,16 @@ from search.engine.region.place_roles import (
     untold_direction_names,
 )
 from search.engine.region.qualifier_readings import shape_carries_measure_match
+from search.engine.region.reading import (
+    ElectionFacts,
+    ReadingDecision,
+    ReadScope,
+    decide_read_scope,
+    elect_at_read,
+)
 from search.engine.region.requirements import refusal_terms, settle_answer, settle_flagged
 from search.engine.region.result import RegionResult
-from search.engine.region.state import ResolveState
+from search.engine.region.state import MintedComposite, ResolveState
 from search.engine.retrieval.bound_values import (
     apply_declaration_version,
     apply_slot_expansions,
@@ -49,6 +58,8 @@ from search.engine.retrieval.bound_values import (
 from search.engine.retrieval.retrieve import Materialised
 from search.engine.shape import identity_shape_for
 from search.engine.spec_build import (
+    AnswerIdentity,
+    answer_identity,
     build_shape_model,
     build_slot,
     build_spec,
@@ -261,7 +272,6 @@ def withdraw_typed_unit(state: ResolveState, exc: UnitConversionRefusal) -> bool
         if isinstance(exc, NonCurrencyUnitError)
         else price_basis_not_applied(asked=state.unit_text, shown=None),
     )
-    state.from_request(warning)
     return True
 
 
@@ -300,12 +310,28 @@ def _unit_currency(unit: str | None) -> str | None:
     return classify_unit(unit=unit, denominator=None, currency_units={}).currency
 
 
+@dataclasses.dataclass(frozen=True)
+class FlaggedMatch:
+    """A flagged match built by `_elected_flagged_match`, holding its Spec and the composite
+    it is minted as (`MintedComposite`), None where it is minted as none. A refusal passes that
+    composite to `ResolveState.no_data` as `matched`, so `ResolveState.minted` holds the
+    part's own answer's composite alone."""
+
+    spec: Spec
+    minted: MintedComposite | None
+
+    @property
+    def matched(self) -> tuple[MintedComposite, ...]:
+        """The composite the match is minted as, as `ResolveState.no_data` takes it."""
+        return () if self.minted is None else (self.minted,)
+
+
 async def _elected_flagged_match(
     state: ResolveState,
     *,
     members: Sequence[str] | None = None,
     open_roles: Collection[RoleAxis] = (),
-) -> Spec:
+) -> FlaggedMatch | RegionResult:
     """Build the elected shape's flagged identity without probing availability, for a
     refusal that judges the shape itself: role incompatibility, or a quantity form or
     denominator the shape does not serve. The identity names `members`, the StatVars
@@ -322,9 +348,19 @@ async def _elected_flagged_match(
     before the read, on the shape's own names.
 
     Preserve an established entity mapping on materialise-stage refusals so the where slot,
-    entities, trace, and identity agree. Early refusals have no mapping to retain."""
+    entities, trace, and identity agree. Early refusals have no mapping to retain.
+
+    A match whose part read rows within a composite's population (`ResolveState.reading`)
+    that no scope minting the composite states has no label for those rows to stand under,
+    so it fails closed as the definite answer does (`reading.ReadScope`): the result
+    returned is no_data `facet_not_available` (`phase_answer.failed_closed`), which the
+    caller returns in place of its refusal, with what the match raised dropped. A match
+    whose part read nothing labels no rows, so where its composite cannot be minted it is
+    minted as none and the caller's refusal stands (`_flagged_scope`)."""
     await read_held_families((state.shape_draft,))
     await judge_coverage(state)
+    # Everything the match raises from here is its own (`ResolveState.mark_answer`).
+    mark = state.mark_answer()
     sv_dcids = list(members) if members else list(state.shape_draft.sv_arc_facts or ())
     (
         five_tuple_refs,
@@ -375,7 +411,34 @@ async def _elected_flagged_match(
     identity_entities = build_identity_entities(entity_objects_data, role_refs)
     requested_window = requested_window_from_date_request(state.date_request)
     slots = apply_slot_expansions(slots, slot_expansions(state.bindings))
+    named_groups = request_named_groups(state, state.place.roles)
+    answer = answer_identity(
+        shape,
+        slots,
+        stat_vars,
+        entities,
+        identity_entities=identity_entities,
+        open_roles=open_roles,
+        requested_window=requested_window,
+        facet_bindings=None,
+        facets=None,
+        resolved_sources=[],
+        plan=None,
+        pin_served_provenance=False,
+        named_groups=named_groups,
+    )
+    # The election and the scope read coverage and scan families, so they run off the
+    # event loop.
+    scoped = await asyncio.to_thread(_flagged_scope, state, answer)
+    if scoped.decision is None and state.reading is not None:
+        # Deferred: the answer phase imports this module.
+        from search.engine.region.phase_answer import failed_closed
+
+        return failed_closed(state, mark)
+    minted = scoped.minted
     spec = build_spec(
+        composite=None if minted is None else minted.mint,
+        answer=answer,
         shape=shape,
         slots=slots,
         stat_vars=stat_vars,
@@ -407,11 +470,81 @@ async def _elected_flagged_match(
         # pairs, as on the definite path below.
         measure_elected_properties=state.measure_elected_properties,
         defaulted_properties=state.defaulted_properties,
-        named_groups=request_named_groups(state, state.place.roles),
+        named_groups=named_groups,
         walked=state.walked,
         query_qualifiers=settle_flagged(state, state.shape_draft, state.bindings),
     )
-    return apply_declaration_version(spec, state.bindings)
+    spec = apply_declaration_version(spec, state.bindings)
+    _key_reading_warnings(state, scoped, spec, minted=minted)
+    return FlaggedMatch(spec=spec, minted=minted)
+
+
+def _flagged_scope(state: ResolveState, answer: AnswerIdentity) -> ReadScope:
+    """The scope of a flagged match of the elected shape whose identity is `answer`
+    (`reading.decide_read_scope`), under the reading its read elected (`_flagged_reading`).
+    A composite that refused its table read elected an undecided reading's choice
+    (`ReadingDecision.refused`), so the match is the table's Spec and says it reads total
+    ODA.
+
+    Where the part read nothing (`ResolveState.reading` is None), the reading is elected for
+    the match alone and labels no rows. A composite it names that cannot be minted leaves
+    the scope without a decision, as for rows read within the population, but the match is
+    then minted as none and its scope's degraded-read note is dropped: no rows went
+    unlabelled and no answer stands on the lost mint."""
+
+    def decide(reading: ReadingDecision | None) -> ReadScope:
+        return decide_read_scope(
+            answer,
+            reading,
+            selection=state.scope_selection,
+            operations=state.operations,
+            coverage=state.coverage,
+            catalogue=state.request_catalogue,
+        )
+
+    if state.reading is not None:
+        return decide(state.reading)
+    with recording_degraded_reads(detached=True) as record:
+        scoped = decide(_flagged_reading(state))
+    if scoped.decision is not None:
+        carry(record)
+    return scoped
+
+
+def _key_reading_warnings(
+    state: ResolveState, scoped: ReadScope, spec: Spec, *, minted: MintedComposite | None
+) -> None:
+    """Add the warnings of `spec`, a flagged match decided as `scoped`, to the part's, each
+    keyed to its spec_id (`ReadScope.warnings`). A match minted as a composite counts the
+    part's own `role_scope_defaulted` warnings, those of the read it was elected at, over
+    the composite's parties, so those warnings speak for it alone and leave the part's
+    unkeyed list."""
+    own = [
+        warning
+        for warning in state.warnings
+        if warning.code == ROLE_SCOPE_DEFAULTED and warning.spec_id is None
+    ]
+    if minted is not None and own:
+        state.warnings[:] = [warning for warning in state.warnings if warning not in own]
+    for warning in scoped.warnings(spec, own):
+        if warning not in state.warnings:
+            state.warnings.append(warning)
+
+
+def _flagged_reading(state: ResolveState) -> ReadingDecision | None:
+    """The provider reading a flagged match of the elected shape is minted under. That is the
+    one its read elected (`ResolveState.reading`), else the one electing at the part's place
+    (`reading.elect_at_read`) where no read has been made."""
+    if state.reading is not None:
+        return state.reading
+    return elect_at_read(
+        state.shape_draft,
+        state.bindings,
+        state.place,
+        date_request=state.date_request,
+        selection=state.scope_selection,
+        facts=ElectionFacts(coverage=state.coverage, operations=state.operations),
+    )
 
 
 async def settle_unjudged_refusal(state: ResolveState, result: RegionResult) -> RegionResult:
@@ -447,9 +580,12 @@ async def settle_unjudged_refusal(state: ResolveState, result: RegionResult) -> 
         mat_result = state.mat_result
         members = mat_result.sv_dcids if isinstance(mat_result, Materialised) else None
         flagged = await _elected_flagged_match(state, members=members)
+        if isinstance(flagged, RegionResult):
+            return flagged
         return state.no_data(
             "qualifier_not_bound",
-            flagged_match=(flagged,),
+            flagged_match=(flagged.spec,),
+            matched=flagged.matched,
             nearest_real=result.nearest_real,
             unbound_qualifiers=settle_answer(state, state.shape_draft, state.bindings),
             llm_usage=result.llm_usage,
@@ -460,10 +596,13 @@ async def settle_unjudged_refusal(state: ResolveState, result: RegionResult) -> 
 
 async def _role_incompatible_no_data(state: ResolveState) -> RegionResult:
     """Return the common role-incompatibility outcome without a new probe."""
-    flagged_match = await _elected_flagged_match(state)
+    flagged = await _elected_flagged_match(state)
+    if isinstance(flagged, RegionResult):
+        return flagged
     return state.no_data(
         "role_incompatible",
-        flagged_match=(flagged_match,),
+        flagged_match=(flagged.spec,),
+        matched=flagged.matched,
         llm_usage=state.var_usage,
     )
 

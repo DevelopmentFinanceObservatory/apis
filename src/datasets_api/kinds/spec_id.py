@@ -82,6 +82,7 @@ from datasets_api.surgery import apply_scope_surgery, open_roles_left_open
 from datasets_api.timings import phase
 from dfo_platform.problem import Refusal
 from materialise import MaterialisationRequest
+from materialise.errors import FacetNotAvailableError
 from materialise.graph import GraphReader
 from search.models import TimeWindow
 from search.role_kinds import RoleKindRefused, check_role_kinds, graph_types
@@ -134,7 +135,8 @@ def _resolve_members(
     scope: Scope | None = None,
 ) -> tuple[StatVarShape, ...]:
     """Resolves an identity and attaches `/input/spec_id` to `MemberNotResolvable` and to the
-    composite refusals (`CompositeUnservable`, `CompositeWindowUnsupported`).
+    composite refusals (`CompositeUnservable`, `CompositeWindowUnsupported`, and the
+    off-side `FacetNotAvailableError` of `adapter.composite_components`).
 
     Accepts a registered identity or an unregistered sidecar. A `scope` that supplies `facets`
     replaces the identity's own before resolution, as scope surgery does, and one that supplies
@@ -175,6 +177,12 @@ def _resolve_members(
         raise
     except (CompositeUnservable, CompositeWindowUnsupported) as exc:
         exc.pointer = _POINTER
+        raise
+    except FacetNotAvailableError as exc:
+        # Only the composite's off-side refusal carries issues; `adapter._resolve_index_members`'s
+        # refusal of a provenance outside the five-tuple's publishers keeps its facet pointer.
+        if exc.issues is not None:
+            exc.pointer = _POINTER
         raise
     return resolved.shapes
 

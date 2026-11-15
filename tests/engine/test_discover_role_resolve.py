@@ -161,6 +161,7 @@ class TestGraphConfirmResolveLabels:
             obs_label="years",
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage_snapshot=_debtor_coverage(sv, "country/ETH"),
+            within=None,
         )
         assert isinstance(result, Materialised)
         # The variables dimension counts resolved members.
@@ -177,6 +178,7 @@ class TestGraphConfirmResolveLabels:
             graph=FakeGraph(nodes={}, obs={}, detect={}, resolve={}),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage_snapshot=_debtor_coverage(sv, "country/ETH"),
+            within=None,
         )
         assert isinstance(result, Materialised)
         # "variables" is a third, always-appended dimension -- see the
@@ -246,6 +248,7 @@ class TestGraphConfirmResolveUnresolvedConstraint:
             graph=FakeGraph(nodes={}, obs={}, detect={}, resolve={}),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage_snapshot=_debtor_coverage(sv_dcid, self._RECIPIENT),
+            within=None,
         )
 
     def test_unresolved_bound_property_excludes_sv(self):
@@ -379,6 +382,7 @@ class TestGraphConfirmResolveUnresolvedConstraint:
             graph=FakeGraph(nodes={}, obs={}, detect={}, resolve={}),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage_snapshot=empty_coverage_snapshot(),
+            within=None,
         )
         assert isinstance(result, NoDataDraft)
         assert result.reason == "variable_not_resolved"
@@ -405,6 +409,7 @@ class TestGraphConfirmResolveUnresolvedConstraint:
             graph=FakeGraph(nodes={}, obs={}, detect={}, resolve={}),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage_snapshot=empty_coverage_snapshot(),
+            within=None,
         )
         assert isinstance(result, NoDataDraft)
         assert result.reason == "variable_not_resolved"

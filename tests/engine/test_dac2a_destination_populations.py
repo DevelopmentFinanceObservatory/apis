@@ -10,12 +10,9 @@ Commission and to `DACAllRecipients`, and its imputed 106 to Ethiopia.
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import logging
-import re
-import threading
-import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 import pytest
@@ -25,31 +22,21 @@ from code_index.composites import CompositeNotServable, destination_population
 from code_index.declarations import DAC2A_INCLUSIVE
 from code_index.shared import get_index
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
-from origin_catalogue import DFO, current_catalogue
+from origin_catalogue import DFO
 from search.engine.clients.graph import Facet
-from search.engine.concurrency import scoped_concurrency
-from search.engine.core import ResolveRecord
-from search.engine.degraded_reads import note_degraded_read, recording_degraded_reads
-from search.engine.departures import measure_not_applied, warning_key
-from search.engine.entry import dataset_resubmit
-from search.engine.errors import EngineInputError
 from search.engine.events import ObservationsEvent
 from search.engine.quantity import NamedDenominator
 from search.engine.region import (
     RegionResult,
-    composite_answer,
+    candidates,
     phase_answer,
     phase_place_materialise,
     pipeline,
-    result,
+    promote_materialise,
     scope_decision,
 )
-from search.engine.region.composite_answer import (
-    ComponentReads,
-    as_merged_composite,
-    population_table_answer,
-)
-from search.engine.region.grounding import role_scope_defaulted_warning
+from search.engine.region.state import ResolveState
+from search.engine.retrieval import role_resolve
 from search.models import (
     BaseIdentity,
     DatasetResubmitInput,
@@ -60,6 +47,7 @@ from search.models import (
     ParsedEntity,
     ParsedInput,
     ParsedPart,
+    Relaxation,
     Resolution,
     ResolveOptions,
     ResolveRequest,
@@ -67,9 +55,10 @@ from search.models import (
     Spec,
     Warning,
 )
+from search.render.heading import LATEST_YEAR_LABEL
+from search.render.plan import render_sentence_plan
 from search.scope import composite as scope_composite
 from search.scope import provider
-from search.scope.state import ScopeState
 from search.scope.tables import ScopeFacts
 from series_coverage.index import CoverageIndex
 from series_coverage.schema import FacetMetadata, RoleNames
@@ -232,11 +221,87 @@ def _resubmit(identity: BaseIdentity, *, observations: bool = False) -> ResolveR
     )
 
 
+@dataclass(frozen=True)
+class _TableRead:
+    """One read of a part's table: the step that made it (`answer` for a fresh part's read,
+    `resubmit` for a posted identity's, `candidate` for a reading beside the answer,
+    `nearest-real` for a suggestion's relaxed query), whether an open axis was discovered
+    within a population's members, and the recipients the read binds. A nearest-real read
+    names its places as subjects, not by role (`role_resolve.graph_confirm_resolve`), so its
+    recipients are None."""
+
+    step: str
+    within: bool
+    recipients: tuple[str, ...] | None
+
+
+# Every function a part's table is read through, by the step that calls it. A nearest-real
+# suggestion's relaxed query reads through `graph_confirm_resolve` by its module attribute
+# (`grounding._relaxed_binding_suggestion`), which no other step reads it through.
+_READ_SITES = {
+    "answer": (phase_place_materialise, "run_materialise"),
+    "resubmit": (promote_materialise, "run_materialise"),
+    "candidate": (candidates, "materialise"),
+    "nearest-real": (role_resolve, "graph_confirm_resolve"),
+}
+
+
+def _table_reads(monkeypatch: pytest.MonkeyPatch) -> list[_TableRead]:
+    """Every read of a part's table from here on, in order, recorded where each step calls
+    the read (`_READ_SITES`)."""
+    reads: list[_TableRead] = []
+
+    def counting(step: str, read: Callable[..., Any]) -> Callable[..., Any]:
+        def counted(*args: Any, within: Any, **kwargs: Any) -> Any:
+            # The role-keyed entities, the third positional argument of every read but the
+            # nearest-real one, which names its places as subject dcids.
+            recipients = (
+                None if step == "nearest-real" else tuple(args[2].get("financingRecipient", ()))
+            )
+            reads.append(_TableRead(step, bool(within), recipients))
+            return read(*args, within=within, **kwargs)
+
+        return counted
+
+    for step, (module, name) in _READ_SITES.items():
+        monkeypatch.setattr(module, name, counting(step, getattr(module, name)))
+    return reads
+
+
+def _counted(reads: list[_TableRead]) -> list[tuple[str, bool]]:
+    """Each read's step and whether it was made within a population."""
+    return [(read.step, read.within) for read in reads]
+
+
 def _part(response: Any) -> DefinitePart:
     assert isinstance(response, Resolution), response
     (part,) = response.parts
     assert isinstance(part, DefinitePart), part
     return part
+
+
+def _ended_state(
+    monkeypatch: pytest.MonkeyPatch, scenario: str, *, sdmx: FakeSdmxClient | None = None
+) -> ResolveState:
+    """The state a fresh answer of `scenario` ends its pass with, read over `sdmx`, else the
+    test's held rows (`_sdmx`): its shape, bindings and place, and the read that elected its
+    reading."""
+    captured: list[ResolveState] = []
+    preview = pipeline._with_composite_preview
+
+    async def capture(result: RegionResult, state: ResolveState) -> RegionResult:
+        captured.append(state)
+        return await preview(result, state)
+
+    monkeypatch.setattr(pipeline, "_with_composite_preview", capture)
+    offline_resolve(
+        _SCENARIOS[scenario](),
+        graph=_graph_with_parties(),
+        llm=_ScriptedLLM(_VARIABLE),
+        sdmx=_sdmx() if sdmx is None else sdmx,
+    )
+    (state,) = captured
+    return state
 
 
 def _resolve_resubmit(
@@ -309,7 +374,11 @@ def test_a_composite_preview_holds_the_country_row_and_inclusive_adds_106(
 
 
 def _fresh_request(
-    entities: list[tuple[str, str]], *, message: str, open_role: str | None
+    entities: list[tuple[str, str]],
+    *,
+    message: str,
+    open_role: str | None,
+    time_text: str = "2019-2021",
 ) -> ResolveRequest:
     return ResolveRequest(
         input=ParsedInput(
@@ -318,7 +387,7 @@ def _fresh_request(
                     variable_text=_VARIABLE,
                     entities=[ParsedEntity(text=text, role_text=role) for role, text in entities],
                     open_roles=[open_role] if open_role else [],
-                    time_text="2019-2021",
+                    time_text=time_text,
                 )
             ],
             user_message=message,
@@ -348,6 +417,13 @@ _SCENARIOS: dict[str, Callable[[], ResolveRequest]] = {
         message="official development assistance from all donors",
         open_role="recipient",
     ),
+    # H1 asking for the latest year.
+    "H1-latest": lambda: _fresh_request(
+        [_FRANCE],
+        message="official development assistance from France",
+        open_role="recipient",
+        time_text="latest",
+    ),
     # A part naming no destination, read over `_AT_TOTAL`: France's ODA, and the top donors.
     "D2": lambda: _fresh_request(
         [_FRANCE], message="official development assistance from France", open_role=None
@@ -358,14 +434,19 @@ _SCENARIOS: dict[str, Callable[[], ResolveRequest]] = {
 }
 
 
-def _answer(spec: Spec, part: DefinitePart) -> dict[str, Any]:
+def _answer(
+    spec: Spec, part: DefinitePart, *, words: frozenset[str] = frozenset()
+) -> dict[str, Any]:
+    """What a fresh answer and a resubmit of its definition both state, without the warnings
+    whose codes `words` names, which the request's own words raise."""
     resolved = spec.resolved
     dump = lambda model: None if model is None else model.model_dump(mode="json")  # noqa: E731
     return {
         "scope": dump(resolved.scope),
         "headline": dump(resolved.headline),
         "coverage": dump(resolved.coverage),
-        "warnings": sorted((w.code, w.message) for w in part.warnings),
+        "entities": [dump(entity) for entity in resolved.entities],
+        "warnings": sorted((w.code, w.message) for w in part.warnings if w.code not in words),
     }
 
 
@@ -400,74 +481,56 @@ def test_a_fresh_answer_equals_a_resubmit_of_its_definition(
     assert _answer(again.spec, again) == _answer(fresh.spec, fresh)
 
 
-# What a fresh part holds from the request's words or its door, which a resubmit of its
-# definition holds none of: the parsed part it restates, the places each text bound, the
-# scope its words and binders stated, and its timings. Departures quote the request's words.
-_WORD_FIELDS = frozenset({"restatement", "entity_refs", "timing_ms"})
-
-
-def _read_fields(part: DefinitePart) -> dict[str, Any]:
-    """`part`'s dump without the fields its request's words decide, its departures without
-    the words they quote."""
-    dump = part.model_dump(mode="json", exclude=set(_WORD_FIELDS))
-    dump["spec"]["resolved"].pop("scope_choices")
-    dump["departures"] = [
-        {key: value for key, value in departure.items() if key not in ("asked", "text")}
-        for departure in dump["departures"]
-    ]
-    return dump
-
-
-# What a fresh region holds from the request's words or its door, which a resubmit region of
-# its definition holds otherwise: the part's words and timings, the phrases and places its
-# words bound, the scope its binders stated, the relaunch facts and deadline of the door,
-# and the closure reading the composite's preview over the door's clients.
-_WORD_REGION_FIELDS = frozenset(
-    {
-        "variable_text",
-        "timing_by_step",
-        "admitted_qualifier_phrases",
-        "scope_choices",
-        "entity_words",
-        "entity_refs",
-        "promote_relaunch",
-        "reads_deadline",
-        "observations_relaunch",
-    }
-)
-
-
-def _region_fields(region: RegionResult) -> dict[str, str]:
-    """Each field of `region` the request's words do not decide, as its text with object
-    addresses left out, so two closures over the same code compare equal."""
+def _shared_fields(part: DefinitePart) -> dict[str, Any]:
+    """What a fresh part and a resubmit of its definition must both state: its definition
+    and spec_id, its scope, entities, headline, coverage, StatVar counts, measure label,
+    provenance facet, data years and download, its warnings, and its departures without the
+    words they quote."""
+    spec = part.spec
+    resolved = spec.resolved
+    dump = lambda model: None if model is None else model.model_dump(mode="json")  # noqa: E731
     return {
-        field.name: re.sub(r" at 0x[0-9a-f]+", "", repr(getattr(region, field.name)))
-        for field in dataclasses.fields(region)
-        if field.name not in _WORD_REGION_FIELDS
+        "spec_id": spec.spec_id,
+        "definition": dump(spec.definition),
+        "scope": dump(resolved.scope),
+        "entities": [dump(entity) for entity in resolved.entities],
+        "headline": dump(resolved.headline),
+        "coverage": dump(resolved.coverage),
+        "stat_vars": dump(resolved.stat_vars),
+        "measure_label": resolved.measure_label,
+        "provenance": dump(resolved.facets.get("provenance")),
+        "data_years": resolved.data_years,
+        "download": dump(resolved.download),
+        "warnings": [dump(warning) for warning in part.warnings],
+        "departures": [
+            {key: value for key, value in dump(departure).items() if key not in ("asked", "text")}
+            for departure in part.departures
+        ],
     }
 
 
-@pytest.mark.parametrize("scenario", ["H1", "H2", "H6"])
+# The headline fields that say whether the request named the years it reads, which the door
+# decides. A fresh `latest` request names no year, and a resubmit posts the year elected.
+_DOOR_FACTS = ("named_window", "year_named")
+
+
+@pytest.mark.parametrize("scenario", ["H1", "H2", "H6", "H5", "H1-latest"])
 def test_a_fresh_composite_answer_reads_every_field_a_resubmit_reads(
     scenario: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Every field of a fresh composite answer the rows it read decide, in its region and in
-    its part, its Spec whole, its warnings and its departures, is a resubmit's of its
-    definition: the fresh answer is that read with the request's words added, so no read
-    field keeps the whole table's."""
-    regions: list[RegionResult] = []
-    scope_choices, as_composite = pipeline._with_scope_choices, dataset_resubmit._as_composite
+    """Every field of a fresh composite answer the rows it read decide is a resubmit's of
+    its definition (`_shared_fields`), as for the plain table answer H5, the control.
 
-    def fresh_region(result: RegionResult, state: Any) -> RegionResult:
-        regions.append(scope_choices(result, state))
-        return regions[-1]
+    The fields the two doors state differently for the plain table too are left out: the
+    trace's `query_qualifiers`, `slot_filters` provenance and `default_reading`, which the
+    request's words decide, `available_at_place`, `inapplicable_slots`, and the region's
+    `observation_entities`, `served_members`, `preview_read` and `served_filter`, which
+    each door builds from its own read.
 
-    def resubmit_region(region: RegionResult, identity: BaseIdentity, **kwargs: Any) -> Any:
-        regions.append(as_composite(region, identity, **kwargs))
-        return regions[-1]
-
-    monkeypatch.setattr(pipeline, "_with_scope_choices", fresh_region)
-    monkeypatch.setattr(dataset_resubmit, "_as_composite", resubmit_region)
+    The headline's `named_window` and `year_named` are door facts too (`_DOOR_FACTS`). A
+    fresh `latest` request names no year, and a resubmit's identity carries the year its
+    definition elected, so it names that year. Its figures and window of data are the
+    same."""
     fresh = _part(
         offline_resolve(
             _SCENARIOS[scenario](),
@@ -479,9 +542,52 @@ def test_a_fresh_composite_answer_reads_every_field_a_resubmit_reads(
 
     again = _resolve_resubmit(fresh.spec.definition.identity)
 
-    assert _read_fields(again) == _read_fields(fresh)
-    fresh_read, resubmitted = regions
-    assert _region_fields(resubmitted) == _region_fields(fresh_read)
+    shared, resubmitted = _shared_fields(fresh), _shared_fields(again)
+    if scenario == "H1-latest":
+        named = {
+            door: {key: shared["headline"].pop(key) for key in _DOOR_FACTS}
+            for door, shared in (("fresh", shared), ("resubmit", resubmitted))
+        }
+        year = fresh.spec.definition.identity.requested_window.end_year
+        assert named == {
+            "fresh": {"named_window": None, "year_named": False},
+            "resubmit": {
+                "named_window": {"start_year": year, "end_year": year},
+                "year_named": True,
+            },
+        }
+        assert fresh.spec.resolved.trace.requested_window == "latest"
+        # The fresh byline states the latest-year label, which the resubmit's lacks (apis#312).
+        assert any(token.text == LATEST_YEAR_LABEL for token in render_sentence_plan(fresh.spec))
+    assert resubmitted == shared
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason="DevelopmentFinanceObservatory/apis#312: a composite identity keeps no latest window",
+)
+def test_a_latest_composite_answer_states_its_label_at_both_doors() -> None:
+    """A `latest` request answered as the bilateral composite states "Latest year with data"
+    in its byline, fresh and resubmitted. The composite's identity holds the year its lines
+    elect in place of `latest` (`provider.elect_latest_window`), since the Datasets mint
+    refuses a composite's `latest` window, so only the fresh answer's trace says the request
+    asked for the latest year (`heading._asks_latest`), and the resubmit states no label."""
+    fresh = _part(
+        offline_resolve(
+            _SCENARIOS["H1-latest"](),
+            graph=_graph_with_parties(),
+            llm=_ScriptedLLM(_VARIABLE),
+            sdmx=_sdmx(),
+        )
+    )
+    again = _resolve_resubmit(fresh.spec.definition.identity)
+
+    labelled = {
+        door: any(token.text == LATEST_YEAR_LABEL for token in render_sentence_plan(spec))
+        for door, spec in (("fresh", fresh.spec), ("resubmit", again.spec))
+    }
+    assert labelled == {"fresh": True, "resubmit": True}
 
 
 @pytest.mark.parametrize(
@@ -555,168 +661,6 @@ def test_a_fresh_bilateral_reading_lists_no_agency_in_its_scope(scenario: str) -
     assert not {member.ref for member in scope.members} & _SPURIOUS
 
 
-def _reads(coverage: CoverageIndex) -> ComponentReads:
-    """The fixture's clients and coverage, as a part's component reads hold the request's."""
-    return ComponentReads(
-        graph=_graph_with_parties(),
-        sdmx=_sdmx(),
-        coverage=FakeCoverageService(coverage).snapshot(),
-        materialise_graph=None,
-        materialise_sdmx=None,
-        rate_cache=None,
-        deadline=None,
-        catalogue=current_catalogue(),
-    )
-
-
-def _in_request_scope[T](call: Callable[[], T]) -> T:
-    """`call`'s result, called inside a request's concurrency scope
-    (`concurrency.scoped_concurrency`), as a direct call below `core.resolve_events` needs."""
-
-    async def scoped() -> T:
-        async with scoped_concurrency():
-            return call()
-
-    return asyncio.run(scoped())
-
-
-def _definite(spec: Spec) -> RegionResult:
-    return RegionResult(
-        variable_text=_VARIABLE,
-        status="definite",
-        specs=(spec,),
-        no_data_reason=None,
-        warnings=(),
-        timing_by_step={},
-    )
-
-
-def test_a_merged_composite_reads_its_table_within_the_population(
-    _coverage: CoverageIndex,
-) -> None:
-    """A same-shape merge of bilateral composite answers rebuilds its table Spec from its
-    members' slots and plans; the composite it is restated as reads that table within the
-    population, as a resubmit of the merged composite does, so a merged table Spec counting
-    the agency leaves no trace. Two donors never fold, since a donor is no slot
-    (`same_shape._resolve_diff_key`), so the merge is driven with a merged table Spec read
-    over the whole table."""
-    whole = _resolve_resubmit(_identity(_DAC2A).model_copy(update={"facets": None})).spec
-    scope = whole.resolved.scope
-    assert scope is not None and {member.ref for member in scope.members} >= _SPURIOUS
-    member = _resolve_resubmit(_identity(_BILATERAL)).spec
-
-    merged = as_merged_composite(_definite(whole), [_definite(member)], reads=_reads(_coverage))
-
-    assert merged.spec.spec_id == member.spec_id
-    resolved, again = merged.spec.resolved, member.resolved
-    assert (resolved.scope, resolved.headline, resolved.coverage) == (
-        again.scope,
-        again.headline,
-        again.coverage,
-    )
-
-
-def test_a_merged_composite_whose_population_holds_no_row_answers_no_data(
-    _coverage: CoverageIndex,
-) -> None:
-    """A same-shape merge whose merged table read holds no row within the population
-    answers that read's no_data, as a reading the read drops does, never the whole table's
-    read restated as the composite: Germany's total ODA in the window went to the agency
-    alone."""
-    table = _identity(_DAC2A).model_copy(update={"facets": None})
-    whole = _resolve_resubmit(table.model_copy(update={"entities": {"origin": [_DEU]}})).spec
-    member = _resolve_resubmit(_identity(_BILATERAL)).spec
-
-    merged = as_merged_composite(_definite(whole), [_definite(member)], reads=_reads(_coverage))
-
-    assert (merged.status, merged.specs, merged.no_data_reason) == (
-        "no_data",
-        (),
-        "no_observations",
-    )
-
-
-def test_a_candidate_restated_as_the_bilateral_composite_lists_no_agency_in_its_scope(
-    _coverage: CoverageIndex,
-) -> None:
-    """A candidate set's DAC2a total ODA reading, resolved over every party, is read again
-    within the bilateral population before it is restated as the composite, as a fresh
-    definite answer is, so its scope and headline count the country alone."""
-    table = _resolve_resubmit(_identity(_DAC2A).model_copy(update={"facets": None})).spec
-    scope = table.resolved.scope
-    assert scope is not None and {member.ref for member in scope.members} >= _SPURIOUS
-    reads = _reads(_coverage)
-    candidates = RegionResult(
-        variable_text=_VARIABLE,
-        status="candidates",
-        specs=(table,),
-        no_data_reason=None,
-        warnings=(),
-        timing_by_step={},
-    )
-
-    (restated,) = _readings(candidates, reads=reads, selection=ScopeState()).specs
-
-    pin = (restated.definition.identity.facets or {}).get("provenance")
-    assert isinstance(pin, IdentityBindingValue) and pin.ref == _BILATERAL
-    scope = restated.resolved.scope
-    assert scope is not None
-    assert {member.ref for member in scope.members} == {_ETH}
-    headline = restated.resolved.headline
-    assert headline is not None and headline.role_counts["financingRecipient"] == 1
-
-
-@pytest.mark.parametrize("shown", ["candidate", "alternate"])
-def test_a_reading_s_population_read_keys_its_warnings_to_the_reading(
-    _coverage: CoverageIndex, monkeypatch: pytest.MonkeyPatch, shown: str
-) -> None:
-    """A reading pinning DAC2a's provenance is read within the bilateral population under the
-    composite's table identity, whose spec_id is not the reading's. Every warning that read
-    raises, keyed to its own Spec or to none, follows the reading to the composite it is
-    restated as, so none names a Spec the response does not hold, whether the reading is the
-    set's own candidate or the alternate a refusal offers."""
-    table = _resolve_resubmit(_identity(_DAC2A)).spec
-    population_read = composite_answer.population_table_answer
-
-    def keyed(spec: Spec, identity: BaseIdentity, *, reads: ComponentReads) -> RegionResult:
-        read = population_read(spec, identity, reads=reads)
-        assert read is not None and read.status == "definite"
-        assert read.spec.spec_id != spec.spec_id
-        own = Warning(
-            code="date_coverage_partial",
-            severity="info",
-            message="the read's",
-            spec_id=read.spec.spec_id,
-        )
-        return dataclasses.replace(read, warnings=(*read.warnings, own))
-
-    monkeypatch.setattr(composite_answer, "population_table_answer", keyed)
-    region = (
-        dataclasses.replace(_definite(table), status="candidates")
-        if shown == "candidate"
-        else RegionResult(
-            variable_text=_VARIABLE,
-            status="no_data",
-            specs=(),
-            no_data_reason="no_observations",
-            warnings=(),
-            timing_by_step={},
-            alternate_match=table,
-        )
-    )
-
-    read = _readings(region, reads=_reads(_coverage), selection=ScopeState())
-
-    (restated,) = (*read.specs, *([read.alternate_match] if read.alternate_match else ()))
-    assert (restated.definition.identity.facets or {}).get("provenance") == (
-        IdentityBindingValue(ref=_BILATERAL)
-    )
-    assert [w.spec_id for w in read.warnings if w.code == "date_coverage_partial"] == [
-        restated.spec_id
-    ]
-    assert {w.spec_id for w in read.warnings} <= {None, restated.spec_id}
-
-
 def test_a_composite_whose_population_holds_no_row_answers_no_data_with_the_request_s_words(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -744,75 +688,43 @@ def test_a_composite_whose_population_holds_no_row_answers_no_data_with_the_requ
 
 
 @pytest.mark.parametrize(
-    ("error", "reason", "degraded"),
+    ("scenario", "within"),
     [
-        pytest.param(
-            EngineInputError(
-                "no rows",
-                code="facet_not_available",
-                status=422,
-                pointer="/input/identity/entities/destination",
-            ),
-            "facet_not_available",
-            False,
-            id="refused",
-        ),
-        pytest.param(
-            dc_graph.GraphDeadlineExceededError("deadline"), "timed_out", True, id="deadline"
-        ),
-        pytest.param(dc_graph.GraphReadError("lost"), "no_observations", True, id="lost-read"),
+        pytest.param("H1", True, id="within-the-population"),
+        # The plain table answer, the control.
+        pytest.param("H5", False, id="whole-table"),
     ],
 )
-def test_a_population_read_that_raises_answers_no_data_with_the_request_s_words(
-    error: Exception, reason: str, degraded: bool, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(dc_graph.GraphDeadlineExceededError("deadline"), id="deadline"),
+        pytest.param(dc_graph.GraphReadError("lost"), id="lost-read"),
+    ],
+)
+def test_a_read_within_the_population_that_raises_is_handled_as_any_table_read(
+    scenario: str, within: bool, error: Exception, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A fresh answer whose population read raises answers no_data with the read's reason
-    under the request's own words, degraded where the read was lost: never the whole
-    table's read of every party, and never a refusal pointing at an identity the request
-    did not post."""
+    """A part's one read, made within the composite's population, that crosses its deadline
+    or loses its read raises the error a whole-table read raises, for the request's door to
+    answer as it answers any lost read."""
+    read_within: list[bool] = []
 
-    def raising(**_kwargs: Any) -> RegionResult:
+    def raising(*_args: Any, within: Any, **_kwargs: Any) -> Any:
+        read_within.append(bool(within))
         raise error
 
-    monkeypatch.setattr(composite_answer, "resolve_spec_resubmit", raising)
-    record = ResolveRecord()
+    monkeypatch.setattr(phase_place_materialise, "run_materialise", raising)
 
-    response = offline_resolve(
-        _SCENARIOS["H1"](),
-        graph=_graph_with_parties(),
-        llm=_ScriptedLLM(_VARIABLE),
-        sdmx=_sdmx(),
-        record=record,
-    )
+    with pytest.raises(type(error)):
+        offline_resolve(
+            _SCENARIOS[scenario](),
+            graph=_graph_with_parties(),
+            llm=_ScriptedLLM(_VARIABLE),
+            sdmx=_sdmx(),
+        )
 
-    assert isinstance(response, Resolution), response
-    (part,) = response.parts
-    assert isinstance(part, NoDataPart), part
-    assert (part.variable_text, part.no_data.reason) == (_VARIABLE, reason)
-    assert record.done is not None and record.done.degraded_leg is degraded
-
-
-def test_a_request_warning_follows_the_population_read_s_spec_id() -> None:
-    """A warning the pass raised about its whole-table answer before the population read is
-    keyed to the read's Spec, the one the part answers, so it never names a spec_id the
-    response does not show."""
-    whole = _resolve_resubmit(_identity(_DAC2A).model_copy(update={"facets": None})).spec
-    read = _resolve_resubmit(
-        _identity(_DAC2A).model_copy(update={"facets": None, "entities": {"origin": [_DEU]}})
-    ).spec
-    assert whole.spec_id != read.spec_id
-    words = Warning(
-        code="query_qualifier_dropped", severity="info", message="the words", spec_id=whole.spec_id
-    )
-    fresh = dataclasses.replace(_definite(whole), warnings=(words,))
-
-    grafted = composite_answer.with_population_read(
-        fresh, _definite(read), request_warnings=(words,)
-    )
-
-    assert [(w.code, w.spec_id) for w in grafted.warnings] == [
-        ("query_qualifier_dropped", read.spec_id)
-    ]
+    assert read_within == [within]
 
 
 def test_a_composite_answer_keeps_the_warnings_raised_before_its_read(
@@ -858,59 +770,6 @@ def _offer_the_bilateral_composite(monkeypatch: pytest.MonkeyPatch) -> None:
         return option.model_copy(update={"availability": OptionAvailability(status="available")})
 
     monkeypatch.setattr(provider, "_bilateral_option", available)
-
-
-def test_a_candidate_whose_population_holds_no_row_is_dropped_not_restated(
-    _coverage: CoverageIndex, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A candidate set's reading settled on the bilateral composite whose population holds no
-    row in the window is dropped, never restated over the whole table's read of the agency,
-    and a set left with none refuses with the reason that read gives."""
-    _offer_the_bilateral_composite(monkeypatch)
-    table = _resolve_resubmit(
-        _identity(_DAC2A).model_copy(update={"facets": None, "entities": {"origin": [_DEU]}})
-    ).spec
-    candidates = dataclasses.replace(_definite(table), status="candidates")
-
-    read = _readings(candidates, reads=_reads(_coverage), selection=ScopeState())
-
-    assert (read.status, read.specs, read.no_data_reason) == ("no_data", (), "no_observations")
-
-
-@pytest.mark.parametrize("with_france", [False, True], ids=["none-left", "one-left"])
-def test_a_dropped_reading_takes_its_warnings_and_departures_with_it(
-    _coverage: CoverageIndex, monkeypatch: pytest.MonkeyPatch, with_france: bool
-) -> None:
-    """A candidate whose population holds no row is dropped with the warnings keyed to it
-    and the departure facts they disclose, whether the set refuses or is left with one
-    reading."""
-    _offer_the_bilateral_composite(monkeypatch)
-    table = _identity(_DAC2A).model_copy(update={"facets": None})
-    germany = _resolve_resubmit(table.model_copy(update={"entities": {"origin": [_DEU]}})).spec
-    france = _resolve_resubmit(table).spec
-    departed = Warning(
-        code="query_qualifier_dropped",
-        severity="degraded",
-        message="Germany's words",
-        spec_id=germany.spec_id,
-    )
-    candidates = dataclasses.replace(
-        _definite(germany),
-        status="candidates",
-        specs=(france, germany) if with_france else (germany,),
-        warnings=(departed,),
-        departure_facts={
-            warning_key(departed): measure_not_applied(asked="words", property_dcid=None)
-        },
-    )
-
-    read = _in_request_scope(
-        lambda: _readings(candidates, reads=_reads(_coverage), selection=ScopeState())
-    )
-
-    assert read.status == ("definite" if with_france else "no_data")
-    assert departed.code not in {w.code for w in read.warnings}
-    assert warning_key(departed) not in read.departure_facts
 
 
 def test_a_composite_answer_keeps_a_denominator_its_words_name_unverified(
@@ -977,41 +836,6 @@ def test_an_inclusive_answer_counts_the_recipients_of_both_lines(
     assert "both recipients" in defaulted
 
 
-def test_a_composite_recounts_the_defaulted_scope_warning_on_its_axis_whatever_it_says(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A table answer's `role_scope_defaulted` warning names its axis in `params`, so the
-    composite it is restated as states its own count on that axis whatever words the table's
-    warning holds, here a label the request spelled its own way; a warning on another axis
-    stands."""
-    _patched_coverage(monkeypatch, _IMPUTED_ONLY)
-    composite = _resolve_fresh("H2", held=_IMPUTED_ONLY).spec
-    facts = [
-        fact.model_copy(update={"member_count": 1})
-        for fact in composite.resolved.role_axis_facts or ()
-    ]
-    table = composite.model_copy(
-        update={
-            "spec_id": "table",
-            "resolved": composite.resolved.model_copy(update={"role_axis_facts": facts}),
-        }
-    )
-    recipients = role_scope_defaulted_warning(
-        "destination",
-        "No recipient was named, so the answer covers the one recipient with data from FR.",
-    ).model_copy(update={"spec_id": "table"})
-    donors = role_scope_defaulted_warning("origin", "No provider was named.").model_copy(
-        update={"spec_id": "table"}
-    )
-
-    recounted = result.recounted_scope((recipients, donors), table, composite, own=False)
-
-    assert [w.message for w in recounted] == [
-        "No recipient was named, so the answer covers both recipients with data from France.",
-        donors.message,
-    ]
-
-
 def test_an_inclusive_answer_lists_the_parties_its_role_axis_fact_counts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1069,15 +893,12 @@ def test_an_inclusive_answer_whose_component_parties_cannot_be_listed_says_so(
     inclusive answer keeps the open axes of its table read, which count the bilateral line's
     recipients alone, and logs a WARNING naming the composite and the component."""
     _patched_coverage(monkeypatch, _IMPUTED_ONLY)
-    open_axes = scope_composite._open_axes
+    lists_parties = scope_composite._lists_parties
 
-    def unsettled(stated: Any, served: Any, declaration: Any, *, facts: Any) -> Any:
-        *listed, last = served
-        return open_axes(
-            stated, [*listed, dataclasses.replace(last, members=None)], declaration, facts=facts
-        )
+    def unsettled(item: scope_composite.ServedComponent, coverage: CoverageIndex) -> bool:
+        return item.component.role != "imputed" and lists_parties(item, coverage)
 
-    monkeypatch.setattr(scope_composite, "_open_axes", unsettled)
+    monkeypatch.setattr(scope_composite, "_lists_parties", unsettled)
 
     with caplog.at_level(logging.WARNING, logger=scope_composite.__name__):
         part = _resolve_fresh("H2", held=_IMPUTED_ONLY)
@@ -1086,106 +907,6 @@ def test_an_inclusive_answer_whose_component_parties_cannot_be_listed_says_so(
     assert scope is not None and [member.ref for member in scope.members] == [_ETH]
     (record,) = [r for r in caplog.records if r.name == scope_composite.__name__]
     assert (record.levelno, record.args[0]) == (logging.WARNING, DAC2A_INCLUSIVE)
-
-
-def test_a_candidate_set_left_with_one_reading_answers_as_its_resubmit(
-    _coverage: CoverageIndex, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A candidate set whose other reading holds no row within its population is left with
-    one reading, so it answers that reading definite, as a resubmit of its composite does,
-    and not as a set of one, stating the scope a definite answer states: compiled to the
-    composite, with its components."""
-    _offer_the_bilateral_composite(monkeypatch)
-    table = _identity(_DAC2A).model_copy(update={"facets": None})
-    france = _resolve_resubmit(table).spec
-    germany = _resolve_resubmit(table.model_copy(update={"entities": {"origin": [_DEU]}})).spec
-    candidates = dataclasses.replace(
-        _definite(france), status="candidates", specs=(france, germany)
-    )
-
-    read = _in_request_scope(
-        lambda: _readings(candidates, reads=_reads(_coverage), selection=ScopeState())
-    )
-
-    again = _resolve_resubmit(_identity(_BILATERAL)).spec
-    assert (read.status, [spec.spec_id for spec in read.specs]) == ("definite", [again.spec_id])
-    assert (read.spec.resolved.scope, read.spec.resolved.headline) == (
-        again.resolved.scope,
-        again.resolved.headline,
-    )
-    assert read.scope_choices is not None
-    assert read.scope_choices.compiled.spec_id == again.spec_id
-    assert read.scope_choices.compiled.components
-
-
-def test_population_reads_take_the_request_s_limit_and_report_their_lost_reads(
-    _coverage: CoverageIndex, monkeypatch: pytest.MonkeyPatch, search_settings: Any
-) -> None:
-    """Two or more population reads run in worker threads, and two parts' reads together run
-    at most the request's concurrency limit at once. A read one of them loses reaches the
-    request's record, so no cache stores the answer."""
-    search_settings(max_variables=2, max_variable_concurrency=2)
-    lock, running, peak = threading.Lock(), [0], [0]
-
-    def reading(spec: Any, identity: Any, *, reads: Any) -> None:
-        with lock:
-            running[0] += 1
-            peak[0] = max(peak[0], running[0])
-        time.sleep(0.05)
-        note_degraded_read(f"read of {spec}")
-        with lock:
-            running[0] -= 1
-
-    monkeypatch.setattr(composite_answer, "population_table_answer", reading)
-    parts: list[Any] = [
-        {name: (name, None) for name in (f"{part}-first", f"{part}-second")} for part in ("a", "b")
-    ]
-    reads = _reads(_coverage)
-
-    async def read() -> tuple[list[dict[str, Any]], list[str]]:
-        async with scoped_concurrency():
-            with recording_degraded_reads() as record:
-                answered = await asyncio.gather(
-                    *(
-                        asyncio.to_thread(composite_answer._population_reads, part, reads=reads)
-                        for part in parts
-                    )
-                )
-        return answered, record.reads
-
-    answered, lost = asyncio.run(read())
-
-    assert answered == [dict.fromkeys(part) for part in parts]
-    assert sorted(lost) == sorted(f"read of {name}" for part in parts for name in part)
-    assert peak[0] == 2
-
-
-def test_a_composite_naming_no_destination_is_read_again_at_its_population_total(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A composite whose identity names no destination binds the population's total in its
-    place (`RolePopulation.total`), which a whole-table answer of the same words never read,
-    so a fresh answer settled on it is read again at that total, as a resubmit of it reads
-    it."""
-    assert destination_population(get_index(), _DAC2A).total == _DEVELOPING
-    reads = dataclasses.replace(
-        _reads(_patched_coverage(monkeypatch, _AT_TOTAL)), sdmx=_sdmx(_AT_TOTAL)
-    )
-    composite = _identity(_BILATERAL).model_copy(update={"open_roles": []})
-    table = _resolve_resubmit(
-        _identity(_DAC2A).model_copy(update={"facets": None}), held=_AT_TOTAL
-    ).spec
-
-    read = population_table_answer(table, composite, reads=reads)
-
-    assert read is not None and read.status == "definite"
-    assert read.spec.definition.identity.entities["destination"] == [_DEVELOPING]
-    resolved = read.spec.resolved
-    assert resolved.headline is not None
-    assert (resolved.headline.series, resolved.headline.role_counts["financingRecipient"]) == (
-        1,
-        1,
-    )
 
 
 @pytest.mark.parametrize(
@@ -1208,11 +929,14 @@ def test_a_fresh_answer_naming_no_destination_states_the_scope_of_its_own_identi
     """A fresh answer naming no destination reads the bilateral composite at the population's
     total, and that read never changes the part's identity or the scope decided on it: the
     answer and its scope's base name no destination, and France's part keeps its provider
-    switch to total ODA, contributions included."""
+    switch to total ODA, contributions included. The one read names the population's
+    total, `DACDevelopingCountries`, and the composite identity names none."""
     _patched_coverage(monkeypatch, _AT_TOTAL)
+    recorded = _table_reads(monkeypatch)
 
     part = _resolve_fresh(scenario, held=_AT_TOTAL)
 
+    assert recorded == [_TableRead("answer", False, (_DEVELOPING,))]
     identity = part.spec.definition.identity
     assert "destination" not in identity.entities
     assert (identity.facets or {}).get("provenance") == IdentityBindingValue(ref=_BILATERAL)
@@ -1227,24 +951,6 @@ def test_a_fresh_answer_naming_no_destination_states_the_scope_of_its_own_identi
         for option in choice.options
     ]
     assert ("provider:contributions" in offered) == (scenario == "D2")
-
-
-def test_a_population_read_the_composite_refuses_answers_no_data(
-    _coverage: CoverageIndex, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A composite that refuses the read of its population answers no_data, so the caller
-    never states the whole table's read of every party under the composite's spec_id."""
-
-    def refusing(*_args: Any, **_kwargs: Any) -> Any:
-        raise EngineInputError("refused", code="requested_option_unavailable", status=422)
-
-    monkeypatch.setattr(composite_answer, "composite_table_identity", refusing)
-    table = _resolve_resubmit(_identity(_DAC2A).model_copy(update={"facets": None})).spec
-
-    read = population_table_answer(table, _identity(_BILATERAL), reads=_reads(_coverage))
-
-    assert read is not None
-    assert (read.status, read.specs, read.no_data_reason) == ("no_data", (), "facet_not_available")
 
 
 def test_a_fresh_bilateral_answer_s_component_carries_the_bound_population() -> None:
@@ -1294,16 +1000,21 @@ def _years_short(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def _slot_refused(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The bilateral composite refuses what the part binds at its aid type slot."""
-    served_components = provider.served_components
+def _composite_refuses(pointer: str) -> Callable[[pytest.MonkeyPatch], None]:
+    """A drift under which the bilateral composite refuses what the part binds at
+    `pointer`."""
 
-    def refusing(document: dict[str, Any], *, facts: Any) -> Any:
-        if document.get("facets", {}).get("provenance", {}).get("ref") == _BILATERAL:
-            raise CompositeNotServable("refused", ref=_BILATERAL, pointer="/slots/0")
-        return served_components(document, facts=facts)
+    def drift(monkeypatch: pytest.MonkeyPatch) -> None:
+        served_components = provider.served_components
 
-    monkeypatch.setattr(provider, "served_components", refusing)
+        def refusing(document: dict[str, Any], *, facts: Any) -> Any:
+            if document.get("facets", {}).get("provenance", {}).get("ref") == _BILATERAL:
+                raise CompositeNotServable("refused", ref=_BILATERAL, pointer=pointer)
+            return served_components(document, facts=facts)
+
+        monkeypatch.setattr(provider, "served_components", refusing)
+
+    return drift
 
 
 def _decision_raises(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1316,28 +1027,40 @@ def _decision_raises(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.parametrize(
-    ("drift", "why"),
+    ("drift", "params"),
     [
         pytest.param(
             lambda monkeypatch: _patched_coverage(
                 monkeypatch, {**_HELD, (_DAC2A_MEMBER, _OFFICIAL, _UNCLASSIFIED): 50}
             ),
-            "destination_unclassified",
+            {"why": "destination_unclassified"},
             id="population-unavailable",
         ),
-        pytest.param(_years_short, "option_not_covered", id="years-not-covered"),
-        pytest.param(_slot_refused, "dac2aAidType", id="slot-refused"),
-        pytest.param(_decision_raises, "scope_undecided", id="decision-raises"),
+        pytest.param(_years_short, {"why": "option_not_covered"}, id="years-not-covered"),
+        pytest.param(
+            _composite_refuses("/slots/0"),
+            {"why": "slot_not_served", "slot": "dac2aAidType"},
+            id="slot-refused",
+        ),
+        pytest.param(
+            _composite_refuses("/requested_window"),
+            {"why": "option_not_covered"},
+            id="window-refused",
+        ),
+        pytest.param(_decision_raises, {"why": "scope_undecided"}, id="decision-raises"),
     ],
 )
 def test_a_ranking_over_every_donor_says_when_it_cannot_read_bilateral_destinations(
-    monkeypatch: pytest.MonkeyPatch, drift: Callable[[pytest.MonkeyPatch], Any], why: str
+    monkeypatch: pytest.MonkeyPatch,
+    drift: Callable[[pytest.MonkeyPatch], Any],
+    params: dict[str, str],
 ) -> None:
     """A fresh ranking over every donor has no provider axis to state why it reads total ODA,
     so where the bilateral default cannot apply, for a population no side declaration fully
-    places, a composite covering fewer years than the answer, a composite refusing a slot
-    the part binds, or a scope decision that raises, it warns
-    `bilateral_reading_unavailable` on its own spec_id with the reason."""
+    places, a composite covering fewer years than the answer or none the window reaches, a
+    composite refusing a slot the part binds, or a scope decision that raises, it warns
+    `bilateral_reading_unavailable` on its own spec_id with the registered reason, and the
+    slot's property for a slot it cannot serve."""
     drift(monkeypatch)
 
     part = _part(
@@ -1350,7 +1073,7 @@ def test_a_ranking_over_every_donor_says_when_it_cannot_read_bilateral_destinati
     )
 
     assert (part.spec.definition.identity.facets or {}).get("provenance") is None
-    assert _withheld(part) == [(part.spec.spec_id, {"why": why})]
+    assert _withheld(part) == [(part.spec.spec_id, params)]
 
 
 def test_a_part_with_a_provider_axis_states_an_unavailable_population_on_its_scope(
@@ -1386,35 +1109,245 @@ def test_a_part_with_a_provider_axis_states_an_unavailable_population_on_its_sco
     assert (_withheld(donor), _withheld(every_donor)) == ([], [])
 
 
-def test_a_candidate_over_every_donor_says_when_it_cannot_read_bilateral_destinations(
+_TOTAL_YEARS = tuple(range(2017, 2022))
+# What each series holds when the bilateral destinations' rows end a year before the rows
+# of the total spanning both sides, and the agency's, so the composite lacks the table's
+# newest year.
+_COMPOSITE_BEHIND = {key: _TOTAL_YEARS[:-1] if key[2] == _ETH else _TOTAL_YEARS for key in _HELD}
+# The reverse. The total spanning both sides ends a year before the destinations, so the
+# composite holds every year the table's newest five do.
+_COMPOSITE_AHEAD = {
+    key: _TOTAL_YEARS[:-1] if key[2] in (_AGENCY, _ALL_RECIPIENTS) else _TOTAL_YEARS
+    for key in _HELD
+}
+
+
+def _ragged(
+    monkeypatch: pytest.MonkeyPatch, years: dict[tuple[str, str, str], tuple[int, ...]]
+) -> FakeSdmxClient:
+    """Coverage and an SDMX double where each series holds the years `years` gives it."""
+    patch_coverage(
+        monkeypatch,
+        [
+            (sv, "dac2a", donor, recipient, list(span))
+            for (sv, donor, recipient), span in years.items()
+        ],
+        role_names=dict.fromkeys((_DAC2A_MEMBER, _DAC2A_ATTRIBUTED), _NAMES),
+        facet_metadata={"dac2a": FacetMetadata(provenance_id=_DAC2A, unit="USD")},
+    )
+    observations: dict[str, dict] = {}
+    for (sv, donor, recipient), span in years.items():
+        facet = Facet(
+            earliest_date=str(span[0]),
+            latest_date=str(span[-1]),
+            obs_count=len(span),
+            dates=tuple(str(y) for y in span),
+            values=(float(_HELD[sv, donor, recipient]),) * len(span),
+            provenance_id=_DAC2A,
+            unit="USD",
+            facet_id="dac2a",
+        )
+        key = (("financingProvider", donor), ("financingRecipient", recipient))
+        observations.setdefault(sv, {})[key] = [facet]
+    return FakeSdmxClient(observations=observations, availability={})
+
+
+def _trailing(scenario: str) -> ResolveRequest:
+    (part,) = _SCENARIOS[scenario]().input.parts
+    return ResolveRequest(
+        input=ParsedInput(
+            parts=[part.model_copy(update={"time_text": "the last five years"})],
+            user_message=_SCENARIOS[scenario]().input.user_message,
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    ("years", "composite"),
+    [
+        # The settled range ends in 2021, a year the bilateral destinations lack.
+        pytest.param(_COMPOSITE_BEHIND, False, id="composite-behind"),
+        pytest.param(_COMPOSITE_AHEAD, True, id="composite-ahead"),
+    ],
+)
+@pytest.mark.parametrize("scenario", ["H1", "H6"])
+def test_a_trailing_request_reads_the_reading_its_settled_range_allows(
+    scenario: str,
+    years: dict[tuple[str, str, str], tuple[int, ...]],
+    composite: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A candidate set's reading over every donor that keeps total ODA because the bilateral
-    population is unavailable warns as a definite answer does, keyed to that reading."""
-    coverage = _patched_coverage(
-        monkeypatch, {**_HELD, (_DAC2A_MEMBER, _OFFICIAL, _UNCLASSIFIED): 50}
+    """Series ending in different years settle "the last five years" on the newest years
+    the table holds, and the answer names the bilateral composite exactly when the
+    composite holds every year of that range; otherwise it states
+    `bilateral_reading_unavailable`. A resubmit of its definition answers the same."""
+    sdmx = _ragged(monkeypatch, years)
+
+    fresh = _part(
+        offline_resolve(
+            _trailing(scenario),
+            graph=_graph_with_parties(),
+            llm=_ScriptedLLM(_VARIABLE),
+            sdmx=sdmx,
+        )
     )
-    table = _resolve_resubmit(
-        _identity(_DAC2A).model_copy(update={"facets": None, "entities": {"origin": [_OFFICIAL]}})
-    ).spec
-    candidates = dataclasses.replace(_definite(table), status="candidates")
-
-    read = _readings(candidates, reads=_reads(coverage), selection=ScopeState())
-
-    assert [spec.spec_id for spec in read.specs] == [table.spec_id]
-    assert [
-        (w.spec_id, w.params) for w in read.warnings if w.code == "bilateral_reading_unavailable"
-    ] == [(table.spec_id, {"why": "destination_unclassified"})]
-
-
-def _readings(
-    region: RegionResult, *, reads: ComponentReads, selection: ScopeState
-) -> RegionResult:
-    """`region` with its readings restated (`with_bilateral_readings`) under scope facts of
-    no operation, as a part with no answer phase decision reads them."""
-    return composite_answer.with_bilateral_readings(
-        region,
-        reads=reads,
-        selection=selection,
-        facts=ScopeFacts(index=get_index(), coverage=reads.coverage),
+    again = _part(
+        offline_resolve(
+            _resubmit(fresh.spec.definition.identity),
+            graph=_graph_with_parties(),
+            llm=_ScriptedLLM(_VARIABLE),
+            sdmx=sdmx,
+        )
     )
+
+    pin = (fresh.spec.definition.identity.facets or {}).get("provenance")
+    assert (pin == IdentityBindingValue(ref=_BILATERAL)) == composite
+    choices = fresh.spec.resolved.scope_choices
+    assert choices is not None
+    if scenario == "H6":
+        # A ranking over every donor has no provider axis to state the reason on.
+        assert [params for _spec_id, params in _withheld(fresh)] == (
+            [] if composite else [{"why": "option_not_covered"}]
+        )
+    else:
+        (provider_choice,) = (c for c in choices.choices if c.axis == "provider")
+        bilateral = next(o for o in provider_choice.options if o.option_id == "provider:bilateral")
+        assert bilateral.availability.code == (None if composite else "option_not_covered")
+    # The trailing words' stale-year departure, which a resubmit of the definition does not
+    # raise, is left out.
+    words = frozenset({"date_coverage_partial"})
+    assert again.spec.spec_id == fresh.spec.spec_id
+    assert _answer(again.spec, again, words=words) == _answer(fresh.spec, fresh, words=words)
+
+
+# A row of the read-count test: given the test's monkeypatch, the reads its answer needs
+# stood in for, it returns the answer's read over an SDMX double, made once the reads are
+# counted.
+type _AnswerOf = Callable[[pytest.MonkeyPatch], Callable[[FakeSdmxClient], Spec]]
+
+
+def _answered(request_of: Callable[[], ResolveRequest]) -> _AnswerOf:
+    """The Spec a part posted as `request_of` answers."""
+
+    def prepare(_monkeypatch: pytest.MonkeyPatch) -> Callable[[FakeSdmxClient], Spec]:
+        def answer(sdmx: FakeSdmxClient) -> Spec:
+            return _part(
+                offline_resolve(
+                    request_of(),
+                    graph=_graph_with_parties(),
+                    llm=_ScriptedLLM(_VARIABLE),
+                    sdmx=sdmx,
+                )
+            ).spec
+
+        return answer
+
+    return prepare
+
+
+def _nearest_real(monkeypatch: pytest.MonkeyPatch) -> Callable[[FakeSdmxClient], Spec]:
+    """The level suggestion of a fresh H1 answer, its elected shape under the same bindings.
+    The fake graph resolves no relaxed query, so the relaxed read answers with the part's
+    own read of the population, stood in before the reads are counted."""
+    answered: list[Any] = []
+    monkeypatch.setattr(role_resolve, "graph_confirm_resolve", lambda **_kwargs: answered[0])
+
+    def suggest(sdmx: FakeSdmxClient) -> Spec:
+        state = _ended_state(monkeypatch, "H1", sdmx=sdmx)
+        answered.append(state.mat_result)
+        level = (
+            state.shape_draft,
+            Relaxation(
+                axis="what", property_dcid="measurementDenominator", dropped_value_dcids=["x"]
+            ),
+        )
+        near = asyncio.run(phase_place_materialise._nearest_real_for(state, level=level))
+        assert near is not None
+        (suggestion,) = near
+        return suggestion
+
+    return suggest
+
+
+@pytest.mark.parametrize(
+    ("answer_of", "years", "source", "reads"),
+    [
+        *(
+            pytest.param(
+                _answered(_SCENARIOS[scenario]), None, source, [("answer", True)], id=scenario
+            )
+            for scenario, source in (
+                ("H1", _BILATERAL),
+                ("H2", DAC2A_INCLUSIVE),
+                ("H6", _BILATERAL),
+            )
+        ),
+        pytest.param(
+            _answered(lambda: _trailing("H1")),
+            _COMPOSITE_AHEAD,
+            _BILATERAL,
+            [("answer", True)],
+            id="trailing",
+        ),
+        pytest.param(
+            _answered(lambda: _resubmit(_identity(_BILATERAL))),
+            None,
+            _BILATERAL,
+            [("resubmit", True)],
+            id="resubmit",
+        ),
+        # The plain table answer, the control, makes one read of the whole table.
+        pytest.param(_answered(_SCENARIOS["H5"]), None, None, [("answer", False)], id="H5"),
+        # A suggestion beside the answer reads its relaxed query once, within the population.
+        pytest.param(
+            _nearest_real,
+            None,
+            _BILATERAL,
+            [("answer", True), ("nearest-real", True)],
+            id="nearest-real",
+        ),
+    ],
+)
+def test_a_part_settling_on_a_population_composite_reads_its_table_once_within_it(
+    answer_of: _AnswerOf,
+    years: dict[tuple[str, str, str], tuple[int, ...]] | None,
+    source: str | None,
+    reads: list[tuple[str, bool]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A part settling on a composite that binds a population reads its table once, within
+    the population, fresh or resubmitted, as the plain table answer reads its table once
+    whole. A nearest-real suggestion settling on the composite reads its own query once,
+    within the population, beside the answer's read."""
+    sdmx = _sdmx() if years is None else _ragged(monkeypatch, years)
+    answer = answer_of(monkeypatch)
+    recorded = _table_reads(monkeypatch)
+
+    spec = answer(sdmx)
+
+    pin = (spec.definition.identity.facets or {}).get("provenance")
+    assert (pin.ref if isinstance(pin, IdentityBindingValue) else None) == source
+    assert _counted(recorded) == reads
+
+
+def test_a_donor_with_no_total_oda_rows_answers_no_observations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A donor holding no 206 row has no observation in the table read, so the part answers
+    no_data with `no_observations`, as the table read alone would, where the composite's
+    population read has no row to hold either. The fixture offers no sibling reading, so
+    `_reelect_zero_observation_sibling` has nothing to elect."""
+    held = {key: value for key, value in _HELD.items() if key[1] != _FRA}
+    held[_DAC2A_ATTRIBUTED, _FRA, _ETH] = 7
+    _patched_coverage(monkeypatch, held)
+    response = offline_resolve(
+        _SCENARIOS["H1"](),
+        graph=_graph_with_parties(),
+        llm=_ScriptedLLM(_VARIABLE),
+        sdmx=_sdmx(held),
+    )
+
+    assert isinstance(response, Resolution), response
+    (part,) = response.parts
+    assert isinstance(part, NoDataPart)
+    assert part.no_data.reason == "no_observations"

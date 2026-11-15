@@ -696,6 +696,7 @@ def test_a_standard_answer_counts_the_points_its_preview_serves(
         date_request=date_request,
         place_dcids=places,
         coverage=empty_coverage_snapshot(),
+        within=None,
     )
     assert isinstance(mat, Materialised)
     # Every plan that serves nothing yields the carrier for data outside its years, and
@@ -784,6 +785,7 @@ def test_a_standard_window_between_recorded_and_projected_years_reads_nothing(
         date_request=DateRequest(window=TimeWindow(start_year=2020), latest=False),
         place_dcids=[_KEN],
         coverage=empty_coverage_snapshot(),
+        within=None,
     )
     assert isinstance(mat, Materialised)
     assert mat.has_data is False and mat.available_at_place is True
@@ -819,6 +821,7 @@ def test_a_scope_read_elects_the_facet_with_points_in_its_years(monkeypatch) -> 
         date_request=DateRequest(window=TimeWindow(start_year=2021), latest=False),
         place_dcids=[_KEN, _NOR, _uga],
         coverage=empty_coverage_snapshot(),
+        within=None,
     )
     assert isinstance(mat, Materialised) and mat.has_data
     plan = mat.read_plan
@@ -869,6 +872,7 @@ def test_a_series_missing_an_id_or_a_provenance_answers_only_inside_its_years(
         date_request=DateRequest(window=window, latest=False),
         place_dcids=[_KEN],
         coverage=empty_coverage_snapshot(),
+        within=None,
     )
     assert isinstance(mat, Materialised)
     assert mat.has_data is has_data

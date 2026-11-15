@@ -10,6 +10,7 @@ from code_index.shared import get_index
 from search.engine.bind import SlotBindingDraft
 from search.engine.region.grounding import _suggest_nearest_real
 from search.engine.shape import ShapeDraft, SlotKeyDraft
+from search.scope.state import ScopeState
 from tests.engine._builders import bound_place
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
@@ -95,6 +96,9 @@ _ROLES = {_KEN_DCID: "observationAbout"}
 def _run():
     graph = FakeGraph(nodes=_NODES, obs=_OBS, detect={}, resolve={})
     return _suggest_nearest_real(
+        scope_selection=ScopeState(),
+        operations=(),
+        request_catalogue=None,
         graph=graph,
         sdmx=FakeSdmxClient(observations={}, availability={}),
         shape_draft=_shape(),

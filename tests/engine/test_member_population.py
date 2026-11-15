@@ -65,6 +65,7 @@ def test_standard_resolve_confirmed_population_exceeds_the_elected_winner():
         graph=graph,
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
+        within=None,
     )
 
     assert isinstance(result, Materialised)
@@ -95,6 +96,7 @@ def test_set_binding_collected_count_matches_population_confirmed():
         graph=graph,
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
+        within=None,
     )
 
     assert isinstance(result, Materialised)
@@ -158,6 +160,7 @@ def test_index_sourced_population_is_exact(monkeypatch):
         graph=FakeGraph(raise_on_call=True),
         sdmx=FakeSdmxClient(observations={}),
         coverage_snapshot=FakeCoverageService(_auto_coverage_index_1).snapshot(),
+        within=None,
     )
 
     assert isinstance(result, Materialised)
@@ -204,6 +207,7 @@ def test_recall_pool_population_is_inexact():
         graph=graph,
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
+        within=None,
     )
 
     assert isinstance(result, Materialised)

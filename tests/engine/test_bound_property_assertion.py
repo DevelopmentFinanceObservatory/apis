@@ -90,6 +90,7 @@ def _resolve(members: dict[str, dict], bindings: list[SlotBindingDraft]):
         sdmx=FakeSdmxClient(observations={}),
         coverage=_coverage(list(members)).snapshot(),
         discover_scope=True,
+        within=None,
     )
 
 

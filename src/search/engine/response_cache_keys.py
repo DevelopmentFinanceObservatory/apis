@@ -432,7 +432,8 @@ def part_memo_key(
     population enters as its side and the dataset it is drawn from, which with the build
     commit and the graph generation fix its members, so a role read open within a population
     and one naming the same parties key apart. A payload binding none adds nothing to the
-    key.
+    key. The composite a payload answers as enters whole, so a table answer stored for its
+    table identity never serves the composite.
     `engine_flags` are the four enrichment flags of the call's `EngineOptions`. The build commit covers the
     code index, and the graph generation, coverage stamp, conversion catalogue revision,
     origin catalogue build with its UN System setting, and UTC day cover what the graph,
@@ -455,6 +456,8 @@ def part_memo_key(
             key: [population.side, population.source.dataset]
             for key, population in sorted(payload.populations.items())
         }
+    if payload.composite is not None:
+        document["composite"] = payload.composite.model_dump(mode="json")
     return _digest("m", document)
 
 

@@ -148,6 +148,7 @@ def _resolve(shape: ShapeDraft, sdmx: FakeSdmxClient, **kwargs):
         discover_scope=True,
         coverage_snapshot=coverage_snapshot,
         **kwargs,
+        within=None,
     )
 
 
@@ -177,6 +178,7 @@ def test_discover_scope_off_by_default_still_variable_not_resolved():
         graph=FakeGraph(raise_on_call=True),
         sdmx=sdmx,
         coverage_snapshot=empty_coverage_snapshot(),
+        within=None,
     )
 
     assert isinstance(result, NoDataDraft)
@@ -268,6 +270,7 @@ def test_multiple_origins_carry_the_full_opposite_role_filter(monkeypatch):
         sdmx=sdmx,
         discover_scope=True,
         coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
+        within=None,
     )
 
     assert isinstance(result, Materialised)
@@ -294,6 +297,7 @@ def test_origin_only_signature_without_discovery_stays_role_incompatible():
         graph=FakeGraph(raise_on_call=True),
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage_snapshot=empty_coverage_snapshot(),
+        within=None,
     )
     assert isinstance(direct, NoDataDraft)
     assert direct.reason == "role_incompatible"
@@ -305,6 +309,7 @@ def test_origin_only_signature_without_discovery_stays_role_incompatible():
         graph=FakeGraph(raise_on_call=True),
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
+        within=None,
     )
     assert isinstance(via_materialise, NoDataDraft)
     assert via_materialise.reason == "role_not_resolved"
@@ -344,6 +349,7 @@ def test_origin_only_signature_discovers_the_origin_axis(monkeypatch, seed):
         sdmx=FakeSdmxClient(observations=observations, availability={}),
         discover_scope=True,
         coverage_snapshot=FakeCoverageService(_auto_coverage_index_1).snapshot(),
+        within=None,
     )
     assert isinstance(direct, Materialised)
     assert direct.discovered_scope.role_name == "financingProvider"
@@ -358,6 +364,7 @@ def test_origin_only_signature_discovers_the_origin_axis(monkeypatch, seed):
         sdmx=FakeSdmxClient(observations=observations, availability={}),
         discover_scope=True,
         coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
+        within=None,
     )
     assert isinstance(via_materialise, Materialised)
 
@@ -390,6 +397,7 @@ def test_origin_only_signature_confirms_at_its_bound_origin(seed, discover_scope
         coverage_snapshot=FakeCoverageService(
             build_coverage_index(rows, role_names=role_names)
         ).snapshot(),
+        within=None,
     )
 
     assert isinstance(result, Materialised)
@@ -443,6 +451,7 @@ def test_a_bound_origin_confirms_the_donor_total_beside_an_optional_recipient(di
         sdmx=FakeSdmxClient(observations={}, availability={}),
         discover_scope=discover_scope,
         coverage_snapshot=FakeCoverageService(coverage).snapshot(),
+        within=None,
     )
 
     assert isinstance(result, Materialised)
@@ -470,6 +479,7 @@ def test_origin_only_signature_with_named_subject_skips_discovery():
         sdmx=sdmx,
         discover_scope=True,
         coverage_snapshot=empty_coverage_snapshot(),
+        within=None,
     )
 
     assert isinstance(result, NoDataDraft)

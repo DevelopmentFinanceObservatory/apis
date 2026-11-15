@@ -249,6 +249,7 @@ def test_standard_resolve_confirms_an_index_sourced_member_never_in_the_recall_p
         graph=graph,
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
+        within=None,
     )
 
     assert isinstance(result, Materialised)
@@ -434,6 +435,7 @@ def test_the_resolver_reads_the_dataset_a_source_binding_names():
         ),
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=FakeCoverageService(coverage).snapshot(),
+        within=None,
     )
 
     assert isinstance(result, Materialised)

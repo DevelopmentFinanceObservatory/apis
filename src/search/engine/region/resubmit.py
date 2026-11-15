@@ -9,8 +9,9 @@ from __future__ import annotations
 import dataclasses
 import logging
 
+from code_index.shared import get_index
 from materialise.member_conversion import request_conversion_reader
-from origin_catalogue import recording_un_blocked_places
+from origin_catalogue import current_catalogue, recording_un_blocked_places
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.degraded_reads import recording_degraded_reads
@@ -21,7 +22,10 @@ from search.engine.region.resubmit_request import pinned_provenance_scope
 from search.engine.region.result import RegionResult
 from search.engine.region.state import EngineOptions
 from search.engine.region.un_system import with_un_unavailable_warning
-from search.models import ResubmitIdentityPayload
+from search.engine.spec_id import identity_spec_id
+from search.models import BaseIdentity, ResubmitIdentityPayload
+from search.scope.composite import CompositeMint, served_components
+from search.scope.tables import ScopeFacts
 from series_coverage.shared import CoverageSnapshot
 
 logger = logging.getLogger(__name__)
@@ -47,6 +51,23 @@ def _with_nested_identity_pointer(exc: EngineInputError) -> EngineInputError:
         pointer=nested_pointer,
         alternatives=exc.alternatives,
         cause=exc.cause,
+    )
+
+
+def composite_mint(identity: BaseIdentity, *, coverage: CoverageSnapshot) -> CompositeMint:
+    """What a Spec answering composite `identity` is minted from (`CompositeMint`): its
+    components with the years each serves (`served_components`), read with facts of the
+    release's code index and `coverage` alone, and the catalogue bound when it is called,
+    which its provenance facet and download read. A caller builds it before any read narrows
+    the catalogue to a source scope (`resubmit_request.pinned_provenance_scope`)."""
+    facts = ScopeFacts(index=get_index(), coverage=coverage)
+    document = identity.model_dump(mode="json", exclude_none=True)
+    return CompositeMint(
+        identity=identity,
+        spec_id=identity_spec_id(identity),
+        served=tuple(served_components(document, facts=facts)),
+        facts=facts,
+        catalogue=current_catalogue(),
     )
 
 
@@ -81,10 +102,17 @@ def resolve_spec_resubmit(
     `coverage` and `options` carry request-scoped enrichment inputs. `options=None` uses
     the un-enriched baseline. The result is `degraded` when the promote swallowed a read
     (`degraded_reads`).
+
+    Where `inp.composite` names the composite `inp.identity` is the table identity of, the
+    Spec is minted as that composite (`composite_mint`), under its spec_id, its warnings
+    keyed to it and its defaulted scope counted over its components
+    (`CompositeMint.role_scope_warnings`).
     """
     check_described_arm(inp.identity.shape, pointer="/input/identity/shape")
     check_not_composite(inp.identity, pointer="/input/identity/facets/provenance")
     _options = options if options is not None else EngineOptions()
+    # Built before the identity's provenance pin narrows the catalogue.
+    mint = None if inp.composite is None else composite_mint(inp.composite, coverage=coverage)
     opened, _ = open_within(inp.identity, inp.populations)
     if opened is not inp.identity:
         inp = inp.model_copy(update={"identity": opened})
@@ -119,6 +147,7 @@ def resolve_spec_resubmit(
                 population_memo=_options.population_memo,
                 place_options_pool=_options.place_options_pool,
                 coverage=coverage,
+                composite=mint,
             )
     except EngineInputError as exc:
         raise _with_nested_identity_pointer(exc) from exc

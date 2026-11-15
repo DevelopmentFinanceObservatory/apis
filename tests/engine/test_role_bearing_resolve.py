@@ -16,6 +16,7 @@ from search.engine.retrieval.retrieve import Materialised, NoDataDraft, material
 from search.engine.retrieval.role_resolve import graph_confirm_resolve
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.models import CoverageBare, CoverageExact, GraphRef, TimeWindow
+from search.scope.state import ScopeState
 from series_coverage.schema import RoleNames
 from series_coverage.shared import CoverageSnapshot
 from tests.engine._builders import bound_place
@@ -107,6 +108,7 @@ def test_declared_names_key_the_facet_grouping(monkeypatch):
         graph=FakeGraph(raise_on_call=True),
         sdmx=sdmx,
         coverage_snapshot=coverage,
+        within=None,
     )
 
     assert isinstance(result, Materialised)
@@ -134,6 +136,7 @@ def test_materialise_confirms_against_every_named_destination(monkeypatch):
         graph=FakeGraph(raise_on_call=True),
         sdmx=FakeSdmxClient(observations={}),  # coverage supplies role facets
         coverage=coverage,
+        within=None,
     )
 
     assert isinstance(result, Materialised)
@@ -166,6 +169,7 @@ def test_materialise_headline_reflects_both_named_destinations(monkeypatch):
         graph=FakeGraph(raise_on_call=True),
         sdmx=FakeSdmxClient(observations={}),  # coverage supplies role facets
         coverage=coverage,
+        within=None,
     )
 
     assert isinstance(result, Materialised)
@@ -197,6 +201,7 @@ def test_materialise_windowed_to_a_year_with_no_data_reports_no_data(monkeypatch
         sdmx=FakeSdmxClient(observations={}),
         date_request=DateRequest(window=TimeWindow(start_year=2015, end_year=2015), latest=False),
         coverage=coverage,
+        within=None,
     )
 
     assert isinstance(result, Materialised)
@@ -227,6 +232,7 @@ def test_materialise_windowed_to_a_year_with_data_reports_the_exact_count(monkey
         sdmx=FakeSdmxClient(observations={}),
         date_request=DateRequest(window=TimeWindow(start_year=2022, end_year=2022), latest=False),
         coverage=coverage,
+        within=None,
     )
 
     assert isinstance(result, Materialised)
@@ -263,6 +269,7 @@ def test_materialise_windowed_count_sums_across_donor_recipient_rows_sharing_a_f
         sdmx=FakeSdmxClient(observations={}),
         date_request=DateRequest(window=TimeWindow(start_year=2021, end_year=2022), latest=False),
         coverage=coverage,
+        within=None,
     )
 
     assert isinstance(result, Materialised)
@@ -288,6 +295,7 @@ def test_materialise_confirms_when_only_the_second_named_origin_has_data(monkeyp
         graph=FakeGraph(raise_on_call=True),
         sdmx=FakeSdmxClient(observations={}),  # coverage supplies role facets
         coverage=coverage,
+        within=None,
     )
 
     assert isinstance(result, Materialised)
@@ -308,6 +316,7 @@ def test_no_matching_coverage_reads_no_sdmx_series(monkeypatch):
         graph=FakeGraph(raise_on_call=True),
         sdmx=sdmx,
         coverage_snapshot=coverage,
+        within=None,
     )
 
     assert isinstance(result, Materialised)
@@ -332,6 +341,7 @@ def test_a_shape_declaring_no_role_is_refused_before_any_read():
             graph=FakeGraph(raise_on_call=True),
             sdmx=sdmx,
             coverage_snapshot=empty_coverage_snapshot(),
+            within=None,
         )
     assert sdmx.series_calls == []
 
@@ -349,6 +359,7 @@ def test_unplaceable_declared_roles_refuse_role_incompatible():
         graph=FakeGraph(raise_on_call=True),
         sdmx=sdmx,
         coverage_snapshot=empty_coverage_snapshot(),
+        within=None,
     )
 
     assert isinstance(result, NoDataDraft)
@@ -369,6 +380,7 @@ def test_materialise_forks_on_the_declaration_alone():
         graph=FakeGraph(raise_on_call=True),
         sdmx=sdmx,
         coverage=empty_coverage_snapshot(),
+        within=None,
     )
     assert isinstance(role_result, Materialised)
     assert role_result.available_at_place is False
@@ -383,6 +395,7 @@ def test_materialise_forks_on_the_declaration_alone():
         graph=graph,
         sdmx=FakeSdmxClient(observations={}),
         coverage=empty_coverage_snapshot(),
+        within=None,
     )
     assert isinstance(non_role_result, Materialised)
 
@@ -408,6 +421,7 @@ def test_materialise_reads_entities_by_the_declared_names():
         graph=FakeGraph(raise_on_call=True),
         sdmx=FakeSdmxClient(observations=observations),
         coverage=empty_coverage_snapshot(),
+        within=None,
     )
     assert isinstance(correctly_keyed, Materialised)
     assert correctly_keyed.sv_dcids == [_SV_DCID]
@@ -419,6 +433,7 @@ def test_materialise_reads_entities_by_the_declared_names():
         graph=FakeGraph(raise_on_call=True),
         sdmx=FakeSdmxClient(observations=observations),
         coverage=empty_coverage_snapshot(),
+        within=None,
     )
     assert isinstance(wrongly_keyed, NoDataDraft)
     assert wrongly_keyed.reason == "variable_not_resolved"
@@ -480,6 +495,7 @@ def test_no_data_draft_sv_dcids_excludes_constraint_mismatched_members():
         graph=FakeGraph(raise_on_call=True),
         sdmx=sdmx,
         coverage_snapshot=empty_coverage_snapshot(),
+        within=None,
     )
 
     assert isinstance(result, Materialised)
@@ -533,6 +549,7 @@ def test_no_data_draft_sv_dcids_preserves_specificity_order(monkeypatch):
         graph=FakeGraph(raise_on_call=True),
         sdmx=FakeSdmxClient(observations={}),
         coverage_snapshot=coverage,
+        within=None,
     )
 
     assert isinstance(result, Materialised)
@@ -562,6 +579,7 @@ def test_no_data_draft_sv_dcids_preserves_specificity_order(monkeypatch):
         graph=FakeGraph(raise_on_call=True),
         sdmx=FakeSdmxClient(observations={}),
         coverage_snapshot=coverage,
+        within=None,
     )
 
     assert isinstance(with_data, Materialised)
@@ -617,6 +635,7 @@ def test_member_refining_another_over_an_unbound_constraint_is_dropped(monkeypat
         graph=FakeGraph(raise_on_call=True),
         sdmx=FakeSdmxClient(observations={}),
         coverage_snapshot=coverage,
+        within=None,
     )
 
     assert isinstance(result, Materialised)
@@ -674,6 +693,7 @@ def test_admitted_counts_the_bindings_admitted_population_named_destination(monk
         graph=FakeGraph(raise_on_call=True),
         sdmx=FakeSdmxClient(observations={}),
         coverage_snapshot=coverage,
+        within=None,
     )
 
     assert isinstance(result, Materialised)
@@ -708,6 +728,7 @@ def test_admitted_counts_the_bindings_admitted_population_discovered_scope(monke
         sdmx=sdmx,
         discover_scope=True,
         coverage_snapshot=coverage,
+        within=None,
     )
 
     assert isinstance(result, Materialised)
@@ -737,6 +758,7 @@ def test_named_destination_resolve_reports_the_shapes_own_member_count(monkeypat
         graph=FakeGraph(raise_on_call=True),
         sdmx=FakeSdmxClient(observations={}),
         coverage_snapshot=coverage,
+        within=None,
     )
 
     assert isinstance(result, Materialised)
@@ -788,6 +810,7 @@ def test_no_break_collects_every_destination_confirmed_member(monkeypatch):
         graph=FakeGraph(raise_on_call=True),
         sdmx=FakeSdmxClient(observations={}),
         coverage_snapshot=coverage,
+        within=None,
     )
 
     assert isinstance(result, Materialised)
@@ -876,6 +899,7 @@ def test_a_refresh_that_times_out_keeps_frozen_rows_and_reports_unverified(monke
         sdmx=FakeSdmxClient(observations={}),
         deadline=123.0,
         coverage_snapshot=coverage,
+        within=None,
     )
 
     assert isinstance(result, Materialised)
@@ -922,6 +946,7 @@ def test_the_refresh_opens_a_deadline_scope_matching_the_callers_own_deadline(
         sdmx=sdmx,
         deadline=555.5,
         coverage_snapshot=empty_coverage_snapshot(),
+        within=None,
     )
 
     assert isinstance(result, Materialised)
@@ -1024,6 +1049,7 @@ def test_an_open_creditor_elects_from_the_index_family_beyond_the_recalled_shape
         sdmx=FakeSdmxClient(observations={}),
         open_axes=frozenset({"origin"}),
         coverage_snapshot=coverage,
+        within=None,
     )
 
     assert isinstance(result, Materialised)
@@ -1113,6 +1139,9 @@ def test_the_nearest_real_relaxation_probe_carries_the_caller_own_deadline(monke
     graph = _DeadlineRecordingGraph(nodes=nodes)
 
     suggestions, warnings, _reads, _presence = _suggest_nearest_real(
+        scope_selection=ScopeState(),
+        operations=(),
+        request_catalogue=None,
         graph=graph,
         sdmx=sdmx,
         shape_draft=shape,

@@ -152,6 +152,7 @@ def _make_spec(
     ]
 
     return build_spec(
+        composite=None,
         open_roles=(),
         measure_elected_properties=frozenset(),
         shape=shape_model,
@@ -223,6 +224,7 @@ def _make_promoting_spec(purpose_dcid: str | None, place_dcid: str):
     ]
 
     return build_spec(
+        composite=None,
         open_roles=(),
         measure_elected_properties=frozenset(),
         shape=shape_model,

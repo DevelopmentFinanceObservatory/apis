@@ -1,5 +1,5 @@
-"""Composite answers in Search: the years a composite's components cover, and an answer
-restated as the composite it serves.
+"""Composite answers in Search: the years a composite's components cover, and the Spec minted
+as the composite it serves.
 
 A composite identity binds a declared composite provenance (`code_index.composites`): the
 provider-inclusive total of a donor's bilateral flows and its imputed multilateral share
@@ -10,13 +10,14 @@ reads the same years from the request's coverage snapshot, in memory, and the ye
 component holds under the part's places (`component_years`), so the window a scope option
 offers is the window the mint serves.
 
-`assemble_composite` restates a Search answer resolved for the composite's table identity
-(`code_index.composites.table_identity`) as the composite: its identity and spec_id, its
-coverage over the composite's years, its provenance facet naming the composite, and one
-`Component` per component with the years it serves, and the facts of the file a mint of it
-writes (`composite_download`). The table identity's observation preview reads one table, so the
-restated answer carries none. The engine reads the composite's preview per component and
-composes it here (`compose_observations`, `search.engine.region.composite_answer`).
+`CompositeMint` mints a Search answer's Spec as the composite (`spec_build.build_spec(composite=)`)
+over the table identity's arguments (`code_index.composites.table_identity`): its identity and
+spec_id, its coverage over the composite's years, its headline, its open role axes, its StatVar
+counts, its provenance facet naming the composite, its download facts (`composite_download`), and
+one `Component` per component with the years it serves. The table identity's observation preview
+reads one table, so the minted Spec carries none. The engine reads the composite's preview per
+component and composes it (`compose_observations`, `search.engine.region.composite_answer`). One
+method derives each field.
 """
 
 from __future__ import annotations
@@ -24,7 +25,9 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import cached_property
 from typing import cast
 
 from code_index.composites import (
@@ -41,6 +44,7 @@ from code_index.types import CompositeDeclaration
 from dfo_platform.roles import role_key_axis
 from materialise.composite import spans, stacked_years, table_years
 from materialise.enrichment import party_count, party_kind_of
+from origin_catalogue import Catalogue, bound_catalogue
 from search.engine.retrieval.bound_values import served_members
 from search.models import (
     BaseIdentity,
@@ -50,6 +54,7 @@ from search.models import (
     DateRange,
     DownloadFacts,
     DownloadLicence,
+    EntityRoleKey,
     Headline,
     HeadlineYear,
     ObservationSeries,
@@ -58,14 +63,16 @@ from search.models import (
     ProvenanceRef,
     ResolvedEntity,
     ResolvedFacet,
-    ResolvedSpec,
+    ResolvedScope,
     ResolvedStatVars,
     RoleAxis,
+    RoleAxisFact,
+    Slot,
     SlotValue,
     Spec,
-    SpecDefinition,
     SpecObservations,
     TimeWindow,
+    Warning,
     omitted_observations,
 )
 from search.observations import composite_facet_ref, provenance_refs
@@ -406,161 +413,242 @@ def _dispatched(read: SpecObservations) -> int:
     return read.omitted.dispatched or 0
 
 
-def assemble_composite(
-    spec: Spec,
-    identity: BaseIdentity,
-    spec_id: str,
-    *,
-    served: Sequence[ServedComponent],
-    facts: ScopeFacts,
-) -> tuple[Spec, list[Component]]:
-    """`spec`, the answer resolved for composite `identity`'s table identity
-    (`code_index.composites.table_identity`), restated as the composite under `spec_id`, and
-    the composite's components (`CompiledScope.components`).
+@dataclass(frozen=True, eq=False)
+class CompositeMint:
+    """What `spec_build.build_spec` mints a Spec as the composite `identity` from: its
+    identity and `spec_id`, its components with the years each serves
+    (`served_components`), the part's `facts`, and the request's `catalogue`, which its
+    provenance facet and download licence read (`ComponentReads.catalogue`), else the bound
+    one.
 
-    `served` holds `identity`'s components with the years each serves (`served_components`),
-    which the composite's preview filters by too. The restated answer's definition is
-    `identity`; its coverage counts every component's series in the years each serves, over
-    the window those years span; its
-    headline counts the latest of those years over every component serving it
-    (`_headline`); its StatVar counts are the components' summed, and it states whether a
-    groupby sum adds the components (`_stat_vars`); its
-    provenance facet names the composite, with the composite's label, the source and Data
-    Commons its component tables share (`search.observations.composite_facet_ref`) and the
-    account they give; its sources are its component tables, whose labels its
-    `published_tables` joins, and its measure label reads the declaration's `measure_noun`
-    (`_measure_label`), so its sentence cites both tables and names the composite's measure;
-    its open role axes (`ResolvedSpec.scope`, `role_axis_facts`) list and count the parties
-    of every component's series in the years it serves (`_open_axes`), as the mint's frame
-    holds them, where the table identity's answer read the first component's table alone;
-    its concept label stays the table identity's answer's, which names no basis; its download
-    facts are the composite file's (`composite_download`); and it carries no observation
-    preview, since the table identity's reads one table. The engine reads the composite's
-    preview per component (`search.engine.region.composite_answer`).
-    Each component names its role, the table it reads, the years it serves, how many
-    StatVars it serves and its own identity. Raises
-    `code_index.composites.CompositeNotServable` as `component_identities` does."""
-    document = identity.model_dump(mode="json", exclude_none=True)
-    index = facts.index
-    declaration = _declaration(index, document)
-    years = sorted({year for item in served for year in item.served})
-    observations = sum(item.years.counts.get(year, 0) for item in served for year in item.served)
-    window = TimeWindow(start_year=years[0], end_year=years[-1]) if years else None
-    sources = _component_sources(index, declaration)
-    provenance = composite_facet_ref(declaration)
-    facets = {
-        **spec.resolved.facets,
-        "provenance": ResolvedFacet(
-            basis="bound",
-            ref=provenance.ref,
-            label=provenance.label,
-            source=provenance.source,
-            data_commons=provenance.data_commons,
-            account=provenance_account(index, declaration.provenance),
-        ),
-    }
-    resolved = spec.resolved.model_copy(
-        update={
-            "coverage": CoverageExact(
-                has_data=observations > 0, observation_count=observations, window=window
-            ),
-            "facets": facets,
-            "observations": None,
-            "headline": _headline(served, spec.resolved.headline, facts=facts),
-            **_open_axes(spec.resolved, served, declaration, facts=facts),
-            "stat_vars": _stat_vars(served, spec.resolved.stat_vars, declaration, facts=facts),
-            "slots": [
-                slot.model_copy(update={"binding": _window_binding(window)})
-                if slot.key.axis == "when" and window is not None
-                else slot
-                for slot in spec.resolved.slots
-            ],
-            "download": composite_download(served, identity, facts=facts),
-            "measure_label": _measure_label(declaration, spec.resolved.measure_label),
-            "published_tables": join_labels([source.label for source in sources]),
-            "trace": spec.resolved.trace.model_copy(update={"resolved_sources": sources}),
-        }
-    ).stating_data_years((years[0], years[-1]) if years else None)
-    restated = spec.model_copy(
-        update={
-            "spec_id": spec_id,
-            "definition": SpecDefinition(spec_id=spec_id, identity=identity),
-            "resolved": resolved,
-        }
-    )
-    return restated, _components(served)
+    Each method returns the value of one field the composite states in place of the table
+    identity's answer (`code_index.composites.table_identity`), from that answer's own value
+    where the field derives from it. Every other field, the slots and entities among them, is
+    the table identity's: the composite reads the same StatVars and places."""
 
+    identity: BaseIdentity
+    spec_id: str
+    served: tuple[ServedComponent, ...]
+    facts: ScopeFacts
+    catalogue: Catalogue | None = None
 
-def _open_axes(
-    stated: ResolvedSpec,
-    served: Sequence[ServedComponent],
-    declaration: CompositeDeclaration,
-    *,
-    facts: ScopeFacts,
-) -> dict[str, object]:
-    """`stated`'s open role axes, the table identity's answer's, restated over every
-    component of the composite `declaration`: its scope lists, and each role axis fact
-    counts (`enrichment.party_count`, in the components' datasets), the parties on the
-    axis's coverage role of the series every component writes in the years it serves, each
-    read under its own places (`_served_parties`). A stacked composite's imputed line can
-    hold recipients its bilateral line lacks, which the table identity's answer, reading
-    the bilateral table alone, leaves out. A scope member the answer listed keeps its label
-    and type, and one only another component holds is labelled from the code index. Empty
-    where the answer leaves no axis open, or where the snapshot cannot list the parties,
-    which is logged at WARNING with the components it cannot list, since the answer then
-    counts the table identity's parties alone."""
-    if stated.scope is None and not stated.role_axis_facts:
-        return {}
-    coverage = facts.coverage.index
-    unlisted = [item for item in served if item.served and not _lists_parties(item, coverage)]
-    if unlisted:
-        logger.warning(
-            "composite %s keeps the open axes of its table read: the snapshot cannot list "
-            "the parties of %s",
-            declaration.provenance,
-            ", ".join(item.component.recipe.dataset for item in unlisted),
+    @cached_property
+    def declaration(self) -> CompositeDeclaration:
+        """The composite `identity`'s provenance facet binds."""
+        return _declaration(
+            self.facts.index, self.identity.model_dump(mode="json", exclude_none=True)
         )
-        return {}
-    held = _served_parties(served, coverage)
-    index = facts.index
-    datasets = [recipe.dataset for recipe in declaration.components]
-    restated: dict[str, object] = {}
-    if stated.role_axis_facts:
-        restated["role_axis_facts"] = [
-            fact.model_copy(
-                update={
-                    "member_count": party_count(
-                        held[_ROLES[fact.role]],
-                        axis=fact.role,
-                        parties=index.parties,
-                        datasets=datasets,
-                    )
-                }
+
+    @cached_property
+    def years(self) -> list[int]:
+        """The years some component serves, in order."""
+        return sorted({year for item in self.served for year in item.served})
+
+    @cached_property
+    def window(self) -> TimeWindow | None:
+        """The window the served years span, None where no component serves a year."""
+        years = self.years
+        return TimeWindow(start_year=years[0], end_year=years[-1]) if years else None
+
+    def coverage(self) -> CoverageExact:
+        """Every component's series counted in the years it serves, over `window`."""
+        observations = sum(
+            item.years.counts.get(year, 0) for item in self.served for year in item.served
+        )
+        return CoverageExact(
+            has_data=observations > 0, observation_count=observations, window=self.window
+        )
+
+    def headline(self, stated: Headline | None) -> Headline | None:
+        """The composite's headline (`_headline`), naming `stated`'s window."""
+        return _headline(self.served, stated, facts=self.facts)
+
+    def parties(self, axis: RoleAxis) -> list[str] | None:
+        """The parties on `axis` of the series every component writes in the years it
+        serves, each read under its own places (`_served_parties`), without the totals
+        `party_count` leaves out (`_parties`). These are the members of the scope `open_axes`
+        states, and `member_count` counts the same parties. None where the snapshot cannot list some
+        serving component's parties (`_lists_parties`)."""
+        held = self._held_parties
+        if held is None:
+            return None
+        return _parties(
+            held[_ROLES[axis]], axis=axis, index=self.facts.index, datasets=self._datasets
+        )
+
+    def member_count(self, axis: RoleAxis) -> int | None:
+        """How many parties `parties(axis)` lists, as `enrichment.party_count` counts them
+        in the components' datasets. It is the count of each `RoleAxisFact` `open_axes` states,
+        which the `role_scope_defaulted` warning states (`role_scope_warnings`). None where
+        they cannot be listed."""
+        held = self._held_parties
+        if held is None:
+            return None
+        return party_count(
+            held[_ROLES[axis]], axis=axis, parties=self.facts.index.parties, datasets=self._datasets
+        )
+
+    @cached_property
+    def _datasets(self) -> list[str]:
+        return [recipe.dataset for recipe in self.declaration.components]
+
+    @cached_property
+    def _held_parties(self) -> dict[Role, frozenset[str]] | None:
+        coverage = self.facts.coverage.index
+        unlisted = [
+            item for item in self.served if item.served and not _lists_parties(item, coverage)
+        ]
+        if unlisted:
+            logger.warning(
+                "composite %s keeps the open axes of its table read: the snapshot cannot list "
+                "the parties of %s",
+                self.declaration.provenance,
+                ", ".join(item.component.recipe.dataset for item in unlisted),
             )
+            return None
+        return _served_parties(self.served, coverage)
+
+    def open_axes(
+        self, scope: ResolvedScope | None, facts: list[RoleAxisFact] | None
+    ) -> tuple[ResolvedScope | None, list[RoleAxisFact] | None]:
+        """`scope` and `facts`, the table identity's answer's open role axes, over every
+        component: the scope lists, and each counted fact counts, `parties` of its axis. A
+        stacked composite's imputed line can hold recipients its bilateral line lacks, which
+        the table identity's answer, reading the bilateral table alone, leaves out. A
+        member the answer listed keeps its label and type, and one only another component
+        holds is labelled from the code index. Both stand where the answer leaves no axis
+        open, and where the snapshot cannot list the parties, which `parties` logs, since
+        the answer then counts the table identity's parties alone."""
+        if (scope is None and not facts) or self._held_parties is None:
+            return scope, facts
+        counted = facts and [
+            fact.model_copy(update={"member_count": self.member_count(fact.role)})
             if fact.member_count is not None
             else fact
-            for fact in stated.role_axis_facts
+            for fact in facts
         ]
-    scope = stated.scope
-    if scope is not None and scope.axis != "observationAbout":
-        role = _ROLES[scope.axis]
+        if scope is None or scope.axis == "observationAbout":
+            return scope, counted
         listed = {member.ref: member for member in scope.members}
-        restated["scope"] = scope.model_copy(
-            update={
-                "members": [
-                    listed.get(dcid)
-                    or ResolvedEntity(
-                        ref=dcid,
-                        label=row.label if (row := index.parties.get(dcid)) else None,
-                        role=scope.axis,
-                    )
-                    for dcid in _parties(
-                        held[role], axis=scope.axis, index=index, datasets=datasets
-                    )
-                ]
-            }
+        parties = self.facts.index.parties
+        members = [
+            listed.get(dcid)
+            or ResolvedEntity(
+                ref=dcid, label=row.label if (row := parties.get(dcid)) else None, role=scope.axis
+            )
+            for dcid in self.parties(scope.axis) or ()
+        ]
+        return scope.model_copy(update={"members": members}), counted
+
+    def stat_vars(self, stated: ResolvedStatVars) -> ResolvedStatVars:
+        """`stated`, the table identity's StatVar counts, over every component (`_stat_vars`)."""
+        return _stat_vars(self.served, stated, self.declaration, facts=self.facts)
+
+    def slots(self, stated: Sequence[Slot]) -> list[Slot]:
+        """`stated` with the when slot bound to `window` (`_window_binding`), where some
+        component serves a year."""
+        window = self.window
+        return [
+            slot.model_copy(update={"binding": _window_binding(window)})
+            if slot.key.axis == "when" and window is not None
+            else slot
+            for slot in stated
+        ]
+
+    def download(self) -> DownloadFacts | None:
+        """The facts of the composite file a Datasets mint writes (`composite_download`)."""
+        with self._reading():
+            return composite_download(self.served, self.identity, facts=self.facts)
+
+    def measure_label(self, stated: str | None) -> str | None:
+        """The measure label the composite's sentence names (`_measure_label`)."""
+        return _measure_label(self.declaration, stated)
+
+    def sources(self) -> list[ProvenanceRef]:
+        """The component tables, each under its declared label (`_component_sources`)."""
+        return _component_sources(self.facts.index, self.declaration)
+
+    def published_tables(self) -> str | None:
+        """The component tables' labels, joined."""
+        return join_labels([source.label for source in self.sources()])
+
+    def provenance_facet(self) -> ResolvedFacet:
+        """The provenance facet naming the composite, with its label, the source and Data
+        Commons its component tables share (`search.observations.composite_facet_ref`), and
+        the account they give."""
+        with self._reading():
+            ref = composite_facet_ref(self.declaration, index=self.facts.index)
+        return ResolvedFacet(
+            basis="bound",
+            ref=ref.ref,
+            label=ref.label,
+            source=ref.source,
+            data_commons=ref.data_commons,
+            account=provenance_account(self.facts.index, self.declaration.provenance),
         )
-    return restated
+
+    def facets(self, stated: Mapping[str, ResolvedFacet]) -> dict[str, ResolvedFacet]:
+        """`stated` with the provenance facet naming the composite."""
+        return {**stated, "provenance": self.provenance_facet()}
+
+    def data_years(self) -> tuple[int, int] | None:
+        """The first and last year some component serves (`ResolvedSpec.data_years`)."""
+        years = self.years
+        return (years[0], years[-1]) if years else None
+
+    def components(self) -> list[Component]:
+        """The composite's components (`CompiledScope.components`)."""
+        return _components(self.served)
+
+    def role_scope_warnings(self, warnings: Sequence[Warning], spec: Spec) -> tuple[Warning, ...]:
+        """`warnings`, with each `role_scope_defaulted` warning about `spec`, the Spec minted
+        from this composite, worded to count the `parties` of its `params["axis"]`, as a
+        fresh answer's warning states its count (`grounding.role_scope_defaulted_message`).
+        The count is the one `spec`'s role axis fact states (`open_axes`), so the warning
+        and the Spec agree where the snapshot cannot list the parties and the fact keeps the
+        table's count. A warning is about `spec` where it is keyed to `spec` or to no Spec.
+        One keyed to another reading, such as a flagged match or a suggestion beside the
+        answer, counts that reading's parties and keeps its words. An axis on which `spec`
+        has no counted role axis fact keeps its warning, as does every other warning."""
+        # Deferred: grounding imports this module while it loads.
+        from search.engine.region.codes import ROLE_SCOPE_DEFAULTED
+        from search.engine.region.grounding import role_scope_defaulted_message
+
+        counted = {
+            fact.role: fact.member_count
+            for fact in reversed(spec.resolved.role_axis_facts or ())
+            if fact.member_count is not None
+        }
+        labels = {entity.ref: entity.label or entity.ref for entity in spec.resolved.entities}
+
+        def stated(warning: Warning) -> Warning:
+            axis = (warning.params or {}).get("axis")
+            if (
+                warning.code != ROLE_SCOPE_DEFAULTED
+                or warning.spec_id not in (None, spec.spec_id)
+                or axis not in counted
+            ):
+                return warning
+            role = cast("RoleAxis", axis)
+            opposite: EntityRoleKey = "origin" if role == "destination" else "destination"
+            message = role_scope_defaulted_message(
+                role,
+                member_count=counted[role],
+                bound_dcids=list(dict.fromkeys(self.identity.entities.get(opposite, ()))),
+                label_of=lambda dcids: [labels.get(dcid, dcid) for dcid in dcids],
+            )
+            return warning.model_copy(update={"message": message})
+
+        return tuple(map(stated, warnings))
+
+    @contextmanager
+    def _reading(self) -> Iterator[None]:
+        """Binds `catalogue`, where one is given, for the body of the `with` block."""
+        if self.catalogue is None:
+            yield
+            return
+        with bound_catalogue(self.catalogue):
+            yield
 
 
 def _parties(
@@ -677,7 +765,7 @@ def _stat_vars(
     *,
     facts: ScopeFacts,
 ) -> ResolvedStatVars:
-    """`stated`, the table identity's StatVar counts, restated over every component of the
+    """`stated`, the table identity's StatVar counts, counted over every component of the
     composite `declaration`. The member count is the StatVars holding a series under their
     component's own places (`_bound`) in the years it serves, the served count sums the
     StatVars a mint of each component serves (None where the index does not settle some

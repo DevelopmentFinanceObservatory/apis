@@ -18,10 +18,12 @@ from search.engine.region.candidate_grounding import _GroundedCandidate, _Ground
 from search.engine.region.candidates import _Candidate
 from search.engine.region.convertibility import UnitCoverage
 from search.engine.region.place_context import PlaceContext
+from search.engine.region.scope_decision import ScopeDecision
 from search.engine.region.state import ResolveState
 from search.engine.retrieval.retrieve import Materialised, NoDataDraft
 from search.engine.shape import ShapeDraft
 from search.models import CandidateBasis, CoverageBare, Spec
+from search.scope.tables import ScopeFacts
 from tests.engine._assemble_fixtures import _make_spec, _standard_shape_draft
 from tests.engine.test_candidate_grounding_thread import _state
 
@@ -49,6 +51,7 @@ def _entry(
             walked=None,
             date_request=None,
             basis=basis,
+            reading=None,
         ),
         is_elected=False,
         plan=None,
@@ -67,12 +70,18 @@ def _entry(
         unit_refusals={},
         unit_coverage=UnitCoverage(),
         unit_gate_reason=None,
+        decision=ScopeDecision(
+            spec_id=spec.spec_id, facts=cast(ScopeFacts, None), scope=None, composite=False
+        ),
+        minted=None,
     )
 
 
 def _grounded(*rows: tuple[Spec, str, ShapeDraft, CandidateBasis | None]) -> _GroundedCandidates:
     """Grounded candidates from (spec, StatVar, shape, basis) rows, in order."""
-    return _GroundedCandidates(entries={row[0].spec_id: _entry(*row) for row in rows}, answer_t0=0)
+    return _GroundedCandidates(
+        entries={row[0].spec_id: _entry(*row) for row in rows}, answer_t0=0, failed=None
+    )
 
 
 def _settle(
@@ -81,7 +90,7 @@ def _settle(
     """The specs `assemble_candidates` hands definite assembly for `grounded`."""
     monkeypatch.setattr(candidate_collapse, "ground_candidates", lambda _state, _c: grounded)
 
-    async def _definite(_state, specs, _grounded, _rate_cache):
+    async def _definite(_state, specs, _grounded, _rate_cache, **_kwargs):
         return specs
 
     monkeypatch.setattr(candidate_collapse, "_assemble_definite", _definite)

@@ -76,6 +76,7 @@ def _role_bound_region(
     )
     facts = (RoleAxisFactInput(role="origin", member_dcids=origin_dcids),)
     spec = build_spec(
+        composite=None,
         open_roles=(),
         measure_elected_properties=frozenset(),
         shape=shape,
@@ -241,6 +242,7 @@ def _where_bound_spec_with_member_count(
         role=EntityRoleDirectional(role=_gr(_RECIPIENT_PROP), axis="destination"),
     )
     return build_spec(
+        composite=None,
         open_roles=(),
         measure_elected_properties=frozenset(),
         shape=shape,
@@ -326,6 +328,7 @@ def _roster_variant_spec(
         role=EntityRoleDirectional(role=_gr(_RECIPIENT_PROP), axis="destination"),
     )
     return build_spec(
+        composite=None,
         open_roles=(),
         measure_elected_properties=frozenset(),
         shape=shape,
@@ -415,6 +418,7 @@ def _what_bound_spec_with_member_count(
         binding=BindingValue(value=SlotValue(ref=_gr(value_dcid), value_kind="enum_value")),
     )
     return build_spec(
+        composite=None,
         open_roles=(),
         measure_elected_properties=frozenset(),
         shape=shape,
@@ -507,6 +511,7 @@ def _g7_region(recipient_dcid: str, *, earliest_index: int) -> RegionResult:
         *(Entity(ref=_gr(dcid), role=donor) for dcid in sorted(_G7.member_dcids)),
     ]
     spec = build_spec(
+        composite=None,
         open_roles=(),
         measure_elected_properties=frozenset(),
         shape=shape,

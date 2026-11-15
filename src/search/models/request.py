@@ -624,6 +624,12 @@ class ResubmitIdentityPayload(StrictModel):
     (`region.resubmit.resolve_spec_resubmit`). Only the engine sets it, from a composite's
     table or component identity, so it stays out of every dump; the part memo keys it by
     the dataset whose population it is (`response_cache_keys.part_memo_key`).
+
+    `composite` is the composite identity whose table identity `identity` is
+    (`code_index.composites.table_identity`), when the part answers as that composite. The
+    resolver mints its Spec as the composite (`spec_build.build_spec` with a
+    `scope.composite.CompositeMint`). Only the engine sets it, so it stays out of every
+    dump, and the part memo keys it (`response_cache_keys.part_memo_key`).
     """
 
     identity: BaseIdentity = Field(
@@ -640,6 +646,14 @@ class ResubmitIdentityPayload(StrictModel):
         description=(
             "the identity's entities keys that bind a population, each read as open within "
             "the population's members; set by the engine alone"
+        ),
+    )
+    composite: BaseIdentity | None = Field(
+        default=None,
+        exclude=True,
+        description=(
+            "the composite identity whose table identity `identity` is, which the answer "
+            "is minted as; set by the engine alone"
         ),
     )
 
