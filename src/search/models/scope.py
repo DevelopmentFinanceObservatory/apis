@@ -185,7 +185,8 @@ class OptionAvailability(StrictModel):
     detail: dict[str, str] = Field(
         default_factory=dict,
         description=(
-            "the code's parameters: `why` for provider_not_offered, `dataset` for "
+            "the code's parameters: `why` for provider_not_offered, with `slot`, the "
+            "property at fault, where why is slot_not_served, `dataset` for "
             "basis_not_published and contributions_counted, `destination` for "
             "multilateral_destination, the multilateral agency the part names as recipient, "
             "whose flows are core contributions, `entry` and `cause` for conflicts_with"

@@ -213,6 +213,7 @@ def test_a_parent_code_crs_ask_returns_data_instead_of_no_data():
         graph=FakeGraph(raise_on_call=True),
         sdmx=_role_sdmx(),
         coverage=empty_coverage_snapshot(),
+        within=None,
     )
 
     assert isinstance(result, Materialised)
@@ -267,6 +268,7 @@ def test_standard_path_reads_a_member_in_the_subtree():
         graph=_graph_with_crs_data(),
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
+        within=None,
     )
 
     assert isinstance(result, Materialised)
@@ -296,6 +298,7 @@ def test_standard_path_refuses_a_sibling_outside_the_subtree():
         graph=_graph_with_crs_data(),
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
+        within=None,
     )
 
     assert isinstance(result, BoundValuesUnrealisable)

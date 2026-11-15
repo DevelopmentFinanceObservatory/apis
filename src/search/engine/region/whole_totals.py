@@ -292,15 +292,18 @@ def population_totals(axes: Collection[RoleAxis]) -> tuple[str, ...]:
 def whole_total_warnings(
     spec: Spec,
     *,
+    identity: BaseIdentity,
+    populations: Mapping[str, RolePopulation] | None,
     coverage: CoverageIndex,
-    populations: Mapping[str, RolePopulation] | None = None,
 ) -> list[Warning]:
     """`whole_total_available` for each flow side `spec` lists member by member, opened by
     `open_roles` or defaulted (`ResolvedSpec.role_axis_facts`), where the dataset elected
-    for its identity (`bound_values.identity_dataset`) publishes the total of that side's
-    whole population over the identity's requested years (`whole_reading`) and `coverage`
-    holds a series of the Spec's own variables at that total beside the places its other
-    side binds (`coverage_series.series_held`). Those variables are among the ones binding
+    for `identity`, the identity `spec`'s rows were read for (`bound_values.identity_dataset`),
+    publishes the total of that side's whole population over the identity's requested years
+    (`whole_reading`) and `coverage` holds a series of the Spec's own variables at that total
+    beside the places its other side binds (`coverage_series.series_held`). A Spec minted as
+    a composite states the composite's identity, and its rows were read for the composite's
+    table identity (`state.MintedComposite.read`), whose dataset and places these read. Those variables are among the ones binding
     repair asks of the total (`place_roles.holds_whole_total`), so the warning names no
     total binding would not serve. The warning names the total in `params`, so a caller
     that sums the members sees the published figure first, and is stamped with `spec`'s
@@ -315,7 +318,6 @@ def whole_total_warnings(
     An answer that reads the other side whole states none: the source publishes no figure
     between two whole totals ("Official Donors, Total" to "All Recipients, Total"), so no
     published total stands beside the members' sum."""
-    identity = spec.definition.identity
     dataset = identity_dataset(identity)
     groups = spec.resolved.entity_groups or {}
     if dataset is None or any(group.whole_of for group in groups.values()):

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import functools
 import itertools
 import logging
 import threading
@@ -32,7 +33,11 @@ from search.engine.degraded_reads import (
 )
 from search.engine.departures import direction_inferred
 from search.engine.envelope import _emit_step, now_ms
-from search.engine.errors import FamilyNotResolvableError, GraphInfraError, RoleSignatureError
+from search.engine.errors import (
+    FamilyNotResolvableError,
+    GraphInfraError,
+    RoleSignatureError,
+)
 from search.engine.interpret import PinnedResolved, Recall
 from search.engine.place import ConsultedPresence, earth_countries, read_default_presence
 from search.engine.quantity import (
@@ -128,6 +133,7 @@ from search.engine.region.place_roles import (
     undirected_place_name,
     whole_total_candidates,
 )
+from search.engine.region.reading import ElectedReads, ReadingDecision, Within
 from search.engine.region.refs import provenance_labels
 from search.engine.region.requirements import record_reading, settle_answer, stray_values
 from search.engine.region.result import FacetAxisFilter, RegionResult
@@ -1631,44 +1637,89 @@ async def _phase_facet_requests(state: ResolveState) -> RegionResult | None:
 type _MaterialiseOutcome = Materialised | NoDataDraft | MaterialisedCandidates | UnsupportedDraft
 
 
-def _materialise_task(
-    state: ResolveState,
-) -> asyncio.Task[tuple[PlaceContext, _MaterialiseOutcome]]:
-    """Start materialising the elected shape over `state.bindings` off-thread, and return
-    the place context it is read in with its result.
+@dataclass(frozen=True)
+class _ElectedRead:
+    """The elected shape's read (`_materialise_task`): the place context it was read in, its
+    outcome, and the provider reading elected before it (`reading.elect_reading`), None
+    where the part binds no total with a bilateral source."""
 
-    A shape whose read decides a place set settles its sets on this read
-    (`place_context.settle_sets`): it is materialised at a set's node and, where the node
-    holds no data in the years asked for, at the set's members, from one facet read. Any
-    other shape is materialised in the context it was installed with.
-    """
-    shape, bindings, presence = state.shape_draft, list(state.bindings), state.default_presence
+    place: PlaceContext
+    outcome: _MaterialiseOutcome
+    reading: ReadingDecision | None
+
+
+def _materialise_task(state: ResolveState) -> asyncio.Task[_ElectedRead]:
+    """Start materialising the elected shape over `state.bindings` off-thread
+    (`_elected_read`), and return its read. A shape whose place sets are not decided
+    settles them on this read; any other shape is read in the context it was installed
+    with."""
     unsettled = state.unsettled_place
     target = unsettled if unsettled is not None and not unsettled.decided else state.place
+    read = functools.partial(
+        _elected_read,
+        state,
+        state.shape_draft,
+        list(state.bindings),
+        target,
+        presence=state.default_presence,
+    )
+    # Match the observation fetch's ``needs_dates=True`` cache key when a preview is enabled,
+    # including dateless queries. The context scope applies only to this task.
+    with force_full_facets(state.include_observations or state.stream_observations):
+        return asyncio.create_task(asyncio.to_thread(read))
 
-    def read(place: PlaceContext, facet_batch: FacetBatch | None) -> _MaterialiseOutcome:
+
+def _elected_read(
+    state: ResolveState,
+    shape: ShapeDraft,
+    bindings: Sequence[SlotBindingDraft],
+    target: PlaceContext | UnsettledPlace,
+    *,
+    presence: ConsultedPresence | None,
+) -> _ElectedRead:
+    """`shape`'s read under `bindings` at `target` (`_ElectedRead`), on a worker thread.
+
+    A target whose place sets are unsettled settles them on this read
+    (`place_context.settle_sets`): it is materialised at a set's node and, where the node
+    holds no data in the years asked for, at the set's members, from one facet read.
+
+    Each read elects its provider reading first, at the place it tries, and reads the
+    composite the reading names within its population (`reading.ElectedReads`), so a part
+    that settles on a composite is read once, as a resubmit of the composite reads it. The
+    read the sets settle on carries its own election.
+    """
+
+    def read(
+        read_at: PlaceContext, facet_batch: FacetBatch | None, within: Within
+    ) -> _MaterialiseOutcome:
         return run_materialise(
             shape,
-            with_where(bindings, place),
-            place.roles.resolved_entities,
+            with_where(bindings, read_at),
+            read_at.roles.resolved_entities,
             graph=state.graph,
             sdmx=state.sdmx,
             date_request=state.date_request,
             deadline=state.deadline,
-            place_dcids=place.probe_places,
-            default_presence=place.presence_for(presence),
-            open_axes=place.roles.open_axes,
+            place_dcids=read_at.probe_places,
+            default_presence=read_at.presence_for(presence),
+            open_axes=read_at.roles.open_axes,
             coverage=state.coverage,
             facet_batch=facet_batch,
+            within=within,
         )
 
-    def settle() -> tuple[PlaceContext, _MaterialiseOutcome]:
-        return settle_sets(target, read)
-
-    # Match the observation fetch's ``needs_dates=True`` cache key when a preview is enabled,
-    # including dateless queries. The context scope applies only to this task.
-    with force_full_facets(state.include_observations or state.stream_observations):
-        return asyncio.create_task(asyncio.to_thread(settle))
+    reads = ElectedReads(
+        shape,
+        bindings,
+        date_request=state.date_request,
+        selection=state.scope_selection,
+        coverage=state.coverage,
+        operations=state.operations,
+        read=read,
+    )
+    place, outcome = settle_sets(target, reads)
+    read_at, reading = reads.settled(place)
+    return _ElectedRead(place=read_at, outcome=outcome, reading=reading)
 
 
 class _RelaxedPartRefused(Exception):
@@ -1773,7 +1824,8 @@ async def _run_materialise_task(state: ResolveState) -> _MaterialiseOutcome:
     t0 = now_ms()
     materialise_task = _materialise_task(state)
     try:
-        place, mat_result = await materialise_task
+        elected = await materialise_task
+        place, mat_result = elected.place, elected.outcome
         while isinstance(mat_result, BoundValuesUnrealisable):
             refused = await _unbind(
                 state,
@@ -1786,7 +1838,8 @@ async def _run_materialise_task(state: ResolveState) -> _MaterialiseOutcome:
                 raise _RelaxedPartRefused(refused)
             await _cover_unbound(state)
             materialise_task = _materialise_task(state)
-            place, mat_result = await materialise_task
+            elected = await materialise_task
+            place, mat_result = elected.place, elected.outcome
         if place != state.place:
             _install_shape(
                 state,
@@ -1797,6 +1850,7 @@ async def _run_materialise_task(state: ResolveState) -> _MaterialiseOutcome:
                 index=state.elected_index,
             )
         state.mat_result = mat_result
+        state.reading = elected.reading
     finally:
         # Cancel and await unfinished materialisation so cancellation cannot detach it.
         if not materialise_task.done():
@@ -1911,7 +1965,7 @@ def _sibling_shapes_of(state: ResolveState) -> dict[int, ShapeDraft]:
 
 async def _reelect_zero_observation_sibling(
     state: ResolveState, mat_result: Materialised
-) -> Materialised:
+) -> _MaterialiseOutcome:
     """Status rule 1's stand-ins (`state.reelection_siblings`) when the elected shape has no
     observations at its places (``has_data=False``, ``available_at_place=False``): its
     equivalent readings, then its measurement-qualifier siblings.
@@ -1935,6 +1989,9 @@ async def _reelect_zero_observation_sibling(
     place of materialising them (`admit_alternates`). An answering stand-in is installed in
     place of the elected shape with its bindings and place context (`_install_shape`),
     replaces the elected result, and warns `elected_shape_no_data` after its place warnings.
+    Each stand-in's read elects its provider reading first, as the elected shape's read
+    does, and an answering stand-in is adopted with that read and its election
+    (`_adopted_read`).
     Its `elected` starts as the stand-in's draft label and becomes the shape label of the
     Spec built for the stand-in, on the definite path and among candidates alike
     (`ResolveState.state_reelected_reading`). A part refused before any such Spec is built
@@ -1986,6 +2043,8 @@ async def _reelect_zero_observation_sibling(
                 date_request=state.date_request,
                 deadline=state.deadline,
                 coverage=state.coverage,
+                selection=state.scope_selection,
+                operations=state.operations,
             )
             for members in by_scope.values()
         ]
@@ -2046,23 +2105,28 @@ async def _reelect_zero_observation_sibling(
         return mat_result
     if _winner is not None:
         _no_data_label = state.shape_draft.label
-        _install_shape(
-            state,
-            _winner.shape,
-            _winner.bindings,
-            _winner.place,
-            index=_index_by_group[_shape_group_key(_winner.shape)],
-        )
+        index = _index_by_group[_shape_group_key(_winner.shape)]
+        adopted = _adopted_read(_winner)
+        _install_shape(state, _winner.shape, _winner.bindings, adopted.place, index=index)
         state.walked = _winner.walked
-        state.mat_result = _winner.mat
-        mat_result = _winner.mat
+        state.mat_result = adopted.outcome
+        state.reading = adopted.reading
         state.reelection_warning = _elected_sibling_warning(
             no_data=[_no_data_label], elected=[_winner.shape.label]
         )
         state.warnings.append(state.reelection_warning)
-    else:
-        state.sibling_candidates = dict(sorted(_with_data.items()))
+        return adopted.outcome
+    state.sibling_candidates = dict(sorted(_with_data.items()))
     return mat_result
+
+
+def _adopted_read(winner: _Candidate) -> _ElectedRead:
+    """The read a stand-in answering in place of the elected shape is adopted with: its own
+    read (`_materialise_alt_shapes`), which elected its provider reading at each place it
+    tried, as the elected shape's read does (`_elected_read`), so a stand-in that settled on
+    a composite was read within its population and is labelled by the reading that read
+    it."""
+    return _ElectedRead(place=winner.place, outcome=winner.mat, reading=winner.reading)
 
 
 def _carry_readings(readings: Mapping[int, DegradedReads], *, compared: Iterable[int]) -> None:
@@ -2100,9 +2164,7 @@ async def _phase_materialise(state: ResolveState) -> RegionResult | None:
         mat_result = await _reelect_zero_observation_sibling(state, mat_result)
 
     # Classify terminal outcomes and append the answering result's warnings, after any
-    # re-election, so they describe the shape in ``state.shape_draft``. Every warning raised
-    # so far is the request's: from here on they derive from the rows the read holds.
-    state.request_warnings = tuple(state.warnings)
+    # re-election, so they describe the shape in ``state.shape_draft``.
     state.opposite_labels = memoised_labels(state.label_dcids)
     outcome = interpret_materialised(
         mat_result,
@@ -2210,9 +2272,6 @@ def note_denominator_unverified(
             spec_id=spec_id,
         )
         state.warnings.append(warning)
-        # The question's words name the base, and the shape states its own: no row read
-        # decides it, so it stands on an answer read again within a population.
-        state.from_request(warning)
 
 
 # The words for the base a schema-term denominator names (`quantity.schema_denominator_kind`).
@@ -2267,7 +2326,8 @@ async def _declined_refusal(state: ResolveState) -> RegionResult:
     flagged = await _elected_flagged_match(state, members=members, open_roles=open_roles)
     return state.no_data(
         "qualifier_not_bound",
-        flagged_match=(flagged,),
+        flagged_match=(flagged.spec,),
+        matched=flagged.matched,
         nearest_real=await _nearest_real_for(state, level=_level_relaxation(state)),
         unbound_qualifiers=settle_answer(state, state.shape_draft, state.bindings),
         llm_usage=state.var_usage,
@@ -2286,7 +2346,8 @@ async def refuse_unread_answer(state: ResolveState) -> RegionResult:
     flagged = await _elected_flagged_match(state, members=members, open_roles=open_roles)
     return state.no_data(
         "qualifier_not_bound",
-        flagged_match=(flagged,),
+        flagged_match=(flagged.spec,),
+        matched=flagged.matched,
         unbound_qualifiers=settle_answer(state, state.shape_draft, state.bindings),
         llm_usage=state.var_usage,
     )
@@ -2338,11 +2399,12 @@ async def _denominator_refusal(
     level = _level_relaxation(state)
     return state.no_data(
         "denominator_not_available",
-        flagged_match=(flagged,),
+        flagged_match=(flagged.spec,),
+        matched=flagged.matched,
         nearest_real=None if level is None else await _nearest_real_for(state, level=level),
         denominator=NoDataDenominator(
             asked=named.ref if named is not None else None,
-            found=flagged.resolved.shape.measurement_denominator,
+            found=flagged.spec.resolved.shape.measurement_denominator,
         ),
         llm_usage=state.var_usage,
     )
@@ -2432,14 +2494,11 @@ async def _nearest_real_for(
     if not probe.specs:
         return None
     near_specs = probe.specs
-    before = len(state.warnings)
     stamp_offered_place_warnings(
         state.warnings,
         [(spec.spec_id, probe.reads[spec.spec_id].place) for spec in near_specs],
         departure_facts=state.departure_facts,
     )
-    # Each suggestion's places are read from the request's words.
-    state.from_request(*state.warnings[before:])
     entity_warnings, previews = await _suggestion_previews(state, near_specs, probe.reads)
     for warning in entity_warnings:
         if warning not in state.warnings:
@@ -2480,6 +2539,9 @@ async def _probe_nearest_real(
         unsettled=state.unsettled_place,
         pin_served_provenance=state.pin_served_provenance,
         level=level,
+        scope_selection=state.scope_selection,
+        operations=state.operations,
+        request_catalogue=state.request_catalogue,
     )
     return _NearestRealProbe(
         specs=near_specs, warnings=near_warnings, reads=near_reads, presence=near_presence
@@ -2493,12 +2555,16 @@ async def _suggestion_previews(
 ) -> tuple[list[Warning], dict[int, tuple[SpecObservations, Warning | None]]]:
     """The warnings choosing each suggestion's preview entities raised, in suggestion order,
     and the observations each previewed suggestion reads, by index in `near_specs`. Only a
-    buffered request previews: nearest-real suggestions have no SSE observation event."""
+    buffered request previews: nearest-real suggestions have no SSE observation event. A
+    suggestion minted as a composite has none (`SuggestionRead.composite`), since the rows
+    read belong to the table, not the composite."""
     if not state.include_observations or state.stream_observations:
         return [], {}
     entity_warnings: list[Warning] = []
     jobs: list[tuple[int, dict[str, list[str]]]] = []
     for index, near_spec in enumerate(near_specs):
+        if near_reads[near_spec.spec_id].composite:
+            continue
         place = near_reads[near_spec.spec_id].place
         obs_entities, obs_entities_warn = _observation_entities(
             state.shape_draft,

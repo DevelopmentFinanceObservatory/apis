@@ -45,6 +45,7 @@ def _slot_options(prop: str, *dcids: str, truncated: bool = True) -> SlotOptions
 def _spec_with_extra_slots(shape, constraint_val: str, *extra_slots, sv_dcid: str = "test_sv"):
     """Build a spec with extra slots to test unbound-slot roster merging (#590)."""
     return build_spec(
+        composite=None,
         open_roles=(),
         measure_elected_properties=frozenset(),
         shape=shape,
@@ -399,6 +400,7 @@ def _purpose_region(
         else _set_slot("what", "crsPurpose", "crsPurpose", list(code))
     )
     spec = build_spec(
+        composite=None,
         open_roles=(),
         measure_elected_properties=frozenset(),
         shape=_ECON_SHAPE,
@@ -655,6 +657,7 @@ def _named_member_region(slot: Slot, sv_dcid: str, name: str, index: int, *place
     slot_key = SlotKey(axis=slot.key.axis, property=slot.key.property, label=slot.key.label)
     shape = _PERSON_SHAPE.model_copy(update={"label": _FAMILY_LABEL, "slot_keys": [slot_key]})
     spec = build_spec(
+        composite=None,
         open_roles=(),
         measure_elected_properties=frozenset(),
         shape=shape,

@@ -124,6 +124,8 @@ async def _materialise_candidates(
             date_request=state.date_request,
             deadline=state.deadline,
             coverage=state.coverage,
+            selection=state.scope_selection,
+            operations=state.operations,
         )
         merge_presence(state, read.presence)
         # Every alternate the admission reads shapes the offer.

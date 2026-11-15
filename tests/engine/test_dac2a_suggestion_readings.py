@@ -1,0 +1,336 @@
+"""A nearest-real suggestion and a flagged match that settle on DAC2a's bilateral composite are
+minted as it from their own build, and no population read follows them.
+
+Both elect their provider reading at the read they are built over (`reading.elect_at_read`)
+and read within the population the reading binds, as the part's definite answer does, so the
+composite spec_id they carry is the one a resubmit of their definition answers under.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from collections.abc import Callable
+from typing import Any
+
+import pytest
+
+from search.engine.errors import EngineInputError
+from search.engine.region import (
+    phase_place_materialise,
+    phase_shared,
+    reading,
+)
+from search.engine.region.state import ResolveState
+from search.engine.retrieval import role_resolve
+from search.engine.spec_id import identity_spec_id
+from search.models import (
+    IdentityBindingValue,
+    NearestRealSpec,
+    NoDataPart,
+    Relaxation,
+    Spec,
+    Warning,
+)
+from tests.engine._harness import offline_resolve
+from tests.engine.test_dac2a_destination_populations import (
+    _BILATERAL,
+    _FRA,
+    _KEN,
+    _VARIABLE,
+    _counted,
+    _coverage,  # noqa: F401 (autouse fixture)
+    _ended_state,
+    _graph_with_parties,
+    _identity,
+    _resolve_resubmit,
+    _resubmit,
+    _ScriptedLLM,
+    _sdmx,
+    _table_reads,
+    _TableRead,
+    _years_short,
+)
+
+
+def _provenance(spec: Spec) -> str | None:
+    pin = (spec.definition.identity.facets or {}).get("provenance")
+    return pin.ref if isinstance(pin, IdentityBindingValue) else None
+
+
+@pytest.fixture
+def population_reads(monkeypatch: pytest.MonkeyPatch) -> list[_TableRead]:
+    """Every read of a part's table from here on (`_table_reads`). It holds the fresh H1
+    answer's one read within the population and none by a suggestion or flagged match built
+    over it."""
+    return _table_reads(monkeypatch)
+
+
+# The fresh H1 answer's own read, the only table read a suggestion or match beside it leaves.
+_ANSWER_READ = [("answer", True)]
+
+
+@pytest.fixture
+def fresh_state(monkeypatch: pytest.MonkeyPatch) -> Callable[[], ResolveState]:
+    """The state a fresh H1 answer (France, every recipient open, over the bilateral
+    composite) ends its pass with: its shape, bindings and place, and the read that elected
+    the composite."""
+
+    def run() -> ResolveState:
+        state = _ended_state(monkeypatch, "H1")
+        assert state.reading is not None and state.reading.table is not None
+        return state
+
+    return run
+
+
+def _level_suggestion(state: ResolveState, monkeypatch: pytest.MonkeyPatch) -> NearestRealSpec:
+    """The one level suggestion of `state`'s elected shape under the same bindings, the aid
+    type the bilateral default reads among them, read as the part's read is."""
+    read = state.mat_result
+    monkeypatch.setattr(role_resolve, "graph_confirm_resolve", lambda **kwargs: read)
+    level = (
+        state.shape_draft,
+        Relaxation(axis="what", property_dcid="measurementDenominator", dropped_value_dcids=["x"]),
+    )
+    near = asyncio.run(phase_place_materialise._nearest_real_for(state, level=level))
+    assert near is not None
+    (suggestion,) = near
+    return suggestion
+
+
+def _coded(state: ResolveState, code: str) -> list[Warning]:
+    return [warning for warning in state.warnings if warning.code == code]
+
+
+def test_a_flagged_match_settling_on_the_bilateral_composite_is_minted_as_it(
+    fresh_state: Callable[[], ResolveState], population_reads: list[Spec]
+) -> None:
+    """The match carries the composite it is minted as on its own result, and its whole-total
+    warnings read the identity its rows were read for. The part's own answer's composite
+    (`ResolveState.minted`) stays as the answer phase minted it."""
+    state = fresh_state()
+    answered = state.minted
+    assert answered is not None
+
+    match = asyncio.run(phase_shared._elected_flagged_match(state))
+
+    flagged = match.spec
+    assert _provenance(flagged) == _BILATERAL
+    assert flagged.spec_id == identity_spec_id(flagged.definition.identity)
+    assert _counted(population_reads) == _ANSWER_READ
+    assert state.minted is answered
+    assert match.minted is not None
+    assert [minted.mint.spec_id for minted in match.matched] == [flagged.spec_id]
+    assert state.minted_as(flagged, match.matched) is match.minted
+
+
+def test_a_flagged_match_minted_as_the_composite_states_the_scope_warning_as_its_own(
+    fresh_state: Callable[[], ResolveState],
+) -> None:
+    """The part's read is the match's, so its `role_scope_defaulted` warning, counted over the
+    composite's parties, is unkeyed until the match is built and keyed to it afterwards."""
+    state = fresh_state()
+    (stated,) = _coded(state, "role_scope_defaulted")
+    assert stated.spec_id is None
+
+    match = asyncio.run(phase_shared._elected_flagged_match(state))
+
+    (keyed,) = _coded(state, "role_scope_defaulted")
+    assert (keyed.spec_id, keyed.params, keyed.message) == (
+        match.spec.spec_id,
+        stated.params,
+        stated.message,
+    )
+
+
+def test_a_flagged_match_elects_and_decides_off_the_event_loop(
+    fresh_state: Callable[[], ResolveState], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The match's election and scope read coverage and scan families, so they run on a
+    worker thread, off the event loop the refusal is built on."""
+    state = fresh_state()
+    state.reading = None
+    ran: list[tuple[str, bool]] = []
+
+    def on_loop() -> bool:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return False
+        return True
+
+    for name in ("elect_at_read", "decide_read_scope"):
+        real = getattr(phase_shared, name)
+
+        def recorded(*args: Any, _real: Any = real, _name: str = name, **kwargs: Any) -> Any:
+            ran.append((_name, on_loop()))
+            return _real(*args, **kwargs)
+
+        monkeypatch.setattr(phase_shared, name, recorded)
+
+    asyncio.run(phase_shared._elected_flagged_match(state))
+
+    assert ran == [("elect_at_read", False), ("decide_read_scope", False)]
+
+
+def test_a_flagged_match_whose_composite_refuses_its_read_says_it_reads_total_oda(
+    fresh_state: Callable[[], ResolveState],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A flagged match whose elected composite refuses its table read is read nowhere, so it
+    is the table's Spec, and it says it reads total ODA because its scope could not be
+    decided, keyed to its own spec_id. The refusal is logged once and noted as a degraded
+    read once, at the election. The match's identity chooses the bilateral composite, as the
+    part's did, and the reading's undecided choice differs from it by design, which is no
+    election fault (`reading._checked`), so the check notes nothing more."""
+    state = fresh_state()
+    assert state.reading is not None
+    bilateral = state.reading.choice
+    state.reading = None
+    monkeypatch.setattr(reading, "choose_provider", lambda *_args: bilateral)
+    degraded: list[str] = []
+
+    def refusing(*_args: object, **_kwargs: object) -> object:
+        raise EngineInputError("refused", code="requested_option_unavailable", status=422)
+
+    monkeypatch.setattr(reading, "composite_table_identity", refusing)
+    monkeypatch.setattr(reading, "note_degraded_read", degraded.append)
+
+    with caplog.at_level(logging.ERROR, logger=reading.__name__):
+        match = asyncio.run(phase_shared._elected_flagged_match(state))
+
+    assert [r.levelno for r in caplog.records if r.name == reading.__name__] == [logging.ERROR]
+    assert degraded == ["reading election"]
+
+    assert match.minted is None
+    assert _provenance(match.spec) != _BILATERAL
+    withheld = [
+        w.params
+        for w in _coded(state, "bilateral_reading_unavailable")
+        if w.spec_id == match.spec.spec_id
+    ]
+    assert withheld == [{"why": "scope_undecided"}]
+
+
+def test_a_resubmit_refusal_s_flagged_match_is_the_composite() -> None:
+    """A composite posted with a destination that holds no row in its population refuses
+    `no_observations` with the composite as its flagged match."""
+    posted = _identity(_BILATERAL).model_copy(
+        update={"entities": {"origin": [_FRA], "destination": [_KEN]}, "open_roles": None}
+    )
+
+    response = offline_resolve(
+        _resubmit(posted), graph=_graph_with_parties(), llm=_ScriptedLLM(_VARIABLE), sdmx=_sdmx()
+    )
+
+    (part,) = response.parts
+    assert isinstance(part, NoDataPart)
+    flagged = part.no_data.flagged_match
+    assert isinstance(flagged, Spec)
+    assert flagged.spec_id == identity_spec_id(posted)
+    assert _provenance(flagged) == _BILATERAL
+
+
+def test_a_nearest_real_suggestion_settling_on_the_bilateral_composite_is_minted_as_it(
+    fresh_state: Callable[[], ResolveState],
+    population_reads: list[Spec],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The suggestion states its own `role_scope_defaulted` warning, keyed to it, as a
+    resubmit of its definition states it."""
+    state = fresh_state()
+    read = state.mat_result
+    opened_within: list[Any] = []
+
+    def confirmed(**kwargs: Any) -> Any:
+        """The relaxed query's own read, answered as the part's read of the population."""
+        opened_within.append(kwargs["within"])
+        return read
+
+    monkeypatch.setattr(role_resolve, "graph_confirm_resolve", confirmed)
+
+    # The level relaxation reads the elected shape under the same bindings, the aid type the
+    # bilateral default reads among them.
+    level = (
+        state.shape_draft,
+        Relaxation(axis="what", property_dcid="measurementDenominator", dropped_value_dcids=["x"]),
+    )
+    near = asyncio.run(phase_place_materialise._nearest_real_for(state, level=level))
+
+    assert _counted(population_reads) == _ANSWER_READ
+    assert near is not None
+    (composite,) = near
+    assert _provenance(composite) == _BILATERAL
+    assert composite.spec_id == identity_spec_id(composite.definition.identity)
+    again = _resolve_resubmit(composite.definition.identity)
+    assert again.spec.spec_id == composite.spec_id
+    assert opened_within and all(within for within in opened_within)
+    own = [w for w in _coded(state, "role_scope_defaulted") if w.spec_id == composite.spec_id]
+    resubmitted = [w for w in again.warnings if w.code == "role_scope_defaulted"]
+    assert [(w.params, w.message) for w in own] == [(w.params, w.message) for w in resubmitted]
+    assert resubmitted
+
+
+def test_each_reading_the_bilateral_default_cannot_reach_says_so_under_its_own_spec_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Over every donor with bilateral destinations covering fewer years than the answer, the
+    part reads total ODA, and a nearest-real suggestion and a flagged match of it, each
+    elected at its own read, each carry `bilateral_reading_unavailable` keyed to its own
+    spec_id, though their messages match."""
+    _years_short(monkeypatch)
+    state = _ended_state(monkeypatch, "H6")
+    assert state.reading is not None and state.reading.table is None
+
+    suggestion = _level_suggestion(state, monkeypatch)
+    match = asyncio.run(phase_shared._elected_flagged_match(state))
+
+    withheld = _coded(state, "bilateral_reading_unavailable")
+    assert suggestion.spec_id != match.spec.spec_id
+    assert [(w.spec_id, w.params) for w in withheld] == [
+        (suggestion.spec_id, {"why": "option_not_covered"}),
+        (match.spec.spec_id, {"why": "option_not_covered"}),
+    ]
+
+
+def test_a_netting_basis_relaxation_elects_the_bilateral_composite_as_its_resubmit_does(
+    fresh_state: Callable[[], ResolveState],
+    population_reads: list[Spec],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Dropping nettingBasis leaves an unbound slot in the suggestion's identity. The election
+    reads that slot as the mint does, so the suggestion settles on the bilateral composite,
+    reads within its population, passes the after-read monitor with no log, and a resubmit of
+    its definition answers under its spec_id."""
+    state = fresh_state()
+    read = state.mat_result
+    opened_within: list[Any] = []
+
+    def confirmed(**kwargs: Any) -> Any:
+        opened_within.append(kwargs["within"])
+        return read
+
+    monkeypatch.setattr(role_resolve, "graph_confirm_resolve", confirmed)
+
+    with caplog.at_level("WARNING"):
+        near = asyncio.run(phase_place_materialise._nearest_real_for(state))
+
+    assert _counted(population_reads) == _ANSWER_READ
+    assert near is not None
+    (relaxed,) = [
+        spec
+        for spec in near
+        if any(
+            slot.property == "nettingBasis" and slot.binding.state == "unbound"
+            for slot in spec.definition.identity.slots
+        )
+    ]
+    assert _provenance(relaxed) == _BILATERAL
+    again = _resolve_resubmit(relaxed.definition.identity)
+    assert again.spec.spec_id == relaxed.spec_id
+    assert any(within for within in opened_within)
+    monitor = [r for r in caplog.records if r.name == reading.__name__ and r.levelno >= 30]
+    assert monitor == []

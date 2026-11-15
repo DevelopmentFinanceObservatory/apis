@@ -136,6 +136,9 @@ if TYPE_CHECKING:
         Spec,
         SpecAlternativeMeasure,
     )
+
+    # For its type alone: importing it at runtime closes the cycle download.py notes.
+    from search.scope.composite import CompositeMint
     from series_coverage.index import CoverageIndex
 
 
@@ -1389,10 +1392,19 @@ def build_spec(
     measure_served_rows: Callable[[BaseIdentity], ServedRows | None] | None = None,
     pin_served_provenance: bool = False,
     answer: AnswerIdentity | None = None,
+    composite: CompositeMint | None,
 ) -> Spec:
     """Assemble a Spec with a deterministic spec_id.
 
     Args:
+        composite: The composite these arguments' identity is the table identity of
+            (`code_index.composites.table_identity`), when the Spec answers as the
+            composite. The Spec is then minted under the composite's identity and spec_id,
+            and each field the composite states is the mint's (`CompositeMint`): coverage
+            in place of ``coverage``, headline, open role axes, StatVar counts, when slot,
+            download, measure label, published tables and sources, provenance facet and
+            data years, with no observation preview. Every other field is the table
+            identity's. None mints the table identity itself.
         answer: The `answer_identity` of these same arguments, when the caller decided
             something over it before building. The Spec is then minted from it as given,
             and a caller passes it only when `shape`, `slots`, `stat_vars`, `entities`,
@@ -1494,7 +1506,11 @@ def build_spec(
     entity_groups = answer.entity_groups
     index = get_index()
     served_datasets = answer.served_datasets
-    definition = SpecDefinition(spec_id=spec_id, identity=identity_doc)
+    definition = (
+        SpecDefinition(spec_id=spec_id, identity=identity_doc)
+        if composite is None
+        else SpecDefinition(spec_id=composite.spec_id, identity=composite.identity)
+    )
     slots = slots_in_identity_order(slots, identity_doc)
     stated = stated_members(identity_doc, walked)
     # A stated family is the one a mint of the definition digests and counts. The admitted
@@ -1535,7 +1551,7 @@ def build_spec(
     )
 
     resolved_entity_refs = [e.ref for e in entities]
-    resolved_sources = answer.resolved_sources
+    resolved_sources = answer.resolved_sources if composite is None else composite.sources()
 
     slot_filters = _build_slot_filters(
         slots,
@@ -1558,7 +1574,9 @@ def build_spec(
 
     provenance = (facets or {}).get("provenance")
     download = (
-        download_facts(
+        composite.download()
+        if composite is not None
+        else download_facts(
             plan,
             coverage_index,
             requested_window=requested_window,
@@ -1572,25 +1590,40 @@ def build_spec(
     )
     unserved = unserved_entities(plan)
     left_out = set(unserved_members(plan))
+    resolved_stat_vars = _resolved_stat_vars(
+        stat_vars,
+        member_count=stat_vars_member_count,
+        member_count_exact=stat_vars_member_count_exact,
+        stated=stated,
+        identity=identity_doc,
+        provenance=provenance.ref if provenance is not None else None,
+    )
+    resolved_slots = apply_slot_summability(slots, identity_doc)
+    stated_facets = facets or {}
+    published_tables = _published_tables(provenance, index)
+    years = data_years(plan)
+    if composite is not None:
+        coverage = composite.coverage()
+        headline = composite.headline(headline)
+        scope, resolved_role_axis_facts = composite.open_axes(scope, resolved_role_axis_facts)
+        resolved_stat_vars = composite.stat_vars(resolved_stat_vars)
+        resolved_slots = composite.slots(resolved_slots)
+        stated_facets = composite.facets(stated_facets)
+        published_tables = composite.published_tables()
+        observations = None
+        years = composite.data_years()
     spec = Spec(
-        spec_id=spec_id,
+        spec_id=definition.spec_id,
         definition=definition,
         resolved=ResolvedSpec(
             shape=wire_shape,
-            slots=apply_slot_summability(slots, identity_doc),
+            slots=resolved_slots,
             inapplicable_slots=inapplicable_slots or [],
             unresolved_slots=unresolved_slots or [],
             slot_options=slot_options or [],
             entity_options=entity_options or [],
             facet_options=facet_options or [],
-            stat_vars=_resolved_stat_vars(
-                stat_vars,
-                member_count=stat_vars_member_count,
-                member_count_exact=stat_vars_member_count_exact,
-                stated=stated,
-                identity=identity_doc,
-                provenance=provenance.ref if provenance is not None else None,
-            ),
+            stat_vars=resolved_stat_vars,
             entities=_resolved_entities(entities, parties=index.parties, datasets=served_datasets),
             entity_groups=entity_groups or None,
             coverage=coverage,
@@ -1598,7 +1631,7 @@ def build_spec(
             download=download,
             coverage_stamp=coverage_stamp,
             scope=scope,
-            facets=facets or {},
+            facets=stated_facets,
             trace=trace,
             available_at_place=available_at_place,
             confidence=confidence,
@@ -1607,13 +1640,17 @@ def build_spec(
             sentence_plan=sentence_plan,
             equivalent_readings=equivalent_readings,
             alternative_measures=alternative_measures,
-            measure_label=measure_label.text,
+            measure_label=(
+                measure_label.text
+                if composite is None
+                else composite.measure_label(measure_label.text)
+            ),
             measure_label_axes=measure_label.axes,
             measure_axis_values=elected_axis_values,
             concept_label=sector_concept(identity_doc, index)
             or ", ".join(concept_qualifiers)
             or None,
-            published_tables=_published_tables(provenance, index),
+            published_tables=published_tables,
             open_axis_facts=resolved_open_axis_facts,
             role_axis_facts=resolved_role_axis_facts,
         )
@@ -1632,7 +1669,7 @@ def build_spec(
             frozenset(alone for group in named_groups for alone in group.named_alone),
         )
         .stating_group_totals(role_group_totals(named_groups, hashed_entities))
-        .stating_data_years(data_years(plan))
+        .stating_data_years(years)
         .stating_continued(serves_continuation(plan))
         .stating_members(stat_vars)
         .stating_measure_label_named_values(measure_label.named_values)

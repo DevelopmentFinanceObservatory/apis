@@ -450,8 +450,9 @@ def test_spec_id_is_byte_identical_with_and_without_provenance_populated():
         "coverage": CoverageBare(has_data=True),
         "open_roles": (),
     }
-    without = build_spec(measure_elected_properties=frozenset(), **common)
+    without = build_spec(composite=None, measure_elected_properties=frozenset(), **common)
     with_provenance = build_spec(
+        composite=None,
         measure_elected_properties=frozenset(),
         **common,
         text_recognized_properties=frozenset({"constraintProp"}),
@@ -478,6 +479,7 @@ def test_measure_elected_properties_stamps_forced_slot_and_leaves_the_rest():
         StatVar(ref=_gr("sv"), shape_id=shape.shape_id, slot_values=[], constraint_properties=[])
     ]
     spec = build_spec(
+        composite=None,
         open_roles=(),
         shape=shape,
         slots=slots,
@@ -514,6 +516,7 @@ def test_measure_elected_and_text_recognized_overlap_raises():
 
     with pytest.raises(ValueError, match="sharedProp"):
         build_spec(
+            composite=None,
             open_roles=(),
             shape=shape,
             slots=slots,

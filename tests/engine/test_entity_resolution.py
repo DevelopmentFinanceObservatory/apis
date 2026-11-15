@@ -1188,6 +1188,7 @@ class TestPlaceExpansionBatchingGuard:
             date_request=None,
             place_dcids=self._COUNTRIES,
             coverage=empty_coverage_snapshot(),
+            within=None,
         )
 
         assert isinstance(result, Materialised)

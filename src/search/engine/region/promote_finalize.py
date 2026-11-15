@@ -22,7 +22,10 @@ from search.engine.region.option_coverage import (
     _maybe_enrich_slot_options,
 )
 from search.engine.region.phase_timing import timed_step
-from search.engine.region.promote_ground import unit_refusal_input_error
+from search.engine.region.promote_ground import (
+    read_whole_total_warnings,
+    unit_refusal_input_error,
+)
 from search.engine.region.promote_relaunch import PromoteRelaunch, bind_relaunches
 from search.engine.region.promote_results import _no_data_region
 from search.engine.region.promote_state import _PromoteState
@@ -30,7 +33,6 @@ from search.engine.region.related_read import joined_related, stating_related
 from search.engine.region.result import RegionResult, answered_roles
 from search.engine.region.state import EngineOptions, _elected_stat_vars
 from search.engine.region.un_system import member_labels
-from search.engine.region.whole_totals import whole_total_warnings
 from search.engine.retrieval.elected_dataset import elected_datasets
 from search.engine.retrieval.member_facts import ArcsMemberFacts
 from search.engine.retrieval.read_plan import plan_window_gap, serves_nothing
@@ -335,9 +337,7 @@ def _phase_finalize(state: _PromoteState) -> RegionResult:
     with timed_step(state, "finalize_wholes"):
         resubmit_warnings = (
             *resubmit_warnings,
-            *whole_total_warnings(
-                spec, coverage=state.coverage.index, populations=state.inp.populations
-            ),
+            *read_whole_total_warnings(state, spec),
         )
 
     relaunch_t0 = now_ms()

@@ -391,9 +391,8 @@ def replayed_place_options(
 
     A fresh run launches one task per definite Spec (`place_options_task`), which the
     response's part carries, and none for a Spec that answers a composite, whose place
-    options would read its table under the composite's spec_id
-    (`result.with_composite_answer`). Parts folded into one Spec share its task.
-    The tasks read `coverage`, the hit's own snapshot, which the bundle's key holds."""
+    options would read its table under the composite's spec_id. Parts folded into one Spec
+    share its task. The tasks read `coverage`, the hit's own snapshot, which the bundle's key holds."""
     if not stream or materialise_graph is None or pool is None:
         return None
     # Bound once narrowed, so the closure reads them as present.

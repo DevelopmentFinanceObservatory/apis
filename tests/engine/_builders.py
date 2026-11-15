@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+import pytest
+
 from code_index.shared import get_index
 from search.engine.bind import SlotBindingDraft
+from search.engine.region import related_read as related_read_module
 from search.engine.region.candidates import _Candidate, _materialise_alt_shapes, elect_alternate
+from search.engine.region.grounding import requested_window_from_date_request
 from search.engine.region.place_context import PlaceContext
 from search.engine.region.place_roles import (
     PlaceAssignment,
@@ -16,6 +21,7 @@ from search.engine.region.place_roles import (
     settled_roles,
 )
 from search.engine.region.place_set import PlaceNode, PlaceSet
+from search.engine.region.related_read import RelatedRead
 from search.engine.retrieval.bound_values import (
     MeasurePartition,
     RoleClassWalks,
@@ -24,6 +30,7 @@ from search.engine.retrieval.bound_values import (
 from search.engine.retrieval.retrieve import UnsupportedDraft
 from search.engine.shape import ShapeDraft, entities_by_role
 from search.engine.spec_build import build_spec
+from search.heading.departure_fact import DepartureFact
 from search.models import (
     Axis,
     BindingSet,
@@ -37,7 +44,9 @@ from search.models import (
     SlotKey,
     SlotValue,
     StatVar,
+    Warning,
 )
+from search.scope.state import ScopeState
 
 
 def gref(dcid: str, label: str | None = None) -> GraphRef:
@@ -165,6 +174,7 @@ def conjoin_spec(
     """
     slot = constraint_value_slot("constraintProp", constraint_val)
     return build_spec(
+        composite=None,
         open_roles=(),
         shape=shape,
         slots=[slot],
@@ -330,5 +340,43 @@ def materialise_alternates(
         places=[place for _, place in kept],
         graph=graph,
         **kwargs,
+        selection=ScopeState(),
+        operations=(),
     )
     return read.candidates, read.blocking
+
+
+def slow_related_reads(monkeypatch: pytest.MonkeyPatch) -> list[RelatedRead]:
+    """Every related-measures read the pass starts from here on, each a task that settles
+    after 0.2 s, so a read nothing cancels ends uncancelled. The answers here qualify for
+    none of their own."""
+    started: list[RelatedRead] = []
+
+    def slow(state: Any, *, stat_vars: Any, date_request: Any, **_kwargs: Any) -> RelatedRead:
+        read = RelatedRead(
+            stat_var=stat_vars[0],
+            window=requested_window_from_date_request(date_request),
+            task=asyncio.create_task(asyncio.sleep(0.2, result=None)),
+        )
+        state.related_reads.append(read)
+        started.append(read)
+        return read
+
+    monkeypatch.setattr(related_read_module, "start_related_read", slow)
+    return started
+
+
+def raise_answer_warnings(state: Any) -> None:
+    """Raise on `state` what a definite answer raises as it is assembled: a
+    `currency_unmapped_omitted` warning, an option coverage warning, each with a departure
+    fact, and a rewording of each `role_scope_defaulted` warning already raised, as a Spec
+    minted as a composite counts its defaulted scope (`CompositeMint.role_scope_warnings`)."""
+    for code in ("currency_unmapped_omitted", "option_coverage_timed_out"):
+        warning = Warning(code=code, severity="warn", message=f"{code} raised by the answer.")
+        state.depart(warning, DepartureFact(code=code, binding_ref=None, shown=code))
+    state.warnings[:] = [
+        warning.model_copy(update={"message": f"{warning.message} Reworded by the answer."})
+        if warning.code == "role_scope_defaulted"
+        else warning
+        for warning in state.warnings
+    ]

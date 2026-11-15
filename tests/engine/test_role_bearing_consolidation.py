@@ -113,6 +113,7 @@ class TestGraphConfirmResolveDeclarationPerturbation:
             graph=FakeGraph(raise_on_call=True),
             sdmx=sdmx,
             coverage_snapshot=empty_coverage_snapshot(),
+            within=None,
         )
 
         from search.engine.retrieval.retrieve import Materialised
@@ -134,6 +135,7 @@ class TestGraphConfirmResolveDeclarationPerturbation:
             graph=graph,
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            within=None,
         )
 
         from search.engine.retrieval.retrieve import Materialised

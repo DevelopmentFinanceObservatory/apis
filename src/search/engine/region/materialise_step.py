@@ -68,7 +68,7 @@ def run_materialise(
     open_axes: frozenset[RoleAxis],
     coverage: CoverageSnapshot,
     facet_batch: FacetBatch | None = None,
-    within: Mapping[RoleAxis, frozenset[str]] | None = None,
+    within: Mapping[RoleAxis, frozenset[str]] | None,
 ) -> Materialised | NoDataDraft | MaterialisedCandidates | UnsupportedDraft:
     """Materialise the chosen shape with scope discovery enabled. `default_presence` derives
     a default place scope in place of `place_dcids` (`standard_resolve`), `open_axes`

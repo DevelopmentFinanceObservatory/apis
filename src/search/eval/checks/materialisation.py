@@ -59,10 +59,10 @@ from code_index.composites import (
 from code_index.members import SourceNotInFamily, identity_family_query, index_family
 from code_index.shared import get_index
 from dc_graph import Facet
-from dfo_platform.roles import role_key_axis
 from graph_release.context import ReleaseNotBound
 from materialise.facets import Cadence, at_cadence, cadences_by_member, continuation
 from materialise.window import RequestedWindow, latest_period
+from search.engine.identity_edit import population_members
 from search.engine.region.codes import (
     CURRENCY_UNMAPPED_OMITTED,
     OBSERVATIONS_PROBE_FAILED,
@@ -513,9 +513,8 @@ def _counted_reads(
             )
         members = {row.dcid for row in family.rows}
         within = {
-            _COVERAGE_ROLE_FOR_AXIS[axis]: frozenset(population.members)
-            for key, population in component.populations.items()
-            if (axis := role_key_axis(key)) is not None
+            _COVERAGE_ROLE_FOR_AXIS[axis]: members
+            for axis, members in population_members(component.populations).items()
         }
         reads.append(
             _CountedRead(

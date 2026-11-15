@@ -38,6 +38,7 @@ def test_build_spec_facets_serialised_body_has_the_four_resolved_facet_shapes():
         ),
     }
     result = build_spec(
+        composite=None,
         open_roles=(),
         measure_elected_properties=frozenset(),
         shape=spec.resolved.shape,
@@ -76,6 +77,7 @@ def test_build_spec_facets_defaults_to_empty_when_not_supplied():
         place_dcid="country/ETH",
     )
     result = build_spec(
+        composite=None,
         open_roles=(),
         measure_elected_properties=frozenset(),
         shape=spec.resolved.shape,
@@ -105,6 +107,7 @@ def test_build_spec_rejects_request_basis_on_a_non_unit_axis():
     }
     with pytest.raises(ValidationError, match="request_basis is only meaningful"):
         build_spec(
+            composite=None,
             open_roles=(),
             measure_elected_properties=frozenset(),
             shape=spec.resolved.shape,

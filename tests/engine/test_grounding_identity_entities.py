@@ -406,6 +406,37 @@ def test_a_scope_warning_naming_every_member_is_restated_to_count_the_answers_sc
         assert [w.message for w in warnings] == [restated]
 
 
+def test_a_scope_warning_is_found_by_its_code_and_axis_whatever_its_text():
+    """The warning on the discovered axis is restated whatever its text says, and the
+    companion axis's warning, whose text another reader could have worded like the
+    discovered axis's, stays as it was."""
+    discovered = _discovered_scope("destination", 3)
+    mat = _materialised(
+        discovered_scope=discovered,
+        scope_member_dcids=discovered.member_dcids,
+        also_defaulted_axis="origin",
+    )
+    on_axis, companion = role_scope_defaulted_warnings(
+        mat, boundary_roles=[], label_of=_EchoLabels()
+    )
+    reworded = on_axis.model_copy(update={"message": "Recipients were counted elsewhere."})
+    lookalike = companion.model_copy(update={"message": on_axis.message})
+    warnings = [lookalike, reworded]
+
+    restate_role_scope_warnings(
+        warnings,
+        mat,
+        members=discovered.member_dcids[:1],
+        boundary_roles=[],
+        label_of=_EchoLabels(),
+    )
+
+    assert [w.message for w in warnings] == [
+        on_axis.message,
+        "No recipient was named, so the answer covers the one recipient with data.",
+    ]
+
+
 def test_a_scope_warning_is_removed_when_the_answer_lists_no_member():
     """Both flow axes are open and the facet filter leaves no recipient served: the answer
     resolved across no recipient, so the recipient warning goes and the provider warning,

@@ -6,6 +6,7 @@ declaration places, in the code index or in coverage, makes the population unava
 
 from __future__ import annotations
 
+import gc
 import gzip
 import json
 import weakref
@@ -317,3 +318,16 @@ def test_the_population_check_memo_holds_one_index_finalizer_however_many_covera
     assert population_check(index, coverages[0]) is first
     assert sum(obj is index for obj in finalized) == on_index
     assert [obj for obj in finalized if obj is not index] == coverages
+
+
+def test_dropping_a_code_index_frees_its_check_memo_while_a_coverage_index_lives():
+    """The finalizer on a coverage index must not hold the code index's memo of checks."""
+    index = _parse()
+    coverage = _coverage([_KENYA])
+    population_check(index, coverage)
+    memo = weakref.ref(composites_module._checks(index))
+
+    del index
+    gc.collect()
+
+    assert memo() is None

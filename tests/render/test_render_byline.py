@@ -18,6 +18,7 @@ from search.models import (
     ResolvedFacet,
     Spec,
     StatVar,
+    TimeWindow,
     UnitConversion,
 )
 from search.render.heading import LATEST_YEAR_LABEL, heading_from_parts
@@ -289,14 +290,28 @@ def test_a_unit_facet_with_no_currency_reads_the_registry_currency(ref, expected
     assert [t.text for t in plan if t.axis == "unit"] == expected
 
 
-def test_a_latest_request_states_its_year_and_opens_the_byline_with_the_label():
-    sentence, plan = _render(
+@pytest.mark.parametrize(
+    "identity_window",
+    [
+        pytest.param("latest", id="identity-latest"),
+        # A composite's identity holds the latest year it elected (`elect_latest_window`),
+        # and its trace the request's `latest`.
+        pytest.param(TimeWindow(start_year=2024, end_year=2024), id="composite-elected-year"),
+    ],
+)
+def test_a_latest_request_states_its_year_and_opens_the_byline_with_the_label(identity_window):
+    spec = _spec(
+        measured_property=_ref("disbursements", "Disbursements"),
         measurement_qualifier=_NOMINAL,
         facets=_unit("CurrencyUSD"),
         stat_vars=_served("2024", "2024"),
         resolved_sources=[_CRS],
-        requested_window="latest",
+        requested_window=identity_window,
     )
+    trace = spec.resolved.trace.model_copy(update={"requested_window": "latest"})
+    spec = spec.model_copy(update={"resolved": spec.resolved.model_copy(update={"trace": trace})})
+    plan = render_sentence_plan(spec)
+    sentence = sentence_from_plan(plan)
     assert sentence == (
         "Disbursements in 2024. Latest year with data · Current US dollars · "
         "OECD Creditor Reporting System (CRS)."

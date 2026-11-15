@@ -1,7 +1,7 @@
 """A fresh answer's scope is decided once, before its preview launches
-(`phase_answer._decide_answer_scope`). An answer the binders settle as a composite then reads
-no preview of the one table it resolved, streamed or buffered; any other answer reads its
-preview as before."""
+(`phase_answer._decide_answer_scope`, `reading.decide_read_scope`). An answer the binders
+settle as a composite then reads no preview of the one table it resolved, streamed or
+buffered. Any other answer reads its preview of that table."""
 
 from __future__ import annotations
 
@@ -18,9 +18,16 @@ from search.engine import spec_build
 from search.engine.concurrency import scoped_concurrency
 from search.engine.errors import GraphInfraError
 from search.engine.events import DoneEvent, ResponseEvent
-from search.engine.region import phase_answer, pipeline, scope_decision
+from search.engine.region import (
+    candidate_collapse,
+    phase_answer,
+    reading,
+    scope_decision,
+)
 from search.engine.region.candidates import resolve_candidates
+from search.engine.region.composite_answer import CompositeRelaunch
 from search.engine.region.observations.dispatch import PreviewRead, PreviewReader
+from search.engine.region.reading import ReadScope
 from search.engine.region.result import RegionResult
 from search.engine.region.scope_decision import ScopeDecision
 from search.engine.region.state import ResolveState
@@ -47,6 +54,13 @@ from tests.engine.test_composite_answer import (
     _observed,
     _stream,
 )
+from tests.engine.test_dac2a_candidate_readings import (
+    india_clients,
+    india_request,
+    patch_india_coverage,
+    refuse_the_recipient_reading_s_mint,
+)
+from tests.engine.test_dac2a_destination_populations import _BILATERAL as _DAC2A_BILATERAL
 from tests.engine.test_observations_rate_cache_dispatch import _resolve_candidates_in_pass
 
 # The provider rule settles this total as CRS's bilateral flows, a single-table answer.
@@ -81,16 +95,23 @@ def _buffered(question: str) -> Spec:
 
 
 def _decisions(monkeypatch: pytest.MonkeyPatch) -> list[ScopeDecision]:
-    """Every scope decided from here on, by the answer phase or by `_with_scope_choices`."""
+    """Every scope decided from here on, by the answer phase (`reading.decide_read_scope`)
+    or by `_with_scope_choices` (`scope_decision.decide_scope`)."""
     decided: list[ScopeDecision] = []
-    real = phase_answer.decide_scope
+    read_scope, decide = phase_answer.decide_read_scope, scope_decision.decide_scope
+
+    def record_read(*args: Any, **kwargs: Any) -> ReadScope:
+        scope = read_scope(*args, **kwargs)
+        assert scope.decision is not None
+        decided.append(scope.decision)
+        return scope
 
     def record(*args: Any, **kwargs: Any) -> ScopeDecision:
-        decision = real(*args, **kwargs)
+        decision = decide(*args, **kwargs)
         decided.append(decision)
         return decision
 
-    monkeypatch.setattr(phase_answer, "decide_scope", record)
+    monkeypatch.setattr(phase_answer, "decide_read_scope", record_read)
     monkeypatch.setattr(scope_decision, "decide_scope", record)
     return decided
 
@@ -202,7 +223,7 @@ def test_the_preview_follows_the_scope_decided_for_the_finished_answer(
     reads = _table_reads(monkeypatch, refuse=False)
     real = phase_answer._decide_answer_scope
 
-    def mismatched(*args: Any) -> phase_answer._AnswerScope:
+    def mismatched(*args: Any) -> ReadScope:
         scope = real(*args)
         assert scope.decision.composite is not early_composite
         decision = dataclasses.replace(scope.decision, spec_id="other", composite=early_composite)
@@ -236,7 +257,7 @@ def test_a_raising_decision_for_the_finished_answer_keeps_it_as_a_single_table(
     _components(monkeypatch)
     real = phase_answer._decide_answer_scope
 
-    def mismatched(*args: Any) -> phase_answer._AnswerScope:
+    def mismatched(*args: Any) -> ReadScope:
         scope = real(*args)
         return dataclasses.replace(
             scope, decision=dataclasses.replace(scope.decision, spec_id="other")
@@ -256,21 +277,21 @@ def test_a_raising_decision_for_the_finished_answer_keeps_it_as_a_single_table(
 
 
 def test_a_raising_decision_for_an_undecided_answer_keeps_it_as_a_single_table(monkeypatch, caplog):
-    """An answer reaching `pipeline._with_scope_choices` with no decision is decided there,
+    """An answer judged with no decision (`phase_answer.finished_scope`) is decided there,
     guarded as every decision is: a decision that raises leaves the answer as one table that
     states no scope, and the error is logged."""
     _components(monkeypatch)
-    real = pipeline._stating_unpublished_wholes
+    real = phase_answer.finished_scope
 
-    def undecided(result: RegionResult, state: ResolveState) -> RegionResult:
-        state.scope_decision = None
-        return real(result, state)
+    async def undecided(state: ResolveState, spec: Spec, **kwargs: Any) -> ScopeDecision | None:
+        return await real(state, spec, **{**kwargs, "decision": None})
 
     def raises(*args: Any, **kwargs: Any) -> ScopeDecision:
         raise _not_servable()
 
-    monkeypatch.setattr(pipeline, "_stating_unpublished_wholes", undecided)
-    # The answer phase decides through its own `decide_scope`, so only the late decision raises.
+    monkeypatch.setattr(phase_answer, "finished_scope", undecided)
+    # The answer phase decides through `reading.build_part_scope`, so only the late decision
+    # raises.
     monkeypatch.setattr(scope_decision, "decide_scope", raises)
 
     with caplog.at_level(logging.WARNING, logger=scope_decision.logger.name):
@@ -288,14 +309,23 @@ def _raising_decisions(
     monkeypatch: pytest.MonkeyPatch, error: Callable[[], Exception] = _not_servable
 ) -> list[str]:
     """Make every scope decision from here on raise `error()`, `CompositeNotServable` by
-    default, and list the `spec_id` of each one asked for."""
+    default, and list the `spec_id` of each one asked for. Those are the answer phase's and
+    the candidates path's (`reading.build_part_scope`, called by `reading.decide_read_scope`)
+    and a late one (`scope_decision.decide_scope`). The build made by a reading election
+    (`reading.elect_reading`) passes through to the real one."""
     asked: list[str] = []
+    build = reading.build_part_scope
 
     def raises(spec_id: str, *args: Any, **kwargs: Any) -> ScopeDecision:
         asked.append(spec_id)
         raise error()
 
-    monkeypatch.setattr(phase_answer, "decide_scope", raises)
+    def raising_build(identity: Any, choice: Any, *, spec_id: str, facts: Any) -> ScopeDecision:
+        if spec_id == reading._ELECTION:
+            return build(identity, choice, spec_id=spec_id, facts=facts)
+        return raises(spec_id)
+
+    monkeypatch.setattr(reading, "build_part_scope", raising_build)
     monkeypatch.setattr(scope_decision, "decide_scope", raises)
     return asked
 
@@ -358,11 +388,7 @@ def test_a_raising_scope_decision_keeps_a_candidates_survivor_as_a_single_table(
         return real(self)
 
     monkeypatch.setattr(PreviewReader, "observations", record)
-
-    def raises(spec: Spec, **kwargs: Any) -> ScopeDecision:
-        raise CompositeNotServable("no component", ref="dfo-composite", pointer="/facets")
-
-    monkeypatch.setattr(scope_decision, "decide_spec_scope", raises)
+    asked = _raising_decisions(monkeypatch)
     outcome: list[tuple[RegionResult | None, ScopeDecision | None]] = []
 
     async def body(state: ResolveState) -> None:
@@ -371,7 +397,7 @@ def test_a_raising_scope_decision_keeps_a_candidates_survivor_as_a_single_table(
             result = await resolve_candidates(state, rate_cache=RateTableCache())
             if result is not None and result.observations_task is not None:
                 result.observations_task.cancel()
-        outcome.append((result, state.scope_decision))
+        outcome.append((result, None if result is None else result.scope_decision))
 
     with caplog.at_level(logging.WARNING, logger=scope_decision.logger.name):
         _resolve_candidates_in_pass(monkeypatch, body)
@@ -386,7 +412,10 @@ def test_a_raising_scope_decision_keeps_a_candidates_survivor_as_a_single_table(
         False,
     )
     assert reads == ["observations"]
-    _assert_decision_error_logged(caplog)
+    # Each grounded candidate's decision raises, and the unit filter keeps one of them.
+    assert result.spec.spec_id in asked
+    errors = [r.exc_info[0] for r in caplog.records if r.exc_info is not None]
+    assert errors and set(errors) == {CompositeNotServable}
 
 
 @pytest.mark.parametrize("stream", [False, True], ids=["buffered", "streamed"])
@@ -412,34 +441,51 @@ def test_a_raising_scope_decision_leaves_a_carve_out_refusal_standing(monkeypatc
 
 
 @pytest.mark.parametrize("stream", [False, True], ids=["buffered", "streamed"])
-def test_a_candidates_survivor_restated_as_a_composite_reads_no_table_preview(monkeypatch, stream):
-    """The candidates path decides the survivor's scope before its preview launches
-    (`candidate_collapse._assemble_definite`). A survivor restated as a composite reads no
-    preview of its table: neither the bound-unit eager read nor the buffered read or the
-    streamed relaunch."""
-    reads: list[str] = []
-    monkeypatch.setattr(PreviewReader, "observations", lambda self: reads.append("observations"))
-    monkeypatch.setattr(PreviewReader, "relaunch", lambda self, labels: reads.append("relaunch"))
-    real = scope_decision.decide_spec_scope
+def test_a_candidates_survivor_minted_as_a_composite_reads_no_table_preview(monkeypatch, stream):
+    """The candidates path decides each candidate's scope when its Spec is minted
+    (`candidate_grounding._candidate_answer`), before the survivor's preview launches
+    (`candidate_collapse._assemble_definite`). A survivor minted as a composite reads no
+    preview of its table, buffered or streamed, and its preview reads the composite's
+    components (`CompositeRelaunch`).
 
-    def composite(spec: Spec, **kwargs: Any) -> ScopeDecision:
-        return dataclasses.replace(real(spec, **kwargs), composite=True)
+    The set is India's DAC2a readings with every recipient open, left with the donor reading
+    over the bilateral composite's population once the recipient reading's mint refuses
+    (`test_dac2a_candidate_readings`)."""
+    patch_india_coverage(monkeypatch)
+    refuse_the_recipient_reading_s_mint(monkeypatch)
+    # The survivor's table preview is read by the candidates path or by the answer phase. The
+    # composite's components read theirs through their own resubmits.
+    reads = _table_reads(monkeypatch, refuse=False)
 
-    monkeypatch.setattr(scope_decision, "decide_spec_scope", composite)
-    outcome: list[RegionResult | None] = []
+    class Recording(PreviewReader):
+        def observations(self) -> Any:
+            reads.append("observations")
+            return super().observations()
 
-    async def body(state: ResolveState) -> None:
-        assert state.bound_unit_outcome is not None
-        state.include_observations = True
-        state.stream_observations = stream
-        async with scoped_concurrency():
-            outcome.append(await resolve_candidates(state, rate_cache=RateTableCache()))
+        def relaunch(self, labels: Any) -> Any:
+            reads.append("relaunch")
+            return super().relaunch(labels)
 
-    _resolve_candidates_in_pass(monkeypatch, body)
+    monkeypatch.setattr(candidate_collapse, "PreviewReader", Recording)
+    survivors: list[RegionResult] = []
+    assemble = candidate_collapse._assemble_definite
 
-    (result,) = outcome
-    assert result is not None
+    async def capture(*args: Any, **kwargs: Any) -> RegionResult:
+        result = await assemble(*args, **kwargs)
+        survivors.append(result)
+        return result
+
+    monkeypatch.setattr(candidate_collapse, "_assemble_definite", capture)
+    request = india_request(open_role="recipient", observations=True)
+
+    events = offline_events(request, stream_slot_options=stream, **india_clients())
+
+    spec = _answered(events)
+    (result,) = survivors
     assert result.status == "definite"
+    assert result.spec.spec_id == spec.spec_id
+    pin = (spec.definition.identity.facets or {}).get("provenance")
+    assert pin is not None and pin.ref == _DAC2A_BILATERAL
     assert result.observations_task is None
-    assert result.observations_relaunch is None
+    assert isinstance(result.observations_relaunch, CompositeRelaunch)
     assert reads == []

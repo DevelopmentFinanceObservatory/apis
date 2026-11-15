@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-import threading
 from collections.abc import Sequence
 from types import SimpleNamespace
 from typing import Any, cast
@@ -14,11 +13,9 @@ from typing import Any, cast
 import pytest
 
 import dc_graph
-from code_index.shared import get_index
 from origin_catalogue import current_catalogue, scoped_reads
 from search.engine import response_cache_flow, same_shape
 from search.engine.concurrency import scoped_concurrency
-from search.engine.enrichment import _launch_trailing_tasks
 from search.engine.entry import dataset_resubmit
 from search.engine.errors import (
     EngineInfraError,
@@ -29,15 +26,19 @@ from search.engine.errors import (
 from search.engine.events import (
     DoneEvent,
     Event,
-    FacetOptionsEvent,
     ObservationsEvent,
     ResponseEvent,
 )
-from search.engine.region import composite_answer, pipeline, place_options, result
+from search.engine.region import (
+    composite_answer,
+    phase_answer,
+    pipeline,
+    place_options,
+    resubmit,
+)
 from search.engine.region.codes import (
     MEMBERS_ABSENT_FROM_GRAPH,
     _ObsProbeResult,
-    _OptionProbeResult,
 )
 from search.engine.region.composite_answer import (
     ComponentReads,
@@ -45,7 +46,6 @@ from search.engine.region.composite_answer import (
     composite_served,
     read_composite_preview,
 )
-from search.engine.region.promote_relaunch import bind_relaunches, without_relaunches
 from search.engine.region.result import RegionResult
 from search.engine.region.state import EngineOptions, ResolveState
 from search.engine.response_cache import ResponseCache
@@ -55,7 +55,6 @@ from search.models import (
     CoverageExact,
     DatasetResubmitInput,
     DefinitePart,
-    Entry,
     IdentityBindingSet,
     IdentityBindingValue,
     ObservationPoint,
@@ -76,14 +75,11 @@ from search.models import (
 )
 from search.scope import composite
 from search.scope.composite import ServedComponent, compose_observations
-from search.scope.state import ScopeState
-from search.scope.tables import ScopeFacts
 from series_coverage.shared import CoverageSnapshot
 from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import offline_events, offline_resolve
 from tests.scope import test_provider as provider
-from tests.scope._axes import carried, explicit
 from tests.scope.test_basis import _graph, _PickingLLM
 
 _WINDOW = range(2015, 2021)
@@ -539,27 +535,32 @@ def test_a_component_reads_under_its_own_pin_whatever_scope_the_part_read_under(
 def test_the_answer_s_composite_facts_read_the_catalogue_the_preview_reads(monkeypatch):
     """The part's source scope narrows the catalogue its binders read, here to a catalogue
     in which the bilateral table holds no 2020 series, and the composite they settle is
-    restated under the request's catalogue, as its preview reads: the component years the
-    answer states are the years the preview filters by."""
+    minted under the request's catalogue (`resubmit.composite_mint`), as its preview reads:
+    the component years the answer states are the years the preview filters by."""
     first, _ = _components(monkeypatch)
     kept: list[tuple[RegionResult, ResolveState]] = []
-    real = pipeline._with_scope_choices
+    preview = pipeline._with_composite_preview
 
-    def capture(result: RegionResult, state: ResolveState) -> RegionResult:
+    async def capture(result: RegionResult, state: ResolveState) -> RegionResult:
         kept.append((result, state))
-        return real(result, state)
+        return await preview(result, state)
 
-    monkeypatch.setattr(pipeline, "_with_scope_choices", capture)
-    previewed = _dates(_observed(_stream(_fresh())).observations)
-    (result, state), *_ = kept
+    monkeypatch.setattr(pipeline, "_with_composite_preview", capture)
     scopes: list[frozenset[str] | None] = []
-    assemble = composite_answer.assemble_composite
+    mint = resubmit.composite_mint
 
-    def record(*args: Any, **kwargs: Any) -> Any:
+    def recording(identity: BaseIdentity, *, coverage: Any) -> Any:
         scopes.append(current_catalogue().scope)
-        return assemble(*args, **kwargs)
+        return mint(identity, coverage=coverage)
 
-    monkeypatch.setattr(composite_answer, "assemble_composite", record)
+    monkeypatch.setattr(resubmit, "composite_mint", recording)
+    decide = phase_answer._decide_answer_scope
+
+    def narrowed_decide(*args: Any, **kwargs: Any) -> Any:
+        with scoped_reads(frozenset({provider._CRS, provider._IMPUTED})):
+            return decide(*args, **kwargs)
+
+    monkeypatch.setattr(phase_answer, "_decide_answer_scope", narrowed_decide)
     held = composite._component_years
 
     def narrowed(identity: Any, *, facts: Any) -> composite.YearCounts:
@@ -573,61 +574,48 @@ def test_the_answer_s_composite_facts_read_the_catalogue_the_preview_reads(monke
 
     monkeypatch.setattr(composite, "_component_years", narrowed)
 
-    with scoped_reads(frozenset({provider._CRS, provider._IMPUTED})):
-        restated = real(result, state)
+    previewed = _dates(_observed(_stream(_fresh())).observations)
+    (stated, state), *_ = kept
 
-    assert restated.scope_choices is not None
-    assert restated.scope_choices.compiled.spec_id == first.spec_id
+    assert stated.scope_choices is not None
+    assert stated.scope_choices.compiled.spec_id == first.spec_id
     assert state.request_catalogue is not None
     assert scopes == [state.request_catalogue.scope]
-    stated = {
+    components = {
         _STAT_VARS[_provenance(component.identity)]: sorted(
             str(year) for start, end in component.periods or () for year in range(start, end + 1)
         )
-        for component in restated.scope_choices.compiled.components or ()
+        for component in stated.scope_choices.compiled.components or ()
     }
-    assert stated == previewed
-    relaunch = restated.observations_relaunch
-    assert isinstance(relaunch, CompositeRelaunch)
-    assert relaunch.served is not None
-    assert {
-        _STAT_VARS[_provenance(BaseIdentity.model_validate(item.component.identity))]: sorted(
-            str(year) for year in item.served
-        )
-        for item in relaunch.served
-    } == stated
+    assert components == previewed
 
 
-class _RecordingTask:
-    """Stands in for a trailing task, recording the thread each `cancel` runs on."""
+def test_a_fresh_composite_answer_launches_none_of_its_table_s_trailing_tasks(monkeypatch):
+    """A fresh answer minted as the composite reaches `_with_scope_choices` holding no slot
+    options, place options or preview task of the table it read, nor a closure relaunching
+    them, so none streams under the composite's spec_id. Its preview reads each component
+    (`composite_answer.CompositeRelaunch`)."""
+    first, _ = _components(monkeypatch)
+    arrived: list[RegionResult] = []
+    real = pipeline._with_scope_choices
 
-    def __init__(self) -> None:
-        self.cancelled_on: list[int] = []
+    def capture(result: RegionResult) -> RegionResult:
+        arrived.append(result)
+        return real(result)
 
-    def cancel(self) -> bool:
-        self.cancelled_on.append(threading.get_ident())
-        return True
-
-
-def test_a_fresh_composite_answer_cancels_the_tasks_it_drops_on_the_event_loop(monkeypatch):
-    """The restatement as the composite runs in a worker thread (`_with_scope_choices`) and
-    drops the trailing tasks the table answer held, which `Task.cancel` may only cancel on
-    the event loop they belong to, so the loop cancels them once the thread returns."""
-    _components(monkeypatch)
-    held = _RecordingTask()
-    loop_threads: list[int] = []
-    stating = pipeline._stating_unpublished_wholes
-
-    def holding(result: RegionResult, state: ResolveState) -> RegionResult:
-        loop_threads.append(threading.get_ident())
-        return dataclasses.replace(stating(result, state), slot_options_task=cast(Any, held))
-
-    monkeypatch.setattr(pipeline, "_stating_unpublished_wholes", holding)
+    monkeypatch.setattr(pipeline, "_with_scope_choices", capture)
 
     _observed(_stream(_fresh()))
 
-    assert loop_threads
-    assert held.cancelled_on == loop_threads[:1]
+    (region, *_) = arrived
+    assert region.spec.spec_id == first.spec_id
+    assert (region.slot_options_task, region.place_options_task, region.observations_task) == (
+        None,
+        None,
+        None,
+    )
+    assert (region.slot_options_relaunch, region.place_options_relaunch) == (None, None)
+    assert isinstance(region.observations_relaunch, CompositeRelaunch)
 
 
 def test_a_component_serving_no_year_is_not_read_and_warns_nothing(monkeypatch):
@@ -1006,257 +994,12 @@ def test_two_merged_composites_preview_both_members_places(monkeypatch, streamed
     assert _dates(observations) == _BOTH
 
 
-def _dac2a_and_crs_snapshot(monkeypatch: pytest.MonkeyPatch) -> CoverageSnapshot:
-    """A snapshot of the CRS rows `provider._coverage_rows` patches in and DAC2a's rows from
-    the United States to Kenya in every year."""
-    rows, extra = provider._coverage_rows(provider._ALL_YEARS)
-    dac2a_rows = [
-        (dcid, "dac2a", provider._USA, provider._KEN, list(provider._ALL_YEARS))
-        for dcid in provider.basis._DAC2A_MEMBERS
-    ]
-    snapshot = FakeCoverageService(
-        patch_coverage(
-            monkeypatch,
-            [*rows, *dac2a_rows],
-            role_names={
-                **extra["role_names"],
-                **dict.fromkeys(provider.basis._DAC2A_MEMBERS, provider._FLOW),
-            },
-            facet_metadata={
-                **extra["facet_metadata"],
-                "dac2a": provider.FacetMetadata(provenance_id=provider._DAC2A, unit="USD"),
-            },
-        )
-    ).snapshot()
-    return snapshot
-
-
-def test_a_candidate_set_restating_a_dac2a_reading_keeps_its_other_readings_options(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    """A candidate set of a DAC2a reading and a CRS reading restates the DAC2a one as its
-    bilateral destinations. Its trailing slot options keep the CRS reading's events and
-    withhold the DAC2a reading's, which read the table under a spec_id the set does not
-    show, as a composite answer carries none."""
-    snapshot = _dac2a_and_crs_snapshot(monkeypatch)
-    crs = provider._ask(
-        "health aid from the United States to Kenya, 2015 to 2020", time="2015-2020"
-    )
-    dac2a = provider._resubmitted(provider._dac2a_identity("Net"), None)
-    assert provider._source(crs) is None and provider._source(dac2a) is None
-
-    def events(spec_id: str) -> list[FacetOptionsEvent]:
-        return [FacetOptionsEvent(spec_id=spec_id, axis="unit", options=[], truncated=False)]
-
-    async def run() -> tuple[RegionResult, list[str]]:
-        async with scoped_concurrency():
-
-            async def probe() -> _OptionProbeResult:
-                return (*events(dac2a.spec_id), *events(crs.spec_id)), ()
-
-            before = RegionResult(
-                variable_text="aid",
-                status="candidates",
-                specs=(dac2a, crs),
-                no_data_reason=None,
-                warnings=(),
-                timing_by_step={},
-                slot_options_task=asyncio.ensure_future(probe()),
-            )
-            after = _readings(before, reads=_reads(snapshot), selection=ScopeState())
-            after = composite_answer.without_restated_options(before, after)
-            assert after.slot_options_task is not None
-            served, _ = await after.slot_options_task
-            return after, [event.spec_id for event in served]
-
-    after, served = asyncio.run(run())
-
-    restated, kept = after.specs
-    assert provider._source(restated) == provider._DAC2A_BILATERAL
-    assert kept.spec_id == crs.spec_id
-    assert served == [crs.spec_id]
-
-
-@pytest.mark.parametrize(
-    ("entries", "source"),
-    [
-        pytest.param((), provider._DAC2A_BILATERAL, id="no-entry"),
-        pytest.param((explicit("provider:contributions"),), None, id="stated-total"),
-        pytest.param((carried("provider:contributions"),), None, id="carried-total"),
-        pytest.param((explicit("provider:bilateral"),), provider._DAC2A_BILATERAL, id="stated"),
-    ],
-)
-def test_a_reading_beside_the_answer_honours_the_part_s_provider_entry(
-    monkeypatch: pytest.MonkeyPatch, entries: tuple[Entry, ...], source: str | None
-):
-    """A candidate, alternate, flagged or nearest reading of DAC2a's total ODA is read as the
-    definite answer is: a stated or carried `provider:contributions` keeps total ODA, and
-    otherwise the reading is restated as the bilateral destinations."""
-    snapshot = _dac2a_and_crs_snapshot(monkeypatch)
-    dac2a = provider._resubmitted(provider._dac2a_identity("Net"), None)
-    before = RegionResult(
-        variable_text="aid",
-        status="candidates",
-        specs=(dac2a,),
-        no_data_reason=None,
-        warnings=(),
-        timing_by_step={},
-        alternate_match=dac2a,
-        flagged_match=(dac2a,),
-        nearest_real=(dac2a,),
-    )
-
-    after = _readings(before, reads=_reads(snapshot), selection=ScopeState(entries=entries))
-
-    assert after.alternate_match is not None
-    assert after.flagged_match is not None and after.nearest_real is not None
-    readings = (*after.specs, after.alternate_match, *after.flagged_match, *after.nearest_real)
-    assert [provider._source(spec) for spec in readings] == [source] * 4
-
-
-def test_a_set_left_with_a_crs_reading_answers_the_composite_its_scope_compiles(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    """A candidate set of a DAC2a reading whose population holds no row and a CRS reading of
-    total health aid is left with the CRS reading, whose scope decision compiles the inclusive
-    composite though no DAC2a default serves it as one. It answers that composite as a fresh
-    definite answer of the reading does: the composite's spec_id, the compiled scope and its
-    components, and the closure that reads its preview, never the table under a composite's
-    scope."""
-    snapshot = _dac2a_and_crs_snapshot(monkeypatch)
-    dac2a = provider._resubmitted(provider._dac2a_identity("Net"), None)
-    _components(monkeypatch)
-    kept: list[tuple[RegionResult, ResolveState]] = []
-    real = pipeline._with_scope_choices
-
-    def capture(result: RegionResult, state: ResolveState) -> RegionResult:
-        kept.append((result, state))
-        return real(result, state)
-
-    monkeypatch.setattr(pipeline, "_with_scope_choices", capture)
-    _stream(_fresh())
-    (table, state), *_ = kept
-    fresh = real(table, state)
-    assert fresh.scope_choices is not None and fresh.spec.spec_id != table.spec.spec_id
-    read = composite_answer.population_table_answer
-
-    def holding_no_dac2a_row(spec: Spec, identity: BaseIdentity, *, reads: Any) -> Any:
-        if spec.spec_id == dac2a.spec_id:
-            return composite_answer._unread_population("no_observations")
-        return read(spec, identity, reads=reads)
-
-    monkeypatch.setattr(composite_answer, "population_table_answer", holding_no_dac2a_row)
-    before = dataclasses.replace(table, status="candidates", specs=(dac2a, table.spec))
-
-    after = _readings(before, reads=_reads(snapshot), selection=state.scope_selection)
-
-    assert (after.status, after.spec.spec_id) == ("definite", fresh.spec.spec_id)
-    assert after.scope_choices is not None
-    assert after.scope_choices.compiled == fresh.scope_choices.compiled
-    assert after.scope_choices.compiled.components
-    assert isinstance(after.observations_relaunch, CompositeRelaunch)
-
-
-def test_a_restated_reading_relaunches_no_table_probe_on_a_replay(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    """A set whose own reading is restated as DAC2a's bilateral destinations carries no
-    closure that reads the table again, nor the facts a part memo hit binds them from: a
-    replay that launches the trailing tasks it lacks (`promote_relaunch.bind_relaunches`,
-    `enrichment._launch_trailing_tasks`) launches none under the composite's spec_id, as a
-    composite answer launches none."""
-    snapshot = _dac2a_and_crs_snapshot(monkeypatch)
-    dac2a = provider._resubmitted(provider._dac2a_identity("Net"), None)
-    launched: list[str] = []
-
-    def relaunch(*args: Any) -> Any:
-        launched.append(repr(args))
-        raise AssertionError("a restated reading relaunched a table probe")
-
-    before = RegionResult(
-        variable_text="aid",
-        status="candidates",
-        specs=(dac2a,),
-        no_data_reason=None,
-        warnings=(),
-        timing_by_step={},
-        slot_options_relaunch=relaunch,
-        place_options_relaunch=relaunch,
-        observations_relaunch=relaunch,
-        promote_relaunch=cast(Any, object()),
-    )
-
-    after = _readings(before, reads=_reads(snapshot), selection=ScopeState())
-    replayed = bind_relaunches(
-        without_relaunches(after),
-        graph=cast(Any, None),
-        sdmx=cast(Any, None),
-        coverage=snapshot,
-        options=cast(
-            Any,
-            SimpleNamespace(
-                stream_slot_options=True,
-                stream_observations=True,
-                materialise_graph=object(),
-                place_options_pool=object(),
-            ),
-        ),
-    )
-    launched_region = _launch_trailing_tasks(
-        replayed, launch_slot_options=True, launch_observations=True
-    )
-
-    assert provider._source(after.spec) == provider._DAC2A_BILATERAL
-    assert (
-        launched_region.slot_options_task,
-        launched_region.place_options_task,
-        launched_region.observations_task,
-    ) == (None, None, None)
-    assert launched == []
-
-
-def test_a_population_read_keeps_the_request_s_warnings_and_replaces_the_read_s(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    """A fresh answer read again within its composite's population keeps the warnings raised
-    before its read and takes every other from that read: a whole-table count, and a
-    currency omission naming an agency the population leaves out, do not survive, whether
-    or not the population read raises their code."""
-    _dac2a_and_crs_snapshot(monkeypatch)
-    table = provider._resubmitted(provider._dac2a_identity("Net"), None)
-
-    def warning(code: str, message: str) -> Warning:
-        return Warning(code=code, severity="warn", message=message)
-
-    words = warning("query_qualifier_dropped", "words")
-    fresh = RegionResult(
-        variable_text="aid",
-        status="definite",
-        specs=(table,),
-        no_data_reason=None,
-        warnings=(
-            words,
-            warning("role_scope_defaulted", "both"),
-            warning("currency_unmapped_omitted", "European Commission"),
-        ),
-        timing_by_step={},
-    )
-    answered = dataclasses.replace(fresh, warnings=(warning("role_scope_defaulted", "one"),))
-
-    grafted = composite_answer.with_population_read(fresh, answered, request_warnings=(words,))
-
-    assert [(w.code, w.message) for w in grafted.warnings] == [
-        ("query_qualifier_dropped", "words"),
-        ("role_scope_defaulted", "one"),
-    ]
-
-
 def test_a_cache_hit_launches_no_place_options_for_a_composite_answer(
     monkeypatch: pytest.MonkeyPatch,
 ):
     """A response cache hit launches the place options a fresh run launches: one task per
     definite table answer, none for a composite answer, whose place options a fresh run
-    drops (`result.with_composite_answer`)."""
+    launches none of."""
     composite_part = provider._posted_dac2a(monkeypatch, provider._DAC2A_BILATERAL, provider._KEN)
     table_part = provider._resubmitted_part(
         provider._dac2a_identity("Gross", destination=provider._DEVELOPING), None
@@ -1287,101 +1030,6 @@ def test_a_cache_hit_launches_no_place_options_for_a_composite_answer(
     assert launched == [table_part.spec.spec_id]
 
 
-def test_a_restated_reading_reads_the_request_catalogue_whatever_scope_the_part_read_under(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    """A candidate restated as DAC2a's bilateral destinations is settled and restated through
-    the request's catalogue, as the definite answer's composite is, so a source scope the
-    part's own reads ran under narrows none of its figures."""
-    snapshot = _dac2a_and_crs_snapshot(monkeypatch)
-    dac2a = provider._resubmitted(provider._dac2a_identity("Net"), None)
-    reads = _reads(snapshot)
-    scopes: dict[str, list[frozenset[str] | None]] = {"default": [], "assemble": []}
-    default, assemble = composite_answer.bilateral_default_reading, composite.assemble_composite
-
-    def recorded_default(*args: Any, **kwargs: Any) -> Any:
-        scopes["default"].append(current_catalogue().scope)
-        return default(*args, **kwargs)
-
-    def recorded_assemble(*args: Any, **kwargs: Any) -> Any:
-        scopes["assemble"].append(current_catalogue().scope)
-        return assemble(*args, **kwargs)
-
-    monkeypatch.setattr(composite_answer, "bilateral_default_reading", recorded_default)
-    monkeypatch.setattr(composite_answer, "assemble_composite", recorded_assemble)
-    before = RegionResult(
-        variable_text="aid",
-        status="candidates",
-        specs=(dac2a,),
-        no_data_reason=None,
-        warnings=(),
-        timing_by_step={},
-    )
-
-    with scoped_reads(frozenset({provider._DAC2A})):
-        (restated,) = _readings(before, reads=reads, selection=ScopeState()).specs
-
-    assert provider._source(restated) == provider._DAC2A_BILATERAL
-    assert scopes == {"default": [reads.catalogue.scope], "assemble": [reads.catalogue.scope]}
-
-
-def test_a_restated_answer_rekeys_only_its_own_keyed_facts(monkeypatch: pytest.MonkeyPatch):
-    """Restating a DAC2a answer as its bilateral destinations moves its own warnings,
-    unpublished-whole facts and assumption echoes to the composite's spec_id, and drops its
-    own all-recipients total, which the composite cannot stand beside. Another reading's
-    warnings and a warning keyed to no reading stand as they are."""
-    snapshot = _dac2a_and_crs_snapshot(monkeypatch)
-    crs = provider._ask(
-        "health aid from the United States to Kenya, 2015 to 2020", time="2015-2020"
-    )
-    table = provider._resubmitted(provider._dac2a_identity("Net"), None)
-    restated = _readings(
-        RegionResult(
-            variable_text="aid",
-            status="candidates",
-            specs=(table,),
-            no_data_reason=None,
-            warnings=(),
-            timing_by_step={},
-        ),
-        reads=_reads(snapshot),
-        selection=ScopeState(),
-    ).spec
-    assert provider._source(restated) == provider._DAC2A_BILATERAL
-
-    def warning(code: str, spec_id: str | None) -> Warning:
-        params = {"total": provider._ALL_RECIPIENTS} if code == "whole_total_available" else None
-        return Warning(code=code, severity="info", message=code, spec_id=spec_id, params=params)
-
-    region = RegionResult(
-        variable_text="aid",
-        status="definite",
-        specs=(table, crs),
-        no_data_reason=None,
-        warnings=(
-            warning("role_scope_defaulted", table.spec_id),
-            warning("whole_total_available", table.spec_id),
-            warning("whole_total_available", crs.spec_id),
-            warning("whole_total_available", None),
-        ),
-        timing_by_step={},
-        unpublished_whole_facts={table.spec_id: (), crs.spec_id: ()},
-        reading_assumption_echoes={table.spec_id: (), crs.spec_id: ()},
-    )
-
-    answered = result.with_composite_answer(
-        region, restated, observations_relaunch=cast(Any, lambda _spec_id: None)
-    )
-
-    assert [(w.code, w.spec_id) for w in answered.warnings] == [
-        ("role_scope_defaulted", restated.spec_id),
-        ("whole_total_available", crs.spec_id),
-        ("whole_total_available", None),
-    ]
-    assert set(answered.unpublished_whole_facts) == {restated.spec_id, crs.spec_id}
-    assert set(answered.reading_assumption_echoes) == {restated.spec_id, crs.spec_id}
-
-
 def test_a_merge_of_composite_parts_with_no_axis_states_the_composite_scope(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -1400,16 +1048,3 @@ def test_a_merge_of_composite_parts_with_no_axis_states_the_composite_scope(
     group = [cast(RegionResult, SimpleNamespace(scope_choices=single))] * 2
 
     assert pipeline.merged_scope_choices(merged, group, coverage=facts.coverage) == single
-
-
-def _readings(
-    region: RegionResult, *, reads: ComponentReads, selection: ScopeState
-) -> RegionResult:
-    """`region` with its readings restated (`with_bilateral_readings`) under scope facts of
-    no operation, as a part with no answer phase decision reads them."""
-    return composite_answer.with_bilateral_readings(
-        region,
-        reads=reads,
-        selection=selection,
-        facts=ScopeFacts(index=get_index(), coverage=reads.coverage),
-    )

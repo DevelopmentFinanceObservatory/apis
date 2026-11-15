@@ -51,7 +51,7 @@ import dataclasses
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
-from typing import cast, get_args
+from typing import Literal, cast, get_args
 
 from code_index.composites import (
     CompositeNotServable,
@@ -163,11 +163,36 @@ _SCOPE_RULES: Mapping[ProviderScope, str] = {row.scope: row.rule for row in PROV
 _DONOR_ORGANISATIONS = frozenset(DONOR_ORGANISATIONS)
 _NET = "net"
 _CONSTANT = "RealValue"
-_SLOT_WHY: Mapping[str, str] = {
-    "crsCooperationModality": "modality",
-    "crsTypeOfFinance": "finance_type",
-}
-"""The `why` of `provider_not_offered` for each slot the imputed table's rows do not declare."""
+_SLOT_NOT_SERVED = "slot_not_served"
+"""The `why` of `provider_not_offered` where a provider composite cannot serve a slot the part
+binds, whose property the detail's `slot` names (`_composite_fault`)."""
+
+WithheldWhy = Literal[
+    "destination_unclassified",
+    "option_not_covered",
+    "read_window_not_covered",
+    "scope_undecided",
+    "slot_not_served",
+]
+"""Why a fresh reading the bilateral default reaches on a part with no provider axis reads total
+ODA: the reasons dfo-spec-kit's `registries/warning-reasons.json` lists for
+`bilateral_reading_unavailable`, and no others."""
+WITHHELD_WHYS: frozenset[str] = frozenset(get_args(WithheldWhy))
+
+
+@dataclass(frozen=True, slots=True)
+class Withheld:
+    """Why the bilateral default reaches a reading and cannot apply (`WithheldWhy`), and for
+    `slot_not_served` the property of the slot the bilateral composite cannot serve."""
+
+    why: WithheldWhy
+    slot: str | None = None
+
+    @property
+    def params(self) -> dict[str, str]:
+        """The `bilateral_reading_unavailable` warning's `params`: `why`, and `slot` where the
+        reason names one."""
+        return {"why": self.why} if self.slot is None else {"why": self.why, "slot": self.slot}
 
 
 @dataclass(frozen=True, slots=True)
@@ -489,8 +514,9 @@ def _bilateral_option(identity: BaseIdentity, rule: DestinationRule, facts: Scop
     destination, whose flows are core contributions the composite leaves out, and not
     offered (`provider_not_offered`) where the composite's population is unavailable (why
     `destination_unclassified`, `_population_unavailable`) or the composite refuses what
-    `identity` binds (`code_index.composites.CompositeNotServable`; why the slot at fault, as
-    `_inclusive_option` names it). Otherwise it serves the years its one component serves
+    `identity` binds (`code_index.composites.CompositeNotServable`, `_composite_fault`: why
+    `slot_not_served` naming the slot at fault, or `option_not_covered` where the window reaches
+    none of the composite's years). Otherwise it serves the years its one component serves
     (`_composite_years`), judged as a sibling total is (`_sibling_option`,
     `_latest_sibling_option`, each `option_not_covered`): available when they cover every
     year the part's answer holds, partial over their latest run when they cover fewer, and
@@ -523,14 +549,9 @@ def _read_bilateral_option(
     try:
         years = _composite_years(identity, rule.read(identity), source.composite, facts)
     except CompositeNotServable as exc:
-        why = (
-            "destination_unclassified"
-            if isinstance(exc, PopulationUnavailable)
-            else _SLOT_WHY.get(prop := _slot_at(identity, exc.pointer), prop)
-        )
         return _option(
             "bilateral",
-            _unavailable("provider_not_offered", {"why": why}),
+            _composite_fault(identity, exc, uncovered="option_not_covered"),
             binding=binding,
             label=source.label,
         )
@@ -701,14 +722,14 @@ def _default_rule(identity: BaseIdentity, facts: ScopeFacts) -> DestinationRule 
 
 def bilateral_default_withheld(
     identity: BaseIdentity, selection: ScopeState, facts: ScopeFacts
-) -> str | None:
+) -> Withheld | None:
     """Why a fresh reading of `identity` that the bilateral default reaches
     (`with_bilateral_default`) reads total ODA, where no provider axis states it
     (`provider_rule`) and no stated or carried provider entry asks for total ODA: the
-    unavailable bilateral option's `why` (`_bilateral_option`), as `destination_unclassified`
-    for an unavailable population or the slot at fault where the composite refuses what
-    `identity` binds, else its reason code, `option_not_covered` where it does not cover
-    every year the answer holds. A part with a provider axis states the reason on its
+    reason its unavailable bilateral option states (`_bilateral_option`, `_withheld`),
+    `destination_unclassified` for an unavailable population, `slot_not_served` naming the
+    slot where the composite cannot serve one `identity` binds, and `option_not_covered` where
+    it does not cover every year the answer holds. A part with a provider axis states the reason on its
     bilateral option instead. None where the default applies or does not reach `identity`."""
     defaulted = _default_bilateral_option(identity, facts)
     if defaulted is None:
@@ -721,15 +742,34 @@ def bilateral_default_withheld(
         return None
     if provider_rule(identity, None, facts) is not None:
         return None
-    return availability.detail.get("why") or availability.code
+    return _withheld(availability)
+
+
+def _withheld(availability: OptionAvailability) -> Withheld:
+    """The reason an unavailable or partial bilateral option states (`_read_bilateral_option`):
+    `destination_unclassified` or `slot_not_served`, with its slot, from a
+    `provider_not_offered` detail, and `option_not_covered` from that code. Raises
+    `ValueError` for any other: the option is unavailable with `multilateral_destination`
+    only on a part naming a multilateral destination, which the default does not reach."""
+    detail = availability.detail
+    match availability.code, detail.get("why"):
+        case "provider_not_offered", "destination_unclassified":
+            return Withheld(why="destination_unclassified")
+        case "provider_not_offered", "slot_not_served":
+            return Withheld(why="slot_not_served", slot=detail["slot"])
+        case "option_not_covered", None:
+            return Withheld(why="option_not_covered")
+    raise ValueError(f"the bilateral option states no withheld reason: {availability!r}")
 
 
 def bilateral_default_reading(
     identity: BaseIdentity, selection: ScopeState, facts: ScopeFacts
 ) -> tuple[BaseIdentity, ScopeState]:
     """The identity a fresh reading of `identity` is served as, and the selection its scope
-    reads: one rule for a fresh search's definite answer (`scope_decision.decide_scope`) and
-    every other reading it shows (`composite_answer.with_bilateral_readings`).
+    reads: the one rule the reading elected before a part's read (`reading.elect_reading`)
+    and the reading elected at the read of each candidate, refusal alternate, flagged match
+    and nearest-real suggestion (`reading.elect_at_read`) both apply, through
+    `scope_decision.choose_provider`.
 
     DAC2a's total ODA reads its bilateral destinations (`with_bilateral_default`) unless the
     part's first provider entry, explicit before carried (`ScopeState.entries_on`), asks for
@@ -1097,7 +1137,8 @@ def _inclusive_option(
     """The inclusive option binding `source`'s composite over `bilateral`, the part's
     identity without it. It is not offered for what `_not_offered` and
     `_providers_not_offered` refuse, or where the imputed line cannot serve a slot
-    `bilateral` binds, even when the part holds it. For a part asking for the latest year it
+    `bilateral` binds (why `slot_not_served`, `_composite_fault`), even when the part holds
+    it. For a part asking for the latest year it
     is available over the year `inclusive_reach` elects, which its window states
     (`elect_latest_window`). Otherwise it is available when both lines cover every year the
     bilateral answer holds; partial over the latest run of years they cover, with that run as
@@ -1108,8 +1149,7 @@ def _inclusive_option(
     try:
         why = _not_offered(bilateral, source) or _providers_not_offered(bilateral, source, facts)
     except CompositeNotServable as exc:
-        prop = _slot_at(bilateral, exc.pointer)
-        why = _SLOT_WHY.get(prop, prop)
+        return _option("inclusive", _composite_fault(bilateral, exc, uncovered="imputed_coverage"))
     if why is not None:
         return _option("inclusive", _unavailable("provider_not_offered", {"why": why}))
     measure = held_measure(bilateral)
@@ -1248,12 +1288,35 @@ def _providers_not_offered(
     return None if carried and not _pools_redistributed(providers) else "pooled_providers"
 
 
-def _slot_at(identity: BaseIdentity, pointer: str) -> str:
-    """The slot property at `pointer` (`/slots/<n>`) of `identity`, or the pointer itself."""
+def _composite_fault(
+    identity: BaseIdentity, exc: CompositeNotServable, *, uncovered: ScopeReasonCode
+) -> OptionAvailability:
+    """The availability of a provider option whose composite refuses what `identity` binds
+    (`exc`): not offered (`provider_not_offered`) with why `destination_unclassified` for an
+    unavailable population (`PopulationUnavailable`) and why `slot_not_served`, its `slot`
+    the property at fault, for a slot the composite's components do not declare; unavailable
+    with `uncovered`, the option's code for a composite serving no year, where the window
+    reaches none of the composite's component periods. Re-raises `exc` at any other member
+    (`/shape`, `/entities/<key>`, a provenance set or a composite the index does not serve),
+    which no part reaches here: the options bind the composite as a value over a described
+    identity whose named destinations are on the composite's side."""
+    if isinstance(exc, PopulationUnavailable):
+        return _unavailable("provider_not_offered", {"why": "destination_unclassified"})
+    if exc.pointer == "/requested_window":
+        return _unavailable(uncovered)
+    slot = _slot_at(identity, exc.pointer)
+    if slot is None:
+        raise exc
+    return _unavailable("provider_not_offered", {"why": _SLOT_NOT_SERVED, "slot": slot})
+
+
+def _slot_at(identity: BaseIdentity, pointer: str) -> str | None:
+    """The slot property at `pointer` (`/slots/<n>`) of `identity`, None at any other
+    member."""
     head, _, position = pointer.rpartition("/")
     if head == "/slots" and position.isdigit() and int(position) < len(identity.slots):
         return identity.slots[int(position)].property
-    return pointer
+    return None
 
 
 def provider_convention(

@@ -766,17 +766,19 @@ def _total() -> ScopeState:
 
 
 @pytest.mark.parametrize(
-    ("slots", "why"),
+    ("slots", "slot"),
     [
         pytest.param(
-            {"crsCooperationModality": "CRSCooperationModalityA01"}, "modality", id="modality"
+            {"crsCooperationModality": "CRSCooperationModalityA01"},
+            "crsCooperationModality",
+            id="modality",
         ),
         pytest.param(
-            {"crsTypeOfFinance": "CRSTypeOfFinance110"}, "finance_type", id="finance-type"
+            {"crsTypeOfFinance": "CRSTypeOfFinance110"}, "crsTypeOfFinance", id="finance-type"
         ),
     ],
 )
-def test_a_bound_modality_or_instrument_keeps_a_total_bilateral_with_the_reason(slots, why):
+def test_a_bound_modality_or_instrument_keeps_a_total_bilateral_with_the_reason(slots, slot):
     facts = _facts()
     identity = _bilateral_identity(**slots)
     table = provider_rule(identity, None, facts)
@@ -789,7 +791,7 @@ def test_a_bound_modality_or_instrument_keeps_a_total_bilateral_with_the_reason(
         "unavailable",
         "provider_not_offered",
     )
-    assert inclusive.availability.detail == {"why": why}
+    assert inclusive.availability.detail == {"why": "slot_not_served", "slot": slot}
     assert (record.active, record.provenance, record.rule) == (
         "provider:bilateral",
         "default",
@@ -3390,7 +3392,11 @@ def test_a_bilateral_composite_that_refuses_its_part_is_not_offered_for_that_rea
         option.availability.status,
         option.availability.code,
         option.availability.detail,
-    ) == ("unavailable", "provider_not_offered", {"why": "dac2aAidType"})
+    ) == (
+        "unavailable",
+        "provider_not_offered",
+        {"why": "slot_not_served", "slot": "dac2aAidType"},
+    )
 
 
 def test_a_fresh_dac2a_scope_reads_its_bilateral_option_once(monkeypatch: pytest.MonkeyPatch):

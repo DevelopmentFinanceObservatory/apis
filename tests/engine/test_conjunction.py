@@ -251,6 +251,7 @@ def test_same_shape_multislot_refusal_keeps_each_members_own_spec():
 
     def _two_slot_spec(val_a: str, val_b: str):
         return build_spec(
+            composite=None,
             open_roles=(),
             measure_elected_properties=frozenset(),
             shape=shape_two_slots,

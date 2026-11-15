@@ -56,6 +56,7 @@ from search.engine.region.codes import (
     _elect_no_data_reason,
     _ObsProbeResult,
 )
+from search.engine.region.composite_answer import CompositeRelaunch
 from search.engine.region.equivalent_series import shared_cluster
 from search.engine.region.materialise_step import lone_breakdown_absent
 from search.engine.region.observations.dispatch import (
@@ -63,6 +64,7 @@ from search.engine.region.observations.dispatch import (
     PreviewReader,
     _attach_observations,
 )
+from search.engine.region.phase_answer import component_reads, failed_closed, finished_scope
 from search.engine.region.phase_election import judge_answer_coverage
 from search.engine.region.phase_place_materialise import (
     note_denominator_unverified,
@@ -92,18 +94,19 @@ from search.engine.region.requirements import (
     settle_flagged,
 )
 from search.engine.region.result import RegionResult
-from search.engine.region.scope_decision import decide_guarded
 from search.engine.region.state import (
+    AnswerMark,
+    MintedComposite,
     Requirement,
     ResolveState,
     ValueRule,
     raised_facts,
     unapplied_departure,
+    whole_totals_as_read,
     with_requirement,
 )
 from search.engine.region.un_system import member_labels
 from search.engine.region.value_labels import draft_value_labels, model_only_values
-from search.engine.region.whole_totals import whole_total_warnings
 from search.engine.retrieval.read_plan import ReadPlan, plan_coverage, serves_nothing
 from search.engine.retrieval.retrieve import Materialised, NoDataDraft
 from search.engine.retrieval.standard import Narrow
@@ -126,14 +129,11 @@ def _offer_place_warnings(
 ) -> None:
     """Stamp each spec in `offered`, in menu order, with the place warnings of its own
     context that the shape in play's do not hold (`stamp_offered_place_warnings`)."""
-    before = len(state.warnings)
     stamp_offered_place_warnings(
         state.warnings,
         [(spec.spec_id, grounded[spec.spec_id].candidate.place) for spec in offered],
         departure_facts=state.departure_facts,
     )
-    # Each reading's places are read from the request's words.
-    state.from_request(*state.warnings[before:])
 
 
 def _apply_bound_unit_filter(
@@ -229,9 +229,11 @@ def _handle_sparse_survivors(
         # Flagged-unavailable carriers belong in no-data responses.
         _offer_place_warnings(state, grounded, unique_specs)
         _settle_lone_survivor(state, grounded, unique_specs[0])
+        matched = _shown(state, grounded, unique_specs[0])
         return state.no_data(
             "no_observations",
             flagged_match=(unique_specs[0],),
+            matched=matched,
             gate=NO_MEMBER_HAS_DATA_AT_PLACE,
             llm_usage=state.var_usage,
         )
@@ -243,7 +245,6 @@ def _handle_sparse_survivors(
             state, served_twin.resolved.shape.label
         )
         state.warnings.append(substituted)
-        state.from_request(substituted)
         return [served_twin]
     # The elected reading of a family with no total is one of its breakdowns, so the others
     # with data answer in its place: one alone, several as candidates.
@@ -265,7 +266,6 @@ def _handle_sparse_survivors(
             no_data=[state.shape_draft.label], elected=[stand_ins[0].resolved.shape.label]
         )
         state.warnings.append(stand_in)
-        state.from_request(stand_in)
         return stand_ins
     if stand_ins:
         return stand_ins
@@ -279,9 +279,11 @@ def _handle_sparse_survivors(
     )
     _offer_place_warnings(state, grounded, unique_specs[:1])
     _settle_lone_survivor(state, grounded, unique_specs[0])
+    matched = _shown(state, grounded, unique_specs[0])
     return state.no_data(
         _elected_reason,
         alternate_match=unique_specs[0],
+        matched=matched,
         gate=ONLY_ALTERNATE_HAS_DATA,
         llm_usage=state.var_usage,
     )
@@ -493,6 +495,8 @@ async def _assemble_definite(
     unique_specs: list[Spec],
     grounded: _GroundedCandidates,
     rate_cache: RateTableCache | None,
+    *,
+    mark: AnswerMark,
 ) -> RegionResult:
     """Build the definite response for one surviving candidate. A requirement it leaves
     unmet returns no-data. A no-data elected shape reaches here only through measure-sibling
@@ -508,6 +512,16 @@ async def _assemble_definite(
     unbound query terms other than its coverage records, its own coverage records
     (`_Candidate.uncovered`), and each code and value requirement its own answer leaves
     unmet.
+
+    The scope the survivor states is checked once (`phase_answer.finished_scope`), before
+    its related read is awaited or any of its trailing tasks launch, and the result carries
+    it (`RegionResult.scope_decision`). A survivor minted as a composite, or read within a
+    composite's population, that no scope states answers no_data `facet_not_available`
+    (`phase_answer.failed_closed`), whose shape-derived fields describe the survivor
+    (`ResolveState.no_data(candidate=)`): the part's warnings, departure facts,
+    re-election warning and judgement are restored to `mark`, what it had raised and judged
+    before the candidates were grounded (`assemble_candidates`), and the related read
+    started for the elected shape is cancelled.
     """
     _entry = grounded[unique_specs[0].spec_id]
     _survivor = _entry.candidate
@@ -515,8 +529,6 @@ async def _assemble_definite(
         install_place_warnings(
             state.warnings, _survivor.place, departure_facts=state.departure_facts
         )
-        # The survivor's places are read from the request's words.
-        state.from_request(*_survivor.place.warnings)
     _survivor_unbound_qualifiers = settle_answer(
         state,
         _survivor.shape,
@@ -525,9 +537,11 @@ async def _assemble_definite(
         uncovered=_survivor.uncovered,
     )
     if _survivor_unbound_qualifiers:
+        matched = _shown(state, grounded, unique_specs[0])
         return state.no_data(
             "qualifier_not_bound",
             flagged_match=(unique_specs[0],),
+            matched=matched,
             gate=None,
             llm_usage=state.var_usage,
             unbound_qualifiers=_survivor_unbound_qualifiers,
@@ -536,6 +550,25 @@ async def _assemble_definite(
     if not unique_specs[0].resolved.members:
         return state.no_data("no_observations", llm_usage=state.var_usage)
     _survivor_spec = unique_specs[0]
+    # The survivor's scope was decided when its Spec was minted, under the reading its own
+    # read elected (`candidate_grounding._candidate_answer`), so a Spec minted as a composite
+    # reads its preview per component and none of the table's. The survivor is judged by
+    # that reading once (`phase_answer.finished_scope`), before its related read, options or
+    # preview launch, and the result carries the decision for `pipeline._with_scope_choices`.
+    # A survivor no scope states answers no_data in its place, describing it, with what it
+    # raised dropped and the elected shape's related read cancelled.
+    _decision = await finished_scope(
+        state,
+        _survivor_spec,
+        decision=_entry.decision,
+        minted=_entry.minted,
+        reading=_survivor.reading,
+    )
+    if _decision is None:
+        return failed_closed(state, mark, candidate=_survivor)
+    # Only a decision compiling the composite reads the survivor as it, as on the answer
+    # phase (`phase_answer._finalize_definite_result`).
+    _minted = _entry.minted if _decision.composite else None
     note_denominator_unverified(state, _survivor.shape, spec_id=_survivor_spec.spec_id)
     if (omitted := _unit_omitted_warning(grounded, _survivor_spec.spec_id)) is not None:
         state.warnings.append(omitted)
@@ -560,94 +593,78 @@ async def _assemble_definite(
         deadline=state.deadline,
         coverage=state.coverage,
     )
-    # The scope is decided from the survivor's Spec beside the reads below and before its
-    # preview launches, so an answer restated as a composite reads no preview of the one
-    # table it resolved. `pipeline._with_scope_choices` states the decision.
-    _decision_task = asyncio.create_task(
-        asyncio.to_thread(
-            decide_guarded,
-            _survivor_spec,
-            selection=state.scope_selection,
-            operations=state.operations,
-            coverage=state.coverage,
-        )
+    # The related reads run beside the streamed preview and the options below.
+    _related_read = related_read_for(
+        state,
+        stat_vars=_entry.sv_dcids,
+        measure_partition=_entry.measure_partition,
+        places=_survivor.place.roles.roles,
+        arcs=_survivor.shape.sv_arc_facts,
+        date_request=_survivor.date_request,
     )
-    try:
-        # The related reads run beside the streamed preview and the options below.
-        _related_read = related_read_for(
-            state,
-            stat_vars=_entry.sv_dcids,
-            measure_partition=_entry.measure_partition,
-            places=_survivor.place.roles.roles,
-            arcs=_survivor.shape.sv_arc_facts,
-            date_request=_survivor.date_request,
-        )
-        if state.bound_unit_outcome is not None:
-            # State the unit lexicon version. A streamed answer also states its preview's
-            # facets and warning with its immediate response. A flagged-unavailable carrier
-            # holds nothing to read and states `_UNIT_CHECK_NOT_PROBED`, and a composite
-            # reads its components' preview once restated.
-            _survivor_spec = with_unit_lexicon_version(_survivor_spec, state.bound_unit_outcome)
-            if state.stream_observations:
-                # An inline preview states its own warning, below.
-                _streamed = (
-                    _UNIT_CHECK_NOT_PROBED
-                    if _survivor_spec.resolved.available_at_place is False
-                    or (await _decision_task).composite
-                    else await asyncio.to_thread(_reader.observations)
-                )
-                _survivor_spec = _attach_observations(
-                    _survivor_spec, _streamed, state.warnings, include_points=False
-                )
-        # Keep this timing key identical to the single-shape path.
-        _options_t0 = now_ms()
-        _survivor_spec = await _attach_candidate_slot_options(state, grounded, _survivor_spec)
-        (_survivor_spec,) = await _attach_candidate_facet_options(state, grounded, [_survivor_spec])
-        _survivor_spec, _entity_options_raw = await _attach_candidate_entity_options(
-            state, grounded, _survivor_spec
-        )
-        state.timing["options"] = now_ms() - _options_t0
-        _family = [
-            *state.family_total_absent_departures((_survivor_spec,)),
-            *grounded.stale_trailing_departures((_survivor_spec,)),
-        ]
-        # Place-option tasks run only when `materialise_graph` is available.
-        _place_options_materialise_graph = state.materialise_graph
-        # Each launch reads the identity of the Spec it is given, a merged one included.
-        _relaunch_place_options_bound = functools.partial(
-            _relaunch_place_options,
-            state=state,
-            place_options_materialise_graph=cast(GraphReader, _place_options_materialise_graph),
-        )
-        _stream_place_options = (
-            state.stream_slot_options
-            and _place_options_materialise_graph is not None
-            and state.place_options_pool is not None
-        )
-        _place_options_task = (
-            _relaunch_place_options_bound(_survivor_spec) if _stream_place_options else None
-        )
-        _survivor_spec = await with_related(_survivor_spec, _related_read)
-        # No await follows the observation task's launch. Passing it live to `RegionResult`
-        # keeps it reachable if cancellation follows.
-        _obs_task: asyncio.Task[_ObsProbeResult] | None = None
-        _obs_relaunch: Callable[[str], asyncio.Task[_ObsProbeResult]] | None = None
-        # A composite's preview reads each component once the answer is restated
-        # (`pipeline._with_composite_preview`).
-        state.scope_decision = await _decision_task
-        composite = state.scope_decision.composite
-        if not composite and state.stream_observations:
-            _obs_relaunch = _reader.relaunch(member_labels((_survivor_spec,)))
-            _obs_task = _obs_relaunch(_survivor_spec.spec_id)
-        elif not composite and state.include_observations:
-            _survivor_spec = _attach_observations(
-                _survivor_spec, await asyncio.to_thread(_reader.observations), state.warnings
+    if state.bound_unit_outcome is not None:
+        # State the unit lexicon version. A streamed answer also states its preview's
+        # facets and warning with its immediate response. A flagged-unavailable carrier
+        # holds nothing to read and states `_UNIT_CHECK_NOT_PROBED`, and a composite
+        # reads its components' preview once minted.
+        _survivor_spec = with_unit_lexicon_version(_survivor_spec, state.bound_unit_outcome)
+        if state.stream_observations:
+            # An inline preview states its own warning, below.
+            _streamed = (
+                _UNIT_CHECK_NOT_PROBED
+                if _survivor_spec.resolved.available_at_place is False or _minted is not None
+                else await asyncio.to_thread(_reader.observations)
             )
-    finally:
-        # Cancel and await the decision so cancellation cannot detach it.
-        if not _decision_task.done():
-            _decision_task.cancel()
-            await asyncio.gather(_decision_task, return_exceptions=True)
+            _survivor_spec = _attach_observations(
+                _survivor_spec, _streamed, state.warnings, include_points=False
+            )
+    # Keep this timing key identical to the single-shape path.
+    _options_t0 = now_ms()
+    _survivor_spec = await _attach_candidate_slot_options(state, grounded, _survivor_spec)
+    (_survivor_spec,) = await _attach_candidate_facet_options(state, grounded, [_survivor_spec])
+    _survivor_spec, _entity_options_raw = await _attach_candidate_entity_options(
+        state, grounded, _survivor_spec
+    )
+    state.timing["options"] = now_ms() - _options_t0
+    _family = [
+        *state.family_total_absent_departures((_survivor_spec,)),
+        *grounded.stale_trailing_departures((_survivor_spec,)),
+    ]
+    # Place-option tasks run only when `materialise_graph` is available.
+    _place_options_materialise_graph = state.materialise_graph
+    # Each launch reads the identity of the Spec it is given, a merged one included.
+    _relaunch_place_options_bound = functools.partial(
+        _relaunch_place_options,
+        state=state,
+        place_options_materialise_graph=cast(GraphReader, _place_options_materialise_graph),
+    )
+    # A composite streams no option of the table it read.
+    _stream_place_options = (
+        state.stream_slot_options
+        and _minted is None
+        and _place_options_materialise_graph is not None
+        and state.place_options_pool is not None
+    )
+    _place_options_task = (
+        _relaunch_place_options_bound(_survivor_spec) if _stream_place_options else None
+    )
+    _survivor_spec = await with_related(_survivor_spec, _related_read)
+    # No await follows the observation task's launch. Passing it live to `RegionResult`
+    # keeps it reachable if cancellation follows.
+    _obs_task: asyncio.Task[_ObsProbeResult] | None = None
+    _obs_relaunch: Callable[[str], asyncio.Task[_ObsProbeResult]] | None = None
+    # A composite's preview reads each component (`pipeline._with_composite_preview`).
+    if _minted is not None:
+        _obs_relaunch = CompositeRelaunch(
+            spec=_survivor_spec, reads=component_reads(state), served=_minted.mint.served
+        )
+    elif state.stream_observations:
+        _obs_relaunch = _reader.relaunch(member_labels((_survivor_spec,)))
+        _obs_task = _obs_relaunch(_survivor_spec.spec_id)
+    elif state.include_observations:
+        _survivor_spec = _attach_observations(
+            _survivor_spec, await asyncio.to_thread(_reader.observations), state.warnings
+        )
     return RegionResult(
         variable_text=state.variable,
         status="definite",
@@ -656,7 +673,7 @@ async def _assemble_definite(
         warnings=(
             *state.warnings,
             *(warning for warning, _fact in _family),
-            *whole_total_warnings(_survivor_spec, coverage=state.coverage.index),
+            *whole_totals_as_read(_survivor_spec, _minted, coverage=state.coverage.index),
         ),
         departure_facts={**state.departure_facts, **raised_facts(_family)},
         timing_by_step=dict(state.timing),
@@ -688,6 +705,7 @@ async def _assemble_definite(
         # conversions over (`RegionResult.served_members`).
         served_members=_entry.served_members,
         served_plans=_entry.served_plans,
+        scope_decision=_decision,
     )
 
 
@@ -809,7 +827,11 @@ async def _assemble_candidate_set(
     departure (`assemble._with_readings_substituted`). Each candidate the search could not
     check against the denominator the question names warns under its own spec_id
     (`note_denominator_unverified`), as each one listing a side whose total its dataset
-    publishes does (`whole_totals.whole_total_warnings`).
+    publishes does (`whole_totals.whole_total_warnings`), read over the identity its rows
+    were read for (`state.whole_totals_as_read`). Each candidate carries the warning of the
+    scope decided for it (`ScopeDecision.warning`), as a definite answer of its reading does.
+    For a reading the bilateral default could not reach, that is
+    `bilateral_reading_unavailable`.
     """
     unique_specs = [
         spec.model_copy(
@@ -825,7 +847,6 @@ async def _assemble_candidate_set(
     if not state.elected_has_data:
         elected_no_data = _elected_no_data_warning(state, unique_specs)
         state.warnings.append(elected_no_data)
-        state.from_request(elected_no_data)
     await _record_unheld_values(
         state,
         [
@@ -882,10 +903,13 @@ async def _assemble_candidate_set(
         warnings=(
             *state.warnings,
             *(warning for warning, _fact in _family),
+            *_decision_warnings(state.warnings, grounded, _candidate_specs),
             *(
                 warning
                 for spec in _candidate_specs
-                for warning in whole_total_warnings(spec, coverage=state.coverage.index)
+                for warning in whole_totals_as_read(
+                    spec, grounded[spec.spec_id].minted, coverage=state.coverage.index
+                )
             ),
         ),
         departure_facts={**state.departure_facts, **raised_facts(_family)},
@@ -900,6 +924,33 @@ async def _assemble_candidate_set(
             grounded[spec.spec_id].answered_roles for spec in _candidate_specs
         ),
     )
+
+
+def _shown(
+    state: ResolveState, grounded: _GroundedCandidates, spec: Spec
+) -> tuple[MintedComposite, ...]:
+    """Record `spec`, the candidate a refusal shows as its flagged or alternate match, as the
+    reading its read elected: the warning of the scope decided for it
+    (`_decision_warnings`). Returns the composite it is minted as, which the refusal passes
+    to `ResolveState.no_data` as `matched`, so its whole-total warnings read the identity its
+    rows were read for."""
+    state.warnings.extend(_decision_warnings(state.warnings, grounded, [spec]))
+    minted = grounded[spec.spec_id].minted
+    return () if minted is None else (minted,)
+
+
+def _decision_warnings(
+    stated: Sequence[Warning], grounded: _GroundedCandidates, specs: Sequence[Spec]
+) -> list[Warning]:
+    """The warning of the scope decided for each of `specs` (`ScopeDecision.warning`), keyed
+    to its own spec_id, leaving out any `stated` already carries. Two candidates whose
+    readings the bilateral default cannot reach for the same reason each carry their own."""
+    found: list[Warning] = []
+    for spec in specs:
+        warning = grounded[spec.spec_id].decision.warning
+        if warning is not None and warning not in stated and warning not in found:
+            found.append(warning)
+    return found
 
 
 async def assemble_candidates(
@@ -923,6 +974,7 @@ async def assemble_candidates(
                 state.place,
                 state.walked,
                 state.date_request,
+                reading=state.reading,
             )
         )
     # Each candidate beside the elected answer is judged on the members its own read
@@ -953,9 +1005,16 @@ async def assemble_candidates(
                 state.place,
                 state.walked,
                 state.date_request,
+                reading=state.reading,
             )
         )
 
+    # The answer is a candidate's from here: everything grounding and the collapse raise or
+    # judge is the lone survivor's, which a survivor that fails closed restores
+    # (`_assemble_definite`, `phase_answer.failed_closed`). The ledger records each value
+    # the request's words name (`_record_unheld_values`) in `state.requirements`, which the
+    # mark leaves alone, so that record stands.
+    mark = state.mark_answer()
     # Grounding reads the graph synchronously for every scope member, so it runs off the event
     # loop, where the request deadline and other requests keep running.
     grounded = await asyncio.to_thread(ground_candidates, state, candidates)
@@ -1031,13 +1090,7 @@ async def assemble_candidates(
         unique_specs = [_elected_left]
 
     # The discovered-scope warning speaks for the candidates the response keeps.
-    restate_scope_warning(
-        state,
-        [
-            (grounded[s.spec_id].candidate.mat, grounded[s.spec_id].scope_members)
-            for s in unique_specs
-        ],
-    )
+    restate_scope_warning(state, [grounded[s.spec_id] for s in unique_specs])
     if len(unique_specs) == 1:
         _note_lone_breakdown(state, grounded, unique_specs[0])
         # The lone reading, a twin or a nominated rival the quantity or unit filter left
@@ -1047,7 +1100,7 @@ async def assemble_candidates(
         # labels.
         lone = grounded[unique_specs[0].spec_id].candidate
         await _record_unheld_values(state, [(lone.shape, lone.bindings)])
-        return await _assemble_definite(state, unique_specs, grounded, rate_cache)
+        return await _assemble_definite(state, unique_specs, grounded, rate_cache, mark=mark)
     return await _assemble_candidate_set(
         state,
         unique_specs,

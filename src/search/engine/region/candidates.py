@@ -11,7 +11,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import NamedTuple
 
 from dc_graph import GraphCapExceededError, GraphDeadlineExceededError, GraphReadError
@@ -38,6 +38,7 @@ from search.engine.region.place_context import (
     unread_context,
     with_where,
 )
+from search.engine.region.reading import ElectedReads, ReadingDecision, Within
 from search.engine.region.result import RegionResult
 from search.engine.region.state import (
     AlternateUnevaluatedReason,
@@ -78,11 +79,13 @@ from search.engine.shape import ShapeDraft, is_role_bearing
 from search.engine.source_scope import SourceScope
 from search.models import (
     CandidateBasis,
+    Operation,
     ResolvedQualifier,
     SpecObservations,
     Warning,
     omitted_observations,
 )
+from search.scope.state import ScopeState
 from series_coverage.shared import CoverageSnapshot
 
 logger = logging.getLogger(__name__)
@@ -114,7 +117,12 @@ class _Candidate:
     `date_request` is the request its Spec states and its option coverage and related
     measures read: the part's, until candidate grounding settles a trailing span on the
     newest years its plan serves (`candidate_grounding._settled_trailing`), which also sets
-    `stale_departure` when that newest year is stale (`trailing.stale_departure`)."""
+    `stale_departure` when that newest year is stale (`trailing.stale_departure`).
+
+    `reading` is the provider reading its read elected at the place it settled on
+    (`reading.elect_at_read`), None where it binds no total with a bilateral source. A
+    reading that names a composite was read within the composite's population, and the
+    candidate's Spec is minted as that composite (`candidate_grounding._candidate_answer`)."""
 
     shape: ShapeDraft
     bindings: list[SlotBindingDraft]
@@ -125,6 +133,7 @@ class _Candidate:
     basis: CandidateBasis | None = None
     uncovered: tuple[ResolvedQualifier, ...] | None = None
     stale_departure: Departed | None = None
+    reading: ReadingDecision | None = field(kw_only=True)
 
 
 def _prewarm_places(
@@ -410,10 +419,19 @@ def _materialise_alt_shapes(
     date_request: DateRequest | None,
     deadline: float | None = None,
     coverage: CoverageSnapshot,
+    selection: ScopeState,
+    operations: Sequence[Operation],
     over_bound: list[_Alternate] | None = None,
     presence_failure: AlternateUnevaluatedReason | None = None,
 ) -> _AlternatesRead:
     """Materialise alternates (`elect_alternate`), each in its own place context.
+
+    Each read elects its provider reading first, at the place it tries, under the part's
+    provider entries `selection` and `operations`, and reads the composite the reading names
+    within its population, as the elected shape's read does (`reading.ElectedReads`). The
+    candidate carries the election of the place it
+    settled on (`_Candidate.reading`), and a reading whose composite refuses its table read
+    reads nothing, so the alternate is dropped as one without data.
 
     ``places`` holds each alternate's places, in ``alternates`` order, for the shape the
     alternate holds. An alternate whose place sets are unsettled settles them on its own
@@ -508,34 +526,45 @@ def _materialise_alt_shapes(
             presences = [presence]
 
             def read(
-                place: PlaceContext,
+                read_at: PlaceContext,
                 facet_batch: FacetBatch | None,
+                within: Within,
                 alternate: _Alternate = alternate,
                 bindings: list[SlotBindingDraft] = bindings,
                 presences: list[ConsultedPresence | None] = presences,
             ) -> Materialised | NoDataDraft | MaterialisedCandidates | UnsupportedDraft:
                 return materialise(
                     alternate.shape,
-                    with_where(bindings, place),
-                    place.roles.resolved_entities,
+                    with_where(bindings, read_at),
+                    read_at.roles.resolved_entities,
                     graph=graph,
                     sdmx=sdmx,
                     date_request=date_request,
                     deadline=deadline,
-                    place_dcids=place.probe_places,
-                    default_presence=place.presence_for(presences[-1]),
+                    place_dcids=read_at.probe_places,
+                    default_presence=read_at.presence_for(presences[-1]),
                     discover_scope=True,
-                    open_axes=place.roles.open_axes,
+                    open_axes=read_at.roles.open_axes,
                     coverage=coverage,
                     facet_batch=facet_batch,
+                    within=within,
                 )
 
+            reads = ElectedReads(
+                alternate.shape,
+                bindings,
+                date_request=date_request,
+                selection=selection,
+                coverage=coverage,
+                operations=operations,
+                read=read,
+            )
             try:
                 # The alternate's values come from its representative StatVar, none from the
                 # request, so values that match no member together are unbound silently, a
                 # minimal set per round (`BoundValuesUnrealisable.relaxation`).
                 while True:
-                    place, result = settle_sets(unsettled, read)
+                    place, result = settle_sets(unsettled, reads)
                     if not isinstance(result, BoundValuesUnrealisable):
                         break
                     bindings[:] = without_values(bindings, result.relaxation())
@@ -585,14 +614,16 @@ def _materialise_alt_shapes(
             if isinstance(result, Materialised) and result.has_data:
                 if alternate.unverified:
                     result = dataclasses.replace(result, membership_unverified=True)
+                read_at, reading = reads.settled(place)
                 results.append(
                     _Candidate(
                         settled_shape(alternate.shape, result),
-                        with_where(bindings, place),
+                        with_where(bindings, read_at),
                         result,
-                        place.settled(result),
+                        read_at.settled(result),
                         alternate.walked,
                         date_request,
+                        reading=reading,
                     )
                 )
     return _AlternatesRead(results, None, presence, tuple(unevaluated), consulted)

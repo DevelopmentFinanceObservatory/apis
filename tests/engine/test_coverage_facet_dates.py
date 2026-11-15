@@ -112,6 +112,7 @@ def _resolve(
         ),
         coverage=FakeCoverageService(index).snapshot(),
         discover_scope=discover,
+        within=None,
     )
     assert isinstance(result, Materialised)
     return result

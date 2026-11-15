@@ -130,6 +130,7 @@ def test_apply_declaration_version_stamps_a_plain_spec_the_index_resolves():
     ]
     shape = shape_five_tuple("FinancialFlow", "amount", "Nominal")
     spec = build_spec(
+        composite=None,
         open_roles=(),
         shape=shape,
         slots=slots,

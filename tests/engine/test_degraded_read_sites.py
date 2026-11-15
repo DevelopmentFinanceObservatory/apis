@@ -57,6 +57,7 @@ from search.engine.retrieval import bound_values, derive
 from search.engine.retrieval.read_plan import PairPlan
 from search.engine.unit import refs
 from search.models import EntityRoleKey, Spec, Warning, omitted_observations
+from search.scope.state import ScopeState
 from series_coverage.index import CoverageIndex
 from tests.engine import _fail_open_deadline
 from tests.engine._fail_open_deadline import FAIL_OPEN_REQUESTS, assert_fail_open_deadline
@@ -141,7 +142,9 @@ def _relaxation_ctx(**changes: object) -> SimpleNamespace:
             "date_request": None,
             "deadline": None,
             "role_class_walks": object(),
-            "from_request": lambda *_warnings: None,
+            "coverage": None,
+            "scope_selection": ScopeState(),
+            "operations": (),
             **changes,
         }
     )
@@ -711,7 +714,7 @@ class _NearestRealRecorder:
             probe_places=["country/KEN"],
             roles=SimpleNamespace(obs_destination_dcid=None, origin_dcids=[]),
         )
-        read = SimpleNamespace(place=place_ctx, plan=None, member_facts=None)
+        read = SimpleNamespace(place=place_ctx, plan=None, member_facts=None, composite=False)
         return [spec], [], {"near": read}, None
 
     def attach(self, spec, result, _warnings):
@@ -755,6 +758,9 @@ def _nearest_real(monkeypatch: pytest.MonkeyPatch, recorder: _NearestRealRecorde
         measure_elected_properties=frozenset(),
         defaulted_properties=frozenset(),
         coverage=None,
+        scope_selection=ScopeState(),
+        operations=(),
+        request_catalogue=None,
         unsettled_place=None,
         pin_served_provenance=False,
         include_observations=True,
@@ -762,7 +768,6 @@ def _nearest_real(monkeypatch: pytest.MonkeyPatch, recorder: _NearestRealRecorde
         rate_cache=None,
         warnings=[],
         departure_facts={},
-        from_request=lambda *_warnings: None,
     )
     return materialise._nearest_real_for(cast(ResolveState, state))
 

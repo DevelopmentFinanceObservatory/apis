@@ -52,6 +52,7 @@ def test_same_shape_multislot_residual_warns():
 
     def _two_slot_spec(val_a: str, val_b: str):
         return build_spec(
+            composite=None,
             open_roles=(),
             measure_elected_properties=frozenset(),
             shape=shape_two_slots,
@@ -102,6 +103,7 @@ def test_combine_regions_keeps_multislot_refusal_parts_distinct():
 
     def _two_slot_spec(val_a: str, val_b: str):
         return build_spec(
+            composite=None,
             open_roles=(),
             measure_elected_properties=frozenset(),
             shape=shape_two_slots,
@@ -161,6 +163,7 @@ def test_collapse_same_shape_exact_coverage_downgrade_unions_has_data():
     """
     window = TimeWindow(start_year=2020, end_year=2020)
     spec_a = build_spec(
+        composite=None,
         open_roles=(),
         measure_elected_properties=frozenset(),
         shape=_PERSON_SHAPE,
@@ -177,6 +180,7 @@ def test_collapse_same_shape_exact_coverage_downgrade_unions_has_data():
         coverage=CoverageExact(has_data=False, observation_count=0, dimensions=None, window=window),
     )
     spec_b = build_spec(
+        composite=None,
         open_roles=(),
         measure_elected_properties=frozenset(),
         shape=_PERSON_SHAPE,

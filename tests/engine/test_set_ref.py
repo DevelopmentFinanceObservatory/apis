@@ -255,6 +255,7 @@ def _entity_slot(axis: Axis, val: str) -> Slot:
 
 def _region(shape: Shape, slot: Slot, sv: str = "sv/X", index: int = 0) -> RegionResult:
     spec = build_spec(
+        composite=None,
         open_roles=(),
         measure_elected_properties=frozenset(),
         shape=shape,

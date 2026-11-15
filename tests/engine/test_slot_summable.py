@@ -296,6 +296,7 @@ class TestBuildSpec:
     def _spec(self, slots: list[Slot], *, pop: str = "EconomicActivity", mq: str | None = None):
         shape = shape_five_tuple(pop, "amount", mq)
         return build_spec(
+            composite=None,
             open_roles=(),
             shape=shape,
             slots=slots,

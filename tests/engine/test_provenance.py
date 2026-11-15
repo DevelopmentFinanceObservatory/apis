@@ -5,7 +5,8 @@ from __future__ import annotations
 import pytest
 
 from code_index.composites import DECLARED_COMPOSITES
-from code_index.declarations import CRS, CRS_INCLUSIVE
+from code_index.declarations import CRS, CRS_INCLUSIVE, DAC2A_BILATERAL
+from code_index.shared import get_index
 from origin_catalogue import BASE, DFO, UN_SYSTEM, ProvenanceRow, SourceRef
 from search.engine.region.refs import provenance_labels
 from search.models import DataCommonsRef, ProvenanceRef
@@ -146,13 +147,24 @@ def test_a_composite_facet_keeps_what_its_component_tables_share(
     bind_catalogue(restrictive_catalogue(provenances=rows))
     composite = DECLARED_COMPOSITES[CRS_INCLUSIVE]
 
-    ref = composite_facet_ref(composite)
+    ref = composite_facet_ref(composite, index=get_index())
 
     assert (ref.ref, ref.label, ref.documentation) == (CRS_INCLUSIVE, composite.label, None)
     assert (
         ref.data_commons.id if ref.data_commons else None,
         ref.source.ref if ref.source else None,
     ) == expected
+
+
+def test_the_bilateral_composite_facet_reads_apart_from_its_plain_table():
+    """The facet label of `DAC2A_BILATERAL`, whose declared label is its table's, carries the
+    composite's measure noun, as its bundle does."""
+    composite = DECLARED_COMPOSITES[DAC2A_BILATERAL]
+
+    ref = composite_facet_ref(composite, index=get_index())
+
+    assert ref.label == f"{composite.label} {composite.measure_noun}"
+    assert ref.label != composite.label
 
 
 class _LabelSpyGraph(FakeGraph):

@@ -74,6 +74,7 @@ from search.engine.region.option_coverage import (
     role_served_filter,
 )
 from search.engine.region.place_roles import request_named_groups
+from search.engine.region.reading import decide_read_scope
 from search.engine.region.requirements import answer_terms
 from search.engine.region.result import FacetAxisFilter, answered_roles
 from search.engine.region.scope import (
@@ -82,7 +83,8 @@ from search.engine.region.scope import (
     scope_axis,
     stated_scope_members,
 )
-from search.engine.region.state import ResolveState
+from search.engine.region.scope_decision import ScopeDecision
+from search.engine.region.state import MintedComposite, ResolveState
 from search.engine.region.trailing import settle_trailing
 from search.engine.retrieval.bound_values import (
     MeasureFamilyCacheKey,
@@ -659,6 +661,11 @@ class _GroundedCandidate:
     `spec` is the Spec as minted, with its unit conversion offer. The collapse rewrites the
     Specs it is handed (basis, equivalent readings, options, lexicon version) under the same
     `spec_id`, so it reads only the facts here.
+
+    A Spec minted as a composite (`minted`) reads its preview per component, so it carries
+    no probe inputs, since the table's slot options would stream under the composite's
+    spec_id.
+    Its scope lists the composite's parties (`CompositeMint.parties`).
     """
 
     spec: Spec
@@ -695,6 +702,10 @@ class _GroundedCandidate:
     unit_coverage: UnitCoverage
     # The bound-unit gate's verdict on the plan its answer serves (`_CandidateConversion`).
     unit_gate_reason: str | None
+    # The scope decided for the Spec and the composite it is minted as, where its scope
+    # compiles one (`_CandidateAnswer`).
+    decision: ScopeDecision
+    minted: MintedComposite | None
 
     @property
     def spec_id(self) -> str:
@@ -767,11 +778,22 @@ def _carrier_flags(cand: _Candidate, *, elected: bool) -> _CarrierFlags:
 
 
 class _CandidateAnswer(NamedTuple):
-    """The identity a candidate's Spec is minted as (`spec_build.answer_identity`) and the
-    facet bindings it holds."""
+    """The identity a candidate's Spec is minted from (`spec_build.answer_identity`), the
+    facet bindings it holds, the scope decided for it under the provider reading its read
+    elected (`reading.decide_read_scope`) and the composite its Spec is minted as,
+    where that scope compiles one. `decision` is None where the candidate was read within a
+    composite's population and no scope minting that composite could be decided."""
 
     identity: AnswerIdentity
     facet_bindings: dict[str, IdentityFacetBinding] | None
+    decision: ScopeDecision | None
+    minted: MintedComposite | None
+
+    @property
+    def spec_id(self) -> str:
+        """The composite's spec_id where the candidate's Spec is minted as one, else the
+        identity's."""
+        return self.identity.spec_id if self.minted is None else self.minted.mint.spec_id
 
 
 def _candidate_answer(
@@ -781,9 +803,14 @@ def _candidate_answer(
     groundwork: _CandidateGroundwork,
     prep: _CandidatePrep,
 ) -> _CandidateAnswer:
-    """The identity candidate `cand_index`'s Spec will be minted as, read before the rest
-    of its Spec is assembled, so a candidate whose `spec_id` an earlier one holds can be
-    skipped at no further cost."""
+    """The identity candidate `cand_index`'s Spec will be minted from and the scope decided
+    for it, read before the rest of its Spec is assembled, so a candidate whose `spec_id` an
+    earlier one holds can be skipped at no further cost.
+
+    The scope applies the provider reading the candidate's own read elected
+    (`_Candidate.reading`), as the definite answer's applies its read's
+    (`reading.decide_read_scope`), so a candidate read within a composite's population
+    is minted as that composite and labelled by the reading that read its rows."""
     facet_bindings: dict[str, IdentityFacetBinding] | None = (
         # A bound outcome guarantees a unit request. The type checker cannot carry that
         # attribute invariant through this access.
@@ -810,7 +837,20 @@ def _candidate_answer(
         pin_served_provenance=state.pin_served_provenance,
         named_groups=request_named_groups(state, cand.place.roles),
     )
-    return _CandidateAnswer(identity=identity, facet_bindings=facet_bindings)
+    scoped = decide_read_scope(
+        identity,
+        cand.reading,
+        selection=state.scope_selection,
+        operations=state.operations,
+        coverage=state.coverage,
+        catalogue=state.request_catalogue,
+    )
+    return _CandidateAnswer(
+        identity=identity,
+        facet_bindings=facet_bindings,
+        decision=scoped.decision,
+        minted=scoped.minted,
+    )
 
 
 def _finish_candidate(
@@ -828,8 +868,9 @@ def _finish_candidate(
     rivalled: bool,
     answer: _CandidateAnswer,
 ) -> _GroundedCandidate:
-    """Assemble one candidate's Spec, minted as `answer` (`_candidate_answer`), and the
-    metadata used by candidate collapse.
+    """Assemble one candidate's Spec, minted as `answer` (`_candidate_answer`), as the
+    composite it names where its scope compiles one, and the metadata used by candidate
+    collapse.
 
     `rivalled` holds when the status rule offers a structural or nominated rival beside
     the elected reading.
@@ -895,7 +936,10 @@ def _finish_candidate(
     cand_role_axis_facts = role_axis_facts_for_materialised(
         cand_mat, shape=cand_shape, plan=groundwork.plan
     )
+    decision, minted = answer.decision, answer.minted
+    assert decision is not None, "a candidate with no decided scope is not finished"
     cand_spec = build_spec(
+        composite=None if minted is None else minted.mint,
         shape=groundwork.shape_model,
         slots=groundwork.slots,
         stat_vars=groundwork.stat_vars,
@@ -960,10 +1004,7 @@ def _finish_candidate(
         plans=(groundwork.plan,) if groundwork.plan is not None else (),
     )
     # `build_spec` mints the Spec as `answer`, so it holds the id the dedup checked.
-    assert cand_spec.spec_id == answer.identity.spec_id, (
-        cand_spec.spec_id,
-        answer.identity.spec_id,
-    )
+    assert cand_spec.spec_id == answer.spec_id, (cand_spec.spec_id, answer.spec_id)
     coverage = prep.unit_coverage[cand_index]
     unit_refusals = dict(prep.unit_refusals[cand_index])
     if coverage.refusal is not None:
@@ -981,7 +1022,7 @@ def _finish_candidate(
         # Retain inputs for both buffered and SSE probes.
         probe_slot_options=(
             tuple(groundwork.slot_options_raw)
-            if state.stream_slot_options or state.include_option_coverage
+            if minted is None and (state.stream_slot_options or state.include_option_coverage)
             else None
         ),
         role_axis_facts=tuple(cand_role_axis_facts),
@@ -989,14 +1030,28 @@ def _finish_candidate(
         measure_siblings=cand_measure_siblings,
         open_axis_facts=cand_open_axis_facts,
         bulk_scope=bulk_scope_for(cand.place, cand_mat, sdmx=state.sdmx),
-        scope_members=(
-            tuple(cand_scope_member_dcids) if cand_scope_member_dcids is not None else None
-        ),
+        scope_members=_listed_members(cand_spec, cand_scope_member_dcids, minted=minted),
         elected=prep.elected_raw[cand_index],
         unit_refusals=unit_refusals,
         unit_coverage=coverage,
         unit_gate_reason=prep.unit_gate_reasons[cand_index],
+        decision=decision,
+        minted=minted,
     )
+
+
+def _listed_members(
+    spec: Spec, members: Sequence[str] | None, *, minted: MintedComposite | None
+) -> tuple[str, ...] | None:
+    """The members `spec`'s scope lists: `members`, the scope its plan serves, else, for a
+    Spec minted as a composite, the composite's parties its scope lists
+    (`CompositeMint.open_axes`)."""
+    if members is None:
+        return None
+    scope = spec.resolved.scope
+    if minted is None or scope is None:
+        return tuple(members)
+    return tuple(member.ref for member in scope.members)
 
 
 @dataclass(frozen=True)
@@ -1046,36 +1101,40 @@ def scopes_on_axis(
     }
 
 
-def restate_scope_warning(
-    state: ResolveState, scopes: Sequence[tuple[Materialised, Sequence[str] | None]]
-) -> None:
+def restate_scope_warning(state: ResolveState, entries: Sequence[_GroundedCandidate]) -> None:
     """Restate the elected shape's discovered-scope warning for the candidates a response
-    states, each given as its carrier and the scope its Spec lists
-    (`restate_role_scope_warnings`). The warning states a count only when every scope on its
-    axis lists the same members (`scopes_on_axis`), and otherwise names every member with
-    data. Grounding restates it over every candidate, and the collapse over the candidates
-    the unit filter keeps, so a lone survivor's warning counts its own scope, as its
-    resubmit does."""
+    states (`entries`), each with the scope its Spec lists (`restate_role_scope_warnings`).
+    The warning states a count only when every scope on its axis lists the same members
+    (`scopes_on_axis`), and otherwise names every member with data. Grounding restates it
+    over every kept candidate, and the collapse over the candidates the unit filter keeps,
+    so a lone survivor's warning counts its own scope, as its resubmit does. Where the
+    elected candidate's Spec is minted as a composite, the count is the composite's parties
+    (`CompositeMint.role_scope_warnings`), as the definite answer's is."""
     if state.opposite_labels is None or not isinstance(state.mat_result, Materialised):
         return
     axis = scope_axis(state.mat_result)
     on_axis = [
-        members
-        for candidate, members in scopes
-        if members is not None and scope_axis(candidate) == axis
+        entry.scope_members
+        for entry in entries
+        if entry.scope_members is not None and scope_axis(entry.candidate.mat) == axis
     ]
     if not on_axis:
         return
     distinct = scopes_on_axis(
-        [candidate for candidate, _members in scopes],
-        [members for _candidate, members in scopes],
+        [entry.candidate.mat for entry in entries],
+        [entry.scope_members for entry in entries],
         axis=axis,
     )
-    own = next((members for candidate, members in scopes if candidate is state.mat_result), None)
+    own = next((entry for entry in entries if entry.candidate.mat is state.mat_result), None)
+    if own is not None and own.minted is not None and len(distinct) <= 1:
+        state.warnings[:] = own.minted.mint.role_scope_warnings(state.warnings, own.spec)
+        return
     restate_role_scope_warnings(
         state.warnings,
         state.mat_result,
-        members=own if own is not None else on_axis[0],
+        members=own.scope_members
+        if own is not None and own.scope_members is not None
+        else on_axis[0],
         boundary_roles=state.place.roles.roles,
         label_of=state.opposite_labels,
         unnamed_wholes=state.place.roles.unnamed_wholes,
@@ -1098,10 +1157,6 @@ def ground_candidates(state: ResolveState, candidates: list[_Candidate]) -> _Gro
     """
     prep = _prepare_candidate_context(state, candidates)
     candidates = prep.candidates
-    restate_scope_warning(
-        state,
-        [(cand.mat, members) for cand, members in zip(candidates, prep.scope_members, strict=True)],
-    )
     answer_t0 = now_ms()
     measure_family_cache: dict[MeasureFamilyCacheKey, tuple[MeasurePartition, ...]] = {}
     # These forced qualifier, measure, and default bindings belong only to candidates that
@@ -1120,7 +1175,9 @@ def ground_candidates(state: ResolveState, candidates: list[_Candidate]) -> _Gro
         answer = _candidate_answer(state, cand_index, cand, groundwork, prep)
         # A candidate whose Spec an earlier one holds adds no Spec or record, and its Spec is
         # not assembled. It follows the candidate it repeats, so it is never the elected one.
-        if answer.identity.spec_id in entries:
+        # One read within a composite's population that cannot be minted as it is dropped,
+        # since the table's label would state the population's rows (`reading.decide_read_scope`).
+        if answer.decision is None or answer.spec_id in entries:
             continue
         entry = _finish_candidate(
             state,
@@ -1140,6 +1197,7 @@ def ground_candidates(state: ResolveState, candidates: list[_Candidate]) -> _Gro
         if cand.mat.family_total_absent is not None:
             state.family_total_absent[entry.spec_id] = cand.mat.family_total_absent
 
+    restate_scope_warning(state, list(entries.values()))
     _warn_for_candidates(state, prep, groundworks)
     return _GroundedCandidates(entries=entries, answer_t0=answer_t0)
 

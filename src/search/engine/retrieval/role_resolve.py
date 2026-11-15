@@ -975,7 +975,7 @@ def graph_confirm_resolve(
     discover_scope: bool = False,
     open_axes: frozenset[RoleAxis] = frozenset(),
     coverage_snapshot: CoverageSnapshot,
-    within: Mapping[RoleAxis, frozenset[str]] | None = None,
+    within: Mapping[RoleAxis, frozenset[str]] | None,
 ) -> Materialised | NoDataDraft | UnsupportedDraft:
     """Filter a role-bearing shape's members by bound values, then confirm observations.
 

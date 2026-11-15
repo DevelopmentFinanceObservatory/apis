@@ -45,6 +45,7 @@ if TYPE_CHECKING:
     from search.engine.options.population_memo import OptionsPopulationMemo
     from search.engine.region.place_options import PlaceOptionsPool
     from search.models import BaseIdentity
+    from search.scope.composite import CompositeMint
 
 
 def _resolve_standard_promote(
@@ -64,8 +65,10 @@ def _resolve_standard_promote(
     population_memo: OptionsPopulationMemo | None = None,
     place_options_pool: PlaceOptionsPool | None = None,
     coverage: CoverageSnapshot,
+    composite: CompositeMint | None = None,
 ) -> RegionResult:
-    """Resolve a resubmit from the identity alone.
+    """Resolve a resubmit from the identity alone, its Spec minted as `composite` where one
+    is given (`spec_build.build_spec`).
 
     The identity's members are elected as the Datasets mint elects them
     (`promote_reread._elected_members`): the release's code index for a named measure family or
@@ -100,6 +103,7 @@ def _resolve_standard_promote(
         population_memo=population_memo,
         place_options_pool=place_options_pool,
         coverage=coverage,
+        composite=composite,
         role_class_walks=(
             RoleClassWalks(
                 materialise_graph,
