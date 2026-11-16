@@ -145,7 +145,7 @@ def test_a_dac2a_destination_is_placed_on_its_side(
 
 def test_an_unknown_party_that_is_no_country_is_unclassified():
     """A party the graph types neither a country nor an organisation is a drift the mint
-    refuses, not a bilateral recipient."""
+    refuses."""
     assert _side(_row("SomeNewAgency", "party")) is None
 
 

@@ -384,8 +384,9 @@ def _parse_party(row: Mapping) -> PartyRow:
     `sums_members` on a party that holds no group or that counts residuals. `whole` markers are
     parsed by `_parse_whole_marker` and checked by `_check_whole_markers`, the dataset kinds by
     `_check_dataset_kinds`, and the class by `_check_party_class`. `published` and `types` are
-    required and may be empty, and `types` must be a list of strings. `residuals`, `sums_members`, `label`, `whole` and
-    `dataset_kinds` are optional, and a row without `sums_members` reads it as true.
+    required and may be empty, and `types` must be a list of strings. `residuals`,
+    `sums_members`, `label`, `whole` and `dataset_kinds` are optional, and a row without
+    `sums_members` reads it as true.
     `party_class` is required on a `party` and a residual and may be absent on a total."""
     if legacy := sorted(_LEGACY_PARTY_KEYS & row.keys()):
         raise IndexFormatError(

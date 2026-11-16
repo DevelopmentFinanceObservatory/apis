@@ -84,8 +84,8 @@ _MODULE_TABLES: Final[tuple[tuple[ModuleType, str], ...]] = (
 the `code_index.declarations` tables `code_index.export` reads, the composites
 `code_index.loader.parse_index` serves (`COMPOSITES`), the totals `search` binds on an open
 flow side (`CONTAINING_TOTALS`), the graph type `code_index.multilaterals` reads a multilateral
-by, and the `code_index.scope_conventions` tables `search.scope` reads. Every name is unique across
-modules, since `declarations_json` keys each table by its name alone."""
+by, and the `code_index.scope_conventions` tables `search.scope` reads. Every name is unique
+across modules, since `declarations_json` keys each table by its name alone."""
 
 
 @dataclass(frozen=True)

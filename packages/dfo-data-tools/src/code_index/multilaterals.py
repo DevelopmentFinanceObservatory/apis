@@ -1,10 +1,11 @@
 """Which parties are multilateral organisations, read from the code index, so Search (donors)
 and the mint (DAC2a destinations) classify a party the same way.
 
-A multilateral is an official party the graph types `Organization` (`PartyRow.types`); the
-private providers the graph types alike, the foundations, the code index classes `private`
-(`PartyRow.party_class`). The EU institutions count, since they spend their member states'
-contributions (`code_index.scope_conventions.REDISTRIBUTED_PROVIDERS`).
+A multilateral is an official party the graph types `Organization` (`PartyRow.types`). The
+foundations, which the graph types `Organization` too, are private providers
+(`PartyRow.party_class`) and so are no multilateral. The EU institutions count, since they
+spend their member states' contributions
+(`code_index.scope_conventions.REDISTRIBUTED_PROVIDERS`).
 """
 
 from __future__ import annotations

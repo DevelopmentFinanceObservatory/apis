@@ -148,8 +148,8 @@ class CompositeNotServable(ValueError):
 
 
 UnclassifiedIn = Literal["code_index", "coverage"]
-"""Where a destination `destination_side` cannot place was found: among the parties the code index
-publishes in the dataset, or among the recipients coverage holds for the population's
+"""Where a destination `destination_side` cannot place was found, among the parties the code
+index publishes in the dataset or among the recipients coverage holds for the population's
 variables (`population_check`)."""
 
 
@@ -157,9 +157,9 @@ variables (`population_check`)."""
 class UnclassifiedDestinations:
     """Destinations of `dataset`, a dataset a composite component binds the destinations of
     (`ComponentRecipe.destinations`), which `destination_side` cannot place: its graph types or
-    the declarations it reads have drifted from the graph. `found_in` says where they were found. While any is
-    unclassified the population is unavailable, since a list of members would leave the
-    drifted destination out without a word.
+    the declarations it reads have drifted from the graph. `found_in` says where they were
+    found. While any is unclassified the population is unavailable, since a list of members
+    would leave the drifted destination out without a word.
 
     `unlisted` names the population's variables whose recipients coverage cannot list: it
     holds rows of the variable, but no facet of it carries `dataset` as its provenance. A
@@ -663,8 +663,8 @@ def population_check(index: CodeIndex, coverage: CoverageIndex) -> PopulationChe
     recipients `coverage` holds for the population's variables: the rows of the dataset that
     hold every code a component binding the population binds (`ComponentRecipe.bind`). A
     recipient the code index does not publish there as a destination is one
-    `destination_side` cannot place, and the population's members would leave it out without a word, so
-    the population is unavailable until the code index places it. A population the code
+    `destination_side` cannot place, and the population's members would leave it out without
+    a word, so the population is unavailable until the code index places it. A population the code
     index itself cannot place (`destination_population`) is unavailable too, and so is one
     with a variable whose recipients coverage cannot list (`UnclassifiedDestinations
     .unlisted`): the check fails closed.
