@@ -21,6 +21,7 @@ from dfo_platform.config import CallerSettings
 _KEY = "test-key"
 _PRINCIPAL = "website-secret"
 _NAMED = "ip:" + "ab" * 16
+_ACCOUNT = "user:" + "cd" * 16
 
 
 def _digest(preimage: str) -> str:
@@ -119,6 +120,34 @@ def test_the_website_names_its_caller_under_the_principal():
     assert resolve_caller(request, _settings(key="")) == Caller(kind="address", key=_NAMED)
 
 
+def test_the_website_names_an_account_caller_under_the_principal():
+    """A request made with an API key counts against its account, whatever address it came from."""
+    request = _request(
+        ("x-forwarded-for", "3.3.3.3"),
+        ("x-dfo-caller-principal", _PRINCIPAL),
+        ("x-dfo-caller", _ACCOUNT),
+    )
+
+    # The named caller needs no key of this service's own.
+    assert resolve_caller(request, _settings(key="")) == Caller(kind="account", key=_ACCOUNT)
+
+
+def test_an_account_caller_is_the_same_whichever_address_the_key_is_used_from():
+    callers = {
+        resolve_caller(
+            _request(
+                ("x-forwarded-for", address),
+                ("x-dfo-caller-principal", _PRINCIPAL),
+                ("x-dfo-caller", _ACCOUNT),
+            ),
+            _settings(),
+        )
+        for address in ("3.3.3.3", "4.4.4.4", "2001:db8::1")
+    }
+
+    assert callers == {Caller(kind="account", key=_ACCOUNT)}
+
+
 @pytest.mark.parametrize(
     "callers",
     [
@@ -127,8 +156,34 @@ def test_the_website_names_its_caller_under_the_principal():
         ["ip:" + "ab" * 15],
         ["ab" * 16],
         [_NAMED, _NAMED],
+        ["user:" + "CD" * 16],
+        ["user:" + "cd" * 15],
+        ["user:" + "cd" * 17],
+        ["user:" + "zz" * 16],
+        ["user:"],
+        [" " + _ACCOUNT],
+        [_ACCOUNT + "\n"],
+        ["USER:" + "cd" * 16],
+        [_ACCOUNT, _ACCOUNT],
+        [_NAMED, _ACCOUNT],
     ],
-    ids=["missing", "uppercase", "short", "no-prefix", "repeated"],
+    ids=[
+        "missing",
+        "uppercase",
+        "short",
+        "no-prefix",
+        "repeated",
+        "user-uppercase",
+        "user-short",
+        "user-long",
+        "user-not-hex",
+        "user-empty",
+        "user-leading-space",
+        "user-trailing-newline",
+        "user-prefix-uppercase",
+        "user-repeated",
+        "ip-and-user",
+    ],
 )
 def test_the_principal_without_one_well_formed_caller_refuses_400(callers: list[str]):
     request = _request(
@@ -180,3 +235,28 @@ def test_a_caller_header_without_a_principal_is_ignored():
     request = _request(("x-forwarded-for", "3.3.3.3"), ("x-dfo-caller", _NAMED))
 
     assert resolve_caller(request, _settings()).key == _digest("3.3.3.3")
+
+
+def test_an_account_caller_without_a_principal_is_ignored_and_the_address_names_the_caller():
+    """A direct request cannot claim an account: `user:` counts only beside the website's secret."""
+    request = _request(("x-forwarded-for", "3.3.3.3"), ("x-dfo-caller", _ACCOUNT))
+
+    assert resolve_caller(request, _settings()) == Caller(kind="address", key=_digest("3.3.3.3"))
+
+
+def test_an_account_caller_under_a_wrong_principal_refuses_500_and_is_not_used():
+    request = _request(
+        ("x-forwarded-for", "3.3.3.3"),
+        ("x-dfo-caller-principal", "not-the-secret"),
+        ("x-dfo-caller", _ACCOUNT),
+    )
+
+    with pytest.raises(CallerUnresolved):
+        resolve_caller(request, _settings())
+
+
+def test_the_invalid_header_refusal_names_both_forms():
+    message = str(CallerHeaderInvalid())
+
+    assert "ip:<32 lowercase hex digits>" in message
+    assert "user:<32 lowercase hex digits>" in message

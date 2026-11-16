@@ -105,7 +105,7 @@ class AllowanceKind(StrEnum):
 
 
 BUDGET_KEY = "all"
-"""The key a budget every caller shares is kept under, beside the `ip:` keys of callers."""
+"""The key a budget every caller shares is kept under, beside the `ip:` and `user:` keys of callers."""
 
 
 @dataclass(frozen=True)
