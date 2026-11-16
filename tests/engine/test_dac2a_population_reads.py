@@ -276,7 +276,7 @@ def test_a_population_filter_keys_search_s_sdmx_reads_by_its_members() -> None:
 
 
 _UNPLACED = "DACRecipientOnNoSide"
-"""A DAC2a destination the code index holds no row for, so no side declaration places it."""
+"""A DAC2a destination the code index holds no row for, so `destination_side` cannot place it."""
 
 
 def _refused_as_unavailable(
@@ -292,7 +292,7 @@ def _refused_as_unavailable(
 def test_a_composite_whose_coverage_holds_a_destination_on_no_side_refuses_at_resubmit(
     provenance: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The coverage snapshot holds a DAC2a recipient no side declaration places, so the
+    """The coverage snapshot holds a DAC2a recipient `destination_side` cannot place, so the
     population would leave it out without a word (`population_check`): a posted composite
     refuses as its scope option reads, not offered, with the destination named and total
     ODA as the alternative, where Search would otherwise answer a scope the mint refuses."""
@@ -327,7 +327,7 @@ def _unavailable(provenance: str):
 def test_a_composite_whose_code_index_places_no_side_refuses_at_resubmit(
     provenance: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A code index publishing a destination no side declaration places makes the
+    """A code index publishing a destination `destination_side` cannot place makes the
     population unavailable where the composite derives (`PopulationUnavailable`): the
     resubmit door refuses it as a scope it does not offer, not as a server fault."""
 

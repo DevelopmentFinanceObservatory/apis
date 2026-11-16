@@ -262,7 +262,7 @@ def test_a_composite_head_rebuilds_when_its_deployed_declaration_changes(
 def test_a_composite_whose_population_is_unavailable_rebuilds_without_raising(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """Under a code index whose side declarations no longer place a DAC2a destination, the
+    """Under a code index that cannot place a DAC2a destination on a side, the
     bilateral composite has no digest: the check reports it changed, so the head rebuilds and
     the mint answers the refusal, and nothing raises out of the check."""
     stored = replace(
@@ -270,8 +270,12 @@ def test_a_composite_whose_population_is_unavailable_rebuilds_without_raising(
         composites=((DAC2A_BILATERAL, declared_composite_digest(DAC2A_BILATERAL, index=_INDEX)),),
     )
 
-    def unplaced_kenya(row, *, datasets):
-        return None if row.dcid == "country/KEN" else destination_side(row, datasets=datasets)
+    def unplaced_kenya(row, *, datasets, index):
+        return (
+            None
+            if row.dcid == "country/KEN"
+            else destination_side(row, datasets=datasets, index=index)
+        )
 
     monkeypatch.setattr(composites_module, "destination_side", unplaced_kenya)
     drifted = _parse_index()

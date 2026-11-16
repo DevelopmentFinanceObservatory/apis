@@ -27,6 +27,7 @@ def _party(dcid: str, kind: str, **extra: Any) -> dict[str, Any]:
         "dcid": dcid,
         "kind": kind,
         "totals": None,
+        "types": [],
         "published": _donor_in(_DAC2A),
         **extra,
     }

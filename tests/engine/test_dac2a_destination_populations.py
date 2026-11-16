@@ -973,7 +973,7 @@ def test_a_fresh_bilateral_answer_s_component_carries_the_bound_population() -> 
     assert not component.identity.open_roles
 
 
-# A DAC2a destination the code index holds no row for, so no side declaration places it and
+# A DAC2a destination the code index holds no row for, so `destination_side` cannot place it and
 # the bilateral population is unavailable (`code_index.composites.population_check`).
 _UNCLASSIFIED = "DACRecipientOnNoSide"
 
@@ -1056,8 +1056,8 @@ def test_a_ranking_over_every_donor_says_when_it_cannot_read_bilateral_destinati
     params: dict[str, str],
 ) -> None:
     """A fresh ranking over every donor has no provider axis to state why it reads total ODA,
-    so where the bilateral default cannot apply, for a population no side declaration fully
-    places, a composite covering fewer years than the answer or none the window reaches, a
+    so where the bilateral default cannot apply, for a population `destination_side` cannot
+    fully place, a composite covering fewer years than the answer or none the window reaches, a
     composite refusing a slot the part binds, or a scope decision that raises, it warns
     `bilateral_reading_unavailable` on its own spec_id with the registered reason, and the
     slot's property for a slot it cannot serve."""

@@ -1,8 +1,9 @@
 """A composite component that binds its destinations to the bilateral side reads DAC2a's
 bilateral population (`code_index.composites.destination_population`): an open destination
 binds the population's members and is tagged as a population, a named one passes only on the
-bilateral side, and an absent one binds the population's total. A destination no side
-declaration places, in the code index or in coverage, makes the population unavailable."""
+bilateral side, and an absent one binds the population's total. A destination
+`destination_side` cannot place, in the code index or in coverage, makes the population
+unavailable."""
 
 from __future__ import annotations
 
@@ -181,8 +182,8 @@ def _placing_kenya_as(monkeypatch: pytest.MonkeyPatch, side: str | None) -> Code
     """A fresh index, so the population memo builds again, whose classifier places Kenya on
     `side`."""
 
-    def placed(row, *, datasets):
-        return side if row.dcid == _KENYA else destination_side(row, datasets=datasets)
+    def placed(row, *, datasets, index):
+        return side if row.dcid == _KENYA else destination_side(row, datasets=datasets, index=index)
 
     monkeypatch.setattr(composites_module, "destination_side", placed)
     return _parse()

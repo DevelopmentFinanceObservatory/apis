@@ -305,6 +305,7 @@ def export_parties(
     load when two windows of a total name different classes. Its label is its graph name, `None` when the graph gives it
     none. A row carries `whole` only for a total in `whole_totals`, and a marker's `years` only
     for a window with a first year, ending in the last year the dataset publishes the total.
+    `types` lists the party's graph types (`typeOf`), sorted and each once.
 
     Raises `ExportRefused` for a `kind_overrides` row naming a party not in `parties`, a
     `kind_overrides` row naming a dataset that does not publish its party, or none, or every one,
@@ -361,6 +362,7 @@ def export_parties(
             "kind": kind,
             "party_class": _party_class(kind, private=dcid in private),
             "label": _graph_label(dcid, party_arcs),
+            "types": sorted(set(party_arcs.get("typeOf", ()))),
             "totals": None if total is None else total.group,
             "residuals": [] if total is None else sorted(total.residuals),
             "sums_members": True if total is None else total.sums_members,

@@ -674,6 +674,10 @@ class PartyRow:
     on the axis of the role it serves, so a kind a dataset gives the party on one axis applies only
     to roles on that axis. `party_class` is the class of `kind`; where the party takes another kind it
     takes that kind's class (`class_of`).
+
+    `types` holds the party's graph types (`typeOf`), sorted and each once, as the export read
+    them. It is empty for a party whose `PARTY_KIND_OVERRIDES` row sets its kind everywhere and
+    whose node carries no type.
     """
 
     dcid: str
@@ -686,6 +690,7 @@ class PartyRow:
     published: tuple[tuple[str, RoleAxis], ...] = ()
     whole: tuple[WholeMarker, ...] = ()
     dataset_kinds: tuple[tuple[str, PartyKind], ...] = ()
+    types: tuple[str, ...] = ()
 
     def publishes(self, axis: RoleAxis, datasets: Collection[str] | AnyDataset) -> bool:
         """Whether one of `datasets` publishes the party on `axis`, or any dataset does for

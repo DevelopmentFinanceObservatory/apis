@@ -490,7 +490,7 @@ def _destination_rule(
         for dcid in dcids
     ]
     sides = {
-        dcid: destination_side(party, datasets=(source.dataset,))
+        dcid: destination_side(party, datasets=(source.dataset,), index=index)
         if (party := index.parties.get(dcid)) is not None
         else None
         for dcid in named
@@ -507,8 +507,9 @@ def _destination_rule(
 def _population_unavailable(composite: str, facts: ScopeFacts) -> bool:
     """Whether a component of `composite` reads a population of destinations that is
     unavailable in `facts`' indexes (`code_index.composites.population_check`): a destination
-    the code index or the coverage snapshot holds that no side declaration places, which the
-    mint refuses to read."""
+    the code index or the coverage snapshot holds that
+    `code_index.scope_conventions.destination_side` cannot place, which the mint refuses to
+    read."""
     return population_check(facts.index, facts.coverage.index).refusal(composite) is not None
 
 

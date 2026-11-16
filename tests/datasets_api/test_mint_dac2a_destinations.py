@@ -220,12 +220,16 @@ def test_a_composite_whose_population_coverage_cannot_place_refuses_before_any_r
 def test_a_composite_whose_code_index_cannot_place_a_destination_is_a_server_fault(
     monkeypatch: pytest.MonkeyPatch, provenance: str
 ) -> None:
-    """A code index publishing a destination no side declaration places leaves the population
+    """A code index publishing a destination `destination_side` cannot place leaves the population
     unavailable: the components refuse as a server fault naming it, and not as the caller's
     unservable composite."""
 
-    def unplaced(row, *, datasets):
-        return None if row.dcid == _RECIPIENT else destination_side(row, datasets=datasets)
+    def unplaced(row, *, datasets, index):
+        return (
+            None
+            if row.dcid == _RECIPIENT
+            else destination_side(row, datasets=datasets, index=index)
+        )
 
     monkeypatch.setattr(composites_module, "destination_side", unplaced)
     with gzip.open(INDEX_FIXTURE) as handle:

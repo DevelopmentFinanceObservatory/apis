@@ -181,9 +181,10 @@ class DestinationUnclassifiedError(MaterialisationError):
     """500 `internal_error`. Raised before any read of a composite whose component binds its
     destinations to one side (`code_index.types.ComponentRecipe.destinations`) while that
     side's population is unavailable (`code_index.composites.population_check`): the code
-    index publishes, or coverage holds rows at, a destination no side declaration places,
-    or coverage cannot list the recipients of a population variable. The graph release and
-    the code index or the side declarations have drifted apart, and a population leaving
+    index publishes, or coverage holds rows at, a destination
+    `code_index.scope_conventions.destination_side` cannot place, or coverage cannot list the
+    recipients of a population variable. The graph release and the code index have drifted
+    apart, and a population leaving
     the destination out would understate the figure with no trace. `destinations` holds the
     dcids, sorted, `variables` the unlisted variables, and `dataset` the component's
     table."""
