@@ -21,7 +21,7 @@ rule version.
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable, Mapping
+from collections.abc import Collection, Iterable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -43,6 +43,8 @@ from code_index.declarations import (
     DAC2A_TOTAL_ODA,
 )
 from code_index.multilaterals import ORGANIZATION_TYPE, party_facts
+from code_index.query import CodeIndex
+from code_index.shared import per_index
 from code_index.types import ComponentDestinations, PartyRow
 
 MeasureBasis = Literal["gross", "net", "grant_equivalent", "commitments", "oecd_headline"]
@@ -651,12 +653,12 @@ DestinationSide = Literal["bilateral", "multilateral", "spanning"]
 
 
 def destination_side(
-    row: PartyRow, *, datasets: Collection[str], parties: Mapping[str, PartyRow]
+    row: PartyRow, *, datasets: Collection[str], index: CodeIndex
 ) -> DestinationSide | None:
     """The side of `row` as a recipient in `datasets`, or `None` when it is unclassified: no
     dataset publishes it as a recipient, they give it different kinds, or the classifier
-    cannot place it. `parties` is the code index's party rows, which hold the totals that
-    list a residual.
+    cannot place it. `index` is the code index `row` comes from, whose totals list the
+    residuals they count.
 
     The rule reads the graph types the code index keeps on each row (`PartyRow.types`), so a
     recipient the OECD adds takes its side from its type. A total is `spanning` when
@@ -676,10 +678,8 @@ def destination_side(
         return _total_side(row)
     if kind == "residual":
         if any(
-            row.dcid in total.residuals
-            and total.kind_over("destination", datasets) == "total"
-            and _total_side(total) == "bilateral"
-            for total in parties.values()
+            total.kind_over("destination", datasets) == "total"
+            for total in _bilateral_totals_listing(index).get(row.dcid, ())
         ):
             return "bilateral"
         if DAC_MULTILATERAL_RESIDUAL_TYPE in row.types:
@@ -690,6 +690,19 @@ def destination_side(
     if party_facts(row, axis="destination", datasets=datasets).multilateral:
         return "multilateral"
     return "bilateral" if COUNTRY_TYPE in row.types else None
+
+
+@per_index
+def _bilateral_totals_listing(index: CodeIndex) -> dict[str, tuple[PartyRow, ...]]:
+    """Each residual a total `_total_side` places `bilateral` counts, mapped to the totals
+    that count it, so `destination_side` reads a residual's totals without a pass over every
+    party."""
+    listing: dict[str, list[PartyRow]] = {}
+    for total in index.parties.values():
+        if total.residuals and _total_side(total) == "bilateral":
+            for residual in total.residuals:
+                listing.setdefault(residual, []).append(total)
+    return {residual: tuple(totals) for residual, totals in listing.items()}
 
 
 def _total_side(total: PartyRow) -> DestinationSide:

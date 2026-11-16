@@ -208,7 +208,7 @@ def composite_table_identity(
     code index (`code_index.composites.PopulationUnavailable`) or in `coverage`, the
     request's coverage snapshot, or the release's where the door holds none
     (`code_index.composites.population_check`), with 422 `requested_option_unavailable`,
-    cause `provider_not_offered`, the destinations no side declaration places, at `pointer`
+    cause `provider_not_offered`, the destinations `destination_side` cannot place, at `pointer`
     joined with the provenance facet; the alternative names the dataset whose total ODA reads
     every destination (`_population_unavailable`), as a fresh search reads it then. Refuses a
     composite that reads one side of its destinations and is posted naming a destination off
@@ -253,7 +253,7 @@ def _population_unavailable(
     index: CodeIndex, ref: str, unclassified: UnclassifiedDestinations, *, pointer: str
 ) -> EngineInputError:
     """The refusal of composite `ref`, whose population of `unclassified.dataset`'s
-    destinations is unavailable: the side declarations have drifted from the graph, so the
+    destinations is unavailable: the code index cannot place a destination on a side, so the
     composite is not offered (`provider_not_offered`, why `destination_unclassified`), and
     the dataset's own total ODA, which reads every destination, is the alternative."""
     dataset = unclassified.dataset

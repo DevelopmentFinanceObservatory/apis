@@ -7,8 +7,9 @@ from __future__ import annotations
 import pytest
 
 from code_index.declarations import DAC2A
+from code_index.query import CodeIndex
 from code_index.scope_conventions import DestinationSide, destination_side
-from code_index.types import PartyKind, PartyRow
+from code_index.types import IndexStamp, PartyKind, PartyRow
 from tests.code_index.support import INDEX_FIXTURE, load_index
 
 _DATASETS = (DAC2A,)
@@ -40,11 +41,23 @@ _TOTALS = (
     _row("DACSomeNewRegion", "total", ("DACGroup",), ("DACSomeNewProject",)),
     _row("SomeAgencyGroup", "total", ("Organization",), ("DACSomeAgencyProject",)),
 )
-_PARTIES = {row.dcid: row for row in _TOTALS}
+_INDEX = CodeIndex(
+    stamp=IndexStamp(
+        graph_endpoint="https://fake.example",
+        exported_at="2026-09-15T00:00:00Z",
+        code_counts={},
+        statvar_shape_counts={},
+        content_hash="",
+    ),
+    declarations=(),
+    codes=(),
+    statvars=(),
+    parties=_TOTALS,
+)
 
 
 def _side(row: PartyRow) -> DestinationSide | None:
-    return destination_side(row, datasets=_DATASETS, parties=_PARTIES)
+    return destination_side(row, datasets=_DATASETS, index=_INDEX)
 
 
 @pytest.mark.parametrize(
@@ -82,7 +95,7 @@ def _side(row: PartyRow) -> DestinationSide | None:
             "party",
             ("Organization",),
             "multilateral",
-            id="an-agency-the-resolver-records-lack",
+            id="an-organisation-typed-party",
         ),
         pytest.param(
             "DACSomeNewGroup", "total", ("DACGroup",), "bilateral", id="an-unlisted-dac-group"
@@ -149,14 +162,29 @@ def test_a_party_no_dataset_publishes_as_a_recipient_is_unclassified():
 
 
 def test_every_dac2a_destination_of_the_recorded_index_is_classified():
-    parties = load_index(INDEX_FIXTURE).parties
-    destinations = [row for row in parties.values() if row.publishes("destination", _DATASETS)]
+    """The recorded residuals keep their sides: the five unspecified parties that stand for the
+    multilaterals read multilateral, and the Mekong Delta Project, an unspecified party Asia
+    counts, reads bilateral through the totals that list it."""
+    index = load_index(INDEX_FIXTURE)
+    destinations = [
+        row for row in index.parties.values() if row.publishes("destination", _DATASETS)
+    ]
+    sides = {
+        row.dcid: destination_side(row, datasets=_DATASETS, index=index) for row in destinations
+    }
 
-    assert destinations
-    unclassified = [
+    assert [dcid for dcid, side in sides.items() if side is None] == []
+    assert len(destinations) == 279
+    assert sorted(
         row.dcid
         for row in destinations
-        if destination_side(row, datasets=_DATASETS, parties=parties) is None
+        if row.kind_over("destination", _DATASETS) == "residual"
+        and sides[row.dcid] == "multilateral"
+    ) == [
+        "DACOtherEUInstitutions",
+        "DACOtherMultilateralRecipient",
+        "DACOtherRegionalDevelopmentBanks",
+        "DACOtherUnitedNations",
+        "DACOtherWorldBank",
     ]
-    assert unclassified == []
-    assert len(destinations) == 279
+    assert sides["DACMekongDeltaProject"] == "bilateral"

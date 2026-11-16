@@ -454,7 +454,7 @@ settled on but not every year read, so it reads total ODA."""
 
 _WITHHELD_REASONS: Mapping[WithheldWhy, str] = {
     "destination_unclassified": (
-        "the data holds a destination no side declaration places, so the bilateral "
+        "the data holds a destination on no side, so the bilateral "
         "destinations cannot be told apart"
     ),
     "option_not_covered": "the bilateral destinations do not cover every year of the answer",

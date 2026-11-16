@@ -148,7 +148,7 @@ class CompositeNotServable(ValueError):
 
 
 UnclassifiedIn = Literal["code_index", "coverage"]
-"""Where a destination no side declaration places was found: among the parties the code index
+"""Where a destination `destination_side` cannot place was found: among the parties the code index
 publishes in the dataset, or among the recipients coverage holds for the population's
 variables (`population_check`)."""
 
@@ -156,8 +156,8 @@ variables (`population_check`)."""
 @dataclass(frozen=True)
 class UnclassifiedDestinations:
     """Destinations of `dataset`, a dataset a composite component binds the destinations of
-    (`ComponentRecipe.destinations`), which `destination_side` cannot place: the declarations
-    have drifted from the graph. `found_in` says where they were found. While any is
+    (`ComponentRecipe.destinations`), which `destination_side` cannot place: its graph types or
+    the declarations it reads have drifted from the graph. `found_in` says where they were found. While any is
     unclassified the population is unavailable, since a list of members would leave the
     drifted destination out without a word.
 
@@ -178,16 +178,13 @@ class UnclassifiedDestinations:
                 f"{list(self.unlisted)!r}"
             )
         where = "publishes" if self.found_in == "code_index" else "holds coverage of"
-        return (
-            f"{self.dataset} {where} destinations no side declaration places: "
-            f"{list(self.destinations)!r}"
-        )
+        return f"{self.dataset} {where} destinations on no side: {list(self.destinations)!r}"
 
 
 class PopulationUnavailable(CompositeNotServable):
     """A composite, provenance `ref`, whose component reads a population of destinations
     (`destination_population`) that is unavailable, for the reason `unclassified` gives: the
-    side declarations have drifted from the graph, a server fault. `pointer` is the
+    code index cannot place a destination on a side, a server fault. `pointer` is the
     composite's provenance facet, since no edit of the identity serves it. A handler of
     `CompositeNotServable` that reads every refusal as the caller's fault catches this first."""
 
@@ -478,7 +475,7 @@ def _bound_datasets() -> frozenset[str]:
 @dataclass(frozen=True)
 class _Classified:
     """One dataset's destinations as `index` publishes them: its population, or the
-    destinations no side declaration places, with no population."""
+    destinations `destination_side` cannot place, with no population."""
 
     population: RolePopulation | None
     unclassified: tuple[str, ...]
@@ -502,7 +499,7 @@ def _classified(index: CodeIndex) -> Mapping[str, _Classified]:
         for dcid, row in index.parties.items():
             if not row.publishes(_DESTINATION, (dataset,)):
                 continue
-            side = destination_side(row, datasets=(dataset,), parties=index.parties)
+            side = destination_side(row, datasets=(dataset,), index=index)
             if side is None:
                 unclassified.append(dcid)
             elif side == "bilateral":
@@ -665,8 +662,8 @@ def population_check(index: CodeIndex, coverage: CoverageIndex) -> PopulationChe
     """Check every population `index` declares (`destination_population`) against the
     recipients `coverage` holds for the population's variables: the rows of the dataset that
     hold every code a component binding the population binds (`ComponentRecipe.bind`). A
-    recipient the code index does not publish there as a destination is one no side
-    declaration places, and the population's members would leave it out without a word, so
+    recipient the code index does not publish there as a destination is one
+    `destination_side` cannot place, and the population's members would leave it out without a word, so
     the population is unavailable until the code index places it. A population the code
     index itself cannot place (`destination_population`) is unavailable too, and so is one
     with a variable whose recipients coverage cannot list (`UnclassifiedDestinations

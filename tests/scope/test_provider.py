@@ -3201,7 +3201,7 @@ _UNCLASSIFIED = "DACRecipientOnNoSide"
 
 
 def test_a_dac2a_total_naming_a_destination_on_no_side_keeps_total_oda():
-    """A donor's DAC2a rows at a destination no side declaration places leave the bilateral
+    """A donor's DAC2a rows at a destination `destination_side` cannot place leave the bilateral
     population unavailable (`code_index.composites.population_check`): its members would
     leave the destination out without a word, and the mint refuses the composite. A fresh
     part keeps total ODA, and its bilateral option is not offered for that reason."""

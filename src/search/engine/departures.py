@@ -958,14 +958,14 @@ def _core_contribution_facts(spec: Spec) -> list[DepartureFact]:
     source = counted_bilateral_source(identity, dataset_of=identity_dataset)
     if source is None:
         return []
-    parties = get_index().parties
+    index = get_index()
     datasets = (source.dataset,)
     facts: list[DepartureFact] = []
     for dcid in identity.entities[key]:
-        party = parties.get(dcid)
+        party = index.parties.get(dcid)
         if (
             party is None
-            or destination_side(party, datasets=datasets, parties=parties) != "multilateral"
+            or destination_side(party, datasets=datasets, index=index) != "multilateral"
         ):
             continue
         facts.append(
