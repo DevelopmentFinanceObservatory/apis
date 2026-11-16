@@ -28,7 +28,7 @@ You need `curl`, `jq`, and `unzip`. The Python version also needs [uv](https://d
 export DFO_API=https://developmentfinance.org
 ```
 
-The API accepts requests without an API key.
+An API key is optional. Anonymous calls work, with a limit for each address, and every call on this page runs without a key. A key from your account on developmentfinance.org raises the limit. Send it as `Authorization: Bearer <key>` or `X-API-Key`. [Use an API key](../hub/build/api-keys.md) covers creating and sending one.
 
 ## Resolve the question
 
