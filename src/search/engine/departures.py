@@ -963,7 +963,10 @@ def _core_contribution_facts(spec: Spec) -> list[DepartureFact]:
     facts: list[DepartureFact] = []
     for dcid in identity.entities[key]:
         party = parties.get(dcid)
-        if party is None or destination_side(party, datasets=datasets) != "multilateral":
+        if (
+            party is None
+            or destination_side(party, datasets=datasets, parties=parties) != "multilateral"
+        ):
             continue
         facts.append(
             DepartureFact(

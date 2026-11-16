@@ -502,7 +502,7 @@ def _classified(index: CodeIndex) -> Mapping[str, _Classified]:
         for dcid, row in index.parties.items():
             if not row.publishes(_DESTINATION, (dataset,)):
                 continue
-            side = destination_side(row, datasets=(dataset,))
+            side = destination_side(row, datasets=(dataset,), parties=index.parties)
             if side is None:
                 unclassified.append(dcid)
             elif side == "bilateral":

@@ -224,8 +224,12 @@ def test_a_composite_whose_code_index_cannot_place_a_destination_is_a_server_fau
     unavailable: the components refuse as a server fault naming it, and not as the caller's
     unservable composite."""
 
-    def unplaced(row, *, datasets):
-        return None if row.dcid == _RECIPIENT else destination_side(row, datasets=datasets)
+    def unplaced(row, *, datasets, parties):
+        return (
+            None
+            if row.dcid == _RECIPIENT
+            else destination_side(row, datasets=datasets, parties=parties)
+        )
 
     monkeypatch.setattr(composites_module, "destination_side", unplaced)
     with gzip.open(INDEX_FIXTURE) as handle:

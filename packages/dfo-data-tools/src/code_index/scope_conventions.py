@@ -21,7 +21,7 @@ rule version.
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Literal
 
@@ -41,9 +41,8 @@ from code_index.declarations import (
     DAC2A_BILATERAL,
     DAC2A_INCLUSIVE,
     DAC2A_TOTAL_ODA,
-    TOTAL_GROUPS,
 )
-from code_index.multilaterals import COUNTRY_PREFIX, organisation_dcids, party_facts
+from code_index.multilaterals import ORGANIZATION_TYPE, party_facts
 from code_index.types import ComponentDestinations, PartyRow
 
 MeasureBasis = Literal["gross", "net", "grant_equivalent", "commitments", "oecd_headline"]
@@ -584,21 +583,16 @@ INCLUSIVE_SOURCES: tuple[InclusiveSource, ...] = (
 # no provider record.
 DONOR_ORGANISATIONS: tuple[str, ...] = (_EU_INSTITUTIONS,)
 
-# The DAC2a recipients that are no named organisation but stand for the multilaterals as a
-# group. The DAC lists them as unspecified parties, so the graph types them as residuals and
-# `party_facts` reads none of them as a multilateral. Each holds a donor's core contributions.
-DAC_MULTILATERAL_RECIPIENTS: tuple[str, ...] = (
-    # Core contributions to multilateral agencies the DAC does not itemise.
-    "DACOtherMultilateralRecipient",
-    # Core contributions to United Nations agencies other than those the DAC itemises.
-    "DACOtherUnitedNations",
-    # Core contributions to regional development banks other than those the DAC itemises.
-    "DACOtherRegionalDevelopmentBanks",
-    # Core contributions to World Bank Group members other than those the DAC itemises.
-    "DACOtherWorldBank",
-    # Core contributions to EU institutions other than those the DAC itemises.
-    "DACOtherEUInstitutions",
-)
+# The graph types that place a DAC2a destination residual no bilateral total lists
+# (`destination_side`). The DAC lists the recipients that stand for the multilaterals as a group,
+# each a donor's core contributions to the agencies it does not itemise ("other United Nations
+# entities"), as unspecified parties, and its lines of bilateral aid it allocates to no country
+# ("Africa, unallocated by country") as unallocated by country.
+DAC_MULTILATERAL_RESIDUAL_TYPE = "DACUnspecifiedParty"
+DAC_BILATERAL_RESIDUAL_TYPE = "DACRecipientUnallocatedByCountry"
+
+# The graph type of a DAC2a recipient country (`destination_side`).
+COUNTRY_TYPE = "Country"
 
 # The organisations the DAC counts as bilateral recipients: DACDevelopingCountries holds them
 # in 206, though the graph types them `Organization` and `party_facts` reads them as
@@ -611,7 +605,7 @@ DAC_BILATERAL_ORGANISATIONS: tuple[str, ...] = (
 )
 
 # The DAC2a recipient total of every multilateral recipient: its named organisations and the
-# unspecified ones in `DAC_MULTILATERAL_RECIPIENTS`.
+# unspecified ones (`DAC_MULTILATERAL_RESIDUAL_TYPE`).
 DAC_ALL_MULTILATERAL_RECIPIENTS = "DACAllMultilateralRecipients"
 
 # The DAC2a total of all recipients, "Developing Countries, Total" plus the multilateral
@@ -621,51 +615,6 @@ DAC_ALL_RECIPIENTS = "DACAllRecipients"
 # The DAC2a total of every developing-country recipient: the countries, regions and the DAC's
 # unallocated lines, the bilateral side of `DAC_ALL_RECIPIENTS`.
 DAC_DEVELOPING_COUNTRIES = "DACDevelopingCountries"
-
-# The DAC2a recipient totals on the bilateral side that `REGION_NAMES` does not name: groups of
-# developing countries by income, by the DAC's or the UN's lists, or by the World Bank's income
-# group. Each counts countries alone, and none counts a multilateral agency.
-DAC_BILATERAL_GROUP_TOTALS: tuple[str, ...] = (
-    "DACACPCountries",
-    "DACCentralAndEasternEuropeanCountries",
-    "DACClubDuSahelCountries",
-    "DACFragileStates",
-    "DACLowerMiddleIncomeCountries",
-    "DACMoreAdvancedDevelopingCountriesAndTerritories",
-    "DACNewIndependentStates",
-    "DACNorthernAmerica",
-    "DACOtherLowIncomeCountries",
-    "DACSmallIslandStates",
-    "DACUnallocatedByIncome",
-    "DACUpperMiddleIncomeCountries",
-    "HeavilyIndebtedPoorCountries",
-    "UNLandlockedDevelopingCountries",
-    "UNLeastDevelopedCountries",
-    "WorldBankHighIncome",
-    "WorldBankLowIncome",
-    "WorldBankLowerMiddleIncome",
-    "WorldBankNotClassifiedByIncome",
-    "WorldBankUpperMiddleIncome",
-)
-
-# The DAC2a residual of bilateral flows the donor allocates to no country or region, which
-# `DAC_DEVELOPING_COUNTRIES` counts beside the regional residuals `TOTAL_GROUPS` lists.
-DAC_BILATERAL_UNALLOCATED = "DACBilateralUnallocated"
-
-# The DAC2a recipient totals on the bilateral side: `DAC_DEVELOPING_COUNTRIES`, the DAC regions
-# (`REGION_NAMES`) and `DAC_BILATERAL_GROUP_TOTALS`.
-_BILATERAL_TOTALS = frozenset(
-    (DAC_DEVELOPING_COUNTRIES, *(dcid for dcid, _ in REGION_NAMES), *DAC_BILATERAL_GROUP_TOTALS)
-)
-
-# The DAC2a residuals on the bilateral side: the unallocated lines each regional total counts
-# beside its members (`TOTAL_GROUPS`) and `DAC_BILATERAL_UNALLOCATED`.
-_BILATERAL_RESIDUALS = frozenset(
-    (
-        DAC_BILATERAL_UNALLOCATED,
-        *(residual for group in TOTAL_GROUPS.values() for residual in group.residuals),
-    )
-)
 
 # The composite each published total counting core contributions over every destination binds
 # for its bilateral scope, and the population every composite component binding the dataset's
@@ -701,39 +650,55 @@ DestinationSide = Literal["bilateral", "multilateral", "spanning"]
 (`spanning`)."""
 
 
-def destination_side(row: PartyRow, *, datasets: Collection[str]) -> DestinationSide | None:
+def destination_side(
+    row: PartyRow, *, datasets: Collection[str], parties: Mapping[str, PartyRow]
+) -> DestinationSide | None:
     """The side of `row` as a recipient in `datasets`, or `None` when it is unclassified: no
     dataset publishes it as a recipient, they give it different kinds, or the classifier
-    cannot place it.
+    cannot place it. `parties` is the code index's party rows, which hold the totals that
+    list a residual.
 
-    A total is `spanning` when `DAC_ALL_RECIPIENTS`, `multilateral` when
-    `DAC_ALL_MULTILATERAL_RECIPIENTS`, and `bilateral` when declared on that side
-    (`DAC_DEVELOPING_COUNTRIES`, `REGION_NAMES`, `DAC_BILATERAL_GROUP_TOTALS`). A residual is
-    `multilateral` when in `DAC_MULTILATERAL_RECIPIENTS` and `bilateral` when declared on that
-    side (`TOTAL_GROUPS` residuals, `DAC_BILATERAL_UNALLOCATED`). A party is `bilateral` when
-    in `DAC_BILATERAL_ORGANISATIONS`, `multilateral` where `party_facts` says so, `bilateral`
-    when a country or an organisation the entity resolver knows, and unclassified otherwise.
+    The rule reads the graph types the code index keeps on each row (`PartyRow.types`), so a
+    recipient the OECD adds takes its side from its type. A total is `spanning` when
+    `DAC_ALL_RECIPIENTS`, `multilateral` when `DAC_ALL_MULTILATERAL_RECIPIENTS` or an
+    organisation (the World Bank Group beside its members), and `bilateral` otherwise. A
+    residual is `bilateral` when a bilateral total of `datasets` counts it beside its members
+    (`PartyRow.residuals`), as Asia counts the Mekong Delta Project, and otherwise
+    `multilateral` when typed `DAC_MULTILATERAL_RESIDUAL_TYPE` and `bilateral` when typed
+    `DAC_BILATERAL_RESIDUAL_TYPE`. A party is `bilateral` when in `DAC_BILATERAL_ORGANISATIONS`,
+    `multilateral` where `party_facts` says so, `bilateral` when a country, and unclassified
+    otherwise.
     """
     kind = row.kind_over("destination", datasets)
     if kind is None:
         return None
     if kind == "total":
-        if row.dcid == DAC_ALL_RECIPIENTS:
-            return "spanning"
-        if row.dcid == DAC_ALL_MULTILATERAL_RECIPIENTS:
-            return "multilateral"
-        return "bilateral" if row.dcid in _BILATERAL_TOTALS else None
+        return _total_side(row)
     if kind == "residual":
-        if row.dcid in DAC_MULTILATERAL_RECIPIENTS:
+        if any(
+            row.dcid in total.residuals
+            and total.kind_over("destination", datasets) == "total"
+            and _total_side(total) == "bilateral"
+            for total in parties.values()
+        ):
+            return "bilateral"
+        if DAC_MULTILATERAL_RESIDUAL_TYPE in row.types:
             return "multilateral"
-        return "bilateral" if row.dcid in _BILATERAL_RESIDUALS else None
+        return "bilateral" if DAC_BILATERAL_RESIDUAL_TYPE in row.types else None
     if row.dcid in DAC_BILATERAL_ORGANISATIONS:
         return "bilateral"
     if party_facts(row, axis="destination", datasets=datasets).multilateral:
         return "multilateral"
-    if row.dcid.startswith(COUNTRY_PREFIX) or row.dcid in organisation_dcids():
-        return "bilateral"
-    return None
+    return "bilateral" if COUNTRY_TYPE in row.types else None
+
+
+def _total_side(total: PartyRow) -> DestinationSide:
+    """The side of `total`, a destination total (`destination_side`)."""
+    if total.dcid == DAC_ALL_RECIPIENTS:
+        return "spanning"
+    if total.dcid == DAC_ALL_MULTILATERAL_RECIPIENTS or ORGANIZATION_TYPE in total.types:
+        return "multilateral"
+    return "bilateral"
 
 
 @dataclass(frozen=True)

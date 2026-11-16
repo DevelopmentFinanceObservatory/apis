@@ -15,10 +15,6 @@ from importlib.resources.abc import Traversable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-# `pack.organisation_dcids` is the reader `code_index.multilaterals` defines, so the code index
-# and the mint read the organisation records without loading resolvekit.
-from code_index.multilaterals import organisation_dcids as organisation_dcids
-
 if TYPE_CHECKING:
     from resolvekit.core.model.result import CandidateSummary
 

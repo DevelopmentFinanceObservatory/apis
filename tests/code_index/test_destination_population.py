@@ -181,8 +181,12 @@ def _placing_kenya_as(monkeypatch: pytest.MonkeyPatch, side: str | None) -> Code
     """A fresh index, so the population memo builds again, whose classifier places Kenya on
     `side`."""
 
-    def placed(row, *, datasets):
-        return side if row.dcid == _KENYA else destination_side(row, datasets=datasets)
+    def placed(row, *, datasets, parties):
+        return (
+            side
+            if row.dcid == _KENYA
+            else destination_side(row, datasets=datasets, parties=parties)
+        )
 
     monkeypatch.setattr(composites_module, "destination_side", placed)
     return _parse()

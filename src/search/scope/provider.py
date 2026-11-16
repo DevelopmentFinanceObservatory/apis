@@ -490,7 +490,7 @@ def _destination_rule(
         for dcid in dcids
     ]
     sides = {
-        dcid: destination_side(party, datasets=(source.dataset,))
+        dcid: destination_side(party, datasets=(source.dataset,), parties=index.parties)
         if (party := index.parties.get(dcid)) is not None
         else None
         for dcid in named

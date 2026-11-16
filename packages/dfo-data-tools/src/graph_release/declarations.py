@@ -21,7 +21,7 @@ from types import ModuleType
 from typing import Final, cast
 
 from code_index import declarations as code_index_declarations
-from code_index import scope_conventions
+from code_index import multilaterals, scope_conventions
 from code_index.declarations import (
     CodeSystemConfig,
     KindOverride,
@@ -56,17 +56,18 @@ _MODULE_TABLES: Final[tuple[tuple[ModuleType, str], ...]] = (
     (code_index_declarations, "MEASURE_VALUE_TEXT"),
     (code_index_declarations, "MEASURE_WORD_SYNONYMS_KEPT"),
     (code_index_declarations, "SLOT_PLAIN_NAMES"),
+    (multilaterals, "ORGANIZATION_TYPE"),
     (scope_conventions, "BASIS_MEASURES"),
     (scope_conventions, "BASIS_RESTRICTIONS"),
     (scope_conventions, "BILATERAL_SOURCES"),
     (scope_conventions, "CONVENTION_CURRENCY"),
+    (scope_conventions, "COUNTRY_TYPE"),
     (scope_conventions, "DAC_ALL_MULTILATERAL_RECIPIENTS"),
     (scope_conventions, "DAC_ALL_RECIPIENTS"),
-    (scope_conventions, "DAC_BILATERAL_GROUP_TOTALS"),
     (scope_conventions, "DAC_BILATERAL_ORGANISATIONS"),
-    (scope_conventions, "DAC_BILATERAL_UNALLOCATED"),
+    (scope_conventions, "DAC_BILATERAL_RESIDUAL_TYPE"),
     (scope_conventions, "DAC_DEVELOPING_COUNTRIES"),
-    (scope_conventions, "DAC_MULTILATERAL_RECIPIENTS"),
+    (scope_conventions, "DAC_MULTILATERAL_RESIDUAL_TYPE"),
     (scope_conventions, "DONOR_ORGANISATIONS"),
     (scope_conventions, "INCLUSIVE_SOURCES"),
     (scope_conventions, "MEASURE_BASIS_CONVENTIONS"),
@@ -82,8 +83,8 @@ _MODULE_TABLES: Final[tuple[tuple[ModuleType, str], ...]] = (
 """The tables read from their modules rather than passed as arguments, each with its module:
 the `code_index.declarations` tables `code_index.export` reads, the composites
 `code_index.loader.parse_index` serves (`COMPOSITES`), the totals `search` binds on an open
-flow side (`CONTAINING_TOTALS`), and the
-`code_index.scope_conventions` tables `search.scope` reads. Every name is unique across
+flow side (`CONTAINING_TOTALS`), the graph type `code_index.multilaterals` reads a multilateral
+by, and the `code_index.scope_conventions` tables `search.scope` reads. Every name is unique across
 modules, since `declarations_json` keys each table by its name alone."""
 
 

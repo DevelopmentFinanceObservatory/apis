@@ -270,8 +270,12 @@ def test_a_composite_whose_population_is_unavailable_rebuilds_without_raising(
         composites=((DAC2A_BILATERAL, declared_composite_digest(DAC2A_BILATERAL, index=_INDEX)),),
     )
 
-    def unplaced_kenya(row, *, datasets):
-        return None if row.dcid == "country/KEN" else destination_side(row, datasets=datasets)
+    def unplaced_kenya(row, *, datasets, parties):
+        return (
+            None
+            if row.dcid == "country/KEN"
+            else destination_side(row, datasets=datasets, parties=parties)
+        )
 
     monkeypatch.setattr(composites_module, "destination_side", unplaced_kenya)
     drifted = _parse_index()
