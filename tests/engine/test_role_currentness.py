@@ -104,6 +104,7 @@ def _resolve(
         sdmx=sdmx,
         discover_scope=False,
         coverage=coverage if coverage is not None else empty_coverage_snapshot(),
+        within=None,
     )
 
 
@@ -616,6 +617,7 @@ def test_the_refresh_reads_after_the_bound_value_filter_narrows_the_population(
         graph=graph,
         sdmx=sdmx,
         coverage=empty_coverage_snapshot(),
+        within=None,
     )
 
     assert isinstance(result, Materialised)
@@ -696,6 +698,7 @@ def test_slot_bindings_do_not_change_the_verdict() -> None:
         graph=FakeGraph(raise_on_call=True),
         sdmx=_sdmx(_SV_DECLARING),
         coverage=empty_coverage_snapshot(),
+        within=None,
     )
 
     assert isinstance(result, Materialised)

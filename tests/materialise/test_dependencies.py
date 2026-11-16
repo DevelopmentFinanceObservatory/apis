@@ -5,14 +5,19 @@ probe or, lacking one, from the graph, giving the same fingerprint either way.""
 
 from __future__ import annotations
 
+import gzip
+import json
 from dataclasses import replace
 from typing import Any
 
 import httpx
 import pytest
 
+import code_index.composites as composites_module
 from code_index.composites import declared_composite_digest
-from code_index.declarations import CRS_INCLUSIVE
+from code_index.declarations import COMPOSITES, CRS_INCLUSIVE, DAC2A_BILATERAL
+from code_index.loader import parse_index
+from code_index.scope_conventions import destination_side
 from dc_sdmx import SdmxClient
 from graph_release.context import current_release
 from materialise import EnrichmentLookup, MaterialisationRequest, materialise_group
@@ -33,10 +38,21 @@ from materialise.window import LatestYear, RequestedWindow, election_window
 from origin_catalogue import DataCommons, bound_catalogue
 from origin_catalogue.origins import BASE, DFO, UN_SYSTEM
 from series_coverage.schema import FacetMetadata, RoleNames
+from tests.code_index.support import INDEX_FIXTURE
 from tests.engine._fake_coverage import build_coverage_index
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue, provenance_row
 
 from .conftest import FakeGraphReader
+
+
+def _parse_index():
+    with gzip.open(INDEX_FIXTURE) as handle:
+        return parse_index(json.load(handle), source="fixture", composites=COMPOSITES)
+
+
+# A code index declaring every composite, whose DAC2a population every destination places.
+_INDEX = _parse_index()
+
 
 _STAT_VAR = "dcid:MalariaGrantDisbursements"
 _BARE_STAT_VAR = "MalariaGrantDisbursements"
@@ -181,7 +197,11 @@ def test_a_refreshed_fingerprint_reads_every_stored_ref_in_one_call():
     window = election_window(RequestedWindow(kind="range", start_year=2015), clock_year=2026)
 
     refreshed = refreshed_dependencies(
-        _BASE, [_request("A", window), _request("B", window)], graph=graph, coverage=None
+        _BASE,
+        [_request("A", window), _request("B", window)],
+        graph=graph,
+        coverage=None,
+        code_index=_INDEX,
     )
 
     assert graph.node_arcs_many_calls == [
@@ -212,7 +232,7 @@ def test_a_refreshed_fingerprint_reads_every_stored_ref_in_one_call():
 def test_a_composite_head_rebuilds_when_its_deployed_declaration_changes(
     stored_digest, provenance, changed
 ):
-    digest = stored_digest or declared_composite_digest(provenance)
+    digest = stored_digest or declared_composite_digest(provenance, index=_INDEX)
     stored = replace(_BASE, composites=((provenance, digest),))
     graph = FakeGraphReader(
         arcs={
@@ -223,7 +243,11 @@ def test_a_composite_head_rebuilds_when_its_deployed_declaration_changes(
     window = election_window(RequestedWindow(kind="range", start_year=2015), clock_year=2026)
     current = replace(
         refreshed_dependencies(
-            stored, [_request("A", window), _request("B", window)], graph=graph, coverage=None
+            stored,
+            [_request("A", window), _request("B", window)],
+            graph=graph,
+            coverage=None,
+            code_index=_INDEX,
         ),
         recipes=stored.recipes,
     )
@@ -233,6 +257,49 @@ def test_a_composite_head_rebuilds_when_its_deployed_declaration_changes(
     assert dependency_changes(stored.as_json(), current) == (
         (f"composites:{provenance}",) if changed else ()
     )
+
+
+def test_a_composite_whose_population_is_unavailable_rebuilds_without_raising(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Under a code index that cannot place a DAC2a destination on a side, the
+    bilateral composite has no digest: the check reports it changed, so the head rebuilds and
+    the mint answers the refusal, and nothing raises out of the check."""
+    stored = replace(
+        _BASE,
+        composites=((DAC2A_BILATERAL, declared_composite_digest(DAC2A_BILATERAL, index=_INDEX)),),
+    )
+
+    def unplaced_kenya(row, *, datasets, index):
+        return (
+            None
+            if row.dcid == "country/KEN"
+            else destination_side(row, datasets=datasets, index=index)
+        )
+
+    monkeypatch.setattr(composites_module, "destination_side", unplaced_kenya)
+    drifted = _parse_index()
+    graph = FakeGraphReader(
+        arcs={
+            "provenance/OECDDAC2A": {"lastDataRefreshDate": ("2026-10-07",)},
+            "provenance/ONEConversionTablesDAC": {"lastDataRefreshDate": ("2026-09-30",)},
+        }
+    )
+    window = election_window(RequestedWindow(kind="range", start_year=2015), clock_year=2026)
+
+    current = replace(
+        refreshed_dependencies(
+            stored,
+            [_request("A", window), _request("B", window)],
+            graph=graph,
+            coverage=None,
+            code_index=drifted,
+        ),
+        recipes=stored.recipes,
+    )
+
+    assert current.composites == ((DAC2A_BILATERAL, None),)
+    assert dependency_changes(stored.as_json(), current) == (f"composites:{DAC2A_BILATERAL}",)
 
 
 def test_a_source_with_no_date_on_both_sides_is_unchanged():
@@ -564,7 +631,9 @@ def test_a_refresh_during_the_fetch_records_the_pre_fetch_token_and_the_next_che
 
     assert result.coverage.rows == members
     assert result.dependencies.sources == (("OECD_DAC2A", "2026-10-07"),)
-    current = refreshed_dependencies(result.dependencies, requests, graph=graph, coverage=None)
+    current = refreshed_dependencies(
+        result.dependencies, requests, graph=graph, coverage=None, code_index=_INDEX
+    )
     assert dependency_changes(result.dependencies.as_json(), current) == ("sources:OECD_DAC2A",)
 
 

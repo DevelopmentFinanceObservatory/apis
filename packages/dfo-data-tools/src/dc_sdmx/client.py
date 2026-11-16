@@ -544,7 +544,21 @@ class ContainedIn:
     child_type: str
 
 
-type EntityFilter = Sequence[str] | ContainedIn
+@pydantic.dataclasses.dataclass(frozen=True)
+class Among:
+    """Select the entities in `members`, a declared population (`side`) bound in place of
+    names a caller gave, as an open DAC2a destination under a bilateral composite binds the
+    bilateral-side recipients.
+
+    Requests send `members` as the role's OR-list, as a list of dcids is sent. A reader of
+    rows reads `members`; a reader of the names a caller asked for reads the role as open."""
+
+    members: tuple[str, ...]
+    side: str
+
+
+type EntityFilter = Sequence[str] | ContainedIn | Among
+"""A role's binding: an OR-list of dcids, a containment filter, or a population."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -2698,9 +2712,10 @@ def _entity_params(entities: Mapping[str, EntityFilter]) -> dict[str, str]:
             params[f"c[{role}.containedInPlace+]"] = filt.parent
             params[f"c[{role}.typeOf]"] = filt.child_type
         else:
-            if not filt:
+            refs = filt.members if isinstance(filt, Among) else filt
+            if not refs:
                 raise SdmxQueryError(f"entity role {role!r} has no values")
-            params[f"c[{role}]"] = _or_list(role, filt)
+            params[f"c[{role}]"] = _or_list(role, refs)
     return params
 
 

@@ -20,7 +20,7 @@ from dfo_frame_grammar import (
     stream_frame_sha256,
 )
 
-from code_index.composites import DECLARED_COMPOSITES, composite_digest
+from code_index.composites import DECLARED_COMPOSITES
 from code_index.declarations import COMPOSITES, CRS_INCLUSIVE
 from code_index.types import ComponentRecipe, ComponentRole, CompositeDeclaration
 from materialise import MaterialisationRequest, MaterialisationResult
@@ -47,6 +47,8 @@ _DAC1 = "provenance/OECDDAC1"
 _STACKED = DECLARED_COMPOSITES[CRS_INCLUSIVE]
 _SPLICED = next(c for c in COMPOSITES if c.kind == "spliced")
 _ENRICHMENT = EnrichmentLookup(FakeGraphReader())
+# The composite digest a mint passes in, recorded as it is.
+_DIGEST = "sha256:composed"
 
 # CRS and imputed members of one sector. The imputed dcid sorts before the CRS one, so the
 # composed frame leads with the zero-filling component's rows.
@@ -199,6 +201,7 @@ def _compose(
         role_columns=_ROLES,
         enrichment=_ENRICHMENT,
         parties={},
+        digest=_DIGEST,
     )
 
 
@@ -441,7 +444,7 @@ def test_the_composite_keeps_the_import_key_only_when_every_component_shares_it(
     dependencies = _compose([bilateral, imputed]).dependencies
 
     assert dependencies.imported_data == expected
-    assert dependencies.composites == ((_STACKED.provenance, composite_digest(_STACKED)),)
+    assert dependencies.composites == ((_STACKED.provenance, _DIGEST),)
 
 
 def test_the_composed_frame_records_each_components_measurement_method_under_one_unit():

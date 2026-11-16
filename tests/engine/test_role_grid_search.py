@@ -681,6 +681,7 @@ def test_a_member_elected_under_one_open_key_states_the_mints_count_for_both_axe
                 },
             )
         ).snapshot(),
+        within=None,
     )
 
     assert resolution.authority.settled

@@ -121,6 +121,8 @@ from materialise.continued_series import continued_series_of_trace
 from materialise.errors import (
     CollectionProbeCeilingExceededError,
     DatasetDisagreementError,
+    DestinationUnclassifiedError,
+    FacetNotAvailableError,
     MaterialisationUsageError,
 )
 from materialise.facets import (
@@ -997,6 +999,17 @@ def _probe(
     except (CompositeUnservable, CurrencyRoleUndeclared, IdentityError) as exc:
         raise _Refused(
             f"the identity is refused: {type(exc).__name__}: {exc}", reason="identity_refused"
+        ) from exc
+    except FacetNotAvailableError as exc:
+        # A composite bound to a destination off its component's side holds no rows there.
+        raise _Refused(
+            f"the composite holds no rows at the bound destination: {exc}",
+            reason="facet_not_available",
+        ) from exc
+    except DestinationUnclassifiedError as exc:
+        raise _Refused(
+            f"the composite's destination population is unavailable: {exc}",
+            reason="destination_unclassified",
         ) from exc
     try:
         with (

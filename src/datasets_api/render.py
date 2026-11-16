@@ -91,6 +91,7 @@ from artifact_store import (
     Tier,
 )
 from artifact_store.errors import ArtifactIntegrityError
+from code_index.composites import DECLARED_COMPOSITES
 from code_index.labels import PRICES_BY_QUALIFIER, family_label
 from code_index.members import absent_member_reads_zero
 from code_index.query import CodeIndex
@@ -171,6 +172,7 @@ from materialise.bundle import (
     BundleContext,
     BundleLinks,
     CodeEntry,
+    CompositeNote,
     MemberProvenance,
     ReproducingCall,
     SourceProvenance,
@@ -185,11 +187,15 @@ from materialise.bundle_columns import (
     year_window,
 )
 from materialise.bundle_naming import heading, member_slugs, sources_slug
-from materialise.bundle_sources import source_provenance
+from materialise.bundle_sources import (
+    composite_bundle_labels,
+    composite_notes,
+    source_provenance,
+)
 from materialise.codes import MaterialisationWarning
 from materialise.content_version import mint_version_from_digest
 from materialise.enrichment import PARTY_FIELDS, EnrichmentLookup, pivot_party_cell
-from materialise.errors import OverCeilingError
+from materialise.errors import MaterialisationUsageError, OverCeilingError
 from materialise.formats import (
     DATA_SHEET_TITLE,
     FORMAT_COLUMN_CAPS,
@@ -1380,9 +1386,10 @@ def _member_provenance(
     scan: TableScan,
     code_index: CodeIndex | None,
     description: str | None,
+    composites: tuple[CompositeNote, ...],
 ) -> MemberProvenance:
     """One bundle member, titled by its sources and years, with each column documented from
-    `scan`."""
+    `scan`, naming the `composites` its rows carry."""
     entry = BundleArtifactEntry(
         path=data_path,
         bytes=written.size_bytes,
@@ -1402,6 +1409,7 @@ def _member_provenance(
         sources=tuple(sources),
         columns=column_docs(scan, code_system_names=code_system_names, rendering=rendering),
         description=description,
+        composites=composites,
     )
 
 
@@ -1474,6 +1482,7 @@ def _members(
     code_index: CodeIndex | None,
     totals: _TotalRows | None,
     totals_file: _TotalsFile | None,
+    composites: tuple[CompositeNote, ...] = (),
 ) -> tuple[MemberProvenance, ...]:
     """The bundle's members: the data file, then the totals file when the total rows are
     written as one (`_write_totals_entry`). Each description says where the total rows are,
@@ -1502,6 +1511,7 @@ def _members(
             totals=totals,
             totals_path=totals_file.path if totals_file is not None else None,
         ),
+        composites=composites,
     )
     if totals_file is None:
         return (main,)
@@ -1521,6 +1531,7 @@ def _members(
                 "figures, such as a regional total. Adding these rows to those of "
                 f"{data_path} counts those figures twice."
             ),
+            composites=composites,
         ),
     )
 
@@ -1572,6 +1583,39 @@ def _table_scan(
     )
 
 
+def _refuse_composite_without_index(
+    provenance_refs: Sequence[str], *, code_index: CodeIndex | None
+) -> None:
+    """Raise `MaterialisationUsageError` when `provenance_refs` name a declared composite
+    (`code_index.composites.DECLARED_COMPOSITES`) and there is no `code_index` to name and
+    describe it from."""
+    if code_index is not None:
+        return
+    composites = sorted({ref for ref in provenance_refs if ref in DECLARED_COMPOSITES})
+    if composites:
+        raise MaterialisationUsageError(
+            f"a render of the composites {composites!r} needs the code index to name them"
+        )
+
+
+def _known_labels(
+    citations: Mapping[str, CitationSource],
+    family: tuple[str, str] | None,
+    *,
+    code_index: CodeIndex | None,
+) -> dict[str, str]:
+    """The names a render gives outright: each cited source's label; each declared
+    composite's bundle name (`materialise.bundle_sources.composite_bundle_labels`), which
+    neither a citation nor the graph holds, so its `provenance` cells and codes-table row
+    name it apart from its tables; and a collapsed family's `(ref, label)`."""
+    known = {ref: cited.label for ref, cited in citations.items()}
+    if code_index is not None:
+        known |= composite_bundle_labels(code_index)
+    if family is not None:
+        known[family[0]] = family[1]
+    return known
+
+
 def _codes(
     scans: Sequence[TableScan],
     *,
@@ -1585,9 +1629,7 @@ def _codes(
     name its `<code_system>_label` cell holds. The graph names every other code through the
     render's `reads`, so the read shares the render's deadline and makes none after a failed
     name read."""
-    known = {ref: cited.label for ref, cited in citations.items()}
-    if family is not None:
-        known[family[0]] = family[1]
+    known = _known_labels(citations, family, code_index=code_index)
     if code_index is not None:
         for scan in scans:
             for column in scan.axis_kinds:
@@ -1815,10 +1857,9 @@ class _RenderReads:
         citations: Mapping[str, CitationSource],
         family: tuple[str, str] | None,
         deadline: float | None,
+        code_index: CodeIndex | None,
     ) -> _RenderReads:
-        known = {ref: cited.label for ref, cited in citations.items()}
-        if family is not None:
-            known[family[0]] = family[1]
+        known = _known_labels(citations, family, code_index=code_index)
         return cls(
             enrichment=enrichment,
             parties=parties,
@@ -2967,8 +3008,14 @@ def render_and_store(
     and mints no version. `options` keep the version's minting options, so they still name the
     rendering, the reproducing call and the bundle's description, and a collapse's family ref
     keeps its label.
+
+    A composite's rows are named and described from its declaration over the code index
+    (`materialise.bundle_sources.composite_notes`), so a render of a frame whose rows carry a
+    declared composite raises `MaterialisationUsageError` without `code_index`, which would
+    write its bundle with no word of the composite.
     """
     check_options_supported(options, code_index=code_index)
+    _refuse_composite_without_index(provenance_refs, code_index=code_index)
     parties = code_index.parties if code_index is not None else {}
     cited_refs = list(citation_refs) if citation_refs is not None else provenance_refs
     subject_id = str(spec.get("spec_id"))
@@ -3005,6 +3052,7 @@ def render_and_store(
     name_reads = _RenderReads.for_render(
         enrichment=enrichment,
         parties=parties,
+        code_index=code_index,
         citations=citations,
         family=(
             (f"{_STAT_VAR_REF_PREFIX}{subject_id}", subject_label)
@@ -3154,6 +3202,11 @@ def render_and_store(
                             code_index=code_index,
                             totals=totals,
                             totals_file=totals_file,
+                            composites=(
+                                ()
+                                if code_index is None
+                                else composite_notes(provenance_refs, index=code_index)
+                            ),
                         )
                         files = assemble_bundle(
                             spec=spec,

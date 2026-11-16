@@ -209,7 +209,7 @@ def test_capabilities_carries_the_real_computed_version() -> None:
 def test_schema_route_serves_the_built_schema_document() -> None:
     client = make_client(registry=LiveSpecRegistry(store=FakeDatasetStore()))
 
-    resp = client.get("/api/datasets/schema")
+    resp = client.get("/api/datasets/json-schema")
 
     assert resp.status_code == 200
     assert resp.json() == build_schema_document()
@@ -1373,7 +1373,7 @@ def test_capabilities_says_the_operation_envelope_is_active() -> None:
 def test_schema_route_carries_cache_headers() -> None:
     client = make_client(registry=LiveSpecRegistry(store=FakeDatasetStore()))
 
-    resp = client.get("/api/datasets/schema", headers={"accept-encoding": "identity"})
+    resp = client.get("/api/datasets/json-schema", headers={"accept-encoding": "identity"})
 
     assert resp.status_code == 200
     assert resp.headers["cache-control"] == "public, max-age=300"
@@ -1384,7 +1384,7 @@ def test_schema_route_carries_cache_headers() -> None:
 def test_schema_route_serves_gzip_when_accepted() -> None:
     client = make_client(registry=LiveSpecRegistry(store=FakeDatasetStore()))
 
-    resp = client.get("/api/datasets/schema", headers={"accept-encoding": "gzip"})
+    resp = client.get("/api/datasets/json-schema", headers={"accept-encoding": "gzip"})
 
     assert resp.status_code == 200
     assert resp.headers["content-encoding"] == "gzip"
@@ -1394,12 +1394,12 @@ def test_schema_route_serves_gzip_when_accepted() -> None:
 
 def test_schema_route_304s_on_if_none_match() -> None:
     client = make_client(registry=LiveSpecRegistry(store=FakeDatasetStore()))
-    etag = client.get("/api/datasets/schema", headers={"accept-encoding": "identity"}).headers[
+    etag = client.get("/api/datasets/json-schema", headers={"accept-encoding": "identity"}).headers[
         "etag"
     ]
 
     resp = client.get(
-        "/api/datasets/schema",
+        "/api/datasets/json-schema",
         headers={"accept-encoding": "identity", "if-none-match": etag},
     )
 

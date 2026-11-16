@@ -28,6 +28,7 @@ import httpx
 
 import search.engine.config as config  # module-attribute access for runtime-resolved values
 from dc_sdmx import (
+    Among,
     ContainedIn,
     EntityFilter,
     SdmxClient,
@@ -324,7 +325,7 @@ class EngineSdmxClient(Protocol):
         Filters can name roles, ``observationAbout``, ``unit``,
         ``provenance``, or ``measurementMethod``. Role values follow the
         ``role_series`` dcid-sequence rules, or are a ``ContainedIn``
-        containment filter. A bare ``time_period`` string
+        containment filter or an ``Among`` population, sent as its members. A bare ``time_period`` string
         selects one exact period. A sequence is an exact-period OR-list.
         The endpoint serves exact periods. ``LATEST`` and ranges raise
         ``RoleNotDeclaredError``. Caps raise ``SdmxCapExceededError``.
@@ -654,7 +655,7 @@ class LiveSdmxClient:
         assert_no_un_variables(method="availability_values", variables=variables)
         filters_arg = (
             {
-                role: filt if isinstance(filt, ContainedIn) else list(filt)
+                role: filt if isinstance(filt, ContainedIn | Among) else list(filt)
                 for role, filt in filters.items()
             }
             if filters

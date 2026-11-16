@@ -41,6 +41,7 @@ from dc_sdmx import (
 from materialise.errors import (
     DatasetDisagreementError,
     DefaultFacetUndefinedError,
+    DestinationUnclassifiedError,
     FacetNotAvailableError,
     MembersNotHeldError,
     UpstreamResponseError,
@@ -700,6 +701,19 @@ class TestSdmxDeterministicRejectionsAreNotRetryable:
         assert spec.retryable is False
         assert "provenance/Elected" in spec.detail
         assert [issue.member for issue in spec.issues or ()] == ["dcid:Member"]
+
+    def test_an_unclassified_destination_is_a_server_fault_whose_detail_names_it(self):
+        exc = DestinationUnclassifiedError(
+            destinations=["SomeNewAgency"], dataset="provenance/OECDDAC2A"
+        )
+
+        spec = classify_mint_exception(exc)
+
+        assert spec is not None
+        assert spec.status == 500
+        assert spec.code == "internal_error"
+        assert spec.retryable is False
+        assert "SomeNewAgency" in spec.detail
 
     def test_a_frame_the_grammar_refuses_is_a_typed_server_fault(self):
         exc = FrameError(

@@ -32,7 +32,7 @@ from dfo_spec_kit.units import Money, UnpricedMoney, parse_unit
 
 from dc_graph import earliest_date as _earliest
 from dc_graph import latest_date as _latest
-from dc_sdmx import ContainedIn, EntityFilter
+from dc_sdmx import Among, ContainedIn, EntityFilter
 from dfo_platform.lru_memo import LruMemo
 from dfo_platform.named import cut
 from dfo_platform.problem import Alternative
@@ -411,8 +411,8 @@ def _bound_roles_for_coverage(
 ) -> BoundRoles | None:
     """Maps declared graph-role bindings to coverage's `donor`/`recipient` labels.
     Returns `None` when `stat_var` has no `RoleNames` entry. `ContainedIn` is unbound because
-    its expansion requires a graph read. This copy keeps `materialise` independent of
-    `datasets_api`."""
+    its expansion requires a graph read; `Among` binds its members. This copy keeps
+    `materialise` independent of `datasets_api`."""
     names = coverage.role_names.get(stat_var)
     if names is None:
         return None
@@ -421,7 +421,7 @@ def _bound_roles_for_coverage(
         refs = role_bindings.get(declared_role)
         if refs is None or isinstance(refs, ContainedIn):
             continue
-        bound[role] = frozenset(refs)
+        bound[role] = frozenset(refs.members if isinstance(refs, Among) else refs)
     return bound
 
 
@@ -1183,12 +1183,15 @@ def entity_filter_key(role_bindings: Mapping[str, EntityFilter]) -> tuple[object
     """Builds a scope key preserving role and filter order.
 
     SDMX applies each `c[role]` filter to every variable in a request, so
-    members with different scopes cannot share one.
+    members with different scopes cannot share one. An `Among` keys as its members, the
+    dcids it sends.
     """
 
     def _filter_key(filt: EntityFilter) -> tuple[object, ...]:
         if isinstance(filt, ContainedIn):
             return ("contained_in", filt.parent, filt.child_type)
+        if isinstance(filt, Among):
+            return ("dcids", filt.members)
         return ("dcids", tuple(filt))
 
     return tuple(sorted((role, _filter_key(filt)) for role, filt in role_bindings.items()))
@@ -1556,11 +1559,12 @@ def _probe_provenance_refresh(
 
 def _flatten_bound_entities(role_bindings: Mapping[str, EntityFilter]) -> tuple[str, ...]:
     """Returns unique plain dcids in first-seen order. Skips `ContainedIn` because expansion
-    requires a graph read. Kept local because `generation` imports this module."""
+    requires a graph read, and `Among`, whose members no caller named. Kept local because
+    `generation` imports this module."""
     seen: set[str] = set()
     entities: list[str] = []
     for filt in role_bindings.values():
-        if isinstance(filt, ContainedIn):
+        if isinstance(filt, ContainedIn | Among):
             continue
         for dcid in filt:
             if dcid not in seen:

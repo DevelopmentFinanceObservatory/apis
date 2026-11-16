@@ -47,10 +47,13 @@ listed members were cut for display or chosen, so both get the same file. Each f
 `description` and README row say which file is which, with "The card shows N of M; <file> holds all
 M." on the shown file. `ComponentExportMismatch` guards the shown file alone, and a bare file holds
 the shown rows. Each provenance ref the kept rows carry is cited from the frame manifest's
-citation, its licence and documentation included, through `materialise.bundle_sources`. Columns are
-documented by `materialise.bundle_columns`, and the codes table is labelled from
-`ResolvedFrame.labels` and the cited source names with no graph read, so a role's codes keep the
-kind `entity`. Links and the reproducing call sit under the public site origin the caller passes.
+citation, its licence and documentation included, through `materialise.bundle_sources`. A
+declared composite is cited by its component tables, as its citation names them, and named with
+what it adds or reads in the README, SOURCES.md and the datapackage description
+(`bundle_sources.composite_notes`). Columns are documented by `materialise.bundle_columns`, and
+the codes table is labelled from `ResolvedFrame.labels`, the declared composites' bundle names
+and the cited source names with no graph read, so a role's codes keep the kind `entity`. Links
+and the reproducing call sit under the public site origin the caller passes.
 
 The revision's stored `created_at` is the bundle's prepared date and dates the file name, so one
 revision always serves one name. An export on a target frame takes both from that frame's
@@ -89,6 +92,8 @@ from assembler.mint.provenance import _UNATTRIBUTED_SOURCE_NAME, _citation_sourc
 from assembler.pipeline.render import render_on_frame
 from assembler.pipeline.stored_revision import read_stored_revision
 from assembler.ports import FrameRef, FrameStore, ReleaseRegistry, ResolvedFrame, RevisionStore
+from code_index.composites import provenance_datasets
+from code_index.shared import get_index
 from dfo_analysis_engine.place_type import (
     PARTY_ROLES,
     PLACE_ROLE,
@@ -117,7 +122,11 @@ from materialise.bundle_naming import (
     revision_tag,
     zip_file_name,
 )
-from materialise.bundle_sources import source_provenance
+from materialise.bundle_sources import (
+    composite_bundle_labels,
+    composite_notes,
+    source_provenance,
+)
 from materialise.formats import (
     Rendering,
     Sink,
@@ -735,7 +744,7 @@ def _export_table(
             generated[label_column] = column
             out_columns.append(label_column)
 
-    labels = resolved_frame.labels
+    labels = _frame_labels(resolved_frame)
     grain = period_grain(row[index[TIME_PERIOD_COLUMN]] for _, row in rows)
     out_rows: list[tuple[object, ...]] = []
     for series_label, row in rows:
@@ -819,6 +828,7 @@ def _bundled_member(
         sources=_sources(resolved_frame=resolved_frame, provenance_refs=refs),
         columns=_column_docs(scan, generated=generated, partly_shown=partly_shown),
         description=description,
+        composites=composite_notes(refs, index=get_index()),
     )
     return provenance, scan
 
@@ -826,25 +836,39 @@ def _bundled_member(
 def _sources(
     *, resolved_frame: ResolvedFrame, provenance_refs: Sequence[str | None]
 ) -> tuple[SourceProvenance, ...]:
-    """One source per provenance ref, cited from the frame manifest's citation. Rows without
-    a provenance cite one unattributed source."""
+    """One source per provenance ref, cited from the frame manifest's citation. A declared
+    composite's rows are cited by its component tables (`code_index.composites
+    .provenance_datasets`), as its citation names them, each once. Rows without a provenance
+    cite one unattributed source."""
     cited_by_ref = _citation_sources_by_ref(resolved_frame.manifest)
+    cited = dict.fromkeys(
+        dataset
+        for ref in provenance_refs
+        for dataset in ((None,) if ref is None else provenance_datasets(ref))
+    )
     return tuple(
         source_provenance(ref, cited_by_ref.get(ref))
         if ref is not None
         else SourceProvenance(ref=None, name=_UNATTRIBUTED_SOURCE_NAME)
-        for ref in provenance_refs
+        for ref in cited
     )
+
+
+def _frame_labels(resolved_frame: ResolvedFrame) -> dict[str, str]:
+    """`ResolvedFrame.labels`, with each declared composite named by its bundle name
+    (`materialise.bundle_sources.composite_bundle_labels`), so its `provenance` cells and
+    codes-table row read apart from its component tables."""
+    return {**resolved_frame.labels, **composite_bundle_labels(get_index())}
 
 
 def _known_labels(
     resolved_frame: ResolvedFrame, *, sources: Sequence[SourceProvenance]
 ) -> dict[str, str]:
-    """The codes table's labels: the frame's resolved labels, with each cited source's name
-    in place of its provenance ref's graph name. A source the citation lacks is named by its
-    ref, so it keeps the frame's label."""
+    """The codes table's labels: the frame's resolved labels (`_frame_labels`), with each
+    cited source's name in place of its provenance ref's graph name. A source the citation
+    lacks is named by its ref, so it keeps the frame's label."""
     cited_by_ref = _citation_sources_by_ref(resolved_frame.manifest)
-    labels = dict(resolved_frame.labels)
+    labels = _frame_labels(resolved_frame)
     labels.update(
         (source.ref, source.name)
         for source in sources

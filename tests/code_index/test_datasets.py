@@ -280,6 +280,7 @@ _MULTILATERALS = {
     "dcid": "DACMultilaterals",
     "kind": "total",
     "totals": None,
+    "types": [],
     "published": [{"dataset": _CRS_PROVENANCE, "axis": "origin"}],
 }
 _MULTILATERAL = {
@@ -331,6 +332,7 @@ def test_loader_reads_the_words_a_dataset_names_a_party_for():
             _MULTILATERAL,
             {
                 **_MULTILATERALS,
+                "types": [],
                 "published": [
                     {"dataset": _CRS_PROVENANCE, "axis": "destination"},
                     {"dataset": _DAC2A_PROVENANCE, "axis": "origin"},
@@ -370,6 +372,7 @@ def test_loader_rejects_one_word_naming_two_parties_on_an_axis():
     payload["parties"] = [
         {
             **_MULTILATERALS,
+            "types": [],
             "published": [
                 {"dataset": _CRS_PROVENANCE, "axis": "destination"},
                 {"dataset": _CRS_PROVENANCE, "axis": "origin"},

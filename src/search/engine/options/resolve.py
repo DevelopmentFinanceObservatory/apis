@@ -88,10 +88,12 @@ open role at election and still refuses.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from typing import cast
 
 from code_index.flow_family import flow_family
+from code_index.scope_conventions import RolePopulation
 from code_index.shared import get_index
 from dfo_platform import Alternative
 from dfo_platform.named import cut, named_capped
@@ -103,6 +105,7 @@ from search.engine.identity_edit import (
     check_described_arm,
     composite_table_identity,
     open_requested_role,
+    open_within,
     refuse_over_place_bound,
     validate_edited_identity,
 )
@@ -124,6 +127,7 @@ from search.models import (
     ResolvedEntity,
 )
 from search.role_kinds import graph_types
+from series_coverage.shared import CoverageSnapshot
 
 
 def _typed_anchors(
@@ -248,6 +252,9 @@ class ResolvedOptionsTarget:
     `node_types_batch` call. `facets` and `requested_window` pass through the
     identity, with the window translated to engine form. `role_names_by_axis`
     maps declared flow axes to role names; it is empty for subject-only data.
+    `sides` holds the population of each flow axis a posted composite reads on one side
+    alone, and `within` the members each role it binds to a population is open within
+    (`identity_edit.TableRead`); both are empty for any other identity.
     """
 
     identity: BaseIdentity
@@ -256,6 +263,8 @@ class ResolvedOptionsTarget:
     facets: dict[str, IdentityFacetBinding] | None
     requested_window: RequestedWindow | None
     role_names_by_axis: dict[RoleAxis, str]
+    sides: Mapping[RoleAxis, RolePopulation] = field(default_factory=dict)
+    within: Mapping[RoleAxis, frozenset[str]] = field(default_factory=dict)
 
 
 def resolve_options_target(
@@ -266,10 +275,13 @@ def resolve_options_target(
     population_memo: OptionsPopulationMemo | None = None,
     deadline: float | None = None,
     join_inflight: bool = True,
+    coverage: CoverageSnapshot | None = None,
 ) -> ResolvedOptionsTarget:
     """Resolve the posted request into the target used by the options surface.
 
-    `materialise_graph` is required for graph-backed population derivation.
+    `materialise_graph` is required for graph-backed population derivation. `coverage` is
+    the request's coverage snapshot, which a posted composite's population is checked
+    against (`composite_table_identity`), the release's where None.
 
     Args:
         population_memo: optional per-surface population memo; `None` derives
@@ -289,7 +301,10 @@ def resolve_options_target(
             or at `/identity/entities`; `facet_not_available` (422) at
             `/identity/facets/provenance` for an identity naming a dataset that does
             not publish its five-tuple (`refuse_source_outside_family`), before any
-            read; every refusal
+            read, and for a composite reading one side of its destinations posted with a
+            destination off it, or reading a population that is unavailable, with the
+            cause `composite_table_identity` names (`multilateral_destination`,
+            `provider_not_offered`); every refusal
             `options.population.options_population` raises propagates
             unchanged (`population_empty`, `scope_too_broad`,
             `role_signature_incompatible`, 422 each); `invalid_role_ref`
@@ -322,7 +337,24 @@ def resolve_options_target(
     validate_edited_identity(identity, pointer="/identity")
     # A composite's options are those of the identity its option was set on, whose one
     # table every read names.
-    identity = composite_table_identity(identity, pointer="/identity")
+    # A role the composite binds to a population is the open role the caller posted, read
+    # within the population's members.
+    try:
+        table = composite_table_identity(identity, pointer="/identity", coverage=coverage)
+    except EngineInputError as exc:
+        if exc.code != "requested_option_unavailable":
+            raise
+        # The options door registers no scope refusal: a composite that cannot read the
+        # posted destinations, or its population, is a facet binding it cannot serve.
+        raise EngineInputError(
+            str(exc),
+            code="facet_not_available",
+            status=422,
+            pointer=exc.pointer,
+            alternatives=exc.alternatives,
+            cause=exc.cause,
+        ) from exc
+    identity, within = open_within(table.identity, table.populations)
     refuse_over_place_bound(identity.entities, pointer="/identity/entities")
     # A pin posted bound and one posted unbound denote one population.
     identity = canonicalise_identity(identity)
@@ -378,4 +410,6 @@ def resolve_options_target(
         facets=identity.facets,
         requested_window=_requested_window_from_identity(identity.requested_window),
         role_names_by_axis=role_names_by_axis,
+        sides=table.sides,
+        within=within,
     )

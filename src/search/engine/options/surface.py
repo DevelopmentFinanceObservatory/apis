@@ -716,6 +716,24 @@ def _directional_opposite_bound(target: ResolvedOptionsTarget, *, axis: RoleAxis
     return {_COVERAGE_ROLE_FOR_AXIS[other_axis]: frozenset(other_dcids)}
 
 
+def _directional_bound(target: ResolvedOptionsTarget, *, axis: RoleAxis) -> BoundRoles:
+    """The coverage roles an options read of `axis` lists under: the opposite axis's bound
+    entities (`_directional_opposite_bound`), or the members it is open within where a posted
+    composite binds it to a population (`ResolvedOptionsTarget.within`), and, where the
+    composite reads `axis` on one side alone (`ResolvedOptionsTarget.sides`), every
+    destination that side may name (`RolePopulation.named`). So a composite counting
+    bilateral flows offers no agency and no total spanning both sides as a destination, and
+    offers as donors those holding rows at the destinations it reads."""
+    bound = dict(_directional_opposite_bound(target, axis=axis))
+    other_axis = _OTHER_FLOW_AXIS[axis]
+    other_role = _COVERAGE_ROLE_FOR_AXIS[other_axis]
+    if other_role not in bound and (members := target.within.get(other_axis)) is not None:
+        bound[other_role] = members
+    if (side := target.sides.get(axis)) is not None:
+        bound[_COVERAGE_ROLE_FOR_AXIS[axis]] = side.named
+    return bound
+
+
 def _directional_window_years(window: RequestedWindow | None) -> tuple[int | None, int | None]:
     """`window` re-expressed as the `first_year`/`last_year` pair
     `CoverageIndex.open_axis` takes: `None` for both when `window` is `None`
@@ -757,7 +775,7 @@ def _directional_options_set(
         coverage_index.open_axis(
             variables=sv_dcids,
             axis=_COVERAGE_ROLE_FOR_AXIS[axis],
-            bound=_directional_opposite_bound(target, axis=axis),
+            bound=_directional_bound(target, axis=axis),
             first_year=first_year,
             last_year=last_year,
         )

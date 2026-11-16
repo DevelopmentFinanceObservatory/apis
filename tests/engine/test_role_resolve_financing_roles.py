@@ -59,6 +59,7 @@ def test_materialise_resolves_a_financing_role_bearing_shape(monkeypatch) -> Non
         graph=FakeGraph(raise_on_call=True),
         sdmx=FakeSdmxClient(observations={}),  # coverage supplies role facets
         coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
+        within=None,
     )
 
     assert isinstance(result, Materialised)
@@ -93,6 +94,7 @@ def test_materialise_two_destinations_sharing_one_facet_id_report_one_source(
         graph=FakeGraph(raise_on_call=True),
         sdmx=FakeSdmxClient(observations={}),
         coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
+        within=None,
     )
 
     assert isinstance(result, Materialised)
@@ -128,6 +130,7 @@ def test_materialise_refuses_role_not_resolved_for_an_unplaceable_role() -> None
         graph=FakeGraph(raise_on_call=True),
         sdmx=FakeSdmxClient(observations={}),
         coverage=empty_coverage_snapshot(),
+        within=None,
     )
 
     assert isinstance(result, NoDataDraft)
@@ -256,6 +259,7 @@ def test_zero_observation_role_bearing_resolve_returns_the_flagged_carrier(monke
         graph=FakeGraph(raise_on_call=True),
         sdmx=FakeSdmxClient(observations={}),
         coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
+        within=None,
     )
     assert isinstance(with_data, Materialised)
     assert with_data.has_data is True
@@ -269,6 +273,7 @@ def test_zero_observation_role_bearing_resolve_returns_the_flagged_carrier(monke
         graph=FakeGraph(raise_on_call=True),
         sdmx=FakeSdmxClient(observations={}),
         coverage=FakeCoverageService(_auto_coverage_index_2).snapshot(),
+        within=None,
     )
 
     assert isinstance(result, Materialised)
@@ -293,6 +298,7 @@ def test_zero_observation_carrier_reports_a_capped_population_as_inexact() -> No
         graph=FakeGraph(raise_on_call=True),
         sdmx=FakeSdmxClient(observations={}),
         coverage=empty_coverage_snapshot(),
+        within=None,
     )
 
     assert isinstance(result, Materialised)

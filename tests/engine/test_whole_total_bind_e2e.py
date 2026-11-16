@@ -25,6 +25,7 @@ from typing import Any, cast
 import pytest
 
 import search.scope_window as scope_window_module
+from code_index.declarations import DAC2A_BILATERAL
 from code_index.shared import get_index
 from search.engine.bind import SlotBindingDraft
 from search.engine.binders import BindRequest, BindResult, GeminiBinder
@@ -50,9 +51,12 @@ from search.engine.retrieval.whole_reading import YearsAsked, whole_reading
 from search.engine.role_text import DoorRole
 from search.models import (
     CandidatesPart,
+    ChoiceOrigin,
     DatasetResubmitInput,
     DefinitePart,
     EntityGroup,
+    Entry,
+    IdentityBindingValue,
     IdentityShapeSchema,
     IdentityWindowRange,
     NoDataPart,
@@ -102,6 +106,7 @@ _TUR = "country/TUR"
 _OFFICIAL = "DACOfficialDonors"
 _PRIVATE = "DACPrivateDonors"
 _ALL_RECIPIENTS = "DACAllRecipients"
+_DEVELOPING = "DACDevelopingCountries"
 _VARIABLE = "official development assistance"
 
 
@@ -245,6 +250,36 @@ def _whole_read(part: DefinitePart) -> tuple[str, str | None] | None:
 def _available(part: DefinitePart) -> list[dict[str, Any] | None]:
     """The params of each `whole_total_available` warning the part carries."""
     return [warning.params for warning in part.warnings if warning.code == "whole_total_available"]
+
+
+def _under_total_oda(spec: Spec) -> DefinitePart:
+    """The answer to `spec`'s identity resubmitted under `provider:contributions`, DAC2a's
+    aid type 206 read bare, which counts the core contributions the bilateral reading
+    leaves out."""
+    switch = Entry(
+        axis="provider",
+        option_id="provider:contributions",
+        provenance="explicit",
+        origin=ChoiceOrigin(choice_id=f"{spec.spec_id}:provider"),
+    )
+    return _part(
+        offline_resolve(
+            ResolveRequest(
+                input=DatasetResubmitInput(
+                    entries=[
+                        ResubmitIdentityEntry(
+                            variable_text=_VARIABLE,
+                            identity=spec.definition.identity,
+                            scope_entries=[switch],
+                        )
+                    ]
+                )
+            ),
+            graph=_graph(),
+            llm=_ScriptedLLM(_VARIABLE),
+            sdmx=FakeSdmxClient(observations={}, availability={}),
+        )
+    )
 
 
 def _origin(spec: Spec) -> list[str] | None:
@@ -781,7 +816,9 @@ def test_an_alternate_match_states_the_total_its_reading_lists_beside(
     series in DAC2a alone, so the part refuses `no_observations` and offers DAC2a's reading
     as its match (`only_alternate_has_data`). That reading lists its donors, and DAC2a
     publishes the official donors' total with a series to Ethiopia, so the part states the
-    total, stamped with the match, as the match's definite answer would."""
+    total, stamped with the match, as the match's definite answer would. The match reads
+    DAC2a's bilateral destinations, as that definite answer would, so a client fetching it
+    reads no agency."""
     names = RoleNames(donor="financingProvider", recipient="financingRecipient")
     patch_coverage(
         monkeypatch,
@@ -809,6 +846,9 @@ def test_an_alternate_match_states_the_total_its_reading_lists_beside(
     match = answer.no_data.alternate_match
     assert match is not None
     assert match.definition.identity.entities == {"destination": [_ETH]}
+    assert (match.definition.identity.facets or {})["provenance"] == IdentityBindingValue(
+        ref=DAC2A_BILATERAL
+    )
     assert [
         (warning.spec_id, warning.params)
         for warning in answer.warnings
@@ -1764,11 +1804,14 @@ def test_a_place_without_a_direction_beside_a_named_population_takes_the_other_s
     assert [option.label for option in answer.no_data.options or ()] == ["To Ethiopia"]
 
 
-def _india_coverage(monkeypatch: pytest.MonkeyPatch, *, aid_type: str = "own") -> None:
+def _india_coverage(
+    monkeypatch: pytest.MonkeyPatch, *, aid_type: str = "own", developing: bool = False
+) -> None:
     """DAC2a holds series in 2021 to India from Germany and from the official donors'
     total, the latter for the official development assistance member's own aid type or for
-    `aid_type`, and from India to every recipient and to Ethiopia; the CRS holds India's
-    series to Ethiopia. No dataset declares India a provider."""
+    `aid_type`, and from India to every recipient and to Ethiopia, and with `developing` to
+    the developing countries' total; the CRS holds India's series to Ethiopia. No dataset
+    declares India a provider."""
     bound = _DAC2A_MEMBER.split("AidType")[1].split("_")[0]
     held = (
         _DAC2A_MEMBER
@@ -1783,6 +1826,7 @@ def _india_coverage(monkeypatch: pytest.MonkeyPatch, *, aid_type: str = "own") -
             (_DAC2A_MEMBER, "dac2a", "country/DEU", _IND, [2021]),
             (_DAC2A_MEMBER, "dac2a", _IND, _ALL_RECIPIENTS, [2021]),
             (_DAC2A_MEMBER, "dac2a", _IND, _ETH, [2021]),
+            *([(_DAC2A_MEMBER, "dac2a", _IND, _DEVELOPING, [2021])] if developing else []),
             (_CRS_MEMBER, "crs", _IND, _ETH, [2021]),
         ],
         role_names=dict.fromkeys((held, _DAC2A_MEMBER, _CRS_MEMBER), names),
@@ -1839,11 +1883,7 @@ def test_an_alternate_judges_the_total_under_its_own_bindings(
         pytest.param(
             "recipient",
             {"origin": [_IND]},
-            {
-                "total": _ALL_RECIPIENTS,
-                "total_label": "all recipients (DAC)",
-                "whole_of": "official,residual",
-            },
+            {"total": _DEVELOPING, "total_label": "developing countries (DAC)", "whole_of": ""},
             id="recipients-listed",
         ),
     ],
@@ -1855,10 +1895,13 @@ def test_a_candidate_set_states_the_total_beside_the_reading_that_lists_its_side
     params: dict[str, str],
 ):
     """India named with no direction offers a reading of each direction. Opening one role
-    lists that side member by member in the reading where India stands on the other side,
-    and DAC2a publishes that side's total with a series beside India, so the set states
-    the total once, stamped with that reading, as a definite answer does."""
-    _india_coverage(monkeypatch)
+    lists that side member by member in the reading where India stands on the other side.
+    Each reading reads DAC2a's bilateral destinations, as a definite answer does. DAC2a
+    publishes the donors' total with a series beside India, so the set states it once,
+    stamped with that reading. Beside the recipients it states the developing countries'
+    total, the total of the bilateral side, in place of the total of every recipient, which
+    holds the core contributions the reading leaves out."""
+    _india_coverage(monkeypatch, developing=True)
 
     response = _resolve(
         {
@@ -1875,12 +1918,45 @@ def test_a_candidate_set_states_the_total_beside_the_reading_that_lists_its_side
     (reading,) = [
         spec for spec in part.candidates.specs if spec.definition.identity.entities == listed
     ]
+    assert (reading.definition.identity.facets or {})["provenance"] == IdentityBindingValue(
+        ref=DAC2A_BILATERAL
+    )
     stated = [
         (warning.spec_id, warning.params)
         for warning in part.warnings
         if warning.code == "whole_total_available"
     ]
     assert stated == [(reading.spec_id, params)]
+
+
+def test_a_recipients_reading_under_total_oda_states_the_total_beside_its_recipients(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Under `provider:contributions`, DAC2a's aid type 206 read bare, the recipients
+    listed beside India hold the core contributions the all-recipients total holds, so the
+    reading states that total as a `DACAllRecipients` warning."""
+    _india_coverage(monkeypatch)
+    response = _resolve(
+        {
+            "entities": [{"text": "India"}],
+            "open_roles": ["recipient"],
+            "time": "2021",
+            "variable": _VARIABLE,
+        }
+    )
+    assert isinstance(response, Resolution), response
+    (part,) = response.parts
+    assert isinstance(part, CandidatesPart), part
+    (reading,) = [
+        spec
+        for spec in part.candidates.specs
+        if spec.definition.identity.entities == {"origin": [_IND]}
+    ]
+
+    answer = _under_total_oda(reading)
+
+    assert (answer.spec.definition.identity.facets or {}).get("provenance") is None
+    assert [warning["total"] for warning in _available(answer) if warning] == [_ALL_RECIPIENTS]
 
 
 # DAC2a's gross imputed multilateral aid, a shape of its own beside the official
@@ -2032,6 +2108,12 @@ def test_a_resubmitted_candidate_set_states_the_total_for_its_own_reading(
         if warning.code == "whole_total_available"
     ]
     assert stated == [(dac2a.spec_id, _OFFICIAL)]
+    # The fresh DAC2a reading is the composite of its bilateral destinations, which the set
+    # posts back and answers as posted.
+    readings = {spec.spec_id: spec for spec in part.candidates.specs}
+    assert (readings[dac2a.spec_id].definition.identity.facets or {})[
+        "provenance"
+    ] == IdentityBindingValue(ref=DAC2A_BILATERAL)
 
 
 def test_a_resubmit_refusing_its_posted_aid_type_states_the_total_beside_its_flagged_match(
@@ -3114,11 +3196,6 @@ _RECIPIENTS_GROUP = {
     "total": _ALL_RECIPIENTS,
     "whole_of": ["official", "residual"],
 }
-_RECIPIENTS_AVAILABLE = {
-    "total": _ALL_RECIPIENTS,
-    "total_label": "all recipients (DAC)",
-    "whole_of": "official,residual",
-}
 
 
 @pytest.mark.parametrize(
@@ -3171,7 +3248,7 @@ _RECIPIENTS_AVAILABLE = {
             },
             False,
             None,
-            [_RECIPIENTS_AVAILABLE],
+            [],
             id="recipients-ranked",
         ),
     ],
@@ -3187,8 +3264,9 @@ def test_a_recipient_side_reads_whole_inside_the_window(
     to all recipients, or to no recipient named, in 2021 reads it whole. Named in 1983, it
     binds as a named party outside the window, with no whole reading. To no recipient named
     over no stated period, or ranked over the recipients, the part reads the recipients.
-    Only the ranked recipients, listed in 2021, are listed inside the total's window, so
-    only they state it beside them."""
+    Only the ranked recipients are listed inside the total's window, and they read DAC2a's
+    bilateral destinations, which leave out the core contributions the total holds, so no
+    part states the total beside its recipients."""
     _coverage(monkeypatch, years=(1983, 2021))
 
     answer = _part(_resolve(part))
@@ -3199,6 +3277,32 @@ def test_a_recipient_side_reads_whole_inside_the_window(
     assert _group(spec, "destination") == (_RECIPIENTS_GROUP if whole else None)
     assert (_whole_read(answer) is not None) == whole
     assert _available(answer) == listed
+
+
+def test_ranked_recipients_under_total_oda_state_the_total_beside_them(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The ranked recipients of France's aid read DAC2a's aid type 206 bare under
+    `provider:contributions`, which holds the core contributions the all-recipients total
+    holds, so the part states that total as a `DACAllRecipients` warning."""
+    _coverage(monkeypatch, years=(1983, 2021))
+    ranked = _part(
+        _resolve(
+            {
+                "entities": [_FROM_FRANCE],
+                "operations": [
+                    {"over": "destination", "phrase": "top 10 recipients", "verb": "rank"}
+                ],
+                "time": "2021",
+                "variable": _VARIABLE,
+            }
+        )
+    )
+
+    answer = _under_total_oda(ranked.spec)
+
+    assert (answer.spec.definition.identity.facets or {}).get("provenance") is None
+    assert [warning["total"] for warning in _available(answer) if warning] == [_ALL_RECIPIENTS]
 
 
 @pytest.mark.parametrize(

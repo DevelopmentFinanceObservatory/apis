@@ -11,7 +11,7 @@ import pytest
 from graph_api import version
 from graph_api.capabilities import DataBuilds, build_capabilities
 from graph_api.codes import GRAPH_CODE_CATALOGUE
-from graph_api.doors.schema import served_wire_schemas
+from graph_api.doors.json_schema import served_wire_schemas
 
 
 def _baseline_capability_document() -> dict:

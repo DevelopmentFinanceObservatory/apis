@@ -34,6 +34,7 @@ from search.engine.entry.parsed import (
 )
 from search.engine.errors import EngineInputError
 from search.engine.fanout import _FanOutResult, _run_variables_streaming
+from search.engine.identity_edit import composite_table_identity
 from search.engine.options.population_memo import OptionsPopulationMemo
 from search.engine.region import RegionResult, resolve_spec_resubmit
 from search.engine.region.place_options import PlaceOptionsPool
@@ -50,7 +51,7 @@ from search.models import (
     ResubmitParsedEntry,
     Warning,
 )
-from search.scope.provider import without_uncounted_inclusive
+from search.scope.provider import elect_latest_window, without_uncounted_inclusive
 from search.scope.tables import ScopeFacts
 from series_coverage.shared import CoverageSnapshot
 
@@ -278,14 +279,38 @@ async def resolve_candidates_entry(
     One semaphore bounds all promotes across up to 6 entries with 6 candidates
     each. Candidate edits skip observations and coverage probes. The caller checks
     the configured candidate cap before scheduling this coroutine.
+
+    A candidate posting a composite, as a fresh candidate set's reading of DAC2a's bilateral
+    destinations is (`reading.decide_read_scope`), resolves its table identity
+    with the populations its roles bind (`identity_edit.composite_table_identity`) and mints
+    its Spec as the composite (`ResubmitIdentityPayload.composite`), over the one year it
+    serves for a `latest` window (`scope.provider.elect_latest_window`), as an identity entry
+    posting it does.
     """
+    facts = ScopeFacts(index=get_index(), coverage=coverage)
 
     def _promote(candidate: ResubmitCandidate) -> RegionResult:
+        # A composite its components cannot serve refuses before it is served, as an
+        # identity entry posting it does (`dataset_resubmit`).
+        table = composite_table_identity(
+            candidate.identity, pointer="/input/identity", coverage=coverage
+        )
         # A candidate carries no scope entries, so the carried entry a served bilateral line
         # would report has no scope to state it.
-        identity, _ = served_posted_identity(candidate.identity, None, coverage=coverage)
+        posted, _ = served_posted_identity(candidate.identity, None, coverage=coverage)
+        identity = elect_latest_window(posted, facts)
+        # The table identity of the posted one stands where the window election and the
+        # served bilateral line leave it unchanged.
+        if identity != candidate.identity:
+            table = composite_table_identity(identity, pointer="/input/identity", coverage=coverage)
+        # A composite is minted as itself (`ResubmitIdentityPayload.composite`).
         return resolve_spec_resubmit(
-            inp=ResubmitIdentityPayload(identity=identity, entity_groups=candidate.entity_groups),
+            inp=ResubmitIdentityPayload(
+                identity=table.identity,
+                entity_groups=candidate.entity_groups,
+                populations=dict(table.populations),
+                composite=None if table.identity == identity else identity,
+            ),
             graph=graph,
             sdmx=sdmx,
             coverage=coverage,

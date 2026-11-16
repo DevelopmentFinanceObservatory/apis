@@ -27,8 +27,10 @@ from dfo_spec_kit.identity import IdentityError, validate_identity_core
 from code_index.composites import (
     ComponentIdentity,
     CompositeNotServable,
+    PopulationUnavailable,
     component_identities,
     composite_ref,
+    destination_population,
 )
 from code_index.members import (
     FamilyQuery,
@@ -66,11 +68,13 @@ from datasets_api.mint_models import (
 )
 from datasets_api.models import CanonicalDefinition
 from datasets_api.shape import StatVarShape, resolve_shape
-from dc_sdmx import EntityFilter
+from dc_sdmx import Among, EntityFilter
 from dfo_platform.named import cut
+from dfo_platform.problem import Alternative, ProblemIssue
 from graph_release.context import bound_release_or_none
 from materialise import MaterialisationRequest
 from materialise.errors import (
+    DestinationUnclassifiedError,
     FacetNotAvailableError,
     OverCeilingError,
 )
@@ -389,9 +393,13 @@ def to_materialisation_request(
     Validation covers facet-binding shape only.
 
     A shape resolved for a component of a composite (`StatVarShape.component`) reads that
-    component's identity in place of `identity`, and the request names the component.
+    component's identity in place of `identity`, and the request names the component. A role
+    the component binds to a population (`ComponentIdentity.populations`) is sent as
+    `dc_sdmx.Among` its members, so readers of rows read the members and readers of the names
+    a caller asked for read the role as open.
     """
     component = shape.component
+    populations = component.populations if component is not None else {}
     if component is not None:
         identity = component.identity
     entities = cast("Mapping[str, list[str]]", identity.get("entities", {}))
@@ -403,7 +411,12 @@ def to_materialisation_request(
             f"declared_roles {shape.declared_roles!r} no longer declares; "
             "check_reproducible runs before materialisation and refuses this"
         )
-        role_bindings[declared_role] = list(refs)
+        population = populations.get(role)
+        role_bindings[declared_role] = (
+            Among(members=tuple(refs), side=population.side)
+            if population is not None
+            else list(refs)
+        )
     facets = cast("Mapping[str, Mapping[str, object]]", identity.get("facets", {}))
     facet_bindings: dict[str, FacetBinding] = {}
     for axis, binding in facets.items():
@@ -498,11 +511,100 @@ def composite_components(
     (`code_index.composites.component_identities`), or `None` for a plain identity. Every
     reader of an identity's provenance pin in this package asks this first.
 
-    Raises `CompositeUnservable` where the components cannot be derived."""
+    Raises `FacetNotAvailableError` for a composite that reads one side's destinations bound
+    to a destination off that side (`_off_side_refusal`), `CompositeUnservable` where the
+    components cannot be derived otherwise, and `DestinationUnclassifiedError` where the
+    side's population is unavailable."""
     try:
         return component_identities(code_index, identity)
+    except PopulationUnavailable as exc:
+        raise DestinationUnclassifiedError(
+            destinations=exc.unclassified.destinations, dataset=exc.unclassified.dataset
+        ) from exc
     except CompositeNotServable as exc:
+        refusal = _off_side_refusal(exc, code_index=code_index)
+        if refusal is not None:
+            raise refusal from exc
         raise CompositeUnservable(str(exc), identity_pointer=exc.pointer) from exc
+
+
+def _off_side_refusal(
+    exc: CompositeNotServable, *, code_index: CodeIndex
+) -> FacetNotAvailableError | None:
+    """The 422 `facet_not_available` for a composite whose component reads one side's
+    destinations (`code_index.types.ComponentRecipe.destinations`) and whose identity binds
+    destinations off that side (`CompositeNotServable.key`, `refs`), the client's fault: the
+    composite holds no rows there. `None` for every other derivation refusal.
+
+    Each such destination is one issue with the fix. The total spanning both sides names the
+    population's total (`RolePopulation.total`) on the destination role. Any other, a
+    multilateral agency or the DAC's total of them, names the component's own table on the
+    provenance axis, which holds the donor's core contributions to it. The refusal points at
+    the destination role when every such destination is the spanning total, whose fix is
+    there, and at the provenance facet otherwise."""
+    key = exc.key
+    if key is None:
+        return None
+    composite = code_index.composite(exc.ref)
+    recipe = (
+        next((recipe for recipe in composite.components if recipe.destinations is not None), None)
+        if composite is not None
+        else None
+    )
+    if recipe is None:
+        return None
+    population = destination_population(code_index, recipe.dataset, composite=exc.ref)
+    off_side = list(exc.refs)
+    source = population.source
+    issues: list[ProblemIssue] = []
+    for ref in off_side:
+        if ref == source.spanning:
+            total = code_index.parties.get(population.total)
+            issues.append(
+                ProblemIssue(
+                    axis=key,
+                    member=ref,
+                    code="facet_not_available",
+                    detail=(
+                        f"{ref} counts both sides of a donor's aid; the {population.side} "
+                        f"line holds its {population.side} side at {population.total}"
+                    ),
+                    alternatives=[
+                        Alternative(
+                            ref=population.total,
+                            label=(total.label if total else None) or population.total,
+                        )
+                    ],
+                    truncated=False,
+                )
+            )
+            continue
+        table = code_index.datasets.get(source.dataset)
+        issues.append(
+            ProblemIssue(
+                axis=_PROVENANCE_AXIS,
+                member=ref,
+                code="facet_not_available",
+                detail=(
+                    f"{ref} is not a {population.side} destination; {source.dataset} itself "
+                    "counts a donor's core contributions to it"
+                ),
+                alternatives=[
+                    Alternative(
+                        ref=source.dataset,
+                        label=(table.label if table else None) or source.dataset,
+                    )
+                ],
+                truncated=False,
+            )
+        )
+    spanning_only = all(ref == source.spanning for ref in off_side)
+    return FacetNotAvailableError(
+        f"provenance binds the {population.side} line of {recipe.dataset}, which holds no "
+        f"rows at {off_side!r}",
+        facet_pointer=f"/entities/{key}" if spanning_only else f"/facets/{_PROVENANCE_AXIS}",
+        issues=tuple(issues),
+    )
 
 
 def identity_composite(

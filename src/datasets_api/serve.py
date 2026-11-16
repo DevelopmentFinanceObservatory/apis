@@ -64,7 +64,12 @@ from typing import cast
 
 from artifact_store import ArtifactStore, ArtifactStoreError
 from artifact_store.inventory import InventoryBatch, InventoryEntry
-from code_index.composites import ComponentIdentity, composite_ref
+from code_index.composites import (
+    ComponentIdentity,
+    composite_digest,
+    composite_ref,
+    population_check,
+)
 from code_index.members import absent_member_reads_zero
 from code_index.query import CodeIndex
 from code_index.types import CompositeDeclaration, PartyRow
@@ -169,7 +174,11 @@ from materialise.composite import (
     table_years,
 )
 from materialise.continued_series import ContinuedSeries, continued_series_of_trace
-from materialise.errors import DefaultFacetUndefinedError, MaterialisationUsageError
+from materialise.errors import (
+    DefaultFacetUndefinedError,
+    DestinationUnclassifiedError,
+    MaterialisationUsageError,
+)
 from materialise.graph import GraphReader
 from materialise.profile import OutputProfile, compute_output_profile_from_chunks
 from materialise.provenance_doc import (
@@ -697,12 +706,21 @@ def _materialise_components(
     origin findings are read only for a version not on record (`_component_findings`). A
     component no request names, a spliced one whose periods the window does not reach, is
     left out. Raises `MaterialisationUsageError` without `coverage_index`, which a composite's
-    years are read from."""
+    years are read from, and `DestinationUnclassifiedError` before any read when a component
+    reads a population `coverage_index` holds a destination outside of, or cannot list the
+    recipients of (`code_index.composites.population_check`)."""
     if coverage_index is None:
         raise MaterialisationUsageError(
             "a composite reads its components' years from the coverage snapshot"
         )
     ref = cast(str, composite_ref(stored.identity))
+    unavailable = population_check(code_index, coverage_index).refusal(ref)
+    if unavailable is not None:
+        raise DestinationUnclassifiedError(
+            destinations=unavailable.destinations,
+            dataset=unavailable.dataset,
+            variables=unavailable.unlisted,
+        )
     composite = cast("CompositeDeclaration", code_index.composite(ref))
     covered = {
         component.role: table_years(code_index, coverage_index, component.identity)
@@ -749,6 +767,7 @@ def _materialise_components(
             role_columns=requests[0].declared_roles,
             enrichment=enrichment,
             parties=code_index.parties,
+            digest=composite_digest(composite, index=code_index),
         )
     check_ceiling(composed.coverage, ceiling=ceiling)
     return replace(composed, output_profile_seconds=seconds), tuple(runs)

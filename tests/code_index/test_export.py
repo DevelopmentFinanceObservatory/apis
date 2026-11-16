@@ -1072,6 +1072,25 @@ def test_provisional_node_check_runs_once_batched_across_every_row():
         export_statvars(graph, ("SV_Disbursement_Gross", "SV_Disbursement_NoNetting"))
 
 
+@pytest.mark.parametrize(
+    ("types", "refusal"),
+    [
+        pytest.param((UNRESOLVED_NODE,), "no typeOf arc", id="unresolved-only"),
+        pytest.param(
+            ("ProvisionalNode", UNRESOLVED_NODE), "ProvisionalNode", id="provisional-and-unresolved"
+        ),
+    ],
+)
+def test_an_unresolved_type_target_counts_as_no_type(types, refusal):
+    # The batched read marks an unresolvable `typeOf` target `UNRESOLVED_NODE`; the rule
+    # judges the resolved types alone, as `graph_api.schema_check` does.
+    graph = _two_system_graph()
+    graph.forward_arcs["SV_Disbursement_Gross"]["nettingBasis"] = ("MarkedStub",)
+    graph.forward_arcs["MarkedStub"] = {"typeOf": types}
+    with pytest.raises(ExportRefused, match=rf"'MarkedStub'.*{refusal}"):
+        export_statvars(graph, ("SV_Disbursement_Gross",))
+
+
 def test_constraint_value_absent_from_graph_raises_export_refused():
     # The value dcid is absent from the graph, unlike a held `ProvisionalNode` stub.
     graph = _two_system_graph()
@@ -3279,7 +3298,7 @@ def test_export_index_writes_each_partys_kind_label_and_the_group_a_total_holds(
     document = _export_parties(
         {
             "country/FRA": ("Country",),
-            "country/IND": ("Country", "Place"),
+            "country/IND": ("Place", "Country", "Country"),
             "IDA": ("Organization", "ProvisionalNode"),
             "DACAfrica": ("DACGroup",),
             "DACAllRecipients": ("DACGroup",),
@@ -3308,18 +3327,21 @@ def test_export_index_writes_each_partys_kind_label_and_the_group_a_total_holds(
             party_class="official",
             label="France",
             published=tuple(product(published, recipient)),
+            types=("Country",),
         ),
         "country/IND": PartyRow(
             dcid="country/IND",
             kind="party",
             party_class="official",
             published=tuple(product(published, recipient)),
+            types=("Country", "Place"),
         ),
         "IDA": PartyRow(
             dcid="IDA",
             kind="party",
             party_class="official",
             published=tuple(product(published, recipient)),
+            types=("Organization", "ProvisionalNode"),
         ),
         "DACAfrica": PartyRow(
             dcid="DACAfrica",
@@ -3328,9 +3350,13 @@ def test_export_index_writes_each_partys_kind_label_and_the_group_a_total_holds(
             residuals=("DACAfricaUnallocated",),
             label="Africa (DAC)",
             published=tuple(product(published, recipient)),
+            types=("DACGroup",),
         ),
         "DACAllRecipients": PartyRow(
-            dcid="DACAllRecipients", kind="total", published=tuple(product(published, recipient))
+            dcid="DACAllRecipients",
+            kind="total",
+            published=tuple(product(published, recipient)),
+            types=("DACGroup",),
         ),
         "DACCountriesTotal": PartyRow(
             dcid="DACCountriesTotal",
@@ -3338,6 +3364,7 @@ def test_export_index_writes_each_partys_kind_label_and_the_group_a_total_holds(
             totals="groups/OECD.DAC",
             sums_members=False,
             published=tuple(product(published, recipient)),
+            types=("DACGroup",),
         ),
         "DACAfricaUnallocated": PartyRow(
             dcid="DACAfricaUnallocated",
@@ -3345,6 +3372,7 @@ def test_export_index_writes_each_partys_kind_label_and_the_group_a_total_holds(
             party_class="residual",
             label="Africa, unallocated by country (DAC)",
             published=tuple(product(published, recipient)),
+            types=("DACRecipientUnallocatedByCountry",),
         ),
     }
     assert index.totals_by_group == {
@@ -3438,18 +3466,21 @@ def test_a_kind_override_replaces_the_kind_the_types_give(tmp_path: Path):
             kind="total",
             totals="groups/WB",
             published=tuple(product(published, recipient)),
+            types=("Organization",),
         ),
         "InternationalFinanceCorporation": PartyRow(
             dcid="InternationalFinanceCorporation",
             kind="party",
             party_class="official",
             published=tuple(product(published, recipient)),
+            types=("Organization",),
         ),
         "Mystery": PartyRow(
             dcid="Mystery",
             kind="residual",
             party_class="residual",
             published=tuple(product(published, recipient)),
+            types=("MysteryGroup",),
         ),
     }
 
@@ -3483,6 +3514,7 @@ def test_a_kind_override_scoped_to_a_dataset_holds_there_and_nowhere_else(tmp_pa
         party_class="official",
         published=tuple(product(published, donor)),
         dataset_kinds=((_TEST_PROVENANCE, "total"),),
+        types=("Organization",),
     )
     assert [parties["TrustFund"].kind_in(dataset) for dataset in published] == ["party", "total"]
     assert parties["Fund"].dataset_kinds == ()

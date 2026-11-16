@@ -177,6 +177,37 @@ class DatasetDisagreementError(MaterialisationError):
         super().__init__(detail, detail=detail, issues=(ProblemIssue(member=stat_var),))
 
 
+class DestinationUnclassifiedError(MaterialisationError):
+    """500 `internal_error`. Raised before any read of a composite whose component binds its
+    destinations to one side (`code_index.types.ComponentRecipe.destinations`) while that
+    side's population is unavailable (`code_index.composites.population_check`): the code
+    index publishes, or coverage holds rows at, a destination
+    `code_index.scope_conventions.destination_side` cannot place, or coverage cannot list the
+    recipients of a population variable. The graph release and the code index have drifted
+    apart, and a population leaving
+    the destination out would understate the figure with no trace. `destinations` holds the
+    dcids, sorted, `variables` the unlisted variables, and `dataset` the component's
+    table."""
+
+    code = "internal_error"
+    status = 500
+
+    def __init__(
+        self, *, destinations: Sequence[str], dataset: str, variables: Sequence[str] = ()
+    ) -> None:
+        self.destinations = tuple(sorted(destinations))
+        self.variables = tuple(variables)
+        self.dataset = dataset
+        detail = (
+            f"coverage lists no recipients of {dataset} for {len(self.variables)} population "
+            f"variable(s), so no side's rows can be kept: {list(self.variables)!r}"
+            if self.variables
+            else f"{len(self.destinations)} destination(s) of {dataset} sit on no known side "
+            f"of its flows, so no side's rows can be kept: {list(self.destinations)!r}"
+        )
+        super().__init__(detail, detail=detail)
+
+
 class MixedGrainError(MaterialisationError):
     """500 `internal_error`. Raised when the rows a materialisation serves hold periods of
     more than one grain, as `2019` beside `2019-01`, which no frame binds

@@ -400,7 +400,7 @@ jobs:
           # would leave every members read a 404.
           wait_for_app() {
             for _ in $(seq 1 120); do
-              if curl -fsS -o /dev/null "http://127.0.0.1:$1/api/search/schema" &&
+              if curl -fsS -o /dev/null "http://127.0.0.1:$1/api/search/capabilities" &&
                 curl -fsS -o /dev/null "http://127.0.0.1:$1/api/datasets/healthz"; then
                 return 0
               fi
@@ -415,11 +415,11 @@ jobs:
           # A head that does not serve is the PR's fault and fails the run. A
           # base that does not serve is infrastructure.
           if ! wait_for_app "$HEAD_PORT" "$head_pid" "$out/head-app.log"; then
-            echo "::error::The head app did not serve /api/search/schema and /api/datasets/healthz."
+            echo "::error::The head app did not serve /api/search/capabilities and /api/datasets/healthz."
             exit 1
           fi
           if ! wait_for_app "$BASE_PORT" "$base_pid" "$out/base-app.log"; then
-            echo "::error::The base app did not serve /api/search/schema and /api/datasets/healthz."
+            echo "::error::The base app did not serve /api/search/capabilities and /api/datasets/healthz."
             echo 3 > "$out/code"
             exit 0
           fi

@@ -310,7 +310,7 @@ class TestPartProvenance:
 
     def test_the_served_schema_lists_the_declared_datasets(self):
         client = make_client()
-        body = client.get("/api/search/schema").json()
+        body = client.get("/api/search/json-schema").json()
         field = body["request"]["$defs"]["ParsedPart"]["properties"]["provenance"]
         (named,) = [branch for branch in field["anyOf"] if branch.get("type") == "string"]
         assert {(value["const"], value["x-opt-in"]) for value in named["oneOf"]} == {
@@ -587,7 +587,7 @@ class TestCapabilitiesPublishLiveDoorAndCaps:
 class TestSchemaReflectsPartsShape:
     def test_schema_request_defines_parsed_input_with_parts(self):
         client = make_client()
-        body = client.get("/api/search/schema").json()
+        body = client.get("/api/search/json-schema").json()
         defs = body["request"]["$defs"]
         assert "ParsedInput" in defs
         parsed_input = defs["ParsedInput"]

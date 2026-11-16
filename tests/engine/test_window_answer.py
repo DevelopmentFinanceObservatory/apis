@@ -1035,7 +1035,9 @@ def test_an_answer_with_fixed_years_starts_its_related_read_before_the_unit_deci
         else DateRequest(window=TimeWindow(start_year=2015, end_year=2020), latest=False)
     )
     state = SimpleNamespace(
-        mat_result=_two_flows(range(2000, 2025)), date_request=request, related_read=None
+        mat_result=_two_flows(range(2000, 2025)),
+        date_request=request,
+        related_read=None,
     )
 
     assert asyncio.run(phase_answer._ground_elected_answer(cast(Any, state))) is stop

@@ -103,6 +103,7 @@ class TestMultiSetAxesCoherentCase:
             graph=graph,
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            within=None,
         )
 
         assert isinstance(result, Materialised)
@@ -143,6 +144,7 @@ class TestMultiSetAxesUnrealisable:
             graph=graph,
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            within=None,
         )
 
         assert isinstance(result, BoundValuesUnrealisable)
@@ -168,6 +170,7 @@ class TestMultiSetAxesUnrealisable:
             graph=graph,
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            within=None,
         )
 
         assert isinstance(result, Materialised)

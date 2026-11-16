@@ -16,10 +16,11 @@ import dataclasses
 import functools
 import logging
 from collections.abc import Callable
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from materialise import GraphReader
 from materialise.errors import DefaultFacetUndefinedError, FacetNotAvailableError
+from origin_catalogue import current_catalogue
 from search.engine.envelope import _emit_step, now_ms
 from search.engine.errors import EngineInfraError
 from search.engine.extract import DateRequest
@@ -34,6 +35,7 @@ from search.engine.region.codes import (
     NO_MEMBER_HAS_DATA_AT_PLACE,
     _ObsProbeResult,
 )
+from search.engine.region.composite_answer import ComponentReads, CompositeRelaunch
 from search.engine.region.convertibility import (
     conversion_period_departure,
     convertible_answer,
@@ -105,6 +107,13 @@ from search.engine.region.phase_shared import (
     withdraw_typed_unit,
 )
 from search.engine.region.place_roles import request_named_groups
+from search.engine.region.reading import (
+    ReadingDecision,
+    ReadScope,
+    decide_read_scope,
+    named_entity_data,
+    roles_read,
+)
 from search.engine.region.related_read import (
     cancel_related_reads,
     start_answer_related_read,
@@ -121,15 +130,19 @@ from search.engine.region.scope import (
 )
 from search.engine.region.scope_decision import (
     ScopeDecision,
-    answer_scope_facts,
-    decide_guarded,
-    decide_scope,
-    guarded_scope_decision,
+    decide_after_read,
+    states_answer,
 )
-from search.engine.region.state import MeasureFamily, ResolveState, raised_facts
+from search.engine.region.state import (
+    AnswerMark,
+    MeasureFamily,
+    MintedComposite,
+    ResolveState,
+    raised_facts,
+    whole_totals_as_read,
+)
 from search.engine.region.trailing import SettledTrailing, passed_over_departure, settle_trailing
 from search.engine.region.un_system import member_labels
-from search.engine.region.whole_totals import whole_total_warnings
 from search.engine.retrieval.bound_values import (
     MeasurePartition,
     OpenAxisFact,
@@ -178,6 +191,9 @@ from search.models import (
     TimeWindow,
     Warning,
 )
+
+if TYPE_CHECKING:
+    from search.engine.region.candidates import _Candidate
 
 logger = logging.getLogger(__name__)
 
@@ -406,11 +422,14 @@ def _install_filtered_answer(
     state: ResolveState, mat_result: Materialised, filtered: FilteredAnswer
 ) -> None:
     """Record the answer's coverage, headline and read plan, and restate the discovered-scope
-    warning to count the members that plan serves, as the scope list and coverage do."""
+    warning to count the members that plan serves, as the scope list and coverage do. A
+    part whose read elected a composite (`ResolveState.reading`) counts the composite's
+    parties instead, once its Spec is minted (`_build_definite_spec`)."""
     state.elected_coverage = filtered.coverage
     state.elected_headline = filtered.headline
     state.elected_plan = filtered.plan
-    if state.opposite_labels is not None:
+    reading = state.reading
+    if state.opposite_labels is not None and (reading is None or reading.table is None):
         restate_role_scope_warnings(
             state.warnings,
             mat_result,
@@ -499,9 +518,7 @@ async def _ground_elected_answer(state: ResolveState) -> RegionResult | None:
     early = await _decide_bound_unit_convertibility(state, mat_result)
     if early is not None:
         # A refusal states no related measures, so the read started for them stops.
-        if state.related_read is not None:
-            cancel_related_reads((state.related_read,))
-            state.related_read = None
+        _drop_related_read(state)
         return early
 
     t0 = now_ms()
@@ -579,7 +596,9 @@ async def _ground_elected_answer(state: ResolveState) -> RegionResult | None:
         state.shape_draft,
         state.bindings,
         mat_result.sv_dcids,
-        state.place.roles.roles,
+        # The answer lists the totals its read bound on axes the part leaves out, as a
+        # resubmit of its composite lists them, and its identity leaves them out.
+        roles_read(state.place.roles.roles, state.reading),
         state.graph,
         # The filtered plan names the sources: under a unit request, the facets it serves
         # in the elected units. A conversion preview may read facets outside it.
@@ -678,8 +697,11 @@ async def _ground_elected_answer(state: ResolveState) -> RegionResult | None:
         for role_draft, entity_ref, entity_type_ref in entity_objects_data
     ]
     state.entity_objects = entity_objects
-    # Hash the same role-dispatched entities presented in the response.
-    identity_entities = build_identity_entities(entity_objects_data, role_refs)
+    # Hash the same role-dispatched entities presented in the response, but the totals the
+    # read bound, which the request did not name.
+    identity_entities = build_identity_entities(
+        named_entity_data(entity_objects_data, state.reading), role_refs
+    )
     state.identity_entities = identity_entities
 
     state.timing["answer"] = now_ms() - t0
@@ -827,6 +849,21 @@ def _start_assemble_definite(state: ResolveState, mat_result: Materialised) -> _
     )
 
 
+def component_reads(state: ResolveState) -> ComponentReads:
+    """The request clients a composite answer's component reads run on, with the request's
+    catalogue as the part found it, before its source scope narrowed it."""
+    return ComponentReads(
+        graph=state.graph,
+        sdmx=state.sdmx,
+        coverage=state.coverage,
+        materialise_graph=state.materialise_graph,
+        materialise_sdmx=state.materialise_sdmx,
+        rate_cache=state.rate_cache,
+        deadline=state.deadline,
+        catalogue=state.request_catalogue or current_catalogue(),
+    )
+
+
 def _preview_reader(state: ResolveState, read: PreviewRead) -> PreviewReader:
     """`read` bound to the request's clients."""
     return PreviewReader(
@@ -848,26 +885,17 @@ async def _fetch_definite_observations(
     return await asyncio.to_thread(_preview_reader(state, setup.preview).observations)
 
 
-@dataclasses.dataclass(frozen=True)
-class _AnswerScope:
-    """The identity `build_spec` mints for the answer (`answer`) and the scope decided over
-    it (`decision`)."""
-
-    answer: AnswerIdentity
-    decision: ScopeDecision
-
-
 def _decide_answer_scope(
     state: ResolveState, mat_result: Materialised, slots: list[Slot], setup: _DefiniteSetup
-) -> _AnswerScope:
-    """The scope the answer `_build_definite_spec` builds from `slots` states
-    (`scope_decision.decide_scope`), decided over the identity `build_spec` mints from the
-    same arguments (`spec_build.answer_identity`) before the options are counted, so a
-    composite answer launches no preview of the one table it resolved. `build_spec` takes
-    that identity as given, since every argument it reads (`state`, `slots`,
-    `mat_result.open_axes` and `setup.facet_bindings`) holds unchanged from here to there.
-    A decision that raises leaves the answer as a single table that states no scope
-    (`scope_decision.guarded_scope_decision`)."""
+) -> ReadScope:
+    """The scope the answer `_build_definite_spec` builds from `slots` states, built over
+    the identity `build_spec` mints from the same arguments (`spec_build.answer_identity`)
+    before the options are counted, so a composite answer launches no preview of the one
+    table it read. `build_spec` takes that identity as given, since every argument it reads
+    (`state`, `slots`, `mat_result.open_axes` and `setup.facet_bindings`) holds unchanged
+    from here to there. The scope applies the provider choice the read elected
+    (`ResolveState.reading`) and mints the Spec as the composite it compiles, where it
+    compiles one (`reading.decide_read_scope`)."""
     answer = answer_identity(
         state.shape_model,
         slots,
@@ -883,32 +911,24 @@ def _decide_answer_scope(
         pin_served_provenance=state.pin_served_provenance,
         named_groups=request_named_groups(state, state.place.roles),
     )
-
-    def decide() -> ScopeDecision:
-        facts = answer_scope_facts(
-            entity_groups=answer.entity_groups,
-            facets=answer.facets or {},
-            sources=answer.resolved_sources,
-            operations=state.operations,
-            coverage=state.coverage,
-        )
-        return decide_scope(
-            answer.spec_id, answer.identity, selection=state.scope_selection, facts=facts
-        )
-
-    decision = guarded_scope_decision(
-        answer.spec_id, decide, operations=state.operations, coverage=state.coverage
+    return decide_read_scope(
+        answer,
+        state.reading,
+        selection=state.scope_selection,
+        operations=state.operations,
+        coverage=state.coverage,
+        catalogue=state.request_catalogue,
     )
-    return _AnswerScope(answer=answer, decision=decision)
 
 
 async def _preview_unless_composite(
-    scope: asyncio.Task[_AnswerScope], setup: _DefiniteSetup, state: ResolveState
+    scope: asyncio.Task[ReadScope], setup: _DefiniteSetup, state: ResolveState
 ) -> tuple[SpecObservations, Warning | None] | None:
     """The answer's preview (`_fetch_definite_observations`), read once its scope is
-    decided. It is None for an answer restated as a composite, whose preview reads each
-    component (`pipeline._with_composite_preview`)."""
-    if (await scope).decision.composite:
+    decided. It is None for an answer whose scope compiles a composite, whose preview reads
+    each component (`pipeline._with_composite_preview`)."""
+    decision = (await scope).decision
+    if decision is None or decision.composite:
         return None
     return await _fetch_definite_observations(setup, state)
 
@@ -921,6 +941,11 @@ class _DefiniteCoverage:
     counted: CountedSlotOptions
     # The identity the answer's scope was decided over, which `build_spec` mints the Spec from.
     answer: AnswerIdentity
+    # The scope decided over `answer` before the preview launched (`_decide_answer_scope`),
+    # which the finished answer is checked against (`finished_scope`).
+    decision: ScopeDecision
+    # The composite the Spec is minted as, where its scope compiles one.
+    minted: MintedComposite | None
     slot_options: list[SlotOptions]
     facet_options: list[FacetOptions]
     entity_options_raw: list[EntityOptions]
@@ -963,17 +988,20 @@ async def _gather_definite_coverage(
     mat_result: Materialised,
     setup: _DefiniteSetup,
     count_task: asyncio.Task[CountedSlotOptions],
-    decision_task: asyncio.Task[_AnswerScope],
+    decision_task: asyncio.Task[ReadScope],
+    mark: AnswerMark,
 ) -> RegionResult | _DefiniteCoverage:
     """Check bound-unit availability, run eligible coverage probes, and await their tasks.
 
     `count_task` counts the answer's menus (`counted_slot_options`) beside the entity,
     facet and observation reads; the slot probe starts from its counted menus once it
     ends. `decision_task` decides the answer's scope (`_decide_answer_scope`), which the
-    preview read waits on. An answer restated as a composite reads no preview here,
-    buffered or streamed, and the decision is kept for `pipeline._with_scope_choices`
-    (`ResolveState.scope_decision`). Unit refusals return a terminal result before
-    slot/facet probes launch. Record option probe timing and return the coverage bundle
+    preview read waits on. An answer whose scope compiles a composite reads no preview
+    here, buffered or streamed, and the decision and the composite it mints are kept for
+    the finished answer's check (`finished_scope`, `_DefiniteCoverage.decision` and
+    `.minted`). A decision that mints no composite for rows read within one answers
+    `failed_closed` back to `mark`. Unit refusals return a terminal result before slot
+    and facet probes launch. Record option probe timing and return the coverage bundle
     otherwise.
     """
     # A known carve-out guarantees no definite result, so the part reads no preview and
@@ -1024,7 +1052,10 @@ async def _gather_definite_coverage(
         if state.stream_observations and not refuses:
             eager_obs_availability = await _preview_unless_composite(decision_task, setup, state)
         answer_scope = await decision_task
-        state.scope_decision = answer_scope.decision
+        if answer_scope.decision is None:
+            # Read within a composite's population, with no scope minting the composite.
+            return failed_closed(state, mark)
+        decision = answer_scope.decision
         counted = await count_task
         # Keep the counted options unless a coverage probe ran.
         slot_options = counted.options
@@ -1064,6 +1095,8 @@ async def _gather_definite_coverage(
     return _DefiniteCoverage(
         counted=counted,
         answer=answer_scope.answer,
+        decision=decision,
+        minted=answer_scope.minted,
         slot_options=slot_options,
         facet_options=facet_options,
         entity_options_raw=entity_options_raw,
@@ -1163,7 +1196,9 @@ def _build_definite_spec(
         served_member_facts,
         value_labels=state.shape_draft.value_labels or {},
     )
+    minted = coverage.minted
     spec = build_spec(
+        composite=None if minted is None else minted.mint,
         shape=state.shape_model,
         slots=slots,
         stat_vars=state.stat_vars,
@@ -1233,6 +1268,10 @@ def _build_definite_spec(
     if state.bound_unit_outcome is not None:
         spec = with_unit_lexicon_version(spec, state.bound_unit_outcome)
     spec = apply_declaration_version(spec, state.bindings)
+    if minted is not None:
+        # A Spec minted as a composite counts its defaulted scope over the composite's
+        # parties (`CompositeMint.role_scope_warnings`).
+        state.warnings[:] = minted.mint.role_scope_warnings(state.warnings, spec)
     family_total_absent = mat_result.family_total_absent or lone_breakdown_absent(
         state.breakdown,
         shape=state.shape_draft,
@@ -1251,13 +1290,21 @@ def _build_definite_spec(
 
 
 async def _assemble_carve_outs(
-    state: ResolveState, mat_result: Materialised, spec: Spec
+    state: ResolveState,
+    mat_result: Materialised,
+    spec: Spec,
+    *,
+    decision: ScopeDecision | None,
+    minted: MintedComposite | None = None,
 ) -> RegionResult | None:
     """Apply the remaining no-data gates after Spec construction. ``None`` means definite.
 
     Qualifier refusal precedes missing-slice and observation checks. Bound-unit availability
-    is already verified by ``bound_unit_gate_reason``.
+    is already verified by ``bound_unit_gate_reason``. `spec`, the flagged match each gate
+    names, is minted as `minted` where it is a composite, and carries the warning of
+    `decision`, the scope decided for it (`_show_decision`).
     """
+    matched = () if minted is None else (minted,)
     # Judge the final answer on every requirement (`requirements.settle_answer`). One it
     # leaves unmet refuses before any broader answer can pass as definite, naming the terms
     # its trace records. The candidates path judges its answers the same way. The answer is
@@ -1266,9 +1313,11 @@ async def _assemble_carve_outs(
         state, state.shape_draft, state.bindings, served=served_prices(spec)
     )
     if unbound_qualifiers:
+        _show_decision(state, decision)
         return state.no_data(
             "qualifier_not_bound",
             flagged_match=(spec,),
+            matched=matched,
             gate=None,
             llm_usage=state.var_usage,
             unbound_qualifiers=unbound_qualifiers,
@@ -1278,9 +1327,11 @@ async def _assemble_carve_outs(
     # place. Read the materialised value directly. Confidence masks it when no place is
     # named. A defaulted country scope can establish ``False``.
     if mat_result.available_at_place is False:
+        _show_decision(state, decision)
         return state.no_data(
             "no_observations",
             flagged_match=(spec,),
+            matched=matched,
             gate=NO_MEMBER_HAS_DATA_AT_PLACE,
             nearest_real=await _nearest_real_for(state),
             llm_usage=state.var_usage,
@@ -1289,9 +1340,11 @@ async def _assemble_carve_outs(
     # Without a named place, ``has_data=False`` means no member asserted every bound
     # property. Report the matched Spec as ``flagged_match``.
     if state.destination_dcid is None and not mat_result.has_data:
+        _show_decision(state, decision)
         return state.no_data(
             "no_matching_slice",
             flagged_match=(spec,),
+            matched=matched,
             gate=NO_MEMBER_ASSERTS_BOUND_PROPERTIES,
             llm_usage=state.var_usage,
         )
@@ -1302,27 +1355,84 @@ async def _assemble_carve_outs(
     return None
 
 
-async def _finished_scope(state: ResolveState, spec: Spec) -> ScopeDecision:
-    """The scope `spec` states, as decided before its preview launched
-    (`ResolveState.scope_decision`). A decision made for another `spec_id` is decided again
-    from `spec`, guarded as every decision is (`scope_decision.decide_guarded`), and kept
-    for `pipeline._with_scope_choices`."""
-    decision = cast(ScopeDecision, state.scope_decision)
-    if decision.spec_id == spec.spec_id:
-        return decision
-    logger.warning(
-        "scope decided for %s before the preview launched, but the answer is %s",
-        decision.spec_id,
-        spec.spec_id,
-    )
-    state.scope_decision = await asyncio.to_thread(
-        decide_guarded,
-        spec,
-        selection=state.scope_selection,
-        operations=state.operations,
-        coverage=state.coverage,
-    )
-    return state.scope_decision
+def _show_decision(state: ResolveState, decision: ScopeDecision | None) -> None:
+    """Add the warning of `decision`, the scope decided for the answer a carve-out refusal
+    shows as its flagged match, to the part's once (`ScopeDecision.warning`): a reading the
+    bilateral default cannot reach says it reads total ODA, as a candidate a refusal shows
+    does (`candidate_collapse._shown`)."""
+    warning = None if decision is None else decision.warning
+    if warning is not None and warning not in state.warnings:
+        state.warnings.append(warning)
+
+
+def _drop_related_read(state: ResolveState) -> None:
+    """Cancel the related-measures read started for the answer (`ResolveState.related_read`),
+    whose result nothing will state."""
+    if state.related_read is not None:
+        cancel_related_reads((state.related_read,))
+        state.related_read = None
+
+
+def failed_closed(
+    state: ResolveState, mark: AnswerMark, *, candidate: _Candidate | None = None
+) -> RegionResult:
+    """The no_data `facet_not_available` answer of a definite answer read as a composite
+    that no scope states, describing `candidate` where the candidates door answers
+    (`ResolveState.no_data(candidate=)`). The refused answer contributes nothing: the part's
+    warnings, departure facts, re-election warning and judgement are restored to `mark`,
+    taken where its producer's answer became specific, before the elected answer is
+    grounded or the candidates are (`ResolveState.mark_answer`), and the related-measures
+    read started for it is cancelled."""
+    state.restore(mark)
+    _drop_related_read(state)
+    return state.no_data("facet_not_available", candidate=candidate, llm_usage=state.var_usage)
+
+
+async def finished_scope(
+    state: ResolveState,
+    spec: Spec,
+    *,
+    decision: ScopeDecision | None,
+    minted: MintedComposite | None,
+    reading: ReadingDecision | None,
+) -> ScopeDecision | None:
+    """The scope the finished definite answer `spec` states. It is `decision`, decided
+    before the preview launched, where that decision states `spec`
+    (`scope_decision.states_answer`), judged by `reading`, the reading the answer's own rows
+    were read under, and `minted`, the composite its Spec was minted as. Any other is a
+    decision made for another answer, so `spec` is decided again
+    (`scope_decision.decide_after_read`), which chooses nothing and fails closed. That
+    decision reads coverage and scans families, so it alone runs off the event loop. It
+    returns None where `spec` is minted as a composite or its rows were read within a
+    composite's population, and the caller answers `failed_closed` in its place. Only a
+    returned decision keeps `minted` on the state (`ResolveState.minted`).
+
+    Each producer of a definite answer, `_assemble_definite_answer` and
+    `candidate_collapse._assemble_definite`, calls it once, before its related read is
+    awaited or any of its trailing tasks launch, and carries the decision it returns on the
+    result (`RegionResult.scope_decision`)."""
+    minted_as_spec = minted is not None and minted.mint.spec_id == spec.spec_id
+    read_within = reading is not None and reading.table is not None
+    if decision is None or not states_answer(
+        decision, spec, minted=minted_as_spec, read_within=read_within
+    ):
+        logger.warning(
+            "scope decided for %s before the preview launched, but the answer is %s",
+            None if decision is None else decision.spec_id,
+            spec.spec_id,
+        )
+        decision = await asyncio.to_thread(
+            decide_after_read,
+            spec,
+            minted=minted_as_spec,
+            read_within=read_within,
+            selection=state.scope_selection,
+            operations=state.operations,
+            coverage=state.coverage,
+        )
+    if decision is not None:
+        state.minted = minted
+    return decision
 
 
 async def _finalize_definite_result(
@@ -1331,12 +1441,21 @@ async def _finalize_definite_result(
     setup: _DefiniteSetup,
     coverage: _DefiniteCoverage,
     definite_spec: _DefiniteSpec,
+    decision: ScopeDecision,
 ) -> RegionResult:
     """Attach eager SSE data and related measures, launch relaunch tasks, and return the
-    definite result. The preview follows the scope decided for the finished answer
-    (`_finished_scope`)."""
+    definite result, which carries `decision`, the scope the finished answer states
+    (`finished_scope`, `RegionResult.scope_decision`). The preview follows it.
+
+    A Spec minted as a composite (`MintedComposite`) launches none of its table's slot
+    options, place options or preview, which would stream under the composite's spec_id. It
+    carries the closure that reads the composite's preview per component
+    (`composite_answer.CompositeRelaunch`), which `pipeline._with_composite_preview`
+    launches. Its `whole_total_available` warnings are read over the identity its rows were
+    read for and the populations its roles were read within
+    (`state.whole_totals_as_read`)."""
     spec = await with_related(definite_spec.spec, state.related_read)
-    decision = await _finished_scope(state, spec)
+    minted = state.minted if decision.composite else None
     if not decision.composite and state.include_observations and not state.stream_observations:
         # A bound-unit check fetches observations whether or not a preview is asked for.
         # Without one the answer states nothing from that fetch, as its resubmit, which
@@ -1369,17 +1488,17 @@ async def _finalize_definite_result(
         variable_labels=member_labels((spec,)),
         date_request=state.date_request,
     )
+    # A composite streams no option of the table it read.
+    stream_slot_options = state.stream_slot_options and minted is None
     slot_options_task = (
-        relaunch_slot_options(spec.spec_id, setup.slot_options_raw)
-        if state.stream_slot_options
-        else None
+        relaunch_slot_options(spec.spec_id, setup.slot_options_raw) if stream_slot_options else None
     )
 
     # Place options require both the graph reader and their dedicated executor. Omit the
     # task when either dependency is absent.
     place_options_materialise_graph = state.materialise_graph
     stream_place_options = (
-        state.stream_slot_options
+        stream_slot_options
         and place_options_materialise_graph is not None
         and state.place_options_pool is not None
     )
@@ -1393,9 +1512,12 @@ async def _finalize_definite_result(
     # Create the deferred SSE task only after the Spec has an ID for correlation.
     observations_task: asyncio.Task[_ObsProbeResult] | None = None
     observations_relaunch: Callable[[str], asyncio.Task[_ObsProbeResult]] | None = None
-    # A composite's preview reads each component once the answer is restated
-    # (`pipeline._with_composite_preview`).
-    if not decision.composite and state.stream_observations:
+    # A composite's preview reads each component (`pipeline._with_composite_preview`).
+    if minted is not None:
+        observations_relaunch = CompositeRelaunch(
+            spec=spec, reads=component_reads(state), served=minted.mint.served
+        )
+    elif not decision.composite and state.stream_observations:
         observations_relaunch = _preview_reader(state, setup.preview).relaunch(
             member_labels((spec,))
         )
@@ -1409,14 +1531,14 @@ async def _finalize_definite_result(
         warnings=(
             *state.warnings,
             *(warning for warning, _fact in family),
-            *whole_total_warnings(spec, coverage=state.coverage.index),
+            *whole_totals_as_read(spec, minted, coverage=state.coverage.index),
         ),
         departure_facts={**state.departure_facts, **raised_facts(family)},
         timing_by_step=dict(state.timing),
         llm_usage=state.var_usage,
         slot_options_task=slot_options_task,
         facet_probe=setup.facet_probe,
-        slot_options_relaunch=relaunch_slot_options if state.stream_slot_options else None,
+        slot_options_relaunch=relaunch_slot_options if stream_slot_options else None,
         place_options_task=place_options_task,
         place_options_relaunch=relaunch_place_options if stream_place_options else None,
         observations_task=observations_task,
@@ -1434,11 +1556,15 @@ async def _finalize_definite_result(
         role_axis_facts=tuple(setup.role_axis_facts),
         member_population=mat_result.population,
         answered_roles=answered_roles(state.shape_draft),
+        scope_decision=decision,
     )
 
 
-async def _assemble_definite_answer(state: ResolveState) -> RegionResult:
-    """Build the Spec, apply no-data gates, and return the terminal result."""
+async def _assemble_definite_answer(state: ResolveState, mark: AnswerMark) -> RegionResult:
+    """Build the Spec, apply no-data gates, and return the terminal result. `mark` is what
+    the part had raised and judged before the elected answer was grounded
+    (`_phase_outcome`), so an answer that fails closed restores the part to it
+    (`failed_closed`)."""
     mat_result = cast(Materialised, state.mat_result)
 
     # Bind the when-slot to the extracted window before assembling the Spec
@@ -1473,7 +1599,9 @@ async def _assemble_definite_answer(state: ResolveState) -> RegionResult:
     decision_task = asyncio.create_task(
         asyncio.to_thread(_decide_answer_scope, state, mat_result, slots, setup)
     )
-    gathered = await _gather_definite_coverage(state, mat_result, setup, count_task, decision_task)
+    gathered = await _gather_definite_coverage(
+        state, mat_result, setup, count_task, decision_task, mark
+    )
     if isinstance(gathered, RegionResult):
         return gathered
     coverage = gathered
@@ -1490,12 +1618,28 @@ async def _assemble_definite_answer(state: ResolveState) -> RegionResult:
     )
     state.state_reelected_reading(definite_spec.spec)
 
-    early = await _assemble_carve_outs(state, mat_result, definite_spec.spec)
+    early = await _assemble_carve_outs(
+        state, mat_result, definite_spec.spec, decision=coverage.decision, minted=coverage.minted
+    )
     if early is not None:
         return early
+    # The scope the answer states is checked once, before its related read is awaited or
+    # any of its trailing tasks launch.
+    decision = await finished_scope(
+        state,
+        definite_spec.spec,
+        decision=coverage.decision,
+        minted=coverage.minted,
+        reading=state.reading,
+    )
+    if decision is None:
+        # Read as a composite, with no scope stating the composite it is.
+        return failed_closed(state, mark)
     note_denominator_unverified(state, state.shape_draft, spec_id=definite_spec.spec.spec_id)
 
-    return await _finalize_definite_result(state, mat_result, setup, coverage, definite_spec)
+    return await _finalize_definite_result(
+        state, mat_result, setup, coverage, definite_spec, decision
+    )
 
 
 async def _phase_outcome(state: ResolveState) -> RegionResult:
@@ -1510,10 +1654,14 @@ async def _phase_outcome(state: ResolveState) -> RegionResult:
     result = await resolve_candidates(state, rate_cache=state.rate_cache)
     if result is None:
         result = await _no_data_answer(state)
+    if result is not None:
+        return result
+    # The answer is the elected shape's from here: everything grounding and assembly raise
+    # or judge is its own (`ResolveState.mark_answer`, `failed_closed`).
+    mark = state.mark_answer()
+    result = await _ground_elected_answer(state)
     if result is None:
-        result = await _ground_elected_answer(state)
-    if result is None:
-        result = await _assemble_definite_answer(state)
+        result = await _assemble_definite_answer(state, mark)
     return result
 
 

@@ -130,6 +130,7 @@ DepartureCode = Literal[
     "organisation_read_as_source",
     "direction_inferred",
     "organisation_read_as_party",
+    "core_contribution_read",
     "scope_limited",
 ]
 """Every way an answer can differ from what its request asked (see
@@ -162,6 +163,7 @@ ScopeReasonCode = Literal[
     "stated_choice_not_applied",
     "option_not_covered",
     "contributions_counted",
+    "multilateral_destination",
 ]
 """Every reason a scope option is partial or unavailable, or a carried or stated entry is
 not applied (see `models.scope.OptionAvailability`, `models.scope.DroppedEntry`). A closed vocabulary

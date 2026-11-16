@@ -1,4 +1,4 @@
-"""`GET /api/datasets/schema` publishes contract-stable schemas with immutable `$id`s. Register,
+"""`GET /api/datasets/json-schema` publishes contract-stable schemas with immutable `$id`s. Register,
 mint, and members request schemas reuse their runtime models, and the members door serves
 `MembersEnvelope` itself. The manifest, options, pin, operation, and description values page
 schemas define the fields their doors enforce. A description refers to the `spec-kit` repository's schema. Nested graph-dependent shapes remain open.

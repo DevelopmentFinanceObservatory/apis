@@ -7,6 +7,7 @@ import functools
 
 import pytest
 
+from code_index.shared import get_index
 from dc_graph import Facet
 from search.eval.checks import CHECKS, MODAL_ONLY_CHECKS, Result, ScoreContext, Verdict, WireSchema
 from series_coverage.loader import CoverageArtifactError
@@ -960,6 +961,82 @@ def test_materialisation_composite_counts_its_components(
     ev = check(response, coverage=coverage)
     assert ev.verdict == verdict, ev.detail
     assert detail in ev.detail
+
+
+_DAC2A = "provenance/OECDDAC2A"
+_DAC2A_BILATERAL = "provenance/ONEDAC2aBilateral"
+_DAC2A_GROSS_ODA = next(
+    row.dcid
+    for row in get_index().statvars
+    if row.provenances == (_DAC2A,)
+    and row.measured_property == "amount"
+    and row.constraint_properties.get("dac2aAidType") == "DAC2aAidType206"
+    and row.constraint_properties.get("nettingBasis") == "Gross"
+)
+# France's DAC2a total ODA to Ethiopia, a bilateral-side destination, to the European
+# Commission, an agency, and to DACAllRecipients, the total spanning both sides, 2019 to 2021.
+_DAC2A_ROWS = tuple(
+    (_DAC2A_GROSS_ODA, "dac2a", "country/FRA", recipient, range(2019, 2022))
+    for recipient in ("country/ETH", "EuropeanCommission", "DACAllRecipients")
+)
+
+
+def _bilateral_response(count: int) -> dict:
+    """France's total ODA on the DAC2a bilateral composite to an open destination, stating
+    `count` observations over 2019 to 2021."""
+    resp = _role_response(
+        count,
+        (("country/FRA", "origin"),),
+        stat_vars=(_DAC2A_GROSS_ODA,),
+        window={"start_year": 2019, "end_year": 2021},
+    )
+    spec = resp["parts"][0]["spec"]
+    spec["resolved"]["facets"] = {"provenance": {"basis": "bound", "ref": _DAC2A_BILATERAL}}
+    spec["definition"]["identity"] = {
+        "identity_version": "spec1",
+        "shape": {
+            "kind": "statvar_schema",
+            "population_type": "FinancialFlow",
+            "measured_property": "amount",
+            "stat_type": "measuredValue",
+            "measurement_qualifier": "Nominal",
+        },
+        "slots": [
+            {"property": "dac2aAidType", "binding": {"state": "value", "ref": "DAC2aAidType206"}},
+            {"property": "financialFlowType", "binding": {"state": "value", "ref": "Disbursement"}},
+            {"property": "nettingBasis", "binding": {"state": "value", "ref": "Gross"}},
+        ],
+        "entities": {"origin": ["country/FRA"]},
+        "open_roles": ["destination"],
+        "requested_window": {"kind": "range", "start_year": 2019, "end_year": 2021},
+        "facets": {"provenance": {"state": "value", "ref": _DAC2A_BILATERAL}},
+    }
+    return resp
+
+
+@pytest.mark.parametrize(
+    ("count", "verdict"),
+    [
+        pytest.param(3, PASS, id="the-bilateral-destination-alone"),
+        pytest.param(9, FAIL, id="agency-and-spanning-rows-are-outside-the-population"),
+    ],
+)
+def test_materialisation_composite_counts_an_open_role_within_its_population(
+    count: int, verdict: Verdict
+):
+    """The bilateral composite reads an open destination within its population, as Search
+    does, so of France's three recipients only Ethiopia's three years count: the European
+    Commission and DACAllRecipients are no member of the bilateral population."""
+    coverage = functools.partial(
+        _ids_coverage,
+        rows=_DAC2A_ROWS,
+        methods={"dac2a": None},
+        provenance=_DAC2A,
+        roles=("financingProvider", "financingRecipient"),
+    )
+    ev = check(_bilateral_response(count), coverage=coverage)
+    assert ev.verdict == verdict, ev.detail
+    assert "observed=3," in ev.detail
 
 
 def _failing_coverage():

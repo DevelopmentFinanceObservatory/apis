@@ -30,7 +30,7 @@ from series_coverage.schema import RoleNames
 from tests.code_index.aid_identity import education_aid_identity
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 
-_CRS_INCLUSIVE, _DAC2A_INCLUSIVE, _HEADLINE = COMPOSITES
+_CRS_INCLUSIVE, _DAC2A_INCLUSIVE, _DAC2A_BILATERAL, _HEADLINE = COMPOSITES
 
 
 def _served(declaration: CompositeDeclaration, *years: range) -> list[ServedComponent]:

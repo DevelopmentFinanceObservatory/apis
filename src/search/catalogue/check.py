@@ -76,6 +76,7 @@ DATA_DESCRIBING_DEPARTURES: Final[frozenset[DepartureCode]] = frozenset(
         "direction_inferred",
         "organisation_read_as_party",
         "scope_limited",
+        "core_contribution_read",
     }
 )
 """Departures that describe the data the answer shows without changing what
@@ -83,7 +84,8 @@ was asked: the values are modelled, a named group was read as its members, a
 flow side was read as the total its source publishes for its whole population, or as
 every party its source holds there where it publishes no such total, a place named
 without a direction was read in the one direction holding data there, an organisation was
-read as a party to the flow, a check covered only some values. An example may carry them."""
+read as a party to the flow, a check covered only some values, a multilateral agency named
+as a recipient was read as total ODA to it. An example may carry them."""
 
 REFUSING_DEPARTURES: Final[frozenset[DepartureCode]] = frozenset(
     {

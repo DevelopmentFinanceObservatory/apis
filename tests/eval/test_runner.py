@@ -481,7 +481,7 @@ def test_fetch_schema_returns_the_app_document():
     document = {"schema_version": 1, "request": {}, "response": {"type": "object"}}
 
     async def handler(request: httpx.Request) -> httpx.Response:
-        assert str(request.url) == "http://app/api/search/schema"
+        assert str(request.url) == "http://app/api/search/json-schema"
         return httpx.Response(200, json=document)
 
     async def go() -> dict:

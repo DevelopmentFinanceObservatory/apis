@@ -179,6 +179,11 @@ CATALOGUE_INDEX_DRIFT = "catalogue_index_drift"
 # side's whole population for the answer's years (`whole_totals.whole_total_warnings`), so a
 # sum of the members can differ from the published figure. Its params name the total.
 WHOLE_TOTAL_AVAILABLE = "whole_total_available"
+# A fresh part reading DAC2a total ODA with no provider axis, which the bilateral default
+# reaches, could not read the bilateral destinations alone
+# (`scope_decision.bilateral_withheld_warning`), so its figures include core contributions to
+# multilateral agencies. Its params name why.
+BILATERAL_READING_UNAVAILABLE = "bilateral_reading_unavailable"
 # The app has loaded no conversion catalogue yet, so a currency answer states no
 # unit_conversion offer; the null says nothing about whether it converts.
 UNIT_CONVERSION_UNAVAILABLE = "unit_conversion_unavailable"

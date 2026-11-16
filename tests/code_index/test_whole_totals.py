@@ -42,6 +42,7 @@ def _total(
         "kind": kind,
         "party_class": party_class,
         "totals": None,
+        "types": [],
         "published": [
             {"dataset": dataset, "axis": axis}
             for dataset in ([_DAC2A, _DAC2B] if datasets is None else datasets)
@@ -132,7 +133,9 @@ def test_side_classes_and_population_totals_read_classes_and_covers():
 
 
 def test_an_index_without_markers_loads_each_party_as_no_whole_total(code_index: CodeIndex):
-    index = _parse([{"dcid": "DACAfrica", "kind": "total", "totals": "africa", "published": []}])
+    index = _parse(
+        [{"dcid": "DACAfrica", "kind": "total", "totals": "africa", "types": [], "published": []}]
+    )
 
     assert index.parties["DACAfrica"].whole == ()
     assert index.parties["DACAfrica"].marker(_DAC2A) is None
@@ -216,7 +219,7 @@ def _party_marked(dcid: str, *markers: dict[str, Any], **extra: Any) -> dict[str
             "both cover",
         ),
         (
-            [{"dcid": "France", "kind": "party", "totals": None, "published": []}],
+            [{"dcid": "France", "kind": "party", "totals": None, "types": [], "published": []}],
             [],
             "carries class None",
         ),
@@ -227,6 +230,7 @@ def _party_marked(dcid: str, *markers: dict[str, Any], **extra: Any) -> dict[str
                     "kind": "party",
                     "party_class": "public",
                     "totals": None,
+                    "types": [],
                     "published": [],
                 }
             ],
@@ -240,6 +244,7 @@ def _party_marked(dcid: str, *markers: dict[str, Any], **extra: Any) -> dict[str
                     "kind": "party",
                     "party_class": "residual",
                     "totals": None,
+                    "types": [],
                     "published": [],
                 }
             ],
@@ -252,6 +257,7 @@ def _party_marked(dcid: str, *markers: dict[str, Any], **extra: Any) -> dict[str
                     "dcid": "DACAfricaUnallocated",
                     "kind": "residual",
                     "totals": None,
+                    "types": [],
                     "published": [],
                 }
             ],
@@ -265,6 +271,7 @@ def _party_marked(dcid: str, *markers: dict[str, Any], **extra: Any) -> dict[str
                     "kind": "residual",
                     "party_class": "official",
                     "totals": None,
+                    "types": [],
                     "published": [],
                 }
             ],

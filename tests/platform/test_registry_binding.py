@@ -17,7 +17,7 @@ from collections.abc import Callable
 from typing import get_args
 
 import pytest
-from dfo_spec_kit.registry import load_registry
+from dfo_spec_kit.registry import WARNING_REASONS, load_registry
 
 import datasets_api.codes as datasets_codes
 import datasets_api.warnings as datasets_warnings
@@ -44,7 +44,10 @@ from presentation_api.doors.components import build_components_door
 from presentation_api.doors.frames import build_frames_door
 from presentation_api.doors.shares import build_shares_door
 from search.engine.config import SEARCH_RESOLVE_DOORS
+from search.engine.region.codes import BILATERAL_READING_UNAVAILABLE
+from search.engine.region.scope_decision import _withheld_warning
 from search.models import NoDataReason
+from search.scope.provider import WITHHELD_WHYS, Withheld, WithheldWhy
 from tests.code_registry import registered_endpoints, registered_status_codes
 
 _REGISTRY = load_registry()
@@ -362,3 +365,15 @@ def test_no_served_code_resolves_to_a_retired_registry_entry():
         code for code in all_served if code in _REGISTRY and _REGISTRY[code].lifecycle == "retired"
     )
     assert not retired, f"served code(s) resolve to a retired registry entry: {retired}"
+
+
+def test_the_bilateral_reading_warning_states_the_registered_reasons_and_no_other():
+    """Every `why` Search can put on `bilateral_reading_unavailable` (`WITHHELD_WHYS`) is a
+    reason the registry lists for it, every listed reason is one Search can state, and each
+    has a message, `slot_not_served` alone naming the slot in `params`."""
+    assert frozenset(WARNING_REASONS[BILATERAL_READING_UNAVAILABLE]) == WITHHELD_WHYS
+    for why in get_args(WithheldWhy):
+        slot = "crsTypeOfFinance" if why == "slot_not_served" else None
+        warning = _withheld_warning("spec", Withheld(why=why, slot=slot))
+        expected = {"why": why} if slot is None else {"why": why, "slot": slot}
+        assert (warning.code, warning.params) == (BILATERAL_READING_UNAVAILABLE, expected)

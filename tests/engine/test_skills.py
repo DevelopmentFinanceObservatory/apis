@@ -87,6 +87,7 @@ def _spec_with(
     equivalent_readings: list[Spec] | None = None,
 ) -> Spec:
     return build_spec(
+        composite=None,
         open_roles=(),
         measure_elected_properties=frozenset(),
         shape=shape,
@@ -619,7 +620,7 @@ def _schema_client() -> TestClient:
 
 
 def test_skills_field_appears_in_the_published_response_schema():
-    resp = _schema_client().get("/api/search/schema")
+    resp = _schema_client().get("/api/search/json-schema")
     assert resp.status_code == 200
     resolution_schema = resp.json()["response"]["$defs"]["Resolution"]
     assert "skills" in resolution_schema["properties"]

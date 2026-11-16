@@ -160,6 +160,7 @@ def _minimal_spec():
         role=EntityRoleSubject(),
     )
     return build_spec(
+        composite=None,
         open_roles=(),
         measure_elected_properties=frozenset(),
         shape=shape_model,

@@ -13,6 +13,7 @@ from code_index import IndexFormatError
 from code_index.composites import (
     CompositeNotServable,
     CompositeProvenanceRead,
+    binds_composite,
     component_identities,
     component_of,
     composite_digest,
@@ -33,7 +34,7 @@ from tests.code_index.aid_identity import (
 )
 from tests.code_index.support import INDEX_FIXTURE
 
-_STACKED, _DAC2A_STACKED, _SPLICED = COMPOSITES
+_STACKED, _DAC2A_STACKED, _DAC2A_BILATERAL, _SPLICED = COMPOSITES
 
 
 def _payload() -> dict:
@@ -321,9 +322,28 @@ def _first_component(composite, **changes):
     ],
 )
 def test_the_composite_digest_moves_with_what_a_run_composes_by(composite, changed):
-    assert composite_digest(changed(composite)) != composite_digest(composite)
-    assert composite_digest(composite) == declared_composite_digest(composite.provenance)
+    digest = composite_digest(composite, index=_INDEX)
+    assert composite_digest(changed(composite), index=_INDEX) != digest
+    assert digest == declared_composite_digest(composite.provenance, index=_INDEX)
 
 
 def test_a_provenance_no_composite_declares_has_no_declared_digest():
-    assert declared_composite_digest("provenance/NotAComposite") is None
+    assert declared_composite_digest("provenance/NotAComposite", index=_INDEX) is None
+
+
+@pytest.mark.parametrize(
+    ("provenance", "binds"),
+    [
+        pytest.param(None, False, id="unbound"),
+        pytest.param({"ref": "OECD_DAC2A"}, False, id="table"),
+        pytest.param({"ref": _DAC2A_BILATERAL.provenance}, True, id="composite"),
+        pytest.param(
+            {"refs": ["OECD_DAC2A", _DAC2A_BILATERAL.provenance]}, True, id="set-naming-one"
+        ),
+    ],
+)
+def test_binds_composite_reads_a_set_naming_one_as_a_composite(
+    provenance: dict[str, object] | None, binds: bool
+) -> None:
+    facets = {} if provenance is None else {"provenance": provenance}
+    assert binds_composite({"facets": facets}) is binds

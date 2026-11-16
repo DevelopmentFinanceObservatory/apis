@@ -30,7 +30,8 @@ served place (``_served_places``). A role-bearing answer is counted from
 An answer served by a declared composite provenance, which no series carries, is the sum of
 its components' counts, each derived from the definition by the bound release's code index
 (``code_index.composites.component_identities``) and counted under its own table's provenance
-inside its own years (``_counted_reads``).
+inside its own years, with an open role read within the population the component binds it
+to (``_counted_reads``).
 
 A part the check cannot count is n/a, with the reason in the detail: a role-bearing answer
 confirmed against another coverage stamp, or mixing ``observationAbout`` with a flow role; a
@@ -47,7 +48,7 @@ runs it on the modal sample alone.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from code_index.composites import (
@@ -61,6 +62,7 @@ from dc_graph import Facet
 from graph_release.context import ReleaseNotBound
 from materialise.facets import Cadence, at_cadence, cadences_by_member, continuation
 from materialise.window import RequestedWindow, latest_period
+from search.engine.identity_edit import population_members
 from search.engine.region.codes import (
     CURRENCY_UNMAPPED_OMITTED,
     OBSERVATIONS_PROBE_FAILED,
@@ -457,11 +459,14 @@ def _coverage_window(spec: SpecView, ctx: ScoreContext) -> TimeWindow | None:
 @dataclass(frozen=True)
 class _CountedRead:
     """One read an exact count sums: the served StatVars it counts, the facets it admits on
-    each axis, and the window it counts inside."""
+    each axis, the window it counts inside, and the parties each coverage role it leaves open
+    is read within: a composite component's population
+    (`code_index.composites.ComponentIdentity.populations`), as Search reads it."""
 
     stat_vars: list[str]
     stated: Mapping[str, _Stated]
     window: TimeWindow | None
+    within: Mapping[CoverageRole, frozenset[str]] = field(default_factory=dict)
 
 
 def _counted_reads(
@@ -477,9 +482,9 @@ def _counted_reads(
     (`code_index.composites.component_identities`, as Search and the Datasets mint derive
     them). No graph series carries a composite's provenance, so each component reads the
     served StatVars of its own family under its own table's provenance, inside the answer's
-    window clipped to the component's. A composite whose components the index cannot derive,
-    or a component whose family it does not decide, is n/a with the reason; an unbound
-    release is an infrastructure result."""
+    window clipped to the component's, and within the population each open role binds. A
+    composite whose components the index cannot derive, or a component whose family it does
+    not decide, is n/a with the reason; an unbound release is an infrastructure result."""
     composite = (stated.get("provenance") or (None, False))[0]
     if composite not in DECLARED_COMPOSITES:
         return [_CountedRead(stat_vars, stated, window)]
@@ -507,11 +512,16 @@ def _counted_reads(
                 f"the code index decides no family for {composite}'s {component.role} component",
             )
         members = {row.dcid for row in family.rows}
+        within = {
+            _COVERAGE_ROLE_FOR_AXIS[axis]: members
+            for axis, members in population_members(component.populations).items()
+        }
         reads.append(
             _CountedRead(
                 [sv for sv in stat_vars if sv in members],
                 {**stated, "provenance": (component.recipe.dataset, False)},
                 _clipped(window, component.identity.get("requested_window")),
+                within,
             )
         )
     return reads
@@ -584,12 +594,13 @@ def _exact(spec: SpecView, response: Mapping[str, Any], ctx: ScoreContext) -> Re
                 bound[coverage_role] = bound.get(coverage_role, frozenset()) | {ref}
         totals = 1
         for read in reads:
-            facets_by_series = _role_series_facets(read.stat_vars, bound, snapshot)
+            read_bound = {**bound, **read.within}
+            facets_by_series = _role_series_facets(read.stat_vars, read_bound, snapshot)
             # The rows a conversion leaves out of the election make the answer unchecked above.
             elected = (
                 snapshot.index.elected_years(
                     variables=read.stat_vars,
-                    bound=bound,
+                    bound=read_bound,
                     admits=_stated_admits(read.stated, snapshot),
                 )
                 if latest

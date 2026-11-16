@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
-from origin_catalogue import BASE, UN_SYSTEM, ProvenanceRow, SourceRef
+import pytest
+
+from code_index.composites import DECLARED_COMPOSITES
+from code_index.declarations import CRS, CRS_INCLUSIVE, DAC2A_BILATERAL
+from code_index.shared import get_index
+from origin_catalogue import BASE, DFO, UN_SYSTEM, ProvenanceRow, SourceRef
 from search.engine.region.refs import provenance_labels
 from search.models import DataCommonsRef, ProvenanceRef
 from search.models import SourceRef as WireSourceRef
-from search.observations import provenance_refs
+from search.observations import composite_facet_ref, provenance_refs
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import make_request, offline_resolve
 from tests.fixtures import FakeGraph
-from tests.origin_catalogue.fake_catalogue import restrictive_catalogue
+from tests.origin_catalogue.fake_catalogue import provenance_row, restrictive_catalogue
 
 # ---------------------------------------------------------------------------
 # Integration test: resolved_sources populated end-to-end
@@ -99,6 +104,67 @@ class TestCatalogueRows:
         assert ref.source.ref == ref.ref
         assert ref.data_commons == DataCommonsRef(id="un_system", label="UN System Data Commons")
         assert graph.label_reads == []
+
+
+_IMPUTED = "provenance/ONEImputedMultilateralSectors"
+
+
+@pytest.mark.parametrize(
+    ("rows", "expected"),
+    [
+        pytest.param(
+            [
+                provenance_row(CRS, DFO, source="dc/s/OECD"),
+                provenance_row(_IMPUTED, DFO, source="dc/s/OECD"),
+            ],
+            ("dfo", "dc/s/OECD"),
+            id="agree",
+        ),
+        pytest.param(
+            [
+                provenance_row(CRS, DFO, source="dc/s/OECD"),
+                provenance_row(_IMPUTED, BASE, source="dc/s/ONE"),
+            ],
+            (None, None),
+            id="disagree",
+        ),
+        pytest.param(
+            [
+                provenance_row(CRS, DFO, source="dc/s/OECD"),
+                provenance_row(_IMPUTED, BASE, source="dc/s/OECD"),
+            ],
+            (None, "dc/s/OECD"),
+            id="one-publisher-two-origins",
+        ),
+        pytest.param([provenance_row(CRS, DFO, source="dc/s/OECD")], (None, None), id="unlisted"),
+    ],
+)
+def test_a_composite_facet_keeps_what_its_component_tables_share(
+    bind_catalogue, rows: list[ProvenanceRow], expected: tuple[str | None, str | None]
+):
+    """A composite's provenance facet keeps the Data Commons and source only where every
+    component table's catalogue row names the same one, and carries no document route."""
+    bind_catalogue(restrictive_catalogue(provenances=rows))
+    composite = DECLARED_COMPOSITES[CRS_INCLUSIVE]
+
+    ref = composite_facet_ref(composite, index=get_index())
+
+    assert (ref.ref, ref.label, ref.documentation) == (CRS_INCLUSIVE, composite.label, None)
+    assert (
+        ref.data_commons.id if ref.data_commons else None,
+        ref.source.ref if ref.source else None,
+    ) == expected
+
+
+def test_the_bilateral_composite_facet_reads_apart_from_its_plain_table():
+    """The facet label of `DAC2A_BILATERAL`, whose declared label is its table's, carries the
+    composite's measure noun, as its bundle does."""
+    composite = DECLARED_COMPOSITES[DAC2A_BILATERAL]
+
+    ref = composite_facet_ref(composite, index=get_index())
+
+    assert ref.label == f"{composite.label} {composite.measure_noun}"
+    assert ref.label != composite.label
 
 
 class _LabelSpyGraph(FakeGraph):

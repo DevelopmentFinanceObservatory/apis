@@ -1,0 +1,622 @@
+"""Check candidate StatisticalVariable definitions against the deployment's schema.
+
+`SchemaLookup` holds the schema document's nodes as the check reads them and the build's
+record of them (`graph_api.schema_document.Schema`), built once per document. `plan_reads`
+decides, before any read, how many rows from the first the check takes and which ids outside
+the document they read: it adds rows while their distinct ids stay within
+`CHECK_MAX_READ_IDS`, and always takes the first. `check_rows` answers each node a row names
+from the document and reads every other named id once, in one `node_arcs_many` call, for its
+`typeOf` and `name`, with no probe budget. It reads no ancestry. The served reader,
+`origin_catalogue.graph.OriginGraphClient`, answers an id the origin catalogue's arc tables hold
+from those tables, a node they hold with no arc as absent, and reads every other id from the
+graph. There an id a batch answers empty is read again alone, so `None` is the graph's answer
+for that id read alone. A node with neither a type nor a name reads as absent, and a node with a
+name and no `typeOf` is untyped. A read error propagates, so no node is reported absent because
+a read failed.
+
+The ids read are the shape fields, constraint properties, observation properties and
+constraint values the document does not hold, less the cells no read can decide and the values
+under a document node that is no Property. A constraint value whose property is not a held
+Property gets no finding of its own, because the property's finding marks the cell, so a value
+under a property outside dcid syntax or outside the served origins is not read. One row names
+at most `CHECK_MAX_ROW_NAMED_IDS` (41) such ids, fewer than `CHECK_MAX_READ_IDS`, so the first
+row always fits. A row's findings depend only on the row, the document, the build's record and
+the answers to the row's own ids, which are the same whichever rows share the read, so each
+row gets the findings it gets checked alone.
+
+A check reads at most `CHECK_MAX_READ_IDS` (200) ids, each once, in one `node_arcs_many` call.
+It reads fewer from the graph when the arc tables answer some. The call sends, for each backend
+its ids go to (the mixer, and the UN deployment where the deployment serves the UN origin), one
+POST per chunk of 50 of its ids, then one POST per id answered empty, 16 at a time. A check of
+k ids therefore sends at most k + ceil(k / 50) POSTs with one backend, 204 for 200 ids, and one
+more with two, 205. A front-door refusal splits a POST of several ids into two halves, so a
+chunk of j ids costs at most 2j - 1 POSTs, and a check of k ids at most 3k - ceil(k / 50), 596
+for 200 ids, on either kind of deployment. A continuation page adds one POST. Each POST is tried
+up to 3 times on a 5xx answer or a transport error. Every read carries the check's deadline,
+`GRAPH_SCHEMA_CHECK_TIMEOUT_SECONDS` (30 s) from the request's start.
+
+No read can decide three kinds of cell, so each gets its finding with no read: a string outside
+dcid syntax, a number or a boolean gets `not_a_node`, and an id of the UN origin on a
+deployment that does not serve it (`origin_catalogue.graph.is_un_dcid`) gets
+`origin_not_served`. Every other id outside the document is read, whatever the range of its
+property.
+
+`check_rows` stops before the row whose findings would take the total past
+`CHECK_MAX_FINDINGS`, or the encoded response past `CHECK_MAX_BODY_BYTES`. It measures each
+finding as `SchemaCheckResponse` encodes it, plus a separating comma, over the encoded response
+with no finding and the widest `rows_checked`. One row yields at most 79 findings
+(`CHECK_MAX_FINDINGS` counts them), so the first row fits the findings cap, and the first row is
+taken whatever its size.
+
+Every row gets existence and kind checks. A row with no measured property gets `value_missing`.
+A constraint value, `stat_type`, `measurement_qualifier` and `measurement_denominator` must each
+name a resolved node, by `code_index.constraint_values.constraint_value_fault`, the test the
+code index export refuses a release on for a constraint value. Range and domain rules apply
+only to a property the document holds with `declared_by == "dfo"`, and both walk `subClassOf`
+chains over the document's nodes alone (`SchemaLookup.ancestry`).
+
+The range rule judges a constraint value, a resolved node, under a property with
+`rangeIncludes`. The value's types are its document node's `types`, or for a value the check
+read the types the read answered. A type is unknown when the graph answers a `typeOf` target it
+cannot resolve (the build's `unresolved_types` for a document node), when `_Unread.fault` names
+it, or when it is an id of the UN origin whether the document holds it or not, since the build
+lists base ranges' descendants on the mixer alone. The value is in range when a type the document
+holds has an ancestry that meets a `rangeIncludes` class, whatever its other types. It gets
+`value_outside_range` when no type is in range, no type is unknown, every `rangeIncludes`
+class is in the build's `closed_ranges`, and the property holds no `rangeIncludes` target the
+graph cannot resolve (the build's `unresolved_ranges`): the document holds a closed range's
+whole descendant tree, so a type outside the document is no descendant of it. Otherwise it gets
+the warning `range_not_judged`. A property whose only `rangeIncludes` target is unresolved is
+ranged, so its values get `range_not_judged`.
+
+The domain rule judges the measured property and each constraint property against the row's
+population type. A property is outside its domain when the population type is a document node
+whose ancestry meets no `domainIncludes` class and is complete: no node on it carries a
+`subClassOf` target the graph cannot resolve (the build's `unresolved_parents`), and every
+parent it reaches is a document node or one the build read as absent. A population type outside
+the document, or one whose ancestry is incomplete, gets no domain finding, nor does a property
+holding a `domainIncludes` target the graph cannot resolve (the build's `unresolved_domains`),
+and the rule is
+skipped when the row names no population type. A property with no `rangeIncludes` or no
+`domainIncludes` admits anything. A row's `dcid` outside dcid syntax gets `not_a_node`. A row
+whose `dcid` the code index serves is compared with the served definition cell by cell.
+"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Collection, Iterable, Mapping, Sequence
+from dataclasses import dataclass
+from types import MappingProxyType
+from typing import Final, Literal
+
+from code_index import CodeIndex, StatVarRow
+from code_index.constraint_values import ConstraintValueFault, constraint_value_fault
+from dc_graph import UNRESOLVED_NODE
+from graph_api.dataset_usage import SHAPE_FIELDS
+from graph_api.reader import GraphNodeReader
+from graph_api.routing import DcidConvertor
+from graph_api.schema_models import (
+    CHECK_MAX_BODY_BYTES,
+    CHECK_MAX_FINDINGS,
+    CHECK_MAX_READ_IDS,
+    CHECK_MAX_ROWS,
+    ConstraintValue,
+    FindingCode,
+    FindingField,
+    SchemaCheckResponse,
+    SchemaCheckRow,
+    SchemaDocument,
+    SchemaFinding,
+)
+from origin_catalogue.graph import is_un_dcid
+
+_CLASS: Final[str] = "Class"
+_PROPERTY: Final[str] = "Property"
+_READ_PROPERTIES: Final[tuple[str, ...]] = ("typeOf", "name")
+_DCID: Final[re.Pattern[str]] = re.compile(rf"{DcidConvertor.regex}")
+_CONSTRAINT: Final = "constraint_properties"
+_OBSERVATION: Final = "observation_properties"
+
+
+@dataclass(frozen=True)
+class _Node:
+    types: frozenset[str]
+    parents: tuple[str, ...] = ()
+    # Whether the graph answered a `typeOf` target it cannot resolve, a type of unknown kind
+    # that `types` leaves out.
+    unresolved_type: bool = False
+    # Whether the graph answered a `subClassOf` target it cannot resolve, which leaves a chain
+    # through the node incomplete.
+    unresolved_parent: bool = False
+    # Whether the graph answered a `rangeIncludes` or `domainIncludes` target it cannot
+    # resolve, a range or domain class of unknown name that `range` or `domain` leaves out.
+    unresolved_range: bool = False
+    unresolved_domain: bool = False
+    dfo: bool = False
+    domain: tuple[str, ...] = ()
+    range: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class SchemaLookup:
+    """The schema document's nodes as the check reads them, the ids the build read that the
+    graph answered with no node and no unresolved target (`absent`), and the range classes
+    whose whole descendant tree the document holds (`closed_ranges`)."""
+
+    nodes: Mapping[str, _Node]
+    absent: frozenset[str]
+    closed_ranges: frozenset[str]
+
+    @classmethod
+    def of(
+        cls,
+        document: SchemaDocument,
+        *,
+        unresolved_types: Collection[str],
+        unresolved_parents: Collection[str],
+        unresolved_ranges: Collection[str],
+        unresolved_domains: Collection[str],
+        absent: Collection[str],
+        closed_ranges: Collection[str],
+    ) -> SchemaLookup:
+        """The lookup of `document` with the build's record (`graph_api.schema_document.Schema`):
+        its nodes in `unresolved_types`, `unresolved_parents`, `unresolved_ranges` or
+        `unresolved_domains` held a `typeOf`, `subClassOf`, `rangeIncludes` or `domainIncludes`
+        target the graph cannot resolve, the graph answered the ids in `absent` with nothing,
+        and the document holds the whole descendant tree of each class in `closed_ranges`."""
+        nodes = {
+            node.ref: _Node(
+                types=frozenset(node.types),
+                parents=tuple(node.sub_class_of),
+                unresolved_type=node.ref in unresolved_types,
+                unresolved_parent=node.ref in unresolved_parents,
+                unresolved_range=node.ref in unresolved_ranges,
+                unresolved_domain=node.ref in unresolved_domains,
+                dfo=node.declared_by == "dfo",
+                domain=tuple(node.domain_includes),
+                range=tuple(node.range_includes),
+            )
+            for node in document.nodes
+        }
+        return cls(
+            nodes=MappingProxyType(nodes),
+            absent=frozenset(absent),
+            closed_ranges=frozenset(closed_ranges),
+        )
+
+    def ancestry(self, dcid: str) -> tuple[set[str], bool]:
+        """`dcid`, a document node, and every `subClassOf` ancestor of it among the document's
+        nodes, and whether that is every ancestor: no node reached carries an unresolved
+        parent, and every parent reached is a document node or in `absent`."""
+        seen: set[str] = set()
+        complete = True
+        stack = [dcid]
+        while stack:
+            current = stack.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            node = self.nodes[current]
+            complete = complete and not node.unresolved_parent
+            for parent in node.parents:
+                if parent in self.nodes:
+                    stack.append(parent)
+                else:
+                    complete = complete and parent in self.absent
+        return seen, complete
+
+
+@dataclass(frozen=True)
+class _Unread:
+    """Decides, with no read, the cells no read can answer."""
+
+    lookup: SchemaLookup
+    un_served: bool
+
+    def fault(self, dcid: str) -> FindingCode | None:
+        """`not_a_node` for `dcid` outside dcid syntax, `origin_not_served` for an id of the UN
+        origin outside the document while the deployment does not serve it, else `None`."""
+        if _DCID.fullmatch(dcid) is None:
+            return "not_a_node"
+        if not self.un_served and dcid not in self.lookup.nodes and is_un_dcid(dcid):
+            return "origin_not_served"
+        return None
+
+
+@dataclass(frozen=True)
+class ReadPlan:
+    """The rows from the first that one check takes, and the ids outside the document they
+    read."""
+
+    row_count: int
+    ids: frozenset[str]
+
+
+def plan_reads(
+    rows: Sequence[SchemaCheckRow], *, lookup: SchemaLookup, un_served: bool
+) -> ReadPlan:
+    """Take rows from the first while the distinct ids they read stay within
+    `CHECK_MAX_READ_IDS`, decided with no read. A row reads every shape field, constraint
+    property and observation property outside the document, and every constraint value outside
+    it that is a dcid, less the cells no read can decide and the values under a property no read
+    can decide or under a document node that is no Property. The first row is always taken.
+
+    Args:
+        rows: the candidate definitions, at least one.
+        lookup: the schema document's lookup.
+        un_served: whether the deployment serves the UN origin, whose ids
+            `origin_catalogue.graph.is_un_dcid` names.
+    """
+    unread = _Unread(lookup, un_served)
+    ids: set[str] = set()
+    for count, row in enumerate(rows):
+        taken = ids | _row_reads(row, unread)
+        if count and len(taken) > CHECK_MAX_READ_IDS:
+            return ReadPlan(row_count=count, ids=frozenset(ids))
+        ids = taken
+    return ReadPlan(row_count=len(rows), ids=frozenset(ids))
+
+
+def _row_reads(row: SchemaCheckRow, unread: _Unread) -> set[str]:
+    named = [value for field in SHAPE_FIELDS if (value := getattr(row, field)) is not None]
+    named.extend(row.observation_properties)
+    for prop, value in row.constraint_properties.items():
+        named.append(prop)
+        if unread.fault(prop) is None and (read := _read_value(prop, value, unread)) is not None:
+            named.append(read)
+    return {
+        dcid for dcid in named if dcid not in unread.lookup.nodes and unread.fault(dcid) is None
+    }
+
+
+class _Nodes:
+    """The nodes the rows name: document nodes free, the rest read once each."""
+
+    def __init__(self, lookup: SchemaLookup, *, reader: GraphNodeReader, deadline: float) -> None:
+        self.lookup = lookup
+        self._read: dict[str, _Node | None] = {}
+        self._reader = reader
+        self._deadline = deadline
+
+    def read(self, dcids: Iterable[str]) -> None:
+        """Read `dcids` in one `node_arcs_many` call that confirms each empty answer alone."""
+        unknown = sorted(set(dcids))
+        if not unknown:
+            return
+        arcs = self._reader.node_arcs_many(
+            unknown,
+            properties=_READ_PROPERTIES,
+            individual_probe_budget=None,
+            deadline=self._deadline,
+        )
+        for dcid in unknown:
+            self._read[dcid] = _held(arcs.get(dcid))
+
+    def get(self, dcid: str) -> _Node | None:
+        if (node := self.lookup.nodes.get(dcid)) is not None:
+            return node
+        return self._read[dcid]
+
+
+def _resolved(arcs: Mapping[str, tuple[str, ...]], prop: str) -> tuple[str, ...]:
+    """The values of `prop` in `arcs`, less the mark of an unresolved node."""
+    return tuple(value for value in arcs[prop] if value != UNRESOLVED_NODE)
+
+
+def _held(arcs: Mapping[str, tuple[str, ...]] | None) -> _Node | None:
+    """The node `node_arcs_many` answered with `arcs`, or `None` for a node with neither a
+    type nor a name."""
+    if arcs is None:
+        return None
+    types = frozenset(_resolved(arcs, "typeOf"))
+    if not types and all(value == UNRESOLVED_NODE for value in arcs["name"]):
+        return None
+    return _Node(types=types, unresolved_type=UNRESOLVED_NODE in arcs["typeOf"])
+
+
+@dataclass(frozen=True)
+class CheckedRows:
+    """The rows one check took, from the first, and their findings."""
+
+    rows_checked: int
+    findings: list[SchemaFinding]
+
+
+def check_rows(
+    rows: Sequence[SchemaCheckRow],
+    *,
+    reads: frozenset[str],
+    lookup: SchemaLookup,
+    reader: GraphNodeReader,
+    code_index: CodeIndex,
+    un_served: bool,
+    generation: str | None,
+    deadline: float,
+) -> CheckedRows:
+    """Find the faults in candidate StatVar definitions, from the first row, stopping before
+    the row whose findings would take the total past `CHECK_MAX_FINDINGS`, or the encoded
+    response past `CHECK_MAX_BODY_BYTES`. The first row is always taken.
+
+    Args:
+        rows: the rows `plan_reads` took.
+        reads: the ids `plan_reads` planned for `rows`.
+        lookup: the schema document's lookup, which answers most ids with no read.
+        reader: the graph reads for nodes the document does not hold, called only when
+            `reads` names an id.
+        code_index: the code index whose StatVar rows the rows' dcids are compared with.
+        un_served: whether the deployment serves the UN origin, as `plan_reads` was told.
+        generation: the generation the response carries, which counts toward its size.
+        deadline: the absolute monotonic deadline passed to every read.
+
+    Returns:
+        The count of rows checked, at least one, and one finding per fault, in row order.
+        Within a row: `dcid`; the shape fields in the order `population_type`,
+        `measured_property`, `stat_type`, `measurement_qualifier`, `measurement_denominator`;
+        the constraint properties sorted, each property's finding before its value's; the
+        observation properties in row order; then `definition_differs` findings in the same
+        field order.
+
+    Raises:
+        GraphReadError: a read failed.
+    """
+    unread = _Unread(lookup, un_served)
+    nodes = _Nodes(lookup, reader=reader, deadline=deadline)
+    nodes.read(reads)
+
+    findings: list[SchemaFinding] = []
+    size = _envelope_bytes(generation)
+    for index, row in enumerate(rows):
+        found = _check_row(index, row, nodes, unread)
+        if row.dcid is not None and (served := code_index.statvar_by_dcid(row.dcid)) is not None:
+            found.extend(_differences(index, row, served))
+        found_size = sum(len(finding.model_dump_json().encode()) + 1 for finding in found)
+        if index and (
+            len(findings) + len(found) > CHECK_MAX_FINDINGS
+            or size + found_size > CHECK_MAX_BODY_BYTES
+        ):
+            return CheckedRows(rows_checked=index, findings=findings)
+        findings.extend(found)
+        size += found_size
+    return CheckedRows(rows_checked=len(rows), findings=findings)
+
+
+def _envelope_bytes(generation: str | None) -> int:
+    """The encoded response carrying `generation` and no finding, at its widest
+    `rows_checked`."""
+    envelope = SchemaCheckResponse(generation=generation, rows_checked=CHECK_MAX_ROWS, findings=[])
+    return len(envelope.model_dump_json().encode())
+
+
+def _is_dcid(value: ConstraintValue) -> bool:
+    return isinstance(value, str) and _DCID.fullmatch(value) is not None
+
+
+def _read_value(prop: str, value: ConstraintValue, unread: _Unread) -> str | None:
+    """`value` when the check answers it from a node, `None` when the value or the property
+    alone decides: a literal, or a value under a document node that is no Property."""
+    if not isinstance(value, str) or not _is_dcid(value):
+        return None
+    nodes = unread.lookup.nodes
+    if prop in nodes and not _is_property(nodes[prop]):
+        return None
+    return value
+
+
+def _is_property(node: _Node | None) -> bool:
+    return node is not None and _PROPERTY in node.types
+
+
+def _ranged(node: _Node | None) -> bool:
+    """Whether the range rule judges values under `node`: a DFO-declared Property whose
+    `rangeIncludes` holds a resolved class or a target the graph cannot resolve."""
+    return (
+        node is not None
+        and node.dfo
+        and _is_property(node)
+        and (bool(node.range) or node.unresolved_range)
+    )
+
+
+def _range_fault(value: _Node, prop: _Node, unread: _Unread) -> FindingCode | None:
+    """`None` when a type of `value` the document holds has an ancestry that meets `prop`'s
+    range; `value_outside_range` when no type does, no type is unknown, every range class is
+    closed and none is unresolved; `range_not_judged` otherwise. A type is unknown when it is
+    an id of the UN origin, held by the document or not, since the build's descendant listings
+    of base ranges do not reach the UN origin; or when it is outside the document and
+    `_Unread.fault` names it."""
+    lookup = unread.lookup
+    unknown = value.unresolved_type
+    for type_ in value.types:
+        held = type_ in lookup.nodes
+        if held and not lookup.ancestry(type_)[0].isdisjoint(prop.range):
+            return None
+        if is_un_dcid(type_) or (not held and unread.fault(type_) is not None):
+            unknown = True
+    closed = not prop.unresolved_range and lookup.closed_ranges.issuperset(prop.range)
+    if not unknown and closed:
+        return "value_outside_range"
+    return "range_not_judged"
+
+
+_NODE_FAULTS: Final[Mapping[ConstraintValueFault, FindingCode]] = MappingProxyType(
+    {"not_held": "node_not_held", "untyped": "node_untyped", "provisional": "node_provisional"}
+)
+
+
+def _node_fault(node: _Node | None) -> FindingCode | None:
+    """Why `node` is no resolved node, by `constraint_value_fault`, or `None` when it is."""
+    fault = constraint_value_fault(None if node is None else node.types)
+    return None if fault is None else _NODE_FAULTS[fault]
+
+
+_WARNINGS: Final[frozenset[FindingCode]] = frozenset(
+    {"range_not_judged", "property_outside_domain", "definition_differs"}
+)
+
+
+def _finding(
+    index: int,
+    field: FindingField,
+    value: ConstraintValue | list[str],
+    code: FindingCode,
+    *,
+    prop: str | None = None,
+    subject: Literal["property", "value"] = "value",
+    served: ConstraintValue | list[str] = None,
+) -> SchemaFinding:
+    return SchemaFinding(
+        row=index,
+        field=field,
+        property=prop,
+        subject=subject,
+        value=value,
+        served=served,
+        code=code,
+        severity="warning" if code in _WARNINGS else "error",
+    )
+
+
+def _check_row(
+    index: int,
+    row: SchemaCheckRow,
+    nodes: _Nodes,
+    unread: _Unread,
+) -> list[SchemaFinding]:
+    findings: list[SchemaFinding] = []
+    lookup = unread.lookup
+
+    def find(
+        field: FindingField,
+        value: ConstraintValue,
+        code: FindingCode,
+        *,
+        prop: str | None = None,
+        subject: Literal["property", "value"] = "value",
+    ) -> None:
+        findings.append(_finding(index, field, value, code, prop=prop, subject=subject))
+
+    if row.dcid is not None and _DCID.fullmatch(row.dcid) is None:
+        find("dcid", row.dcid, "not_a_node")
+
+    population: set[str] | None = None
+    if row.population_type is not None:
+        if fault := unread.fault(row.population_type):
+            find("population_type", row.population_type, fault)
+        elif (held := nodes.get(row.population_type)) is None:
+            find("population_type", row.population_type, "node_not_held")
+        elif _CLASS not in held.types:
+            find("population_type", row.population_type, "not_a_class")
+        elif row.population_type in lookup.nodes:
+            reached, complete = lookup.ancestry(row.population_type)
+            population = reached if complete else None
+
+    def check_property(field: FindingField, prop: str, *, cell: bool) -> bool:
+        """Find the property's faults and return whether it is a held Property. `cell` is true
+        when `prop` is a constraint property, which the finding then names as its subject."""
+
+        def find_property(code: FindingCode) -> None:
+            if cell:
+                find(field, prop, code, prop=prop, subject="property")
+            else:
+                find(field, prop, code)
+
+        if fault := unread.fault(prop):
+            find_property(fault)
+            return False
+        held = nodes.get(prop)
+        if held is None:
+            find_property("node_not_held")
+            return False
+        if not _is_property(held):
+            find_property("not_a_property")
+            return False
+        if (
+            population is not None
+            and held.dfo
+            and held.domain
+            and not held.unresolved_domain
+            and population.isdisjoint(held.domain)
+        ):
+            find_property("property_outside_domain")
+        return True
+
+    if row.measured_property is None:
+        find("measured_property", None, "value_missing")
+    else:
+        check_property("measured_property", row.measured_property, cell=False)
+    for field in ("stat_type", "measurement_qualifier", "measurement_denominator"):
+        value = getattr(row, field)
+        if value is None:
+            continue
+        if fault := unread.fault(value) or _node_fault(nodes.get(value)):
+            find(field, value, fault)
+
+    for prop, value in sorted(row.constraint_properties.items()):
+        if not check_property(_CONSTRAINT, prop, cell=True):
+            continue
+        if value is None:
+            find(_CONSTRAINT, value, "value_missing", prop=prop)
+            continue
+        if not isinstance(value, str):
+            find(_CONSTRAINT, value, "not_a_node", prop=prop)
+            continue
+        if fault := unread.fault(value):
+            find(_CONSTRAINT, value, fault, prop=prop)
+            continue
+        held = nodes.get(value)
+        if (fault := _node_fault(held)) or (
+            held is not None
+            and _ranged(prop_node := nodes.get(prop))
+            and prop_node is not None
+            and (fault := _range_fault(held, prop_node, unread))
+        ):
+            find(_CONSTRAINT, value, fault, prop=prop)
+
+    for prop in row.observation_properties:
+        if (fault := unread.fault(prop)) is None:
+            held = nodes.get(prop)
+            if held is None:
+                fault = "node_not_held"
+            elif not _is_property(held):
+                fault = "not_a_property"
+        if fault is not None:
+            find(_OBSERVATION, prop, fault, prop=prop, subject="property")
+    return findings
+
+
+def _differences(index: int, row: SchemaCheckRow, served: StatVarRow) -> list[SchemaFinding]:
+    """One `definition_differs` warning per cell where the row departs from `served`, carrying
+    what the row sent and what the code index serves."""
+    differs = [
+        _finding(index, field, sent, "definition_differs", served=getattr(served, field))
+        for field in SHAPE_FIELDS
+        if (sent := getattr(row, field)) != getattr(served, field)
+    ]
+    sent_constraints = row.constraint_properties
+    served_constraints = served.constraint_properties
+    differs.extend(
+        _finding(
+            index,
+            _CONSTRAINT,
+            sent_constraints.get(prop),
+            "definition_differs",
+            prop=prop,
+            served=served_constraints.get(prop),
+        )
+        for prop in sorted(sent_constraints.keys() | served_constraints.keys())
+        if prop not in sent_constraints
+        or prop not in served_constraints
+        or sent_constraints[prop] != served_constraints[prop]
+    )
+    if set(row.observation_properties) != set(served.observation_properties):
+        differs.append(
+            _finding(
+                index,
+                _OBSERVATION,
+                sorted(row.observation_properties),
+                "definition_differs",
+                served=sorted(served.observation_properties),
+            )
+        )
+    return differs

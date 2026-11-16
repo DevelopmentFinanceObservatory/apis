@@ -17,8 +17,9 @@ every manifest that names it.
 A reader refuses a manifest whose `format` is not `FORMAT`. It ignores part
 names and columns it does not know and reads an absent optional column as
 null, so a new column, part or manifest field ships without a format change.
-A changed type, key, sort order or mask definition, or a removed part,
-bumps `FORMAT`.
+A changed type, key, sort order or mask definition, a removed part, or a
+field a reader newly requires bumps `FORMAT`. Format 3 requires `types` on
+every code index party row.
 
 `write_part` and `write_blob_part` stage files locally and upload nothing;
 `graph_release.publish` is the only code that writes to the bucket.
@@ -43,7 +44,7 @@ import pyarrow.compute as pc
 
 from artifact_publication.uri import download_uri_to_path, join_uri, read_uri_bytes
 
-FORMAT: Final[int] = 2
+FORMAT: Final[int] = 3
 
 MAX_ROWS = 2**21
 """The most rows a `series` or `edges` file holds, unless one variable or

@@ -70,6 +70,7 @@ from typing import Protocol
 
 import pyarrow as pa
 
+from code_index.composites import population_check
 from code_index.query import CodeIndex
 from code_index.types import MeasureIndex
 from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
@@ -191,13 +192,26 @@ class ReleaseViews:
 
 def build_release_views(loaded: LoadedRelease) -> ReleaseViews:
     """The serving views of `loaded`. Raises `graph_release.views.ViewRefused` when one does
-    not build."""
+    not build.
+
+    Checks the destination populations of the code index against the coverage view
+    (`code_index.composites.population_check`) as they open, and logs
+    `destination_population_unavailable` for each population that does not hold every
+    destination coverage serves, or whose variables' recipients coverage cannot list. The release still serves: the composites reading that
+    population refuse until a release places every destination."""
     code_index, measure_index = release_code_indexes(loaded)
-    return ReleaseViews(
-        code_index=code_index,
-        measure_index=measure_index,
-        coverage=release_coverage_index(loaded),
-    )
+    coverage = release_coverage_index(loaded)
+    for unclassified in population_check(code_index, coverage).unclassified.values():
+        _event(
+            logging.ERROR,
+            "destination_population_unavailable",
+            release_id=loaded.manifest.release_id,
+            dataset=unclassified.dataset,
+            found_in=unclassified.found_in,
+            destinations=list(unclassified.destinations),
+            unlisted=list(unclassified.unlisted),
+        )
+    return ReleaseViews(code_index=code_index, measure_index=measure_index, coverage=coverage)
 
 
 @dataclass(frozen=True, eq=False)

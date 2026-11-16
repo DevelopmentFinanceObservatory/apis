@@ -10,6 +10,7 @@ tests bind ``scoped_concurrency()`` when they reach these helpers.
 from __future__ import annotations
 
 import asyncio
+import threading
 from collections.abc import AsyncIterator, Coroutine
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
@@ -31,13 +32,16 @@ class RequestScope:
     combined work stays under the configured limit. ``create_owned_task``
     registers returned tasks. Completion removes them. Scope exit cancels and
     awaits every unclaimed task. ``claim_withheld_read`` grants the request's one
-    ``withheld_by_registry`` re-read.
+    ``withheld_by_registry`` re-read. ``thread_permits`` bounds, at the same limit, the
+    reads the request's worker threads run at once where they cannot take a permit of the
+    semaphore, since the part leg that starts them holds one.
     """
 
-    __slots__ = ("_withheld_read_claimed", "semaphore", "tasks")
+    __slots__ = ("_withheld_read_claimed", "semaphore", "tasks", "thread_permits")
 
     def __init__(self) -> None:
         self.semaphore = asyncio.Semaphore(settings().max_variable_concurrency)
+        self.thread_permits = threading.BoundedSemaphore(settings().max_variable_concurrency)
         self.tasks: set[asyncio.Task[Any]] = set()
         self._withheld_read_claimed = False
 
@@ -90,6 +94,12 @@ def current_scope() -> RequestScope:
 def bounded_semaphore() -> asyncio.Semaphore:
     """Return the semaphore shared by the current request's bounded call sites."""
     return current_scope().semaphore
+
+
+def bounded_thread_permits() -> threading.BoundedSemaphore:
+    """Return the current request's limit on reads its worker threads run at once
+    (`RequestScope.thread_permits`)."""
+    return current_scope().thread_permits
 
 
 def create_owned_task[T](coro: Coroutine[Any, Any, T]) -> asyncio.Task[T]:

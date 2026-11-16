@@ -954,6 +954,7 @@ def _same_shape_region_with_obs_task(
     """Build a same-shape result with a pending observations task and relaunch callback."""
     stat_var_ref = GraphRef(ref=sv_dcid, label=sv_dcid)
     spec = build_spec(
+        composite=None,
         open_roles=(),
         measure_elected_properties=frozenset(),
         shape=_SAME_SHAPE,
@@ -1086,6 +1087,7 @@ def _same_shape_region_with_place_options_task(
     """Build a same-shape result with a pending place-options task and relaunch callback."""
     stat_var_ref = GraphRef(ref=sv_dcid, label=sv_dcid)
     spec = build_spec(
+        composite=None,
         open_roles=(),
         measure_elected_properties=frozenset(),
         shape=_SAME_SHAPE,

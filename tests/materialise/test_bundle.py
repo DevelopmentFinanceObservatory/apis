@@ -13,6 +13,8 @@ import jsonschema
 import pytest
 import yaml
 
+from code_index.declarations import DAC2A_BILATERAL, DAC2A_INCLUSIVE
+from code_index.shared import get_index
 from materialise.bundle import (
     DATAPACKAGE_PROFILE_URL,
     ArtifactEntry,
@@ -27,7 +29,7 @@ from materialise.bundle import (
     SourceProvenance,
     assemble_bundle,
 )
-from materialise.bundle_sources import source_provenance
+from materialise.bundle_sources import composite_summary, source_provenance
 from materialise.errors import MaterialisationUsageError
 from materialise.license_type import LicenceIds, licence_ids
 
@@ -576,3 +578,16 @@ def test_a_data_cell_missing_from_the_codes_table_fails_validation(tmp_path):
     descriptor_path = _write_bundle(tmp_path, _standalone(codes=(_CODES[0],)))
     report = frictionless.validate(str(descriptor_path))
     assert {error_type for (error_type,) in report.flatten(["type"])} == {"foreign-key"}
+
+
+def test_the_inclusive_composite_states_the_bilateral_reading_beside_its_bilateral_component_only():
+    index = get_index()
+    reading = "without core contributions to multilateral agencies"
+
+    bilateral = composite_summary(index, index.composite(DAC2A_BILATERAL))
+    inclusive = composite_summary(index, index.composite(DAC2A_INCLUSIVE))
+
+    assert bilateral.endswith(f"{reading}.")
+    assert not inclusive.endswith(f"{reading}.")
+    assert inclusive.count(reading) == 1
+    assert inclusive.index(reading) < inclusive.index("imputed")

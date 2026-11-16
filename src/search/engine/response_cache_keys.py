@@ -427,15 +427,20 @@ def part_memo_key(
 ) -> str:
     """Key one resubmitted identity's region in the part memo.
 
-    The payload is the identity and the named groups posted beside it, and the whole of it
-    enters, since each field changes the answer.
+    The payload is the identity, the named groups posted beside it and the populations its
+    roles bind, and the whole of it enters, since each field changes the answer. A
+    population enters as its side and the dataset it is drawn from, which with the build
+    commit and the graph generation fix its members, so a role read open within a population
+    and one naming the same parties key apart. A payload binding none adds nothing to the
+    key. The composite a payload answers as enters whole, so a table answer stored for its
+    table identity never serves the composite.
     `engine_flags` are the four enrichment flags of the call's `EngineOptions`. The build commit covers the
     code index, and the graph generation, coverage stamp, conversion catalogue revision,
     origin catalogue build with its UN System setting, and UTC day cover what the graph,
     coverage and conversion reads return and what the answer admits. Its entries come from
     regions that make no model call (`region.resolve_spec_resubmit`), so the binder a
     request was routed to is not in the key."""
-    document = {
+    document: dict[str, object] = {
         "payload": payload.model_dump(mode="json"),
         "engine_flags": dict(engine_flags),
         "build_commit": build_commit,
@@ -446,6 +451,13 @@ def part_memo_key(
         "un_system_enabled": un_system_enabled,
         "today": today,
     }
+    if payload.populations:
+        document["populations"] = {
+            key: [population.side, population.source.dataset]
+            for key, population in sorted(payload.populations.items())
+        }
+    if payload.composite is not None:
+        document["composite"] = payload.composite.model_dump(mode="json")
     return _digest("m", document)
 
 

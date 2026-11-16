@@ -44,6 +44,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 
 from dc_sdmx import (
+    Among,
     ContainedIn,
     EntityFilter,
     SdmxCapExceededError,
@@ -122,13 +123,14 @@ def _period_key(time_period: Literal["LATEST"] | Sequence[str] | None) -> _Perio
 
 
 def _bound_key(entities: Mapping[str, EntityFilter]) -> _Bound | None:
-    """`entities` as a planned read's `bound`, or None for a containment filter, which no
-    planned read sends."""
+    """`entities` as a planned read's `bound`, a population as its members
+    (`dc_sdmx.Among.members`), or None for a containment filter, which no planned read
+    sends."""
     bound: list[tuple[str, tuple[str, ...]]] = []
     for role, dcids in entities.items():
         if isinstance(dcids, ContainedIn):
             return None
-        bound.append((role, tuple(dcids)))
+        bound.append((role, dcids.members if isinstance(dcids, Among) else tuple(dcids)))
     return tuple(bound)
 
 

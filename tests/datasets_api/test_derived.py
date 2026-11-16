@@ -19,6 +19,8 @@ from fastapi.testclient import TestClient
 
 import datasets_api.doors.analysis as analysis_door
 from artifact_store import Tier
+from code_index.composites import DECLARED_COMPOSITES
+from code_index.declarations import DAC2A_BILATERAL
 from dataset_store.snapshot import ManifestFacts, StoredVersion
 from datasets_api.analysis import AnalysisRequest, run_analysis
 from datasets_api.config import DatasetsBuildSettings
@@ -48,8 +50,9 @@ from ._render_inputs import SITE
 from .conftest import FakeDatasetStore
 
 
-def _aid() -> Any:
-    """ODA to three recipients over 2021 and 2022, each recipient a party."""
+def _aid(provenance: str = "dcid:dc/base/OECD_CRS") -> Any:
+    """ODA to three recipients over 2021 and 2022, each recipient a party, read from
+    `provenance`."""
     return build_frame(
         role_keys=["financingRecipient", "financingRecipient_party_kind"],
         rows=[
@@ -60,7 +63,7 @@ def _aid() -> Any:
                 "time_period": year,
                 "value": 10.0,
                 "unit": "USDollar",
-                "provenance": "dcid:dc/base/OECD_CRS",
+                "provenance": provenance,
             }
             for recipient in ("country/GHA", "country/KEN", "country/NGA")
             for year in ("2021", "2022")
@@ -107,18 +110,21 @@ _CHAIN = step(
 )
 
 
-def _roots(stores: Stores) -> FakeRootSource:
+def _roots(stores: Stores, *, aid: Any = None) -> FakeRootSource:
     return FakeRootSource(
-        frames={(AID, AID_V1): _aid(), (POPULATION, POPULATION_V1): _population()},
+        frames={
+            (AID, AID_V1): _aid() if aid is None else aid,
+            (POPULATION, POPULATION_V1): _population(),
+        },
         newest={AID: AID_V1, POPULATION: POPULATION_V1},
         recipes=stores.recipe_store,
     )
 
 
-def _stored(stores: Stores) -> dict[str, Any]:
+def _stored(stores: Stores, *, aid: Any = None, tree: Any = _CHAIN) -> dict[str, Any]:
     result = run_analysis(
-        AnalysisRequest.model_validate({"tree": _CHAIN}),
-        source=_roots(stores),
+        AnalysisRequest.model_validate({"tree": tree}),
+        source=_roots(stores, aid=aid),
         stores=stores.analysis(),
     )
     return result.ref()["members"][0]
@@ -232,6 +238,42 @@ def test_the_file_route_writes_the_frame_in_each_format(
         names = zipfile.ZipFile(io.BytesIO(response.content)).namelist()
         assert "datapackage.json" in names
         assert any(name.startswith("data/") and name.endswith(".csv") for name in names)
+
+
+def test_a_bundle_of_a_frame_over_a_composite_cites_its_tables_and_names_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A derived frame keeps its root's composite provenance. Its bundle cites the composite's
+    component table, as every other bundle does, and names the composite with what it reads
+    and the destinations it keeps."""
+    stores = Stores()
+    # Aid's change from 2021 to 2022, a step on one root, which keeps its provenance.
+    growth = step(
+        "growth",
+        dataset(AID, AID_V1),
+        window_start="2021",
+        window_end="2022",
+        entity_by=["financingRecipient"],
+        change="absolute",
+    )
+    member = _stored(stores, aid=_aid(DAC2A_BILATERAL), tree=growth)
+    composite = DECLARED_COMPOSITES[DAC2A_BILATERAL]
+    (table,) = {recipe.dataset for recipe in composite.components}
+
+    with _client(stores, monkeypatch) as client:
+        response = client.get(_path(member, "/file"))
+
+    assert response.status_code == 200, response.text
+    with zipfile.ZipFile(io.BytesIO(response.content)) as bundle:
+        files = {name: bundle.read(name).decode() for name in bundle.namelist()}
+    descriptor = json.loads(files["datapackage.json"])
+    # The roots here carry no stored citation, so the table is named by its ref.
+    assert [source["title"] for source in descriptor["sources"]] == [table]
+    cut = "counting bilateral flows to countries and regions, without core contributions"
+    for text in (files["README.md"], files["SOURCES.md"], descriptor["description"]):
+        assert "OECD DAC2a (bilateral flows)" in text
+        assert DAC2A_BILATERAL in text
+        assert cut in text
 
 
 def _locations(stores: Stores, member: dict[str, Any]) -> Any:

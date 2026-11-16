@@ -29,6 +29,7 @@ from dc_graph import GraphClient, GraphNotAdvancingError, GraphOmittedDcidsError
 from dc_sdmx import SdmxHttpError, SdmxUnsupportedFilterError
 from materialise import facets as facets_module
 from materialise.codes import MATERIALISE_CODE_CATALOGUE
+from materialise.errors import DestinationUnclassifiedError, FacetNotAvailableError
 from materialise.finish import COUNTRIES_FALLBACK_SENTENCE, member_sentences
 from materialise.graph import Facet, GraphReadError
 from origin_catalogue import record_un_read_failure
@@ -893,16 +894,38 @@ class _BrokenGraph(FakeGraphReader):
         raise ValueError("a defect, not a failed read")
 
 
+def _raising(error: Exception) -> Callable[..., object]:
+    def composite_components(*args: object, **kwargs: object) -> object:
+        raise error
+
+    return composite_components
+
+
 @pytest.mark.parametrize(
     ("fault", "reason"),
-    [("ceiling", "probe_refused"), ("malformed-identity", "identity_refused")],
+    [
+        ("ceiling", "probe_refused"),
+        ("malformed-identity", "identity_refused"),
+        ("off-side-destination", "facet_not_available"),
+        ("population-unavailable", "destination_unclassified"),
+    ],
 )
 def test_a_deterministic_failure_is_refused_for_good(fault, reason, monkeypatch, capsys):
+    from datasets_api import warning_backfill
+
     row = _row(_warning([_IN]), zero=[_IN])
     if fault == "ceiling":
         monkeypatch.setattr(facets_module, "_MAX_COLLECTION_PROBE_PAIRS", 0)
-    else:
+    elif fault == "malformed-identity":
         row["definition"]["identity"]["facets"] = {"unit": {"ref": "USD", "request": {}}}
+    else:
+        # The composite derivation's refusals (`adapter.composite_components`).
+        error = (
+            FacetNotAvailableError("no rows there", facet_pointer="/entities/destination")
+            if fault == "off-side-destination"
+            else DestinationUnclassifiedError(destinations=["dcid:x"], dataset="OECD_DAC2A")
+        )
+        monkeypatch.setattr(warning_backfill, "composite_components", _raising(error))
     store = _Store([row])
 
     assert _run(store) == 0

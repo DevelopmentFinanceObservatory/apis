@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Protocol
 from dfo_frame_grammar import FRAME_GRAMMAR_VERSION, frame_sha256
 
 from code_index.types import PartyRow
-from dc_sdmx import ContainedIn, EntityFilter
+from dc_sdmx import Among, ContainedIn, EntityFilter
 
 # `pipeline` imports this module during initialisation. `MaterialisationResult` resolves when
 # `_finish_member` runs, after `pipeline` has loaded.
@@ -828,6 +828,12 @@ def deflator_missing_omitted_warning(omitted: Iterable[tuple[str, int]]) -> Mate
 
 
 def _plain_role_bindings(role_bindings: Mapping[str, EntityFilter]) -> dict[str, Sequence[str]]:
-    """Returns plain DCID lists for coverage checks. `ContainedIn` scopes require graph
-    expansion and stay outside this mapping."""
-    return {role: filt for role, filt in role_bindings.items() if not isinstance(filt, ContainedIn)}
+    """Returns the DCID lists a caller named, for coverage checks. `ContainedIn` scopes require
+    graph expansion and stay outside this mapping, as does `Among`: its members are a
+    population bound in place of an open role, and an open role names no entity it could
+    leave unserved."""
+    return {
+        role: filt
+        for role, filt in role_bindings.items()
+        if not isinstance(filt, ContainedIn | Among)
+    }

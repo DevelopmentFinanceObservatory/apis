@@ -68,11 +68,13 @@ def run_materialise(
     open_axes: frozenset[RoleAxis],
     coverage: CoverageSnapshot,
     facet_batch: FacetBatch | None = None,
+    within: Mapping[RoleAxis, frozenset[str]] | None,
 ) -> Materialised | NoDataDraft | MaterialisedCandidates | UnsupportedDraft:
     """Materialise the chosen shape with scope discovery enabled. `default_presence` derives
     a default place scope in place of `place_dcids` (`standard_resolve`), `open_axes`
-    are the flow axes its places leave open (`place_roles.PlaceRoles.open_axes`), and
-    `facet_batch` shares the facet reads of a shape whose place sets are settling."""
+    are the flow axes its places leave open (`place_roles.PlaceRoles.open_axes`),
+    `facet_batch` shares the facet reads of a shape whose place sets are settling, and
+    `within` holds the members an open axis is discovered within (`graph_confirm_resolve`)."""
     return materialise(
         shape_draft,
         bindings,
@@ -87,6 +89,7 @@ def run_materialise(
         open_axes=open_axes,
         coverage=coverage,
         facet_batch=facet_batch,
+        within=within,
     )
 
 

@@ -61,7 +61,7 @@ def _make_slot_options_task(
     probes: list[_SlotOptionsProbe] = []
     for s in surviving:
         entry = grounded[s.spec_id]
-        if (inputs := entry.probe_inputs) is None:
+        if (inputs := entry.streamed_probe_inputs) is None:
             continue
         _cand_shape, _cand_bindings, _cand_slot_options, _cand_place_dcids = inputs
         probes.append(
@@ -108,7 +108,7 @@ def _make_slot_options_relaunch(
     Expose the same optional facet probe override as the single-shape path.
     """
     entry = grounded[original_spec.spec_id]
-    if not state.stream_slot_options or (inputs := entry.probe_inputs) is None:
+    if not state.stream_slot_options or (inputs := entry.streamed_probe_inputs) is None:
         return None
     _shape, _bindings, _, _place_dcids = inputs
     return functools.partial(

@@ -20,6 +20,11 @@ source of the data (`region.source_choice.choose_reading`): the query names it a
 another source the query names, which lists it as a party; its words resolving to no single
 source; or none of its own data leading the recall of the source reading."""
 
+type ContributionRecipient = Literal["party", "total", "residual"]
+"""What the multilateral recipient of a `core_contribution_read` answer is
+(`code_index.types.PartyKind`): a multilateral organisation, the DAC's total over
+multilateral agencies, or the DAC's line for the agencies it does not name."""
+
 type UndirectedRule = Literal["complement", "operation", "declaration", "coverage"]
 """Why a place named without a direction is read on one flow axis
 (`region.undirected.settle_undirected_axis`): the part names its other places on the other
@@ -165,6 +170,8 @@ class DepartureFact:
       value").
     - `left_out` (`measure_not_applied`): `asked` is the request's words for something it
       asked to leave out ("excluding humanitarian aid"), which the answer does not.
+    - `recipient` (`core_contribution_read`): what the multilateral recipient `shown` names
+      is, which the text words its figures by.
     """
 
     code: DepartureCode
@@ -215,6 +222,7 @@ class DepartureFact:
     left_out: bool = False
     read_by: UndirectedRule | None = None
     listed_by: str | None = None
+    recipient: ContributionRecipient | None = None
 
 
 def ordered_facts(facts: Iterable[DepartureFact]) -> tuple[DepartureFact, ...]:

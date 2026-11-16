@@ -22,7 +22,8 @@ every filter, merge, and retraction the warning goes through. The other codes ar
 the Spec the part answers with and the operations it carries (`spec_departure_facts`). A
 no-data answer for years its series holds no point in carries `year_unavailable`
 (`window_gap_fact`), and a no-data answer whose check the engine narrowed carries
-`scope_limited` (`scope_limited_fact`).
+`scope_limited` (`scope_limited_fact`). An answer reading DAC2a's total ODA at a multilateral
+recipient carries `core_contribution_read` (`_core_contribution_facts`).
 
 A part states one `entity_unavailable` per role whichever reads raised it
 (`merged_entity_facts`), and only the facts that tell its reader something its heading and
@@ -36,9 +37,11 @@ from collections.abc import Collection, Iterable, Mapping, Sequence
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal
 
-from code_index.composites import provenance_datasets
+from code_index.composites import binds_composite, provenance_datasets
+from code_index.scope_conventions import destination_side
 from code_index.shared import get_index
 from dfo_platform.roles import role_key_axis
+from search.engine.retrieval.bound_values import identity_dataset
 from search.heading.departure_fact import (
     DepartureFact,
     PartyReason,
@@ -69,6 +72,7 @@ from search.models import (
     Warning,
     role_ref,
 )
+from search.scope.edits import counted_bilateral_source
 from search.scope.region import is_residual
 from unit_words.currency_nouns import currency_noun
 
@@ -331,6 +335,7 @@ def spec_departure_facts(
         facts.append(left_out)
     facts.extend(year_facts)
     facts.extend(_scope_window_facts(spec))
+    facts.extend(_core_contribution_facts(spec))
     if modelled := _modelled_fact(spec):
         facts.append(modelled)
     for role, group in (spec.resolved.entity_groups or {}).items():
@@ -928,6 +933,47 @@ def _scope_window_facts(spec: Spec) -> list[DepartureFact]:
                 requested_years=requested,
                 covered_years=tuple(availability.years),
                 limited_by=_SCOPE_LIMITS.get(availability.code or ""),
+            )
+        )
+    return facts
+
+
+def _core_contribution_facts(spec: Spec) -> list[DepartureFact]:
+    """`core_contribution_read` for each destination the answer names on the multilateral
+    side (`code_index.scope_conventions.destination_side`) of a published total that
+    declares a bilateral source (`code_index.scope_conventions.BILATERAL_SOURCES`), DAC2a's
+    total ODA, read on its own dataset: its figures at that destination are the donor's core
+    contributions to it. Read from the destinations themselves, so it holds with or without
+    a provider axis, as for every donor's ODA to one agency, and a resubmit states it too.
+    `shown` is the recipient's name in the code index, and `recipient` its kind as a
+    destination of that dataset: an organisation, a total or a residual. An answer binding a
+    composite, or a provenance set naming one (`code_index.composites.binds_composite`), reads
+    no published total, so it carries none."""
+    identity = spec.definition.identity
+    key = next((key for key in identity.entities if role_key_axis(key) == "destination"), None)
+    if key is None:
+        return []
+    if binds_composite(identity.model_dump(mode="json", include={"facets"})):
+        return []
+    source = counted_bilateral_source(identity, dataset_of=identity_dataset)
+    if source is None:
+        return []
+    index = get_index()
+    datasets = (source.dataset,)
+    facts: list[DepartureFact] = []
+    for dcid in identity.entities[key]:
+        party = index.parties.get(dcid)
+        if (
+            party is None
+            or destination_side(party, datasets=datasets, index=index) != "multilateral"
+        ):
+            continue
+        facts.append(
+            DepartureFact(
+                code="core_contribution_read",
+                binding_ref=role_ref(key),
+                shown=party.label or dcid,
+                recipient=party.kind_over("destination", datasets) or party.kind,
             )
         )
     return facts

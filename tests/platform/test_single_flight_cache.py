@@ -817,6 +817,69 @@ def test_custom_ttl_for_stamp_policy_overrides_the_stamps_own_max_age():
     assert len(calls) == 2
 
 
+def test_value_ttl_shortens_the_lifetime_of_the_values_it_names():
+    clock = [0.0]
+    cache: SingleFlightCache[str, str] = _cache(
+        maxsize=10, clock=lambda: clock[0], ttl_for_stamp=lambda stamp: 100.0
+    )
+    fetched: list[list[str]] = []
+
+    def fetch(keys: list[str], _deadline: float) -> dict[str, str]:
+        fetched.append(keys)
+        return {key: key for key in keys}
+
+    lifetimes = {"short": 10.0, "past": 500.0}
+
+    def read() -> dict[str, str]:
+        return cache.get_or_fetch_many(["short", "past", "long"], fetch, value_ttl=lifetimes.get)
+
+    read()
+    clock[0] = 9.0
+    read()
+    clock[0] = 11.0
+    read()
+    # A lifetime past the TTL stores for the TTL, the lesser of the two.
+    clock[0] = 101.0
+    read()
+
+    assert fetched == [["short", "past", "long"], ["short"], ["short", "past", "long"]]
+
+
+def test_a_caller_joining_a_live_flight_has_its_value_ttl_ignored():
+    """The caller that starts the flight decides its values' lifetime: a joiner naming a
+    shorter one leaves the value stored for the TTL."""
+    clock = [0.0]
+    cache: SingleFlightCache[str, str] = _cache(
+        maxsize=10, clock=lambda: clock[0], ttl_for_stamp=lambda stamp: 100.0
+    )
+    started = threading.Event()
+    release = threading.Event()
+    fetched: list[list[str]] = []
+
+    def fetch(keys: list[str], _deadline: float) -> dict[str, str]:
+        fetched.append(keys)
+        started.set()
+        assert release.wait(timeout=5), "test deadlocked waiting for release"
+        return {key: key for key in keys}
+
+    leader = threading.Thread(target=lambda: cache.get_or_fetch_many(["k"], fetch))
+    leader.start()
+    assert started.wait(timeout=5), "leader never reached fetch"
+    joiner = threading.Thread(
+        target=lambda: cache.get_or_fetch_many(["k"], fetch, value_ttl=lambda value: 1.0)
+    )
+    joiner.start()
+    time.sleep(0.05)  # give the joiner a chance to park on the leader's slot
+    release.set()
+    leader.join(timeout=5)
+    joiner.join(timeout=5)
+
+    clock[0] = 50.0
+    cache.get_or_fetch_many(["k"], fetch)
+
+    assert fetched == [["k"]]
+
+
 def test_stats_and_clear():
     cache: SingleFlightCache[str, str] = _cache(maxsize=1)
 

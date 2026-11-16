@@ -27,6 +27,7 @@ from search.engine.shape import ShapeDraft
 from search.engine.stated_words_read import StatedWordsOutput
 from search.engine.time_bind import parse_time_text
 from search.models import CoverageBare, TimeWindow
+from search.scope.state import ScopeState
 from tests.engine._binders import elected_reply
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
@@ -63,6 +64,7 @@ def test_a_shape_with_no_declarations_resolves_by_subject_probe():
             graph=FakeGraph(raise_on_call=True),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            within=None,
         )
 
 
@@ -200,6 +202,7 @@ class TestBoundValuesUnrealisable:
             graph=_graph_with_data_for(*shape.sv_arc_facts),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            within=None,
         )
 
         assert isinstance(result, BoundValuesUnrealisable)
@@ -217,6 +220,7 @@ class TestBoundValuesUnrealisable:
             graph=_graph_with_male_data(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            within=None,
         )
 
         assert isinstance(result, Materialised)
@@ -372,6 +376,7 @@ class TestFullyBoundMembersExcludesUnresolved:
             graph=_graph_with_unresolved_gender_data(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            within=None,
         )
 
         assert isinstance(result, Materialised)
@@ -398,6 +403,7 @@ class TestDegenerateBindingFailsClosed:
             graph=_graph_with_male_data(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            within=None,
         )
 
         assert isinstance(result, NoDataDraft)
@@ -417,6 +423,7 @@ class TestDegenerateBindingFailsClosed:
             graph=_graph_with_male_data(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            within=None,
         )
 
         assert isinstance(result, NoDataDraft)
@@ -590,6 +597,8 @@ class TestUnrealisableValuesUnbound:
             sdmx=FakeSdmxClient(observations={}, availability={}),
             date_request=None,
             coverage=empty_coverage_snapshot(),
+            selection=ScopeState(),
+            operations=(),
         )
 
         assert unsupported is None
@@ -634,6 +643,7 @@ class TestUnrealisableValuesUnbound:
             graph=graph,
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            within=None,
         )
         assert isinstance(refusal, BoundValuesUnrealisable)
 
@@ -962,6 +972,7 @@ class TestSetBindingMultiMemberCollection:
             graph=graph,
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            within=None,
         )
 
         assert isinstance(result, Materialised)
@@ -990,6 +1001,7 @@ class TestSetBindingMultiMemberCollection:
             graph=graph,
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            within=None,
         )
 
         assert isinstance(result, Materialised)
@@ -1080,6 +1092,7 @@ def test_unbound_entity_probe_preserves_insertion_order_and_single_match(
         graph=graph,
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
+        within=None,
     )
 
     assert isinstance(result, Materialised)
@@ -1127,6 +1140,7 @@ def test_no_entity_bound_member_is_representative(shape, bindings, graph, expect
         graph=graph,
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
+        within=None,
     )
 
     assert isinstance(result, Materialised)
@@ -1154,6 +1168,7 @@ class TestBindAwareSpecificityTieBreak:
             graph=graph,
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            within=None,
         )
 
         assert isinstance(result, Materialised)
@@ -1179,6 +1194,7 @@ class TestBindAwareSpecificityTieBreak:
             graph=graph,
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            within=None,
         )
 
         assert isinstance(result, Materialised)
@@ -1227,6 +1243,7 @@ class TestNoEntitySpecificityTieBreak:
             sdmx=FakeSdmxClient(observations={}, availability={}),
             place_dcids=place_dcids,
             coverage=empty_coverage_snapshot(),
+            within=None,
         )
 
         assert isinstance(result, Materialised)
@@ -1251,6 +1268,7 @@ class TestNoEntitySpecificityTieBreak:
             graph=graph,
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            within=None,
         )
 
         assert isinstance(result, Materialised)
@@ -1316,6 +1334,7 @@ class TestNoEntityEligibilityRestriction:
             graph=_graph_with_data_for(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            within=None,
         )
 
         assert isinstance(result, Materialised)
@@ -1361,6 +1380,7 @@ class TestNoEntityEligibilityRestriction:
             sdmx=FakeSdmxClient(observations={}, availability={}),
             place_dcids=["country/A1"],
             coverage=empty_coverage_snapshot(),
+            within=None,
         )
 
         assert isinstance(result, Materialised)
@@ -1390,6 +1410,7 @@ class TestVariablesCoverageDimension:
             graph=_graph_with_male_data(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            within=None,
         )
         assert isinstance(result, Materialised)
         dims = result.coverage.dimensions
@@ -1414,6 +1435,7 @@ class TestVariablesCoverageDimension:
             graph=_graph_with_data_for(_SET_SV_A, _SET_SV_B),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            within=None,
         )
         assert isinstance(result, Materialised)
         dims = result.coverage.dimensions
@@ -1478,6 +1500,7 @@ def _resolve_at_recipient(shape: ShapeDraft, bindings: list[SlotBindingDraft], g
         graph=graph,
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
+        within=None,
     )
 
 
@@ -1593,6 +1616,7 @@ def test_un_family_without_a_place_names_every_kept_member_without_a_notice():
         graph=_graph_with_data_for(),
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
+        within=None,
     )
 
     assert isinstance(result, Materialised)
@@ -1681,6 +1705,7 @@ def _resolve_in_years(graph: FakeGraph):
         sdmx=FakeSdmxClient(observations={}, availability={}),
         date_request=DateRequest(window=TimeWindow(start_year=2022, end_year=2024), latest=False),
         coverage=empty_coverage_snapshot(),
+        within=None,
     )
 
 
@@ -1821,6 +1846,7 @@ class TestRootElection:
             graph=_graph_with_data_for(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            within=None,
         )
 
         assert isinstance(result, Materialised)
@@ -2297,6 +2323,7 @@ class TestFamilyTotalRule:
             graph=_graph_with_data_for(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            within=None,
         )
 
         assert isinstance(result, Materialised)
@@ -2508,6 +2535,7 @@ def _old_and_new_members(date_request):
         sdmx=FakeSdmxClient(observations={}, availability={}),
         date_request=date_request,
         coverage=empty_coverage_snapshot(),
+        within=None,
     )
 
 
@@ -3339,6 +3367,7 @@ def _sources_in(
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
         date_request=date_request,
+        within=None,
     )
     assert isinstance(result, Materialised)
     return result

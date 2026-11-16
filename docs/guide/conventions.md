@@ -20,7 +20,7 @@ Use JSON request bodies and send `Content-Type: application/json` for requests w
 
 ## Versioning
 
-Datasets requests and responses use `schema_version: 1`. Search responses also carry `schema_version: 1`. The Graph API has its own response shapes, which `GET /api/v1/graph/schema` publishes.
+Datasets requests and responses use `schema_version: 1`. Search responses also carry `schema_version: 1`. The Graph API has its own response shapes, which `GET /api/v1/graph/json-schema` publishes.
 
 `GET /api/v1/datasets/capabilities` reports live Datasets formats, input kinds, feature flags, limits, and a capability version. Treat capability values as deployment data.
 
@@ -32,10 +32,10 @@ When the graph does not declare a facet default, the Datasets API uses `dfo/face
 | --- | --- |
 | `GET /api/{search,datasets,graph}/healthz` | Check that an API is available and identify its build. |
 | `GET /api/{search,datasets,graph}/capabilities` | Read deployment capabilities and limits. |
-| `GET /api/v1/search/schema` | Read Search request and response schemas. |
+| `GET /api/v1/search/json-schema` | Read Search request and response schemas. |
 | `GET /api/v1/search/catalogue` | Read available data and example questions. |
-| `GET /api/v1/datasets/schema` | Read Datasets request and response schemas. |
-| `GET /api/v1/graph/schema` | Read Graph request and response schemas. |
+| `GET /api/v1/datasets/json-schema` | Read Datasets request and response schemas. |
+| `GET /api/v1/graph/json-schema` | Read Graph request and response schemas. |
 | `POST /api/v1/graph/nodes` | Read several graph nodes in one request. |
 | `GET /codes/{code}` | Read the registry entry for a problem code. |
 | `GET /openapi.json` | Read the OpenAPI document. |

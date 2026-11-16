@@ -2057,6 +2057,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: country/DEU, role: origin}, {dcid: country/KEN, role: destination}]
 - id: ent-abbreviation-uk-aid
   query: aid from the UK to Kenya
@@ -2065,6 +2066,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: country/GBR, role: origin}, {dcid: country/KEN, role: destination}]
 - id: ent-04
   query: ODA from the World Bank
@@ -2110,6 +2112,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities:
       - dcid: DACOfficialDonors
         role: origin
@@ -2288,6 +2291,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities:
       - dcid: DACOfficialDonors
         role: origin
@@ -2304,6 +2308,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities:
       - dcid: DACOfficialDonors
         role: origin
@@ -3883,6 +3888,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/ETH, role: destination}]
       window: {kind: range, start: 2021, end: 2021}
 - id: whole-total-oda-ethiopia-all-donors
@@ -3894,6 +3900,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities:
         - {dcid: DACOfficialDonors, role: origin}
         - {dcid: DACPrivateDonors, role: origin}
@@ -3908,6 +3915,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/ETH, role: destination}]
 - id: whole-total-oda-ethiopia-all-donors-total-label
   query: 'parsed: official development assistance, to Ethiopia, from All Donors, Total, 2021'
@@ -3918,6 +3926,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/ETH, role: destination}]
 - id: whole-total-oda-ethiopia-summed-open-donors
   query: 'parsed: official development assistance, to Ethiopia, open donors, aggregate over origin, 2021'
@@ -3933,6 +3942,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: country/ETH, role: destination}]
 - id: whole-total-oda-kenya-range-total
   query: 'parsed: official development assistance received, to Kenya, total from all donors, 2015 to 2022'
@@ -3947,6 +3957,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: DACOfficialDonors, role: origin}, {dcid: country/KEN, role: destination}]
       window: {kind: range, start: 2015, end: 2022}
 - id: whole-total-oda-ethiopia-including-private
@@ -3958,6 +3969,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities:
         - {dcid: DACOfficialDonors, role: origin}
         - {dcid: DACPrivateDonors, role: origin}
@@ -4011,6 +4023,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: country/KEN, role: destination}]
       window: {kind: range, start: 2020, end: 2024}
       operations: []
@@ -4021,6 +4034,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: country/KEN, role: destination}]
       window: {kind: range, start: 2022, end: 2022}
       operations: []
@@ -4031,6 +4045,7 @@
   expect:
     definite:
       measure: {family: dac2a.oda_net_received}
+      provenance: {origin: dfo, dataset: provenance/ONEDAC2aBilateral}
       entities: [{dcid: country/KEN, role: destination}]
       window: {kind: range, start: 2022, end: 2022}
       operations: []

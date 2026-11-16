@@ -1069,7 +1069,7 @@ def test_a_word_naming_a_measure_value_the_answer_lacks_refuses_whatever_its_rat
     materialised = Materialised(
         sv_dcids=["psi_member"], has_data=True, coverage=CoverageBare(has_data=True)
     )
-    result = asyncio.run(_assemble_carve_outs(state, materialised, spec))
+    result = asyncio.run(_assemble_carve_outs(state, materialised, spec, decision=None))
 
     terms = result.unbound_qualifiers if result is not None else ()
     assert (result is not None and result.no_data_reason == "qualifier_not_bound") == bool(refused)

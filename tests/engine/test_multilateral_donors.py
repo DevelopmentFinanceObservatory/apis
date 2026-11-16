@@ -16,8 +16,8 @@ from __future__ import annotations
 
 import pytest
 
+from code_index.multilaterals import PartyFacts, is_multilateral, party_facts
 from code_index.types import PartyRow
-from search.engine.multilaterals import PartyFacts, is_multilateral, party_facts
 from search.models import (
     DatasetResubmitInput,
     DefinitePart,

@@ -735,7 +735,7 @@ class DefinitionModel(BaseModel):
     spec_id: str
     identity: Mapping[str, object] = Field(
         description="the identity-core document, shaped as search.models.identity.BaseIdentity "
-        "and published at GET /api/search/schema"
+        "and published at GET /api/search/json-schema"
     )
 
 

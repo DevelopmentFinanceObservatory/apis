@@ -278,6 +278,7 @@ class TestInapplicableSlotsIdentity:
             stat_vars,
             [],
             coverage,
+            composite=None,
             open_roles=(),
             inapplicable_slots=[],
             measure_elected_properties=frozenset(),
@@ -288,6 +289,7 @@ class TestInapplicableSlotsIdentity:
             stat_vars,
             [],
             coverage,
+            composite=None,
             open_roles=(),
             inapplicable_slots=["SomeProperty"],
             measure_elected_properties=frozenset(),
@@ -409,7 +411,7 @@ class TestSchemaPublishesResolved:
         app = search_app(graph=graph, resolver=make_resolver(graph), llm=FakeLLM(), sdmx=EMPTY_SDMX)
         client = TestClient(app, raise_server_exceptions=False)
 
-        resp = client.get("/api/search/schema")
+        resp = client.get("/api/search/json-schema")
         assert resp.status_code == 200
         body = resp.json()
         defs = body["response"]["$defs"]

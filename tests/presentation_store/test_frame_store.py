@@ -49,6 +49,8 @@ from assembler.testing import (
     malaria_ethiopia_frame_ref,
     malaria_ethiopia_rows,
 )
+from code_index.composites import DECLARED_COMPOSITES
+from code_index.declarations import DAC2A_BILATERAL
 from code_index.members import canonical_identity
 from code_index.query import CodeIndex
 from code_index.shared import get_index
@@ -3777,6 +3779,30 @@ def test_load_cites_the_distinct_upstream_provenances_of_a_published_ops_frame()
         **version_document(_version(frame_ref)),
         "citation": _served(_OPS_CITATION),
     }
+
+
+def test_load_cites_a_composite_ops_frame_by_its_component_tables():
+    """An ops frame keeping a composite's provenance cites the composite's component table,
+    as a version of the composite does, and reads no node for the composite, which the graph
+    does not hold."""
+    snapshots, artifacts, frame_ref, _ = _ops_happy_path_fixture()
+    rows = [{**row, "provenance": DAC2A_BILATERAL} for row in malaria_ethiopia_rows()]
+    data = json.dumps(build_frame_doc(role_keys=("recipient",), rows=rows)).encode("utf-8")
+    digest = artifacts.seed(tier=Tier.working, data=data)
+    snapshots.locations[(frame_ref.spec_id, frame_ref.content_version)] = [
+        _location(digest=digest, tier=Tier.working.value)
+    ]
+    (table,) = {recipe.dataset for recipe in DECLARED_COMPOSITES[DAC2A_BILATERAL].components}
+    graph = _FakeGraphReader(arcs={table: {"typeOf": ("Provenance",), "name": ("OECD DAC2a",)}})
+
+    resolved = _store(snapshots=snapshots, artifacts=artifacts, graph=graph).load(
+        frame_ref=frame_ref
+    )
+
+    citation = cast("Mapping[str, Any]", resolved.manifest["citation"])
+    assert [(source["ref"], source["label"]) for source in citation["sources"]] == [
+        (table, "OECD DAC2a")
+    ]
 
 
 def test_load_caches_an_ops_frame_s_citation_with_the_frame():

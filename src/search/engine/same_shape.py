@@ -18,7 +18,7 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import nullcontext
 from typing import TYPE_CHECKING, NamedTuple
 
-from code_index.composites import composite_ref
+from code_index.composites import binds_composite
 from code_index.shared import get_index
 from dfo_platform.request_deadline import bounded_deadline, request_deadline
 from search.engine.config import settings
@@ -53,10 +53,12 @@ from search.engine.retrieval.coverage import answer_coverage, answer_headline
 from search.engine.retrieval.merged_plan import merged_read_plan
 from search.engine.spec_build import (
     RoleAxisFactInput,
+    answer_identity,
     build_spec,
     entity_from_resolved,
     spec_named_groups,
 )
+from search.engine.spec_id import identity_spec_id
 from search.engine.unit.conversion import with_unit_conversion
 from search.models import (
     BindingSet,
@@ -82,6 +84,7 @@ if TYPE_CHECKING:
     from search.engine.retrieval.member_facts import MemberFacts
     from search.engine.retrieval.read_plan import ReadPlan
     from search.models import (
+        BaseIdentity,
         Coverage,
         Entity,
         FacetOptions,
@@ -97,6 +100,7 @@ if TYPE_CHECKING:
         SpecObservations,
         Warning,
     )
+    from search.scope.composite import CompositeMint
     from series_coverage.index import CoverageIndex
 
 ScopeReader = Callable[["RegionResult", "Sequence[RegionResult]"], "PartScope | None"]
@@ -651,8 +655,8 @@ def collapse_same_shape(
     facet options over the merged spec (`_merge_facet_options`), preserve shared
     identity facets, and set ``earliest_index`` to the group's minimum. A merged region
     states the scope ``scope_for`` builds over the merged identity, none without it. A group
-    of composite answers merges into the composite over the merged identity
-    (`composite_answer.as_merged_composite`), and refuses without ``preview_reads``, the
+    of composite answers merges into the composite over the merged identity, minted from the
+    members' facets (`_merged_composite`), and refuses without ``preview_reads``, the
     request's clients. Where its members preview, a merged region previews the read of its
     merged identity through ``preview_reads`` (`_with_merged_preview`). The merged regions
     whose members embed their previews read theirs together in the calling thread
@@ -715,9 +719,9 @@ def _collapse_group(
 
 
 def _binds_composite(spec: Spec) -> bool:
-    """Whether `spec`'s identity binds a declared composite provenance (`composite_ref`)."""
-    facets = spec.definition.identity.model_dump(mode="json", include={"facets"})
-    return composite_ref(facets) is not None
+    """Whether `spec`'s identity binds a declared composite provenance
+    (`code_index.composites.binds_composite`)."""
+    return binds_composite(spec.definition.identity.model_dump(mode="json", include={"facets"}))
 
 
 def _check_merge_gates(group: list[RegionResult], base_spec: Spec) -> None:
@@ -738,7 +742,7 @@ def _check_merge_gates(group: list[RegionResult], base_spec: Spec) -> None:
     base_facets = base_spec.definition.identity.facets
     if any(r.spec.definition.identity.facets != base_facets for r in group[1:]):
         raise _RefuseMerge
-    # A composite answer merges only with composites, so the merge restates the composite.
+    # A composite answer merges only with composites, so the merge mints the composite.
     if len({_binds_composite(r.spec) for r in group}) > 1:
         raise _RefuseMerge
 
@@ -1099,8 +1103,8 @@ def _merged_counts(
     `_merged_unserved`) and no download, where
 
     - `reads`, the request's clients, is absent;
-    - the merge is a composite, which states its components' download
-      (`composite_answer.as_merged_composite`);
+    - the merge is a composite, which states its components' download and years
+      (`_merged_composite`);
     - a member's plan was narrowed to the units a unit request elected over that member's own
       group (`RegionResult.units_elected`), which a resolve of the merged identity elects over
       the merged group;
@@ -1313,6 +1317,7 @@ def _finalize_merged_region(
     served_filter: RoleServedFilter | None,
     served_members: tuple[MemberFacts, ...],
     served_plans: tuple[ReadPlan, ...],
+    composite: CompositeMint | None = None,
 ) -> RegionResult:
     """Assemble the merged region and preserve group-wide trace data.
 
@@ -1322,7 +1327,8 @@ def _finalize_merged_region(
     id so they remain attached to their result, and add the facet-options read's warning.
     The merged region is one answer, so a warning several members raise appears once. Its
     preview is a read of the merged identity, of `preview_read` where the merge rebuilt its
-    read plan (`_with_merged_preview`).
+    read plan (`_with_merged_preview`). `composite` is the composite `merged_spec` was
+    minted as (`_merged_composite`), None where the merge minted none.
     """
     base_resolved = group[0].spec.resolved
     merged_spec = merged_spec.model_copy(
@@ -1366,7 +1372,9 @@ def _finalize_merged_region(
         served_members=served_members,
         served_plans=served_plans,
     )
-    return _with_merged_preview(merged, group, reads=preview_reads, preview_read=preview_read)
+    return _with_merged_preview(
+        merged, group, reads=preview_reads, preview_read=preview_read, composite=composite
+    )
 
 
 def _with_merged_preview(
@@ -1375,20 +1383,24 @@ def _with_merged_preview(
     *,
     reads: ComponentReads | None,
     preview_read: PreviewRead | None,
+    composite: CompositeMint | None = None,
 ) -> RegionResult:
-    """`merged`, the region `group` merged into, restated as the merged identity answers and
-    with the relaunch that previews it when the members preview. The merged identity's
-    composite binding (`_binds_composite`, which the merge gate holds every member to)
-    chooses between them. A group of composite answers is restated as the composite over
-    the merged identity (`composite_answer.as_merged_composite`), whose `CompositeRelaunch`
-    reads the components it serves. Any other merge keeps its Spec. With `preview_read`, what
-    a read of the merged read plan the merge rebuilt previews (`_merged_preview_read`), it
-    reads that, as one answer reads its preview, and states it as its `preview_read`
-    (`composite_answer.PlanPreview`), so its preview and its download come from one plan.
-    Without it, it previews by one resubmit of its identity
+    """`merged`, the region `group` merged into, with the relaunch that previews it when the
+    members preview. The merged identity's composite binding (`_binds_composite`, which the
+    merge gate holds every member to) chooses the relaunch. A group of composite answers
+    merges into the composite over the merged identity, minted as `composite`
+    (`_merged_composite`), whose `CompositeRelaunch` reads the components it serves to the
+    later of the deadline of `reads` and the latest any member's reads ran to
+    (`RegionResult.reads_deadline`), and whose `role_scope_defaulted` warnings count the
+    composite's parties (`CompositeMint.role_scope_warnings`). Its trailing slot and place
+    options read the one table the merge resolved, so it carries none. With `preview_read`,
+    what a read of the merged read plan the merge rebuilt previews
+    (`_merged_preview_read`), any other merge reads that, as one answer reads its preview,
+    and states it as its `preview_read` (`composite_answer.PlanPreview`), so its preview and
+    its download come from one plan. Without it, it previews by one resubmit of its identity
     (`composite_answer.IdentityPreview`). Each reads through `reads`, the request's clients.
-    The members' own preview warnings leave the merged answer, which states its own read's. Where the members do not preview, the merged region
-    reads no preview.
+    The members' own preview warnings leave the merged answer, which states its own read's.
+    Where the members do not preview, the merged region reads no preview.
 
     Where the members stream their previews, `enrichment._reconcile_after_collapse` launches
     the relaunch and cancels the members' tasks. Where they embed them,
@@ -1400,11 +1412,11 @@ def _with_merged_preview(
     streamed = any(r.observations_relaunch is not None for r in group)
     embedded = any(r.spec.resolved.observations is not None for r in group)
     previews = streamed or embedded
-    composite = _binds_composite(group[0].spec)
+    binds = _binds_composite(group[0].spec)
     unread = dataclasses.replace(
         merged, observations_task=None, observations_relaunch=None, preview_read=None
     )
-    if not previews and not composite:
+    if not previews and not binds:
         return unread
     if reads is None:
         raise ValueError(
@@ -1413,18 +1425,17 @@ def _with_merged_preview(
     # composite_answer reads through resubmit, which imports conjoin, which imports this module.
     from search.engine.region.composite_answer import (
         PREVIEW_WARNING_CODES,
+        CompositeRelaunch,
         IdentityPreview,
         PlanPreview,
-        as_merged_composite,
     )
 
     # The codes only a preview read raises, without `un_system_unavailable`, which a member's
     # resolve can raise too.
     member_codes = (PREVIEW_WARNING_CODES - {UN_SYSTEM_UNAVAILABLE}) | {DEFLATOR_PROJECTED}
-    unread = dataclasses.replace(
-        unread, warnings=tuple(w for w in merged.warnings if w.code not in member_codes)
-    )
-    if not composite and preview_read is not None:
+    warnings = tuple(w for w in merged.warnings if w.code not in member_codes)
+    unread = dataclasses.replace(unread, warnings=warnings)
+    if not binds and preview_read is not None:
         return dataclasses.replace(
             unread,
             preview_read=preview_read,
@@ -1434,12 +1445,29 @@ def _with_merged_preview(
                 variable_labels=member_labels((merged.spec,)),
             ),
         )
-    if not composite:
+    if not binds:
         return dataclasses.replace(
             unread, observations_relaunch=IdentityPreview(spec=merged.spec, reads=reads)
         )
-    restated = as_merged_composite(unread, group, reads=reads)
-    return restated if previews else dataclasses.replace(restated, observations_relaunch=None)
+    deadlines = [
+        deadline
+        for deadline in (reads.deadline, *(r.reads_deadline for r in group))
+        if deadline is not None
+    ]
+    if deadlines:
+        reads = dataclasses.replace(reads, deadline=max(deadlines))
+    if composite is not None:
+        warnings = composite.role_scope_warnings(warnings, merged.spec)
+    relaunch = CompositeRelaunch(
+        spec=merged.spec, reads=reads, served=None if composite is None else composite.served
+    )
+    return dataclasses.replace(
+        unread,
+        warnings=warnings,
+        slot_options_relaunch=None,
+        place_options_relaunch=None,
+        observations_relaunch=relaunch if previews else None,
+    )
 
 
 _COMBINE_TAIL_S = 0.25
@@ -1478,7 +1506,7 @@ def _read_merged_previews(pending: Sequence[RegionResult]) -> list[RegionResult]
         relaunch = region.observations_relaunch
         assert isinstance(relaunch, CompositeRelaunch | IdentityPreview | PlanPreview)
         relaunches.append(relaunch)
-    # A composite's reads run to its latest member's (`as_merged_composite`), which may pass
+    # A composite's reads run to its latest member's (`_with_merged_preview`), which may pass
     # the request clients' own.
     deadlines = [r.reads.deadline for r in relaunches if r.reads.deadline is not None]
     bound = bounded_deadline(max(deadlines) - _COMBINE_TAIL_S if deadlines else None)
@@ -1596,6 +1624,37 @@ def _merged_data_years(group: list[RegionResult]) -> tuple[int, int] | None:
     return min(first for first, _last in spans), max(last for _first, last in spans)
 
 
+def _merged_composite(
+    identity: BaseIdentity, member: Spec, *, reads: ComponentReads | None
+) -> CompositeMint:
+    """The composite a merge of composite answers mints its Spec as
+    (`spec_build.build_spec(composite=)`): `identity`, the merged table identity, binding
+    `member`'s facets, the composite provenance among them, which the merge gate holds every
+    member to, with the components it serves read through `reads`, the request's clients
+    (`composite_answer.composite_served`). The merge rebuilds its Spec from its members'
+    slots, which bind no composite, so the identity it mints is the table identity over
+    every member's entities. Each member was read within the composite's population, so
+    the mint reads none.
+
+    Raises `ValueError` where `reads` is None: `_collapse_group` refuses a composite group
+    without them."""
+    if reads is None:
+        raise ValueError("a merge of composite answers needs the request's preview reads")
+    # composite_answer reads through resubmit, which imports conjoin, which imports this module.
+    from search.engine.region.composite_answer import composite_served
+    from search.scope.composite import CompositeMint
+    from search.scope.tables import ScopeFacts
+
+    composite = identity.model_copy(update={"facets": member.definition.identity.facets})
+    return CompositeMint(
+        identity=composite,
+        spec_id=identity_spec_id(composite),
+        served=tuple(composite_served(composite, reads=reads)),
+        facts=ScopeFacts(index=get_index(), coverage=reads.coverage),
+        catalogue=reads.catalogue,
+    )
+
+
 def _merge_group(
     group: list[RegionResult],
     set_ref_for: Callable[[list[str]], GraphRef | None] | None,
@@ -1639,34 +1698,72 @@ def _merge_group(
     served_members = tuple(member for r in group for member in r.served_members)
     served_plans = tuple(plan for r in group for plan in r.served_plans)
 
+    entities = _union_entities(group)
+    # Identity slots omit where; its entity buckets define the merged identity.
+    # Use each member's hashed buckets, not its displayed entity projection.
+    identity_entities = _union_identity_entities(group)
+    # The merge gate holds every member to the base's open roles.
+    open_roles = base_spec.definition.identity.open_roles or ()
+    # All members share this request window; use the base's hashed value.
+    requested_window = base_spec.resolved.trace.requested_window
+    # Shared identity facets pass through. build_spec derives provenance from merged slots.
+    facet_bindings = base_spec.definition.identity.facets
+    facets = _merge_resolved_facets(group, bound_facet_axes)
+    resolved_sources = _union_sources(group)
+    plan = counted.plan if counted is not None else None
+    # A member's group survives on a role the merge leaves unchanged.
+    named_groups = [named for region in group for named in spec_named_groups(region.spec)]
+    answer = answer_identity(
+        merged_shape,
+        merged_slots,
+        all_stat_vars,
+        entities,
+        identity_entities=identity_entities,
+        open_roles=open_roles,
+        requested_window=requested_window,
+        facet_bindings=facet_bindings,
+        facets=facets,
+        resolved_sources=resolved_sources,
+        plan=plan,
+        pin_served_provenance=False,
+        named_groups=named_groups,
+    )
+    composite = (
+        _merged_composite(answer.identity, base_spec, reads=preview_reads)
+        if _binds_composite(base_spec)
+        else None
+    )
+    headline = counted.headline if counted is not None else None
+    if composite is not None and headline is None:
+        # The composite's headline names the request's window, which the gate holds every
+        # member to.
+        headline = base_spec.resolved.headline
+
     merged_spec = build_spec(
+        composite=composite,
+        answer=answer,
         shape=merged_shape,
         slots=merged_slots,
         stat_vars=all_stat_vars,
         stat_vars_member_count=stat_vars_member_count,
         stat_vars_member_count_exact=stat_vars_member_count_exact,
         walked=_merged_walked(group),
-        entities=_union_entities(group),
-        # Identity slots omit where; its entity buckets define the merged identity.
-        # Use each member's hashed buckets, not its displayed entity projection.
-        identity_entities=_union_identity_entities(group),
-        # The merge gate holds every member to the base's open roles.
-        open_roles=base_spec.definition.identity.open_roles or (),
-        # All members share this request window; use the base's hashed value.
-        requested_window=base_spec.resolved.trace.requested_window,
+        entities=entities,
+        identity_entities=identity_entities,
+        open_roles=open_roles,
+        requested_window=requested_window,
         coverage=counted.coverage if counted is not None else _merge_coverage(group, base_spec),
-        headline=counted.headline if counted is not None else None,
-        plan=counted.plan if counted is not None else None,
+        headline=headline,
+        plan=plan,
         coverage_index=counted.coverage_index if counted is not None else None,
-        resolved_sources=_union_sources(group),
+        resolved_sources=resolved_sources,
         slot_options=merged_slot_options,
         entity_options=entity_options,
         scope=base_spec.resolved.scope,
         inapplicable_slots=inapplicable_slots,
         unresolved_slots=unresolved_slots,
-        # Shared identity facets pass through. build_spec derives provenance from merged slots.
-        facet_bindings=base_spec.definition.identity.facets,
-        facets=_merge_resolved_facets(group, bound_facet_axes),
+        facet_bindings=facet_bindings,
+        facets=facets,
         facet_options=[],
         equivalent_readings=_union_equivalent_readings(group),
         text_recognized_properties=text_recognized,
@@ -1680,25 +1777,23 @@ def _merge_group(
         measure_siblings=measure_siblings,
         open_axis_facts=open_axis_facts,
         role_axis_facts=role_axis_facts,
-        # A member's group survives on a role the merge leaves unchanged.
-        named_groups=[named for region in group for named in spec_named_groups(region.spec)],
+        named_groups=named_groups,
         # The merged identity's alternatives read every member's entities.
         measure_served_rows=measure_served_counter(served_filter),
     )
     merged_spec = with_unit_conversion(merged_spec, members=served_members, plans=served_plans)
     if counted is None:
         # With no merged plan, `build_spec` states none of these, so they come from the
-        # members. A rebuilt plan states them as its download counts them.
-        merged_spec = merged_spec.model_copy(
-            update={
-                "resolved": merged_spec.resolved.stating_unserved(
-                    _merged_unserved(group, merged_spec)
-                )
-                .stating_unserved_members(_merged_unserved_members(group))
-                .stating_data_years(_merged_data_years(group))
-                .stating_continued(any(region.spec.resolved.continued for region in group))
-            }
+        # members. A rebuilt plan states them as its download counts them. A composite
+        # states the years its components serve.
+        resolved = (
+            merged_spec.resolved.stating_unserved(_merged_unserved(group, merged_spec))
+            .stating_unserved_members(_merged_unserved_members(group))
+            .stating_continued(any(region.spec.resolved.continued for region in group))
         )
+        if composite is None:
+            resolved = resolved.stating_data_years(_merged_data_years(group))
+        merged_spec = merged_spec.model_copy(update={"resolved": resolved})
 
     merged_spec, merged_probe, facet_warning = _merge_facet_options(
         group, merged_spec, facet_options_for
@@ -1706,6 +1801,7 @@ def _merge_group(
     return _finalize_merged_region(
         group,
         merged_spec,
+        composite=composite,
         preview_reads=preview_reads,
         preview_read=None if counted is None else _merged_preview_read(group, counted.plan),
         facet_probe=merged_probe,

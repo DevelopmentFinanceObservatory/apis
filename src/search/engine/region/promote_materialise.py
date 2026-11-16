@@ -11,6 +11,7 @@ from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import Facet
 from search.engine.envelope import now_ms
 from search.engine.errors import EngineInputError
+from search.engine.identity_edit import population_members
 from search.engine.region.grounding import _build_entity, memoised_labels, role_bindings
 from search.engine.region.materialise_step import (
     NoDataMaterialise,
@@ -237,6 +238,7 @@ def _phase_materialise(state: _PromoteState) -> RegionResult | None:
             default_presence=state.place.presence_for(state.default_presence),
             open_axes=state.place.roles.open_axes,
             coverage=state.coverage,
+            within=population_members(state.inp.populations),
         )
 
     # The standard materialise probe uses the representative StatVar.

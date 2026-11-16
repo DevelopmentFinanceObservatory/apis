@@ -127,6 +127,7 @@ from search.models import (
     ResolvedQualifier,
     Spec,
     TimeWindow,
+    Warning,
 )
 
 
@@ -321,11 +322,12 @@ def _install_narrowed_answer(
 ) -> None:
     """Record the resubmit's coverage, headline and read plan, and restate the
     discovered-scope warning to count the members that plan serves, as the scope list and
-    coverage do."""
+    coverage do. A Spec minted as a composite counts its components' members instead
+    (`_ground_and_build_spec`)."""
     state.narrowed_coverage = filtered.coverage
     state.narrowed_headline = filtered.headline
     state.narrowed_plan = filtered.plan
-    if state.opposite_labels is not None:
+    if state.opposite_labels is not None and state.composite is None:
         restate_role_scope_warnings(
             state.warnings,
             mat_result,
@@ -460,7 +462,9 @@ def _converted_by(state: _PromoteState) -> IdentityUnitRequest | None:
 def _ground_and_build_spec(
     state: _PromoteState, mat_result: Materialised, roles: list[tuple[str, EntityRoleKey]]
 ) -> Spec:
-    """Ground the answer, derive scope and axis facts, and build the Spec.
+    """Ground the answer, derive scope and axis facts, and build the Spec, minted as the
+    composite `state.composite` names where it names one, whose `role_scope_defaulted`
+    warning then counts the composite's parties (`CompositeMint.role_scope_warnings`).
 
     Option-coverage probes wait until finalisation confirms a definite result."""
     t0 = _ground_answer_and_models(state, mat_result, roles)
@@ -548,6 +552,7 @@ def _ground_and_build_spec(
     state.unit_request_basis = _unit_request_basis_from_facets(state.inp.identity.facets)
     named_groups = resubmit_named_groups(state.inp, graph=state.graph, deadline=state.deadline)
     spec = state.spec = build_spec(
+        composite=state.composite,
         shape=shape_model,
         slots=slots,
         stat_vars=stat_vars,
@@ -603,6 +608,8 @@ def _ground_and_build_spec(
         plans=(state.narrowed_plan,) if state.narrowed_plan is not None else (),
     )
     spec = state.spec = apply_declaration_version(spec, state.bindings)
+    if state.composite is not None:
+        state.warnings[:] = state.composite.role_scope_warnings(state.warnings, spec)
     # The resubmit states the `family_total_absent` fact its member read states. The slots
     # its posted identity leaves open count as named, so every signature of the family it
     # admits lies inside them and no lone breakdown is stated (`lone_breakdown_absent`).
@@ -668,6 +675,20 @@ def _ground_build_gates(
     return None
 
 
+def read_whole_total_warnings(state: _PromoteState, spec: Spec) -> list[Warning]:
+    """`whole_total_available` for `spec` over the identity the resubmit read and the
+    populations its roles were read within (`ResubmitIdentityPayload.populations`). For a
+    Spec minted as a composite that identity is the table identity the resubmit read
+    (`state.inp.identity`), whose members `spec` lists and whose places (a population's total
+    among them) it binds, as a fresh answer minted as the composite reads
+    (`state.whole_totals_as_read`). Any other Spec reads its own identity, within the
+    populations a composite's component is posted with."""
+    read = spec.definition.identity if state.composite is None else state.inp.identity
+    return whole_total_warnings(
+        spec, identity=read, populations=state.inp.populations, coverage=state.coverage.index
+    )
+
+
 def _flagged_refusal(
     state: _PromoteState,
     spec: Spec,
@@ -684,7 +705,7 @@ def _flagged_refusal(
         reason,
         warnings=(
             *state.refusal_warnings(),
-            *whole_total_warnings(spec, coverage=state.coverage.index),
+            *read_whole_total_warnings(state, spec),
         ),
         flagged_match=(spec,),
         gate=gate,

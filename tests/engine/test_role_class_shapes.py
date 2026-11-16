@@ -104,6 +104,7 @@ from search.models import (
     ResubmitIdentityPayload,
     RoleAxis,
 )
+from search.scope.state import ScopeState
 from series_coverage.schema import ABSENT_ENTITY, RoleNames
 from series_coverage.shared import CoverageSnapshot
 from statvar_members import MemberEnumerator, member_digest
@@ -1560,7 +1561,10 @@ def _open_creditor_promote_state(
     )
     state = _PromoteState(
         inp=cast(
-            Any, SimpleNamespace(identity=SimpleNamespace(facets=None, open_roles=posted_open))
+            Any,
+            SimpleNamespace(
+                identity=SimpleNamespace(facets=None, open_roles=posted_open), populations={}
+            ),
         ),
         graph=cast(Any, FakeGraph(raise_on_call=True)),
         sdmx=cast(Any, None),
@@ -2914,6 +2918,8 @@ def test_an_alternate_whose_values_no_member_holds_together_unbinds_a_minimal_se
         sdmx=FakeSdmxClient(observations={}, availability={}),
         date_request=None,
         coverage=_one_role_coverage(_RELAX_NODES, _RELAX_OBS),
+        selection=ScopeState(),
+        operations=(),
     )
 
     (candidate,) = read.candidates

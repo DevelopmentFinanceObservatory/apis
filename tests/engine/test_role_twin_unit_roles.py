@@ -109,6 +109,7 @@ def total_result(twin_shape: ShapeDraft) -> Materialised:
         graph=FakeGraph(raise_on_call=True),
         sdmx=FakeSdmxClient(observations={}),
         coverage=_twin_coverage().snapshot(),
+        within=None,
     )
     assert isinstance(result, Materialised)
     assert result.sv_dcids == [_TOTAL]
@@ -242,6 +243,7 @@ def test_candidate_path_unit_decision_hands_sdmx_the_survivors_roles(
                     _destination_place(twin_shape),
                     None,
                     state.date_request,
+                    reading=None,
                 )
             ],
         )
@@ -271,7 +273,12 @@ def test_candidate_unit_decision_binds_the_candidates_own_probe_places(
 
     with pytest.raises(_StopAfterRequest):
         _prepare_candidate_context(
-            state, [_Candidate(twin_shape, [], total_result, own_places, None, state.date_request)]
+            state,
+            [
+                _Candidate(
+                    twin_shape, [], total_result, own_places, None, state.date_request, reading=None
+                )
+            ],
         )
 
     assert seen == [{"financingRecipient": [_DESTINATION, "country/UGA"]}]
@@ -340,6 +347,7 @@ def _role_currency_decision(
         graph=FakeGraph(raise_on_call=True),
         sdmx=FakeSdmxClient(observations={}),
         coverage=_twin_coverage().snapshot(),
+        within=None,
     )
     assert isinstance(total, Materialised)
     request = IdentityUnitRequest(
@@ -351,7 +359,13 @@ def _role_currency_decision(
         state,
         [
             _Candidate(
-                twin_shape, [], total, _destination_place(twin_shape), None, state.date_request
+                twin_shape,
+                [],
+                total,
+                _destination_place(twin_shape),
+                None,
+                state.date_request,
+                reading=None,
             )
         ],
     )

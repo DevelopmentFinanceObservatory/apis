@@ -554,6 +554,7 @@ async def list_options(body: OptionsRequest, deps: SearchDepsDep) -> Response:
             materialise_graph=materialise_graph,
             population_memo=deps.population_memo,
             deadline=deadline,
+            coverage=coverage_snapshot,
         ),
         deadline=deadline,
     )
@@ -596,7 +597,7 @@ async def get_health() -> HealthResponse:
     return health_response(capability_version=settings().capability_version)
 
 
-async def get_schema(request: Request, deps: SearchDepsDep) -> Response:
+async def get_json_schema(request: Request, deps: SearchDepsDep) -> Response:
     return deps.documents.schema.respond(request)
 
 
@@ -1215,11 +1216,11 @@ def search_surface(
     router.post("/api/search/options", response_model=OptionsResponse)(list_options)
     router.get("/api/search/healthz", response_model=HealthResponse)(get_health)
     router.get(
-        "/api/search/schema",
+        "/api/search/json-schema",
         responses={
             200: {"content": {"application/json": {"schema": _schema_payload_response_schema()}}}
         },
-    )(get_schema)
+    )(get_json_schema)
     router.get("/api/search/capabilities", response_model=Capabilities)(get_capabilities)
     router.get("/api/search/catalogue", response_model=CatalogueResponse)(get_catalogue)
 

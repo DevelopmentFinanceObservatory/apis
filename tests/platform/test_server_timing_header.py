@@ -133,7 +133,9 @@ def _static_route_client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
 
 
 def test_shared_cacheable_static_route_carries_no_server_timing(_static_route_client):
-    resp = _static_route_client.get("/api/search/schema", headers={"accept-encoding": "identity"})
+    resp = _static_route_client.get(
+        "/api/search/json-schema", headers={"accept-encoding": "identity"}
+    )
 
     assert resp.status_code == 200
     assert resp.headers.get("cache-control", "").find("public") != -1

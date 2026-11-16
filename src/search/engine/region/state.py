@@ -14,6 +14,7 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal, cast
 
 from code_index.members import FamilyQuery
+from code_index.scope_conventions import RolePopulation
 from code_index.shared import get_index, get_measure_index
 from code_index.tokens import word_tokens
 from code_index.types import BroadReading, summable_axes
@@ -163,22 +164,73 @@ if TYPE_CHECKING:
 
     # Shares the same runtime cycle, so this import is type-checking only.
     from search.engine.region.place_options import PlaceOptionsPool
+    from search.engine.region.reading import ReadingDecision
     from search.engine.region.related_read import RelatedRead
 
     # `requirements` imports this module.
     from search.engine.region.requirements import Judgement
-    from search.engine.region.scope_decision import ScopeDecision
+    from search.scope.composite import CompositeMint
+    from series_coverage.index import CoverageIndex
 
-__all__ = ["EngineOptions", "ResolveState", "UnLeg", "raised_facts"]
+__all__ = [
+    "EngineOptions",
+    "MintedComposite",
+    "ResolveState",
+    "UnLeg",
+    "raised_facts",
+    "whole_totals_as_read",
+]
 
 
 # A served measure partition and its sibling partitions (`bound_values.observed_measure_family`).
 type MeasureFamily = tuple[MeasurePartition | None, tuple[MeasurePartition, ...]]
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class MintedComposite:
+    """A definite answer minted as the composite `mint` names (`spec_build.build_spec`):
+    `read` is the identity its rows were read for, the composite's table identity with each
+    population role open within its members, and `populations` the roles bound to a
+    population (`identity_edit.TableRead.populations`), as a resubmit of the composite reads
+    them (`resubmit.resolve_spec_resubmit`)."""
+
+    mint: CompositeMint
+    read: BaseIdentity
+    populations: Mapping[str, RolePopulation]
+
+
+def whole_totals_as_read(
+    spec: Spec, minted: MintedComposite | None, *, coverage: CoverageIndex
+) -> list[Warning]:
+    """`whole_total_available` for `spec` (`whole_totals.whole_total_warnings`), read over the
+    identity its rows were read for: where `spec` is the Spec minted as `minted`, the
+    composite's table identity, read within its populations (`MintedComposite.read`,
+    `MintedComposite.populations`), else `spec`'s own."""
+    if minted is None:
+        return whole_total_warnings(
+            spec, identity=spec.definition.identity, populations=None, coverage=coverage
+        )
+    return whole_total_warnings(
+        spec, identity=minted.read, populations=minted.populations, coverage=coverage
+    )
+
+
 def raised_facts(departed: Iterable[Departed]) -> dict[WarningKey, DepartureFact]:
     """Each departure fact in `departed` under the key of the warning that discloses it."""
     return {warning_key(warning): fact for warning, fact in departed}
+
+
+@dataclass(frozen=True, slots=True)
+class AnswerMark:
+    """What a part had raised and judged when a producer started on its definite answer
+    (`ResolveState.mark_answer`): its warnings, departure facts, re-election warning and
+    judgement. A refused answer restores them (`ResolveState.restore`), so it contributes
+    no warning, departure fact or judgement."""
+
+    warnings: tuple[Warning, ...]
+    departure_facts: Mapping[WarningKey, DepartureFact]
+    reelection_warning: Warning | None
+    judgement: Judgement | None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -887,13 +939,20 @@ class ResolveState:
     # the record of each axis they settle, from which the pass's definite answer states its
     # scope choices (`pipeline._with_scope_choices`).
     scope_selection: ScopeState = field(default_factory=ScopeState)
-    # The scope the definite answer states, decided before its preview launches, which
-    # `pipeline._with_scope_choices` reuses for that answer. A single-table answer sets it in
-    # `phase_answer._gather_definite_coverage` (`phase_answer._decide_answer_scope`) and
-    # decides it again in `phase_answer._finished_scope` when the finished answer has another
-    # `spec_id`; a candidates answer sets it in `candidate_collapse._assemble_definite`. None
-    # until then.
-    scope_decision: ScopeDecision | None = None
+    # The provider reading the elected shape's read elected before it read
+    # (`reading.elect_reading`), set beside `mat_result` by
+    # `phase_place_materialise._run_materialise_task`: the choice the definite answer's
+    # scope is built from (`phase_answer._decide_answer_scope`) and the composite's table read
+    # the read read within. A stand-in whose read answers in place of the elected shape's
+    # sets the reading its own read elected
+    # (`phase_place_materialise._reelect_zero_observation_sibling`). None where the part's
+    # identity counts no total with a bilateral source, and before the part reads.
+    reading: ReadingDecision | None = None
+    # The composite the definite answer's Spec is minted as (`spec_build.build_spec`), with
+    # the identity its rows were read for and the populations its roles were read within,
+    # set once the answer's check returns a decision (`phase_answer.finished_scope`).
+    # A flagged match minted at its own build carries its own (`phase_shared.FlaggedMatch`).
+    minted: MintedComposite | None = None
     # Shared warnings list; mutations here affect every stage holding the list.
     warnings: list[Warning]
     # The departure facts raised beside warnings, each under its warning's key
@@ -1530,6 +1589,27 @@ class ResolveState:
         """Every vocabulary's qualifier matches, in vocabulary order (`merge_lists`)."""
         return merge_lists(self.query_qualifier_matches.values())
 
+    def mark_answer(self) -> AnswerMark:
+        """What the part has raised and judged so far, taken where a producer's definite
+        answer becomes specific: everything raised or judged after it is that answer's own."""
+        return AnswerMark(
+            warnings=tuple(self.warnings),
+            departure_facts=dict(self.departure_facts),
+            reelection_warning=self.reelection_warning,
+            judgement=self.judgement,
+        )
+
+    def restore(self, mark: AnswerMark) -> None:
+        """Make the part's warnings, departure facts, re-election warning and judgement
+        those of `mark`, the list and the mapping in place, since stages hold them: a
+        warning raised since is dropped, one reworded since reads as it did, and the
+        answer's judgement is undone."""
+        self.warnings[:] = mark.warnings
+        self.departure_facts.clear()
+        self.departure_facts.update(mark.departure_facts)
+        self.reelection_warning = mark.reelection_warning
+        self.judgement = mark.judgement
+
     def depart(self, warning: Warning, fact: DepartureFact) -> None:
         """Append `warning` and record `fact`, the departure it discloses, under its key."""
         self.warnings.append(warning)
@@ -1665,6 +1745,20 @@ class ResolveState:
             specs, self.family_total_absent, variable_text=self.variable, label_of=self.label_dcids
         )
 
+    def minted_as(
+        self, spec: Spec, matched: Sequence[MintedComposite] = ()
+    ) -> MintedComposite | None:
+        """The composite `spec` is minted as, among the part's answer's (`minted`) and
+        `matched`, None where it is minted as none."""
+        return next(
+            (
+                minted
+                for minted in (self.minted, *matched)
+                if minted is not None and spec.spec_id == minted.mint.spec_id
+            ),
+            None,
+        )
+
     def settled_dataset(self, candidate: _Candidate | None = None) -> str | None:
         """The dataset the part's run has settled on for `candidate`, else for the elected
         shape: the one the shape names (`ShapeDraft.named_dataset`), which is the dataset
@@ -1719,6 +1813,7 @@ class ResolveState:
         denominator: NoDataDenominator | None = None,
         role_assignments: tuple[Mapping[str, RoleAxis], ...] = (),
         candidate: _Candidate | None = None,
+        matched: Sequence[MintedComposite] = (),
     ) -> RegionResult:
         """Build a no-data result, preserving `cause`. A `no_observations` answer over an
         elected result holding data outside the years read carries its `year_unavailable`
@@ -1736,8 +1831,10 @@ class ResolveState:
         `unanswerable` when one did and the part still could not be answered from it.
 
         The part holds `flagged_match` and `alternate_match`, so those Specs raise
-        `family_total_absent` and `whole_total_available` (`whole_totals.whole_total_warnings`).
-        `elected_stat_vars` names members without a Spec and raises none.
+        `family_total_absent` and `whole_total_available` (`whole_totals.whole_total_warnings`),
+        each read over the identity its rows were read for (`whole_totals_as_read`): `matched` holds
+        the composites a match minted at its own build is minted as, which the part's answer
+        (`minted`) is not. `elected_stat_vars` names members without a Spec and raises none.
         """
         if (refused := self.source_code_no_data(reason, llm_usage=llm_usage)) is not None:
             return refused
@@ -1760,7 +1857,9 @@ class ResolveState:
                 *(
                     warning
                     for match in matches
-                    for warning in whole_total_warnings(match, coverage=self.coverage.index)
+                    for warning in whole_totals_as_read(
+                        match, self.minted_as(match, matched), coverage=self.coverage.index
+                    )
                 ),
             ),
             departure_facts={**self.departure_facts, **raised_facts(family)},

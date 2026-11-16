@@ -1166,17 +1166,20 @@ def _fingerprint_changes(
     *,
     graph: GraphReader,
     coverage: CoverageIndex,
+    code_index: CodeIndex,
 ) -> tuple[str, ...]:
     """The members of `head`'s dependency fingerprint that differ from the one a run over
-    `requests` would record now, read in one graph call and elected from `coverage`
-    (`refreshed_dependencies`). A head with no readable fingerprint differs on `schema` and
-    reads nothing."""
+    `requests` would record now, read in one graph call, elected from `coverage` and digested
+    under `code_index` (`refreshed_dependencies`). A head with no readable fingerprint differs
+    on `schema` and reads nothing."""
     stored = decode_dependencies(head.dependencies) if head.dependencies is not None else None
     if stored is None:
         return ("schema",)
     return dependency_changes(
         head.dependencies,
-        refreshed_dependencies(stored, requests, graph=graph, coverage=coverage),
+        refreshed_dependencies(
+            stored, requests, graph=graph, coverage=coverage, code_index=code_index
+        ),
     )
 
 
@@ -1238,7 +1241,9 @@ def _judge_head(
         resolved = requests()
         if _catalogue_unkeys(head, resolved):
             return _Freshness(head=None, rebuild_reason=_IMPORTED_DATA)
-        changes = _fingerprint_changes(head, resolved, graph=deps.graph, coverage=coverage)
+        changes = _fingerprint_changes(
+            head, resolved, graph=deps.graph, coverage=coverage, code_index=deps.code_index
+        )
     if changes:
         return _Freshness(head=None, rebuild_reason=",".join(changes))
     written = deps.head_store.confirm_head(
