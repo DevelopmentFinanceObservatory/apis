@@ -139,6 +139,7 @@ def _scoped_party(**fields: object) -> dict[str, object]:
         "kind": "party",
         "party_class": "official",
         "totals": None,
+        "types": [],
         "published": [{"dataset": _CRS, "axis": "origin"}, {"dataset": _DAC2A, "axis": "origin"}],
         **fields,
     }
@@ -156,11 +157,17 @@ def _scoped_party(**fields: object) -> dict[str, object]:
         ),
         (
             [],
-            [{"dcid": "X", "kind": "aggregate", "totals": None, "published": []}],
+            [{"dcid": "X", "kind": "aggregate", "totals": None, "types": [], "published": []}],
             IndexFormatError,
             "aggregate",
         ),
         ([], [{"dcid": "X", "kind": "party", "totals": None}], IndexFormatError, "no `published`"),
+        (
+            [],
+            [{"dcid": "X", "kind": "party", "totals": None, "published": []}],
+            IndexFormatError,
+            "no `types`",
+        ),
         (
             [],
             [{"dcid": "X", "kind": "party", "totals": None, "published": [], "datasets": []}],
@@ -180,6 +187,7 @@ def _scoped_party(**fields: object) -> dict[str, object]:
                     "dcid": "X",
                     "kind": "party",
                     "totals": None,
+                    "types": [],
                     "published": [{"dataset": "provenance/P", "axis": "recipient"}],
                 }
             ],
@@ -188,15 +196,35 @@ def _scoped_party(**fields: object) -> dict[str, object]:
         ),
         (
             [],
-            [{"dcid": "country/FRA", "kind": "party", "totals": "europe", "published": []}],
+            [
+                {
+                    "dcid": "country/FRA",
+                    "kind": "party",
+                    "totals": "europe",
+                    "types": [],
+                    "published": [],
+                }
+            ],
             IndexFormatError,
             "only a total",
         ),
         (
             [],
             [
-                {"dcid": "DACAfrica", "kind": "total", "totals": "africa", "published": []},
-                {"dcid": "DACAfrica", "kind": "total", "totals": None, "published": []},
+                {
+                    "dcid": "DACAfrica",
+                    "kind": "total",
+                    "totals": "africa",
+                    "types": [],
+                    "published": [],
+                },
+                {
+                    "dcid": "DACAfrica",
+                    "kind": "total",
+                    "totals": None,
+                    "types": [],
+                    "published": [],
+                },
             ],
             DuplicateDcid,
             "DACAfrica",
@@ -209,6 +237,7 @@ def _scoped_party(**fields: object) -> dict[str, object]:
                     "kind": "total",
                     "totals": None,
                     "sums_members": False,
+                    "types": [],
                     "published": [],
                 }
             ],
@@ -224,6 +253,7 @@ def _scoped_party(**fields: object) -> dict[str, object]:
                     "totals": "africa",
                     "residuals": ["DACAfricaUnallocated"],
                     "sums_members": False,
+                    "types": [],
                     "published": [],
                 }
             ],
@@ -287,6 +317,7 @@ def _scoped_party(**fields: object) -> dict[str, object]:
         "type-twice",
         "party-kind",
         "published-missing",
+        "types-missing",
         "legacy-datasets",
         "legacy-axes",
         "party-axis",
@@ -323,6 +354,7 @@ def test_a_party_on_both_axes_counts_on_each_only_where_a_dataset_publishes_it_t
             "kind": "party",
             "party_class": "private",
             "totals": None,
+            "types": [],
             "published": [
                 {"dataset": _CRS, "axis": "origin"},
                 {"dataset": _DAC2A, "axis": "destination"},

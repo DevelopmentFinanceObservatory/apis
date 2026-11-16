@@ -378,15 +378,16 @@ def _parse_party_types(rows: Sequence[Mapping]) -> dict[str, PartyKind | None]:
 
 
 def _parse_party(row: Mapping) -> PartyRow:
-    """One `parties` row, refusing a row without `published` or with the `datasets` and `axes`
-    keys of release format 1, a kind outside `PartyKind`, an axis outside the flow axes, a
-    `totals` or `residuals` on a party that is not a total, and a false `sums_members` on a
-    party that holds no group or that counts residuals. `whole` markers are parsed by
-    `_parse_whole_marker` and checked by `_check_whole_markers`, the dataset kinds by
-    `_check_dataset_kinds`, and the class by `_check_party_class`. `published` is required and
-    may be empty. `residuals`, `sums_members`, `label`, `whole` and `dataset_kinds` are
-    optional, and a row without `sums_members` reads it as true. `party_class` is required on a
-    `party` and a residual and may be absent on a total."""
+    """One `parties` row, refusing a row without `published` or `types`, or with the
+    `datasets` and `axes` keys of release format 1, a kind outside `PartyKind`, an axis outside
+    the flow axes, a `totals` or `residuals` on a party that is not a total, and a false
+    `sums_members` on a party that holds no group or that counts residuals. `whole` markers are
+    parsed by `_parse_whole_marker` and checked by `_check_whole_markers`, the dataset kinds by
+    `_check_dataset_kinds`, and the class by `_check_party_class`. `published` and `types` are
+    required and may be empty; a release built before parties carried `types` refuses, so the
+    deploy's verify step rebuilds it. `residuals`, `sums_members`, `label`, `whole` and
+    `dataset_kinds` are optional, and a row without `sums_members` reads it as true.
+    `party_class` is required on a `party` and a residual and may be absent on a total."""
     if legacy := sorted(_LEGACY_PARTY_KEYS & row.keys()):
         raise IndexFormatError(
             f"party {row.get('dcid')!r} carries {legacy!r}, which release format 1 wrote; "
@@ -394,6 +395,11 @@ def _parse_party(row: Mapping) -> PartyRow:
         )
     if "published" not in row:
         raise IndexFormatError(f"party {row.get('dcid')!r} carries no `published` list")
+    if "types" not in row:
+        raise IndexFormatError(
+            f"party {row.get('dcid')!r} carries no `types` list; the release predates party "
+            "types and needs a rebuild"
+        )
     party = PartyRow(
         dcid=row["dcid"],
         kind=row["kind"],
@@ -412,6 +418,7 @@ def _parse_party(row: Mapping) -> PartyRow:
         dataset_kinds=tuple(
             sorted((entry["dataset"], entry["kind"]) for entry in row.get("dataset_kinds", ()))
         ),
+        types=tuple(sorted(row["types"])),
     )
     if party.kind not in PARTY_KINDS:
         raise IndexFormatError(

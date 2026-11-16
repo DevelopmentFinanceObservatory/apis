@@ -3298,7 +3298,7 @@ def test_export_index_writes_each_partys_kind_label_and_the_group_a_total_holds(
     document = _export_parties(
         {
             "country/FRA": ("Country",),
-            "country/IND": ("Country", "Place"),
+            "country/IND": ("Place", "Country", "Country"),
             "IDA": ("Organization", "ProvisionalNode"),
             "DACAfrica": ("DACGroup",),
             "DACAllRecipients": ("DACGroup",),
@@ -3327,18 +3327,21 @@ def test_export_index_writes_each_partys_kind_label_and_the_group_a_total_holds(
             party_class="official",
             label="France",
             published=tuple(product(published, recipient)),
+            types=("Country",),
         ),
         "country/IND": PartyRow(
             dcid="country/IND",
             kind="party",
             party_class="official",
             published=tuple(product(published, recipient)),
+            types=("Country", "Place"),
         ),
         "IDA": PartyRow(
             dcid="IDA",
             kind="party",
             party_class="official",
             published=tuple(product(published, recipient)),
+            types=("Organization", "ProvisionalNode"),
         ),
         "DACAfrica": PartyRow(
             dcid="DACAfrica",
@@ -3347,9 +3350,13 @@ def test_export_index_writes_each_partys_kind_label_and_the_group_a_total_holds(
             residuals=("DACAfricaUnallocated",),
             label="Africa (DAC)",
             published=tuple(product(published, recipient)),
+            types=("DACGroup",),
         ),
         "DACAllRecipients": PartyRow(
-            dcid="DACAllRecipients", kind="total", published=tuple(product(published, recipient))
+            dcid="DACAllRecipients",
+            kind="total",
+            published=tuple(product(published, recipient)),
+            types=("DACGroup",),
         ),
         "DACCountriesTotal": PartyRow(
             dcid="DACCountriesTotal",
@@ -3357,6 +3364,7 @@ def test_export_index_writes_each_partys_kind_label_and_the_group_a_total_holds(
             totals="groups/OECD.DAC",
             sums_members=False,
             published=tuple(product(published, recipient)),
+            types=("DACGroup",),
         ),
         "DACAfricaUnallocated": PartyRow(
             dcid="DACAfricaUnallocated",
@@ -3364,6 +3372,7 @@ def test_export_index_writes_each_partys_kind_label_and_the_group_a_total_holds(
             party_class="residual",
             label="Africa, unallocated by country (DAC)",
             published=tuple(product(published, recipient)),
+            types=("DACRecipientUnallocatedByCountry",),
         ),
     }
     assert index.totals_by_group == {
@@ -3457,18 +3466,21 @@ def test_a_kind_override_replaces_the_kind_the_types_give(tmp_path: Path):
             kind="total",
             totals="groups/WB",
             published=tuple(product(published, recipient)),
+            types=("Organization",),
         ),
         "InternationalFinanceCorporation": PartyRow(
             dcid="InternationalFinanceCorporation",
             kind="party",
             party_class="official",
             published=tuple(product(published, recipient)),
+            types=("Organization",),
         ),
         "Mystery": PartyRow(
             dcid="Mystery",
             kind="residual",
             party_class="residual",
             published=tuple(product(published, recipient)),
+            types=("MysteryGroup",),
         ),
     }
 
@@ -3502,6 +3514,7 @@ def test_a_kind_override_scoped_to_a_dataset_holds_there_and_nowhere_else(tmp_pa
         party_class="official",
         published=tuple(product(published, donor)),
         dataset_kinds=((_TEST_PROVENANCE, "total"),),
+        types=("Organization",),
     )
     assert [parties["TrustFund"].kind_in(dataset) for dataset in published] == ["party", "total"]
     assert parties["Fund"].dataset_kinds == ()
