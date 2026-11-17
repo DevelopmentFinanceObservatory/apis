@@ -30,6 +30,23 @@ async def _cancel_and_await(task: asyncio.Task | None) -> None:
         await asyncio.gather(task, return_exceptions=True)
 
 
+async def _gather_cancelling_siblings[T](coros: Iterable[Coroutine[Any, Any, T]]) -> list[T]:
+    """Run `coros` as tasks and return their results in order.
+
+    When one raises, or the caller is cancelled, cancel every unfinished sibling and await
+    them all before the exception leaves, so no sibling starts work after the caller has
+    the failure. `asyncio.gather` over bare coroutines leaves the siblings running.
+    """
+    tasks = [asyncio.create_task(coro) for coro in coros]
+    try:
+        return await asyncio.gather(*tasks)
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 class _CarriesTrailingTasks(Protocol):
     """Structural protocol for a region's trailing task handles."""
 

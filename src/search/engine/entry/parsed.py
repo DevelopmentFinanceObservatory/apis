@@ -30,9 +30,11 @@ from origin_catalogue import current_catalogue
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
+from search.engine.config import settings
 from search.engine.conjoin import assemble_region
+from search.engine.deadline import _gather_cancelling_siblings
 from search.engine.enrichment import _stream_slot_options
-from search.engine.entity_checks import part_entities
+from search.engine.entity_checks import check_entity_count, part_entities, resolver_names
 from search.engine.entity_text import ENTITY_LIKE_PHRASING, detect_entity_like_phrasing
 from search.engine.entry.multi import _stream_combined_regions
 from search.engine.entry.params import EntryParams
@@ -522,14 +524,7 @@ async def per_part_pre_resolved(
     one.
     An entity pinned everywhere is excluded. Both parsed-entry doors use this map.
     """
-    unpinned = list(
-        dict.fromkeys(
-            (entity.identity, part_surfaces.get(entity.identity))
-            for part, part_pins, part_surfaces in zip(parts, pins, surfaces, strict=True)
-            for entity in (part.entities or ())
-            if entity.identity not in part_pins
-        )
-    )
+    unpinned = resolver_names(parts, pinned=pins, surfaces=surfaces)
     # `resolve_names` reads one surface per identity, so each batch holds an identity once.
     batches: list[dict[str, str | None]] = []
     for identity, surface in unpinned:
@@ -538,9 +533,13 @@ async def per_part_pre_resolved(
             batch = {}
             batches.append(batch)
         batch[identity] = surface
-    resolved = await asyncio.gather(
-        *(
-            _resolve_entities_bounded(
+    # One batch per surface an identity is posted under, so up to one per part; the
+    # request's variable-leg limit bounds how many run at once.
+    permits = asyncio.Semaphore(settings().max_variable_concurrency)
+
+    async def _resolve_batch(batch: dict[str, str | None]) -> dict[str, Resolution]:
+        async with permits:
+            return await _resolve_entities_bounded(
                 list(batch),
                 resolver=resolver,
                 deadline=deadline,
@@ -548,9 +547,8 @@ async def per_part_pre_resolved(
                     identity: surface for identity, surface in batch.items() if surface is not None
                 },
             )
-            for batch in batches
-        )
-    )
+
+    resolved = await _gather_cancelling_siblings(_resolve_batch(batch) for batch in batches)
     by_pair = {
         (identity, batch[identity]): resolution
         for batch, resolutions in zip(batches, resolved, strict=True)
@@ -623,6 +621,7 @@ async def handle(
             return
 
     # Confirm pins before fan-out, preserving original indices for refusal pointers.
+    check_entity_count(parts, pointer="/input/parts")
     pointer_prefixes = [f"/input/parts/{i}" for i in original_indices]
     pins = await confirm_part_pins(
         parts, graph=graph, resolver=resolver, pointer_prefixes=pointer_prefixes

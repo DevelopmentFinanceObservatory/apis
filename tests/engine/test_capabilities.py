@@ -19,6 +19,7 @@ from search.engine import config, schema
 from search.engine.capabilities import build_capabilities
 from search.engine.codes import CODE_CATALOG
 from search.engine.config import (
+    SEARCH_MAX_CODE_PARTS,
     SEARCH_MAX_ENTITY_TEXT_CHARS,
     SEARCH_MAX_PART_ENTITIES,
     SEARCH_MAX_PARTS,
@@ -130,6 +131,8 @@ class TestPublishedCapsEqualEnforcedValues:
         assert caps["role_bulk_rank_max_rows"] == observation_settings().role_bulk_rank_max_rows
         assert caps["max_options"] == settings().max_options
         assert caps["max_parts"] == SEARCH_MAX_PARTS
+        assert caps["max_code_parts"] == SEARCH_MAX_CODE_PARTS
+        assert caps["max_entities"] == settings().max_entities
         assert caps["max_part_entities"] == SEARCH_MAX_PART_ENTITIES
         assert caps["max_variable_text_chars"] == SEARCH_MAX_VARIABLE_TEXT_CHARS
         assert caps["max_entity_text_chars"] == SEARCH_MAX_ENTITY_TEXT_CHARS
@@ -231,13 +234,14 @@ class TestCapabilityVersionPerturbation:
         assert perturbed != original
 
     def test_changing_each_new_cap_moves_the_capability_version(self, monkeypatch):
-        # Every one of the eight parsed-door caps must individually be wired
+        # Every one of the nine parsed-door caps must individually be wired
         # into the hash -- not just the one spot-checked above. Fixed
         # constants, patched directly on the config module (SearchSettings'
         # own _capability_version_payload reads them as module globals, not
         # instance fields).
         new_cap_names = [
             "SEARCH_MAX_PARTS",
+            "SEARCH_MAX_CODE_PARTS",
             "SEARCH_MAX_PART_ENTITIES",
             "SEARCH_MAX_VARIABLE_TEXT_CHARS",
             "SEARCH_MAX_ENTITY_TEXT_CHARS",
@@ -264,6 +268,11 @@ class TestCapabilityVersionPerturbation:
             update={"region_max_members": base.region_max_members + 1}
         )
         assert perturbed_settings._compute_capability_version() != baseline
+
+    def test_changing_max_entities_moves_the_capability_version(self):
+        base = config.settings()
+        perturbed = base.model_copy(update={"max_entities": base.max_entities + 1})
+        assert perturbed._compute_capability_version() != base._compute_capability_version()
 
     @pytest.mark.parametrize("cap", ["scope_min_year", "scope_max_window_years"])
     def test_changing_a_scope_window_cap_moves_the_capability_version(self, search_settings, cap):
