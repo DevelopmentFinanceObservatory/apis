@@ -61,6 +61,9 @@ class RawTextInput(StrictModel):
 # importing search.models does not require the optional engine package. A parity
 # test checks these static values against config.py.
 _PARSED_MAX_PARTS = 6
+# The parts a request holds when every part names a `source_code`, and the entries a
+# dataset_resubmit holds when no parsed entry lacks one.
+_PARSED_MAX_CODE_PARTS = 32
 _PARSED_MAX_PART_ENTITIES = 16
 _PARSED_MAX_VARIABLE_TEXT_CHARS = 200
 _PARSED_MAX_ENTITY_TEXT_CHARS = 128
@@ -537,12 +540,14 @@ class ParsedInput(StrictModel):
     )
     parts: list[ParsedPart] = Field(
         min_length=1,
-        max_length=_PARSED_MAX_PARTS,
+        max_length=_PARSED_MAX_CODE_PARTS,
         description=(
-            "one entry per variable ask; conjunctions pre-split by the caller. Parts "
-            "that are byte-identical across every field collapse to one before "
-            "resolution, so the response's own parts list can hold fewer entries "
-            "than this list."
+            "one entry per variable ask; conjunctions pre-split by the caller. At most "
+            f"{_PARSED_MAX_PARTS} parts (caps.max_parts), or {_PARSED_MAX_CODE_PARTS} "
+            "(caps.max_code_parts) when every part names a source_code; a longer list "
+            "refuses request_invalid. Parts that are byte-identical across every field "
+            "collapse to one before resolution, so the response's own parts list can "
+            "hold fewer entries than this list."
         ),
     )
     raw_query: str | None = Field(
@@ -576,6 +581,20 @@ class ParsedInput(StrictModel):
             "resolved.scope_choices.dropped_entries. None carries none"
         ),
     )
+
+    @field_validator("parts")
+    @classmethod
+    def _uncoded_parts_capped(cls, parts: list[ParsedPart]) -> list[ParsedPart]:
+        """Refuse more than `_PARSED_MAX_PARTS` parts unless every part names a series
+        code, which `max_length` caps at `_PARSED_MAX_CODE_PARTS`."""
+        uncoded = next((i for i, part in enumerate(parts) if part.source_code is None), None)
+        if len(parts) > _PARSED_MAX_PARTS and uncoded is not None:
+            raise ValueError(
+                f"a request holds at most {_PARSED_MAX_PARTS} parts, or "
+                f"{_PARSED_MAX_CODE_PARTS} when every part names a source_code; got "
+                f"{len(parts)}, and parts/{uncoded} names none"
+            )
+        return parts
 
     @field_validator("carried_entries")
     @classmethod
@@ -950,10 +969,14 @@ class DatasetResubmitInput(StrictModel):
     )
     entries: list[ResubmitEntry] = Field(
         min_length=1,
-        max_length=_PARSED_MAX_PARTS,
+        max_length=_PARSED_MAX_CODE_PARTS,
         description=(
             "one entry per response part, in response part order; a single-entry "
-            "request whose entry is an identity re-resolves exactly that one part"
+            "request whose entry is an identity re-resolves exactly that one part. At "
+            f"most {_PARSED_MAX_PARTS} entries (caps.max_parts), or "
+            f"{_PARSED_MAX_CODE_PARTS} (caps.max_code_parts) when every parsed entry's "
+            "part names a source_code, so an answer of that many code parts posts back "
+            "whole; a longer list refuses request_invalid"
         ),
     )
     raw_query: str | None = Field(
@@ -962,6 +985,28 @@ class DatasetResubmitInput(StrictModel):
         max_length=_PARSED_MAX_RAW_QUERY_CHARS,
         description="original query text, for echo only; does not affect resolution",
     )
+
+    @field_validator("entries")
+    @classmethod
+    def _uncoded_entries_capped(cls, entries: list[ResubmitEntry]) -> list[ResubmitEntry]:
+        """Refuse more than `_PARSED_MAX_PARTS` entries when a parsed entry's part names
+        no series code. Identity, candidates and placeholder entries re-resolve no
+        variable_text, so they count as coded."""
+        uncoded = next(
+            (
+                i
+                for i, entry in enumerate(entries)
+                if isinstance(entry, ResubmitParsedEntry) and entry.part.source_code is None
+            ),
+            None,
+        )
+        if len(entries) > _PARSED_MAX_PARTS and uncoded is not None:
+            raise ValueError(
+                f"a dataset_resubmit holds at most {_PARSED_MAX_PARTS} entries, or "
+                f"{_PARSED_MAX_CODE_PARTS} when every parsed entry's part names a "
+                f"source_code; got {len(entries)}, and entries/{uncoded}/part names none"
+            )
+        return entries
 
 
 ResolveInput = Annotated[

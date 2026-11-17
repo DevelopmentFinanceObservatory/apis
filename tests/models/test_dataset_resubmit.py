@@ -9,6 +9,8 @@ from pydantic import ValidationError
 
 from search.engine.codes import WARNING_CODES
 from search.models import (
+    _PARSED_MAX_CODE_PARTS,
+    _PARSED_MAX_PARTS,
     _RESUBMIT_MAX_CANDIDATES,
     DatasetResubmitInput,
     EntityGroup,
@@ -87,13 +89,40 @@ class TestDatasetResubmitDiscrimination:
         with pytest.raises(ValidationError):
             DatasetResubmitInput.model_validate({"entries": []})
 
-    def test_entries_beyond_max_parts_rejected(self):
-        from search.models import _PARSED_MAX_PARTS
-
-        with pytest.raises(ValidationError):
-            DatasetResubmitInput.model_validate(
-                {"entries": [_identity_entry() for _ in range(_PARSED_MAX_PARTS + 1)]}
-            )
+    @pytest.mark.parametrize(
+        ("entries", "accepted"),
+        [
+            pytest.param(
+                [_identity_entry()] * _PARSED_MAX_CODE_PARTS, True, id="identities-at-cap"
+            ),
+            pytest.param(
+                [_identity_entry()] * (_PARSED_MAX_CODE_PARTS + 1), False, id="identities-past-cap"
+            ),
+            pytest.param(
+                [_parsed_entry(part={"variable_text": "debt", "source_code": "DT.TDS.DEGG.CD"})]
+                * _PARSED_MAX_CODE_PARTS,
+                True,
+                id="code-parts-at-cap",
+            ),
+            pytest.param([_parsed_entry()] * _PARSED_MAX_PARTS, True, id="free-text-at-cap"),
+            pytest.param(
+                [*[_identity_entry()] * _PARSED_MAX_PARTS, _parsed_entry()],
+                False,
+                id="one-free-text-part-past-cap",
+            ),
+        ],
+    )
+    def test_entries_cap_depends_on_every_parsed_entry_naming_a_code(self, entries, accepted):
+        """An answer of `_PARSED_MAX_CODE_PARTS` code parts posts back whole; a parsed entry
+        with no series code holds the request to `_PARSED_MAX_PARTS` entries."""
+        if accepted:
+            model = DatasetResubmitInput.model_validate({"entries": entries})
+            assert len(model.entries) == len(entries)
+            return
+        with pytest.raises(ValidationError) as excinfo:
+            DatasetResubmitInput.model_validate({"entries": entries})
+        (error,) = excinfo.value.errors()
+        assert error["loc"] == ("entries",)
 
     def test_unknown_entry_kind_rejected(self):
         with pytest.raises(ValidationError):

@@ -32,7 +32,7 @@ from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.conjoin import assemble_region
 from search.engine.enrichment import _stream_slot_options
-from search.engine.entity_checks import part_entities
+from search.engine.entity_checks import check_resolver_names, part_entities, resolver_names
 from search.engine.entity_text import ENTITY_LIKE_PHRASING, detect_entity_like_phrasing
 from search.engine.entry.multi import _stream_combined_regions
 from search.engine.entry.params import EntryParams
@@ -522,14 +522,7 @@ async def per_part_pre_resolved(
     one.
     An entity pinned everywhere is excluded. Both parsed-entry doors use this map.
     """
-    unpinned = list(
-        dict.fromkeys(
-            (entity.identity, part_surfaces.get(entity.identity))
-            for part, part_pins, part_surfaces in zip(parts, pins, surfaces, strict=True)
-            for entity in (part.entities or ())
-            if entity.identity not in part_pins
-        )
-    )
+    unpinned = resolver_names(parts, pinned=pins, surfaces=surfaces)
     # `resolve_names` reads one surface per identity, so each batch holds an identity once.
     batches: list[dict[str, str | None]] = []
     for identity, surface in unpinned:
@@ -623,6 +616,7 @@ async def handle(
             return
 
     # Confirm pins before fan-out, preserving original indices for refusal pointers.
+    check_resolver_names(parts, pointer="/input/parts")
     pointer_prefixes = [f"/input/parts/{i}" for i in original_indices]
     pins = await confirm_part_pins(
         parts, graph=graph, resolver=resolver, pointer_prefixes=pointer_prefixes

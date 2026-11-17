@@ -1380,11 +1380,10 @@ async def _resolve_entities_bounded(
 ) -> dict[str, Resolution]:
     """Resolve the deduplicated names in one resolver call before fan-out.
 
-    Caller-side limits cap parsed-door input at 96 entities by default
-    (`SEARCH_MAX_PARTS * SEARCH_MAX_PART_ENTITIES`) and raw-text input at
-    `SEARCH_MAX_ENTITIES`. `surfaces` maps a name to the query words it resolves through
-    (`surface_resolution.resolve_names`). `_await_bounded` bounds the wait by the shared
-    monotonic deadline.
+    Caller-side limits cap the names at `SEARCH_MAX_ENTITIES` on every door
+    (`extract._bound_entities`, `entity_checks.check_resolver_names`). `surfaces` maps a
+    name to the query words it resolves through (`surface_resolution.resolve_names`).
+    `_await_bounded` bounds the wait by the shared monotonic deadline.
     """
     if not unique_entities:
         return {}

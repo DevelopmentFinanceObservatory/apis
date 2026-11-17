@@ -13,6 +13,7 @@ from code_index.query import CodeIndex
 from code_index.shared import get_index
 from dfo_platform.build import build_commit
 from search.engine.config import (
+    SEARCH_MAX_CODE_PARTS,
     SEARCH_MAX_ENTITY_TEXT_CHARS,
     SEARCH_MAX_PART_ENTITIES,
     SEARCH_MAX_PARTS,
@@ -75,10 +76,26 @@ class CapabilityCaps(BaseModel):
     )
     max_parts: int = Field(
         description=(
-            "parsed.parts list length ceiling; a request over this refuses "
-            "request_invalid. Distinct from max_variables: raw_text clamps an "
-            "over-limit extraction with a variables_clamped warning and keeps "
-            "resolving, while parsed enforces this as a hard schema cap"
+            "parsed.parts list length ceiling for a request with any part that names no "
+            "source_code; a request over this refuses request_invalid. Distinct from "
+            "max_variables: raw_text clamps an over-limit extraction with a "
+            "variables_clamped warning and keeps resolving, while parsed refuses"
+        )
+    )
+    max_code_parts: int = Field(
+        description=(
+            "parsed.parts list length ceiling when every part names a source_code, and "
+            "dataset_resubmit.entries ceiling when every parsed entry's part names one; "
+            "a request over this refuses request_invalid"
+        )
+    )
+    max_entities: int = Field(
+        description=(
+            "distinct entities one request resolves by name; over this refuses "
+            "request_invalid. A raw_text query counts its distinct entity names. A parsed "
+            "request counts across its parts, and a dataset_resubmit across its parsed "
+            "entries, each entity posted without a dcid once per identity and the text it "
+            "resolves through"
         )
     )
     max_part_entities: int = Field(
@@ -258,6 +275,8 @@ def build_capabilities(index: CodeIndex | None = None) -> Capabilities:
             role_bulk_rank_max_rows=observation_settings().role_bulk_rank_max_rows,
             max_options=settings().max_options,
             max_parts=SEARCH_MAX_PARTS,
+            max_code_parts=SEARCH_MAX_CODE_PARTS,
+            max_entities=settings().max_entities,
             max_part_entities=SEARCH_MAX_PART_ENTITIES,
             max_variable_text_chars=SEARCH_MAX_VARIABLE_TEXT_CHARS,
             max_entity_text_chars=SEARCH_MAX_ENTITY_TEXT_CHARS,

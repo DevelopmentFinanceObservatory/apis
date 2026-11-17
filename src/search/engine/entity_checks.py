@@ -6,8 +6,10 @@ refuse is not offered."""
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Collection, Mapping, Sequence
 from typing import NoReturn
 
+from search.engine.config import settings
 from search.engine.errors import EngineInputError
 from search.engine.qualifier_match import _normalize
 from search.engine.role_text import role_axis_for_text
@@ -90,7 +92,59 @@ def _entity_surfaces_for_part(part: ParsedPart, *, pointer_prefix: str) -> dict[
                 code="request_invalid",
                 pointer=f"{pointer_prefix}/entities",
             )
+    return _resolution_surfaces(part)
+
+
+def _resolution_surfaces(part: ParsedPart) -> dict[str, str]:
+    """Each unpinned entity's identity mapped to the first text the part posts it under,
+    where that text names it in other words (`surface_resolution.is_surface`)."""
+    texts: dict[str, str] = {}
+    for entity in part.entities or ():
+        if entity.dcid is None:
+            texts.setdefault(entity.identity, entity.text)
     return {identity: text for identity, text in texts.items() if is_surface(text, identity)}
+
+
+def resolver_names(
+    parts: Sequence[ParsedPart],
+    *,
+    pinned: Sequence[Collection[str]],
+    surfaces: Sequence[Mapping[str, str]],
+) -> list[tuple[str, str | None]]:
+    """The distinct names the request's one resolver call reads, in first-seen order: each
+    entity identity a part leaves out of its `pinned` identities, with the part's surface
+    for it from `surfaces`, or `None` (`entry.parsed.per_part_pre_resolved`)."""
+    return list(
+        dict.fromkeys(
+            (entity.identity, part_surfaces.get(entity.identity))
+            for part, part_pins, part_surfaces in zip(parts, pinned, surfaces, strict=True)
+            for entity in part.entities or ()
+            if entity.identity not in part_pins
+        )
+    )
+
+
+def check_resolver_names(parts: Sequence[ParsedPart], *, pointer: str) -> None:
+    """Refuse `request_invalid` at `pointer` when the parts' entities ask the resolver for
+    more than `max_entities` distinct names (`resolver_names`), the bound the raw-text
+    door's extraction keeps. It reads the posted rows alone, so it runs before any pin is
+    confirmed."""
+    names = resolver_names(
+        parts,
+        pinned=[
+            {entity.identity for entity in part.entities or () if entity.dcid is not None}
+            for part in parts
+        ],
+        surfaces=[_resolution_surfaces(part) for part in parts],
+    )
+    cap = settings().max_entities
+    if len(names) > cap:
+        raise EngineInputError(
+            f"the parts name {len(names)} distinct entities to resolve; a request resolves "
+            f"at most {cap} (caps.max_entities). Entities posted with a dcid do not count",
+            code="request_invalid",
+            pointer=pointer,
+        )
 
 
 def _entity_words_for_part(part: ParsedPart) -> dict[str, str]:

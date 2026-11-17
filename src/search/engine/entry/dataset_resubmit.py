@@ -99,6 +99,7 @@ from search.engine.conjoin import assemble_region
 from search.engine.deadline import _await_bounded
 from search.engine.departures import warning_key
 from search.engine.enrichment import _launch_trailing_tasks, _stream_slot_options
+from search.engine.entity_checks import check_resolver_names
 from search.engine.entry.dataset_entries import (
     check_candidates_ceiling,
     resolve_candidates_entry,
@@ -421,6 +422,11 @@ async def handle(
             _unsupported_detail(entry.code, index=i)
         elif isinstance(entry, ResubmitCandidatesEntry):
             check_candidates_ceiling(entry, index=i)
+    # Parsed entries share one resolver call (`dataset_entries.resolve_parsed_entries`).
+    check_resolver_names(
+        [entry.part for entry in inp.entries if isinstance(entry, ResubmitParsedEntry)],
+        pointer="/input/entries",
+    )
 
     # One request-scoped semaphore bounds promotes and parsed fan-out together.
     sem = bounded_semaphore()
