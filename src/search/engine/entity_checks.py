@@ -124,24 +124,26 @@ def resolver_names(
     )
 
 
-def check_resolver_names(parts: Sequence[ParsedPart], *, pointer: str) -> None:
-    """Refuse `request_invalid` at `pointer` when the parts' entities ask the resolver for
-    more than `max_entities` distinct names (`resolver_names`), the bound the raw-text
-    door's extraction keeps. It reads the posted rows alone, so it runs before any pin is
-    confirmed."""
+def check_entity_count(parts: Sequence[ParsedPart], *, pointer: str) -> None:
+    """Refuse `request_invalid` at `pointer` when the parts post more than `max_entities`
+    distinct entities, the bound the raw-text door's extraction keeps: each dcid pinned
+    anywhere, which `entry.parsed.confirm_part_pins` reads from the graph, and each name the
+    resolver reads (`resolver_names`). It reads the posted rows alone, so it runs before
+    any pin is confirmed or name resolved."""
+    pinned = [
+        {entity.identity for entity in part.entities or () if entity.dcid is not None}
+        for part in parts
+    ]
     names = resolver_names(
-        parts,
-        pinned=[
-            {entity.identity for entity in part.entities or () if entity.dcid is not None}
-            for part in parts
-        ],
-        surfaces=[_resolution_surfaces(part) for part in parts],
+        parts, pinned=pinned, surfaces=[_resolution_surfaces(part) for part in parts]
     )
+    count = len(set().union(*pinned)) + len(names)
     cap = settings().max_entities
-    if len(names) > cap:
+    if count > cap:
         raise EngineInputError(
-            f"the parts name {len(names)} distinct entities to resolve; a request resolves "
-            f"at most {cap} (caps.max_entities). Entities posted with a dcid do not count",
+            f"the parts name {count} distinct entities; a request resolves at most {cap} "
+            "(caps.max_entities), counting each pinned dcid once and each name once per "
+            "text it is resolved through",
             code="request_invalid",
             pointer=pointer,
         )

@@ -85,17 +85,18 @@ class CapabilityCaps(BaseModel):
     max_code_parts: int = Field(
         description=(
             "parsed.parts list length ceiling when every part names a source_code, and "
-            "dataset_resubmit.entries ceiling when every parsed entry's part names one; "
-            "a request over this refuses request_invalid"
+            "dataset_resubmit.entries ceiling when no entry is a candidates entry and "
+            "every parsed entry's part names one; a request over this refuses "
+            "request_invalid"
         )
     )
     max_entities: int = Field(
         description=(
-            "distinct entities one request resolves by name; over this refuses "
-            "request_invalid. A raw_text query counts its distinct entity names. A parsed "
-            "request counts across its parts, and a dataset_resubmit across its parsed "
-            "entries, each entity posted without a dcid once per identity and the text it "
-            "resolves through"
+            "distinct entities one request resolves; over this refuses request_invalid. "
+            "A raw_text query counts its distinct entity names. A parsed request counts "
+            "across its parts, and a dataset_resubmit across its parsed entries, each "
+            "pinned dcid once and each entity posted without a dcid once per identity and "
+            "the text it resolves through"
         )
     )
     max_part_entities: int = Field(

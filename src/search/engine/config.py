@@ -411,8 +411,8 @@ class SearchSettings(BaseSettings):
     # The cap 96 matches the parsed door's 6 parts x 16 entities and admits ordinary G20 asks.
     # Resolvekit costs about 0.3-0.4 ms per entity. 96 takes tens of milliseconds of the
     # 45-s request budget. The cap bounds work on the process's single shared resolver thread.
-    # The parsed and dataset_resubmit doors refuse past it too, counting the distinct names
-    # their parts ask the resolver for (`entity_checks.check_resolver_names`).
+    # The parsed and dataset_resubmit doors refuse past it too, counting the distinct dcids
+    # their parts pin and names they resolve (`entity_checks.check_entity_count`).
     max_entities: int = 96
 
     # Raw mention cap, checked alongside max_entities before scanning entity spans.

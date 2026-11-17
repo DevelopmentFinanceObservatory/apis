@@ -110,11 +110,33 @@ class TestDatasetResubmitDiscrimination:
                 False,
                 id="one-free-text-part-past-cap",
             ),
+            pytest.param(
+                [
+                    *[_identity_entry()] * (_PARSED_MAX_CODE_PARTS - 1),
+                    _parsed_entry(part={"variable_text": "debt", "source_code": "DT.TDS.DEGG.CD"}),
+                ],
+                True,
+                id="identities-and-a-code-part-at-cap",
+            ),
+            pytest.param(
+                [_candidates_entry()] * _PARSED_MAX_PARTS, True, id="candidates-at-free-text-cap"
+            ),
+            pytest.param(
+                [_candidates_entry()] * (_PARSED_MAX_PARTS + 1),
+                False,
+                id="candidates-past-free-text-cap",
+            ),
+            pytest.param(
+                [*[_identity_entry()] * _PARSED_MAX_PARTS, _candidates_entry()],
+                False,
+                id="one-candidates-entry-past-free-text-cap",
+            ),
         ],
     )
-    def test_entries_cap_depends_on_every_parsed_entry_naming_a_code(self, entries, accepted):
-        """An answer of `_PARSED_MAX_CODE_PARTS` code parts posts back whole; a parsed entry
-        with no series code holds the request to `_PARSED_MAX_PARTS` entries."""
+    def test_entries_cap_depends_on_what_each_entry_costs(self, entries, accepted):
+        """An answer of `_PARSED_MAX_CODE_PARTS` code parts posts back whole as identity,
+        placeholder and coded parsed entries; a candidates entry, or a parsed entry with no
+        series code, holds the request to `_PARSED_MAX_PARTS` entries."""
         if accepted:
             model = DatasetResubmitInput.model_validate({"entries": entries})
             assert len(model.entries) == len(entries)

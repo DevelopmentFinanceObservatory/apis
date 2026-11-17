@@ -62,7 +62,7 @@ class RawTextInput(StrictModel):
 # test checks these static values against config.py.
 _PARSED_MAX_PARTS = 6
 # The parts a request holds when every part names a `source_code`, and the entries a
-# dataset_resubmit holds when no parsed entry lacks one.
+# dataset_resubmit holds when it has no candidates entry and no parsed entry lacks one.
 _PARSED_MAX_CODE_PARTS = 32
 _PARSED_MAX_PART_ENTITIES = 16
 _PARSED_MAX_VARIABLE_TEXT_CHARS = 200
@@ -974,9 +974,10 @@ class DatasetResubmitInput(StrictModel):
             "one entry per response part, in response part order; a single-entry "
             "request whose entry is an identity re-resolves exactly that one part. At "
             f"most {_PARSED_MAX_PARTS} entries (caps.max_parts), or "
-            f"{_PARSED_MAX_CODE_PARTS} (caps.max_code_parts) when every parsed entry's "
-            "part names a source_code, so an answer of that many code parts posts back "
-            "whole; a longer list refuses request_invalid"
+            f"{_PARSED_MAX_CODE_PARTS} (caps.max_code_parts) when no entry is a "
+            "candidates entry and every parsed entry's part names a source_code, so an "
+            "answer of that many code parts posts back whole as identity, placeholder and "
+            "parsed entries; a longer list refuses request_invalid"
         ),
     )
     raw_query: str | None = Field(
@@ -989,22 +990,23 @@ class DatasetResubmitInput(StrictModel):
     @field_validator("entries")
     @classmethod
     def _uncoded_entries_capped(cls, entries: list[ResubmitEntry]) -> list[ResubmitEntry]:
-        """Refuse more than `_PARSED_MAX_PARTS` entries when a parsed entry's part names
-        no series code. Identity, candidates and placeholder entries re-resolve no
-        variable_text, so they count as coded."""
-        uncoded = next(
-            (
-                i
-                for i, entry in enumerate(entries)
-                if isinstance(entry, ResubmitParsedEntry) and entry.part.source_code is None
-            ),
-            None,
-        )
-        if len(entries) > _PARSED_MAX_PARTS and uncoded is not None:
+        """Refuse more than `_PARSED_MAX_PARTS` entries when one is a candidates entry,
+        which promotes up to `_RESUBMIT_MAX_CANDIDATES` identities, or a parsed entry whose
+        part names no series code. Identity and placeholder entries promote at most one
+        identity and call no model, so they count as coded."""
+        if len(entries) <= _PARSED_MAX_PARTS:
+            return entries
+        for i, entry in enumerate(entries):
+            if isinstance(entry, ResubmitCandidatesEntry):
+                reason = f"entries/{i} is a candidates entry"
+            elif isinstance(entry, ResubmitParsedEntry) and entry.part.source_code is None:
+                reason = f"entries/{i}/part names no source_code"
+            else:
+                continue
             raise ValueError(
                 f"a dataset_resubmit holds at most {_PARSED_MAX_PARTS} entries, or "
-                f"{_PARSED_MAX_CODE_PARTS} when every parsed entry's part names a "
-                f"source_code; got {len(entries)}, and entries/{uncoded}/part names none"
+                f"{_PARSED_MAX_CODE_PARTS} when it holds no candidates entry and every "
+                f"parsed entry's part names a source_code; got {len(entries)}, and {reason}"
             )
         return entries
 
