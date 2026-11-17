@@ -32,6 +32,7 @@ from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.config import settings
 from search.engine.conjoin import assemble_region
+from search.engine.deadline import _gather_cancelling_siblings
 from search.engine.enrichment import _stream_slot_options
 from search.engine.entity_checks import check_entity_count, part_entities, resolver_names
 from search.engine.entity_text import ENTITY_LIKE_PHRASING, detect_entity_like_phrasing
@@ -547,7 +548,7 @@ async def per_part_pre_resolved(
                 },
             )
 
-    resolved = await asyncio.gather(*(_resolve_batch(batch) for batch in batches))
+    resolved = await _gather_cancelling_siblings(_resolve_batch(batch) for batch in batches)
     by_pair = {
         (identity, batch[identity]): resolution
         for batch, resolutions in zip(batches, resolved, strict=True)

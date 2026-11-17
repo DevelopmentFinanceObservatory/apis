@@ -792,6 +792,54 @@ class TestEntityCap:
         assert calls == len(parts)
         assert peak == settings().max_variable_concurrency
 
+    def test_per_part_pre_resolved_stops_every_batch_once_one_fails(self):
+        """A failing resolver batch cancels the batches in flight, and no queued batch
+        starts after the failure reaches the caller."""
+        parts = [
+            ParsedPart(
+                variable_text="debt service",
+                source_code=f"DT.CODE.{i}",
+                entities=[ParsedEntity(text=f"Kenya {i}", name="Kenya")],
+            )
+            for i in range(SEARCH_MAX_CODE_PARTS)
+        ]
+        starts = cancelled = 0
+
+        class _Resolver:
+            async def resolve(self, names):
+                nonlocal starts, cancelled
+                starts += 1
+                if starts == 1:
+                    await asyncio.sleep(0)
+                    raise RuntimeError("resolver down")
+                try:
+                    for _ in range(5):
+                        await asyncio.sleep(0)
+                except asyncio.CancelledError:
+                    cancelled += 1
+                    raise
+                return [NotFound() for _ in names]
+
+        async def run() -> tuple[int, int]:
+            with pytest.raises(RuntimeError, match="resolver down"):
+                await parsed_entry.per_part_pre_resolved(
+                    parts,
+                    [{} for _ in parts],
+                    surfaces=[{"Kenya": f"Kenya {i}"} for i in range(len(parts))],
+                    resolver=_Resolver(),
+                    deadline=time.monotonic() + 30,
+                )
+            starts_at_failure = starts
+            for _ in range(20):
+                await asyncio.sleep(0)
+            return starts_at_failure, starts
+
+        starts_at_failure, starts_after = asyncio.run(run())
+
+        assert starts_at_failure < len(parts)
+        assert starts_after == starts_at_failure
+        assert cancelled == starts_at_failure - 1
+
 
 class TestCapabilitiesPublishLiveDoorAndCaps:
     def test_capabilities_publish_parsed_live_and_the_new_caps(self):
