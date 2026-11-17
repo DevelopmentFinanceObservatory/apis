@@ -26,7 +26,7 @@ from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.config import settings
-from search.engine.deadline import _cancel_trailing_tasks
+from search.engine.deadline import _cancel_trailing_tasks, _gather_cancelling_siblings
 from search.engine.entry.parsed import (
     confirm_part_pins,
     interpret_parts,
@@ -334,20 +334,10 @@ async def resolve_candidates_entry(
                     exc, index=index, candidate_index=candidate_index
                 ) from exc
 
-    # Explicit tasks let `finally` cancel siblings. `gather` on bare coroutines
-    # leaves them running after one promote fails.
-    candidate_tasks = [
-        asyncio.create_task(_promote_one(j, candidate))
-        for j, candidate in enumerate(entry.candidates)
-    ]
-    try:
-        promoted = await asyncio.gather(*candidate_tasks)
-    finally:
-        for t in candidate_tasks:
-            if not t.done():
-                t.cancel()
-        await asyncio.gather(*candidate_tasks, return_exceptions=True)
-    return _build_candidates_region(entry, list(promoted), index=index)
+    promoted = await _gather_cancelling_siblings(
+        _promote_one(j, candidate) for j, candidate in enumerate(entry.candidates)
+    )
+    return _build_candidates_region(entry, promoted, index=index)
 
 
 async def resolve_parsed_entries(
