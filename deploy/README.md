@@ -118,6 +118,15 @@ dispatched commit, whether or not it's already live, since dispatch exists to fo
 commit rather than by moving traffic in the Cloud Run console: dispatch also points the
 origin catalogue and search catalogue jobs at that commit's image, so the scheduled runs keep its format roots current (see [deploy/origin-catalogue.md](origin-catalogue.md) and [deploy/search-catalogue.md](search-catalogue.md)). An image older than `4be674b7d` cannot open a graph release; [deploy/graph-release.md](graph-release.md) gives the rollback floor and the environment older images read.
 
+### Rollback floor for account callers
+
+Once the website names a caller made with an API key as `user:<digest>`, and a `user:` pin principal exists, no rollback may reach an image older than the one that accepts account callers (`feat(caller): accept an account caller from the website`). Such an image breaks in two ways:
+
+- Its `settle`, which a dispatched rollback runs after the services move, rewrites every pin principal that is neither a `secret-sha256:` label nor an `ip:` key into a hash label, as if it were a raw secret. Each `user:` pin then stops matching its account's repeat pins, and the rewrite runs in one committed transaction with nothing to undo it from.
+- Its caller check answers 400 to every request that names a `user:` caller, so every keyed call through the website fails.
+
+If an older image is needed anyway, first set `API_KEYS_ENABLED=false` on the website and roll it onto a new revision, so it names every caller `ip:` again. Then move the apis service's traffic to the older revision in Cloud Run, without dispatching the older commit, so its `settle` never runs. Dispatch the current commit again before turning keys back on.
+
 ## Workload Identity Federation & Authentication
 
 Deployments authenticate to Google Cloud using GitHub Actions OIDC tokens exchanged via a Workload Identity Pool.
