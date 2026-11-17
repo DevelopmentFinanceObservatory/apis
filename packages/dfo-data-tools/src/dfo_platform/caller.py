@@ -22,13 +22,16 @@ and clipped, as `client_header`, and split into `client_name`, `client_version` 
 `client_runtime` when it has that shape. A request without the header logs none of
 these fields.
 
-`resolve_caller` names the caller an allowance counts against, as a `Caller` whose key is
-`ip:` and the first 32 hex digits of HMAC-SHA-256 over the client's address, folded
-(`fold_address`), under `DFO_CALLER_HMAC_KEY`. The website computes the same key for the
-callers it forwards (its `src/lib/proxy/caller.ts`), so a client has one key on either path
-and no raw address is stored. A request whose `x-dfo-caller-principal` matches
-`DFO_CALLER_PRINCIPAL` comes from the website, which names its client in `x-dfo-caller`. A
-request that carries `x-dfo-caller-principal` without matching it, or while `DFO_CALLER_PRINCIPAL`
+`resolve_caller` names the caller an allowance counts against, as a `Caller`. An address
+caller (`kind="address"`) has a key of `ip:` and the first 32 hex digits of HMAC-SHA-256 over
+the client's address, folded (`fold_address`), under `DFO_CALLER_HMAC_KEY`. The website
+computes the same key for the callers it forwards (its `src/lib/proxy/caller.ts`), so a client
+has one key on either path and no raw address is stored. An account caller (`kind="account"`)
+has a key of `user:` and 32 lowercase hex digits, a digest of the account's id that the website
+computes for a request made with an API key, so its allowances count per account and not per
+address. This service never derives an account key, only accepts the website's. A request whose
+`x-dfo-caller-principal` matches `DFO_CALLER_PRINCIPAL` comes from the website, which names its
+client in `x-dfo-caller`, as `ip:<digest>` or `user:<digest>`. A request that carries `x-dfo-caller-principal` without matching it, or while `DFO_CALLER_PRINCIPAL`
 is unset, refuses `CallerUnresolved` and logs the mismatch at ERROR, since counting it by
 address would put every client of the website on the website's own allowance. A request with no
 `x-dfo-caller-principal` is named from the X-Forwarded-For entry `DFO_TRUSTED_PROXY_HOPS` places
@@ -184,24 +187,31 @@ def log_request(*, method: str, path: str, status: int | None, headers: Mapping[
 
 
 CALLER_HEADER = "x-dfo-caller"
-"""The caller the website resolved for a request it forwards, as `ip:<32 hex digits>`."""
+"""The caller the website resolved for a request it forwards, as `ip:<32 hex digits>` or, for a
+request made with an API key, `user:<32 hex digits>`."""
 CALLER_PRINCIPAL_HEADER = "x-dfo-caller-principal"
 """The secret that vouches for `CALLER_HEADER`, `DFO_CALLER_PRINCIPAL`."""
 FORWARDED_FOR_HEADER = "x-forwarded-for"
 
 ADDRESS_KEY_PREFIX = "ip:"
 """The prefix of every `kind="address"` caller key. Reference rows keyed by a caller start with
-it, which tells them from the `secret-sha256:` labels of principals."""
+it or with `USER_KEY_PREFIX`, which tells them from the `secret-sha256:` labels of principals."""
+
+USER_KEY_PREFIX = "user:"
+"""The prefix of every `kind="account"` caller key. Reference rows keyed by a caller start with
+it or with `ADDRESS_KEY_PREFIX`, which tells them from the `secret-sha256:` labels of principals."""
 
 _DIGEST_LENGTH = 32
 _ADDRESS_KEY = re.compile(rf"{ADDRESS_KEY_PREFIX}[0-9a-f]{{{_DIGEST_LENGTH}}}")
+_USER_KEY = re.compile(rf"{USER_KEY_PREFIX}[0-9a-f]{{{_DIGEST_LENGTH}}}")
 
 
 @dataclass(frozen=True, slots=True)
 class Caller:
-    """Who an allowance counts against. `kind="address"` keys a client by its network address."""
+    """Who an allowance counts against. `kind="address"` keys a client by its network address,
+    and `kind="account"` keys an account the website named for a request made with an API key."""
 
-    kind: Literal["address"]
+    kind: Literal["address", "account"]
     key: str
 
 
@@ -215,7 +225,8 @@ class CallerHeaderInvalid(Refusal):
     def __init__(self) -> None:
         super().__init__(
             f"the request carries a valid {CALLER_PRINCIPAL_HEADER} but no single "
-            f"{CALLER_HEADER} of the form ip:<32 lowercase hex digits>"
+            f"{CALLER_HEADER} of the form ip:<32 lowercase hex digits> or "
+            "user:<32 lowercase hex digits>"
         )
 
 
@@ -300,9 +311,12 @@ def resolve_caller(request: Request, settings: CallerSettings) -> Caller:
         if not _vouched(request, settings):
             raise _principal_mismatch(settings)
         named = _single(request, CALLER_HEADER)
-        if named is None or not _ADDRESS_KEY.fullmatch(named):
-            raise CallerHeaderInvalid()
-        return Caller(kind="address", key=named)
+        if named is not None:
+            if _ADDRESS_KEY.fullmatch(named):
+                return Caller(kind="address", key=named)
+            if _USER_KEY.fullmatch(named):
+                return Caller(kind="account", key=named)
+        raise CallerHeaderInvalid()
 
     hmac_key = settings.caller_hmac_key.get_secret_value()
     if not hmac_key:

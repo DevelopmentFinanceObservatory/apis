@@ -4371,7 +4371,7 @@ def test_settle_counts_factless_versions_and_labels_raw_pin_principals(live_stor
 
 
 def test_settle_leaves_labels_and_caller_keys_as_they_are(live_store):
-    """Only a raw secret is rewritten. An open caller's `ip:` key and a principal's label stay
+    """Only a raw secret is rewritten. An open caller's `ip:` or `user:` key and a principal's label stay
     as stored over two runs, so a caller's repeat pin still matches its own reference."""
     from datasets_api.maintenance import run_settle
 
@@ -4379,10 +4379,11 @@ def test_settle_leaves_labels_and_caller_keys_as_they_are(live_store):
     pinned = f"spec_settle_keys_{suffix}"
     digest = f"sha256:test-live-settle-keys-{suffix}"
     caller_key = "ip:" + suffix
+    account_key = "user:" + suffix
     label = _principal_label(f"settle-keys-secret-{suffix}")
     _seed_reference_fk_targets(live_store, digest=digest, subject_id=pinned)
     with live_store.transaction() as tx:
-        for principal in (caller_key, label):
+        for principal in (caller_key, account_key, label):
             tx.execute(
                 "INSERT INTO datasets.artifact_reference (principal, artifact_digest, "
                 "subject_id, content_version, reference_kind, created_at) "
@@ -4398,7 +4399,9 @@ def test_settle_leaves_labels_and_caller_keys_as_they_are(live_store):
                     "SELECT principal FROM datasets.artifact_reference WHERE subject_id = %s",
                     (pinned,),
                 )
-            assert sorted(row["principal"] for row in rows) == sorted([caller_key, label])
+            assert sorted(row["principal"] for row in rows) == sorted(
+                [caller_key, account_key, label]
+            )
     finally:
         with live_store.transaction() as tx:
             tx.execute("DELETE FROM datasets.artifact_reference WHERE subject_id = %s", (pinned,))

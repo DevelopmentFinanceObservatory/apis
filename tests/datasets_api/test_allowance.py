@@ -39,6 +39,7 @@ from ._version_record_store import FakeVersionRecordDatasetStore
 _NOON = datetime(2026, 6, 1, 12, tzinfo=UTC)
 _ALICE = Caller(kind="address", key="ip:" + "a" * 32)
 _BOB = Caller(kind="address", key="ip:" + "b" * 32)
+_ACCOUNT = Caller(kind="account", key="user:" + "c" * 32)
 
 
 @pytest.fixture
@@ -72,6 +73,31 @@ def test_callers_kinds_and_days_count_apart(ledger):
     ledger.spend(_ALICE, AllowanceKind.share, _NOON + timedelta(hours=12))
     with pytest.raises(AllowanceExhausted):
         ledger.spend(_ALICE, AllowanceKind.share, _NOON + timedelta(hours=11, minutes=59))
+
+
+def test_an_account_caller_spends_its_own_allowance_and_counts_apart_from_addresses(ledger):
+    """The allowance row is the caller's key, so an account's `user:` key keeps its own count."""
+    ledger.spend(_ACCOUNT, AllowanceKind.share, _NOON)
+    ledger.spend(_ALICE, AllowanceKind.share, _NOON)
+
+    with pytest.raises(AllowanceExhausted) as refused:
+        ledger.spend(_ACCOUNT, AllowanceKind.share, _NOON)
+
+    assert refused.value.code == "allowance_exhausted"
+    with ledger._store.transaction() as tx:
+        rows = tx.fetch_all("SELECT caller_key, kind, count FROM datasets.caller_allowance")
+    assert {(row["caller_key"], row["kind"]): row["count"] for row in rows} == {
+        (_ACCOUNT.key, "share"): 1,
+        (_ALICE.key, "share"): 1,
+    }
+
+
+def test_an_account_callers_refund_gives_its_unit_back(ledger):
+    ledger.spend(_ACCOUNT, AllowanceKind.share, _NOON)
+
+    ledger.refund(_ACCOUNT, AllowanceKind.share, _NOON)
+
+    ledger.spend(_ACCOUNT, AllowanceKind.share, _NOON)
 
 
 def test_the_day_is_the_utc_day_whatever_the_clocks_zone(ledger):
