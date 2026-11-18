@@ -699,3 +699,76 @@
     definite:
       measure: {family: ids.debt_service}
       entities: [{dcid: InternationalMonetaryFund, role: origin}, {dcid: country/KEN, role: destination}]
+
+- id: dq-ids-067
+  query: 'parsed: DT.TDS.DEGG.CD for Kenya'
+  door: parsed
+  parsed: [{variable_text: DT.TDS.DEGG.CD, entities: [{text: Kenya}], source_code: DT.TDS.DEGG.CD}]
+  why: The code names general-government debt service; with no creditor role open its aggregate member answers.
+  tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: parsed, phrasing: technical, probe: [source_code]}
+  expect:
+    definite:
+      measure:
+        family: ids.debt_service
+        bound: {idsDebtorType: IDSDebtorTypeGG}
+        stat_vars: [Amount_FinancialFlow_ServicingPayment_IDSDebtorTypeGG_Nominal]
+      entities: [{dcid: country/KEN, role: destination}]
+
+- id: dq-ids-068
+  query: 'parsed: DT.TDS.DEGG.CD for Kenya by creditor'
+  door: parsed
+  parsed: [{variable_text: DT.TDS.DEGG.CD, entities: [{text: Kenya}], source_code: DT.TDS.DEGG.CD, open_roles: [creditor]}]
+  why: An open creditor role on the code elects its by-creditor member, one series per creditor.
+  tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: creditor_class, door: parsed, phrasing: technical, probe: [source_code]}
+  expect:
+    definite:
+      measure:
+        family: ids.debt_service
+        bound: {idsDebtorType: IDSDebtorTypeGG}
+        stat_vars: [Amount_FinancialFlow_ServicingPayment_IDSDebtorTypeGG_ByCreditor_Nominal]
+      entities: [{dcid: country/KEN, role: destination}]
+
+- id: dq-ids-069
+  query: 'parsed: general government debt service DT.TDS.DEGG.CD for Kenya'
+  door: parsed
+  parsed: [{variable_text: general government debt service DT.TDS.DEGG.CD, entities: [{text: Kenya}], source_code: DT.TDS.DEGG.CD}]
+  why: Words beside the code leave its series unchanged, so the part answers the aggregate the bare code answers.
+  tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: parsed, phrasing: technical, probe: [source_code]}
+  expect:
+    definite:
+      measure:
+        family: ids.debt_service
+        bound: {idsDebtorType: IDSDebtorTypeGG}
+        stat_vars: [Amount_FinancialFlow_ServicingPayment_IDSDebtorTypeGG_Nominal]
+      entities: [{dcid: country/KEN, role: destination}]
+
+- id: dq-ids-070
+  query: 'parsed: DT.CUR.USDL.ZS for Kenya'
+  door: parsed
+  parsed: [{variable_text: DT.CUR.USDL.ZS, entities: [{text: Kenya}], source_code: DT.CUR.USDL.ZS}]
+  why: The code's two members divide by different PPG stocks; with no creditor role open the share of the aggregate stock answers.
+  tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: parsed, phrasing: technical, probe: [source_code]}
+  expect:
+    definite:
+      measure:
+        family: ids.currency_composition
+        bound: {currencyOfDenomination: CurrencyUSD}
+        stat_vars: [Amount_FinancialPosition_AmountOutstanding_CurrencyUSD_AsAFractionOf_Amount_FinancialPosition_AmountOutstanding_PublicOrPubliclyGuaranteed_Nominal]
+      entities: [{dcid: country/KEN, role: destination}]
+
+- id: dq-ids-071
+  query: 'parsed: DT.DOD.DECT.GN.ZS for Kenya'
+  door: parsed
+  parsed: [{variable_text: DT.DOD.DECT.GN.ZS, entities: [{text: Kenya}], source_code: DT.DOD.DECT.GN.ZS}]
+  why: The code names one series, external debt stock as a share of gross national income.
+  tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: parsed, phrasing: technical, probe: [source_code]}
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: FinancialPosition
+          measured_property: amount
+          stat_type: measuredValue
+          measurement_denominator: PrimaryIncome_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal
+        stat_vars: [Amount_FinancialPosition_AmountOutstanding_AsAFractionOf_PrimaryIncome_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal]
+      entities: [{dcid: country/KEN, role: destination}]
