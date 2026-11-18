@@ -17,7 +17,13 @@
     "datasets_api": {
       "level": "INFO"
     },
+    "dfo_apis": {
+      "level": "INFO"
+    },
     "graph_release": {
+      "level": "INFO"
+    },
+    "origin_catalogue": {
       "level": "INFO"
     },
     "search": {
