@@ -324,8 +324,9 @@ class _QuantityRecordingBinder(GeminiBinder):
 
 def test_a_code_only_part_sends_the_quantity_read_the_codes_graph_name():
     """The quantity read runs before the menu is seated, and a part whose text is only its
-    series code still sends the bind phrase the bind call reads: the graph name of the
-    code's member among the admissible shapes."""
+    series code, with two admissible shapes, sends the bind phrase the bind call reads: the
+    graph name of the code's member among the admissible shapes. With one admissible shape
+    the read sends nothing, since the code fixes the measure."""
     code = SeriesCodeMembers(code="DT.DOD.DECT.CD", provenance="WorldBank/IDS", dcids=("sv_debt",))
     name = "External debt stocks, total (DOD, current US$)"
     shape = dataclasses.replace(
@@ -337,10 +338,14 @@ def test_a_code_only_part_sends_the_quantity_read_the_codes_graph_name():
     state.source_code = code
     state.capped_shapes = []
 
-    assert asyncio.run(_read_stated_quantity(state, [shape])) is None
+    assert asyncio.run(_read_stated_quantity(state, [shape, _shape("debt_share")])) is None
 
     (request,) = binder.quantity_requests
     assert (request.variable, request.bind_variable) == ("DT.DOD.DECT.CD", name)
+
+    binder.quantity_requests.clear()
+    assert asyncio.run(_read_stated_quantity(state, [shape])) is None
+    assert binder.quantity_requests == []
 
 
 _DEBTOR_SLOT = SlotKeyDraft(axis="how", property_dcid="idsDebtorType", label="debtor type")
