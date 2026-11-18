@@ -443,7 +443,9 @@ async def resolve(body: ResolveRequest, request: Request, deps: SearchDepsDep) -
             )
 
     # Refresh before every generation-keyed cache lookup.
+    refresh_t0 = time.monotonic()
     await deps.generation.refresh_if_stale()
+    refresh_ms = round((time.monotonic() - refresh_t0) * 1000)
 
     pipeline_deps: _PipelineDeps = {
         "graph": deps.graph,
@@ -465,6 +467,10 @@ async def resolve(body: ResolveRequest, request: Request, deps: SearchDepsDep) -
     # The soft deadline and the hard cap share this start.
     budget = request_budget(kind=body.input.kind)
     record = ResolveRecord()
+    record.refresh_ms = refresh_ms
+    received = getattr(request.state, "received", None)
+    if received is not None:
+        record.pre_ms = round((time.monotonic() - received) * 1000)
     caller = request.headers.get("user-agent")
 
     # JSON and SSE share the ResolveResponse body. SSE adds trailing slot-option coverage events.

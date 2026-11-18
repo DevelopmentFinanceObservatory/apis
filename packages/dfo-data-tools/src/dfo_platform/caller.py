@@ -9,6 +9,10 @@ Run checks it ahead of `Authorization`. `Authorization` is the fallback. Neither
 header's value, signature included, reaches a log line. Only the `email` and `aud`
 claims and a presence flag do.
 
+`log_request_received` writes a `request_received` line when a request enters the app, with
+the count of requests in flight in the process, so a hold between the container taking a
+request and the app starting on it shows against the Cloud Run request log.
+
 `log_request` writes one `dfo_platform.request` line per request, through the
 `json_fields` record attribute that `dfo_platform.cloud_logging` merges into the
 entry. While the service is open to every caller, filtering these lines for a
@@ -156,6 +160,23 @@ def client_fields_from_headers(headers: Mapping[str, str]) -> dict[str, str]:
         if match["runtime"] is not None:
             fields["client_runtime"] = match["runtime"]
     return fields
+
+
+def log_request_received(*, trace_id: str, method: str, path: str, in_flight: int) -> None:
+    """Log one `request_received` line as a request enters the app, before any route
+    work. `in_flight` counts the requests in the process now, this one included, and
+    `trace_id` joins the line to the request's other lines."""
+    _log.info(
+        "request_received",
+        extra={
+            JSON_FIELDS_ATTR: {
+                "trace_id": trace_id,
+                "http_method": method,
+                "http_path": path,
+                "in_flight": in_flight,
+            }
+        },
+    )
 
 
 def log_request(*, method: str, path: str, status: int | None, headers: Mapping[str, str]) -> None:

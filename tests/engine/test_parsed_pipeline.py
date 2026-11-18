@@ -183,6 +183,12 @@ class TestSinglePartResolvesThroughSharedPipeline:
         assert result.query_echo.extract_skipped is True
         assert [p.variable_text for p in result.parts] == ["fertility rate"]
 
+    def test_the_steps_ahead_of_the_fan_out_report_on_the_envelope_timing(self):
+        result = _resolve_parsed([_fertility_kenya_part()])
+        by_step = result.diagnostics.timing_ms.by_step
+        assert {"confirm_pins", "interpret_parts"} <= set(by_step)
+        assert all(by_step[step] >= 0 for step in ("confirm_pins", "interpret_parts"))
+
     def test_convergence_with_raw_text(self):
         """The same utterance through raw_text and parsed converges: same
         requested_window, same identity entity buckets, and (as a

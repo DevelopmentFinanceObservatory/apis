@@ -32,6 +32,7 @@ from search.engine.entry.parsed import (
     interpret_parts,
     per_part_pre_resolved,
 )
+from search.engine.envelope import now_ms
 from search.engine.errors import EngineInputError
 from search.engine.fanout import _FanOutResult, _run_variables_streaming
 from search.engine.identity_edit import composite_table_identity
@@ -375,10 +376,16 @@ async def resolve_parsed_entries(
     # Confirm pins per part, then resolve unpinned names once and overlay each part's
     # pins. Identity and candidate entries resolve their own dcids.
     pointer_prefixes = [f"/input/entries/{entry_index}/part" for entry_index, _ in entries]
+    pins_t0 = now_ms()
     pins = await confirm_part_pins(
         parts, graph=graph, resolver=resolver, pointer_prefixes=pointer_prefixes
     )
+    interpret_t0 = now_ms()
     interpretation = interpret_parts(parts, pointer_prefixes=pointer_prefixes)
+    pre_fanout_timing = {
+        "confirm_pins": interpret_t0 - pins_t0,
+        "interpret_parts": now_ms() - interpret_t0,
+    }
     per_variable_pre_resolved = await per_part_pre_resolved(
         parts,
         pins,
@@ -405,7 +412,7 @@ async def resolve_parsed_entries(
         rate_cache=rate_cache,
         population_memo=population_memo,
         place_options_pool=place_options_pool,
-        base_timing={},
+        base_timing=pre_fanout_timing,
         pre_resolved=None,
         deadline=deadline,
         degrade_on_error=True,

@@ -299,6 +299,22 @@ def _client() -> TestClient:
     return TestClient(app, raise_server_exceptions=False)
 
 
+def test_the_resolve_line_reports_the_time_before_the_route_body_and_in_the_refresh(monkeypatch):
+    async def _pipeline(*_args, **_kwargs):
+        return
+        yield  # pragma: no cover - makes this an async generator
+
+    monkeypatch.setattr("search.engine.core._resolve_pipeline_events", _pipeline)
+
+    with resolve_log_lines() as lines:
+        _client().post("/api/search/resolve", json=_RAW_BODY)
+
+    [logged] = lines
+    assert isinstance(logged["pre_ms"], int)
+    assert isinstance(logged["refresh_ms"], int)
+    assert logged["pre_ms"] >= logged["refresh_ms"] >= 0
+
+
 _BOOM = RuntimeError("boom")
 _NOT_RAN = EngineInputError("no such door", code="door_not_implemented", status=501)
 

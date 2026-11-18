@@ -623,11 +623,17 @@ async def handle(
     # Confirm pins before fan-out, preserving original indices for refusal pointers.
     check_entity_count(parts, pointer="/input/parts")
     pointer_prefixes = [f"/input/parts/{i}" for i in original_indices]
+    pins_t0 = now_ms()
     pins = await confirm_part_pins(
         parts, graph=graph, resolver=resolver, pointer_prefixes=pointer_prefixes
     )
-
+    interpret_t0 = now_ms()
     interpretation = interpret_parts(parts, pointer_prefixes=pointer_prefixes)
+    # Both steps run once per request ahead of the fan-out; each region's timing starts from them.
+    pre_fanout_timing = {
+        "confirm_pins": interpret_t0 - pins_t0,
+        "interpret_parts": now_ms() - interpret_t0,
+    }
     variable_texts = interpretation.variable_texts
     all_dates = [d for dates in interpretation.dates for d in dates]
 
@@ -673,7 +679,7 @@ async def handle(
                 rate_cache=rate_cache,
                 population_memo=population_memo,
                 place_options_pool=place_options_pool,
-                base_timing={},
+                base_timing=pre_fanout_timing,
                 pre_resolved=pins[0] or None,
                 entity_surfaces=interpretation.entity_surfaces[0] or None,
                 entity_words=interpretation.entity_words[0] or None,
@@ -777,7 +783,7 @@ async def handle(
             rate_cache=rate_cache,
             population_memo=population_memo,
             place_options_pool=place_options_pool,
-            base_timing={},
+            base_timing=pre_fanout_timing,
             pre_resolved=None,
             deadline=params.deadline,
             degrade_on_error=True,

@@ -16,6 +16,7 @@ from starlette.datastructures import Headers
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from dfo_platform import app as app_module
 from dfo_platform import caller
 from dfo_platform.app import Surface, _trace_id_dispatch, create_app
 from dfo_platform.caller import (
@@ -186,7 +187,12 @@ def request_lines():
     log.addHandler(handler)
     log.setLevel(logging.INFO)
     log.propagate = False
-    yield lambda: [json.loads(line) for line in stream.getvalue().splitlines()]
+
+    def lines(message: str = "request") -> list[dict]:
+        entries = [json.loads(line) for line in stream.getvalue().splitlines()]
+        return [entry for entry in entries if entry["message"] == message]
+
+    yield lines
     log.removeHandler(handler)
     log.setLevel(logging.NOTSET)
     log.propagate = True
@@ -225,6 +231,29 @@ def test_a_request_logs_one_line_with_the_callers_claimed_identity(request_lines
         "caller_email": _EMAIL,
         "caller_aud": _AUD,
     }
+
+
+def test_a_request_logs_its_arrival_with_the_trace_id_and_the_requests_in_flight(request_lines):
+    seen: list[int] = []
+    router = APIRouter()
+
+    @router.get("/api/t/ok")
+    async def ok():
+        seen.append(app_module._in_flight)
+        return {}
+
+    surface = Surface(name="t", prefix="/api/t", router=router, capability_version="v-t", codes={})
+    client = TestClient(create_app([surface]))
+
+    response = client.get("/api/t/ok")
+
+    (arrival,) = request_lines("request_received")
+    assert arrival["logger"] == "dfo_platform.request"
+    assert arrival["trace_id"] == response.headers["x-dfo-trace-id"]
+    assert arrival["http_path"] == "/api/t/ok"
+    assert arrival["in_flight"] == 1
+    assert seen == [1]
+    assert app_module._in_flight == 0
 
 
 @pytest.mark.parametrize(

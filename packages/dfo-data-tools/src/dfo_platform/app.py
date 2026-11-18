@@ -35,7 +35,7 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from dfo_platform import codes, refusal
 from dfo_platform.build import build_commit
-from dfo_platform.caller import CLIENT_HEADER, log_request
+from dfo_platform.caller import CLIENT_HEADER, log_request, log_request_received
 from dfo_platform.codes import (
     PLATFORM_CODE_CATALOGUE,
     CodeCatalogue,
@@ -559,6 +559,11 @@ start, so the elapsed time would be time-to-headers on a stream, not the
 whole response)."""
 
 
+_in_flight = 0
+"""Requests inside `_trace_id_dispatch` in this process. The event loop runs every
+update, so the count needs no lock."""
+
+
 async def _trace_id_dispatch(
     request: Request, call_next: RequestResponseEndpoint, *, commit: str
 ) -> Response:
@@ -577,14 +582,30 @@ async def _trace_id_dispatch(
 
     Exception handlers run inside `call_next` before the context resets.
     `_dispatch` can rebind the ID from `request.state` as a fallback.
+
+    Logs a `request_received` line on entry, with the count of requests in flight, and
+    stores the entry time on `request.state.received` (a `time.monotonic()` reading)
+    for a route to measure its own start against.
     """
+    global _in_flight  # a process-wide count of requests in flight
     trace_id = new_trace_id()
     request.state.trace_id = trace_id
+    request.state.received = time.monotonic()
+    _in_flight += 1
     token = set_trace_id(trace_id)
     cloud_token = set_cloud_trace_id(cloud_trace_id_from_headers(request.headers))
     start = time.perf_counter()
     status: int | None = None
     try:
+        try:
+            log_request_received(
+                trace_id=trace_id,
+                method=request.method,
+                path=request.url.path,
+                in_flight=_in_flight,
+            )
+        except Exception as exc:
+            logger.warning("request_received log line failed: %s", type(exc).__name__)
         response = await call_next(request)
         status = response.status_code
         elapsed_ms = (time.perf_counter() - start) * 1000
@@ -612,6 +633,7 @@ async def _trace_id_dispatch(
             # out of the record, as it can carry a credential.
             logger.warning("request log line failed: %s", type(exc).__name__)
         finally:
+            _in_flight -= 1
             # The inner task retains its copied trace context after this outer task resets.
             reset_trace_id(token)
             reset_cloud_trace_id(cloud_token)
