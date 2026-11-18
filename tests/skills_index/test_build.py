@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 
 import pytest
 
@@ -2557,3 +2558,56 @@ def test_every_classification_read_raising_reraises():
 
     with pytest.raises(RuntimeError):
         build_index(graph=graph)
+
+
+def test_skills_read_their_reach_side_by_side():
+    """skill-a's hierarchy reads wait until skill-b's have started, which happens only when
+    the two skills' reach reads run at once."""
+    second_started = threading.Event()
+    waits: list[bool] = []
+
+    class _Graph(FakeSkillsGraph):
+        def node_subjects_many(self, dcids, *, property, max_results):
+            if property in HIERARCHY_PROPERTIES:
+                if "Animal" in dcids:
+                    second_started.set()
+                elif "Person" in dcids:
+                    waits.append(second_started.wait(timeout=5))
+            return super().node_subjects_many(dcids, property=property, max_results=max_results)
+
+    graph = _Graph(
+        subjects={
+            **_roster("skill-a", "skill-b"),
+            ("Person", "populationType"): ["sv-1"],
+            ("Animal", "populationType"): ["sv-2"],
+        },
+        arcs={
+            "skill/skill-a": skill_node("skill-a") | {"skillAppliesTo": ("Person",)},
+            "skill/skill-b": skill_node("skill-b") | {"skillAppliesTo": ("Animal",)},
+        },
+    )
+
+    index = build_index(graph=graph)
+
+    assert waits and all(waits)
+    assert [node.dcid for node in index.skills["skill-a"].reach.nodes] == ["Person"]
+    assert [node.dcid for node in index.skills["skill-b"].reach.nodes] == ["Animal"]
+    assert index.failed_reads == 0
+
+
+def test_a_skill_excluded_by_an_exhausted_page_counts_no_failed_read():
+    """skill-a's `isPartOf` page exhausts its budget, which settles the skill before its
+    `subClassOf` read, which would raise. The build counts only the reads it made, so a
+    rebuild-on-swap sees a clean build."""
+    graph = FakeSkillsGraph(
+        subjects={**_roster("skill-a"), ("Person", "populationType"): ["sv-1"]},
+        arcs={"skill/skill-a": skill_node("skill-a") | {"skillAppliesTo": ("Person",)}},
+        budget_exhausted={("Person", "isPartOf")},
+        failing_subject_reads={("Person", "subClassOf")},
+    )
+
+    index = build_index(graph=graph)
+
+    assert index.skills["skill-a"].reach.excluded is True
+    assert "skill_build_unconfirmed" in {issue.code for issue in index.issues}
+    assert index.failed_reads == 0

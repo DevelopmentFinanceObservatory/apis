@@ -29,6 +29,7 @@ import logging
 import sys
 import time
 from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterator, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import (
     AbstractAsyncContextManager,
     AsyncExitStack,
@@ -53,8 +54,10 @@ from dfo_platform import Envelope, HealthResponse, ProblemSpec, health_response,
 from dfo_platform.app import Surface
 from dfo_platform.app import create_app as platform_create_app
 from dfo_platform.build import build_commit
+from dfo_platform.cloud_logging import log_event
 from dfo_platform.config import parse_cors_origins
 from dfo_platform.doors import path_registry_endpoints
+from dfo_platform.executor import submit_with_context
 from dfo_platform.named import cut
 from dfo_platform.problem import log_problem
 from dfo_platform.request_deadline import request_deadline
@@ -1192,6 +1195,46 @@ def _require_jev_key() -> None:
         raise RuntimeError(f"SEARCH_BINDER={config.binder} needs TYPESAFE_API_KEY; it is unset")
 
 
+def _load_catalogue_and_release() -> tuple[CatalogueService, ReleaseService]:
+    """The origin catalogue and graph release services, the release loading on a second thread
+    under the caller's context while the catalogue loads on this one, since each first load
+    downloads its artifact. A failing catalogue raises its error once the release load has
+    finished, after logging the release's own error, if any, as
+    `search_startup_stage_failed`."""
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="graph-release-load") as pool:
+        release = submit_with_context(
+            pool, lambda: _timed_load("graph_release", get_release_service)
+        )
+        try:
+            catalogue = _timed_load("origin_catalogue", get_catalogue_service)
+        except Exception:
+            if (release_error := release.exception()) is not None:
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "search_startup_stage_failed",
+                    exc_info=release_error,
+                    stage="graph_release",
+                    error=type(release_error).__name__,
+                )
+            raise
+        return catalogue, release.result()
+
+
+def _timed_load[T](stage: str, load: Callable[[], T]) -> T:
+    """`load()`, logged as one `search_startup_stage` line with its duration."""
+    started = time.monotonic()
+    result = load()
+    log_event(
+        logger,
+        logging.INFO,
+        "search_startup_stage",
+        stage=stage,
+        duration_ms=round((time.monotonic() - started) * 1000),
+    )
+    return result
+
+
 def search_surface(
     *,
     graph: EngineGraphClient | None = None,
@@ -1227,8 +1270,7 @@ def search_surface(
     """
     _require_jev_key()
     # Fail during construction when an artifact or the graph release is missing or unreadable.
-    catalogue = get_catalogue_service()
-    release = get_release_service()
+    catalogue, release = _load_catalogue_and_release()
     # The documents read the code index as they are built, so they are built under the
     # release a request would bind.
     with bound_served_release(release):

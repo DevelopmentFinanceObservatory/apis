@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import logging
+import threading
 from dataclasses import replace
 from pathlib import Path
 
@@ -12,6 +14,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
+from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
 from origin_catalogue import UN_SYSTEM, CataloguePointer, artifact
 from origin_catalogue.arc_tables import EMPTY_ARC_TABLES, ArcTables
 from origin_catalogue.artifact import (
@@ -99,6 +102,59 @@ def test_round_trip_reproduces_the_tables(tmp_path: Path) -> None:
     assert snapshot.admit_candidate(UN_VARIABLE) == UN_SYSTEM
     assert snapshot.admit_candidate(CENSUS_POVERTY) is None
     assert snapshot.base_places(GDP) == ("country/KEN", "country/USA", "nuts/DE11")
+
+
+def test_load_reads_every_table_file_side_by_side(tmp_path: Path, monkeypatch) -> None:
+    """Every file waits at one barrier, so the load finishes only if it reads them all at
+    once. The snapshot matches the one the round trip above checks."""
+    uri = _uri(tmp_path)
+    build = publish_sample(uri, un_mirror=sample_un_mirror())
+    names = {build.manifest.files[logical] for logical in artifact._ALL_FILES}
+    barrier = threading.Barrier(len(names), timeout=5)
+    read = artifact._read
+
+    def read_at_barrier(file_uri: str) -> bytes:
+        if file_uri.rsplit("/", 1)[-1] in names:
+            barrier.wait()
+        return read(file_uri)
+
+    monkeypatch.setattr(artifact, "_read", read_at_barrier)
+    monkeypatch.setattr(artifact, "READ_WORKERS", len(names))
+    snapshot = load_catalogue(uri)
+
+    assert snapshot.tables == sample_tables()
+    assert snapshot.un.mirror == sample_un_mirror()
+    assert snapshot.arcs == load_catalogue(uri).arcs
+
+
+def test_load_refuses_with_the_first_bad_file_in_reading_order(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A UN file and a table file both fail their hash. The table file, which the loader
+    read first when it read one file at a time, names the error, and each file read that
+    ran logs its failure."""
+    uri = _uri(tmp_path)
+    publish_sample(uri, un_mirror=sample_un_mirror())
+    for name in ("provenances.json", UN_TOPICS_FILE):
+        path = _build_dir(tmp_path) / name
+        path.write_bytes(path.read_bytes() + b" ")
+
+    with (
+        caplog.at_level(logging.INFO, logger=artifact.__name__),
+        pytest.raises(CatalogueArtifactError) as refused,
+    ):
+        load_catalogue(uri)
+
+    assert "provenances.json" in str(refused.value)
+    assert UN_TOPICS_FILE not in str(refused.value)
+    failed = {
+        fields["file"]: (record.levelno, fields["error"])
+        for record in caplog.records
+        if (fields := getattr(record, JSON_FIELDS_ATTR, {})).get("event")
+        == "origin_catalogue_file_failed"
+    }
+    assert failed["provenances"] == (logging.WARNING, "CatalogueArtifactError")
+    assert set(failed) <= {"provenances", "un_topics"}
 
 
 def test_manifest_records_counts_overlaps_identity_and_size(tmp_path: Path) -> None:
