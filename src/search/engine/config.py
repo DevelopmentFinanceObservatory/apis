@@ -167,8 +167,13 @@ class SearchSettings(BaseSettings):
     # 622 ms, and chunked requests p95 about 1.1 s.
     jev_ceiling_s: float = 2.5
 
-    # Jev requests in flight per event loop, chunks of a split request included.
-    jev_max_concurrency: int = 8
+    # Jev requests in flight per event loop, chunks of a split request included. One
+    # search runs up to 8 legs at once, each with a Jev call in flight, so 64 serves 8
+    # concurrent searches without a slot wait. It stays below the client's 100-connection
+    # pool (`jev_client._LIMITS`): a call past the cap waits here and fails as `slot_wait`
+    # or `queued_timeout`, which the breaker ignores, where a wait in the pool would fail
+    # as `timeout` and open it.
+    jev_max_concurrency: int = 64
 
     # Percent of queries, 0 to 100, `binder="jev"` routes to Jev, picked by a hash of the
     # normalised query so a repeated query keeps its binder; the rest go to Gemini. Read only
