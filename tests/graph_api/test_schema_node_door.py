@@ -10,9 +10,11 @@ from collections.abc import Sequence
 import httpx
 import pytest
 
-from dc_graph import ArcTarget, GraphClient
+from dc_graph import ArcTarget, GraphCapExceededError, GraphClient, GraphReadError
 from graph_api import app as graph_app
+from graph_api import node_view
 from graph_api.deps import DcpExecutorSaturated
+from graph_api.doors import schema as schema_door
 from materialise.graph import GraphDeadlineExceededError
 from origin_catalogue.graph import UnGeneration
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue
@@ -77,8 +79,9 @@ def test_a_base_class_is_read_from_the_mixer_and_cached(serve_catalogue):
     assert gzipped.headers["Content-Encoding"] == "gzip"
     assert gzipped.json() == body
     assert not_modified.status_code == 304
-    # Three reads build the view once. The later requests read nothing.
-    assert reads == 3
+    # Eight reads build the view once: `->*`, the five in-arc walks, the closure, and the
+    # level below Student. The later requests read nothing.
+    assert reads == 8
     assert len(mixer.calls) == reads
     assert un.calls == []
 
@@ -140,18 +143,64 @@ def test_a_node_the_mixer_lacks_is_read_from_the_un_deployment(serve_catalogue):
     assert (_out_reads(mixer), _out_reads(un)) == (1, 1)
 
 
-def test_a_node_no_deployment_holds_is_refused_and_not_kept(serve_catalogue):
+@pytest.mark.parametrize(
+    ("mixer_error", "refusal", "reads"),
+    [
+        pytest.param(
+            None, (404, "not_found", False, "node_not_held", "no-store"), (1, 1), id="not-held"
+        ),
+        pytest.param(
+            GraphCapExceededError("too large", cap_kind="bytes", cap=1, observed=2),
+            (500, "internal_error", False, "node_view_too_large", "no-store"),
+            (1, 0),
+            id="too-large",
+        ),
+    ],
+)
+def test_a_refusal_is_kept_apart_from_the_views(
+    serve_catalogue,
+    mixer_error: Exception | None,
+    refusal: tuple[int, str, bool, str, str],
+    reads: tuple[int, int],
+):
+    """Each deployment's miss cache keeps its refusal, so a second request reads nothing. A
+    view past its byte cap is refused without reading the UN deployment."""
     serve_catalogue(FakeCatalogue())
-    mixer, un = _FakeGraph(_MIXER_ARCS), _FakeGraph(_UN_ARCS)
+    mixer = _FakeGraph(_MIXER_ARCS) if mixer_error is None else _Failing(mixer_error)
+    un = _FakeGraph(_UN_ARCS)
 
     with make_client(view_graph=mixer, un_view_graph=un) as client:
         response = client.get(_ROUTE + "NoSuchNode")
         again = client.get(_ROUTE + "NoSuchNode")
 
-    assert _refusal(response) == _refusal(again)
-    assert _refusal(response) == (404, "not_found", False, "node_not_held", "no-store")
-    # The mixer's miss is kept under its generation. The UN deployment's refusal is not.
-    assert (_out_reads(mixer), _out_reads(un)) == (1, 2)
+    assert _refusal(response) == _refusal(again) == refusal
+    assert (_out_reads(mixer), _out_reads(un)) == reads
+
+
+def test_made_up_dcids_evict_no_view(serve_catalogue, monkeypatch):
+    monkeypatch.setattr(schema_door, "NODE_VIEW_CACHE_SIZE", 1)
+    serve_catalogue(FakeCatalogue())
+    mixer = _FakeGraph(_MIXER_ARCS)
+
+    with make_client(view_graph=mixer, un_view_graph=_FakeGraph(_UN_ARCS)) as client:
+        assert client.get(_ROUTE + "Person").status_code == 200
+        for made_up in ("NoSuchNode", "NorThis"):
+            assert client.get(_ROUTE + made_up).status_code == 404
+        assert client.get(_ROUTE + "Person").status_code == 200
+
+    assert [dcids for method, dcids, _ in mixer.calls if method == "->*"].count(("Person",)) == 1
+
+
+def test_a_view_past_the_byte_budget_is_served_and_not_kept(serve_catalogue, monkeypatch):
+    monkeypatch.setattr(schema_door, "NODE_VIEW_CACHE_BYTES", 100)
+    serve_catalogue(FakeCatalogue())
+    mixer = _FakeGraph(_MIXER_ARCS)
+
+    with make_client(view_graph=mixer, un_view_graph=_FakeGraph(_UN_ARCS)) as client:
+        responses = [client.get(_ROUTE + "Person") for _ in range(2)]
+
+    assert [response.status_code for response in responses] == [200, 200]
+    assert _out_reads(mixer) == 2
 
 
 def _wire_entry(subject: str, value: str, arcs: Sequence[tuple[str, str, str]]) -> dict:
@@ -257,11 +306,20 @@ class _Failing(_FakeGraph):
         pytest.param("a" * 513, None, 400, "request_invalid", id="dcid-too-long"),
         pytest.param("Person", GraphDeadlineExceededError("late"), 504, "timeout", id="deadline"),
         pytest.param("Person", DcpExecutorSaturated(), 503, "service_unavailable", id="busy"),
+        pytest.param(
+            "Person",
+            GraphReadError("rate limited", upstream_status=429),
+            503,
+            "service_unavailable",
+            id="rate-limited",
+        ),
     ],
 )
 def test_a_failed_view_answers_its_refusal_and_is_not_kept(
-    serve_catalogue, dcid: str, error: Exception | None, status: int, code: str
+    serve_catalogue, monkeypatch, dcid: str, error: Exception | None, status: int, code: str
 ):
+    # A 429 is sent again after no wait, so each request reads once.
+    monkeypatch.setattr(node_view, "RATE_LIMIT_WAITS_SECONDS", ())
     serve_catalogue(FakeCatalogue())
     mixer = _FakeGraph(_MIXER_ARCS) if error is None else _Failing(error)
 
@@ -272,6 +330,8 @@ def test_a_failed_view_answers_its_refusal_and_is_not_kept(
 
     assert (response.status_code, response.json()["code"]) == (status, code)
     assert response.headers["Cache-Control"] == "no-store"
+    if isinstance(error, GraphReadError) and error.upstream_status == 429:
+        assert response.headers["Retry-After"] == "5"
     # A failed read is not kept, so the next request reads again. A long dcid reads nothing.
     assert reads == (0 if error is None else 1)
     assert _out_reads(mixer) == 2 * reads

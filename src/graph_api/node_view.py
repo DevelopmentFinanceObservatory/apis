@@ -9,8 +9,9 @@ context, so a reader that needs the bound origin catalogue, as the UN deployment
 for its cache generation, finds it on the worker. Each read carries the view's deadline and
 caps each decoded response at `NODE_VIEW_MAX_BYTES`. A read the graph answers with HTTP 429 is
 sent again after each of `RATE_LIMIT_WAITS_SECONDS`, one budget for the whole view, while the
-wait ends before the deadline. A read with no dcid to read is not sent, and a view that ends,
-by an answer or a failure, cancels every read it submitted that has not started.
+wait ends before the deadline. An in-arc read walks each property in turn, so a 429 sends
+only that property's walk again. A read is sent only when it has a dcid to read, and a view
+that ends, by an answer or a failure, cancels every read it submitted that has not started.
 
 Round one runs three reads at once: `->*` on the centre (`node_all_arc_targets_many`), the
 centre's in-arcs under `subClassOf`, `subPropertyOf`, `specializationOf`, `rangeIncludes` and
@@ -21,14 +22,21 @@ target of the centre's arcs is a neighbour: those of `typeOf` and the five schem
 those `other_properties` keeps, such as a UN series' `unConcept`. Each in-arc subject is a
 neighbour carrying the one arc that ties it to the centre.
 
+A Class lists the classes below it: from its narrower classes down, one `<-subClassOf` read
+per level, each class joining as a neighbour with its `subClassOf` edges to the classes above
+it in the view, so a walk down `sub_class_of` from the centre reaches each. The walk stops at
+`DESCENDANT_CAP` classes or `DESCENDANT_LEVELS` levels. The UN deployment answers
+`<-subClassOf+` without its own classes, which this walk reads.
+
 A Class whose closure holds `Enumeration` is a value list. Its round two lists its `<-typeOf`
 members, capped at `MEMBER_CAP`, and each member joins as a neighbour. When `Enumeration` is
-not a direct parent it also reads the direct `subClassOf` edges of the closure, so the chain
-from the centre to `Enumeration` in the view is the graph's. The centre's `instances` holds the
-members and is complete only when the listing read every one and the centre has no narrower
-class, since a narrower class's members are not listed. Each narrower class and each chain
-parent that reaches `Enumeration` gets `instances: {refs: [], complete: false}`. No other node
-has its `<-typeOf` read, so a class such as `Place` lists no members.
+not a direct parent it also reads the direct `subClassOf` edges of the closure, each empty
+answer read again alone, so the chain from the centre to `Enumeration` in the view is the
+graph's. The centre's `instances` holds the members and is complete only when the listing read
+every one and the centre has no narrower class, since a narrower class's members are left
+unlisted. Each class below the centre and each chain parent that reaches `Enumeration` gets
+`instances: {refs: [], complete: false}`. Only a value list's centre has its `<-typeOf` read,
+so a class such as `Place` lists no members.
 
 A Property reads in round two the `->subClassOf+` closure of each of its first
 `RANGE_CLASS_CAP` range classes other than `Thing`, sorted, one read each, and a range class
@@ -43,12 +51,15 @@ reads the direct `subClassOf` edges of every such class and its closure in one b
 class gets `instances: {refs: [centre], complete: false}`.
 
 A neighbour's `provenances` are those of the arcs the view read from it: a member's `typeOf`,
-an in-arc subject's arc to the centre or to a type class, and a chain class's `subClassOf`
-edges. Its `declared_by` follows from them by `schema_document.declared_by`, and is null for a
-neighbour the view read no arc from, such as an out-arc target of the centre, since the arc
-the centre holds to it names the centre's declarer. `capped` names each in-arc listing that
-stopped at its cap by the node listed and the property: the centre's schema arcs and members,
-and a value's type classes under `rangeIncludes`.
+an in-arc subject's arc to the centre or to a type class, a class's `subClassOf` edge below
+the centre, and a chain class's `subClassOf` edges. Its `declared_by` follows from them by
+`schema_document.declared_by`, and is null for a neighbour the view read no arc from, such as
+an out-arc target of the centre, since the arc the centre holds to it names the centre's
+declarer. `capped` names each listing the view cut by the node listed and the property: an
+in-arc listing at its cap (the centre's schema arcs and members, and a value's type classes
+under `rangeIncludes`), a property of the centre's `other_properties` that
+`schema_document.node_other_properties` cut, and `subClassOf+` on a Class whose walk below
+stopped with classes it had not read below.
 """
 
 from __future__ import annotations
@@ -97,6 +108,15 @@ RANGE_CLASS_CAP: Final[int] = 3
 """The most range classes a property's view reads the closure of, the first sorted, so a
 property's view makes at most `3 + RANGE_CLASS_CAP` reads."""
 
+DESCENDANT_CAP: Final[int] = 1_000
+"""The most classes below a Class centre its view lists, its direct narrower classes
+included."""
+
+DESCENDANT_LEVELS: Final[int] = 12
+"""The most levels below a Class centre its view lists, its direct narrower classes the first,
+so a class view makes at most `DESCENDANT_LEVELS - 1` reads beyond its first round. The deepest
+chain below `Thing` on the dev mixer has 11."""
+
 READS_AT_ONCE: Final[int] = 3
 """The reads a view's first round runs at once, the most any later round runs but a value's
 second, which runs `1 + VALUE_TYPE_CAP`."""
@@ -132,6 +152,7 @@ _CLASS: Final[str] = "Class"
 _PROPERTY: Final[str] = "Property"
 _ENUMERATION: Final[str] = "Enumeration"
 _THING: Final[str] = "Thing"
+_DESCENDANTS: Final[str] = "subClassOf+"
 _RATE_LIMITED: Final[int] = 429
 _NO_IN_ARCS: Final[InArcs] = InArcs(subjects=(), capped=frozenset())
 
@@ -156,10 +177,12 @@ class NodeViewReader(Protocol):
         dcids: Sequence[str],
         *,
         properties: Sequence[str],
+        individual_probe_budget: int | None = 0,
         max_bytes: int | None = None,
         deadline: float | None = None,
     ) -> _Targets:
-        """The named properties' targets, `None` for an absent dcid."""
+        """The named properties' targets, `None` for an absent dcid. With
+        `individual_probe_budget=None` an empty answer is read again alone."""
         ...
 
     def node_in_arcs(
@@ -215,50 +238,81 @@ class _Reads:
 
     def out_arcs(self, dcid: str) -> Future[_Targets]:
         return self._submit(
-            lambda: self._reader.node_all_arc_targets_many(
-                [dcid], max_bytes=NODE_VIEW_MAX_BYTES, deadline=self._deadline
+            lambda: self._paced(
+                lambda: self._reader.node_all_arc_targets_many(
+                    [dcid], max_bytes=NODE_VIEW_MAX_BYTES, deadline=self._deadline
+                )
             )
         )
 
     def in_arcs(
         self, dcids: Sequence[str], *, properties: Sequence[str], cap: int
     ) -> Future[Mapping[str, InArcs]]:
+        """The in-arcs of `dcids` under `properties`, one walk per property in turn, so a
+        429 sends only that property's walk again."""
         if not dcids:
             return _done({})
-        return self._submit(
-            lambda: self._reader.node_in_arcs(
-                dcids,
-                properties=properties,
-                max_results=cap,
-                max_bytes=NODE_VIEW_MAX_BYTES,
-                deadline=self._deadline,
+
+        def walk(prop: str) -> Mapping[str, InArcs]:
+            return self._paced(
+                lambda: self._reader.node_in_arcs(
+                    dcids,
+                    properties=(prop,),
+                    max_results=cap,
+                    max_bytes=NODE_VIEW_MAX_BYTES,
+                    deadline=self._deadline,
+                )
             )
-        )
+
+        def read() -> Mapping[str, InArcs]:
+            walks = [walk(prop) for prop in properties]
+            return {
+                dcid: InArcs(
+                    subjects=tuple(
+                        subject
+                        for answer in walks
+                        for subject in answer.get(dcid, _NO_IN_ARCS).subjects
+                    ),
+                    capped=frozenset(
+                        prop for answer in walks for prop in answer.get(dcid, _NO_IN_ARCS).capped
+                    ),
+                )
+                for dcid in dcids
+            }
+
+        return self._submit(read)
 
     def closure(self, dcid: str) -> Future[frozenset[str]]:
         """The dcids `->subClassOf+` reaches from `dcid`."""
         return self._submit(
             lambda: frozenset(
                 target.value
-                for target in self._reader.node_closure(
-                    dcid,
-                    property=_SUB_CLASS_OF,
-                    max_bytes=NODE_VIEW_MAX_BYTES,
-                    deadline=self._deadline,
+                for target in self._paced(
+                    lambda: self._reader.node_closure(
+                        dcid,
+                        property=_SUB_CLASS_OF,
+                        max_bytes=NODE_VIEW_MAX_BYTES,
+                        deadline=self._deadline,
+                    )
                 )
             )
         )
 
     def edges(self, dcids: Sequence[str]) -> Future[_Targets]:
-        """The direct `subClassOf` targets of each of `dcids`."""
+        """The direct `subClassOf` targets of each of `dcids`, each empty answer read again
+        alone, so a batch's spurious empty answer leaves no class of the chain without its
+        edges."""
         if not dcids:
             return _done({})
         return self._submit(
-            lambda: self._reader.node_arc_targets_many(
-                dcids,
-                properties=(_SUB_CLASS_OF,),
-                max_bytes=NODE_VIEW_MAX_BYTES,
-                deadline=self._deadline,
+            lambda: self._paced(
+                lambda: self._reader.node_arc_targets_many(
+                    dcids,
+                    properties=(_SUB_CLASS_OF,),
+                    individual_probe_budget=None,
+                    max_bytes=NODE_VIEW_MAX_BYTES,
+                    deadline=self._deadline,
+                )
             )
         )
 
@@ -267,15 +321,13 @@ class _Reads:
         for cancel in self._cancels:
             cancel()
 
-    def _submit[R](self, read: Callable[[], R]) -> Future[R]:
-        def run() -> R:
-            return self._waiting_out_rate_limits(read)
-
-        future = submit_with_context(self._executor, run)
+    def _submit[R](self, job: Callable[[], R]) -> Future[R]:
+        future = submit_with_context(self._executor, job)
         self._cancels.append(future.cancel)
         return future
 
-    def _waiting_out_rate_limits[R](self, read: Callable[[], R]) -> R:
+    def _paced[R](self, read: Callable[[], R]) -> R:
+        """`read`, sent again after each wait of the shared budget while it answers 429."""
         while True:
             try:
                 return read()
@@ -396,10 +448,11 @@ def _build(
         prop: tuple(dict.fromkeys(target.value for target in entry.get(prop, ())))
         for prop in NODE_PROPERTIES
     }
-    other_properties = node_other_properties(dcid, entry, {})
+    left_out: dict[tuple[str, str], int] = {}
+    other_properties = node_other_properties(dcid, entry, left_out)
     types = set(arcs[_TYPE_OF])
     neighbours = _Neighbours(dcid)
-    capped: set[tuple[str, str]] = set()
+    capped = set(left_out)
     for prop in (_TYPE_OF, *IN_ARCS):
         for target in entry.get(prop, ()):
             neighbours.add_target(target)
@@ -415,13 +468,29 @@ def _build(
             neighbours.link(subject.dcid, subject.property, dcid)
 
     instances: SchemaInstances | None = None
-    if _CLASS in types and _ENUMERATION in closure:
-        instances = _read_value_list(
+    value_list = (
+        _start_value_list(dcid, parents=arcs[_SUB_CLASS_OF], closure=closure, reads=reads)
+        if _CLASS in types and _ENUMERATION in closure
+        else None
+    )
+    descendants = (
+        _read_descendants(
             dcid,
-            parents=arcs[_SUB_CLASS_OF],
-            closure=closure,
-            in_arcs=in_arcs,
+            children=[s.dcid for s in in_arcs.subjects if s.property == _SUB_CLASS_OF],
+            children_capped=_SUB_CLASS_OF in in_arcs.capped,
             reads=reads,
+            neighbours=neighbours,
+            capped=capped,
+        )
+        if _CLASS in types
+        else set()
+    )
+    if value_list is not None:
+        instances = _finish_value_list(
+            dcid,
+            value_list,
+            parents=arcs[_SUB_CLASS_OF],
+            descendants=descendants,
             neighbours=neighbours,
             capped=capped,
         )
@@ -452,25 +521,88 @@ def _build(
     )
 
 
-def _read_value_list(
+def _read_descendants(
     dcid: str,
     *,
-    parents: Collection[str],
-    closure: Collection[str],
-    in_arcs: InArcs,
+    children: Sequence[str],
+    children_capped: bool,
     reads: _Reads,
     neighbours: _Neighbours,
     capped: set[tuple[str, str]],
-) -> SchemaInstances:
-    """Round two of value list `dcid`: its members, and the chain to `Enumeration` when that is
-    not a direct parent. Returns the centre's `instances`."""
-    members_read = reads.in_arcs([dcid], properties=(_TYPE_OF,), cap=MEMBER_CAP)
-    edges_read = (
-        None if _ENUMERATION in parents else reads.edges(sorted(set(closure) - {_ENUMERATION}))
+) -> set[str]:
+    """The classes below Class `dcid`, from its narrower `children` down, one `<-subClassOf`
+    read per level, each joining as a neighbour with its `subClassOf` edges to the classes
+    above it in the view. Returns them. A walk that stops at `DESCENDANT_CAP` classes or
+    `DESCENDANT_LEVELS` levels with classes whose narrower classes it has not read, or after a
+    capped listing, names `(dcid, "subClassOf+")` in `capped`."""
+    seen = {dcid, *children}
+    frontier = sorted(set(children))
+    levels = 1
+    cut = children_capped
+    while frontier and not cut:
+        room = DESCENDANT_CAP - (len(seen) - 1)
+        if levels >= DESCENDANT_LEVELS or room <= 0:
+            cut = True
+            break
+        answer = reads.in_arcs(frontier, properties=(_SUB_CLASS_OF,), cap=room).result()
+        found: dict[str, list[tuple[str, InArcSubject]]] = {}
+        for parent in frontier:
+            listing = answer.get(parent, _NO_IN_ARCS)
+            cut = cut or _SUB_CLASS_OF in listing.capped
+            for subject in listing.subjects:
+                if subject.property == _SUB_CLASS_OF:
+                    found.setdefault(subject.dcid, []).append((parent, subject))
+        new = sorted(ref for ref in found if ref not in seen)
+        if len(new) > room:
+            cut = True
+            new = new[:room]
+        seen.update(new)
+        for ref, edges in found.items():
+            if ref not in seen:
+                continue
+            for parent, subject in edges:
+                neighbours.add_subject(subject)
+                neighbours.link(ref, _SUB_CLASS_OF, parent)
+        frontier = new
+        levels += 1
+    if cut:
+        capped.add((dcid, _DESCENDANTS))
+    return seen - {dcid}
+
+
+@dataclass(frozen=True, slots=True)
+class _ValueListReads:
+    members: Future[Mapping[str, InArcs]]
+    edges: Future[_Targets] | None
+
+
+def _start_value_list(
+    dcid: str, *, parents: Collection[str], closure: Collection[str], reads: _Reads
+) -> _ValueListReads:
+    """Submit round two of value list `dcid`: its members, and the chain to `Enumeration` when
+    that is not a direct parent."""
+    return _ValueListReads(
+        members=reads.in_arcs([dcid], properties=(_TYPE_OF,), cap=MEMBER_CAP),
+        edges=None
+        if _ENUMERATION in parents
+        else reads.edges(sorted(set(closure) - {_ENUMERATION})),
     )
-    members = members_read.result().get(dcid, _NO_IN_ARCS)
-    if edges_read is not None:
-        edges = _join_chain(edges_read.result(), neighbours)
+
+
+def _finish_value_list(
+    dcid: str,
+    value_list: _ValueListReads,
+    *,
+    parents: Collection[str],
+    descendants: Collection[str],
+    neighbours: _Neighbours,
+    capped: set[tuple[str, str]],
+) -> SchemaInstances:
+    """Join round two of value list `dcid` and mark each of its `descendants` as a list.
+    Returns the centre's `instances`."""
+    members = value_list.members.result().get(dcid, _NO_IN_ARCS)
+    if value_list.edges is not None:
+        edges = _join_chain(value_list.edges.result(), neighbours)
         edges[dcid] = set(parents)
         _mark_chain(edges, exclude=dcid, neighbours=neighbours)
 
@@ -480,12 +612,11 @@ def _read_value_list(
     if _TYPE_OF in members.capped:
         capped.add((dcid, _TYPE_OF))
 
-    narrower = {subject.dcid for subject in in_arcs.subjects if subject.property == _SUB_CLASS_OF}
-    for ref in narrower:
+    for ref in descendants:
         neighbours.mark_list(ref, SchemaInstances(refs=[], complete=False))
     return SchemaInstances(
         refs=sorted({subject.dcid for subject in member_subjects}),
-        complete=not members.capped and not narrower,
+        complete=not members.capped and not descendants,
     )
 
 
@@ -563,22 +694,21 @@ def _mark_chain(
     edges: Mapping[str, Collection[str]], *, exclude: str, neighbours: _Neighbours
 ) -> None:
     """Mark each class of `edges` whose read `subClassOf` edges reach `Enumeration` as listing
-    instances it has not listed, `exclude` left alone."""
-    reaches: dict[str, bool] = {}
-
-    def reach(ref: str, path: frozenset[str]) -> bool:
-        if ref == _ENUMERATION:
-            return True
-        if ref in reaches:
-            return reaches[ref]
-        if ref in path:
-            return False
-        reaches[ref] = any(reach(parent, path | {ref}) for parent in edges.get(ref, ()))
-        return reaches[ref]
-
-    for ref in edges:
-        if ref != exclude and reach(ref, frozenset()):
-            neighbours.mark_list(ref, SchemaInstances(refs=[], complete=False))
+    instances it has not listed, `exclude` left alone. One walk down the edges from
+    `Enumeration` finds them, so the marks follow from the edges alone."""
+    narrower: dict[str, set[str]] = {}
+    for ref, parents in edges.items():
+        for parent in parents:
+            narrower.setdefault(parent, set()).add(ref)
+    reached: set[str] = set()
+    stack = [_ENUMERATION]
+    while stack:
+        for ref in narrower.get(stack.pop(), ()):
+            if ref not in reached:
+                reached.add(ref)
+                stack.append(ref)
+    for ref in reached - {exclude, _ENUMERATION}:
+        neighbours.mark_list(ref, SchemaInstances(refs=[], complete=False))
 
 
 def _neighbour_node(ref: str, neighbour: _Neighbour, catalogue: Catalogue) -> SchemaNode:

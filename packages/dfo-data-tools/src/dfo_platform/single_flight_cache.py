@@ -3,8 +3,10 @@
 Each call captures one generation stamp before lookup and keys entries by `(stamp.key, key)`.
 The default TTL is `stamp.max_age_s`. A `get_or_fetch_many` caller that starts a flight may
 pass `value_ttl`, which stores a value it names a lifetime for under the lesser of that
-lifetime and the TTL. `maxsize` bounds the LRU store. One lock protects O(1) bookkeeping and is
-released before fetches or awaits.
+lifetime and the TTL. `maxsize` bounds the LRU store's entries, and a cache given `weigh` and
+`max_weight` bounds the total weight of the values it holds too: the least recently used entries
+leave until both bounds hold, and a value heavier than `max_weight` alone is not stored. One lock
+protects O(1) bookkeeping and is released before fetches or awaits.
 
 A miss starts a flight, which belongs to no caller. Its deadline is `flight_timeout_s` from the
 moment it starts, queue time included. Its fetch receives that deadline as an argument and runs
@@ -141,7 +143,8 @@ class SingleFlightCache[K, V]:
     `flight_timeout_s` sets each flight's deadline, which bounds every wait on the flight.
     `executor` runs sync flights and is required by `get_or_fetch` and `get_or_fetch_many` on an
     enabled cache. Async flights run on `executor` when it is given, else on the event loop's
-    default executor.
+    default executor. `weigh` gives a value's weight, such as its encoded bytes, and
+    `max_weight` the most the stored values may weigh together; the two are given together.
     """
 
     def __init__(
@@ -154,10 +157,18 @@ class SingleFlightCache[K, V]:
         clock: Callable[[], float] = time.monotonic,
         ttl_for_stamp: Callable[[GenerationStamp], float] = _default_ttl_for_stamp,
         timeout_message: str = _DEFAULT_TIMEOUT_MESSAGE,
+        weigh: Callable[[V], int] | None = None,
+        max_weight: int | None = None,
     ) -> None:
         if flight_timeout_s <= 0:
             raise ValueError(f"flight_timeout_s must be positive, got {flight_timeout_s!r}")
+        if (weigh is None) != (max_weight is None):
+            raise ValueError("weigh and max_weight are given together")
         self._maxsize = maxsize
+        self._weigh = weigh
+        self._max_weight = max_weight
+        self._weights: dict[tuple[str, K], int] = {}
+        self._weight = 0
         self._flight_timeout_s = flight_timeout_s
         self._executor = executor
         self._generation = generation
@@ -733,15 +744,29 @@ class SingleFlightCache[K, V]:
                 self._store.move_to_end(full_key)
                 self._hits += 1
                 return value
-            del self._store[full_key]  # expired: fall through, treat as a miss
+            self._drop_locked(full_key)  # expired: fall through, treat as a miss
         self._misses += 1
         return _MISS
 
+    def _drop_locked(self, full_key: tuple[str, K]) -> None:
+        del self._store[full_key]
+        self._weight -= self._weights.pop(full_key, 0)
+
     def _publish_locked(self, full_key: tuple[str, K], value: V, *, ttl: float, now: float) -> None:
+        if full_key in self._store:
+            self._drop_locked(full_key)
+        if self._weigh is not None and self._max_weight is not None:
+            weight = self._weigh(value)
+            if weight > self._max_weight:
+                return
+            self._weights[full_key] = weight
+            self._weight += weight
         self._store[full_key] = (now + ttl, value)
-        self._store.move_to_end(full_key)
-        while len(self._store) > self._maxsize:
-            self._store.popitem(last=False)
+        while len(self._store) > self._maxsize or (
+            self._max_weight is not None and self._weight > self._max_weight
+        ):
+            evicted, _ = self._store.popitem(last=False)
+            self._weight -= self._weights.pop(evicted, 0)
             self._evictions += 1
 
     # -------------------------------------------------------------------
@@ -749,19 +774,25 @@ class SingleFlightCache[K, V]:
     # -------------------------------------------------------------------
 
     def stats(self) -> Mapping[str, int]:
-        """Hit, miss and eviction counters plus the current entry count."""
+        """Hit, miss and eviction counters plus the current entry count, and on a cache given
+        `weigh` the stored values' total `weight`."""
         with self._lock:
-            return {
+            counts = {
                 "hits": self._hits,
                 "misses": self._misses,
                 "evictions": self._evictions,
                 "entries": len(self._store),
             }
+            if self._weigh is not None:
+                counts["weight"] = self._weight
+            return counts
 
     def clear(self) -> None:
         """Clear entries and in-flight bookkeeping. Active flights continue to completion."""
         with self._lock:
             self._store.clear()
+            self._weights.clear()
+            self._weight = 0
             self._sync_inflight.clear()
             self._async_inflight.clear()
 

@@ -97,8 +97,10 @@ from graph_api.doors.node import NODE_MEMBERSHIP_SLOT, build_node_door
 from graph_api.doors.resolve import build_resolve_door
 from graph_api.doors.schema import (
     NODE_VIEW_FLIGHT_WORKERS,
+    UN_NODE_VIEW_MISS_TTL_SECONDS,
     build_schema_door,
     new_node_view_cache,
+    new_node_view_miss_cache,
     new_schema_cache,
     warm_schema,
     warm_un_terms,
@@ -467,19 +469,31 @@ def graph_surface(
                 base_views = new_node_view_cache(
                     executor=node_view_executor, generation=resolved_generation
                 )
+                base_misses = new_node_view_miss_cache(generation=resolved_generation)
+
+                def clear_node_views() -> None:
+                    base_views.clear()
+                    base_misses.clear()
+
                 node_views_registration = resolved_generation.register(
-                    "graph_api.node_views", stats=base_views.stats, clear=base_views.clear
+                    "graph_api.node_views", stats=base_views.stats, clear=clear_node_views
                 )
+                un_view_generation = un_generation if un_generation is not None else UnGeneration()
                 node_views = NodeViews(
                     mixer=mixer_view,
                     base=base_views,
+                    base_misses=base_misses,
                     reads=node_view_reads,
                     un_reader=un_view,
                     un=None
                     if un_view is None
                     else new_node_view_cache(
-                        executor=node_view_executor,
-                        generation=un_generation if un_generation is not None else UnGeneration(),
+                        executor=node_view_executor, generation=un_view_generation
+                    ),
+                    un_misses=None
+                    if un_view is None
+                    else new_node_view_miss_cache(
+                        generation=un_view_generation, ttl_s=UN_NODE_VIEW_MISS_TTL_SECONDS
                     ),
                 )
 

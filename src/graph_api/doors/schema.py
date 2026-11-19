@@ -24,8 +24,8 @@ that outlives its deadline stores nothing, and its waiters answer 504 `timeout`.
 with every worker busy refuses the build with `DcpExecutorSaturated`, which the surface answers
 as retryable 503. A read past its deadline answers 504 `timeout`. A listing that reached its
 cap, or a document with no node DFO declares, is a server fault and answers non-retryable 500
-`internal_error`. A DCP 4xx answers 502 `upstream_error` and any other read failure retryable
-503. Under a known generation the entry keeps either refusal as `RefusedSchema` for
+`internal_error`. A DCP 429 answers retryable 503 with `Retry-After: 5`, any other DCP 4xx 502
+`upstream_error`, and any other read failure retryable 503. Under a known generation the entry keeps either refusal as `RefusedSchema` for
 `SCHEMA_REFUSAL_TTL_SECONDS` (60 s), so every request for the key in that time answers the
 same 500 with no build, and the first request after it builds again. Under an unknown
 generation the build raises the refusal unkept and the next request builds again. Any other
@@ -131,28 +131,38 @@ nothing. A bound catalogue that is not a loaded `CatalogueSnapshot` holds no tab
 from, and both routes answer it the same way.
 
 `GET /api/graph/schema/node/{dcid}` serves `SchemaNodeView`, one node and its schema
-neighbours, built by `graph_api.node_view.build_node_view` from at most eight reads. Its
-flights run on an executor of `NODE_VIEW_FLIGHT_WORKERS` workers that admits one flight per
-worker, so a miss that finds every worker busy answers retryable 503 at once. Their reads run
-on a pool of `NODE_VIEW_FLIGHT_WORKERS * READS_AT_ONCE` workers, apart from the DCP-read executor.
-A dcid past `DCID_MAX_LENGTH` answers 400 `request_invalid` before any read. A UN id
+neighbours, built by `graph_api.node_view.build_node_view` from at most eight reads, and for a
+Class one more per level below its narrower classes. Its flights run on an executor of
+`NODE_VIEW_FLIGHT_WORKERS` workers that admits one flight per worker, so a miss that finds every
+worker busy answers retryable 503 at once. Their reads run on a pool of
+`NODE_VIEW_FLIGHT_WORKERS * READS_AT_ONCE` workers, apart from the DCP-read executor. A dcid past
+`DCID_MAX_LENGTH` answers 400 `request_invalid` before any read. A UN id
 (`origin_catalogue.graph.is_un_dcid`) is read from the UN deployment's own client once the route
 has checked that the bound catalogue serves the UN origin; with the origin off, or on a surface
 with no UN reader, it answers 404 `not_found`, not retryable, with
 `cause: {"code": "origin_not_served"}`, and reads nothing. Any other id is read from the mixer's
 own client, and a node the mixer does not hold, such as `unCode`, is read from the UN deployment
 when the UN origin is served. A node neither read holds answers 404 `not_found`, not retryable,
-with `cause: {"code": "node_not_held"}`. Both refusals go out `no-store`. The mixer's cache
-keeps `NodeViewMiss.NOT_HELD` for a node the mixer lacks, so a later request reads the UN
-deployment or refuses without reading the mixer again under that generation. The UN
-deployment's keeps no refusal. `NodeViews` holds the two single-flight caches of
-`NODE_VIEW_CACHE_SIZE` entries each: the mixer's keyed by `NodeViewKey` under the mixer's
-generation, so a generation change clears it, and the UN deployment's under
-`origin_catalogue.graph.UnGeneration`, whose body `generation` is `null`. Each flight's deadline
-is `GRAPH_NODE_TIMEOUT_SECONDS` from its start, so a UN read after a mixer miss gets a deadline
-of its own, and a request waits `GRAPH_NODE_TIMEOUT_SECONDS` from its start over both. Either
-passing answers 504 `timeout`. A failed read answers as on the other routes. Each view answers
-`public, max-age=300` with a strong `ETag`, gzip and 304 as the document does.
+with `cause: {"code": "node_not_held"}`. A read past the view's byte cap answers 500
+`internal_error`, not retryable, with `cause: {"code": "node_view_too_large"}`, and the UN
+deployment is not read for it. All refusals go out `no-store`. The route binds no code registry
+endpoint, so it refuses with platform codes and names its reason in `cause.code`, where
+`GET /api/graph/node/{dcid}` answers the Graph code `node_not_held` at the top level.
+
+`NodeViews` holds two caches per deployment. The view caches hold at most
+`NODE_VIEW_CACHE_SIZE` entries and `NODE_VIEW_CACHE_BYTES` of encoded bodies each: the mixer's
+keyed by `NodeViewKey` under the mixer's generation, so a generation change clears it, and the
+UN deployment's under `origin_catalogue.graph.UnGeneration`, whose body `generation` is `null`.
+Beside each, a miss cache of `NODE_VIEW_MISS_CACHE_SIZE` dcids keeps the deployment's
+refusals (`NodeViewMiss`), so a made-up dcid evicts no view and is answered again with no
+read: the mixer's for its generation, the UN deployment's for `UN_NODE_VIEW_MISS_TTL_SECONDS`.
+Each flight's deadline is `GRAPH_NODE_TIMEOUT_SECONDS` from its start, so a UN read after a
+mixer miss gets a deadline of its own, and a request waits `GRAPH_NODE_TIMEOUT_SECONDS` from its
+start over both. Either passing answers 504 `timeout`. A read the graph still answers with HTTP
+429 after the view's own waits answers retryable 503 `service_unavailable` with
+`Retry-After: 5`, on this route as on the others. Any other failed read answers as on the other
+routes. Each view answers `public, max-age=300` with a strong `ETag`, gzip and 304 as the
+document does.
 
 After each build the door logs one line timing the encoding of the document and terms bodies
 and giving their sizes, beside the build's own per-phase line.
@@ -181,6 +191,7 @@ from fastapi import APIRouter, Request, Response
 
 from code_index import CodeIndex
 from code_index.shared import get_index
+from dc_graph import GraphCapExceededError
 from dfo_platform import ProblemSpec
 from dfo_platform.doors import DoorContribution
 from dfo_platform.problem import Cause
@@ -228,7 +239,7 @@ from graph_api.un_terms import (
     UnTermsRateLimitedError,
     build_un_terms,
 )
-from graph_generation import GenerationProvider
+from graph_generation import GenerationProvider, GenerationStamp
 from graph_generation.stamp import UNKNOWN_KEY
 from graph_release.context import served_origin_key
 from materialise.graph import GraphDeadlineExceededError, GraphReadError
@@ -250,12 +261,17 @@ SCHEMA_GENERATION_WAIT_SECONDS = 3.0
 and the request builds a second entry under `UNKNOWN_KEY`, which costs a whole build; a cold
 read of the generation took 1.5 s from a laptop and 1.9 s at an instance's start."""
 
+GRAPH_RATE_LIMITED_RETRY_AFTER_SECONDS = 5
+"""The `Retry-After` a request sends when a graph read still answered HTTP 429 after the reads'
+own waits."""
+
 SCHEMA_REFUSAL_TTL_SECONDS = 60.0
 """How long the schema cache keeps a build's refusal (`RefusedSchema`). A listing the upstream
 answers empty or truncated for a moment refuses the requests of this window, and the first
 request after it builds again, so a lasting fault costs one build a minute."""
 
 _MAX_AGE_SECONDS = 300
+_RATE_LIMITED = 429
 
 
 class SchemaKey(NamedTuple):
@@ -358,19 +374,43 @@ class NodeViewKey(NamedTuple):
 NODE_VIEW_CACHE_SIZE = 2_000
 """The most node views each node view cache keeps, the mixer's and the UN deployment's."""
 
+NODE_VIEW_CACHE_BYTES = 64 * 1024 * 1024
+"""The most bytes of encoded bodies each node view cache keeps, identity and gzip together, the
+least recently used leaving first. A view at every cap, with 6,002 neighbours, weighs 2.49 MB
+(2.44 MB identity), so a cache holds at least 25 such views, and the two caches together hold at
+most 128 MiB of the 1.6 GiB the dev apis service leaves beside two origin catalogue builds
+(deploy/origin-catalogue.md)."""
+
+NODE_VIEW_MISS_CACHE_SIZE = 1_000
+"""The most refused dcids each node view miss cache keeps, apart from the views, so made-up dcids
+evict no view."""
+
+UN_NODE_VIEW_MISS_TTL_SECONDS = 300.0
+"""How long the UN deployment's miss cache keeps a refusal. The UN deployment serves no
+generation token, so a node it gains shows within this time."""
+
 NODE_VIEW_FLIGHT_WORKERS = 4
 """The workers the node view flights run on, one flight each. A miss that finds them all busy is
 refused."""
 
 
 class NodeViewMiss(Enum):
-    """`NOT_HELD`: the mixer answered the dcid with no arc. The mixer's cache keeps it, so the
-    mixer is read for that dcid once per generation."""
+    """A view's refusal, kept in a miss cache apart from the views. `NOT_HELD`: the deployment
+    answered the dcid with no arc. `TOO_LARGE`: a read answered past `NODE_VIEW_MAX_BYTES`."""
 
     NOT_HELD = "not_held"
+    TOO_LARGE = "too_large"
 
 
 type NodeViewEntry = FrozenJSON | NodeViewMiss
+
+
+class NodeViewTooLarge(Exception):
+    """A read of the view of `dcid` answered past the view's byte cap, so the node has no view."""
+
+    def __init__(self, dcid: str) -> None:
+        super().__init__(f"a graph read for the view of {dcid!r} passed its byte cap")
+        self.dcid = dcid
 
 
 class NodeViewTimedOut(Exception):
@@ -408,16 +448,44 @@ def new_schema_cache[K, V](
     )
 
 
+def _view_bytes(entry: NodeViewEntry) -> int:
+    """The bytes `entry`'s encoded bodies hold, identity and gzip."""
+    if isinstance(entry, NodeViewMiss):
+        return 0
+    return len(entry.identity) + len(entry.gzip or b"")
+
+
 def new_node_view_cache(
     *, executor: Executor, generation: GenerationProvider
 ) -> SingleFlightCache[NodeViewKey, NodeViewEntry]:
-    """A cache of `NODE_VIEW_CACHE_SIZE` node views, each built on `executor` within
-    `GRAPH_NODE_TIMEOUT_SECONDS`, with a key that carries `generation`'s stamp."""
+    """A cache of at most `NODE_VIEW_CACHE_SIZE` node views and `NODE_VIEW_CACHE_BYTES` of their
+    bodies, each built on `executor` within `GRAPH_NODE_TIMEOUT_SECONDS`, with a key that
+    carries `generation`'s stamp."""
     return SingleFlightCache(
         maxsize=NODE_VIEW_CACHE_SIZE,
         flight_timeout_s=GRAPH_NODE_TIMEOUT_SECONDS,
         executor=executor,
         generation=generation,
+        weigh=_view_bytes,
+        max_weight=NODE_VIEW_CACHE_BYTES,
+    )
+
+
+def new_node_view_miss_cache(
+    *, generation: GenerationProvider, ttl_s: float | None = None
+) -> SingleFlightCache[NodeViewKey, NodeViewMiss]:
+    """A cache of `NODE_VIEW_MISS_CACHE_SIZE` view refusals with a key that carries
+    `generation`'s stamp, each kept for the stamp's own lifetime, or for `ttl_s` when given.
+    Refusals join it by `offer`, so it needs no executor."""
+
+    def ttl(stamp: GenerationStamp) -> float:
+        return stamp.max_age_s if ttl_s is None else ttl_s
+
+    return SingleFlightCache(
+        maxsize=NODE_VIEW_MISS_CACHE_SIZE,
+        flight_timeout_s=GRAPH_NODE_TIMEOUT_SECONDS,
+        generation=generation,
+        ttl_for_stamp=ttl,
     )
 
 
@@ -562,6 +630,15 @@ def classify_schema_exception(exc: BaseException) -> ProblemSpec | None:
                 code="node_not_held" if isinstance(exc, NodeNotHeldError) else "origin_not_served"
             ),
         )
+    if isinstance(exc, NodeViewTooLarge):
+        return ProblemSpec(
+            status=500,
+            code=SERVER_ERROR_FALLBACK_CODE,
+            detail=str(exc),
+            retryable=False,
+            cause=Cause(code="node_view_too_large"),
+            log=f"Graph schema door refused a node view past its byte cap: {exc}",
+        )
     if isinstance(exc, NodeViewTimedOut):
         return ProblemSpec(
             status=TIMEOUT_DEFAULT.status,
@@ -616,6 +693,15 @@ def classify_schema_exception(exc: BaseException) -> ProblemSpec | None:
             code=TIMEOUT_DEFAULT.code,
             detail="the deadline expired during the schema door's graph reads; retry",
             retryable=TIMEOUT_DEFAULT.retryable,
+        )
+    if error.upstream_status == _RATE_LIMITED:
+        return ProblemSpec(
+            status=503,
+            code="service_unavailable",
+            detail="the graph is limiting the rate of reads; retry",
+            retryable=True,
+            headers={"Retry-After": str(GRAPH_RATE_LIMITED_RETRY_AFTER_SECONDS)},
+            log=f"Graph schema door's DCP read still answered 429: {error}",
         )
     return graph_read_problem(error)._replace(
         log=f"Graph schema door's DCP read failed: {error}", log_traceback=True
@@ -854,63 +940,89 @@ async def _frozen_origin_usage(deps: GraphDeps, origin: UsageOrigin) -> FrozenJS
     return found[key]
 
 
-def _un_side(
-    views: NodeViews, catalogue: Catalogue
-) -> tuple[NodeViewReader, SingleFlightCache[NodeViewKey, NodeViewEntry]] | None:
-    """The UN deployment's reader and view cache, or `None` when the bound catalogue does not
-    serve the UN origin or the surface has no UN reader."""
-    if views.un_reader is None or views.un is None or not catalogue.un_system_enabled:
+@dataclass(frozen=True, slots=True)
+class _ViewSide:
+    """One deployment's reader, view cache and miss cache."""
+
+    reader: NodeViewReader
+    cache: SingleFlightCache[NodeViewKey, NodeViewEntry]
+    misses: SingleFlightCache[NodeViewKey, NodeViewMiss]
+
+
+def _un_side(views: NodeViews, catalogue: Catalogue) -> _ViewSide | None:
+    """The UN deployment's reader and caches, or `None` when the bound catalogue does not serve
+    the UN origin or the surface has no UN reader."""
+    if (
+        views.un_reader is None
+        or views.un is None
+        or views.un_misses is None
+        or not catalogue.un_system_enabled
+    ):
         return None
-    return views.un_reader, views.un
+    return _ViewSide(reader=views.un_reader, cache=views.un, misses=views.un_misses)
+
+
+def _refuse(miss: NodeViewMiss, dcid: str) -> Exception:
+    if miss is NodeViewMiss.TOO_LARGE:
+        return NodeViewTooLarge(dcid)
+    return NodeNotHeldError(dcid)
 
 
 async def _node_view_from(
     views: NodeViews,
+    side: _ViewSide,
     *,
-    reader: NodeViewReader,
-    cache: SingleFlightCache[NodeViewKey, NodeViewEntry],
     key: NodeViewKey,
     catalogue: Catalogue,
     generation: str | None,
     deadline: float,
-    keep_not_held: bool,
 ) -> FrozenJSON:
-    """The view of `key.dcid` read from `reader`, from `cache`, building it on a miss with its
-    reads on `views.reads` and waiting until `deadline`. With `keep_not_held`, a node `reader`
-    lacks is kept as `NodeViewMiss.NOT_HELD`.
+    """The view of `key.dcid` read from `side.reader`, from `side.cache`, building it on a miss
+    with its reads on `views.reads` and waiting until `deadline`. A refusal is kept in
+    `side.misses`, which answers it again with no read.
 
     Raises:
-        NodeNotHeldError: `reader` holds no such node.
+        NodeNotHeldError: `side.reader` holds no such node.
+        NodeViewTooLarge: a read answered past the view's byte cap.
         NodeViewTimedOut: the wait or the flight passed its deadline.
         SchemaReadFailed: a read failed.
         DcpExecutorSaturated: every flight worker is busy.
     """
+    if (miss := side.misses.cached_many([key]).get(key)) is not None:
+        raise _refuse(miss, key.dcid)
+    stamp_key = side.misses.stamp_key()
 
     def build(_keys: list[NodeViewKey], flight_deadline: float) -> dict[NodeViewKey, NodeViewEntry]:
         try:
             view = build_node_view(
                 key.dcid,
-                reader=reader,
+                reader=side.reader,
                 catalogue=catalogue,
                 generation=generation,
                 executor=views.reads,
                 deadline=flight_deadline,
             )
         except NodeNotHeldError:
-            if not keep_not_held:
-                raise
             return {key: NodeViewMiss.NOT_HELD}
+        except GraphCapExceededError:
+            return {key: NodeViewMiss.TOO_LARGE}
         return {key: _freeze(view)}
 
     try:
-        found = await cache.aget_or_fetch_many([key], log_queue_wait(build), deadline=deadline)
+        found = await side.cache.aget_or_fetch_many(
+            [key],
+            log_queue_wait(build),
+            deadline=deadline,
+            is_cacheable=lambda entry: not isinstance(entry, NodeViewMiss),
+        )
     except TimeoutError as exc:
         raise NodeViewTimedOut() from exc
     except GraphReadError as exc:
         raise SchemaReadFailed(exc) from exc
     entry = found[key]
     if isinstance(entry, NodeViewMiss):
-        raise NodeNotHeldError(key.dcid)
+        side.misses.offer(key, entry, stamp_key=stamp_key)
+        raise _refuse(entry, key.dcid)
     return entry
 
 
@@ -945,32 +1057,23 @@ async def _frozen_node_view(deps: GraphDeps, dcid: str) -> FrozenJSON:
     un = _un_side(views, catalogue)
     if not is_un_dcid(dcid):
         await deps.generation.refresh_if_stale()
+        mixer = _ViewSide(reader=views.mixer, cache=views.base, misses=views.base_misses)
         try:
             return await _node_view_from(
                 views,
-                reader=views.mixer,
-                cache=views.base,
+                mixer,
                 key=key,
                 catalogue=catalogue,
                 generation=deps.generation.stamp().token,
                 deadline=deadline,
-                keep_not_held=True,
             )
         except NodeNotHeldError:
             if un is None:
                 raise
     elif un is None:
         raise UnOriginNotServed()
-    reader, cache = un
     return await _node_view_from(
-        views,
-        reader=reader,
-        cache=cache,
-        key=key,
-        catalogue=catalogue,
-        generation=None,
-        deadline=deadline,
-        keep_not_held=False,
+        views, un, key=key, catalogue=catalogue, generation=None, deadline=deadline
     )
 
 
@@ -1144,11 +1247,13 @@ def build_schema_door() -> DoorContribution:
             SchemaCheckBusy,
             UnOriginNotServed,
             NodeNotHeldError,
+            NodeViewTooLarge,
             NodeViewTimedOut,
         ),
         exception_exemplars=(
             UnOriginNotServed(),
             NodeNotHeldError("exemplar"),
+            NodeViewTooLarge("exemplar"),
             NodeViewTimedOut(),
             SchemaCheckBusy(),
             SchemaBuildPending(),
@@ -1159,6 +1264,7 @@ def build_schema_door() -> DoorContribution:
             SchemaReadFailed(UnTermsListingEmptyError("Property")),
             SchemaReadFailed(GraphDeadlineExceededError("exemplar")),
             SchemaReadFailed(GraphReadError("exemplar", upstream_status=400)),
+            SchemaReadFailed(GraphReadError("exemplar", upstream_status=429)),
             SchemaReadFailed(GraphReadError("exemplar", upstream_status=503)),
         ),
     )

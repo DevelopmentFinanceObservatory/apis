@@ -1043,9 +1043,9 @@ class GraphClient:
         max_bytes: int | None = None,
     ) -> dict:
         """Read one `/v2/node` page. This mixer repeats continuation tokens for this request shape,
-        so discard the whole response and halve the dcid chunk into fresh requests. A continuation
-        for one dcid raises the read error. A front-door refusal halves the chunk the same way
-        (`_read_refused_halves`).
+        so discard the whole response and halve the dcid chunk into fresh requests. A
+        continuation for one dcid is followed page by page (`_page_single_arc`). A front-door
+        refusal halves the chunk the same way (`_read_refused_halves`).
 
         Acquire `semaphore` for this POST and release it before recursive retries. `deadline`
         bounds the wait and raises `_ChunkDeadlineExpired` when time expires. A bound request
@@ -1053,31 +1053,12 @@ class GraphClient:
         deadline error when it is the one that expires. `max_bytes` caps each decoded response
         (`_post_node`).
         """
-        acquired = False
-        if semaphore is not None:
-            wait_deadline = bounded_deadline(deadline)
-            timeout = None if wait_deadline is None else max(0.0, wait_deadline - time.monotonic())
-            acquired = semaphore.acquire(timeout=timeout)
-            if not acquired:
-                detail = (
-                    f"deadline elapsed before {len(dcids)} dcid(s) reached the front of "
-                    "the node-arc semaphore queue"
-                )
-                if deadline is not None and time.monotonic() >= deadline:
-                    raise _ChunkDeadlineExpired(detail)
-                raise self._deadline_error_cls(f"{_DEADLINE_EXCEEDED_DETAIL}: {detail}")
-        try:
-            if deadline is not None and time.monotonic() >= deadline:
-                raise _ChunkDeadlineExpired(
-                    f"deadline elapsed before {len(dcids)} dcid(s) reached the front of "
-                    "the node-arc semaphore queue"
-                )
-            body = self._post_node(
-                {"nodes": dcids, "property": property_arc}, deadline=deadline, max_bytes=max_bytes
-            )
-        finally:
-            if semaphore is not None and acquired:
-                semaphore.release()
+        body = self._post_node_in_slot(
+            {"nodes": dcids, "property": property_arc},
+            semaphore=semaphore,
+            deadline=deadline,
+            max_bytes=max_bytes,
+        )
         if body is None:
             return self._read_refused_halves(
                 dcids,
@@ -1107,9 +1088,13 @@ class GraphClient:
         if body.get("nextToken") is None:
             return data
         if len(dcids) == 1:
-            raise self._read_error_cls(
-                f"graph /v2/node reported a continuation reading {property_arc} for "
-                f"{dcids[0]!r} alone; refusing to return a short mapping"
+            return self._page_single_arc(
+                dcids[0],
+                property_arc=property_arc,
+                first=body,
+                semaphore=semaphore,
+                deadline=deadline,
+                max_bytes=max_bytes,
             )
         mid = len(dcids) // 2
         left = self._fetch_single_arc_chunk(
@@ -1127,6 +1112,95 @@ class GraphClient:
             max_bytes=max_bytes,
         )
         return {**left, **right}
+
+    def _post_node_in_slot(
+        self,
+        payload: dict,
+        *,
+        semaphore: threading.BoundedSemaphore | None,
+        deadline: float | None,
+        max_bytes: int | None,
+    ) -> dict | None:
+        """`_post_node` holding a `semaphore` slot for the POST when one is given. `deadline`
+        bounds the wait and raises `_ChunkDeadlineExpired` when time expires; a bound request
+        deadline that expires first raises the configured deadline error."""
+        count = len(payload["nodes"])
+        detail = (
+            f"deadline elapsed before {count} dcid(s) reached the front of "
+            "the node-arc semaphore queue"
+        )
+        acquired = False
+        if semaphore is not None:
+            wait_deadline = bounded_deadline(deadline)
+            timeout = None if wait_deadline is None else max(0.0, wait_deadline - time.monotonic())
+            acquired = semaphore.acquire(timeout=timeout)
+            if not acquired:
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise _ChunkDeadlineExpired(detail)
+                raise self._deadline_error_cls(f"{_DEADLINE_EXCEEDED_DETAIL}: {detail}")
+        try:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise _ChunkDeadlineExpired(detail)
+            return self._post_node(payload, deadline=deadline, max_bytes=max_bytes)
+        finally:
+            if semaphore is not None and acquired:
+                semaphore.release()
+
+    def _page_single_arc(
+        self,
+        dcid: str,
+        *,
+        property_arc: str,
+        first: dict,
+        semaphore: threading.BoundedSemaphore | None,
+        deadline: float | None,
+        max_bytes: int | None,
+    ) -> dict:
+        """Follow the continuation of `first`, the answer for `dcid` read alone, page by page,
+        and merge every page's arcs in page order. A repeated token, a page past
+        `_NODE_ARCS_MANY_MAX_PAGES` still continued, a refused page or a malformed one raises
+        the read error. Each page holds a `semaphore` slot and caps at `max_bytes`."""
+        merged: dict[str, dict] = {}
+        body = first
+        token: str | None = None
+        for _ in range(_NODE_ARCS_MANY_MAX_PAGES):
+            data = body.get("data", {})
+            if not isinstance(data, dict) or not isinstance(data.get(dcid) or {}, dict):
+                raise self._read_error_cls("graph /v2/node returned a malformed response body")
+            _merge_node_arcs_page(merged, {dcid: data[dcid]} if dcid in data else {})
+            next_token = body.get("nextToken")
+            if next_token is None:
+                return merged
+            if next_token == token:
+                stuck = GraphNotAdvancingError(
+                    f"graph /v2/node repeated the continuation token reading {property_arc} "
+                    f"for {dcid!r}",
+                    dcid=dcid,
+                    property=property_arc,
+                )
+                raise self._read_error_cls(str(stuck)) from stuck
+            token = next_token
+            page = self._post_node_in_slot(
+                {"nodes": [dcid], "property": property_arc, "nextToken": token},
+                semaphore=semaphore,
+                deadline=deadline,
+                max_bytes=max_bytes,
+            )
+            if page is None:
+                raise self._read_error_cls(
+                    f"graph front door refused a /v2/node page reading {property_arc} for {dcid!r}",
+                    upstream_status=403,
+                )
+            if not isinstance(page, dict):
+                raise self._read_error_cls("graph /v2/node returned a malformed response body")
+            body = page
+        capped = GraphNotAdvancingError(
+            f"graph /v2/node still reported a continuation after {_NODE_ARCS_MANY_MAX_PAGES} "
+            f"pages reading {property_arc} for {dcid!r}",
+            dcid=dcid,
+            property=property_arc,
+        )
+        raise self._read_error_cls(str(capped)) from capped
 
     def _fetch_arc_chunks(
         self,
@@ -2105,8 +2179,9 @@ class GraphClient:
         every node is capped under that property, and a capped node leaves the walk's later
         requests. So one property with many subjects pages no further than its cap, whatever
         the other properties hold. A repeated token or more than
-        `_NODE_SUBJECTS_MANY_MAX_PAGES` pages in one walk raises the read error. `max_bytes`
-        caps each decoded response, and one absolute `deadline` bounds every page.
+        `_NODE_SUBJECTS_MANY_MAX_PAGES` pages in one walk raises the read error. A front-door
+        refusal walks the property again over two halves of the dcids. `max_bytes` caps each
+        decoded response, and one absolute `deadline` bounds every page.
         """
         if not dcids:
             return {}
@@ -2152,7 +2227,8 @@ class GraphClient:
         deadline: float | None,
     ) -> dict[str, tuple[_InArcFold, bool]]:
         """One `<-[property]` walk of `node_in_arcs`: each dcid's fold and whether its listing
-        stopped at `max_results`."""
+        stopped at `max_results`. A front-door refusal of any page walks the dcids again as two
+        halves (`_read_refused_halves`)."""
         spec = f"<-[{property}]"
         folds = {dcid: _InArcFold() for dcid in dcids}
         capped: set[str] = set()
@@ -2162,9 +2238,18 @@ class GraphClient:
             payload: dict = {"nodes": pending, "property": spec}
             if token is not None:
                 payload["nextToken"] = token
-            body = self.post_capped_bytes(
-                NODE_PATH, payload, max_bytes=max_bytes, deadline=deadline
-            )
+            body = self._post_node(payload, deadline=deadline, max_bytes=max_bytes)
+            if body is None:
+                return self._read_refused_halves(
+                    dcids,
+                    lambda part: self._walk_in_arcs(
+                        part,
+                        property=property,
+                        max_results=max_results,
+                        max_bytes=max_bytes,
+                        deadline=deadline,
+                    ),
+                )
             data = body.get("data", {})
             for dcid in pending:
                 arcs = (data.get(dcid) or {}).get("arcs", {})

@@ -118,14 +118,14 @@ curl -fsS "$DFO_API/api/v1/graph/schema" \
 
 A node's `declared_by` names the origin that declares it: `dfo`, `base` for base Data Commons, or `un_system`. It is `null` when the graph names no declaring Provenance for the node or term. `range_includes` and `domain_includes` name the classes a property accepts. The first request after a graph release builds the document and can take longer than later ones. A `503` whose `cause.code` is `schema_building` means the build is still running; retry after the `Retry-After` interval.
 
-`GET /api/v1/graph/schema/node/{dcid}` reads one node the graph holds, base, UN or DFO, with its schema neighbours, in the document's node shape: `{generation, centre, nodes, capped}`. `centre` is the node with every outgoing arc, and `nodes` holds the classes and properties it points at, the subclasses and properties that point at it, and the members of a value list, up to 1,000 per property. `capped` names each property whose list stopped there. Use it for a term the document does not hold, such as the base property `age` or a UN series.
+`GET /api/v1/graph/schema/node/{dcid}` reads one node the graph holds, base, UN or DFO, with its schema neighbours, in the document's node shape: `{generation, centre, nodes, capped}`. `centre` is the node with every outgoing arc, and `nodes` holds the classes and properties it points at, the subclasses and properties that point at it, and the members of a value list, up to 1,000 per property. For a class, `nodes` also holds every class below it, up to 1,000, each with its `sub_class_of` edge, so following `sub_class_of` down from the centre reaches each. `capped` names each list the view cut: a property whose list stopped at 1,000, a property of the centre with more than 100 values, or `subClassOf+` when the classes below a class stopped. Use it for a term the document does not hold, such as the base property `age` or a UN series.
 
 ```bash
 curl -fsS "$DFO_API/api/v1/graph/schema/node/age" \
   | jq '{centre: .centre.range_includes, nodes: [.nodes[].ref]}'
 ```
 
-A UN id on a deployment that does not serve the UN origin answers `404` with `cause.code` `origin_not_served`, and a node no deployment holds `404` with `cause.code` `node_not_held`. Neither answer changes on retry.
+A UN id on a deployment that does not serve the UN origin answers `404` with `cause.code` `origin_not_served`, a node no deployment holds `404` with `cause.code` `node_not_held`, and a node whose graph answer passes 2 MiB, such as `country/USA`, `500` with `cause.code` `node_view_too_large`. All three stay the same on retry.
 
 ## See how a dataset uses the model
 

@@ -57,6 +57,7 @@ if TYPE_CHECKING:
     from graph_api.doors.schema import (
         NodeViewEntry,
         NodeViewKey,
+        NodeViewMiss,
         SchemaEntry,
         SchemaKey,
         UnTermsEntry,
@@ -94,17 +95,20 @@ class UnTerms:
 
 @dataclass(frozen=True, slots=True)
 class NodeViews:
-    """The node view route's state: the mixer's own client and the cache of the views read from
-    it, keyed under the mixer's generation, and the UN deployment's own client and its cache,
-    keyed under the UN deployment's (`origin_catalogue.graph.UnGeneration`). `reads` runs the
-    views' reads, apart from the flights the caches run on. `un_reader` and `un` are `None` on
-    a surface with no UN reader, which reads no node from the UN deployment."""
+    """The node view route's state: the mixer's own client and the caches of the views read from
+    it and of its refusals, keyed under the mixer's generation, and the UN deployment's own
+    client and its two caches, keyed under the UN deployment's
+    (`origin_catalogue.graph.UnGeneration`). `reads` runs the views' reads, apart from the
+    flights the view caches run on. `un_reader`, `un` and `un_misses` are `None` on a surface
+    with no UN reader, which reads no node from the UN deployment."""
 
     mixer: NodeViewReader
     base: SingleFlightCache[NodeViewKey, NodeViewEntry]
+    base_misses: SingleFlightCache[NodeViewKey, NodeViewMiss]
     reads: Executor
     un_reader: NodeViewReader | None = None
     un: SingleFlightCache[NodeViewKey, NodeViewEntry] | None = None
+    un_misses: SingleFlightCache[NodeViewKey, NodeViewMiss] | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -835,6 +835,30 @@ def test_node_all_arc_targets_many_halves_a_chunk_the_mixer_continues():
     assert result == {"country/KEN": _COUNTRY, "country/ZZZ": _COUNTRY}
 
 
+def test_node_all_arc_targets_many_pages_a_node_the_mixer_continues_alone():
+    # A continuation for one dcid cannot be halved, so its pages are followed and merged.
+    named = {"name": {"nodes": [{"value": "Kenya", "provenanceId": "dc/base/Schema"}]}}
+    transport, requests = _sequenced(
+        [
+            {"data": {"country/KEN": {"arcs": _TYPED}}, "nextToken": "tok1"},
+            {"data": {"country/KEN": {"arcs": named}}, "nextToken": "tok2"},
+            {"data": {"country/KEN": {"arcs": _TYPED}}},
+        ]
+    )
+
+    result = _reader(transport).node_all_arc_targets_many(["country/KEN"])
+
+    assert [json.loads(request.content).get("nextToken") for request in requests] == [
+        None,
+        "tok1",
+        "tok2",
+    ]
+    targets = result["country/KEN"]
+    assert targets is not None
+    assert [target.value for target in targets["name"]] == ["Kenya"]
+    assert {target.value for target in targets["typeOf"]} == {"Country"}
+
+
 _WITH_UNRESOLVED = {
     "typeOf": {
         "nodes": [

@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import time
+from collections import Counter
 from collections.abc import Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
 from dc_graph import ArcTarget, GraphClient, GraphReadError, InArcs, InArcSubject
-from graph_api import node_view
+from graph_api import node_view, schema_document
 from graph_api.node_view import NodeNotHeldError, NodeViewReader, build_node_view
 from graph_api.node_view_models import CappedListing, SchemaNodeView
 from graph_api.schema_models import SchemaInstances, SchemaNode
@@ -72,10 +73,18 @@ _LITERALS = {("undata/eclac/SI_POV", "unCode"): ("SI_POV",)}
 
 class _FakeGraph:
     """`_ARCS` as the four reads answer them, each call recorded as (method, dcids, properties)
-    and each byte cap sent in `max_bytes`."""
+    and each byte cap sent in `max_bytes`. A dcid of `empty_in_batches` read beside others under
+    `->p` answers empty unless each empty answer is read again alone, as `GraphClient` does
+    with `individual_probe_budget=None`."""
 
-    def __init__(self, arcs: Sequence[tuple[str, str, str]] = _ARCS) -> None:
+    def __init__(
+        self,
+        arcs: Sequence[tuple[str, str, str]] = _ARCS,
+        *,
+        empty_in_batches: frozenset[str] = frozenset(),
+    ) -> None:
         self.arcs = tuple(arcs)
+        self.empty_in_batches = empty_in_batches
         self.calls: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = []
         self.max_bytes: set[int | None] = set()
 
@@ -120,12 +129,18 @@ class _FakeGraph:
         dcids: Sequence[str],
         *,
         properties: Sequence[str],
+        individual_probe_budget: int | None = 0,
         max_bytes: int | None = None,
         deadline: float | None = None,
     ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
         self.calls.append(("->", tuple(dcids), tuple(properties)))
         self.max_bytes.add(max_bytes)
-        return {dcid: self._read(dcid, properties) for dcid in dcids}
+        return {
+            dcid: None
+            if dcid in self.empty_in_batches and len(dcids) > 1 and individual_probe_budget == 0
+            else self._read(dcid, properties)
+            for dcid in dcids
+        }
 
     def node_in_arcs(
         self,
@@ -136,7 +151,10 @@ class _FakeGraph:
         max_bytes: int | None = None,
         deadline: float | None = None,
     ) -> Mapping[str, InArcs]:
-        self.calls.append(("<-", tuple(dcids), tuple(properties)))
+        # One walk per property in turn, as `GraphClient.node_in_arcs` reads them.
+        for prop in properties:
+            self.calls.append(("<-", tuple(dcids), (prop,)))
+            self._walked(prop)
         self.max_bytes.add(max_bytes)
         answers: dict[str, InArcs] = {}
         for dcid in dcids:
@@ -158,6 +176,9 @@ class _FakeGraph:
                 )
             answers[dcid] = InArcs(subjects=tuple(subjects), capped=frozenset(capped))
         return answers
+
+    def _walked(self, prop: str) -> None:
+        """Called after each in-arc walk is sent."""
 
     def node_closure(
         self,
@@ -301,13 +322,15 @@ def test_a_value_reads_its_list(executor: ThreadPoolExecutor) -> None:
     assert nodes["gender"].range_includes == ["GenderType"]
     assert nodes["Enumeration"].instances is None
     assert graph.in_arc_reads("typeOf") == []
-    assert len(graph.calls) == 6
+    # Round one walks each of the five in-arcs apart, so a 429 sends one walk again.
+    assert Counter(method for method, _, _ in graph.calls) == {"->*": 1, "<-": 6, "+": 2, "->": 1}
 
 
 def test_a_un_series_reads_its_list_through_the_chain(executor: ThreadPoolExecutor) -> None:
     """A UN series' type class reaches `Enumeration` through a parent, and every edge of the
-    chain in the view is one the graph answered."""
-    graph = _FakeGraph()
+    chain in the view is one the graph answered, even where the batch read of the chain's edges
+    answers a class empty."""
+    graph = _FakeGraph(empty_in_batches=frozenset({"undata/Series"}))
     view = _view("undata/eclac/SI_POV", graph, executor)
 
     assert view.centre.declared_by == "un_system"
@@ -348,29 +371,58 @@ def test_a_deep_value_list_reads_its_chain_and_marks_narrower_lists(
     assert _nodes(deep)["undata/Series"].instances == SchemaInstances(refs=[], complete=False)
 
 
+_GRADUATES = (
+    ("Graduate", "typeOf", "Class"),
+    ("Graduate", "subClassOf", "Student"),
+    ("Doctoral", "typeOf", "Class"),
+    ("Doctoral", "subClassOf", "Graduate"),
+)
+
+
 @pytest.mark.parametrize(
     ("centre", "extra", "cap", "capped"),
     [
         pytest.param(
             "GenderType",
             (("Other", "typeOf", "GenderType"),),
-            ("MEMBER_CAP", 2),
+            (node_view, "MEMBER_CAP", 2),
             ("GenderType", "typeOf"),
             id="value-list-members",
         ),
         pytest.param(
             "Person",
             (("Teacher", "typeOf", "Class"), ("Teacher", "subClassOf", "Person")),
-            ("IN_ARC_CAP", 1),
+            (node_view, "IN_ARC_CAP", 1),
             ("Person", "subClassOf"),
             id="centre-schema-arc",
         ),
         pytest.param(
             "Female",
             (("sex", "typeOf", "Property"), ("sex", "rangeIncludes", "GenderType")),
-            ("IN_ARC_CAP", 1),
+            (node_view, "IN_ARC_CAP", 1),
             ("GenderType", "rangeIncludes"),
             id="value-type-class-range",
+        ),
+        pytest.param(
+            "Person",
+            _GRADUATES,
+            (node_view, "DESCENDANT_CAP", 2),
+            ("Person", "subClassOf+"),
+            id="descendant-count",
+        ),
+        pytest.param(
+            "Person",
+            _GRADUATES,
+            (node_view, "DESCENDANT_LEVELS", 2),
+            ("Person", "subClassOf+"),
+            id="descendant-levels",
+        ),
+        pytest.param(
+            "undata/eclac/SI_POV",
+            (("undata/eclac/SI_POV", "unConcept", "undata/eclac/HUNGER"),),
+            (schema_document, "OTHER_VALUES_MAX", 1),
+            ("undata/eclac/SI_POV", "unConcept"),
+            id="centre-other-property",
         ),
     ],
 )
@@ -379,12 +431,13 @@ def test_a_listing_past_its_cap_is_named_capped(
     monkeypatch: pytest.MonkeyPatch,
     centre: str,
     extra: tuple[tuple[str, str, str], ...],
-    cap: tuple[str, int],
+    cap: tuple[object, str, int],
     capped: tuple[str, str],
 ) -> None:
     """Each capped listing is named by the node listed and the property, so a value's type
-    class listing reads apart from the centre's own."""
-    monkeypatch.setattr(node_view, *cap)
+    class listing reads apart from the centre's own, and a cut walk below a class names
+    `subClassOf+`."""
+    monkeypatch.setattr(*cap)
     view = _view(centre, _FakeGraph((*_ARCS, *extra)), executor)
 
     assert CappedListing(ref=capped[0], property=capped[1]) in view.capped
@@ -392,23 +445,44 @@ def test_a_listing_past_its_cap_is_named_capped(
         assert view.centre.instances == SchemaInstances(refs=["Female", "Male"], complete=False)
 
 
+def test_a_class_lists_every_class_below_it_with_its_edges(executor: ThreadPoolExecutor) -> None:
+    """The classes below a narrower class join with the `subClassOf` edge to the class above,
+    so a walk down from the centre reaches each, and an uncut walk names nothing capped."""
+    graph = _FakeGraph((*_ARCS, *_GRADUATES))
+    view = _view("Person", graph, executor)
+
+    nodes = _nodes(view)
+    assert nodes["Graduate"].sub_class_of == ["Student"]
+    assert nodes["Doctoral"].sub_class_of == ["Graduate"]
+    assert nodes["Doctoral"].declared_by == "base"
+    assert view.capped == []
+    assert graph.in_arc_reads("subClassOf") == ["Person", "Student", "Graduate", "Doctoral"]
+
+
 def test_a_value_list_with_an_untyped_narrower_class_is_incomplete(
     executor: ThreadPoolExecutor,
 ) -> None:
     """A `subClassOf` subject the graph answers with no types still narrows the list, so its
-    members are not all listed."""
-    graph = _FakeGraph((*_ARCS, ("SubGender", "subClassOf", "GenderType")))
+    members are not all listed, and each class below it lists instances too."""
+    graph = _FakeGraph(
+        (
+            *_ARCS,
+            ("SubGender", "subClassOf", "GenderType"),
+            ("SubSubGender", "subClassOf", "SubGender"),
+        )
+    )
     view = _view("GenderType", graph, executor)
 
     assert view.centre.instances == SchemaInstances(refs=["Female", "Male"], complete=False)
-    assert _nodes(view)["SubGender"].instances == SchemaInstances(refs=[], complete=False)
+    for ref in ("SubGender", "SubSubGender"):
+        assert _nodes(view)[ref].instances == SchemaInstances(refs=[], complete=False)
 
 
 def test_a_value_with_no_type_class_sends_no_empty_read(executor: ThreadPoolExecutor) -> None:
     graph = _FakeGraph((*_ARCS, ("Somewhere", "typeOf", "Thing")))
     _view("Somewhere", graph, executor)
 
-    assert [method for method, _, _ in graph.calls] == ["->*", "<-", "+"]
+    assert Counter(method for method, _, _ in graph.calls) == {"->*": 1, "<-": 5, "+": 1}
 
 
 class _RateLimited(_FakeGraph):
@@ -457,6 +531,54 @@ def test_a_rate_limited_read_is_sent_again_within_the_budget(
             view()
         assert raised.value.upstream_status == 429
     assert [call[0] for call in graph.calls].count("429") == failures
+
+
+class _RateLimitedWalk(_FakeGraph):
+    """`_FakeGraph` whose first `rangeIncludes` in-arc walk answers HTTP 429."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.failed = False
+
+    def _walked(self, prop: str) -> None:
+        if prop == "rangeIncludes" and not self.failed:
+            self.failed = True
+            raise GraphReadError("rate limited", upstream_status=429)
+
+
+def test_a_rate_limited_walk_sends_only_that_walk_again(
+    executor: ThreadPoolExecutor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(node_view, "RATE_LIMIT_WAITS_SECONDS", (0.0,))
+    graph = _RateLimitedWalk()
+    view = build_node_view(
+        "Person",
+        reader=graph,
+        catalogue=FakeCatalogue(),
+        generation="g1",
+        executor=executor,
+        deadline=time.monotonic() + 60,
+    )
+
+    assert _nodes(view)["age"].domain_includes == ["Person"]
+    assert graph.in_arc_reads("rangeIncludes") == ["Person", "Person"]
+    assert graph.in_arc_reads("subPropertyOf") == ["Person"]
+
+
+def test_chain_marks_follow_from_the_edges_in_any_order() -> None:
+    """A class that reaches `Enumeration` only through a class on the walk's path is marked,
+    whichever parent the edges list first."""
+    for parents in (["B", "Enumeration"], ["Enumeration", "B"]):
+        neighbours = node_view._Neighbours("centre")
+        for ref in ("A", "B"):
+            neighbours.add(ref)
+        node_view._mark_chain({"A": parents, "B": ["A"]}, exclude="centre", neighbours=neighbours)
+
+        listed = SchemaInstances(refs=[], complete=False)
+        assert {ref: n.instances for ref, n in neighbours.by_ref.items()} == {
+            "A": listed,
+            "B": listed,
+        }
 
 
 def test_a_dcid_the_graph_lacks_is_refused(executor: ThreadPoolExecutor) -> None:
