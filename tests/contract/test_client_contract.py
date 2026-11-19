@@ -99,7 +99,7 @@ def served() -> _Served:
         for name in _UNDEPLOYED_FLAGS:
             patch.delenv(name, raising=False)
         surfaces = tuple(dfo_apis_app.deployed_surfaces())
-        patch.setattr(dfo_apis_app, "deployed_surfaces", lambda: list(surfaces))
+        patch.setattr(dfo_apis_app, "deployed_surfaces", lambda **_: list(surfaces))
         document = dfo_apis_app.create_app().openapi()
     schemas = Registry().with_resource(
         _DOCUMENT_URI, Resource.from_contents(document, default_specification=DRAFT202012)

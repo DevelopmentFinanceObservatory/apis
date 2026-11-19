@@ -5,7 +5,8 @@ surface can record phases. `door_call` measures the call's total and renders
 the `Server-Timing` header and log line. The header carries each phase as
 `name;dur=ms` and each count, such as `db_transactions` or `sdmx_requests`, as
 `name;desc=n`, so a client such as `scripts/bench_datasets.py` reads a
-request's counts from its response.
+request's counts from its response. A door that serves data also logs its
+`datasets.delivery` line here (`datasets_api.delivery`).
 """
 
 from __future__ import annotations
@@ -13,9 +14,10 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 
+from datasets_api.delivery import Delivery, delivering, log_delivery
 from dfo_platform.timings import (
     PhaseTimings,
     collecting,
@@ -32,26 +34,34 @@ from dfo_platform.trace import get_trace_id
 class DoorCall:
     """Timing state for one endpoint call.
 
-    `server_timing` is set on exit, once total time is known.
+    `server_timing` is set on exit, once total time is known. `delivery` is what a door opened
+    with `delivers=True` served, `None` on any other door.
     """
 
     timings: PhaseTimings
     server_timing: str = ""
+    delivery: Delivery | None = None
 
 
 @contextmanager
-def door_call(door: str, *, logger: logging.Logger) -> Iterator[DoorCall]:
+def door_call(door: str, *, logger: logging.Logger, delivers: bool = False) -> Iterator[DoorCall]:
     """Time a door call and log its outcome and phases.
 
     Read `call.timings` inside the block. Read `call.server_timing` after it
-    exits, when this context manager has measured the total time.
+    exits, when this context manager has measured the total time. With
+    `delivers`, the block runs with a `Delivery` bound (`datasets_api.delivery`),
+    and a call that ends without raising logs its delivery line after the
+    timings line.
     """
     trace_id = get_trace_id()
     call = DoorCall(timings=PhaseTimings())
     start = time.perf_counter()
     outcome = "ok"
     try:
-        yield call
+        with ExitStack() as stack:
+            if delivers:
+                call.delivery = stack.enter_context(delivering())
+            yield call
     except BaseException as exc:
         outcome = type(exc).__name__
         raise
@@ -71,6 +81,8 @@ def door_call(door: str, *, logger: logging.Logger) -> Iterator[DoorCall]:
                 *(f"{name};desc={n}" for name, n in call.timings.count_snapshot().items()),
             ]
         )
+        if outcome == "ok" and call.delivery is not None:
+            log_delivery(door, call.delivery)
 
 
 __all__ = [

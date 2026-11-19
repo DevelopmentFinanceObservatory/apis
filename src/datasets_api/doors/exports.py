@@ -51,6 +51,7 @@ from datasets_api.codes_exports import (
 from datasets_api.codes_snapshot import ArtifactExpired, SnapshotSigningFailed, SpecNotFound
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.current import DefinitionDeps, StoredTraceMissingResolvedStatVars
+from datasets_api.delivery import record_export
 from datasets_api.deps import Deps, DepsCell
 from datasets_api.doors.definition import _run_retrieval, request_definition_deps
 from datasets_api.doors.files import (
@@ -211,7 +212,7 @@ def build_exports_door(
         current = deps.get()
         granted: Principal = request.state.principal
         retrieval = request_definition_deps(current)
-        with door_call("export", logger=logger) as call:
+        with door_call("export", logger=logger, delivers=True) as call:
             frame = body.frame
             if isinstance(frame, BareExportFrame):
                 frame = await _run_retrieval(
@@ -231,6 +232,7 @@ def build_exports_door(
                 retrieval=retrieval,
                 timings=call.timings,
             )
+            record_export(facts, served=False)
         return JSONResponse(facts, headers=no_store_headers(server_timing=call.server_timing))
 
     exemplar_day = datetime(2026, 1, 1, tzinfo=UTC)
@@ -324,7 +326,7 @@ def build_export_link_door(*, deps: DepsCell) -> DoorContribution:
     async def get_export(export_id: str) -> RedirectResponse:
         """Redirect to the export's file, signed for five minutes. Renders nothing."""
         current = deps.get()
-        with door_call("export_link", logger=logger) as call:
+        with door_call("export_link", logger=logger, delivers=True) as call:
             url = await current.read_executor.run(
                 functools.partial(
                     run_with_timings,

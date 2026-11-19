@@ -83,6 +83,7 @@ from datasets_api.config import (
     DatasetsBuildSettings,
 )
 from datasets_api.current import served_trace
+from datasets_api.delivery import record_manifest
 from datasets_api.deps import DepsCell
 from datasets_api.doors.snapshot import read_snapshot_manifest
 from datasets_api.headers import no_store_headers
@@ -381,6 +382,8 @@ def _resolve_operation(
         serving_basis=serving_basis,
     )
     if manifest is not None:
+        # A mint answered 202 logs nothing, so the poll that finds it done logs the delivery.
+        record_manifest(manifest)
         return OperationResource(
             operation=OperationEnvelope(operation_id=operation.id, status="done"),
             manifest=manifest.model_dump(mode="json", exclude_none=True),
@@ -465,7 +468,7 @@ def build_meta_door(*, deps: DepsCell, settings: DatasetsBuildSettings) -> DoorC
     )
     async def get_operation(operation_id: str) -> JSONResponse:
         current = deps.get()
-        with door_call("operations", logger=logger) as call:
+        with door_call("operations", logger=logger, delivers=True) as call:
             resource = await current.read_executor.run(
                 functools.partial(
                     run_with_timings,

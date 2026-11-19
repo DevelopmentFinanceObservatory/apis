@@ -41,7 +41,7 @@ import functools
 import logging
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Any, Literal
 
@@ -74,6 +74,7 @@ from datasets_api.backpressure import Backpressure
 from datasets_api.codes import CODE_CATALOG
 from datasets_api.codes_analysis import ANALYSIS_STATUSES
 from datasets_api.current import DefinitionDeps
+from datasets_api.delivery import record_analysis
 from datasets_api.deps import Deps, DepsCell
 from datasets_api.doors.definition import (
     SERVING_EXCEPTION_EXEMPLARS,
@@ -206,7 +207,7 @@ def _log_caller(request: Request, deps: Deps, *, route: str) -> None:
     """Log the caller of `request`. A caller the service cannot name logs as unresolved."""
     try:
         key: str | None = resolve_caller(request, deps.settings.caller).key
-    except CallerUnresolved:
+    except (CallerUnresolved, CallerHeaderInvalid):
         key = None
     logger.info("analysis call", extra={JSON_FIELDS_ATTR: {"route": route, "caller": key}})
 
@@ -349,13 +350,23 @@ class _AnalysisRoutes:
         self._cell = cell
         self._analysis_job = functools.partial(_analysis_job, running=running)
 
-    async def _run(self, job: Any, *, name: str, request: Request, body: BaseModel) -> JSONResponse:
+    async def _run(
+        self,
+        job: Any,
+        *,
+        name: str,
+        request: Request,
+        body: BaseModel,
+        record: Callable[[dict[str, Any]], None] | None = None,
+    ) -> JSONResponse:
+        """Run `job` as door `name`. A door given `record` delivers: `record` records its
+        answer for the call's `datasets.delivery` line."""
         current = self._cell.get()
         _log_caller(request, current, route=name)
         deps = definition_deps(
             current, deadline=time.monotonic() + current.settings.analysis_timeout_seconds
         )
-        with door_call(name, logger=logger) as call:
+        with door_call(name, logger=logger, delivers=record is not None) as call:
             try:
                 answer = await _run_retrieval(
                     current.analysis_executor,
@@ -372,6 +383,8 @@ class _AnalysisRoutes:
             except (AnalysisRefused, Refusal) as refused:
                 outcome = _refused(refused)
             else:
+                if record is not None:
+                    record(answer)
                 outcome = JSONResponse(answer, headers=dict(NO_STORE_HEADERS))
         outcome.headers["Server-Timing"] = call.server_timing
         return outcome
@@ -379,7 +392,13 @@ class _AnalysisRoutes:
     async def post_analysis(self, body: AnalysisRequest, request: Request) -> JSONResponse:
         """Compute a recipe tree and store its frame. Answers the stored frame's format 2 ref,
         `pending` while a root builds, or the refusal with its fix."""
-        return await self._run(self._analysis_job, name="analysis", request=request, body=body)
+        return await self._run(
+            self._analysis_job,
+            name="analysis",
+            request=request,
+            body=body,
+            record=record_analysis,
+        )
 
     async def post_anchor(self, body: AnchorRequest, request: Request) -> JSONResponse:
         """The latest period of the roots over the populations, and the series it leaves

@@ -31,8 +31,11 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 
-BACKGROUND_HEADER = "X-DFO-Mint-Admission"
-BACKGROUND_VALUE = "background"
+from dfo_platform.caller import MINT_ADMISSION_BACKGROUND, MINT_ADMISSION_HEADER
+
+# The delivery line reads the same header (`dfo_platform.caller.delivery_identity`).
+BACKGROUND_HEADER = MINT_ADMISSION_HEADER
+BACKGROUND_VALUE = MINT_ADMISSION_BACKGROUND
 
 # The work slots, materialise permits and backlog places a background mint leaves free for others.
 BACKGROUND_HEADROOM = 1

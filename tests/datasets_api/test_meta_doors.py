@@ -52,6 +52,7 @@ from datasets_api.version_store import enriched_rendering_key, rendering_key
 from datasets_api.versions import NullVersionRecordWriter
 from dfo_platform import Alternative, ProblemIssue, ProblemSpec
 from dfo_platform.build import build_commit
+from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
 from dfo_platform.config import PublicSiteSettings
 from dfo_platform.problem import Cause
 from graph_release.context import bound_release
@@ -754,7 +755,10 @@ def _basis_before_a_redeploy() -> str:
     ],
 )
 def test_done_operation_serves_the_manifest_with_a_freshly_signed_url_without_a_principal(
-    confirmed_at: datetime | None, family: dict[str, object] | None, currency: dict[str, object]
+    confirmed_at: datetime | None,
+    family: dict[str, object] | None,
+    currency: dict[str, object],
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A row the run completed states the run's currency and the family it served in place of
     the stored version's first-mint family (`Operation.family`). A row that recorded no family
@@ -788,12 +792,25 @@ def test_done_operation_serves_the_manifest_with_a_freshly_signed_url_without_a_
         ),
     )
 
-    resp = client.get("/api/datasets/operations/op_1")
+    with caplog.at_level(logging.INFO, logger="datasets_api.delivery"):
+        resp = client.get("/api/datasets/operations/op_1")
 
     assert resp.status_code == 200
     body = resp.json()
     assert body["operation"] == {"operation_id": "op_1", "status": "done"}
     assert "retry-after" not in resp.headers
+    # A mint answered 202 logged nothing, so the poll that serves it done logs its delivery.
+    (line,) = [
+        fields
+        for record in caplog.records
+        if record.name == "datasets_api.delivery"
+        and (fields := getattr(record, JSON_FIELDS_ATTR, None))
+    ]
+    assert (line["door"], line["spec_id"], line["content_version"]) == (
+        "operations",
+        "spec_a",
+        "cv1",
+    )
     trace = body["manifest"]["trace"]
     stated = (
         "served_from",

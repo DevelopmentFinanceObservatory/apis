@@ -44,6 +44,7 @@ from datasets_api.admission import bounded_materialise_slot
 from datasets_api.artifact_delivery import artifact_content_disposition
 from datasets_api.backpressure import Backpressure
 from datasets_api.codes_snapshot import ArtifactExpired
+from datasets_api.delivery import record_derived_file
 from datasets_api.deps import Deps, DepsCell
 from datasets_api.derived import (
     DerivedFile,
@@ -214,7 +215,7 @@ class _DerivedRoutes:
         """The derived frame's rows as a file in the format and bundle the query names."""
         options = selector_options(request.query_params.multi_items())
         current = self._cell.get()
-        with door_call("derived_file", logger=logger) as call:
+        with door_call("derived_file", logger=logger, delivers=True) as call:
             rendered = await current.work_executor.run(
                 functools.partial(
                     run_with_timings,
@@ -229,6 +230,7 @@ class _DerivedRoutes:
                 ),
                 refuse=DerivedBackpressure,
             )
+            record_derived_file(spec_id=id, content_version=content_version, file=rendered)
         return Response(
             rendered.data,
             media_type=rendered.media_type,

@@ -89,6 +89,7 @@ from datasets_api.current import (
     read_located_frame,
     refuse_located_frame_past_decode_bound,
 )
+from datasets_api.delivery import record_file
 from datasets_api.deps import Deps, DepsCell
 from datasets_api.doors.definition import _run_retrieval, request_definition_deps
 from datasets_api.doors.mint_errors import MintBackpressure, classify_mint_exception
@@ -217,7 +218,8 @@ def _signed_url(
     location: StoredArtifactLocation, *, stored: ServableVersion, artifact_store: ArtifactStore
 ) -> str:
     """`signed_download_url` over the location in hand, naming the download as the mint names
-    it."""
+    it, recorded as the call's delivery (`datasets_api.delivery.record_file`)."""
+    record_file(stored.version, location)
     return signed_download_url(
         location.artifact_digest,
         tier=Tier(location.tier),
@@ -747,7 +749,7 @@ def build_files_door(*, deps: DepsCell) -> DoorContribution:
     )
     async def get_file(id: str, content_version: str, digest: str) -> RedirectResponse:
         current = deps.get()
-        with door_call("files", logger=logger) as call:
+        with door_call("files", logger=logger, delivers=True) as call:
             url = await current.read_executor.run(
                 functools.partial(
                     run_with_timings,
@@ -788,7 +790,7 @@ def build_files_door(*, deps: DepsCell) -> DoorContribution:
         frame."""
         requested = selector_options(request.query_params.multi_items())
         current = deps.get()
-        with door_call("file_selector", logger=logger) as call:
+        with door_call("file_selector", logger=logger, delivers=True) as call:
             url = await current.read_executor.run(
                 functools.partial(
                     run_with_timings,
