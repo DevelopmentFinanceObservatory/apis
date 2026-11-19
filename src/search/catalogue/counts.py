@@ -2,8 +2,9 @@
 catalogue build and one coverage index build.
 
 - Indicators (global only): the StatVars search can serve, meaning the
-  origin catalogue's base variables, its DFO variables, and the coverage
-  variables it does not withhold.
+  origin catalogue's base variables, its DFO variables, the coverage
+  variables it does not withhold, and the UN variables (none with the UN
+  origin off).
 - Datasets (global only): distinct source-index entries (`entry_ref`) over
   the admitted provenances.
 - Publishers: distinct `ProvenanceRow.source.ref` over the admitted
@@ -18,6 +19,16 @@ catalogue build and one coverage index build.
   a total of other parties (`CodeIndex.parties`) is no donor or recipient of
   its own. At a country, the donors to it, the recipients of its own aid,
   and the years of either.
+- Origin split (`Counts.by_origin`, global only): the dfo group holds the
+  DFO variables, the coverage variables search serves on a facet of a DFO
+  provenance, and the provenances whose origin is `dfo`. The data_commons
+  group holds the base variables, the coverage variables search serves on a
+  facet of any other provenance, the UN variables of the origin catalogue's
+  `un_variables.parquet` (none with the UN origin off) and the provenances of
+  every other origin. Something both groups hold, such as a publisher with a
+  dfo and a base provenance, counts in each, so the split can exceed the
+  global figure. The dfo and data_commons indicators together are the global
+  `indicators`.
 - Variables (per country only): base variables with data there, plus
   coverage variables with a row naming it.
 """
@@ -35,8 +46,16 @@ import pyarrow as pa
 
 from code_index.multilaterals import COUNTRY_PREFIX
 from code_index.types import PartyRow
-from origin_catalogue.catalogue import CatalogueSnapshot, entry_ref
-from search.catalogue.artifact import AidCounts, Counts, PlaceCounts, YearRange
+from origin_catalogue.catalogue import CatalogueSnapshot, ProvenanceRow, entry_ref
+from origin_catalogue.origins import DFO
+from search.catalogue.artifact import (
+    AidCounts,
+    Counts,
+    OriginCounts,
+    OriginSplit,
+    PlaceCounts,
+    YearRange,
+)
 from series_coverage.coverage_types import COVERAGE_ROLE_AXES, Role
 from series_coverage.index import CoverageIndex
 from series_coverage.schema import (
@@ -68,12 +87,15 @@ class _BaseByCountry:
 @dataclass(frozen=True, slots=True)
 class _CoverageByCountry:
     """What the coverage rows naming each country, as donor or recipient,
-    hold. `covered` holds every variable with a coverage row. `overlap`
-    counts the variables that are also base variables with data there.
+    hold. `dfo_covered` and `base_covered` hold the variables with a
+    coverage row on a facet of a DFO provenance and of any other one.
+    `overlap` counts the variables that are also base variables with data
+    there.
     `aid_donors` counts the donors of aid to the country and
     `aid_recipients` the recipients of its own aid."""
 
-    covered: frozenset[str]
+    dfo_covered: frozenset[str]
+    base_covered: frozenset[str]
     variables: Mapping[str, int]
     overlap: Mapping[str, int]
     sources: Mapping[str, frozenset[str]]
@@ -128,19 +150,41 @@ def catalogue_counts(
         for country in countries
     }
     tables = catalogue.tables
-    indicators = (
+    dfo_indicators = tables.dfo_variables | (held.dfo_covered - tables.withheld_variables)
+    un_variables = catalogue.un.mirror.variables.keys() if catalogue.un_system_enabled else set()
+    data_commons_indicators = (
         tables.base_variables.keys()
-        | tables.dfo_variables
-        | (held.covered - tables.withheld_variables)
+        | (held.base_covered - tables.withheld_variables)
+        | un_variables
     )
+    indicators = dfo_indicators | data_commons_indicators
     counts = Counts(
         indicators=len(indicators),
         datasets=len({entry_ref(row) for row in provenances}),
         publishers=len(set(source_of.values())),
         countries=len(countries),
         aid=held.aid,
+        by_origin=OriginCounts(
+            dfo=OriginSplit(
+                indicators=len(dfo_indicators),
+                **_provenance_split([row for row in provenances if row.data_commons == DFO]),
+            ),
+            data_commons=OriginSplit(
+                indicators=len(data_commons_indicators),
+                **_provenance_split([row for row in provenances if row.data_commons != DFO]),
+            ),
+        ),
     )
     return CatalogueCounts(counts=counts, places=places)
+
+
+def _provenance_split(rows: Iterable[ProvenanceRow]) -> dict[str, int]:
+    """The distinct datasets and publishers of `rows`."""
+    rows = list(rows)
+    return {
+        "datasets": len({entry_ref(row) for row in rows}),
+        "publishers": len({row.source.ref for row in rows}),
+    }
 
 
 def _coverage_by_country(
@@ -152,9 +196,9 @@ def _coverage_by_country(
     datasets: Collection[str],
     parties: Mapping[str, PartyRow],
 ) -> _CoverageByCountry:
-    """Every country's coverage summary from six grouped passes over the
-    index: each role by facet and by variable, the variables, and the donor
-    and recipient pairs by facet."""
+    """Every country's coverage summary from seven grouped passes over the
+    index: each role by facet and by variable, the variables by facet, and
+    the donor and recipient pairs by facet."""
     provenance_of = {
         facet_id: meta.provenance_id for facet_id, meta in coverage.facet_metadata.items()
     }
@@ -215,9 +259,23 @@ def _coverage_by_country(
         if donor_counted and recipient_counted:
             flows.add((donor, recipient))
 
+    dfo_covered: set[str] = set()
+    base_covered: set[str] = set()
+    by_variable_facet = coverage.grouped(by=("variable", "facet_id"))
+    for variable, facet in zip(
+        _strings(by_variable_facet["variable"]),
+        _strings(by_variable_facet[FACET_COLUMN]),
+        strict=True,
+    ):
+        if provenance_of[facet] in catalogue.tables.dfo_provenances:
+            dfo_covered.add(variable)
+        else:
+            base_covered.add(variable)
+
     variables, overlap = _variables_by_country(coverage, catalogue=catalogue, base=base)
     return _CoverageByCountry(
-        covered=frozenset(_strings(coverage.grouped(by=("variable",))["variable"])),
+        dfo_covered=frozenset(dfo_covered),
+        base_covered=frozenset(base_covered),
         variables=variables,
         overlap=overlap,
         sources={place: frozenset(named) for place, named in sources.items()},
