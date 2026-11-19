@@ -738,10 +738,10 @@ class LiveVersionLister:
 
     def list_versions(self, subject_id: str) -> list[ListedVersion]:
         return self._list(
+            subject_id,
             records="subject_id = %s",
-            linked="va.subject_id = %s",
             params=(subject_id,),
-            linked_params=(subject_id,),
+            every_link=True,
             failure=f"listing versions subject_id {subject_id!r}",
         )
 
@@ -751,14 +751,10 @@ class LiveVersionLister:
         """The subject's versions recorded as derived from `base_content_version`, as
         `list_versions` reads them, read in one transaction filtered by that base."""
         return self._list(
+            subject_id,
             records="subject_id = %s AND base_content_version = %s",
-            linked=(
-                "va.subject_id = %s AND va.content_version IN ("
-                "SELECT content_version FROM datasets.version_record "
-                "WHERE subject_id = %s AND base_content_version = %s)"
-            ),
             params=(subject_id, base_content_version),
-            linked_params=(subject_id, subject_id, base_content_version),
+            every_link=False,
             failure=(
                 f"listing versions subject_id {subject_id!r} derived from {base_content_version!r}"
             ),
@@ -766,15 +762,16 @@ class LiveVersionLister:
 
     def _list(
         self,
+        subject_id: str,
         *,
         records: str,
-        linked: str,
         params: tuple[object, ...],
-        linked_params: tuple[object, ...],
+        every_link: bool,
         failure: str,
     ) -> list[ListedVersion]:
         """The versions whose records match `records`, newest first, each with the renderings
-        of the files linked under it (`linked`), read in one transaction."""
+        of the files linked under it, read in one transaction. The links read are every one of
+        the subject's with `every_link`, and otherwise those under the versions listed."""
         error: str | None = None
         sqlstate: str | None = None
         rows: list[Mapping[str, object]] = []
@@ -789,7 +786,20 @@ class LiveVersionLister:
                     "ORDER BY recorded_at DESC, content_version DESC",
                     params,
                 )
-                links = tx.fetch_all(_LINKED_RENDERINGS_SQL.format(where=linked), linked_params)
+                listed = [row["content_version"] for row in rows]
+                if every_link:
+                    links = tx.fetch_all(
+                        _LINKED_RENDERINGS_SQL.format(where="va.subject_id = %s"), (subject_id,)
+                    )
+                elif listed:
+                    # Placeholders the in-memory test store binds as well as Postgres does.
+                    placeholders = ", ".join("%s" for _ in listed)
+                    links = tx.fetch_all(
+                        _LINKED_RENDERINGS_SQL.format(
+                            where=f"va.subject_id = %s AND va.content_version IN ({placeholders})"
+                        ),
+                        (subject_id, *listed),
+                    )
         except Exception as exc:
             error = f"{failure} failed: {safe_diagnostics(exc)}"
             sqlstate = extract_sqlstate(exc)

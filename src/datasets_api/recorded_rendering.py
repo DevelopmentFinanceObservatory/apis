@@ -52,10 +52,14 @@ _WITHOUT_PARTY_TOTALS_KEY = "without_party_totals"
 @dataclass(frozen=True)
 class MintingOptions:
     """The options of a rendering that mint a version of their own: its `groupby`, and
-    whether it leaves out party totals. A plain rendering holds neither."""
+    whether it leaves out party totals. A plain rendering holds neither. Equal options hash
+    alike, by `_minting_order`, though `GroupbyOptions` does not hash."""
 
     groupby: GroupbyOptions | None = None
     without_party_totals: bool = False
+
+    def __hash__(self) -> int:
+        return hash(_minting_order(self))
 
 
 def _recorded(rendering: Mapping[str, object]) -> MintingOptions | None:
@@ -80,9 +84,9 @@ def recorded_mintings(renderings: Iterable[Mapping[str, object]]) -> list[Mintin
     return [recorded for rendering in renderings if (recorded := _recorded(rendering))]
 
 
-def minting_key(minting: MintingOptions) -> tuple[str, bool]:
-    """A hashable key of `minting`'s options, the same for equal options: its groupby's
-    canonical JSON, or `""`, and whether it leaves out party totals."""
+def _minting_order(minting: MintingOptions) -> tuple[str, bool]:
+    """A key of `minting`'s options, the same for equal options: its groupby's canonical JSON,
+    or `""`, and whether it leaves out party totals."""
     groupby = minting.groupby
     return (
         json.dumps(groupby.model_dump(mode="json"), sort_keys=True) if groupby is not None else "",
@@ -94,7 +98,7 @@ def ordered_mintings(mintings: Iterable[MintingOptions]) -> tuple[MintingOptions
     """Each different set of `mintings`, in an order of the options alone: a party-totals cut
     alone first, then each groupby by its canonical JSON, without the cut before with it. The
     order of the files that recorded them does not move it."""
-    return tuple(sorted(_distinct(mintings), key=minting_key))
+    return tuple(sorted(_distinct(mintings), key=_minting_order))
 
 
 def _distinct(mintings: Iterable[MintingOptions]) -> tuple[MintingOptions, ...]:
@@ -231,7 +235,6 @@ class RenderingNotRecorded(Refusal):
         plain: bool = False,
         unreadable_record: bool = False,
     ) -> None:
-        self.renderings = renderings
         named = f"{spec_id!r} at content_version {content_version!r}"
         if unreadable_record:
             detail = f"the card's recorded rendering of {named} names no rendering this build reads"
@@ -320,11 +323,6 @@ class StoredRendering:
         return plain + ordered_mintings(self.mintings)
 
     @property
-    def minting(self) -> MintingOptions | None:
-        """The first of `mintings`, `None` when there are none."""
-        return next(iter(self.mintings), None)
-
-    @property
     def ambiguous(self) -> bool:
         """Whether the frame's version is recorded under two or more renderings."""
         return len(self.renderings) > 1
@@ -344,7 +342,7 @@ class StoredRendering:
         (`presentation.component_revision.frame_rendering`), read back by `from_record`."""
         return {
             "base_content_version": self.base_content_version,
-            "minting": _minting_record(self.minting),
+            "minting": _minting_record(next(iter(self.mintings), None)),
             # A reader of records without `plain` reads `ambiguous` as the plain rendering
             # being one of several, and refreshes any other record as `minting`.
             "ambiguous": self.plain,
@@ -441,7 +439,6 @@ __all__ = [
     "StoredRendering",
     "derived_version_sums",
     "frame_options",
-    "minting_key",
     "ordered_mintings",
     "own_frame_mode",
     "recorded_minting",
