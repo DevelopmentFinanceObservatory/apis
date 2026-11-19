@@ -15,7 +15,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 from urllib.parse import urlsplit
 from uuid import uuid4
 
@@ -1404,6 +1404,47 @@ def test_operation_store_create_or_get_decides_again_when_its_reset_matches_noth
         assert worker.get(first.id) == resubmitted
     finally:
         worker_pool.close_all()
+
+
+def test_operation_mark_delivered_returns_the_row_once_and_a_reset_clears_it(live_store):
+    """`mark_delivered` stamps a done row for the one call that finds `delivered_at` null, and a
+    resubmit's reset clears it and takes the resubmitter's admission (migration 0047)."""
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    run_id = uuid4().hex
+    _insert_version_record(
+        live_store, subject_id=f"spec-test-live-delivered-{run_id}", content_version="cv1"
+    )
+    store = LiveOperationStore(store=live_store, now=lambda: now, backlog_max=10_000)
+    submission: dict[str, Any] = {
+        "request_identity": {"input": {"spec_id": f"spec-test-live-delivered-{run_id}"}},
+        "options": {"format": "parquet"},
+        "coverage_stamp": f"cov-test-live-delivered-{run_id}",
+        "origin_catalogue_build_id": "fake-catalogue",
+        "estimate": Estimate(rows=1, requests=1),
+    }
+
+    first = store.create_or_get(**submission, admission="background")
+    assert (first.admission, first.delivered_at) == ("background", None)
+    assert store.mark_delivered(first.id, attempt=0) is None
+    assert store.claim(first.id, submission_count=0, lease_seconds=60, final_delivery=True)
+    assert store.complete(
+        first.id,
+        attempt=1,
+        subject_id=f"spec-test-live-delivered-{run_id}",
+        content_version="cv1",
+        confirmed_at=now,
+        family=UNKNOWN_FAMILY,
+        basis=TEST_BASIS,
+    )
+
+    delivered = store.mark_delivered(first.id, attempt=1)
+    again = store.mark_delivered(first.id, attempt=1)
+    reset = store.create_or_get(**submission)
+
+    assert delivered is not None
+    assert (delivered.admission, delivered.delivered_at) == ("background", now)
+    assert again is None
+    assert (reset.state, reset.admission, reset.delivered_at) == ("pending", "foreground", None)
 
 
 def test_operation_insert_predating_submitted_at_still_succeeds(live_store):

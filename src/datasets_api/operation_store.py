@@ -103,6 +103,7 @@ from datasets_api.operations.lease import LEASE_SECONDS
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.version_store import rendering_key
 from dfo_platform import ProblemSpec
+from dfo_platform.caller import Admission
 from dfo_platform.store_errors import extract_sqlstate, safe_diagnostics
 from materialise.trace import (
     RecordedFamily,
@@ -123,7 +124,7 @@ _COLUMNS = (
     "estimate_requests, rows_written, subject_id, content_version, refusal_code, "
     "attempt_count, claimed_at, lease_seconds, created_at, updated_at, "
     "submission_count, retryable, dispatched_at, submitted_at, origin_catalogue_build_id, "
-    "refusal, final_delivery, confirmed_at, family"
+    "refusal, final_delivery, confirmed_at, family, admission, delivered_at"
 )
 
 # The end of a running row's static lease.
@@ -271,7 +272,9 @@ class Operation:
     task create returned, `None` until then. `coverage_stamp` records admission, and `estimate`
     is the latest estimate, replaced by the worker's re-estimate. `origin_catalogue_build_id`
     is the catalogue build the submitting request was bound to, `None` on a row submitted
-    before the column existed.
+    before the column existed. `admission` is the admission the submitting request carried
+    (`create_or_get`), and `delivered_at` is when the first poll found the row done and logged its
+    delivery line (`mark_delivered`), `None` until then.
     """
 
     id: str
@@ -298,6 +301,8 @@ class Operation:
     final_delivery: bool | None = None
     confirmed_at: datetime | None = None
     family: RecordedFamily | None = None
+    admission: Admission = "foreground"
+    delivered_at: datetime | None = None
 
     def lease_ended(self, now: datetime) -> bool:
         """Whether this is a `running` row whose claim has stopped owning it at `now`, the rule
@@ -334,13 +339,15 @@ class OperationStore(Protocol):
         origin_catalogue_build_id: str,
         estimate: Estimate,
         headroom: int = 0,
+        admission: Admission = "foreground",
     ) -> Operation:
         """Creates or reuses the operation keyed by identity, catalogue build, and rendering.
 
         A new row commits `pending` with no dispatch. Existing rows remain unchanged unless
         resettable; a `done` row always is. Raises `OperationBacklogFull` when a new row
         would leave fewer than `headroom` of the configured backlog limit free. A background
-        mint leaves one for foreground callers.
+        mint leaves one for foreground callers. A new or reset row records `admission`, which
+        the delivery line of its completion carries.
         """
         ...
 
@@ -413,6 +420,12 @@ class OperationStore(Protocol):
         id."""
         ...
 
+    def mark_delivered(self, id: str, *, attempt: int) -> Operation | None:
+        """Records that a poll found the row `done` at `attempt` and is logging its delivery.
+        Returns the row for the one call that records it, and `None` for every later call, for a
+        row not `done` at that attempt, and for an unknown id."""
+        ...
+
     def get(self, id: str) -> Operation | None:
         """Returns any operation state, or `None` for an unknown id."""
         ...
@@ -434,6 +447,7 @@ class NullOperationStore:
         origin_catalogue_build_id: str,
         estimate: Estimate,
         headroom: int = 0,
+        admission: Admission = "foreground",
     ) -> Operation:
         raise NotImplementedError(
             "NullOperationStore cannot create an operation it could never find again"
@@ -486,6 +500,9 @@ class NullOperationStore:
     def fail_unservable_done(self, id: str, *, attempt: int) -> Operation | None:
         return None
 
+    def mark_delivered(self, id: str, *, attempt: int) -> Operation | None:
+        return None
+
     def get(self, id: str) -> Operation | None:
         return None
 
@@ -518,6 +535,8 @@ def _operation_from_row(row: Mapping[str, object]) -> Operation:
         final_delivery=cast("bool | None", row["final_delivery"]),
         confirmed_at=cast("datetime | None", row["confirmed_at"]),
         family=parse_recorded_family(row["family"]),
+        admission=cast(Admission, row["admission"]),
+        delivered_at=cast("datetime | None", row["delivered_at"]),
     )
 
 
@@ -631,6 +650,7 @@ class LiveOperationStore:
         origin_catalogue_build_id: str,
         estimate: Estimate,
         headroom: int = 0,
+        admission: Admission = "foreground",
     ) -> Operation:
         id = compute_operation_id(
             request_identity=request_identity,
@@ -659,6 +679,7 @@ class LiveOperationStore:
                         origin_catalogue_build_id=origin_catalogue_build_id,
                         estimate=estimate,
                         now=now,
+                        admission=admission,
                     )
                     if row is not None:
                         return row
@@ -684,6 +705,7 @@ class LiveOperationStore:
         estimate: Estimate,
         now: datetime,
         headroom: int,
+        admission: Admission,
     ) -> Mapping[str, object] | None:
         """One pass of `create_or_get` under the backlog lock.
 
@@ -708,8 +730,8 @@ class LiveOperationStore:
                 "INSERT INTO datasets.operation "
                 "(id, request_identity, options, coverage_stamp, state, estimate_rows, "
                 "estimate_requests, rows_written, attempt_count, created_at, updated_at, "
-                "submitted_at, origin_catalogue_build_id) "
-                "VALUES (%s, %s, %s, %s, 'pending', %s, %s, 0, 0, %s, %s, %s, %s) "
+                "submitted_at, origin_catalogue_build_id, admission) "
+                "VALUES (%s, %s, %s, %s, 'pending', %s, %s, 0, 0, %s, %s, %s, %s, %s) "
                 f"ON CONFLICT (id) DO NOTHING RETURNING {_COLUMNS}",
                 (
                     id,
@@ -722,6 +744,7 @@ class LiveOperationStore:
                     now,
                     now,
                     origin_catalogue_build_id,
+                    admission,
                 ),
             )
         # `_RESETTABLE` re-checks the row as it stands when the update runs.
@@ -729,11 +752,11 @@ class LiveOperationStore:
             "UPDATE datasets.operation SET state = 'pending', "
             "claimed_at = NULL, lease_seconds = NULL, final_delivery = NULL, "
             "refusal_code = NULL, refusal = NULL, retryable = NULL, rows_written = 0, "
-            "family = NULL, "
+            "family = NULL, delivered_at = NULL, admission = %s, "
             "submission_count = submission_count + 1, dispatched_at = NULL, "
             "submitted_at = %s, updated_at = %s "
             f"WHERE id = %s AND {_RESETTABLE} RETURNING {_COLUMNS}",
-            (now, now, id, now, now - _UNTRACKED_LEASE, now - self._deadline),
+            (admission, now, now, id, now, now - _UNTRACKED_LEASE, now - self._deadline),
         )
 
     def mark_dispatched(self, id: str, *, submission_count: int) -> Operation | None:
@@ -876,6 +899,15 @@ class LiveOperationStore:
             "retryable = TRUE, updated_at = %s "
             "WHERE id = %s AND state = 'done' AND attempt_count = %s",
             (now, id, attempt),
+        )
+
+    def mark_delivered(self, id: str, *, attempt: int) -> Operation | None:
+        return self._update_one(
+            "marking the delivery of",
+            id,
+            "UPDATE datasets.operation SET delivered_at = %s "
+            "WHERE id = %s AND state = 'done' AND attempt_count = %s AND delivered_at IS NULL",
+            (self._now(), id, attempt),
         )
 
     def get(self, id: str) -> Operation | None:

@@ -135,6 +135,9 @@ class _FixedOperationStore:
     def fail_unservable_done(self, id: str, *, attempt: int):
         return None
 
+    def mark_delivered(self, id: str, *, attempt: int):
+        return self._operations.get(id)
+
     def get(self, id: str) -> Operation | None:
         return self._operations.get(id)
 
@@ -687,6 +690,60 @@ def _basis_before_a_redeploy() -> str:
     """The basis a run resolved its family under before the graph release moved."""
     with bound_release(_redeployed()):
         return _serving_basis()
+
+
+def test_the_first_poll_of_a_done_background_mint_logs_its_line_and_later_polls_log_none(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """One line per completion, under the admission the mint recorded, whatever header the poll sends."""
+    artifact_store = FakeArtifactStore()
+    location = _stored_rendering(artifact_store, _PARQUET_BUNDLE, data=b"a,b\n1,2\n")
+    operations = LiveOperationStore(store=FakeOperationDatasetStore(), now=lambda: _OP_NOW)
+    created = operations.create_or_get(
+        request_identity={"input": {"spec_id": "spec_a"}},
+        options=_PARQUET_BUNDLE.model_dump(mode="json"),
+        coverage_stamp="cov_stamp_1",
+        origin_catalogue_build_id="fake-catalogue",
+        estimate=_DEFAULT_ESTIMATE,
+        admission="background",
+    )
+    assert operations.claim(
+        created.id, submission_count=0, lease_seconds=LEASE_SECONDS, final_delivery=True
+    )
+    assert operations.complete(
+        created.id,
+        attempt=1,
+        subject_id="spec_a",
+        content_version="cv1",
+        confirmed_at=_CONFIRMED_AT,
+        family=UNKNOWN_FAMILY,
+        basis=TEST_BASIS,
+    )
+    client = make_client(
+        registry=LiveSpecRegistry(store=FakeDatasetStore()),
+        settings=_SITE_SETTINGS,
+        spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
+        snapshot_reader=FakeSnapshotReader(
+            versions={("spec_a", "cv1"): _FIRST_MINT_VERSION},
+            locations={("spec_a", "cv1"): [location]},
+        ),
+        artifact_store=artifact_store,
+        reference_writer=FakeArtifactReferenceWriter(),
+        version_writer=NullVersionRecordWriter(),
+        operation_store=operations,
+    )
+
+    with caplog.at_level(logging.INFO, logger="datasets_api.delivery"):
+        polls = [client.get(f"/api/datasets/operations/{created.id}") for _ in range(3)]
+
+    assert [poll.status_code for poll in polls] == [200, 200, 200]
+    (line,) = [
+        fields
+        for record in caplog.records
+        if record.name == "datasets_api.delivery"
+        and (fields := getattr(record, JSON_FIELDS_ATTR, None))
+    ]
+    assert (line["door"], line["admission"], line["rows_served"]) == ("operations", "background", 0)
 
 
 @pytest.mark.parametrize(

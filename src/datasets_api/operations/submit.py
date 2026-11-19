@@ -30,6 +30,7 @@ from datasets_api.operations.task_client import TaskClient
 from datasets_api.origin import catalogue_build_id
 from datasets_api.schema import OperationEnvelope, OperationResource
 from datasets_api.timings import phase
+from dfo_platform.caller import current_delivery_identity
 from series_coverage.index import Estimate
 
 # The shortest poll interval an operation advertises, and the refresh door's fixed retry interval.
@@ -97,6 +98,7 @@ def submit_over_budget(
             origin_catalogue_build_id=catalogue_build_id(),
             estimate=estimate,
             headroom=admission_headroom(),
+            admission=current_delivery_identity().admission,
         )
     with phase("dispatch"):
         dispatch_if_due(accepted, operation_store=operation_store, task_client=task_client)

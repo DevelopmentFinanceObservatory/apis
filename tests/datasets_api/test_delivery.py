@@ -40,8 +40,8 @@ from .test_exports import (
 _LOGGER = "datasets_api.delivery"
 _PRINCIPAL = "website-secret"
 _CONVERSATION = "conversation:" + "cd" * 16
+# No forwarded-for entry. A vouched conversation is keyed on itself.
 _STUDIO_HEADERS = {
-    **_CALLER_HEADERS,
     "x-dfo-caller-principal": _PRINCIPAL,
     "x-dfo-caller": _CONVERSATION,
 }
@@ -55,6 +55,7 @@ _FIELDS = {
     "surface",
     "client",
     "user_agent",
+    "turn_id",
     "spec_id",
     "content_version",
     "export_id",
@@ -196,11 +197,31 @@ def test_the_surface_is_believed_only_beside_the_principal(
 
 
 @pytest.mark.usefixtures("vouching")
+def test_the_line_carries_the_turn_a_studio_caller_names(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    rig = _Rig("fetched", monkeypatch, dataset="place")
+    frame = rig.frame
+    turn = "tr_" + "0123456789abcdef"
+
+    with caplog.at_level(logging.INFO, logger=_LOGGER):
+        resp = rig.client.get(
+            f"/api/datasets/{frame['spec_id']}/{frame['content_version']}",
+            headers={**_STUDIO_HEADERS, "x-dfo-turn": turn},
+        )
+
+    assert resp.status_code == 200, resp.text
+    (line,) = _lines(caplog)
+    assert line["turn_id"] == turn
+    assert line["turn_id"] != line["trace_id"]
+
+
+@pytest.mark.usefixtures("vouching")
 def test_a_studio_caller_prepares_links_and_pins(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ):
-    """A vouched `conversation:` caller names no allowance of its own, so the allowance doors
-    answer it as they answer the upstream's own address."""
+    """A vouched `conversation:` caller holds allowances keyed on the conversation, so the
+    allowance doors serve it with no forwarded-for entry."""
     rig = _Rig("fetched", monkeypatch, dataset="place")
     frame = rig.frame
     path = f"/api/datasets/{frame['spec_id']}/{frame['content_version']}"
@@ -356,6 +377,39 @@ def test_a_file_serves_the_versions_rows_only_when_its_rendering_keeps_them(
     assert (delivery.rows_available, delivery.rows_served) == (7, rows_served)
 
 
+class _UnreadableRendering:
+    def get(self, key: str, default: object = None) -> object:
+        raise RuntimeError("the stored rendering cannot be read")
+
+
+def test_a_file_whose_row_count_raises_still_logs_its_line_with_null_rows(
+    caplog: pytest.LogCaptureFixture,
+):
+    stored = SimpleNamespace(
+        subject_id="spec_x",
+        content_version="cv",
+        facts=ManifestFacts(
+            prepared_at=datetime(2026, 1, 1, tzinfo=UTC),
+            definition={"spec_id": "spec_x"},
+            coverage={"rows": 7},
+            citation={},
+            trace={},
+            warnings=(),
+        ),
+    )
+    token = set_delivery_identity(UNRESOLVED_IDENTITY)
+    try:
+        with caplog.at_level(logging.INFO, logger=_LOGGER), delivering() as delivery:
+            assert delivery.rows_served is None
+            record_file(stored, SimpleNamespace(rendering=_UnreadableRendering()))  # ty: ignore[invalid-argument-type]
+            log_delivery("files", delivery)
+    finally:
+        reset_delivery_identity(token)
+
+    (line,) = _lines(caplog)
+    assert (line["spec_id"], line["rows_available"], line["rows_served"]) == ("spec_x", 7, None)
+
+
 def test_a_recording_fault_warns_and_leaves_the_call_running(caplog: pytest.LogCaptureFixture):
     # The answer lacks `content_version`. The spec id is readable, and the line must stay empty.
     answer = {
@@ -388,6 +442,7 @@ def test_a_long_statvar_list_is_cut_at_the_cap(caplog: pytest.LogCaptureFixture)
     assert len(line["measures"]) == MEASURES_CAP
     assert line["measures_truncated"] is True
     assert line["measure_count"] == MEASURES_CAP + 1
+    assert line["rows_served"] == 0
 
 
 def test_a_call_that_recorded_no_spec_logs_nothing(caplog: pytest.LogCaptureFixture):

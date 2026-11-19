@@ -382,8 +382,10 @@ def _resolve_operation(
         serving_basis=serving_basis,
     )
     if manifest is not None:
-        # A mint answered 202 logs nothing, so the poll that finds it done logs the delivery.
-        record_manifest(manifest)
+        # A mint answered 202 logs nothing, so the first poll that finds it done logs the
+        # delivery, under the admission the mint recorded. Later polls read the same manifest.
+        if operation_store.mark_delivered(operation.id, attempt=operation.attempt_count):
+            record_manifest(manifest, admission=operation.admission)
         return OperationResource(
             operation=OperationEnvelope(operation_id=operation.id, status="done"),
             manifest=manifest.model_dump(mode="json", exclude_none=True),

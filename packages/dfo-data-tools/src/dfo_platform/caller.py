@@ -35,19 +35,22 @@ address would put every client of the website on the website's own allowance. A 
 from the right, the entry the proxies in front of this service appended. `request.client` goes
 unused, because `ProxyHeadersMiddleware` sets it from the leftmost entry, which the client writes.
 A vouched `x-dfo-caller` of the form `conversation:<32 hex digits>`, which the Studio harness sends,
-names no allowance of its own, so that request is named by address as an unvouched one is.
+names a `Caller` of `kind="conversation"` keyed on that value, so each conversation holds its own
+allowances and the vouched path never reads the request's address.
 
 `delivery_identity` names the consumer of a request for its delivery log line
 (`datasets_api.delivery`), and never raises. `dfo_platform.app` resolves it once per request and
 binds it for `current_delivery_identity`. A vouched request's caller is its `x-dfo-caller` (`ip:`
 or `conversation:`), or none when that header is missing, repeated or malformed, since the
 request's own address is the upstream's. An unvouched request's caller is its own address key,
-else none. Its surface is the `x-dfo-surface` header beside a valid principal, checked against
+else none. The surface is the `x-dfo-surface` header beside a valid principal, checked against
 `DeliverySurface`, except that a `conversation:` caller is always `studio`. A request no
-principal vouches for is `direct`, whatever it claims. Its client is the `<name>/<version>`
-product token of `X-DFO-Client`. Its user agent is a vouched request's `x-dfo-user-agent`, the
+principal vouches for is `direct`, whatever it claims. The client is the `<name>/<version>`
+product token of `X-DFO-Client`. The user agent is a vouched request's `x-dfo-user-agent`, the
 end client's User-Agent an upstream forwards, else the request's own User-Agent, and none for a
-`conversation:` caller.
+`conversation:` caller. The turn id is the `x-dfo-turn` header (`tr_` and 16 lowercase hex
+digits) the Studio harness sends for the turn that caused the request, kept only on a vouched
+`conversation:` caller's request when the single value fully matches, else none.
 """
 
 from __future__ import annotations
@@ -214,13 +217,17 @@ CONVERSATION_KEY_PREFIX = "conversation:"
 _DIGEST_LENGTH = 32
 _ADDRESS_KEY = re.compile(rf"{ADDRESS_KEY_PREFIX}[0-9a-f]{{{_DIGEST_LENGTH}}}")
 _CONVERSATION_KEY = re.compile(rf"{CONVERSATION_KEY_PREFIX}[0-9a-f]{{{_DIGEST_LENGTH}}}")
+TURN_HEADER = "x-dfo-turn"
+"""The Studio turn that caused a request, as `tr_<16 hex digits>`."""
+_TURN_ID = re.compile(r"tr_[0-9a-f]{16}")
 
 
 @dataclass(frozen=True, slots=True)
 class Caller:
-    """Who an allowance counts against. `kind="address"` keys a client by its network address."""
+    """Who an allowance counts against. `kind="address"` keys a client by its network address and
+    `kind="conversation"` keys a Studio conversation by the vouched `conversation:` value."""
 
-    kind: Literal["address"]
+    kind: Literal["address", "conversation"]
     key: str
 
 
@@ -322,8 +329,9 @@ def resolve_caller(request: Request, settings: CallerSettings) -> Caller:
         named = _single(request, CALLER_HEADER)
         if named is not None and _ADDRESS_KEY.fullmatch(named):
             return Caller(kind="address", key=named)
-        if named is None or not _CONVERSATION_KEY.fullmatch(named):
-            raise CallerHeaderInvalid()
+        if named is not None and _CONVERSATION_KEY.fullmatch(named):
+            return Caller(kind="conversation", key=named)
+        raise CallerHeaderInvalid()
     return Caller(kind="address", key=_own_address_key(request, settings))
 
 
@@ -396,7 +404,9 @@ class DeliveryIdentity:
     `<name>/<version>` product token of the `X-DFO-Client` value, `None` when the header is
     absent or has another shape. `user_agent` is the end client's User-Agent, cleaned and
     clipped (see the module docstring). `admission` is `background` for a request sent with
-    `X-DFO-Mint-Admission: background`, else `foreground`.
+    `X-DFO-Mint-Admission: background`, else `foreground`. `turn_id` is the `x-dfo-turn` value
+    of a vouched `conversation:` caller's request when it fully matches `tr_<16 hex digits>`,
+    else `None`.
     """
 
     caller: str | None
@@ -406,6 +416,7 @@ class DeliveryIdentity:
     client: str | None
     user_agent: str | None
     admission: Admission
+    turn_id: str | None
 
 
 UNRESOLVED_IDENTITY = DeliveryIdentity(
@@ -416,6 +427,7 @@ UNRESOLVED_IDENTITY = DeliveryIdentity(
     client=None,
     user_agent=None,
     admission="foreground",
+    turn_id=None,
 )
 """The identity of a delivery made outside a request `dfo_platform.app` resolved."""
 
@@ -471,6 +483,9 @@ def delivery_identity(request: Request, settings: CallerSettings) -> DeliveryIde
             surface = DeliverySurface.studio
         else:
             surface = _named_surface(request)
+        turn = _single(request, TURN_HEADER)
+        # `conversation` is true only for a vouched caller, so it carries the vouch.
+        turn_id = turn if conversation and turn and _TURN_ID.fullmatch(turn) else None
         forwarded = _clean(request.headers.get(USER_AGENT_HEADER, "")) if vouched else ""
         own = _clean(request.headers.get("user-agent", ""))
         return DeliveryIdentity(
@@ -481,6 +496,7 @@ def delivery_identity(request: Request, settings: CallerSettings) -> DeliveryIde
             client=_client_token(request),
             user_agent=None if conversation else (forwarded or own or None),
             admission=admission,
+            turn_id=turn_id,
         )
     except Exception as exc:
         # A log line's identity must not fail the request it describes.

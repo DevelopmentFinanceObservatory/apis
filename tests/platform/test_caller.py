@@ -187,15 +187,22 @@ def test_a_caller_header_without_a_principal_is_ignored():
     assert resolve_caller(request, _settings()).key == _digest("3.3.3.3")
 
 
-def test_a_vouched_conversation_caller_is_named_by_address():
-    """The Studio harness names a conversation, which holds no allowance of its own."""
-    request = _request(
-        ("x-forwarded-for", "3.3.3.3"),
-        ("x-dfo-caller-principal", _PRINCIPAL),
-        ("x-dfo-caller", _CONVERSATION),
-    )
+def test_a_vouched_conversation_caller_is_keyed_on_the_conversation():
+    """Each Studio conversation holds its own allowances, whatever address the harness sends from,
+    and the request's address is not read."""
+    other = "conversation:" + "ef" * 16
 
-    assert resolve_caller(request, _settings()).key == _digest("3.3.3.3")
+    def resolve(named: str, *, key: str = _KEY, forwarded: list[str] | None = None) -> Caller:
+        headers = [("x-dfo-caller-principal", _PRINCIPAL), ("x-dfo-caller", named)]
+        headers += [("x-forwarded-for", value) for value in forwarded or []]
+        return resolve_caller(_request(*headers), _settings(key=key))
+
+    assert resolve(_CONVERSATION, forwarded=["3.3.3.3"]) == Caller(
+        kind="conversation", key=_CONVERSATION
+    )
+    assert resolve(other, forwarded=["3.3.3.3"]).key == other
+    # With no forwarded-for entry and no HMAC key, the address path refuses and the vouched path serves.
+    assert resolve(_CONVERSATION, key="") == Caller(kind="conversation", key=_CONVERSATION)
 
 
 _VOUCHED = ("x-dfo-caller-principal", _PRINCIPAL)
@@ -279,6 +286,7 @@ def test_the_delivery_identity_carries_the_upstream_client_token_and_admission()
         client="dfo-python/0.1.0",
         user_agent=None,
         admission="background",
+        turn_id=None,
     )
 
 
@@ -328,3 +336,35 @@ def test_the_delivery_user_agent_is_the_end_clients(
     request = _request(("x-forwarded-for", "3.3.3.3"), ("user-agent", _OWN), *headers)
 
     assert delivery_identity(request, _settings()).user_agent == user_agent
+
+
+_TURN = "tr_" + "0123456789abcdef"
+
+
+@pytest.mark.parametrize(
+    ("headers", "turn_id"),
+    [
+        ([_VOUCHED, ("x-dfo-caller", _CONVERSATION), ("x-dfo-turn", _TURN)], _TURN),
+        ([("x-dfo-caller", _CONVERSATION), ("x-dfo-turn", _TURN)], None),
+        ([_VOUCHED, ("x-dfo-caller", _NAMED), ("x-dfo-turn", _TURN)], None),
+        ([_VOUCHED, ("x-dfo-caller", _CONVERSATION), ("x-dfo-turn", _TURN + "0")], None),
+        ([_VOUCHED, ("x-dfo-caller", _CONVERSATION), ("x-dfo-turn", _TURN.upper())], None),
+        ([_VOUCHED, ("x-dfo-caller", _CONVERSATION), ("x-dfo-turn", _TURN + "\n")], None),
+        ([_VOUCHED, ("x-dfo-caller", _CONVERSATION)], None),
+    ],
+    ids=[
+        "kept",
+        "unvouched",
+        "non-conversation",
+        "too-long",
+        "uppercase",
+        "trailing-newline",
+        "absent",
+    ],
+)
+def test_the_delivery_turn_id_is_kept_only_for_a_vouched_conversation_with_a_valid_id(
+    headers: list[tuple[str, str]], turn_id: str | None
+):
+    request = _request(("x-forwarded-for", "3.3.3.3"), *headers)
+
+    assert delivery_identity(request, _settings()).turn_id == turn_id

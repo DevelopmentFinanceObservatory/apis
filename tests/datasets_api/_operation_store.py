@@ -42,7 +42,9 @@ CREATE TABLE datasets.operation (
     refusal TEXT,
     final_delivery INTEGER,
     confirmed_at TEXT,
-    family TEXT
+    family TEXT,
+    admission TEXT NOT NULL DEFAULT 'foreground',
+    delivered_at TEXT
 );
 """
 
@@ -86,7 +88,15 @@ def _sqlite_param(value: object) -> object:
 
 _JSON_COLUMNS = frozenset({"request_identity", "options", "refusal", "family"})
 _TIMESTAMP_COLUMNS = frozenset(
-    {"claimed_at", "created_at", "updated_at", "dispatched_at", "submitted_at", "confirmed_at"}
+    {
+        "claimed_at",
+        "created_at",
+        "updated_at",
+        "dispatched_at",
+        "submitted_at",
+        "confirmed_at",
+        "delivered_at",
+    }
 )
 _BOOL_COLUMNS = frozenset({"retryable", "final_delivery"})
 

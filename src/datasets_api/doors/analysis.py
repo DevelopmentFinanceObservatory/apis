@@ -19,8 +19,8 @@ storing nothing.
 
 Both routes admit every caller and spend no allowance. The caller is resolved
 (`dfo_platform.caller.resolve_caller`) for the call's log line alone, and a caller this
-service cannot name logs as unresolved. A website request whose caller header is malformed
-still refuses, as on every route that resolves callers. Every Datasets code the routes answer
+service cannot name logs as unresolved, a malformed `x-dfo-caller` of a vouched request
+included. Every Datasets code the routes answer
 goes out at the status the code registry maps on `datasets.analysis`. A run takes a thread of
 the analysis executor (`DATASETS_ANALYSIS_MAX_CONCURRENCY`), refusing retryable
 `service_unavailable` (503) when every thread is busy, and one materialise permit for its frames.
@@ -443,7 +443,6 @@ def build_analysis_door(*, deps: DepsCell, running: RunningAnalyses) -> DoorCont
             AnalysisTooLarge,
             AnalysisStoreDiverges,
             AnalysisBackpressure,
-            CallerHeaderInvalid,
             # A dataset root whose queued rebuild failed (`datasets_api.analysis_roots`).
             RefreshRebuildFailed,
         ),
@@ -471,7 +470,6 @@ def build_analysis_door(*, deps: DepsCell, running: RunningAnalyses) -> DoorCont
                 AnalysisTooLarge(ceiling_kind="analysis_nodes", count=65, cap=64),
                 AnalysisStoreDiverges(spec_id="ops_exemplar", content_version="ocv_exemplar"),
                 AnalysisBackpressure(),
-                CallerHeaderInvalid(),
                 RefreshRebuildFailed(operation_id="op_exemplar", refusal_code="over_ceiling"),
             )
         },

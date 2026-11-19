@@ -14,18 +14,22 @@ The line carries the request's `dfo_platform.caller.DeliveryIdentity` beside the
 structured fields (`dfo_platform.cloud_logging.JSON_FIELDS_ATTR`) and a short message:
 
 - `door`, `trace_id`, and `admission`, `caller`, `caller_source`, `upstream`, `surface`,
-  `client`, `user_agent` from the identity;
+  `client`, `user_agent`, `turn_id` from the identity;
 - `spec_id` (an `ops_` id on the derived file and analysis doors), `content_version`, and
   `export_id` on the export doors;
 - `measures`, the sorted bare StatVar dcids of the manifest's `resolved_stat_vars`, only where
-  the door holds a manifest (mint, definition, snapshot), else `None`, cut to `MEASURES_CAP`
-  with `measures_truncated` set; `measure_count` wherever the StatVars are known;
+  the door holds a manifest (mint, definition, snapshot, operations poll), else `None`, cut
+  to `MEASURES_CAP` with `measures_truncated` set; `measure_count` wherever the StatVars are
+  known;
 - `series_count`, `rows_available` (the version's `coverage.rows`, an export's rows, or a
   derived file's data rows) and `rows_served`, the rows that left: observation points, a data
-  file's rows, an export link's rows, a derived file's rows, and 0 on the manifest doors, an
-  export prepare, an analysis answer and a series statistics file. A file whose rendering
-  reshapes rows (`RESHAPING_KEYS`) or leaves total rows out (a bare long CSV) stores no row
-  count of its own, so its `rows_served` is `None`.
+  file's rows, an export link's rows, a derived file's rows, and 0 on the manifest doors (an
+  operations poll included), an export prepare, an analysis answer and a series statistics
+  file. A file whose rendering reshapes rows (`RESHAPING_KEYS`) or leaves total rows out (a
+  bare long CSV) stores no row count of its own, so its `rows_served` is `None`. A call that
+  records none, including a file whose row count raised, still logs its line with null.
+- `admission` is the request's own, except on an operations poll, which logs the admission the
+  mint recorded on its operation.
 """
 
 from __future__ import annotations
@@ -39,7 +43,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from dataset_store.snapshot import ManifestFacts
-from dfo_platform.caller import current_delivery_identity
+from dfo_platform.caller import Admission, current_delivery_identity
 from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
 from dfo_platform.trace import get_trace_id
 from materialise.generation import bare_stat_var_ref
@@ -61,7 +65,10 @@ RESHAPING_KEYS = frozenset({"groupby", "pivot", "without_party_totals"})
 
 @dataclass
 class Delivery:
-    """What one door call served, filled as the door comes to each fact."""
+    """What one door call served, filled as the door comes to each fact. `rows_served` stays
+    `None` until a `record_*` function sets it, so a call that records no row count logs null.
+    `admission` overrides the request's own (`DeliveryIdentity.admission`) where the
+    line describes a mint an earlier request submitted."""
 
     spec_id: str | None = None
     content_version: str | None = None
@@ -70,7 +77,8 @@ class Delivery:
     measure_count: int | None = None
     series_count: int | None = None
     rows_available: int | None = None
-    rows_served: int | None = 0
+    rows_served: int | None = None
+    admission: Admission | None = None
 
 
 _current: ContextVar[Delivery | None] = ContextVar("datasets_delivery", default=None)
@@ -139,8 +147,10 @@ def _record(
 
 
 @_never_raises
-def record_manifest(manifest: Manifest) -> None:
-    """Record the version `manifest` describes, with its StatVars, on the bound delivery."""
+def record_manifest(manifest: Manifest, *, admission: Admission | None = None) -> None:
+    """Record the version `manifest` describes, with its StatVars, on the bound delivery. It
+    serves no rows, so `rows_served` is 0. `admission` is the one a mint recorded on its
+    operation, for a poll that logs that mint's line."""
     _record(
         definition={"spec_id": manifest.definition.spec_id},
         content_version=manifest.content_version,
@@ -149,6 +159,10 @@ def record_manifest(manifest: Manifest) -> None:
         trace=manifest.trace,
         measures=True,
     )
+    delivery = _current.get()
+    if delivery is not None:
+        delivery.rows_served = 0
+        delivery.admission = admission
 
 
 @_never_raises
@@ -183,7 +197,8 @@ def record_version(stored: StoredVersion) -> None:
 def record_file(stored: StoredVersion, location: StoredArtifactLocation) -> None:
     """Record the stored version `stored` and the file at `location` it serves. Rows served are 0
     for a series statistics file, the version's rows for a file that keeps them one for one, and
-    `None` otherwise, as the location stores no row count of its own."""
+    `None` otherwise, as the location stores no row count of its own. A fault in that count
+    leaves `None`, so the line still logs, with `rows_served` null."""
     record_version(stored)
     delivery = _current.get()
     if delivery is None:
@@ -276,13 +291,14 @@ def log_delivery(door: str, delivery: Delivery) -> None:
         fields: dict[str, object] = {
             "door": door,
             "trace_id": get_trace_id(),
-            "admission": identity.admission,
+            "admission": delivery.admission or identity.admission,
             "caller": identity.caller,
             "caller_source": identity.caller_source,
             "upstream": identity.upstream,
             "surface": identity.surface.value,
             "client": identity.client,
             "user_agent": identity.user_agent,
+            "turn_id": identity.turn_id,
             "spec_id": delivery.spec_id,
             "content_version": delivery.content_version,
             "export_id": delivery.export_id,
@@ -301,7 +317,7 @@ def log_delivery(door: str, delivery: Delivery) -> None:
             delivery.content_version,
             identity.surface.value,
             identity.caller_source,
-            identity.admission,
+            delivery.admission or identity.admission,
             delivery.measure_count,
             delivery.rows_served,
             extra={JSON_FIELDS_ATTR: fields},

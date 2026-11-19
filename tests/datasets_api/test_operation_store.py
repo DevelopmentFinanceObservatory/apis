@@ -136,6 +136,39 @@ def test_a_coverage_build_leaves_the_operation_and_its_admitted_stamp_in_place(
     )
 
 
+def test_a_completion_is_delivered_once_and_a_resubmit_resets_it_under_its_own_admission(
+    store: LiveOperationStore,
+) -> None:
+    submission = {
+        "request_identity": _IDENTITY,
+        "options": _OPTIONS,
+        "coverage_stamp": _STAMP,
+        "origin_catalogue_build_id": _BUILD,
+        "estimate": _ESTIMATE,
+    }
+    first = store.create_or_get(**submission, admission="background")
+    assert store.mark_delivered(first.id, attempt=0) is None  # not done
+    assert store.claim(first.id, submission_count=0, lease_seconds=60, final_delivery=False)
+    assert store.complete(
+        first.id,
+        attempt=1,
+        subject_id="spec_abc",
+        content_version="cv_1",
+        confirmed_at=_CONFIRMED_AT,
+        family=UNKNOWN_FAMILY,
+        basis=TEST_BASIS,
+    )
+
+    delivered = store.mark_delivered(first.id, attempt=1)
+    again = store.mark_delivered(first.id, attempt=1)
+    reset = store.create_or_get(**submission)
+
+    assert delivered is not None
+    assert (delivered.admission, delivered.delivered_at is not None) == ("background", True)
+    assert again is None
+    assert (reset.state, reset.admission, reset.delivered_at) == ("pending", "foreground", None)
+
+
 def test_compute_operation_id_differs_by_rendering() -> None:
     """Different renderings of the same subject and coverage stamp get distinct ids."""
     id_parquet = compute_operation_id(
