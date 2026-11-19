@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from functools import cached_property
 from typing import cast
 
 from pydantic import ValidationError
@@ -245,7 +246,11 @@ class StoredRendering:
     the plain rendering (a raw version's own frame, recorded by a plain requested-format file or
     by no file of minting options) when `plain`, and each of `mintings`. Those renderings were
     one frame when their files were linked, since a version is the content its rows hash to. A
-    rendering with no `mintings` is the plain one whatever `plain` says."""
+    rendering with no `mintings` is the plain one, so each rendering has one value.
+
+    Raises:
+        ValueError: `plain` with no `mintings`, which is the plain rendering already.
+    """
 
     # The raw version the frame is, or was derived from.
     base_content_version: str
@@ -254,10 +259,14 @@ class StoredRendering:
     # Each different set of minting options a file linked under the frame's version records,
     # in the order the files were linked.
     mintings: tuple[MintingOptions, ...] = ()
-    # The plain rendering is one of the renderings the frame's version is recorded under.
+    # The plain rendering is recorded beside `mintings`.
     plain: bool = False
 
-    @property
+    def __post_init__(self) -> None:
+        if self.plain and not self.mintings:
+            raise ValueError("a rendering with no minting options is the plain one already")
+
+    @cached_property
     def renderings(self) -> tuple[MintingOptions | None, ...]:
         """Every rendering the frame's version is recorded under, `None` for the plain one,
         which comes first when recorded, then `mintings` in `ordered_mintings` order. The first
@@ -306,18 +315,23 @@ class StoredRendering:
         `ambiguous`, or a `minting` of `None`, says the plain rendering is one of them.
 
         Raises:
-            ValueError: `record` is not an object `to_record` writes, or holds a groupby this
-                build's grammar refuses.
+            ValueError: `record` is not an object `to_record` writes, holds a groupby this
+                build's grammar refuses, or records no rendering: no minting options and no
+                plain rendering.
         """
         try:
             recorded = cast("Sequence[Mapping[str, object]]", record["mintings"])
             minting = _minting_of(cast("Mapping[str, object] | None", record["minting"]))
             ambiguous = cast(bool, record["ambiguous"])
+            mintings = _distinct(cast(MintingOptions, _minting_of(entry)) for entry in recorded)
+            plain = cast(bool, record.get("plain", ambiguous or minting is None))
+            if not mintings and not plain:
+                raise ValueError("the record names no rendering")
             return cls(
                 base_content_version=cast(str, record["base_content_version"]),
                 collapsed=cast(bool, record["collapsed"]),
-                mintings=_distinct(cast(MintingOptions, _minting_of(entry)) for entry in recorded),
-                plain=cast(bool, record.get("plain", ambiguous or minting is None)),
+                mintings=mintings,
+                plain=plain and bool(mintings),
             )
         except (KeyError, TypeError, ValidationError) as exc:
             raise ValueError(f"not a stored rendering record: {exc}") from exc
@@ -371,7 +385,7 @@ def rendering_of(
     return StoredRendering(
         base_content_version=content_version,
         mintings=mintings,
-        plain=records_plain_file(renderings),
+        plain=bool(mintings) and records_plain_file(renderings),
     )
 
 

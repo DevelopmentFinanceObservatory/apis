@@ -142,6 +142,33 @@ def test_a_card_record_keeps_the_link_order_and_adds_only_plain():
     assert rendering.refreshes_as is None
 
 
+@pytest.mark.parametrize(
+    "rendering",
+    [
+        StoredRendering(base_content_version="cv1"),
+        StoredRendering(base_content_version="cv1", mintings=(_CUT_MINTING,)),
+        StoredRendering(
+            base_content_version="cv1", mintings=(_SUMMED_MINTING, _CUT_MINTING), plain=True
+        ),
+        StoredRendering(
+            base_content_version="cv_base",
+            collapsed=True,
+            mintings=(_CUT_AND_SUMMED_MINTING, _SUMMED_MINTING),
+        ),
+    ],
+    ids=["plain", "single", "ambiguous-raw", "ambiguous-derived"],
+)
+def test_a_card_record_reads_back_as_the_rendering_it_records(rendering: StoredRendering):
+    assert StoredRendering.from_record(rendering.to_record()) == rendering
+
+
+def test_a_card_record_that_records_no_rendering_is_refused():
+    record = {**StoredRendering(base_content_version="cv1").to_record(), "plain": False}
+
+    with pytest.raises(ValueError):
+        StoredRendering.from_record(record)
+
+
 def test_a_card_record_from_before_the_plain_key_reads_its_plain_rendering():
     """A card revision recorded a raw version linking a plain file and a groupby file with no
     `plain` key; it reads back as recorded under both, refreshing as the plain rendering."""

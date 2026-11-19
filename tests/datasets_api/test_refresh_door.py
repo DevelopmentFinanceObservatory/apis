@@ -929,12 +929,10 @@ def test_a_raw_version_linking_a_cut_and_a_summed_cut_refreshes_until_they_diffe
         assert refused.json()["code"] == "rendering_not_recorded"
 
 
-def test_a_rendering_the_rebuilt_head_cannot_make_refuses_retryably(
-    monkeypatch: pytest.MonkeyPatch,
-):
+def test_a_rendering_the_rebuilt_head_cannot_make_refuses(monkeypatch: pytest.MonkeyPatch):
     """A frame recorded under a cut and a summed cut whose summed cut cannot be made from the
     head rebuilds, and when it cannot be made from the rebuilt head either the refresh refuses
-    retryable `service_unavailable`, never `rendering_not_recorded`."""
+    `rendering_not_recorded`."""
     shared = _one_contributor_rig(_CUT_MINT, _CUT_SUMMED_MINT)
     _move_to(shared, _MEMBER_A_ROW.replace(",1000,", ",3000,"))
     real = refresh_module._rendering_frame
@@ -950,10 +948,56 @@ def test_a_rendering_the_rebuilt_head_cannot_make_refuses_retryably(
 
     resp = shared.rig.refresh(spec_id=shared.spec_id, content_version=shared.base_content_version)
 
-    assert resp.status_code == 503, resp.text
-    assert (resp.json()["code"], resp.json()["retryable"]) == ("service_unavailable", True)
+    assert resp.status_code == 422, resp.text
+    assert (resp.json()["code"], resp.json()["retryable"]) == ("rendering_not_recorded", False)
     # The head read sent the call to a rebuild, which fetched.
     assert len(shared.rig.sdmx_requests) > sdmx_requests
+
+
+def test_a_rebuild_that_remakes_the_named_frame_answers_current(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A frame recorded under a cut and a summed cut whose head frame expired rebuilds to the
+    same version, and the refresh answers `current` with it, whatever its renderings make."""
+    shared = _one_contributor_rig(_CUT_MINT, _CUT_SUMMED_MINT)
+    shared.rig.expire_frame(spec_id=shared.spec_id, content_version=shared.base_content_version)
+    monkeypatch.setattr(refresh_module, "_rendering_frame", lambda **kwargs: None)
+    named = {"spec_id": shared.spec_id, "content_version": shared.base_content_version}
+
+    resp = shared.rig.refresh(**named)
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"status": "current", "frame": named}
+    assert shared.rig.frame_servable(**named)
+
+
+def test_renderings_that_agree_on_a_frame_the_rebuild_did_not_serve_refuse(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """When the renderings of a frame a rebuild served agree on another version, the refresh
+    refuses `rendering_not_recorded`."""
+    shared = _one_contributor_rig(_CUT_MINT, _CUT_SUMMED_MINT)
+    # The head is fresh, so the rebuild runs only because the head read finds nothing.
+    shared.rig.body["text"] = collapse_fixture._CSV_HEADER + _MEMBER_A_ROW.replace(
+        ",1000,", ",3000,"
+    )
+    real = refresh_module._agreed_frame
+    calls: list[str] = []
+
+    def agreed_on_the_old_head(**kwargs):
+        calls.append(kwargs["head_content_version"])
+        if len(calls) == 1:
+            return None
+        return real(**{**kwargs, "head_content_version": shared.base_content_version})
+
+    monkeypatch.setattr(refresh_module, "_agreed_frame", agreed_on_the_old_head)
+
+    resp = shared.rig.refresh(spec_id=shared.spec_id, content_version=shared.base_content_version)
+
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["code"] == "rendering_not_recorded"
+    new_head = shared.rig.head_store.head_for(shared.spec_id).content_version
+    assert calls == [shared.base_content_version, new_head]
 
 
 # The groupby that keeps `testAxis` sums `flowAxis`, so it has a version of its own.
@@ -1050,6 +1094,66 @@ def test_a_derived_version_recorded_under_two_renderings_refreshes_until_they_di
         refused = serving.refresh(**frame)
         assert refused.status_code == 422, refused.text
         assert refused.json()["code"] == "rendering_not_recorded"
+
+
+def test_a_refresh_finds_the_version_its_rebuild_recorded(monkeypatch: pytest.MonkeyPatch):
+    """A derived frame recorded under two renderings whose head and frame expired rebuilds on
+    new data, and the check after the rebuild finds the groupby the rebuild recorded instead of
+    rendering it again."""
+    minting = _cut_family_rig(dac_total_kind="party")
+    spec_id = recompute_identity(selector_fixture._CUT_FAMILY_IDENTITY).spec_id
+    sidecar = {
+        "schema_version": 1,
+        "spec_id": spec_id,
+        "identity": selector_fixture._CUT_FAMILY_IDENTITY,
+    }
+    summed = party_fixture._mint(
+        minting.client,
+        spec_id=spec_id,
+        sidecar=sidecar,
+        options={"bundle": False, "groupby": _KEEPS_TEST_AXIS},
+    )
+    party_fixture._mint(
+        minting.client,
+        spec_id=spec_id,
+        sidecar=sidecar,
+        options={**_CUT_MINT, "groupby": _KEEPS_TEST_AXIS},
+    )
+    head = minting.head_store.head_for(spec_id).content_version
+    minting.expire_frame(spec_id=spec_id, content_version=head)
+    minting.expire_frame(spec_id=spec_id, content_version=summed["content_version"])
+    # The head is fresh, so the rebuild runs only because the head read cannot render.
+    minting.body["text"] = selector_fixture._CUT_FAMILY_CSV.replace(",2020,9", ",2020,19")
+    rendered: list[tuple[str, MintingOptions]] = []
+    real = refresh_module.head_rendering
+
+    def recording(**kwargs):
+        options = kwargs["options"]
+        if options is not None and options.groupby is not None:
+            rendered.append(
+                (
+                    kwargs["content_version"],
+                    MintingOptions(
+                        groupby=options.groupby,
+                        without_party_totals=options.without_party_totals,
+                    ),
+                )
+            )
+        return real(**kwargs)
+
+    monkeypatch.setattr(refresh_module, "head_rendering", recording)
+
+    resp = minting.refresh(spec_id=spec_id, content_version=summed["content_version"])
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "moved"
+    new_head = minting.head_store.head_for(spec_id).content_version
+    assert new_head != head
+    groupby = GroupbyOptions.model_validate(_KEEPS_TEST_AXIS)
+    # Only the summed cut renders from the new head; the rebuild recorded the groupby.
+    assert [entry for entry in rendered if entry[0] == new_head] == [
+        (new_head, MintingOptions(groupby=groupby, without_party_totals=True))
+    ]
 
 
 def test_a_refresh_lists_the_dataset_versions_once(monkeypatch: pytest.MonkeyPatch):
