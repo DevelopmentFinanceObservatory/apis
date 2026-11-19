@@ -25,17 +25,17 @@ the named version's revocation, so a frame taken down still refreshes to a newer
 
 A groupby sum that leaves the frame unchanged, as over a dataset with one contributing StatVar,
 and a party-totals cut that leaves nothing out have no version of their own: their file is
-linked under the raw version. A raw version linking a file of one set of minting options and no
-plain requested-format file is that rendering. One linking a plain file and files of one or more
-minting options stands for several renderings, and its records do not say which the caller
-holds. While those renderings of the current data are still one frame, the refresh answers with
-it and links every file under it. Once they differ, because a rendering of the current data has
-a version of its own, the refresh refuses `rendering_not_recorded` (422) and names the rendering
-ambiguous. A raw version linking files of two or more different minting options and no plain
-file refuses `rendering_not_recorded` at once, since no rendering of the current data is the
-one to answer with. So does a derived version linking files of two or more different minting
-options, which two renderings producing the same rows share, such as a cut and a groupby that
-left the cut frame unchanged.
+linked under the raw version. Renderings that produce the same rows share one version, so a
+version can be recorded under several renderings: a raw version under the plain rendering and
+such files, a derived version under a groupby and a groupby with a cut that left nothing out.
+The records do not say which of them the caller holds, and they need not say: the refresh
+renders each of them from the head with the current code index (`_rendering_frame`) and answers
+with the one frame they make, linking a file of each under it. Once they differ it refuses
+`rendering_not_recorded` (422). A head whose stored frame has expired, so that a rendering
+cannot be made from it, rebuilds or answers `pending` as for any other frame. The frame
+refreshes, and rebuilds, as the plain rendering when that is recorded, and otherwise as the
+first of its minting options by `recorded_rendering.ordered_mintings`, so the order the files
+were linked in moves nothing.
 
 Freshness is the definition door's (`current.serve_current` through `serve_spec`): a head
 confirmed within `head_recheck_seconds` answers with no read, a later call compares the head's
@@ -102,6 +102,7 @@ from datasets_api.recorded_rendering import (
     RenderingNotRecorded,
     StoredRendering,
     frame_options,
+    ordered_mintings,
     recorded_mintings,
     recorded_party_cut,
     records_plain_file,
@@ -206,24 +207,20 @@ FrameRefreshResponse = Annotated[
 def stored_rendering(
     *, spec_id: str, content_version: str, snapshot_reader: SnapshotReader
 ) -> StoredRendering:
-    """Resolve a stored dataset frame's rendering from its version record and linked files.
+    """Resolve a stored dataset frame's rendering from its version record and linked files
+    (`recorded_rendering.rendering_of`).
 
-    A version derived from another takes its minting options (a groupby, a party-totals cut,
-    or both) from the files linked under it. It refuses when none records any, and when they
-    record two or more different ones, since renderings that produce the same rows share one
-    derived version and nothing says which the frame is. A raw version linking no file of
-    minting options is the plain rendering. One linking files of one set of minting options
-    and no plain file is that rendering. One linking files of two or more different ones and
-    no plain file refuses, since nothing says which the frame is. One linking a plain file and
-    any files of minting options is `ambiguous`: it is served as the plain rendering, which is
-    determined because the refresh answers only while every one of `mintings` still renders
-    the current data as the plain frame. The registration of `spec_id` is not checked.
+    A version is recorded under each rendering a file linked under it records, and a raw
+    version under the plain rendering too when it links a plain file or no file of minting
+    options. A version recorded under several is `ambiguous` and refreshes as the plain
+    rendering when that is recorded, else as the first of its `mintings`; the refresh answers it
+    only while all of them render the current data as one frame. The registration of `spec_id`
+    is not checked.
 
     Raises:
         SnapshotNotFound: The dataset holds no version at `content_version`.
         RenderingNotRecorded: The version is derived and its linked files record no minting
-            options or several different ones, or a raw version linking several different
-            ones and no plain file.
+            options.
     """
     version = snapshot_reader.read_version(spec_id, content_version)
     if version is None:
@@ -244,19 +241,16 @@ def refresh_can_answer(*, stored: StoredRendering, target: StoredRendering) -> b
     target by this rule, so they draw a card on every frame its refresh returns and on no
     other.
 
-    The refresh answers a plain frame with the dataset's raw head, whatever else is linked
-    under it. It answers a derived frame with the same rendering of the head: a derived version
-    recording those minting options, or the raw head when the rendering leaves the frame
-    unchanged and its file is linked there. It answers an ambiguous frame only with a raw head
-    that is every one of its renderings, so one linking a file of each of its minting options.
+    The refresh answers with the frame every rendering `stored` is recorded under makes from the
+    head, and links a file of each of its minting options under that frame. A plain rendering
+    makes the raw head, so a `stored` recording it answers with a raw version alone. Each of
+    `stored.mintings` makes a derived version recording it, or the raw head when it leaves the
+    frame unchanged and its file is linked there. So the target is a frame recording every one
+    of `stored.mintings`, and a raw one when `stored` records the plain rendering.
     """
-    if stored.minting is None:
-        return not target.collapsed
-    if stored.ambiguous:
-        return not target.collapsed and all(
-            minting in target.mintings for minting in stored.mintings
-        )
-    return stored.minting in target.mintings
+    if stored.plain and target.collapsed:
+        return False
+    return all(minting in target.mintings for minting in stored.mintings)
 
 
 def _recorded_derived(
@@ -334,65 +328,87 @@ def _rendering_frame(
     return _servable_frame(spec_id=spec_id, content_version=rendered.content_version, deps=deps)
 
 
-def _refuse_differing_renderings(
+def _records_every(
+    *, spec_id: str, content_version: str, rendering: StoredRendering, deps: DefinitionDeps
+) -> bool:
+    """Whether the version at `content_version` links a file of each of `rendering.mintings`,
+    and a plain file when `rendering` records the plain rendering, so every rendering
+    `rendering` is recorded under makes that version."""
+    renderings = [
+        location.rendering
+        for location in deps.snapshot_reader.read_artifact_locations(spec_id, content_version)
+    ]
+    recorded = ordered_mintings(renderings)
+    return all(minting in recorded for minting in rendering.mintings) and (
+        not rendering.plain or records_plain_file(renderings)
+    )
+
+
+def _agreed_frame(
     *,
     spec_id: str,
     content_version: str,
-    current_content_version: str,
-    minting: MintingOptions,
+    head_content_version: str,
+    rendering: StoredRendering,
     deps: DefinitionDeps,
     trace_id: str | None,
-) -> None:
-    """Refuse an ambiguous frame once the plain and the `minting` rendering of the current data
-    differ. `current_content_version` is the plain one.
+    coverage_snapshot: CoverageSnapshot,
+) -> Manifest | None:
+    """The stored frame every rendering `rendering` is recorded under makes from the head, with
+    a file of each linked under it, or `None` when one of them cannot be made from the head's
+    frame (`_rendering_frame`), which sends the caller to a rebuild. `content_version` is the
+    named frame's.
 
-    The two are one frame when the current version links a file of each, as the named version
-    does. When it does not yet, both are rendered from its stored frame: a rendering that keeps
-    the version is linked under it (`_rendering_frame`), and so is the plain file. Anything else
-    refuses: a rendering with a version of its own, a rendering that cannot be made, and a file
-    that was not linked. The current frame therefore always records both renderings, and a
-    later refresh of it meets the same check.
+    The first rendering is the one the frame refreshes as, and a frame recorded under one
+    rendering is that rendering's frame. When the first rendering's frame already links a file
+    of every rendering, they are one frame there and nothing more renders. Otherwise each other
+    rendering is made from the head with the current code index, a plain file is linked under
+    the head, and the frame answers once every rendering made the same version and that version
+    links a file of each.
 
     Raises:
-        RenderingNotRecorded: The two renderings are not established to be one frame.
+        RenderingNotRecorded: The renderings make different frames, or their files did not
+            all link under the one they make.
     """
+    renderings = ((None,) if rendering.plain else ()) + rendering.mintings
 
-    def _records_both() -> bool:
-        renderings = [
-            location.rendering
-            for location in deps.snapshot_reader.read_artifact_locations(
-                spec_id, current_content_version
-            )
-        ]
-        return minting in recorded_mintings(renderings) and records_plain_file(renderings)
-
-    def _render_both(coverage_snapshot: CoverageSnapshot) -> bool:
-        """Render what the current version lacks and say whether it then records both."""
-        summed = _rendering_frame(
+    def frame_of(minting: MintingOptions | None) -> Manifest | None:
+        return _rendering_frame(
             spec_id=spec_id,
-            head_content_version=current_content_version,
+            head_content_version=head_content_version,
             minting=minting,
             deps=deps,
             trace_id=trace_id,
             coverage_snapshot=coverage_snapshot,
         )
-        if summed is None or summed.content_version != current_content_version:
-            return False
+
+    def records_every(made: str) -> bool:
+        return _records_every(spec_id=spec_id, content_version=made, rendering=rendering, deps=deps)
+
+    differ = RenderingNotRecorded(
+        spec_id=spec_id, content_version=content_version, renderings=len(renderings)
+    )
+    frame = frame_of(renderings[0])
+    if frame is None or len(renderings) == 1 or records_every(frame.content_version):
+        return frame
+    for other in renderings[1:]:
+        made = frame_of(other)
+        if made is None:
+            return None
+        if made.content_version != frame.content_version:
+            raise differ
+    if rendering.plain:
         head_rendering(
             subject_id=spec_id,
-            content_version=current_content_version,
+            content_version=head_content_version,
             deps=deps,
             options=frame_options(None),
             trace_id=trace_id,
             coverage_snapshot=coverage_snapshot,
         )
-        return _records_both()
-
-    if _records_both():
-        return
-    if _render_both(deps.coverage.snapshot()):
-        return
-    raise RenderingNotRecorded(spec_id=spec_id, content_version=content_version, ambiguous=True)
+    if not records_every(frame.content_version):
+        raise differ
+    return frame
 
 
 def answer_frame_refresh(
@@ -428,9 +444,25 @@ def answer_frame_refresh(
             )
         )
     named_spec_id, spec_id = spec_id, served.spec_id
-    # An ambiguous frame is served as the plain rendering, and `_answer` then checks the others.
-    minting = None if rendering.ambiguous else rendering.minting
-    options = frame_options(minting)
+    minting = rendering.refreshes_as
+    options = rendering.options
+    # The versions `_agreed_frame` found every rendering makes, so `_answer` checks only a
+    # frame a rebuild served.
+    agreed: set[str] = set()
+
+    def _agreed(head_content_version: str, coverage_snapshot: CoverageSnapshot) -> Manifest | None:
+        frame = _agreed_frame(
+            spec_id=spec_id,
+            content_version=content_version,
+            head_content_version=head_content_version,
+            rendering=rendering,
+            deps=deps,
+            trace_id=trace_id,
+            coverage_snapshot=coverage_snapshot,
+        )
+        if frame is not None:
+            agreed.add(frame.content_version)
+        return frame
 
     def _load_head_frame(
         head_content_version: str, coverage_snapshot: CoverageSnapshot
@@ -445,28 +477,26 @@ def answer_frame_refresh(
             stored = _servable_frame(spec_id=spec_id, content_version=content_version, deps=deps)
             if stored is not None:
                 return stored
-        return _rendering_frame(
-            spec_id=spec_id,
-            head_content_version=head_content_version,
-            minting=minting,
-            deps=deps,
-            trace_id=trace_id,
-            coverage_snapshot=coverage_snapshot,
-        )
+        return _agreed(head_content_version, coverage_snapshot)
 
     def _answer(current_content_version: str) -> FrameCurrent | FrameMoved:
         frame = FramePair(spec_id=spec_id, content_version=current_content_version)
         if (spec_id, current_content_version) == (named_spec_id, content_version):
             return FrameCurrent(frame=frame)
-        if rendering.ambiguous:
-            for recorded in rendering.mintings:
-                _refuse_differing_renderings(
+        if rendering.ambiguous and current_content_version not in agreed:
+            # A rebuild served the frame, so no head read checked the other renderings.
+            version = deps.snapshot_reader.read_version(spec_id, current_content_version)
+            head_content_version = (
+                version.base_content_version
+                if version is not None and version.base_content_version is not None
+                else current_content_version
+            )
+            made = _agreed(head_content_version, deps.coverage.snapshot())
+            if made is None or made.content_version != current_content_version:
+                raise RenderingNotRecorded(
                     spec_id=spec_id,
                     content_version=content_version,
-                    current_content_version=current_content_version,
-                    minting=recorded,
-                    deps=deps,
-                    trace_id=trace_id,
+                    renderings=len(rendering.mintings) + rendering.plain,
                 )
         return FrameMoved(frame=frame)
 

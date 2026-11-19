@@ -27,6 +27,7 @@ from dataset_store.snapshot import (
 )
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors.definition import DefinitionDeps
+from datasets_api.mint_models import GroupbyOptions
 from datasets_api.operation_store import LiveOperationStore
 from datasets_api.operations.task_client import FakeTaskClient
 from datasets_api.operations.worker import run_operation
@@ -42,6 +43,7 @@ from dc_sdmx import SdmxClient
 from materialise import EnrichmentLookup
 from materialise.rate_tables import RateTableCache
 from spec_registry import LiveSpecRegistry
+from spec_registry.identity import recompute_identity
 from spec_registry.reader import LiveSpecReader
 from statvar_members import MemberEnumerator
 
@@ -868,6 +870,159 @@ def test_a_raw_version_linking_both_renderings_refuses_once_they_differ():
         assert refused.status_code == 422, refused.text
         assert refused.json()["code"] == "rendering_not_recorded"
         assert refused.json()["retryable"] is False
+
+
+_CUT_MINT = {"bundle": False, "without_party_totals": True}
+_CUT_SUMMED_MINT = {**_CUT_MINT, "groupby": _GROUPBY}
+
+
+def _draws_on(rig: _Rig, *, spec_id: str, stored: str, target: str) -> bool:
+    """Whether the render routes draw a card made on `stored`, recording its rendering as a
+    card revision does, on `target` (`refresh_can_answer`)."""
+    reader = LiveSnapshotReader(store=rig.version_store)
+    recorded = refresh_module.stored_rendering(
+        spec_id=spec_id, content_version=stored, snapshot_reader=reader
+    )
+    return refresh_module.refresh_can_answer(
+        stored=refresh_module.StoredRendering.from_record(recorded.to_record()),
+        target=refresh_module.stored_rendering(
+            spec_id=spec_id, content_version=target, snapshot_reader=reader
+        ),
+    )
+
+
+def test_a_raw_version_linking_a_cut_and_a_summed_cut_refreshes_until_they_differ():
+    """A raw version linking a party-totals cut and a cut with a groupby, and no plain file,
+    refreshes while both render the current data as one frame, and refuses once they differ."""
+    shared = _one_contributor_rig(_CUT_MINT, _CUT_SUMMED_MINT)
+    named = {"spec_id": shared.spec_id, "content_version": shared.base_content_version}
+
+    unmoved = shared.rig.refresh(**named)
+    assert unmoved.status_code == 200, unmoved.text
+    assert unmoved.json() == {"status": "current", "frame": named}
+
+    # New data with one member contributing: the cut leaves nothing out and the sum is the frame.
+    _move_to(shared, _MEMBER_A_ROW.replace(",1000,", ",3000,"))
+    one_frame = shared.rig.refresh(**named)
+    assert one_frame.status_code == 200, one_frame.text
+    assert one_frame.json()["status"] == "moved"
+    moved_to = one_frame.json()["frame"]["content_version"]
+    assert moved_to == shared.rig.head_store.head_for(shared.spec_id).content_version
+    assert moved_to != shared.base_content_version
+    assert shared.recorded_groupby(moved_to) == [_GROUPBY]
+    assert _draws_on(
+        shared.rig, spec_id=shared.spec_id, stored=shared.base_content_version, target=moved_to
+    )
+
+    # Its frame file expires: the refresh rebuilds and answers the same frame, as for any frame.
+    shared.rig.expire_frame(spec_id=shared.spec_id, content_version=moved_to)
+    rebuilt = shared.rig.refresh(**named)
+    assert rebuilt.status_code == 200, rebuilt.text
+    assert rebuilt.json() == one_frame.json()
+    assert shared.rig.frame_servable(spec_id=shared.spec_id, content_version=moved_to)
+
+    # A second member contributes: the summed cut is no longer the cut frame.
+    _move_to(shared, _MEMBER_A_ROW.replace(",1000,", ",3000,"), _MEMBER_B_ROW)
+    for frame in (named, {**named, "content_version": moved_to}):
+        refused = shared.rig.refresh(**frame)
+        assert refused.status_code == 422, refused.text
+        assert refused.json()["code"] == "rendering_not_recorded"
+
+
+# The groupby that keeps `testAxis` sums `flowAxis`, so it has a version of its own.
+_KEEPS_TEST_AXIS = {"by": ["recipient", "testAxis"], "op": "sum"}
+
+
+def _cut_family_index(*, dac_total_kind: str) -> CodeIndex:
+    """The cut family's index with `flowAxis` summable, the DAC total of `dac_total_kind`: a
+    `total` the cut leaves out, or a `party` it keeps."""
+    index = selector_fixture._cut_family_code_index(flow_summable=True)
+    return CodeIndex(
+        stamp=index.stamp,
+        declarations=index.declarations.values(),
+        codes=index.codes,
+        statvars=index.statvars,
+        parties=[
+            replace(row, kind=dac_total_kind) if row.dcid == party_fixture._DAC_TOTAL else row
+            for row in index.parties.values()
+        ],
+    )
+
+
+def _cut_family_rig(*, dac_total_kind: str, stores_of: _Rig | None = None) -> _Rig:
+    return _rig(
+        graph=selector_fixture._cut_family_graph(),
+        coverage=selector_fixture._cut_family_coverage(),
+        body=selector_fixture._CUT_FAMILY_CSV,
+        code_index=_cut_family_index(dac_total_kind=dac_total_kind),
+        stores_of=stores_of,
+    )
+
+
+def _move_cut_family(rig: _Rig, *, spec_id: str, by: int) -> None:
+    """Add `by` to every value the source serves and force the next refresh to rebuild."""
+    rig.body["text"] = selector_fixture._CUT_FAMILY_CSV.replace(
+        ",2020,9", f",2020,{9 + by}"
+    ).replace(",2020,1", f",2020,{1 + by}")
+    rig.head_store.age_head(spec_id, age=_PAST_MAX_AGE)
+
+
+def test_a_derived_version_recorded_under_two_renderings_refreshes_until_they_differ():
+    """A groupby and a groupby with a party-totals cut that left nothing out share one derived
+    version. It refreshes while both render the current data as one frame, and refuses once a
+    code index that makes the DAC total a total has the cut leave it out at a later head."""
+    minting = _cut_family_rig(dac_total_kind="party")
+    spec_id = recompute_identity(selector_fixture._CUT_FAMILY_IDENTITY).spec_id
+    sidecar = {
+        "schema_version": 1,
+        "spec_id": spec_id,
+        "identity": selector_fixture._CUT_FAMILY_IDENTITY,
+    }
+    summed = party_fixture._mint(
+        minting.client,
+        spec_id=spec_id,
+        sidecar=sidecar,
+        options={"bundle": False, "groupby": _KEEPS_TEST_AXIS},
+    )
+    both = party_fixture._mint(
+        minting.client,
+        spec_id=spec_id,
+        sidecar=sidecar,
+        options={**_CUT_MINT, "groupby": _KEEPS_TEST_AXIS},
+    )
+    assert both["content_version"] == summed["content_version"]
+    assert summed["content_version"] != minting.head_store.head_for(spec_id).content_version
+    named = {"spec_id": spec_id, "content_version": summed["content_version"]}
+
+    unmoved = minting.refresh(**named)
+    assert unmoved.status_code == 200, unmoved.text
+    assert unmoved.json() == {"status": "current", "frame": named}
+
+    _move_cut_family(minting, spec_id=spec_id, by=1)
+    one_frame = minting.refresh(**named)
+    assert one_frame.status_code == 200, one_frame.text
+    assert one_frame.json()["status"] == "moved"
+    moved_to = one_frame.json()["frame"]["content_version"]
+    reader = LiveSnapshotReader(store=minting.version_store)
+    version = reader.read_version(spec_id, moved_to)
+    assert version is not None
+    assert version.base_content_version == minting.head_store.head_for(spec_id).content_version
+    assert recorded_mintings(
+        location.rendering for location in reader.read_artifact_locations(spec_id, moved_to)
+    ) == [
+        MintingOptions(groupby=GroupbyOptions.model_validate(_KEEPS_TEST_AXIS)),
+        MintingOptions(
+            groupby=GroupbyOptions.model_validate(_KEEPS_TEST_AXIS), without_party_totals=True
+        ),
+    ]
+    assert _draws_on(minting, spec_id=spec_id, stored=summed["content_version"], target=moved_to)
+
+    serving = _cut_family_rig(dac_total_kind="total", stores_of=minting)
+    _move_cut_family(serving, spec_id=spec_id, by=2)
+    for frame in (named, {**named, "content_version": moved_to}):
+        refused = serving.refresh(**frame)
+        assert refused.status_code == 422, refused.text
+        assert refused.json()["code"] == "rendering_not_recorded"
 
 
 def test_a_refresh_under_the_recorded_rendering_ignores_a_file_linked_later(

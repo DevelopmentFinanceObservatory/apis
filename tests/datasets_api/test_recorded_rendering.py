@@ -11,9 +11,11 @@ from datasets_api.mint_models import GroupbyOptions
 from datasets_api.recorded_rendering import (
     MintingOptions,
     ServingFrame,
+    StoredRendering,
     derived_version_sums,
     recorded_mintings,
     records_plain_file,
+    rendering_of,
     serving_frames,
 )
 from datasets_api.render import FrameMode
@@ -75,6 +77,73 @@ def test_each_file_records_its_groupby_and_party_totals_cut():
 )
 def test_a_derived_version_sums_unless_it_is_a_cut_alone(trace, renderings, sums):
     assert derived_version_sums(trace, renderings) is sums
+
+
+_PLAIN = {"format": "csv", "bundle": False}
+_CUT_MINTING = MintingOptions(without_party_totals=True)
+_SUMMED_MINTING = MintingOptions(groupby=_GROUPBY)
+_CUT_AND_SUMMED_MINTING = MintingOptions(groupby=_GROUPBY, without_party_totals=True)
+
+
+@pytest.mark.parametrize(
+    ("base", "renderings", "refreshes_as", "mintings"),
+    [
+        (None, [_CUT_AND_SUMMED, _CUT], _CUT_MINTING, (_CUT_MINTING, _CUT_AND_SUMMED_MINTING)),
+        (None, [_CUT, _CUT_AND_SUMMED], _CUT_MINTING, (_CUT_MINTING, _CUT_AND_SUMMED_MINTING)),
+        (None, [_CUT_AND_SUMMED, _PLAIN], None, (_CUT_AND_SUMMED_MINTING,)),
+        (
+            "cv_base",
+            [_CUT_AND_SUMMED, _SUMMED],
+            _SUMMED_MINTING,
+            (_SUMMED_MINTING, _CUT_AND_SUMMED_MINTING),
+        ),
+        (
+            "cv_base",
+            [_SUMMED, _CUT_AND_SUMMED],
+            _SUMMED_MINTING,
+            (_SUMMED_MINTING, _CUT_AND_SUMMED_MINTING),
+        ),
+    ],
+    ids=[
+        "raw-summed-cut-first",
+        "raw-cut-first",
+        "raw-plain-file-last",
+        "derived-summed-cut-first",
+        "derived-groupby-first",
+    ],
+)
+def test_a_version_recorded_under_several_renderings_refreshes_as_one_the_file_order_leaves(
+    base, renderings, refreshes_as, mintings
+):
+    rendering = rendering_of(
+        spec_id="spec_a",
+        version=_version(base_content_version=base),
+        renderings=[{"format": "frame"}, *renderings],
+    )
+
+    assert (rendering.refreshes_as, rendering.mintings, rendering.ambiguous) == (
+        refreshes_as,
+        mintings,
+        True,
+    )
+    assert StoredRendering.from_record(rendering.to_record()) == rendering
+
+
+def test_a_card_record_from_before_the_plain_key_reads_its_plain_rendering():
+    """A card revision recorded a raw version linking a plain file and a groupby file with no
+    `plain` key; it reads back as recorded under both, refreshing as the plain rendering."""
+    record = StoredRendering(
+        base_content_version="cv1",
+        minting=_SUMMED_MINTING,
+        ambiguous=True,
+        mintings=(_SUMMED_MINTING,),
+        plain=True,
+    ).to_record()
+    del record["plain"]
+
+    read = StoredRendering.from_record(record)
+
+    assert (read.plain, read.refreshes_as, read.mintings) == (True, None, (_SUMMED_MINTING,))
 
 
 _LEFT_OUT = {"party_totals_left_out": [{"role": "recipient", "entities": ["X"]}]}

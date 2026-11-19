@@ -934,17 +934,8 @@ def _cut_family_code_index(*, flow_summable: bool) -> CodeIndex:
     )
 
 
-def _cut_family_client(
-    version_store,
-    artifact_store,
-    *,
-    flow_summable: bool = False,
-    store: FakeDatasetStore | None = None,
-):
-    """A client over `_CUT_FAMILY`, registering specs in `store`. With `flow_summable`, the
-    index declares `flowAxis` summable too, so a groupby that keeps `testAxis` sums `flowAxis`
-    into a frame of its own."""
-    graph = FakeMintGraphReader(
+def _cut_family_graph() -> FakeMintGraphReader:
+    return FakeMintGraphReader(
         arcs={
             member: {
                 "typeOf": ("StatisticalVariable",),
@@ -959,7 +950,10 @@ def _cut_family_client(
         },
         labels={"OECD_DAC2A": "OECD DAC2a", "country/KEN": "Kenya", "country/FRA": "France"},
     )
-    coverage = FakeCoverageService(
+
+
+def _cut_family_coverage() -> FakeCoverageService:
+    return FakeCoverageService(
         build_coverage_index(
             [
                 (member, "facet1", provider, "country/KEN", [2020])
@@ -976,8 +970,20 @@ def _cut_family_client(
             },
         )
     )
+
+
+def _cut_family_client(
+    version_store,
+    artifact_store,
+    *,
+    flow_summable: bool = False,
+    store: FakeDatasetStore | None = None,
+):
+    """A client over `_CUT_FAMILY`, registering specs in `store`. With `flow_summable`, the
+    index declares `flowAxis` summable too, so a groupby that keeps `testAxis` sums `flowAxis`
+    into a frame of its own."""
     return _client(
-        graph=graph,
+        graph=_cut_family_graph(),
         sdmx_transport=httpx.MockTransport(
             lambda request: httpx.Response(
                 200,
@@ -990,7 +996,7 @@ def _cut_family_client(
         head_writer=_FakeHeadStore(),
         artifact_store=artifact_store,
         code_index=_cut_family_code_index(flow_summable=flow_summable),
-        coverage=coverage,
+        coverage=_cut_family_coverage(),
     )
 
 
