@@ -32,8 +32,10 @@ The refresh makes each of them from the head with the current code index (`_rend
 and answers with the one frame they make, linking a file of each under it, so the caller's
 frame is that frame whichever rendering it was made as. Once they differ it refuses
 `rendering_not_recorded` (422). A head whose stored frame has expired, so that a rendering
-cannot be made from it, rebuilds or answers `pending` as for any other frame, and a rendering
-that cannot be made from the rebuilt head refuses `rendering_not_recorded` (422). The frame
+cannot be made from it, rebuilds or answers `pending` as for any other frame. After a
+rebuild the renderings are made from the head it wrote: one that cannot be made refuses
+retryable `service_unavailable` (503), and renderings that make one frame other than the one
+the rebuild served refuse `rendering_not_recorded`. The frame
 refreshes, and rebuilds, as the plain rendering when that is recorded, and otherwise as the
 first of its minting options by `recorded_rendering.ordered_mintings`, so the order the files
 were linked in moves nothing.
@@ -158,6 +160,21 @@ class RefreshBackpressure(Backpressure):
         super().__init__("the frame refresh door is at its concurrent capacity right now; retry")
 
 
+class RefreshRenderingUnmade(Refusal):
+    """A rebuild served the frame, and a rendering it is recorded under could not be made from
+    the rebuilt head: a stored frame the render reads was missing or unreadable when it ran, a
+    state of the store a retry can find changed. Maps to retryable `service_unavailable` (503),
+    with no `Retry-After`, since no capacity is waited for."""
+
+    code = "service_unavailable"
+    retryable = True
+
+    def __init__(self) -> None:
+        super().__init__(
+            "a rendering of the frame could not be made from the rebuilt dataset; retry"
+        )
+
+
 def classify_refresh_exception(exc: BaseException) -> ProblemSpec | None:
     return classify_datasets_refusal(exc)
 
@@ -256,35 +273,35 @@ def refresh_can_answer(*, stored: StoredRendering, target: StoredRendering) -> b
 
 
 class _DerivedVersions:
-    """The dataset's versions derived from one head, listed on the first lookup of that head
-    and kept with each version a render of this refresh recorded from it. A lookup of another
-    head lists again, and so does one after `forget`, which a rebuild calls, so a lookup never
-    misses a version recorded during the refresh."""
+    """The dataset's versions derived from each head a lookup names, read with a query filtered
+    by that head (`VersionLister.list_derived_versions`) on its first lookup, and kept with each
+    version a render or rebuild of this refresh made from it, whatever base its record names.
+    `forget` drops what was read, so the next lookup reads again: every head read starts from
+    a fresh read, and so does the check after a rebuild."""
 
     def __init__(self, *, spec_id: str, deps: DefinitionDeps) -> None:
         self._spec_id = spec_id
         self._deps = deps
-        self._head: str | None = None
-        self._listed: list[tuple[tuple[MintingOptions, ...], str]] = []
+        self._by_head: dict[str, list[tuple[tuple[MintingOptions, ...], str]]] = {}
 
     def _versions(self, head_content_version: str) -> list[tuple[tuple[MintingOptions, ...], str]]:
-        if self._head != head_content_version:
+        if head_content_version not in self._by_head:
             lister = self._deps.version_lister
-            self._listed = (
+            self._by_head[head_content_version] = (
                 [
                     (tuple(recorded_mintings(version.renderings)), version.content_version)
-                    for version in lister.list_versions(self._spec_id)
-                    if version.base_content_version == head_content_version
+                    for version in lister.list_derived_versions(
+                        self._spec_id, base_content_version=head_content_version
+                    )
                 ]
                 if lister is not None
                 else []
             )
-            self._head = head_content_version
-        return self._listed
+        return self._by_head[head_content_version]
 
     def recorded(self, *, base_content_version: str, minting: MintingOptions) -> str | None:
-        """The stored version derived from `base_content_version` with `minting`, the first the
-        listing names, or `None` when none is on record."""
+        """The stored version derived from `base_content_version` with `minting`: one a render
+        or rebuild of this refresh made, else the first the read names, or `None`."""
         return next(
             (
                 content_version
@@ -297,14 +314,13 @@ class _DerivedVersions:
     def add(
         self, *, base_content_version: str, minting: MintingOptions, content_version: str
     ) -> None:
-        """Note that a render recorded `content_version` derived from `base_content_version`
-        with `minting`."""
-        self._versions(base_content_version).append(((minting,), content_version))
+        """Note that a render or rebuild made `content_version` from `base_content_version`
+        with `minting`, which its record may name another base for."""
+        self._versions(base_content_version).insert(0, ((minting,), content_version))
 
     def forget(self) -> None:
-        """Drop the listing, so the next lookup lists the versions a rebuild recorded."""
-        self._head = None
-        self._listed = []
+        """Drop what was read, so the next lookup reads the versions again."""
+        self._by_head.clear()
 
 
 @dataclass(frozen=True)
@@ -500,7 +516,9 @@ def answer_frame_refresh(
 
     Raises:
         RenderingNotRecorded: The renderings the frame is recorded under make different
-            frames from the current data, or, after a rebuild, one of them cannot be made from
+            frames from the current data, or, after a rebuild, agree on a version other than
+            the one it served.
+        RefreshRenderingUnmade: After a rebuild, one of the renderings could not be made from
             the rebuilt head.
     """
     with phase("resolve"):
@@ -550,6 +568,8 @@ def answer_frame_refresh(
             stored = _servable_frame(spec_id=spec_id, content_version=content_version, deps=deps)
             if stored is not None:
                 return stored.manifest
+        # A head read after another caller's rebuild sees what that rebuild recorded.
+        derived.forget()
         frame = _agreed(head_content_version, coverage_snapshot)
         return frame.manifest if frame is not None else None
 
@@ -558,21 +578,29 @@ def answer_frame_refresh(
         if (spec_id, current_content_version) == (named_spec_id, content_version):
             return FrameCurrent(frame=frame)
         if rendering.ambiguous and current_content_version not in agreed:
-            # A rebuild served the frame, so no head read checked the other renderings, and
-            # the versions it recorded are not in the listing.
+            # A rebuild served the frame, so no head read checked the other renderings against
+            # the head it wrote, and the versions it recorded are not in what was read.
+            head = deps.head_store.read_head(spec_id)
+            if head is None:
+                raise RefreshRenderingUnmade()
+            head_content_version = head.content_version
             derived.forget()
-            version = deps.snapshot_reader.read_version(spec_id, current_content_version)
-            head_content_version = (
-                version.base_content_version
-                if version is not None and version.base_content_version is not None
-                else current_content_version
-            )
+            if minting is not None and current_content_version != head_content_version:
+                # The rebuild made the frame from the head, whatever base its record names.
+                derived.add(
+                    base_content_version=head_content_version,
+                    minting=minting,
+                    content_version=current_content_version,
+                )
             made = _agreed(head_content_version, deps.coverage.snapshot())
-            if made is None or made.content_version != current_content_version:
+            if made is None:
+                raise RefreshRenderingUnmade()
+            if made.content_version != current_content_version:
                 raise RenderingNotRecorded(
                     spec_id=spec_id,
                     content_version=content_version,
                     renderings=len(rendering.renderings),
+                    agreed_on=made.content_version,
                 )
         return FrameMoved(frame=frame)
 
@@ -651,6 +679,7 @@ def build_refresh_door(
             RenderingNotRecorded,
             RefreshRebuildFailed,
             RefreshBackpressure,
+            RefreshRenderingUnmade,
             RefreshNotPermitted,
             # `stored_rendering` reads the frame's version, which may not exist.
             SnapshotNotFound,
@@ -666,6 +695,7 @@ def build_refresh_door(
                 RenderingNotRecorded(spec_id="spec_exemplar", content_version="cv_exemplar"),
                 RefreshRebuildFailed(operation_id="op_exemplar", refusal_code="over_ceiling"),
                 RefreshBackpressure(),
+                RefreshRenderingUnmade(),
                 RefreshNotPermitted(presented=False),
                 SnapshotNotFound(id="ops_exemplar", content_version="ocv_exemplar"),
             )
@@ -682,6 +712,7 @@ __all__ = [
     "RefreshBackpressure",
     "RefreshFrameRequest",
     "RefreshRebuildFailed",
+    "RefreshRenderingUnmade",
     "RenderingNotRecorded",
     "StoredRendering",
     "answer_frame_refresh",

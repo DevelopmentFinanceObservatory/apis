@@ -67,7 +67,12 @@ from datasets_api.recipe_store import (
 from datasets_api.reference_store import PIN_REFERENCE_KIND, LiveArtifactReferenceWriter
 from datasets_api.retention_admission import CopyClaimUnsettled, PreparingCopy
 from datasets_api.store_errors import DatasetsStoreUnavailable
-from datasets_api.version_store import LiveHeadStore, LiveVersionRecordWriter
+from datasets_api.version_store import (
+    LiveHeadStore,
+    LiveVersionLister,
+    LiveVersionRecordWriter,
+    rendering_key,
+)
 from datasets_api.versions import (
     ArtifactRecord,
     HeadFence,
@@ -822,6 +827,88 @@ def test_read_version_state_reads_the_base_revocation_and_links_in_one_transacti
     assert (unnamed.revocation is not None) is (revoked is not None and not revoked_under_other)
     assert reader.artifact_inventoried(digest)
     assert not reader.artifact_inventoried(f"sha256:never-stored-{uuid4().hex}")
+
+
+def test_list_derived_versions_reads_the_versions_of_one_base_as_list_versions_does(live_store):
+    """`list_derived_versions` returns exactly the subject's versions recorded with the base it
+    names, each as `list_versions` reads it, with its linked renderings and the role columns of
+    its stored output profile, in the same order."""
+    subject_id = f"spec:test-live-derived-{uuid4().hex}"
+    other_id = f"spec:test-live-derived-other-{uuid4().hex}"
+    digests = {name: f"sha256:test-live-derived-{name}-{uuid4().hex}" for name in ("a", "b")}
+    profile = {"columns": [{"kind": "role", "name": "financingProvider"}]}
+    started = datetime.now(UTC)
+    with live_store.transaction() as tx:
+        rows = (
+            (subject_id, "cv_h1", None, None, 0),
+            (subject_id, "cv_h2", None, None, 1),
+            (subject_id, "cv_d1", "cv_h1", profile, 2),
+            (subject_id, "cv_d2", "cv_h1", None, 3),
+            (subject_id, "cv_d3", "cv_h2", None, 4),
+            (other_id, "cv_h1", None, None, 0),
+            (other_id, "cv_d9", "cv_h1", None, 5),
+        )
+        for recorded_under, content_version, base, output_profile, offset in rows:
+            tx.execute(
+                "INSERT INTO datasets.version_record "
+                "(subject_id, subject_kind, content_version, schema_version, "
+                "immutable_body, recorded_at, base_content_version) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (
+                    recorded_under,
+                    "spec",
+                    content_version,
+                    1,
+                    # The record's trigger copies the body's output profile into its column.
+                    {**_LINEAGE_BODY, "output_profile": output_profile},
+                    started + timedelta(seconds=offset),
+                    base,
+                ),
+            )
+        for digest in digests.values():
+            tx.execute(
+                "INSERT INTO datasets.artifact_inventory (artifact_digest, size_bytes) "
+                "VALUES (%s, %s)",
+                (digest, 7),
+            )
+            tx.execute(
+                "INSERT INTO datasets.artifact_location "
+                "(artifact_digest, tier, bucket, object_name, stored_at) "
+                "VALUES (%s, %s, %s, %s, now())",
+                (digest, "working", "b", digest),
+            )
+        groupby = {"format": "csv", "bundle": False, "groupby": {"by": ["recipient"]}}
+        for content_version, digest, rendering in (
+            ("cv_d1", digests["a"], groupby),
+            ("cv_d1", digests["b"], {**groupby, "without_party_totals": True}),
+            ("cv_d3", digests["a"], groupby),
+        ):
+            tx.execute(
+                "INSERT INTO datasets.version_artifact "
+                "(subject_id, content_version, artifact_digest, rendering_key, rendering, "
+                "media_type) VALUES (%s, %s, %s, %s, %s, %s)",
+                (
+                    subject_id,
+                    content_version,
+                    digest,
+                    rendering_key(rendering),
+                    rendering,
+                    "text/csv",
+                ),
+            )
+    lister = LiveVersionLister(store=live_store)
+
+    derived = lister.list_derived_versions(subject_id, base_content_version="cv_h1")
+
+    assert [version.content_version for version in derived] == ["cv_d2", "cv_d1"]
+    assert derived == [
+        version
+        for version in lister.list_versions(subject_id)
+        if version.base_content_version == "cv_h1"
+    ]
+    assert [len(version.renderings) for version in derived] == [0, 2]
+    assert [version.holds_party_role for version in derived] == [None, True]
+    assert lister.list_derived_versions(subject_id, base_content_version="cv_none") == []
 
 
 def test_version_revocation_fk_rejects_an_unknown_version(live_store):

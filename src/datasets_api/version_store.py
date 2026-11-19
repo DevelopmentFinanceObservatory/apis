@@ -24,7 +24,8 @@ rows its artifacts owe (`artifact_store.inventory.write_entry`), the record
 and its links, the rendered links and collapsed version when the stored record
 holds the body they were rendered from, and the served version read back.
 `LiveVersionLister.list_versions` reads a subject's versions by `recorded_at`, newest first,
-each with the renderings of the files linked under it. The second statement selects and orders
+each with the renderings of the files linked under it, and `list_derived_versions` those
+recorded as derived from one base. The second statement selects and orders
 those files as `LiveSnapshotReader.read_artifact_locations` does, so a rendering read from the
 list is the one a read of that version's locations gives. `list_servable_versions` reads one
 page of the versions recorded under a set of subject ids in the same order, reading each from
@@ -755,6 +756,45 @@ class LiveVersionLister:
                 )
         except Exception as exc:
             failure = f"listing versions subject_id {subject_id!r} failed: {safe_diagnostics(exc)}"
+            sqlstate = extract_sqlstate(exc)
+        if failure is not None:
+            raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
+        return _listed_versions(rows, linked, _stored_role_columns(rows))
+
+    def list_derived_versions(
+        self, subject_id: str, *, base_content_version: str
+    ) -> list[ListedVersion]:
+        """The subject's versions recorded as derived from `base_content_version`, as
+        `list_versions` reads them, read in one transaction filtered by that base."""
+        failure: str | None = None
+        sqlstate: str | None = None
+        rows: list[Mapping[str, object]] = []
+        linked: list[Mapping[str, object]] = []
+        try:
+            with self._store.transaction() as tx:
+                rows = tx.fetch_all(
+                    "SELECT content_version, base_content_version, recorded_at, "
+                    f"{_ROLE_COLUMNS_SQL} "
+                    "FROM datasets.version_record "
+                    "WHERE subject_id = %s AND base_content_version = %s "
+                    "ORDER BY recorded_at DESC, content_version DESC",
+                    (subject_id, base_content_version),
+                )
+                linked = tx.fetch_all(
+                    _LINKED_RENDERINGS_SQL.format(
+                        where=(
+                            "va.subject_id = %s AND va.content_version IN ("
+                            "SELECT content_version FROM datasets.version_record "
+                            "WHERE subject_id = %s AND base_content_version = %s)"
+                        )
+                    ),
+                    (subject_id, subject_id, base_content_version),
+                )
+        except Exception as exc:
+            failure = (
+                f"listing versions subject_id {subject_id!r} derived from "
+                f"{base_content_version!r} failed: {safe_diagnostics(exc)}"
+            )
             sqlstate = extract_sqlstate(exc)
         if failure is not None:
             raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)

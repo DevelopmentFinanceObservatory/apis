@@ -368,6 +368,13 @@ class VersionLister(Protocol):
         """Return the subject's stored versions, newest first. Empty when it holds none."""
         ...
 
+    def list_derived_versions(
+        self, subject_id: str, *, base_content_version: str
+    ) -> list[ListedVersion]:
+        """Return the subject's versions recorded as derived from `base_content_version`,
+        newest first. Empty when it holds none."""
+        ...
+
     def list_servable_versions(
         self, subject_ids: Sequence[str], *, after: VersionsPageKey | None, limit: int
     ) -> list[ListedVersion]:

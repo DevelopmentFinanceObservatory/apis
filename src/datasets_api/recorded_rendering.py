@@ -199,26 +199,49 @@ def recorded_party_cut(version: StoredVersion) -> PartyTotalsCut:
 
 
 class RenderingNotRecorded(Refusal):
-    """The frame is not established as one rendering of the current data: a derived frame with
-    no linked file recording its minting options, or, with `renderings`, a version recorded
-    under that many renderings, which were one frame when recorded and are not one frame at the
-    head. Maps to `rendering_not_recorded` (422)."""
+    """The frame is not established as one rendering of the current data. Maps to
+    `rendering_not_recorded` (422). Its detail names the case:
+
+    - with neither keyword, a derived frame with no linked file recording its minting options;
+    - with `renderings`, a version recorded under that many renderings, which were one frame
+      when recorded and make different frames from the current data;
+    - with `renderings` and `agreed_on`, renderings that make one frame from the current data,
+      `agreed_on`, which is not the version the rebuild served;
+    - with `unreadable_record`, a card revision's recorded rendering that names no rendering
+      this build reads.
+    """
 
     code = "rendering_not_recorded"
 
-    def __init__(self, *, spec_id: str, content_version: str, renderings: int = 1) -> None:
+    def __init__(
+        self,
+        *,
+        spec_id: str,
+        content_version: str,
+        renderings: int = 1,
+        agreed_on: str | None = None,
+        unreadable_record: bool = False,
+    ) -> None:
         self.renderings = renderings
-        if renderings > 1:
+        named = f"{spec_id!r} at content_version {content_version!r}"
+        if unreadable_record:
+            detail = f"the card's recorded rendering of {named} names no rendering this build reads"
+        elif agreed_on is not None:
             detail = (
-                f"{spec_id!r} at content_version {content_version!r} was recorded under "
-                f"{renderings} renderings, which were one frame then; the current data renders "
-                "them as different frames, so the frame is no longer one rendering"
+                f"{named} was recorded under {renderings} renderings; they make "
+                f"{agreed_on!r} from the current data, which is not the version the rebuild "
+                "served"
+            )
+        elif renderings > 1:
+            detail = (
+                f"{named} was recorded under {renderings} renderings, which were one frame "
+                "then; the current data renders them as different frames, so the frame is no "
+                "longer one rendering"
             )
         else:
             detail = (
-                f"{spec_id!r} at content_version {content_version!r} is a derived version, "
-                "and no file linked under it records the groupby or party-totals cut it was "
-                "minted with"
+                f"{named} is a derived version, and no file linked under it records the "
+                "groupby or party-totals cut it was minted with"
             )
         super().__init__(detail)
 
