@@ -123,7 +123,9 @@ class ResolveRecord:
     settle bound (`SEARCH_LLM_SECOND_SAMPLE_SETTLE_S`) or failed. `second_sample_usage`
     is what the second samples of its exclusion read and extraction cost
     (`CacheScope.second_sample_usage`), which the response does not wait for and the log
-    line's `llm_usage` adds.
+    line's `llm_usage` adds. `pre_ms` is the time from the platform middleware receiving the
+    request to the route body having passed its input checks, and `refresh_ms` is the part of
+    it spent in the generation refresh; both stay None when the route does not set them.
     """
 
     cache: str = "inactive"
@@ -133,6 +135,8 @@ class ResolveRecord:
     done: DoneEvent | None = None
     error_code: str | None = None
     delivered: bool = False
+    pre_ms: int | None = None
+    refresh_ms: int | None = None
     extraction_agreed: bool | None = None
     second_sample_usage: dict | None = None
 
@@ -274,6 +278,8 @@ def _log_resolve(
                 "extraction_agreed": record.extraction_agreed,
                 "memo_hits": record.memo_hits,
                 "memo_misses": record.memo_misses,
+                "pre_ms": record.pre_ms,
+                "refresh_ms": record.refresh_ms,
                 "total_ms": timing.total if timing is not None else None,
                 "by_step": timing.by_step if timing is not None else None,
                 "parts_by_step": [
