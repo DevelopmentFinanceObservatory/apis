@@ -825,6 +825,7 @@ def test_run_resolve_refreshes_the_generation_once():
         coverage=get_coverage_service(),
         schema=new_schema_cache(entries=2, executor=executor, generation=generation),
         dataset_usage=new_schema_cache(entries=1, executor=executor, generation=generation),
+        origin_usage=new_schema_cache(entries=2, executor=executor, generation=generation),
         check_executor=new_check_executor(),
     )
 

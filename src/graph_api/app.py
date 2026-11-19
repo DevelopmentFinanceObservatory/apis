@@ -97,6 +97,7 @@ from graph_api.doors.schema import (
 )
 from graph_api.doors.sources import build_sources_door, new_provenance_doc_cache
 from graph_api.node_cache import NodeEntryCache
+from graph_api.origin_usage import CatalogueGeneration
 from graph_api.reader import GraphNodeReader
 from graph_api.un_terms import UnTermsReader
 from graph_api.version import GRAPH_CAPABILITY_VERSION
@@ -242,6 +243,7 @@ def graph_surface(
         usage_executor: ThreadPoolExecutor | None = None
         un_terms_executor: ThreadPoolExecutor | None = None
         un_terms: UnTerms | None = None
+        origin_usage_executor: ThreadPoolExecutor | None = None
         profile_executor: ThreadPoolExecutor | None = None
         profile_reads: ThreadPoolExecutor | None = None
         card_reads: CardReadCaches | None = None
@@ -268,6 +270,8 @@ def graph_surface(
                 await asyncio.to_thread(usage_executor.shutdown, wait=True)
             if un_terms_executor is not None:
                 await asyncio.to_thread(un_terms_executor.shutdown, wait=True, cancel_futures=True)
+            if origin_usage_executor is not None:
+                await asyncio.to_thread(origin_usage_executor.shutdown, wait=True)
             if card_reads is not None:
                 await asyncio.to_thread(card_reads.close)
             if shared_profiles is not None:
@@ -413,6 +417,13 @@ def graph_surface(
                         generation=un_generation if un_generation is not None else UnGeneration(),
                     ),
                 )
+            # A single-flight cache needs a pool no caller runs on.
+            origin_usage_executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="graph-origin-usage"
+            )
+            origin_usage = new_schema_cache(
+                entries=2, executor=origin_usage_executor, generation=CatalogueGeneration()
+            )
 
             profile_cache: FacetProfileCache | None = None
             if shared_profiles is not None:
@@ -462,6 +473,7 @@ def graph_surface(
             schema=schema,
             dataset_usage=dataset_usage,
             un_terms=un_terms,
+            origin_usage=origin_usage,
             coverage=resolved_coverage,
             profile_cache=profile_cache,
             card_reads=card_reads,

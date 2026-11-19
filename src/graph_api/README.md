@@ -9,6 +9,7 @@ The surface mounts at `/api/graph` and operates as an independent composition ro
                       POST /nodes           GET /roots                   GET /sources
                       GET /schema  GET /schema/terms  GET /schema/usage  POST /schema/check
                       GET /schema/terms/un_system
+                      GET /schema/usage/base  GET /schema/usage/un_system
       |                    |                        |                            |
       v                    v                        v                            |
 +------------------+  +------------------------------------------+               |
@@ -1118,6 +1119,79 @@ The body is built once per code index and coverage build, by one build that conc
 
 ---
 
+### GET /api/graph/schema/usage/base and /api/graph/schema/usage/un_system
+
+How each base Data Commons Provenance, or each UN System agency's Provenance, uses the model, in the shape of `GET /api/graph/schema/usage` and with its grouping and ordering. The body comes from the resident origin catalogue alone (`graph_api.origin_usage.build_origin_usage`), with no graph read, and admits what the catalogue admits:
+
+- `base` counts each variable of the catalogue's base variable table that the catalogue does not hold superseded, under each of its Provenances the catalogue admits. A Provenance the registry excludes, a variable withheld under one, and a variable a UN agency supersedes have no entry.
+- `un_system` counts each variable of the UN tables the catalogue admits as UN, under its agency's Provenance. A series the registry excludes has no variable there, and an agency row holding no admitted variable has no entry.
+
+A variable's shape fields come from its catalogue arcs as the catalogue's family tables read them: a property's first literal, else its first node, and a `measurementQualifier` or `measurementDenominator` whose every target is a `ProvisionalNode` reads as `null`. A declared constraint whose value the arcs leave out counts in its pattern's `constraint_properties` and adds nothing to `constraint_values`. `label` is the catalogue's name for the Provenance and `description` its source-index entry's description, always `null` for a UN agency. `facets` holds empty lists, since the coverage index covers DFO series alone. On the dev catalogue the base body holds 91 Provenances, 84,123 StatVars and 5,855 patterns (134 KB gzip), and the UN body 14 agencies, 93,270 StatVars and 3,466 patterns (106 KB gzip). A build takes about 1 s.
+
+Each body is built once per origin catalogue build and UN origin setting, by one build that concurrent first requests share, and kept until a request bound to another build arrives or the cache's maximum age passes. A request whose wait passes 10 s answers `503 service_unavailable`, retryable, with `Retry-After: 5` and `cause: {"code": "schema_building"}`, and a build past its 60 s deadline answers `504 timeout`. Each answers `public, max-age=300` with a strong `ETag`, a gzip representation and `304` on `If-None-Match`.
+
+A deployment that does not serve the UN origin (`ORIGIN_CATALOGUE_UN_SYSTEM_ENABLED` off) answers `GET /api/graph/schema/usage/un_system` with `404 not_found`, not retryable, with `cause: {"code": "origin_not_served"}` and `Cache-Control: no-store`, and builds nothing. The base route answers whatever the setting.
+
+The example is abridged. It keeps the first pattern and the first two values of the first constraint property, and `...` marks each cut list.
+
+```json
+{
+  "provenances": [
+    {
+      "ref": "dc/base/Adolescent_Birth_Rate",
+      "label": "Adolescent Birth Rate",
+      "description": "The annual number of births to females aged 10-14 or 15-19 years per 1,000 females in the respective age group.",
+      "stat_var_count": 2,
+      "patterns": [
+        {
+          "population_type": "Person",
+          "measured_property": "fertilityRate",
+          "stat_type": "measuredValue",
+          "measurement_qualifier": null,
+          "measurement_denominator": "Count_Person_10To14Years_Female",
+          "constraint_properties": [
+            "age",
+            "gender"
+          ],
+          "observation_properties": [],
+          "stat_var_count": 1,
+          "examples": [
+            "FertilityRate_Person_10To14Years_Female_AsAFractionOf_Count_Person_10To14Years_Female"
+          ]
+        },
+        ...
+      ],
+      "constraint_values": [
+        {
+          "property": "age",
+          "values": [
+            {
+              "value": "Years10To14",
+              "stat_var_count": 1
+            },
+            {
+              "value": "Years15To19",
+              "stat_var_count": 1
+            }
+          ]
+        },
+        ...
+      ],
+      "facets": {
+        "units": [],
+        "scaling_factors": [],
+        "measurement_methods": [],
+        "observation_periods": [],
+        "currencies": []
+      }
+    },
+    ...
+  ]
+}
+```
+
+---
+
 ### POST /api/graph/schema/check
 
 Checks candidate StatVar definitions against the schema. The request is `{rows}`, 1 to 2,000 rows (`caps.max_check_rows`). The route checks rows in order from the first and answers the findings for the rows it checked and how many that is (`rows_checked`). When `rows_checked` is less than the rows sent, send the rows from that index in the next request. Every response checks at least one row.
@@ -1311,7 +1385,7 @@ The Graph API reads environment variables during module initialization and appli
 | `GRAPH_DCP_TOKEN`               | String  | `""`                    | Optional access token sent via `x-graph-token` header to DCP and to its SDMX root.  |
 | `GRAPH_NODE_POOL_SIZE`          | Integer | `4`                     | Worker count of the DCP-read executor. It admits one read per worker and refuses the next with `503`. |
 | `GRAPH_RESOLVE_TIMEOUT_SECONDS` | Integer | `30`                    | Request timeout for `/api/graph/resolve`.                                           |
-| `GRAPH_NODE_TIMEOUT_SECONDS`    | Integer | `10`                    | Request timeout for `/api/graph/node/{dcid}`, `/api/graph/nodes`, `/api/graph/documentation/{dcid}`, the label and facet reads of `/api/graph/node/{dcid}/members`, and the build wait of `GET /api/graph/schema`, `/schema/terms`, `/schema/terms/un_system`. |
+| `GRAPH_NODE_TIMEOUT_SECONDS`    | Integer | `10`                    | Request timeout for `/api/graph/node/{dcid}`, `/api/graph/nodes`, `/api/graph/documentation/{dcid}`, the label and facet reads of `/api/graph/node/{dcid}/members`, and the build wait of `GET /api/graph/schema`, `/schema/terms`, `/schema/terms/un_system`, `/schema/usage/base` and `/schema/usage/un_system`. |
 | `GRAPH_SCHEMA_CHECK_TIMEOUT_SECONDS` | Integer | `30`             | Request timeout for `POST /api/graph/schema/check`, covering its wait for the schema build and its reads of up to 200 ids in at most 596 POSTs. |
 | `GRAPH_PROVENANCE_DOC_CACHE_SIZE` | Integer | `512`                 | Most source documents `/api/graph/documentation/{dcid}` keeps in its cache at once. |
 | `GRAPH_NODE_ENTRY_CACHE_SIZE`   | Integer | `2048`                  | Most built node entries the node routes keep in their cache at once.                |
@@ -1338,6 +1412,7 @@ Errors use RFC 9457 problem detail envelopes:
 | `503`       | `service_unavailable` | `GET /api/graph/documentation/{dcid}`'s own Dataset children read came back truncated (more than 256 children, or a surviving `nextToken`).            | None                                                                                        | No        |
 | `404`       | `not_found`           | Unmatched route or empty DCID path parameter (`/api/graph/node/`).                                                                                     | None                                                                                        | No        |
 | `404`       | `not_found`           | `GET /api/graph/schema/terms/un_system` on a deployment that does not serve the UN origin, with `cause.code` `origin_not_served`.                        | None                                                                                        | No        |
+| `404`       | `not_found`           | `GET /api/graph/schema/usage/un_system` on a deployment that does not serve the UN origin, with `cause.code` `origin_not_served`.                        | None                                                                                        | No        |
 | `400`       | `request_invalid`     | `POST /api/graph/schema/check` that is not JSON, with `rows` missing, empty or over 2,000 entries, an unknown member, a row over 16 constraint properties or 4 observation properties, a string over 512 characters, or a constraint value that is a number past plus or minus 2**53, `NaN` or an infinity. A row's content is never refused; its faults are findings. | The offending body field, naming the row (e.g. `/rows`, `/rows/37/constraint_properties`). | No        |
 | `503`       | `service_unavailable` | A schema route's own wait passed while the build runs on (`cause.code` `schema_building`), or two schema checks already run in the process (`cause.code` `check_busy`). The first sends `Retry-After: 5`, the second `Retry-After: 1`. `GET /api/graph/schema/terms/un_system` with no body served yet, when a UN listing names no UN term (`cause.code` `listing_incomplete`) or the UN front door still answers `429` (`cause.code` `upstream_rate_limited`), with `Retry-After` the seconds left on the kept refusal. | None                                                                                        | Yes       |
 | `500`       | `internal_error`      | A schema build's Class or Property listing reached its cap, or its document holds no node DFO declares. Under a known generation the schema, terms and check routes answer it for 60 s, and the first request after that builds again, so a retry within the 60 s gets the same 500 and a fault that lasts refuses again. Under an unknown generation the next request builds again. | None                                                                                        | No        |

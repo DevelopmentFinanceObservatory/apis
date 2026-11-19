@@ -127,6 +127,8 @@ curl -fsS "$DFO_API/api/v1/graph/schema/usage" \
   | jq '.provenances[0] | {ref, stat_var_count, patterns: (.patterns | length)}'
 ```
 
+`GET /api/v1/graph/schema/usage/base` and `GET /api/v1/graph/schema/usage/un_system` answer the same for each base Data Commons Provenance and each UN System agency, with empty facet lists. A deployment that does not serve the UN origin answers the second with `404` and `cause.code` `origin_not_served`; retrying does not help.
+
 ## Check StatVar definitions
 
 `POST /api/v1/graph/schema/check` takes 1 to 2,000 candidate definitions (`caps.max_check_rows`) and lists the faults in the rows it checked. It checks rows in order from the first and may stop before the end: `rows_checked` says how many it checked. When that is less than the rows sent, send the rest from that index. Every response checks at least one row. Rows naming terms the model already declares read little from the graph, so a sheet of known terms is checked in few requests. Each server process runs two checks at once, and a third answers a retryable `503` with `Retry-After` and `cause.code` `check_busy`.

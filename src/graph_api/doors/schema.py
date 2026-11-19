@@ -115,6 +115,16 @@ page they hit, within the flight (`graph_api.un_terms`). The entry keeps three r
 Each 503 sends `Retry-After` with the seconds left on the refusal. Any other failed build is not
 kept.
 
+`GET /api/graph/schema/usage/base` and `GET /api/graph/schema/usage/un_system` serve the
+`DatasetUsage` body of one outside origin, built by `graph_api.origin_usage.build_origin_usage`
+from the bound origin catalogue alone, with no graph read. `GraphDeps.origin_usage`, a
+single-flight cache of two entries keyed by `OriginUsageKey` (the origin, the catalogue build
+and whether it serves the UN origin) on the catalogue's own generation
+(`graph_api.origin_usage.CatalogueGeneration`), holds each frozen body, built on its own
+one-worker executor. A request's wait and a build past its deadline answer as on the usage
+route. With the UN origin off, `GET /api/graph/schema/usage/un_system` answers 404 `not_found`,
+not retryable, with `cause: {"code": "origin_not_served"}`, and builds nothing.
+
 After each build the door logs one line timing the encoding of the document and terms bodies
 and giving their sizes, beside the build's own per-phase line.
 
@@ -162,6 +172,7 @@ from graph_api.deps import (
     run_dcp_read,
 )
 from graph_api.doors.node import graph_read_problem
+from graph_api.origin_usage import UsageOrigin, build_origin_usage
 from graph_api.reader import GraphNodeReader
 from graph_api.schema_check import SchemaLookup, check_rows, plan_reads
 from graph_api.schema_document import (
@@ -185,7 +196,7 @@ from graph_api.un_terms import (
 from graph_generation import GenerationProvider
 from graph_generation.stamp import UNKNOWN_KEY
 from materialise.graph import GraphDeadlineExceededError, GraphReadError
-from origin_catalogue import Catalogue, current_catalogue
+from origin_catalogue import Catalogue, CatalogueSnapshot, current_catalogue
 
 logger = logging.getLogger(__name__)
 
@@ -289,6 +300,15 @@ UN_TERMS_KEY = "un_system"
 type UnTermsEntry = FrozenJSON | RefusedSchema
 
 
+class OriginUsageKey(NamedTuple):
+    """The origin of a usage body, the build of the origin catalogue it reads and whether that
+    catalogue serves the UN origin."""
+
+    origin: UsageOrigin
+    origin_catalogue: str
+    un_system_enabled: bool
+
+
 class UsageKey(NamedTuple):
     """The content hash of the code index and the coverage build the usage body reads."""
 
@@ -306,8 +326,8 @@ def new_schema_cache[K, V](
     """A cache of this door's bodies holding `entries` entries, each built on `executor` within
     `SCHEMA_FLIGHT_TIMEOUT_SECONDS`, with a key that carries `generation`'s stamp and entry
     lifetimes measured on `clock`. `GraphDeps.schema` holds two, so a request stamped with an
-    unknown generation keeps the entry of the known one, and `GraphDeps.dataset_usage` holds
-    one, and the UN terms cache one."""
+    unknown generation keeps the entry of the known one, `GraphDeps.dataset_usage` holds
+    one, the UN terms cache one, and `GraphDeps.origin_usage` one per origin."""
     return SingleFlightCache(
         maxsize=entries,
         flight_timeout_s=SCHEMA_FLIGHT_TIMEOUT_SECONDS,
@@ -672,6 +692,51 @@ async def warm_un_terms(deps: GraphDeps, *, timeout_s: float) -> None:
         logger.info("UN terms warm-up built in %.2f s", time.monotonic() - started)
 
 
+def _freeze_origin_usage(catalogue: Catalogue, origin: UsageOrigin) -> FrozenJSON:
+    """The frozen usage body of `origin` in `catalogue`, which is the loaded
+    `CatalogueSnapshot`: the build reads its tables, which the `Catalogue` protocol leaves out.
+    """
+    if not isinstance(catalogue, CatalogueSnapshot):
+        raise TypeError(f"origin usage reads a CatalogueSnapshot, not {type(catalogue).__name__}")
+    return _freeze(build_origin_usage(catalogue, origin))
+
+
+async def _frozen_origin_usage(deps: GraphDeps, origin: UsageOrigin) -> FrozenJSON:
+    """The usage body of `origin` from `deps.origin_usage`, building it on the cache's executor
+    on a miss, with concurrent misses sharing that one build. A request waits until
+    `GRAPH_NODE_TIMEOUT_SECONDS` from its start.
+
+    Raises:
+        UnOriginNotServed: `origin` is the UN System and the bound catalogue does not serve it.
+            Nothing is built.
+        SchemaBuildPending: the request's wait passed while the build runs on.
+        SchemaBuildExpired: the build outlived its flight deadline.
+    """
+    catalogue = current_catalogue()
+    if origin == "un_system" and not catalogue.un_system_enabled:
+        raise UnOriginNotServed()
+    key = OriginUsageKey(
+        origin=origin,
+        origin_catalogue=catalogue.build_id,
+        un_system_enabled=catalogue.un_system_enabled,
+    )
+
+    def build(
+        _keys: list[OriginUsageKey], _flight_deadline: float
+    ) -> dict[OriginUsageKey, FrozenJSON]:
+        return {key: _freeze_origin_usage(catalogue, origin)}
+
+    try:
+        found = await deps.origin_usage.aget_or_fetch_many(
+            [key], build, deadline=_request_deadline()
+        )
+    except WaitTimeout:
+        raise SchemaBuildPending() from None
+    except TimeoutError as exc:
+        raise SchemaBuildExpired() from exc
+    return found[key]
+
+
 async def warm_schema(deps: GraphDeps, *, timeout_s: float) -> None:
     """Build the entry `GET /api/graph/schema` would build now, under the bound origin
     catalogue and served release, waiting at most `timeout_s`. A build still running then
@@ -771,6 +836,14 @@ async def get_schema_usage(deps: GraphDepsDep, request: Request) -> Response:
     return (await _frozen_usage(deps)).respond(request)
 
 
+async def get_schema_usage_base(deps: GraphDepsDep, request: Request) -> Response:
+    return (await _frozen_origin_usage(deps, "base")).respond(request)
+
+
+async def get_schema_usage_un_system(deps: GraphDepsDep, request: Request) -> Response:
+    return (await _frozen_origin_usage(deps, "un_system")).respond(request)
+
+
 def build_schema_door() -> DoorContribution:
     router = APIRouter()
     # `response_model` documents the response body in OpenAPI. The handlers' responses pass
@@ -793,6 +866,18 @@ def build_schema_door() -> DoorContribution:
     router.add_api_route(
         "/api/graph/schema/usage",
         get_schema_usage,
+        methods=["GET"],
+        response_model=DatasetUsage,
+    )
+    router.add_api_route(
+        "/api/graph/schema/usage/base",
+        get_schema_usage_base,
+        methods=["GET"],
+        response_model=DatasetUsage,
+    )
+    router.add_api_route(
+        "/api/graph/schema/usage/un_system",
+        get_schema_usage_un_system,
         methods=["GET"],
         response_model=DatasetUsage,
     )
