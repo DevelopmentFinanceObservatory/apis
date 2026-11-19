@@ -37,18 +37,23 @@ def test_a_response_schema_requires_every_field_the_server_emits():
     assert all("kind" in d["required"] for d in envelopes.values())
     # No model of a response is left on a base that makes defaulted fields optional. The
     # `licence*` spellings stay optional, so bodies recorded before them still validate, and so
-    # do the usage members that `/schema/usage/{origin}` writes and `/schema/usage` leaves out.
+    # do the usage members that `/schema/usage/base` and `/schema/usage/un_system` write and
+    # `/schema/usage` leaves out. Each is exempt on its own model alone.
     optional_members = {
-        "licence",
-        "licence_type",
-        "terms",
-        "measurement_denominator_unresolved",
+        ("DatasetEntry", "licence_type"),
+        ("GraphSourceBlock", "licence"),
+        ("GraphSourceBlock", "licence_type"),
+        ("SourceDocumentation", "licence"),
+        ("DatasetUsage", "terms"),
+        ("SchemaPattern", "measurement_denominator_unresolved"),
     }
     for name, schema in schemas.items():
         if name.endswith("_response"):
             for node in [schema, *schema.get("$defs", {}).values()]:
                 properties = set(node.get("properties", {}))
-                optional = properties - set(node.get("required", []))
+                optional = {
+                    (node.get("title"), prop) for prop in properties - set(node.get("required", []))
+                }
                 assert optional <= optional_members, (name, node.get("title"))
     source_block = nodes_defs["SourceBlock"]
     assert {"licence", "licence_type"} <= set(source_block["properties"])

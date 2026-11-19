@@ -117,14 +117,18 @@ kept.
 
 `GET /api/graph/schema/usage/base` and `GET /api/graph/schema/usage/un_system` serve the
 `DatasetUsage` body of one outside origin, with its `terms`, built by
-`graph_api.origin_usage.build_origin_usage` from the bound origin catalogue alone, whatever the
-request's source scope, with no graph read. `GraphDeps.origin_usage`, a single-flight cache of
-two entries keyed by the origin under the catalogue build's stamp
+`graph_api.origin_usage.build_origin_usage` from the bound origin catalogue and graph release,
+whatever the request's source scope, with no graph read. `GraphDeps.origin_usage`, a
+single-flight LRU cache of two entries keyed by the origin and the release id
+(`graph_api.origin_usage.OriginUsageKey`) under the catalogue build's stamp
 (`graph_api.origin_usage.CatalogueGeneration`), holds each frozen body, built on its own
-one-worker executor. A request's wait and a build past its flight deadline answer as on the
-usage route, and each build logs one line with its origin, catalogue build, time and encoded
-size. With the UN origin off, `GET /api/graph/schema/usage/un_system` answers 404 `not_found`,
-not retryable, with `cause: {"code": "origin_not_served"}`, and builds nothing.
+one-worker executor. A request bound to another build or release builds its own entry, which
+evicts the least recently used one. A request's wait and a build past its flight deadline
+answer as on the usage route, and each build logs one line with its origin, catalogue build,
+release, time and encoded size. With the UN origin off, `GET /api/graph/schema/usage/un_system`
+answers 404 `not_found`, not retryable, with `cause: {"code": "origin_not_served"}`, and builds
+nothing. A bound catalogue that is not a loaded `CatalogueSnapshot` holds no tables to build
+from, and both routes answer it the same way.
 
 After each build the door logs one line timing the encoding of the document and terms bodies
 and giving their sizes, beside the build's own per-phase line.
@@ -173,7 +177,7 @@ from graph_api.deps import (
     run_dcp_read,
 )
 from graph_api.doors.node import graph_read_problem
-from graph_api.origin_usage import UsageOrigin, build_origin_usage
+from graph_api.origin_usage import OriginUsageKey, UsageOrigin, build_origin_usage
 from graph_api.reader import GraphNodeReader
 from graph_api.schema_check import SchemaLookup, check_rows, plan_reads
 from graph_api.schema_document import (
@@ -196,6 +200,7 @@ from graph_api.un_terms import (
 )
 from graph_generation import GenerationProvider
 from graph_generation.stamp import UNKNOWN_KEY
+from graph_release.context import served_origin_key
 from materialise.graph import GraphDeadlineExceededError, GraphReadError
 from origin_catalogue import Catalogue, CatalogueSnapshot, current_catalogue
 
@@ -295,6 +300,14 @@ class UnOriginNotServed(Exception):
         super().__init__("this deployment does not serve the UN System Data Commons origin")
 
 
+class OriginUsageNotServed(Exception):
+    """The bound catalogue is not a loaded `CatalogueSnapshot`, so it holds no tables to build
+    an origin's usage body from."""
+
+    def __init__(self, origin: UsageOrigin) -> None:
+        super().__init__(f"this deployment holds no origin catalogue to serve {origin} usage from")
+
+
 UN_TERMS_KEY = "un_system"
 """The one key of the UN terms cache, whose own generation stamp is the UN deployment's."""
 
@@ -319,7 +332,7 @@ def new_schema_cache[K, V](
     `SCHEMA_FLIGHT_TIMEOUT_SECONDS`, with a key that carries `generation`'s stamp and entry
     lifetimes measured on `clock`. `GraphDeps.schema` holds two, so a request stamped with an
     unknown generation keeps the entry of the known one, `GraphDeps.dataset_usage` holds
-    one, the UN terms cache one, and `GraphDeps.origin_usage` one per origin."""
+    one, the UN terms cache one, and `GraphDeps.origin_usage` two, one per origin."""
     return SingleFlightCache(
         maxsize=entries,
         flight_timeout_s=SCHEMA_FLIGHT_TIMEOUT_SECONDS,
@@ -460,7 +473,7 @@ def classify_schema_exception(exc: BaseException) -> ProblemSpec | None:
             cause=Cause(code="check_busy" if busy else "schema_building"),
             headers={"Retry-After": str(retry_after)},
         )
-    if isinstance(exc, UnOriginNotServed):
+    if isinstance(exc, UnOriginNotServed | OriginUsageNotServed):
         return ProblemSpec(
             status=404,
             code="not_found",
@@ -685,24 +698,27 @@ async def warm_un_terms(deps: GraphDeps, *, timeout_s: float) -> None:
 
 
 def _freeze_origin_usage(
-    catalogue: CatalogueSnapshot, origin: UsageOrigin, *, deadline: float
+    catalogue: CatalogueSnapshot, key: OriginUsageKey, *, deadline: float
 ) -> FrozenJSON:
-    """The frozen usage body of `origin` in `catalogue`, logging the build's time and size.
+    """The frozen usage body of `key.origin` in `catalogue` under the bound release, logging
+    the build's time and size.
 
     Raises:
         TimeoutError: `deadline` passed before the encoding.
     """
     started = time.monotonic()
-    usage = build_origin_usage(catalogue, origin)
+    usage = build_origin_usage(catalogue, key.origin)
     built = time.monotonic()
     if built >= deadline:
-        raise TimeoutError(f"the {origin} usage build outlived its flight deadline")
+        raise TimeoutError(f"the {key.origin} usage build outlived its flight deadline")
     frozen = _freeze(usage)
     ended = time.monotonic()
     logger.info(
-        "origin usage %s under catalogue %s took %d ms: build %d ms; encode %d ms %d bytes",
-        origin,
+        "origin usage %s under catalogue %s and release %s took %d ms: build %d ms; "
+        "encode %d ms %d bytes",
+        key.origin,
         catalogue.build_id,
+        key.release,
         round((ended - started) * 1_000),
         round((built - started) * 1_000),
         round((ended - built) * 1_000),
@@ -713,15 +729,17 @@ def _freeze_origin_usage(
 
 async def _frozen_origin_usage(deps: GraphDeps, origin: UsageOrigin) -> FrozenJSON:
     """The usage body of `origin` from `deps.origin_usage`, building it on the cache's executor
-    on a miss, with concurrent misses sharing that one build. The cache keys on `origin` under
-    the bound catalogue's build (`CatalogueGeneration`). The build ignores the request's source
-    scope. A request waits until `GRAPH_NODE_TIMEOUT_SECONDS` from its start.
+    on a miss, with concurrent misses sharing that one build. The cache keys on `origin` and the
+    bound release's id under the bound catalogue's build (`CatalogueGeneration`), and the build
+    runs under the context of the request that starts it, so it reads that release. The build
+    ignores the request's source scope. A request waits until `GRAPH_NODE_TIMEOUT_SECONDS` from
+    its start.
 
     Raises:
         UnOriginNotServed: `origin` is the UN System and the bound catalogue does not serve it.
             Nothing is built.
-        TypeError: the bound catalogue is not a loaded `CatalogueSnapshot`, whose tables the
-            build reads and the `Catalogue` protocol leaves out. Nothing is built.
+        OriginUsageNotServed: the bound catalogue is not a loaded `CatalogueSnapshot`, whose
+            tables the build reads and the `Catalogue` protocol leaves out. Nothing is built.
         SchemaBuildPending: the request's wait passed while the build runs on.
         SchemaBuildExpired: the build outlived its flight deadline.
     """
@@ -729,20 +747,23 @@ async def _frozen_origin_usage(deps: GraphDeps, origin: UsageOrigin) -> FrozenJS
     if origin == "un_system" and not catalogue.un_system_enabled:
         raise UnOriginNotServed()
     if not isinstance(catalogue, CatalogueSnapshot):
-        raise TypeError(f"origin usage reads a CatalogueSnapshot, not {type(catalogue).__name__}")
+        raise OriginUsageNotServed(origin)
+    key = OriginUsageKey(origin=origin, release=served_origin_key())
 
-    def build(_keys: list[UsageOrigin], flight_deadline: float) -> dict[UsageOrigin, FrozenJSON]:
-        return {origin: _freeze_origin_usage(catalogue, origin, deadline=flight_deadline)}
+    def build(
+        _keys: list[OriginUsageKey], flight_deadline: float
+    ) -> dict[OriginUsageKey, FrozenJSON]:
+        return {key: _freeze_origin_usage(catalogue, key, deadline=flight_deadline)}
 
     try:
         found = await deps.origin_usage.aget_or_fetch_many(
-            [origin], log_queue_wait(build), deadline=_request_deadline()
+            [key], build, deadline=_request_deadline()
         )
     except WaitTimeout:
         raise SchemaBuildPending() from None
     except TimeoutError as exc:
         raise SchemaBuildExpired() from exc
-    return found[origin]
+    return found[key]
 
 
 async def warm_schema(deps: GraphDeps, *, timeout_s: float) -> None:

@@ -2,21 +2,30 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass, field
+import logging
+import re
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from code_index.shared import get_index
+from graph_api import deps as deps_module
 from graph_api.dataset_usage import build_usage
 from graph_api.doors import schema as schema_door
 from graph_api.origin_usage import build_origin_usage
+from graph_release import service as release_service_module
+from graph_release.context import bound_release
+from graph_release.service import Release, ReleaseService
 from origin_catalogue import BASE, UN_SYSTEM, CardFacts, Catalogue, CatalogueSnapshot
 from origin_catalogue import service as catalogue_service_module
 from origin_catalogue.arc_tables import ArcTables
 from origin_catalogue.service import CatalogueService
 from origin_catalogue.un_mirror import UnArc
+from tests.graph_release.support import origin_release, release_at_revision
 from tests.origin_catalogue.fake_catalogue import (
     FakeCatalogue,
     provenance_row,
@@ -281,6 +290,113 @@ def test_the_base_terms_leave_out_a_provisional_qualifier() -> None:
     ]
 
 
+_TERMS = "dc/base/Terms"
+
+
+def test_a_term_reads_the_label_its_node_card_gives() -> None:
+    """The node card labels a node by the display name of its own names. `Count_Person` is a
+    held denominator whose names differ from the one its arc carries, and `Years10To14` is an
+    arc target the tables label apart from its arc's name. `Person`'s only name is its dcid."""
+    arcs = {
+        "Count_Person_10To14": (
+            UnArc(property="age", dcid="Years10To14", name="Years 10 To 14"),
+            UnArc(property="constraintProperties", dcid="age", name="age"),
+            UnArc(property="measuredProperty", dcid="count", name="count"),
+            UnArc(property="measurementDenominator", dcid="Count_Person", name="Population"),
+            UnArc(property="populationType", dcid="Person", name="Person"),
+            UnArc(property="statType", dcid="measuredValue", name="measuredValue"),
+        ),
+        "Count_Person": (
+            UnArc(property="name", value="Population"),
+            UnArc(property="name", value="Total population"),
+        ),
+    }
+    labels = {**named_labels(arcs), "Years10To14": "Years10To14 range"}
+    catalogue = restrictive_catalogue(
+        provenances=[provenance_row(_TERMS, BASE, name="Terms")],
+        base_variables={"Count_Person_10To14": ((_TERMS,), ())},
+        arcs=ArcTables(dfo={}, base=arcs, schema={}, labels=labels),
+    )
+
+    terms = {
+        term["ref"]: term["label"]
+        for term in build_origin_usage(catalogue, "base").model_dump(mode="json")["terms"]
+    }
+
+    assert (terms["Count_Person"], terms["Years10To14"], terms["Person"]) == (
+        "Total population",
+        "Years10To14 range",
+        None,
+    )
+
+
+_OVERLAP_SOURCE = "dc/base/Overlap"
+
+
+def _person_arcs(population: str) -> tuple[UnArc, ...]:
+    return (
+        UnArc(property="measuredProperty", dcid="count", name="count"),
+        UnArc(property="populationType", dcid=population, name=population),
+        UnArc(property="statType", dcid="measuredValue", name="measuredValue"),
+    )
+
+
+def test_a_base_variable_whose_node_is_dfo_s_reads_the_bound_release() -> None:
+    """Both variables are DFO's nodes, held in the build's `dfo` arc table and listed in the
+    base variable table. The release holds `Count_Released` with another population, and does
+    not hold `Count_Unreleased`, whose node `/node/{dcid}` then reads from the graph."""
+    build_arcs = {
+        "Count_Released": _person_arcs("Person"),
+        "Count_Unreleased": _person_arcs("Person"),
+    }
+    catalogue = restrictive_catalogue(
+        provenances=[provenance_row(_OVERLAP_SOURCE, BASE, name="Overlap")],
+        dfo_variables=build_arcs,
+        base_variables=dict.fromkeys(build_arcs, ((_OVERLAP_SOURCE,), ())),
+        arcs=ArcTables(dfo=build_arcs, base={}, schema={}, labels=named_labels(build_arcs)),
+    )
+    released = {
+        "Count_Released": {
+            "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
+            "measuredProperty": {"nodes": [{"dcid": "count", "name": "count"}]},
+            "populationType": {
+                "nodes": [{"dcid": "Household", "name": "Household", "types": ["Class"]}]
+            },
+            "statType": {"nodes": [{"dcid": "measuredValue", "name": "measuredValue"}]},
+        }
+    }
+
+    with bound_release(origin_release(released)):
+        entry = _entries(catalogue, "base")[_OVERLAP_SOURCE]
+
+    assert entry["stat_var_count"] == 1
+    assert [(p["population_type"], p["examples"]) for p in entry["patterns"]] == [
+        ("Household", ["Count_Released"])
+    ]
+
+
+class _CountedRows(dict):
+    """Provenance rows that count the scans of every row."""
+
+    scans = 0
+
+    def values(self):
+        self.scans += 1
+        return super().values()
+
+
+def test_the_un_document_scans_the_provenance_rows_once_per_agency() -> None:
+    """Both UN variables sit under the WHO segment, so one scan of the rows answers both."""
+    catalogue = _catalogue()
+    rows = _CountedRows(catalogue.tables.provenances)
+    catalogue = replace(catalogue, tables=replace(catalogue.tables, provenances=rows))
+    rows.scans = 0
+
+    build_origin_usage(catalogue, "un_system")
+
+    assert rows.scans == 1
+
+
 # The routes
 
 
@@ -354,6 +470,106 @@ def test_a_request_bound_to_another_catalogue_build_builds_the_body_again(
     assert [first.status_code, changed.status_code, repeat.status_code] == [200, 200, 200]
     assert changed.headers["ETag"] == first.headers["ETag"]
     assert builds.origins == ["base", "base"]
+
+
+class _SwappableReleases:
+    """A release service serving `release`, which a test swaps between requests."""
+
+    def __init__(self, release: Release) -> None:
+        self.release = release
+
+    def snapshot(self) -> Release:
+        return self.release
+
+    def serves(self, release: Release) -> bool:
+        return release is self.release
+
+    def register_swap_guard(self, guard: object) -> Callable[[], None]:
+        return lambda: None
+
+    def on_swap(self, callback: object) -> Callable[[], None]:
+        return lambda: None
+
+    def close(self) -> None:
+        pass
+
+
+@contextmanager
+def _serving_releases(releases: _SwappableReleases) -> Iterator[None]:
+    with release_service_module._singleton.poisoned_for_test(cast("ReleaseService", releases)):
+        yield
+
+
+def test_a_request_bound_to_another_release_builds_the_body_again(
+    serve_catalogue: Callable[[Catalogue], None], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The body reads the release's arcs, so the cache keys on the release under one
+    catalogue build."""
+    builds = _Counted()
+    builds.install(monkeypatch)
+    serve_catalogue(_catalogue(build_id="build-a"))
+    releases = _SwappableReleases(release_at_revision("rev-1"))
+
+    with _serving_releases(releases), make_client() as client:
+        first = client.get("/api/graph/schema/usage/base", headers=_IDENTITY)
+        releases.release = release_at_revision("rev-2")
+        swapped = client.get("/api/graph/schema/usage/base", headers=_IDENTITY)
+        repeat = client.get("/api/graph/schema/usage/base", headers=_IDENTITY)
+
+    assert [first.status_code, swapped.status_code, repeat.status_code] == [200, 200, 200]
+    assert builds.origins == ["base", "base"]
+
+
+@pytest.mark.parametrize("origin", ["base", "un_system"])
+def test_a_catalogue_with_no_tables_serves_no_origin_usage(
+    origin: str, serve_catalogue: Callable[[Catalogue], None], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    builds = _Counted()
+    builds.install(monkeypatch)
+    serve_catalogue(FakeCatalogue())
+
+    with make_client() as client:
+        refused = client.get(f"/api/graph/schema/usage/{origin}", headers=_IDENTITY)
+
+    assert refused.status_code == 404, refused.text
+    body = refused.json()
+    assert (body["code"], body["retryable"], body["cause"]["code"]) == (
+        "not_found",
+        False,
+        "origin_not_served",
+    )
+    assert builds.origins == []
+
+
+def test_an_origin_build_logs_no_dcp_queue_wait(
+    serve_catalogue: Callable[[Catalogue], None],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The build reads no DCP, so a wait for its worker is no DCP read's wait, even past a
+    threshold every wait passes."""
+    monkeypatch.setattr(deps_module, "DCP_QUEUE_WAIT_WARN_SECONDS", -1.0)
+    serve_catalogue(_catalogue())
+
+    with caplog.at_level(logging.DEBUG, logger=deps_module.logger.name), make_client() as client:
+        response = client.get("/api/graph/schema/usage/base", headers=_IDENTITY)
+
+    assert response.status_code == 200, response.text
+    assert not [
+        r
+        for r in caplog.records
+        if r.name == deps_module.logger.name and r.levelno >= logging.WARNING
+    ]
+
+
+def test_every_schema_path_a_usage_description_names_is_served() -> None:
+    with make_client() as client:
+        spec = client.get("/openapi.json").json()
+
+    named = set(re.findall(r"`(/schema/[^`]*)`", str(spec["components"]["schemas"])))
+
+    assert named
+    assert {f"/api/graph{path}" for path in named} <= set(spec["paths"])
 
 
 def test_the_un_route_with_the_un_origin_off_refuses_and_builds_nothing(

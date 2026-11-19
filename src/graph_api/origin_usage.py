@@ -11,28 +11,36 @@ Admission follows the catalogue's rules:
   in, so an excluded provenance has no entry, and no superseded or withheld variable, which
   `CatalogueTables` keeps in `withheld_variables`.
 - UN System: every variable of the UN tables, under its agency's provenance rows
-  (`Catalogue.variable_provenances`). The tables hold no variable of a series the registry
-  excludes.
+  (`Catalogue.variable_provenances`), read once per agency id segment. The tables hold no
+  variable of a series the registry excludes.
 
-A variable's StatVar row reads its arcs (`ArcTables.arcs` for base, `UnVariable.arcs` for UN)
-through `origin_catalogue.families.VariableArcs`, as a family key does. A property reads as its
-first literal, else its first node. A `measurementQualifier` whose every target is a
-`ProvisionalNode` reads as none, and a missing `measuredProperty` as the empty string. A
-`measurementDenominator` with targets but no value, or whose every target is a
-`ProvisionalNode`, is unresolved. The pattern keeps the target it names, null for none, and
+A base variable's arcs are `Catalogue.held_arcs`: the bound graph release's for a variable the
+release holds as DFO, else the arc tables', less the build's own DFO rows, which give way to the
+release (`origin_catalogue.catalogue.release_held_arcs`). A UN variable's are
+`UnVariable.arcs`. A StatVar row reads them through `origin_catalogue.families.VariableArcs`, as
+a family key does. A property reads as its first literal, else its first node. A
+`measurementQualifier` whose every target is a `ProvisionalNode` reads as none, and a missing
+`measuredProperty` as the empty string. A `measurementDenominator` with targets but no value,
+or whose every target is a `ProvisionalNode`, is unresolved. The pattern keeps the target it names, null for none, and
 sets `measurement_denominator_unresolved`, so it stays apart from a pattern with no
 denominator. The constraint properties are the `constraintProperties` targets less the
 `import_added` ones. A declared constraint whose value the arcs do not resolve counts in its
-pattern's `constraint_properties` and adds no row to `constraint_values`. A base variable the
-arc tables do not hold has no row.
+pattern's `constraint_properties` and adds no row to `constraint_values`. A base variable
+neither the release nor the arc tables hold has no row.
 
 `label` is the provenance row's name and `description` the `CardFacts.description` of the row's
 source-index entry (`entry_ref`). UN rows carry no card facts, so a UN description is null.
 `facets` is empty for every provenance, since the coverage index covers DFO series alone.
 
-`terms` lists every node the patterns and constraint values name, with the display name
-(`dc_graph.display_name`) and the types the variables' arcs to it carry. UN series and the base
-terms the DFO schema document leaves out have no other label source.
+`terms` lists every node the patterns and constraint values name, with the types the
+variables' arcs to it carry and the label `GET /api/graph/node/{dcid}` gives it, the
+`dc_graph.display_name` of its names (`_term_label`): a node the catalogue holds reads its own
+`name` arcs, a node an arc of the arc tables names reads `Catalogue.arc_label`, and any other
+node, such as a UN series, reads the names the variables' arcs carry. A name equal to the dcid
+is no label.
+
+The body depends on the catalogue build and, through `held_arcs`, on the bound release, so the
+door keys it on both (`OriginUsageKey`, `CatalogueGeneration`).
 """
 
 from __future__ import annotations
@@ -40,7 +48,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
-from typing import Literal
+from typing import Literal, NamedTuple
 
 from code_index import StatVarRow
 from dc_graph import display_name
@@ -50,11 +58,21 @@ from graph_generation import GenerationStamp, RegistrationHandle
 from graph_generation.registry import CacheRegistry
 from origin_catalogue import CatalogueSnapshot, current_catalogue, entry_ref
 from origin_catalogue.families import VariableArcs
-from origin_catalogue.origins import UN_SYSTEM
+from origin_catalogue.origins import UN_ID_PREFIX, UN_SYSTEM
 from origin_catalogue.un_mirror import UnArc
 
 type UsageOrigin = Literal["base", "un_system"]
 """An origin with its own usage document."""
+
+
+class OriginUsageKey(NamedTuple):
+    """The origin of a usage body and the id of the graph release it read
+    (`graph_release.context.served_origin_key`). The cache stamps it with the catalogue
+    build."""
+
+    origin: UsageOrigin
+    release: str
+
 
 _TERM_PROPERTIES = (
     "populationType",
@@ -69,9 +87,10 @@ _TERM_PROPERTIES = (
 
 
 class CatalogueGeneration:
-    """A generation provider whose stamp is the bound origin catalogue's build, so a cache on
-    it keeps an entry until a request bound to another build looks it up or the stamp's
-    maximum age passes. `stamp` raises `CatalogueNotBound` when no catalogue is bound."""
+    """A generation provider whose stamp is the bound origin catalogue's build, so a request
+    bound to another build misses every entry stored under this one. Each entry lives until the
+    stamp's maximum age passes or the cache's LRU bound evicts it. `stamp` raises
+    `CatalogueNotBound` when no catalogue is bound."""
 
     def __init__(self) -> None:
         self._registry = CacheRegistry()
@@ -144,7 +163,7 @@ def _group_base(catalogue: CatalogueSnapshot) -> _Grouped:
     grouped: _Grouped = defaultdict(list)
     for dcid, variable in sorted(catalogue.tables.base_variables.items()):
         provenances = [p for p in variable.provenances if catalogue.is_admitted(p)]
-        arcs = catalogue.arcs.arcs(dcid) if provenances else None
+        arcs = catalogue.held_arcs(dcid) if provenances else None
         if not arcs:
             continue
         read = _read(dcid, arcs)
@@ -154,11 +173,20 @@ def _group_base(catalogue: CatalogueSnapshot) -> _Grouped:
 
 
 def _group_un(catalogue: CatalogueSnapshot) -> _Grouped:
+    """The UN variables under their agency's rows. `variable_provenances` scans every
+    provenance row and answers alike for every variable of one id segment, so it is read once
+    per segment."""
     grouped: _Grouped = defaultdict(list)
+    by_segment: dict[str, list[str]] = {}
     for dcid, variable in sorted(catalogue.un.mirror.variables.items()):
-        provenances = [
-            row.id for row in catalogue.variable_provenances(dcid) if catalogue.is_admitted(row.id)
-        ]
+        segment = dcid.removeprefix(UN_ID_PREFIX).split("/", 1)[0]
+        provenances = by_segment.get(segment)
+        if provenances is None:
+            provenances = by_segment[segment] = [
+                row.id
+                for row in catalogue.variable_provenances(dcid)
+                if catalogue.is_admitted(row.id)
+            ]
         if not provenances:
             continue
         read = _read(dcid, variable.arcs)
@@ -187,8 +215,27 @@ def _named_refs(usage: ProvenanceUsage) -> Iterable[str | None]:
         yield from (value.value for value in entry.values)
 
 
-def _terms(provenances: list[ProvenanceUsage], reads: Iterable[_Read]) -> list[UsageTerm]:
-    """Each node `provenances` name that an arc of `reads` targets, labelled from those arcs."""
+def _term_label(catalogue: CatalogueSnapshot, ref: str, arc_names: Iterable[str]) -> str | None:
+    """`ref`'s `display_name`, as `GET /api/graph/node/{dcid}` labels it: from its own `name`
+    arcs where the catalogue holds the node, from `arc_label` where an arc of the arc tables
+    names it, and from `arc_names`, the names the variables' arcs to it carry, otherwise.
+    `arc_label` is `GraphClient.node_label`'s answer, `label_or_self_name`, so its self-name
+    reads as none."""
+    variable = catalogue.un_variable(ref)
+    own = variable.arcs if variable is not None else catalogue.held_arcs(ref)
+    if own is not None:
+        return display_name((arc.value for arc in own if arc.property == "name" and arc.value), ref)
+    if catalogue.arc_target(ref) is not None:
+        label = catalogue.arc_label(ref)
+        return None if label == ref else label
+    return display_name(arc_names, ref)
+
+
+def _terms(
+    catalogue: CatalogueSnapshot, provenances: list[ProvenanceUsage], reads: Iterable[_Read]
+) -> list[UsageTerm]:
+    """Each node `provenances` name that an arc of `reads` targets, with the types those arcs
+    carry and its `_term_label`."""
     named = {ref for usage in provenances for ref in _named_refs(usage) if ref}
     found: dict[str, _Term] = defaultdict(_Term)
     for read in reads:
@@ -199,14 +246,16 @@ def _terms(provenances: list[ProvenanceUsage], reads: Iterable[_Read]) -> list[U
                     term.names.append(arc.name)
                 term.types.update(arc.types)
     return [
-        UsageTerm(ref=ref, label=display_name(term.names, ref), types=sorted(term.types))
+        UsageTerm(ref=ref, label=_term_label(catalogue, ref, term.names), types=sorted(term.types))
         for ref, term in sorted(found.items())
     ]
 
 
 def build_origin_usage(catalogue: CatalogueSnapshot, origin: UsageOrigin) -> DatasetUsage:
     """How each admitted provenance of `origin` in `catalogue` uses the model, one entry per
-    provenance holding at least one admitted variable, sorted by ref, and the terms they name."""
+    provenance holding at least one admitted variable, sorted by ref, and the terms they name.
+    Reads the bound graph release, and raises `graph_release.context.ReleaseNotBound` with none
+    bound."""
     grouped = _group_base(catalogue) if origin == "base" else _group_un(catalogue)
     provenances: list[ProvenanceUsage] = []
     for ref, reads in sorted(grouped.items()):
@@ -233,7 +282,7 @@ def build_origin_usage(catalogue: CatalogueSnapshot, origin: UsageOrigin) -> Dat
             )
         )
     reads = (read for group in grouped.values() for read in group)
-    return DatasetUsage(provenances=provenances, terms=_terms(provenances, reads))
+    return DatasetUsage(provenances=provenances, terms=_terms(catalogue, provenances, reads))
 
 
-__all__ = ["CatalogueGeneration", "UsageOrigin", "build_origin_usage"]
+__all__ = ["CatalogueGeneration", "OriginUsageKey", "UsageOrigin", "build_origin_usage"]

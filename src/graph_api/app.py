@@ -30,7 +30,8 @@ generation and code index, held in a cache the lifespan registers beside the sou
 and node-envelope caches. `GET /schema/usage` reads each Provenance node's name and
 description in one batch and keeps its body per code index and coverage build in a cache
 registered the same way. `GET /schema/usage/base` and `GET /schema/usage/un_system` read the
-origin catalogue alone and keep each body per catalogue build. A live surface builds the schema
+origin catalogue and the bound graph release and keep each body per catalogue build and
+release. A live surface builds the schema
 document in its lifespan, before the instance takes traffic, waiting at most
 `SCHEMA_WARM_TIMEOUT_SECONDS` (20 s). An unfinished build logs and the first request joins
 it. A failed build logs, and the first request builds again, unless the build refused under a
