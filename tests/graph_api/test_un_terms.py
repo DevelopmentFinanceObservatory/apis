@@ -1,5 +1,6 @@
-"""`GET /api/graph/schema/terms/un_system`: the UN-declared terms read from the UN deployment's
-own client, its cache, its per-page waits and its refusal when the UN origin is not served."""
+"""Tests for `GET /api/graph/schema/terms/un_system`, covering the UN-declared terms read from
+the UN deployment's own client, its cache, its per-page waits and its refusal when the UN origin
+is not served."""
 
 from __future__ import annotations
 

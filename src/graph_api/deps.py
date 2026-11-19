@@ -70,9 +70,9 @@ class GraphDepsNotSet(Exception):
 
 @dataclass(frozen=True, slots=True)
 class UnTerms:
-    """The UN deployment's own client, the cache of the UN terms body it builds, under one key,
-    since the cache's own generation stamp is the UN deployment's, and the event that ends a
-    build's waits at shutdown."""
+    """The UN terms route's state: the UN deployment's own client, the cache of the body built
+    from it under one key (the cache's generation stamp is the UN deployment's), and the event
+    that ends a build's waits at shutdown."""
 
     reader: UnTermsReader
     cache: SingleFlightCache[str, UnTermsEntry]

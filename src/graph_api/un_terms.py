@@ -2,8 +2,8 @@
 
 `build_un_terms` reads `Class <-typeOf` and then `Property <-typeOf` from the UN deployment's
 own `dc_graph.GraphClient`, page by page through its `post`, one listing after the other, so the
-build has one request in flight against the UN deployment. Each failure is retried on the page
-it hit, and the pages already read are kept:
+build has one request in flight against the UN deployment. Two failures are retried on the
+page they hit, and the pages already read are kept:
 
 - The UN front door rate-limits a busy client with HTTP 429. The page is requested again after
   each of `UN_TERMS_RATE_LIMIT_WAITS_SECONDS` (5 and 15 s), one budget shared by both listings,
@@ -18,8 +18,8 @@ it hit, and the pages already read are kept:
 Each wait logs one line. A wait ends early when the build's `stop` event is set, as the Graph
 lifespan sets it at shutdown, and the build then raises `GraphReadError`.
 
-A term is kept when its listing entries carry a provenance outside base Data Commons: some
-provenance whose origin (`graph_api.schema_document.provenance_origin`) is not `"base"`. Every
+A term is kept when its listing entries carry a provenance outside base Data Commons, meaning
+one whose origin (`graph_api.schema_document.provenance_origin`) is not `"base"`. Every
 provenance the UN deployment serves outside `dc/base/` is a UN declaration, so the `"dfo"`
 fallback for an unknown prefix, and a term with base and UN provenances both, count as
 `un_system`. A UN term declared under `undata/p/UNData` with no `undata` prefix, such as

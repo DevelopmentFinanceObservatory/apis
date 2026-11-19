@@ -231,7 +231,7 @@ class Schema:
 
 @dataclass
 class ListedTerm:
-    """One subject of the `Class` and `Property` listings: the names, listings and
+    """One subject of the `Class` and `Property` listings, with the names, kinds and
     provenances of its entries."""
 
     names: set[str] = field(default_factory=set)
@@ -242,8 +242,9 @@ class ListedTerm:
 def fold_listings(
     listings: Iterable[tuple[TermKind, Iterable[ArcSubject]]],
 ) -> dict[str, ListedTerm]:
-    """Each subject of `listings`, pairs of a kind and the `<-typeOf` subjects of that kind,
-    with every name and provenance its entries carry and every kind that lists it."""
+    """Fold `listings`, pairs of a kind and the `<-typeOf` subjects of that kind, into one
+    `ListedTerm` per subject, with every name and provenance its entries carry and every kind
+    that lists it."""
     listed: dict[str, ListedTerm] = {}
     for kind, subjects in listings:
         for subject in subjects:

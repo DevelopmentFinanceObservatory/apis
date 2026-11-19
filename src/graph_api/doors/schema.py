@@ -87,7 +87,7 @@ failed read answers as it does for the other two routes. A failed build is not k
 the UN System Data Commons declares, built by `graph_api.un_terms.build_un_terms` from two
 listings read through the UN deployment's own client (`GraphDeps.un_terms`), past the origin
 client's routing, which would send `Class` and `Property` to the mixer. That client skips the
-catalogue's `un_system_enabled` gate too, so the route checks it first: with the UN origin off,
+catalogue's `un_system_enabled` gate too, so the route checks it first. With the UN origin off,
 or on a surface with no UN reader, it answers 404 `not_found`, not retryable, with
 `cause: {"code": "origin_not_served"}`, and reads nothing. The refusal goes out `no-store`, so no
 cache keeps it past a change of the flag. The body sits in a single-flight cache of one entry on
