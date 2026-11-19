@@ -133,8 +133,8 @@ from, and both routes answer it the same way.
 `GET /api/graph/schema/node/{dcid}` serves `SchemaNodeView`, one node and its schema
 neighbours, built by `graph_api.node_view.build_node_view` from at most eight reads. Its
 flights run on an executor of `NODE_VIEW_FLIGHT_WORKERS` workers that admits one flight per
-worker, so a miss that finds every worker busy answers retryable 503 at once, and their reads
-on one of `NODE_VIEW_FLIGHT_WORKERS * READS_AT_ONCE` workers, apart from the DCP-read executor.
+worker, so a miss that finds every worker busy answers retryable 503 at once. Their reads run
+on a pool of `NODE_VIEW_FLIGHT_WORKERS * READS_AT_ONCE` workers, apart from the DCP-read executor.
 A dcid past `DCID_MAX_LENGTH` answers 400 `request_invalid` before any read. A UN id
 (`origin_catalogue.graph.is_un_dcid`) is read from the UN deployment's own client once the route
 has checked that the bound catalogue serves the UN origin; with the origin off, or on a surface
@@ -144,7 +144,7 @@ own client, and a node the mixer does not hold, such as `unCode`, is read from t
 when the UN origin is served. A node neither read holds answers 404 `not_found`, not retryable,
 with `cause: {"code": "node_not_held"}`. Both refusals go out `no-store`. The mixer's cache
 keeps `NodeViewMiss.NOT_HELD` for a node the mixer lacks, so a later request reads the UN
-deployment or refuses without reading the mixer again under that generation; the UN
+deployment or refuses without reading the mixer again under that generation. The UN
 deployment's keeps no refusal. `NodeViews` holds the two single-flight caches of
 `NODE_VIEW_CACHE_SIZE` entries each: the mixer's keyed by `NodeViewKey` under the mixer's
 generation, so a generation change clears it, and the UN deployment's under

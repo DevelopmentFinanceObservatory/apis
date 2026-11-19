@@ -23,7 +23,7 @@ from .test_node_view import _ARCS, _BASE, _NAMES, _PROVENANCES, _FakeGraph
 _ROUTE = "/api/graph/schema/node/"
 _IDENTITY = {"Accept-Encoding": "identity"}
 
-# The mixer holds the base and DFO terms; the UN deployment holds its own nodes and `unCode`,
+# The mixer holds the base and DFO terms. The UN deployment holds its own nodes and `unCode`,
 # a UN property with no `undata` prefix.
 _MIXER_ARCS = tuple(arc for arc in _ARCS if not arc[0].startswith("undata"))
 _UN_ARCS = (
@@ -77,7 +77,7 @@ def test_a_base_class_is_read_from_the_mixer_and_cached(serve_catalogue):
     assert gzipped.headers["Content-Encoding"] == "gzip"
     assert gzipped.json() == body
     assert not_modified.status_code == 304
-    # Three reads build the view once; the later requests read nothing.
+    # Three reads build the view once. The later requests read nothing.
     assert reads == 3
     assert len(mixer.calls) == reads
     assert un.calls == []
@@ -150,7 +150,7 @@ def test_a_node_no_deployment_holds_is_refused_and_not_kept(serve_catalogue):
 
     assert _refusal(response) == _refusal(again)
     assert _refusal(response) == (404, "not_found", False, "node_not_held", "no-store")
-    # The mixer's miss is kept under its generation; the UN deployment's refusal is not.
+    # The mixer's miss is kept under its generation. The UN deployment's refusal is not.
     assert (_out_reads(mixer), _out_reads(un)) == (1, 2)
 
 
@@ -214,7 +214,7 @@ def _wire(arcs: Sequence[tuple[str, str, str]]) -> httpx.MockTransport:
 
 def test_a_un_class_below_enumeration_reads_through_the_un_client(serve_catalogue):
     """The UN deployment's own client stamps its cache with the bound catalogue's build, so each
-    read runs under the request's context: undata/eclac/SERIES reaches `Enumeration` through
+    read runs under the request's context. The class undata/eclac/SERIES reaches `Enumeration` through
     undata/Series, and the chain's edges read through the client's generation-stamped cache."""
     serve_catalogue(FakeCatalogue())
     un = GraphClient(
@@ -272,7 +272,7 @@ def test_a_failed_view_answers_its_refusal_and_is_not_kept(
 
     assert (response.status_code, response.json()["code"]) == (status, code)
     assert response.headers["Cache-Control"] == "no-store"
-    # A failed read is not kept, so the next request reads again; a long dcid reads nothing.
+    # A failed read is not kept, so the next request reads again. A long dcid reads nothing.
     assert reads == (0 if error is None else 1)
     assert _out_reads(mixer) == 2 * reads
 

@@ -217,7 +217,7 @@ def _nodes(view: SchemaNodeView) -> dict[str, SchemaNode]:
 
 
 def test_a_class_carries_its_arcs_and_no_member_read(executor: ThreadPoolExecutor) -> None:
-    """Person outside `Enumeration` lists no members: `<-typeOf` is never requested."""
+    """Person is outside `Enumeration`, so it lists no members and `<-typeOf` is not requested."""
     graph = _FakeGraph()
     view = _view("Person", graph, executor)
 
@@ -333,7 +333,7 @@ def test_a_deep_value_list_reads_its_chain_and_marks_narrower_lists(
     executor: ThreadPoolExecutor,
 ) -> None:
     """The class undata/Series reaches `Enumeration` directly and has a narrower list, so its
-    own list is incomplete and the narrower class lists instances too; the deeper
+    own list is incomplete and the narrower class lists instances too. The deeper
     undata/eclac/SERIES reads the edges to `Enumeration`."""
     graph = _FakeGraph()
     series = _view("undata/Series", graph, executor)

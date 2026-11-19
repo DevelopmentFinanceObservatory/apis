@@ -455,7 +455,7 @@ def graph_surface(
             node_views: NodeViews | None = None
             if mixer_view is not None:
                 # A single-flight cache needs a pool no caller runs on. One flight per worker, so
-                # a miss past them is refused at once; each flight's reads queue on a pool
+                # a miss past them is refused at once. Each flight's reads queue on a pool
                 # sized for every flight's first round at once.
                 node_view_executor = DcpReadExecutor(
                     max_workers=NODE_VIEW_FLIGHT_WORKERS, thread_name_prefix="graph-node-view"

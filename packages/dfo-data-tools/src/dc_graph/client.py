@@ -2097,8 +2097,8 @@ class GraphClient:
         """Read the incoming arcs of every `dcids` node through every one of `properties` with
         the bracket form `<-[p]`, one walk per property, the properties in turn. Return every
         input dcid with its `InArcs`. Each subject carries its name, types and provenances. A
-        subject is distinct within a property and capped at `max_results` per node and property;
-        a further subject marks the property in `InArcs.capped`. A missing node or one with no
+        subject is distinct within a property and capped at `max_results` per node and property.
+        A further subject marks the property in `InArcs.capped`. A missing node or one with no
         in-arcs maps to an empty `InArcs`.
 
         A property's pages share one `nextToken` walk, which ends once the token is gone or

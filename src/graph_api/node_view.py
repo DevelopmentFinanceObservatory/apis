@@ -22,13 +22,13 @@ those `other_properties` keeps, such as a UN series' `unConcept`. Each in-arc su
 neighbour carrying the one arc that ties it to the centre.
 
 A Class whose closure holds `Enumeration` is a value list. Its round two lists its `<-typeOf`
-members, capped at `MEMBER_CAP`, and each member joins as a neighbour; when `Enumeration` is
+members, capped at `MEMBER_CAP`, and each member joins as a neighbour. When `Enumeration` is
 not a direct parent it also reads the direct `subClassOf` edges of the closure, so the chain
 from the centre to `Enumeration` in the view is the graph's. The centre's `instances` holds the
 members and is complete only when the listing read every one and the centre has no narrower
 class, since a narrower class's members are not listed. Each narrower class and each chain
 parent that reaches `Enumeration` gets `instances: {refs: [], complete: false}`. No other node
-has its `<-typeOf` read, so a class such as `Place` never requests its members.
+has its `<-typeOf` read, so a class such as `Place` lists no members.
 
 A Property reads in round two the `->subClassOf+` closure of each of its first
 `RANGE_CLASS_CAP` range classes other than `Thing`, sorted, one read each, and a range class
@@ -102,7 +102,7 @@ READS_AT_ONCE: Final[int] = 3
 second, which runs `1 + VALUE_TYPE_CAP`."""
 
 NODE_VIEW_MAX_BYTES: Final[int] = 2 * 1024 * 1024
-"""The most decoded bytes one response of a view's reads may carry; a larger one fails the
+"""The most decoded bytes one response of a view's reads may carry. A larger one fails the
 read."""
 
 RATE_LIMIT_WAITS_SECONDS: Final[tuple[float, ...]] = (1.0, 2.0)
@@ -301,7 +301,7 @@ class _Neighbour:
 
 class _Neighbours:
     """The view's neighbours by dcid, each merged over every answer that names it. The centre
-    is never one."""
+    is left out."""
 
     def __init__(self, centre: str) -> None:
         self._centre = centre
@@ -325,7 +325,7 @@ class _Neighbours:
 
     def add_target(self, target: ArcTarget) -> None:
         """Add a node target with the name and types the answer carries, and none of its
-        provenances, which name the declarer of the arc to it; a literal and an unresolved
+        provenances, which name the declarer of the arc to it. A literal and an unresolved
         target are left out."""
         if target.literal or target.value == UNRESOLVED_NODE:
             return

@@ -66,7 +66,7 @@ def test_node_in_arcs_node_without_arcs_or_absent_is_empty(monkeypatch) -> None:
 
 
 def test_node_in_arcs_stops_each_property_at_its_cap(monkeypatch) -> None:
-    """A capped property reads no page past its cap while another property is still listed:
+    """A capped property reads no page past its cap while another property is still listed.
     `subClassOf` caps on its first of five pages, and `rangeIncludes` has one page."""
     pages_by_property = {
         "subClassOf": [["x", "y", "x"], ["z"], ["w"], ["v"], ["u"]],

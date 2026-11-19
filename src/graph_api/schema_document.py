@@ -183,7 +183,7 @@ NODE_PROPERTIES: Final[tuple[str, ...]] = (
     "rangeIncludes",
     "classificationCode",
 )
-"""The properties a `SchemaNode` holds in fields of its own; every other is in
+"""The properties a `SchemaNode` holds in fields of its own. Every other is in
 `other_properties`."""
 
 type _Arcs = dict[str, tuple[str, ...]]

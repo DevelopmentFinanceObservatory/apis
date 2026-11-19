@@ -140,7 +140,7 @@ class GraphDeps:
     # serves no UN terms.
     un_terms: UnTerms | None = None
     # The node view route's readers and caches, `None` on a surface with no mixer reader for
-    # it, which answers the route 503 as before the lifespan.
+    # it, which answers the route 503.
     node_views: NodeViews | None = None
 
 
