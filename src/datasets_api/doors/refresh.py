@@ -32,7 +32,9 @@ The refresh makes each of them from the head with the current code index (`_rend
 and answers with the one frame they make, linking a file of each under it, so the caller's
 frame is that frame whichever rendering it was made as. Once they differ it refuses
 `rendering_not_recorded` (422). A head whose stored frame has expired, so that a rendering
-cannot be made from it, rebuilds or answers `pending` as for any other frame. After a
+cannot be made from it, rebuilds or answers `pending` as for any other frame. With the plain
+rendering among them the head is that rendering's frame, so a servable head that cannot make
+another rendering refuses `rendering_not_recorded` at once. After a
 rebuild the renderings are made from the raw version it materialised, whether or not that
 became the head: one that cannot be made, and renderings that make one frame other than the
 one the rebuild served, refuse `rendering_not_recorded`. The frame
@@ -79,7 +81,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from typing import Annotated, Literal
+from typing import Annotated, Literal, cast
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
@@ -400,14 +402,23 @@ def _rendering_frame(
 
 
 def _records_every(
-    renderings: Iterable[Mapping[str, object]], *, rendering: StoredRendering
+    renderings: Iterable[Mapping[str, object]],
+    *,
+    rendering: StoredRendering,
+    base_content_version: str,
+    collapsed: bool,
 ) -> bool:
-    """Whether files of `renderings` record each of `rendering.mintings`, and a plain file when
-    the plain rendering is one of `rendering`'s, so every rendering `rendering` is recorded under
-    makes the version they are linked under."""
+    """Whether a version linking files of `renderings` is one the refresh of `rendering` answers
+    with (`refresh_can_answer`), derived from `base_content_version` when `collapsed`, and links
+    a plain file when the plain rendering is one of `rendering`'s, so every rendering it is
+    recorded under makes that version."""
     renderings = list(renderings)
-    recorded = recorded_mintings(renderings)
-    return all(minting in recorded for minting in rendering.mintings) and (
+    target = StoredRendering(
+        base_content_version=base_content_version,
+        collapsed=collapsed,
+        mintings=tuple(recorded_mintings(renderings)),
+    )
+    return refresh_can_answer(stored=rendering, target=target) and (
         None not in rendering.renderings or records_plain_file(renderings)
     )
 
@@ -428,18 +439,20 @@ def _agreed_frame(
     frame (`_rendering_frame`), which sends the caller to a rebuild. `content_version` is the
     named frame's.
 
-    The first rendering is the one the frame refreshes as, and a frame recorded under one
-    rendering is that rendering's frame. When the first rendering's frame is the head and
-    already links a file of every rendering, they are one frame there and nothing more renders.
-    A derived frame's files may have been linked from other heads, so each other rendering is
-    made from this one. Otherwise each other
-    rendering is made from the head with the current code index, a plain file is linked under
-    the head unless one is, and the frame answers once every rendering made the same version and
-    that version links a file of each. Each check reads the files the frame's own read listed.
+    Every rendering is made from the head with the current code index, the first being the one
+    the frame refreshes as; a frame recorded under one rendering is that rendering's frame. When
+    the first rendering's frame is the head itself and already links a file of every rendering,
+    each of them made that head, so nothing more renders; a derived frame's files may have been
+    linked from other heads, so its other renderings are made again. A plain file is linked
+    under the head unless one is, and the frame answers once every rendering made the same
+    version and that version links a file of each. Each check reads the files the frame's own
+    read listed. When the plain rendering is one of them, the head is servable, so a rendering
+    that cannot be made from it refuses rather than rebuilds.
 
     Raises:
-        RenderingNotRecorded: The renderings make different frames, or their files did not
-            all link under the one they make.
+        RenderingNotRecorded: The renderings make different frames, their files did not all
+            link under the one they make, or, with the plain rendering among them, one cannot
+            be made from the head.
     """
     renderings = rendering.renderings
 
@@ -460,13 +473,25 @@ def _agreed_frame(
         renderings=len(renderings),
         plain=None in renderings,
     )
+    unmade = RenderingNotRecorded(
+        spec_id=spec_id,
+        content_version=content_version,
+        renderings=len(renderings),
+        unmade=True,
+        plain=None in renderings,
+    )
     frame = frame_of(renderings[0])
     if (
         frame is None
         or len(renderings) == 1
         or (
             frame.content_version == head_content_version
-            and _records_every(frame.renderings, rendering=rendering)
+            and _records_every(
+                frame.renderings,
+                rendering=rendering,
+                base_content_version=head_content_version,
+                collapsed=False,
+            )
         )
     ):
         return frame
@@ -474,6 +499,10 @@ def _agreed_frame(
     for other in renderings[1:]:
         made = frame_of(other)
         if made is None:
+            # With the plain rendering first, `frame` is the servable head, so the rendering
+            # cannot be made from a frame a rebuild would only make again.
+            if None in renderings:
+                raise unmade
             return None
         if made.content_version != frame.content_version:
             raise differ
@@ -491,7 +520,12 @@ def _agreed_frame(
         )
         if plain is not None:
             linked += [artifact.rendering for artifact in plain.artifacts]
-    if not _records_every(linked, rendering=rendering):
+    if not _records_every(
+        linked,
+        rendering=rendering,
+        base_content_version=head_content_version,
+        collapsed=frame.content_version != head_content_version,
+    ):
         raise differ
     return frame
 
@@ -587,26 +621,14 @@ def answer_frame_refresh(
         frame = FramePair(spec_id=spec_id, content_version=current_content_version)
         if (spec_id, current_content_version) == (named_spec_id, content_version):
             return FrameCurrent(frame=frame)
-        if rendering.ambiguous and not (
-            (materialised, current_content_version) in agreed
-            if materialised is not None
-            else any(version == current_content_version for _, version in agreed)
-        ):
+        if rendering.ambiguous and materialised is None:
+            # With no rebuild of this call, a head read answered, which agreed on the frame.
+            assert any(version == current_content_version for _, version in agreed)
+        elif rendering.ambiguous and (materialised, current_content_version) not in agreed:
             # A rebuild of this call served the frame, so the renderings are checked against
             # the raw version it materialised, whether or not that became the head, unless a
-            # head read agreed on the frame there. With no rebuild of this call, another
-            # caller's served it, and the head is that version.
-            head_content_version = materialised
-            if head_content_version is None:
-                head = deps.head_store.read_head(spec_id)
-                if head is None:
-                    raise RenderingNotRecorded(
-                        spec_id=spec_id,
-                        content_version=content_version,
-                        renderings=len(rendering.renderings),
-                        unmade=True,
-                    )
-                head_content_version = head.content_version
+            # head read agreed on the frame there.
+            head_content_version = cast(str, materialised)
             derived.reread()
             if minting is not None and current_content_version != head_content_version:
                 derived.add(
@@ -622,6 +644,7 @@ def answer_frame_refresh(
                     renderings=len(rendering.renderings),
                     agreed_on=made.content_version if made is not None else None,
                     unmade=made is None,
+                    plain=None in rendering.renderings,
                 )
         return FrameMoved(frame=frame)
 

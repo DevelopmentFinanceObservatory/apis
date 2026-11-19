@@ -205,9 +205,11 @@ class RenderingNotRecorded(Refusal):
     `rendering_not_recorded` (422). Its detail names the case:
 
     - with neither keyword, a derived frame with no linked file recording its minting options;
+    - with `renderings` and `plain`, a raw version recorded under that many renderings, the
+      plain one among them, that are no longer one frame of the current data, whichever of the
+      cases below it also is;
     - with `renderings`, a version recorded under that many renderings, which were one frame
-      when recorded and make different frames from the current data, and with `plain` also a
-      raw version that links a plain file;
+      when recorded and make different frames from the current data;
     - with `renderings` and `agreed_on`, renderings that make one frame from the current data,
       `agreed_on`, which is not the version the rebuild served;
     - with `renderings` and `unmade`, a rendering the raw version a rebuild materialised cannot
@@ -233,6 +235,12 @@ class RenderingNotRecorded(Refusal):
         named = f"{spec_id!r} at content_version {content_version!r}"
         if unreadable_record:
             detail = f"the card's recorded rendering of {named} names no rendering this build reads"
+        elif renderings > 1 and plain:
+            detail = (
+                f"the rendering of {named} is ambiguous: the version links a groupby sum or "
+                "party-totals cut and a plain file, and the renderings of the current data are "
+                "no longer one frame"
+            )
         elif unmade:
             detail = (
                 f"{named} was recorded under {renderings} renderings, and one of them cannot be "
@@ -243,12 +251,6 @@ class RenderingNotRecorded(Refusal):
                 f"{named} was recorded under {renderings} renderings; they make "
                 f"{agreed_on!r} from the current data, which is not the version the rebuild "
                 "served"
-            )
-        elif renderings > 1 and plain:
-            detail = (
-                f"the rendering of {named} is ambiguous: the version links a groupby sum or "
-                "party-totals cut and a plain file, and the renderings of the current data are "
-                "no longer one frame"
             )
         elif renderings > 1:
             detail = (
@@ -343,7 +345,9 @@ class StoredRendering:
         return {
             "base_content_version": self.base_content_version,
             "minting": _minting_record(self.minting),
-            "ambiguous": self.ambiguous,
+            # A reader of records without `plain` reads `ambiguous` as the plain rendering
+            # being one of several, and refreshes any other record as `minting`.
+            "ambiguous": self.plain,
             "collapsed": self.collapsed,
             "mintings": [_minting_record(minting) for minting in self.mintings],
             "plain": None in self.renderings,

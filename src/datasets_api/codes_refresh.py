@@ -17,8 +17,7 @@ REFRESH_DOOR_CODE_CATALOGUE: dict[str, tuple[str, str]] = {
         "links both a groupby sum and a plain file and the two renderings of the current "
         "data differ. It is also refused when its version is recorded under several "
         "renderings, raw or derived, and the current data renders them as different frames, "
-        "when a rebuilt dataset cannot render one of them or renders them as one frame other "
-        "than the one it served, and when a card's recorded rendering names no rendering this "
-        "build reads.",
+        "and when a rebuilt dataset cannot render one of them or renders them as one frame "
+        "other than the one it served.",
     ),
 }

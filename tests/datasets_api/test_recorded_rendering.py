@@ -150,16 +150,54 @@ def test_a_card_record_keeps_the_link_order_and_adds_only_plain():
         StoredRendering(
             base_content_version="cv1", mintings=(_SUMMED_MINTING, _CUT_MINTING), plain=True
         ),
+        StoredRendering(base_content_version="cv1", mintings=(_CUT_MINTING, _SUMMED_MINTING)),
         StoredRendering(
             base_content_version="cv_base",
             collapsed=True,
             mintings=(_CUT_AND_SUMMED_MINTING, _SUMMED_MINTING),
         ),
     ],
-    ids=["plain", "single", "ambiguous-raw", "ambiguous-derived"],
+    ids=["plain", "single", "ambiguous-raw", "several-mintings-raw", "ambiguous-derived"],
 )
 def test_a_card_record_reads_back_as_the_rendering_it_records(rendering: StoredRendering):
     assert StoredRendering.from_record(rendering.to_record()) == rendering
+
+
+@pytest.mark.parametrize(
+    ("rendering", "ambiguous"),
+    [
+        (
+            StoredRendering(
+                base_content_version="cv1", mintings=(_SUMMED_MINTING, _CUT_MINTING), plain=True
+            ),
+            True,
+        ),
+        (
+            StoredRendering(base_content_version="cv1", mintings=(_CUT_MINTING, _SUMMED_MINTING)),
+            False,
+        ),
+        (
+            StoredRendering(
+                base_content_version="cv_base",
+                collapsed=True,
+                mintings=(_CUT_AND_SUMMED_MINTING, _SUMMED_MINTING),
+            ),
+            False,
+        ),
+    ],
+    ids=["plain-and-mintings", "several-mintings-raw", "several-mintings-derived"],
+)
+def test_a_card_record_is_ambiguous_only_when_the_plain_rendering_is_one_of_several(
+    rendering: StoredRendering, ambiguous: bool
+):
+    """A reader that predates `plain` reads `ambiguous` as the plain rendering being one of
+    several and otherwise refreshes the record as its `minting`, the first linked."""
+    record = rendering.to_record()
+
+    assert (record["ambiguous"], record["minting"]) == (
+        ambiguous,
+        _minting_record(rendering.mintings[0]),
+    )
 
 
 def test_a_card_record_that_records_no_rendering_is_refused():

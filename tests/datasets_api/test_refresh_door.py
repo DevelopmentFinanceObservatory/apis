@@ -984,6 +984,73 @@ def test_a_rebuild_is_checked_against_its_own_head_when_another_writer_moves_it(
     assert shared.recorded_groupby(moved_to) == [_GROUPBY]
 
 
+_SUMMED = MintingOptions(groupby=GroupbyOptions.model_validate(_GROUPBY))
+
+
+def _origin_ambiguous_detail(*, spec_id: str, content_version: str) -> str:
+    """The detail a raw version with a plain file whose renderings are no longer one frame
+    refuses with, as the refresh has always stated it."""
+    return (
+        f"the rendering of {spec_id!r} at content_version {content_version!r} is ambiguous: the "
+        "version links a groupby sum or party-totals cut and a plain file, and the renderings "
+        "of the current data are no longer one frame"
+    )
+
+
+def test_a_servable_head_that_cannot_make_the_groupby_of_a_plain_frame_refuses_at_once(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A raw version linking a plain file and a groupby file, whose head another caller's plain
+    mint moved, refuses `rendering_not_recorded` without a rebuild when the servable head
+    cannot make the groupby."""
+    shared = _one_contributor_rig(_PLAIN_MINT, _SUMMED_MINT)
+    _move_to(shared, _MEMBER_A_ROW.replace(",1000,", ",3000,"))
+    spec_id, sidecar = collapse_fixture._spec_id_and_sidecar()
+    collapse_fixture._mint(shared.rig.client, spec_id=spec_id, sidecar=sidecar, options=_PLAIN_MINT)
+    assert shared.rig.head_store.head_for(spec_id).content_version != shared.base_content_version
+    real = refresh_module._rendering_frame
+    monkeypatch.setattr(
+        refresh_module,
+        "_rendering_frame",
+        lambda **kwargs: None if kwargs["minting"] == _SUMMED else real(**kwargs),
+    )
+    sdmx_requests = len(shared.rig.sdmx_requests)
+
+    resp = shared.rig.refresh(spec_id=shared.spec_id, content_version=shared.base_content_version)
+
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == _origin_ambiguous_detail(
+        spec_id=shared.spec_id, content_version=shared.base_content_version
+    )
+    assert len(shared.rig.sdmx_requests) == sdmx_requests
+
+
+def test_a_rebuilt_plain_frame_that_cannot_make_the_groupby_refuses_as_ambiguous(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A raw version linking a plain file and a groupby file whose head frame expired rebuilds
+    on new data, and when the rebuilt version cannot make the groupby the refusal states the
+    plain frame's ambiguity."""
+    shared = _one_contributor_rig(_PLAIN_MINT, _SUMMED_MINT)
+    shared.rig.expire_frame(spec_id=shared.spec_id, content_version=shared.base_content_version)
+    _move_to(shared, _MEMBER_A_ROW.replace(",1000,", ",3000,"))
+    real = refresh_module._rendering_frame
+    monkeypatch.setattr(
+        refresh_module,
+        "_rendering_frame",
+        lambda **kwargs: None if kwargs["minting"] == _SUMMED else real(**kwargs),
+    )
+    sdmx_requests = len(shared.rig.sdmx_requests)
+
+    resp = shared.rig.refresh(spec_id=shared.spec_id, content_version=shared.base_content_version)
+
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["detail"] == _origin_ambiguous_detail(
+        spec_id=shared.spec_id, content_version=shared.base_content_version
+    )
+    assert len(shared.rig.sdmx_requests) > sdmx_requests
+
+
 def test_a_rebuild_that_remakes_the_named_frame_answers_current(
     monkeypatch: pytest.MonkeyPatch,
 ):
