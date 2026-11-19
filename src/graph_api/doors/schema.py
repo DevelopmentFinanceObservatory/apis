@@ -1171,6 +1171,7 @@ def _check_body(
     lookup: SchemaLookup,
     reader: GraphNodeReader,
     code_index: CodeIndex,
+    catalogue: Catalogue,
     un_served: bool,
     generation: str | None,
     deadline: float,
@@ -1183,6 +1184,7 @@ def _check_body(
         lookup=lookup,
         reader=reader,
         code_index=code_index,
+        catalogue=catalogue,
         un_served=un_served,
         generation=generation,
         deadline=deadline,
@@ -1197,7 +1199,8 @@ async def post_schema_check(deps: GraphDepsDep, body: SchemaCheckRequest) -> Res
     deadline = _request_deadline(GRAPH_SCHEMA_CHECK_TIMEOUT_SECONDS)
     code_index = get_index()
     frozen = await _frozen_schema(deps, code_index=code_index, deadline=deadline)
-    un_served = current_catalogue().un_system_enabled
+    catalogue = current_catalogue()
+    un_served = catalogue.un_system_enabled
     plan = plan_reads(body.rows, lookup=frozen.lookup, un_served=un_served)
     try:
         async with asyncio.timeout(max(0.0, deadline - time.monotonic())):
@@ -1209,6 +1212,7 @@ async def post_schema_check(deps: GraphDepsDep, body: SchemaCheckRequest) -> Res
                 lookup=frozen.lookup,
                 reader=deps.graph,
                 code_index=code_index,
+                catalogue=catalogue,
                 un_served=un_served,
                 generation=frozen.generation,
                 deadline=deadline,
