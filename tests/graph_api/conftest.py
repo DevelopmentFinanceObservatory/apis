@@ -20,6 +20,7 @@ from entity_resolution.shared import SharedResolver
 from graph_api.app import graph_surface
 from graph_api.code_lookup import CodeIndexCodes
 from graph_api.reader import NodeArcsByDcid
+from graph_api.un_terms import UnTermsReader
 from materialise.facet_profile import ProfileGraphReader
 from materialise.graph import SubjectPage
 from materialise.place_scope import AvailabilityReader
@@ -233,6 +234,7 @@ def make_app(
     coverage: object | None = None,
     profile_graph: ProfileGraphReader | None = None,
     availability: AvailabilityReader | None = None,
+    un_graph: UnTermsReader | None = None,
 ) -> FastAPI:
     if graph is None:
         graph = FakeGraphNodeReader()
@@ -245,6 +247,7 @@ def make_app(
                 coverage=coverage,
                 profile_graph=profile_graph,
                 availability=availability,
+                un_graph=un_graph,
             )
         ]
     )
@@ -258,6 +261,7 @@ def make_client(
     coverage: object | None = None,
     profile_graph: ProfileGraphReader | None = None,
     availability: AvailabilityReader | None = None,
+    un_graph: UnTermsReader | None = None,
 ) -> TestClient:
     return TestClient(
         make_app(
@@ -267,6 +271,7 @@ def make_client(
             coverage=coverage,
             profile_graph=profile_graph,
             availability=availability,
+            un_graph=un_graph,
         ),
         raise_server_exceptions=False,
     )

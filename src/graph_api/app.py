@@ -23,7 +23,8 @@ from the bound release's coverage.
 Routes: `GET /healthz`, `GET /capabilities`, `GET /json-schema`, `POST /resolve`,
 `GET /node/{dcid}`, `POST /nodes`, `GET /node/{dcid}/members`, `GET /roots`,
 `GET /documentation/{dcid}`, `GET /sources`, `GET /schema`, `GET /schema/terms`,
-`GET /schema/usage`, and `POST /schema/check`, all under `/api/graph`.
+`GET /schema/terms/un_system`, `GET /schema/usage`, and `POST /schema/check`, all under
+`/api/graph`.
 `GET /schema`, `GET /schema/terms` and `POST /schema/check` share one build per graph
 generation and code index, held in a cache the lifespan registers beside the source-document
 and node-envelope caches. `GET /schema/usage` reads each Provenance node's name and
@@ -79,6 +80,7 @@ from graph_api.deps import (
     DcpReadExecutor,
     GraphDeps,
     GraphDepsNotSet,
+    UnTerms,
     new_check_executor,
 )
 from graph_api.doors.health import build_health_door
@@ -94,6 +96,7 @@ from graph_api.doors.schema import (
 from graph_api.doors.sources import build_sources_door, new_provenance_doc_cache
 from graph_api.node_cache import NodeEntryCache
 from graph_api.reader import GraphNodeReader
+from graph_api.un_terms import UnTermsReader
 from graph_api.version import GRAPH_CAPABILITY_VERSION
 from graph_generation import UNKNOWN_GENERATION, GenerationProvider, RegistrationHandle
 from graph_generation import acquire_shared as acquire_shared_generation
@@ -123,6 +126,7 @@ from origin_catalogue.graph import (
     OBS_CACHE_SIZE,
     OBS_PROPERTIES_CACHE_SIZE,
     OriginGraphClient,
+    UnGeneration,
     build_graph_client,
 )
 from origin_catalogue.service import get_catalogue_service
@@ -180,6 +184,7 @@ def graph_surface(
     coverage: ServedCoverage | None = None,
     profile_graph: ProfileGraphReader | None = None,
     availability: AvailabilityReader | None = None,
+    un_graph: UnTermsReader | None = None,
 ) -> Surface:
     """Build the Graph surface.
 
@@ -191,7 +196,9 @@ def graph_surface(
     feed a facet profile cache of the surface's own, on an executor of its own, for an
     injected graph. A live surface ignores them and acquires the process's shared cache, and
     an injected graph runs without a profile cache unless both are given. An injected
-    resolver leaves the membership policy for its caller to publish.
+    resolver leaves the membership policy for its caller to publish. `un_graph` feeds the UN
+    terms route for an injected graph. A live surface ignores it and reads the UN deployment's
+    own client, and an injected graph without it serves no UN terms.
     """
     catalogue = get_catalogue_service()
     release = get_release_service()
@@ -229,6 +236,7 @@ def graph_surface(
         dcp_executor: DcpReadExecutor | None = None
         check_executor: DcpReadExecutor | None = None
         usage_executor: ThreadPoolExecutor | None = None
+        un_terms_executor: ThreadPoolExecutor | None = None
         profile_executor: ThreadPoolExecutor | None = None
         profile_reads: ThreadPoolExecutor | None = None
         card_reads: CardReadCaches | None = None
@@ -249,6 +257,8 @@ def graph_surface(
                 await asyncio.to_thread(check_executor.shutdown, wait=True)
             if usage_executor is not None:
                 await asyncio.to_thread(usage_executor.shutdown, wait=True)
+            if un_terms_executor is not None:
+                await asyncio.to_thread(un_terms_executor.shutdown, wait=True)
             if card_reads is not None:
                 await asyncio.to_thread(card_reads.close)
             if shared_profiles is not None:
@@ -379,6 +389,20 @@ def graph_surface(
             usage_registration = resolved_generation.register(
                 "graph_api.dataset_usage", stats=dataset_usage.stats, clear=dataset_usage.clear
             )
+            un_reader = live_reader.un_graph() if live_reader is not None else un_graph
+            un_terms: UnTerms | None = None
+            if un_reader is not None:
+                # Keyed by the UN deployment's own generation, so a mixer generation change
+                # leaves it in place.
+                un_terms_executor = ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="graph-un-terms"
+                )
+                un_terms = UnTerms(
+                    reader=un_reader,
+                    cache=new_schema_cache(
+                        entries=1, executor=un_terms_executor, generation=UnGeneration()
+                    ),
+                )
 
             profile_cache: FacetProfileCache | None = None
             if shared_profiles is not None:
@@ -427,6 +451,7 @@ def graph_surface(
             node_entries=node_entries,
             schema=schema,
             dataset_usage=dataset_usage,
+            un_terms=un_terms,
             coverage=resolved_coverage,
             profile_cache=profile_cache,
             card_reads=card_reads,

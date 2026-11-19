@@ -8,6 +8,7 @@ The surface mounts at `/api/graph` and operates as an independent composition ro
  POST /resolve        GET /node/{dcid}      GET /node/{dcid}/members     GET /documentation/{dcid}
                       POST /nodes           GET /roots                   GET /sources
                       GET /schema  GET /schema/terms  GET /schema/usage  POST /schema/check
+                      GET /schema/terms/un_system
       |                    |                        |                            |
       v                    v                        v                            |
 +------------------+  +------------------------------------------+               |
@@ -953,7 +954,7 @@ Under a known generation the cache keeps these two refusals for 60 s (`SCHEMA_RE
 
 ### GET /api/graph/schema/terms
 
-Every Class and Property the DFO graph lists by `typeOf`, base Data Commons terms included, as `{generation, terms}`. The listing reads the mixer alone, so the UN origin's terms are absent even on a deployment that serves the UN origin. Each term is `{ref, label, types, provenances, declared_by}`, sorted by `ref`. `types` is `["Class"]`, `["Property"]` or both. `label`, `provenances` and `declared_by` follow the rules of the schema document. A term whose listing entries carry no Provenance has empty `provenances` and a `null` `declared_by`.
+Every Class and Property the DFO graph lists by `typeOf`, base Data Commons terms included, as `{generation, terms}`. The listing reads the mixer alone, so the UN origin's terms are absent even on a deployment that serves the UN origin. `GET /api/graph/schema/terms/un_system` lists them. Each term is `{ref, label, types, provenances, declared_by}`, sorted by `ref`. `types` is `["Class"]`, `["Property"]` or both. `label`, `provenances` and `declared_by` follow the rules of the schema document. A term whose listing entries carry no Provenance has empty `provenances` and a `null` `declared_by`.
 
 The route reads the same cached build as `GET /api/graph/schema`, so its caching (`public, max-age=300`, a strong `ETag`, gzip, `304`) and its failures are the same as that route's, and a request that follows one for the document makes no graph read.
 
@@ -982,6 +983,46 @@ The route reads the same cached build as `GET /api/graph/schema`, so its caching
         "provenance/DFOOntology"
       ],
       "declared_by": "dfo"
+    }
+  ]
+}
+```
+
+---
+
+### GET /api/graph/schema/terms/un_system
+
+Every Class and Property the UN System Data Commons declares, as `{generation, terms}` in the shape of `GET /api/graph/schema/terms`, with `generation` always `null`, since the UN deployment serves no generation token. The route reads `Class <-typeOf` and then `Property <-typeOf` from the UN deployment's own client, one listing at a time, and keeps each term whose listing Provenances give it `declared_by` `un_system` by the schema document's rule. That keeps `unCode` and `unConcept`, which the UN deployment declares under `undata/p/UNData` with no `undata` prefix, and the base-named Classes it declares again, such as `Dataset` and `Topic`. It leaves out the base Data Commons terms the UN deployment also lists, which the default terms route serves. The UN deployment lists 2,105 Classes and 6,144 Properties and declares 219 and 215 of them.
+
+A listing the UN front door answers with `429` is read again after 10, 30 and 60 s, while the wait ends inside the build's 60 s deadline. The body is cached per UN cache generation (the bound origin catalogue's build and the UTC date) and the UN origin flag, so a change on the UN deployment shows from the next UTC day or catalogue build. Concurrent first requests share one build. A request whose wait passes 10 s answers `503 service_unavailable`, retryable, with `Retry-After: 5` and `cause: {"code": "schema_building"}`, and the build lands for the next request. A build past its 60 s deadline answers `504 timeout`, a listing at its cap a non-retryable `500 internal_error`, and a failed read answers as it does on `GET /api/graph/schema`. A failed build is not kept. The body answers `public, max-age=300` with a strong `ETag`, a gzip representation and `304` on `If-None-Match`.
+
+A deployment that does not serve the UN origin (`ORIGIN_CATALOGUE_UN_SYSTEM_ENABLED` off) answers `404 not_found`, not retryable, with `cause: {"code": "origin_not_served"}` and `Cache-Control: no-store`, and sends the UN deployment nothing.
+
+```json
+{
+  "generation": null,
+  "terms": [
+    {
+      "ref": "unCode",
+      "label": "UN Data source code",
+      "types": [
+        "Property"
+      ],
+      "provenances": [
+        "undata/p/UNData"
+      ],
+      "declared_by": "un_system"
+    },
+    {
+      "ref": "undata/AGE",
+      "label": "Age",
+      "types": [
+        "Class"
+      ],
+      "provenances": [
+        "undata/p/UNData"
+      ],
+      "declared_by": "un_system"
     }
   ]
 }
@@ -1268,7 +1309,7 @@ The Graph API reads environment variables during module initialization and appli
 | `GRAPH_DCP_TOKEN`               | String  | `""`                    | Optional access token sent via `x-graph-token` header to DCP and to its SDMX root.  |
 | `GRAPH_NODE_POOL_SIZE`          | Integer | `4`                     | Worker count of the DCP-read executor. It admits one read per worker and refuses the next with `503`. |
 | `GRAPH_RESOLVE_TIMEOUT_SECONDS` | Integer | `30`                    | Request timeout for `/api/graph/resolve`.                                           |
-| `GRAPH_NODE_TIMEOUT_SECONDS`    | Integer | `10`                    | Request timeout for `/api/graph/node/{dcid}`, `/api/graph/nodes`, `/api/graph/documentation/{dcid}`, the label and facet reads of `/api/graph/node/{dcid}/members`, and the build wait of `GET /api/graph/schema`, `/schema/terms`. |
+| `GRAPH_NODE_TIMEOUT_SECONDS`    | Integer | `10`                    | Request timeout for `/api/graph/node/{dcid}`, `/api/graph/nodes`, `/api/graph/documentation/{dcid}`, the label and facet reads of `/api/graph/node/{dcid}/members`, and the build wait of `GET /api/graph/schema`, `/schema/terms`, `/schema/terms/un_system`. |
 | `GRAPH_SCHEMA_CHECK_TIMEOUT_SECONDS` | Integer | `30`             | Request timeout for `POST /api/graph/schema/check`, covering its wait for the schema build and its reads of up to 200 ids in at most 596 POSTs. |
 | `GRAPH_PROVENANCE_DOC_CACHE_SIZE` | Integer | `512`                 | Most source documents `/api/graph/documentation/{dcid}` keeps in its cache at once. |
 | `GRAPH_NODE_ENTRY_CACHE_SIZE`   | Integer | `2048`                  | Most built node entries the node routes keep in their cache at once.                |
@@ -1294,6 +1335,7 @@ Errors use RFC 9457 problem detail envelopes:
 | `400`       | `request_invalid`     | `GET /api/graph/documentation/{dcid}`'s `dcid` is held, but is neither a `Dataset` nor a `Provenance` node, including a `Source` dcid.   | `/dcid`                                                                                     | No        |
 | `503`       | `service_unavailable` | `GET /api/graph/documentation/{dcid}`'s own Dataset children read came back truncated (more than 256 children, or a surviving `nextToken`).            | None                                                                                        | No        |
 | `404`       | `not_found`           | Unmatched route or empty DCID path parameter (`/api/graph/node/`).                                                                                     | None                                                                                        | No        |
+| `404`       | `not_found`           | `GET /api/graph/schema/terms/un_system` on a deployment that does not serve the UN origin, with `cause.code` `origin_not_served`.                        | None                                                                                        | No        |
 | `400`       | `request_invalid`     | `POST /api/graph/schema/check` that is not JSON, with `rows` missing, empty or over 2,000 entries, an unknown member, a row over 16 constraint properties or 4 observation properties, a string over 512 characters, or a constraint value that is a number past plus or minus 2**53, `NaN` or an infinity. A row's content is never refused; its faults are findings. | The offending body field, naming the row (e.g. `/rows`, `/rows/37/constraint_properties`). | No        |
 | `503`       | `service_unavailable` | A schema route's own wait passed while the build runs on (`cause.code` `schema_building`), or two schema checks already run in the process (`cause.code` `check_busy`). The first sends `Retry-After: 5`, the second `Retry-After: 1`. | None                                                                                        | Yes       |
 | `500`       | `internal_error`      | A schema build's Class or Property listing reached its cap, or its document holds no node DFO declares. Under a known generation the schema, terms and check routes answer it for 60 s, and the first request after that builds again, so a retry within the 60 s gets the same 500 and a fault that lasts refuses again. Under an unknown generation the next request builds again. | None                                                                                        | No        |

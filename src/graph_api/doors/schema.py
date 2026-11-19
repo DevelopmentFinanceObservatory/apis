@@ -1,5 +1,5 @@
-"""Serve the deployment's schema document and the list of the DFO graph's Classes and
-Properties.
+"""Serve the deployment's schema document, the list of the DFO graph's Classes and
+Properties, and the list of those the UN System Data Commons declares.
 
 `GET /api/graph/schema` serves `SchemaDocument` and `GET /api/graph/schema/terms`
 serves `SchemaTerms`, every Class and Property the mixer lists by `typeOf` and none of the UN
@@ -83,6 +83,22 @@ deadline, and concurrent misses share that build. A request whose wait passes
 `cause: {"code": "schema_building"}`, a build past its flight deadline answers 504, and a
 failed read answers as it does for the other two routes. A failed build is not kept.
 
+`GET /api/graph/schema/terms/un_system` serves `SchemaTerms` for the Classes and Properties
+the UN System Data Commons declares, built by `graph_api.un_terms.build_un_terms` from two
+listings read through the UN deployment's own client (`GraphDeps.un_terms`), past the origin
+client's routing, which would send `Class` and `Property` to the mixer. That client skips the
+catalogue's `un_system_enabled` gate too, so the route checks it first: with the UN origin off,
+or on a surface with no UN reader, it answers 404 `not_found`, not retryable, with
+`cause: {"code": "origin_not_served"}`, and reads nothing. The refusal goes out `no-store`, so no
+cache keeps it past a change of the flag. The body sits in a single-flight cache of one entry on
+an executor of one worker, keyed by `UnTermsKey`: the UN deployment's cache generation
+(`origin_catalogue.graph.UnGeneration`, the bound catalogue's build and the UTC date) and the
+flag. The UN deployment serves no generation token, so a UN change shows on the next UTC day or
+catalogue build, and the body's `generation` is `null`. A miss builds under the flight deadline,
+a request waits until `GRAPH_NODE_TIMEOUT_SECONDS` from its start, and the waits and failures
+answer as on the usage route, a listing at its cap as on `GET /api/graph/schema`. A failed
+build is not kept.
+
 After each build the door logs one line timing the encoding of the document and terms bodies
 and giving their sizes, beside the build's own per-phase line.
 
@@ -144,6 +160,7 @@ from graph_api.schema_models import (
     SchemaDocument,
     SchemaTerms,
 )
+from graph_api.un_terms import build_un_terms
 from graph_generation import GenerationProvider
 from graph_generation.stamp import UNKNOWN_KEY
 from materialise.graph import GraphDeadlineExceededError, GraphReadError
@@ -236,6 +253,21 @@ class SchemaReadFailed(Exception):
         self.error = error
 
 
+class UnOriginNotServed(Exception):
+    """The bound catalogue does not serve the UN origin, or the surface has no UN reader."""
+
+    def __init__(self) -> None:
+        super().__init__("this deployment does not serve the UN System Data Commons origin")
+
+
+class UnTermsKey(NamedTuple):
+    """The UN deployment's cache generation stamp and whether the bound catalogue serves the UN
+    origin."""
+
+    un_generation: str
+    un_system_enabled: bool
+
+
 class UsageKey(NamedTuple):
     """The content hash of the code index and the coverage build the usage body reads."""
 
@@ -254,7 +286,7 @@ def new_schema_cache[K, V](
     `SCHEMA_FLIGHT_TIMEOUT_SECONDS`, with a key that carries `generation`'s stamp and entry
     lifetimes measured on `clock`. `GraphDeps.schema` holds two, so a request stamped with an
     unknown generation keeps the entry of the known one, and `GraphDeps.dataset_usage` holds
-    one."""
+    one, and the UN terms cache one."""
     return SingleFlightCache(
         maxsize=entries,
         flight_timeout_s=SCHEMA_FLIGHT_TIMEOUT_SECONDS,
@@ -395,6 +427,14 @@ def classify_schema_exception(exc: BaseException) -> ProblemSpec | None:
             cause=Cause(code="check_busy" if busy else "schema_building"),
             headers={"Retry-After": str(retry_after)},
         )
+    if isinstance(exc, UnOriginNotServed):
+        return ProblemSpec(
+            status=404,
+            code="not_found",
+            detail=str(exc),
+            retryable=False,
+            cause=Cause(code="origin_not_served"),
+        )
     if isinstance(exc, SchemaBuildExpired):
         return ProblemSpec(
             status=TIMEOUT_DEFAULT.status,
@@ -490,6 +530,43 @@ async def _frozen_usage(deps: GraphDeps) -> FrozenJSON:
     return found[key]
 
 
+async def _frozen_un_terms(deps: GraphDeps) -> FrozenJSON:
+    """The UN terms body from `deps.un_terms`, building it on a miss. A request waits until
+    `GRAPH_NODE_TIMEOUT_SECONDS` from its start.
+
+    Raises:
+        UnOriginNotServed: the bound catalogue does not serve the UN origin, or the surface has
+            no UN reader. Nothing is read.
+        SchemaBuildPending: the request's wait passed while the build runs on.
+        SchemaBuildExpired: the build outlived its flight deadline.
+        SchemaReadFailed: a listing failed or reached its cap.
+    """
+    catalogue = current_catalogue()
+    un_terms = deps.un_terms
+    if un_terms is None or not catalogue.un_system_enabled:
+        raise UnOriginNotServed()
+    key = UnTermsKey(
+        un_generation=un_terms.cache.stamp_key(),
+        un_system_enabled=catalogue.un_system_enabled,
+    )
+
+    def build(_keys: list[UnTermsKey], flight_deadline: float) -> dict[UnTermsKey, FrozenJSON]:
+        terms = build_un_terms(
+            reader=un_terms.reader, catalogue=catalogue, deadline=flight_deadline
+        )
+        return {key: _freeze(terms)}
+
+    try:
+        found = await un_terms.cache.aget_or_fetch_many([key], build, deadline=_request_deadline())
+    except WaitTimeout:
+        raise SchemaBuildPending() from None
+    except TimeoutError as exc:
+        raise SchemaBuildExpired() from exc
+    except GraphReadError as exc:
+        raise SchemaReadFailed(exc) from exc
+    return found[key]
+
+
 async def warm_schema(deps: GraphDeps, *, timeout_s: float) -> None:
     """Build the entry `GET /api/graph/schema` would build now, under the bound origin
     catalogue and served release, waiting at most `timeout_s`. A build still running then
@@ -520,6 +597,10 @@ async def get_schema(deps: GraphDepsDep, request: Request) -> Response:
 async def get_schema_terms(deps: GraphDepsDep, request: Request) -> Response:
     frozen = await _frozen_schema(deps, code_index=get_index(), deadline=_request_deadline())
     return frozen.terms.respond(request)
+
+
+async def get_un_schema_terms(deps: GraphDepsDep, request: Request) -> Response:
+    return (await _frozen_un_terms(deps)).respond(request)
 
 
 def _check_body(
@@ -599,6 +680,12 @@ def build_schema_door() -> DoorContribution:
         response_model=SchemaTerms,
     )
     router.add_api_route(
+        "/api/graph/schema/terms/un_system",
+        get_un_schema_terms,
+        methods=["GET"],
+        response_model=SchemaTerms,
+    )
+    router.add_api_route(
         "/api/graph/schema/usage",
         get_schema_usage,
         methods=["GET"],
@@ -618,8 +705,10 @@ def build_schema_door() -> DoorContribution:
             SchemaBuildExpired,
             SchemaReadFailed,
             SchemaCheckBusy,
+            UnOriginNotServed,
         ),
         exception_exemplars=(
+            UnOriginNotServed(),
             SchemaCheckBusy(),
             SchemaBuildPending(),
             SchemaBuildExpired(),
