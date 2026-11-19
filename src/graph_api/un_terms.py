@@ -7,16 +7,23 @@ page they hit, and the pages already read are kept:
 
 - The UN front door rate-limits a busy client with HTTP 429. The page is requested again after
   each of `UN_TERMS_RATE_LIMIT_WAITS_SECONDS` (5 and 15 s), one budget shared by both listings,
-  so a build waits 20 s at most for 429s, inside its 60 s flight. A 429 past the budget, or one
-  whose next wait would end past the build's deadline, raises its `GraphReadError`.
+  or after the response's `Retry-After` where that is longer, so a build with no `Retry-After`
+  waits 20 s at most for 429s, inside its 60 s flight. A 429 past the budget, or one whose
+  next wait would not leave `UN_TERMS_MIN_READ_SECONDS` before the build's deadline for the
+  page's read, raises `UnTermsRateLimitedError`, which carries the response's `Retry-After`.
 - The graph sometimes answers a page with a token the listing has already been given. The page
   is requested again after each of `origin_catalogue.node_reads.REPEATED_PAGE_WAITS_SECONDS`
-  (1, 2 and 4 s), while the wait ends before the deadline, and then raises
-  `dc_graph.GraphNotAdvancingError`, as does a listing that adds no subject for
-  `STALLED_PAGE_LIMIT` pages or passes `MAX_PAGES`.
+  (1, 2 and 4 s), while the wait leaves `UN_TERMS_MIN_READ_SECONDS` before the deadline, and
+  then raises `dc_graph.GraphNotAdvancingError`, as does a listing that passes `MAX_PAGES` or
+  whose pages add no subject and no new provenance of a subject for `STALLED_PAGE_LIMIT` pages.
 
-Each wait logs one line. A wait ends early when the build's `stop` event is set, as the Graph
-lifespan sets it at shutdown, and the build then raises `GraphReadError`.
+Each wait logs one line. The build's `stop` event, which the Graph lifespan sets at shutdown,
+ends a wait at once and stops the build before its next request, and the build then raises
+`GraphReadError`.
+
+A listing that names no subject, or none the UN origin declares, raises
+`UnTermsListingEmptyError`: the UN deployment declares 219 Classes and 215 Properties, so an
+empty one is a deployment mid-reload, which answers `{"data": {"Property": {}}}`.
 
 A term is kept when its listing entries carry a provenance outside base Data Commons, meaning
 one whose origin (`graph_api.schema_document.provenance_origin`) is not `"base"`. Every
@@ -26,7 +33,9 @@ fallback for an unknown prefix, and a term with base and UN provenances both, co
 `unCode` or `unConcept`, is kept, and so is a base-named Class the UN deployment declares again,
 such as `Dataset`. A term whose entries carry only base provenances is the base term the default
 list serves, and is left out. A term whose entries carry none is left out and logged. The UN
-deployment lists 2,105 Classes and 6,144 Properties, and declares 219 and 215 of them.
+deployment lists 2,105 Classes and 6,129 Properties, and declares 219 and 215 of them. The
+mixer's `GET /api/graph/schema/terms` lists every one of the other 1,886 Classes and 5,914
+Properties, so leaving them out drops no term from both routes.
 """
 
 from __future__ import annotations
@@ -34,7 +43,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator
 from typing import Final, Protocol
 
 from dc_graph import ArcSubject, GraphNotAdvancingError, GraphReadError
@@ -60,10 +69,32 @@ UN_TERMS_RATE_LIMIT_WAITS_SECONDS: Final[tuple[float, ...]] = (5.0, 15.0)
 """The waits before each further request for a page the UN front door answered with HTTP 429,
 one budget for the whole build. Both end inside the 60 s flight with time left to read."""
 
+UN_TERMS_MIN_READ_SECONDS: Final[float] = 5.0
+"""The time a wait must leave before the build's deadline for the page's read that follows it.
+A wait that leaves less is not taken, since the read would fail on the deadline."""
+
 _NODE_PATH: Final[str] = "/v2/node"
 _RATE_LIMITED: Final[int] = 429
 _KINDS: Final[tuple[TermKind, ...]] = ("Class", "Property")
 _LOGGED_DCIDS: Final[int] = 10
+
+
+class UnTermsRateLimitedError(GraphReadError):
+    """The UN front door still answered HTTP 429 when the build's 429 waits were spent or the
+    next would not fit before its deadline. `retry_after` is the seconds the last response's
+    `Retry-After` named, `None` when it named none."""
+
+    def __init__(self, *args: object, retry_after: float | None = None) -> None:
+        super().__init__(*args, upstream_status=_RATE_LIMITED)
+        self.retry_after = retry_after
+
+
+class UnTermsListingEmptyError(GraphReadError):
+    """A `Class` or `Property` listing named no subject, or none the UN origin declares."""
+
+    def __init__(self, kind: TermKind) -> None:
+        super().__init__(f"the UN deployment's {kind} <-typeOf lists no term the UN declares")
+        self.kind = kind
 
 
 class UnTermsReader(Protocol):
@@ -103,19 +134,25 @@ class _Pages:
 
     def _post(self, kind: str, payload: dict) -> dict:
         while True:
+            if self._stop.is_set():
+                raise GraphReadError("the UN terms build stopped for shutdown")
             try:
                 return self._reader.post(_NODE_PATH, payload, deadline=self._deadline)
             except GraphReadError as exc:
                 if exc.upstream_status != _RATE_LIMITED:
                     raise
-                wait = next(self._rate_limit_waits, None)
+                budget = next(self._rate_limit_waits, None)
+                wait = max(budget, exc.retry_after or 0.0) if budget is not None else None
                 if wait is None or not self._fits(wait):
-                    raise
+                    raise UnTermsRateLimitedError(
+                        f"the UN deployment answered 429 paging {kind} <-typeOf",
+                        retry_after=exc.retry_after,
+                    ) from exc
                 logger.info("UN terms: %s listing answered 429, waiting %.0f s", kind, wait)
             self._sleep(wait)
 
     def _fits(self, wait: float) -> bool:
-        return time.monotonic() + wait < self._deadline
+        return time.monotonic() + wait + UN_TERMS_MIN_READ_SECONDS < self._deadline
 
     def _sleep(self, wait: float) -> None:
         if self._stop.wait(wait):
@@ -137,14 +174,21 @@ def build_un_terms(
         catalogue: the origin catalogue whose provenance table names the origin of the
             provenances it lists.
         deadline: the absolute monotonic deadline passed to every read.
-        stop: an event that ends any wait at once and fails the build.
+        stop: an event that ends any wait at once, stops the build before its next request,
+            and fails the build.
 
     Raises:
         SchemaListingTruncatedError: a listing passed `TERM_LISTING_CAP`.
-        GraphReadError: a listing failed, stopped advancing, or still answered 429.
+        UnTermsListingEmptyError: a listing named no term the UN declares.
+        UnTermsRateLimitedError: a listing still answered 429.
+        GraphReadError: a listing failed or stopped advancing.
     """
     pages = _Pages(reader, deadline=deadline, stop=stop if stop is not None else threading.Event())
-    listed = fold_listings((kind, _list(pages, kind)) for kind in _KINDS)
+    listings = [(kind, _list(pages, kind)) for kind in _KINDS]
+    for kind, subjects in listings:
+        if not any(_declared_by_un(subject.provenances, catalogue) for subject in subjects):
+            raise UnTermsListingEmptyError(kind)
+    listed = fold_listings(listings)
     unsourced = sorted(dcid for dcid, term in listed.items() if not term.provenances)
     if unsourced:
         logger.warning(
@@ -155,9 +199,13 @@ def build_un_terms(
     terms = [
         schema_term(dcid, term, declared_by="un_system")
         for dcid, term in sorted(listed.items())
-        if term.provenances and declared_by(term.provenances, catalogue=catalogue) != "base"
+        if _declared_by_un(term.provenances, catalogue)
     ]
     return SchemaTerms(generation=None, terms=terms)
+
+
+def _declared_by_un(provenances: Collection[str], catalogue: Catalogue) -> bool:
+    return bool(provenances) and declared_by(provenances, catalogue=catalogue) != "base"
 
 
 def _list(pages: _Pages, kind: TermKind) -> list[ArcSubject]:
@@ -166,8 +214,8 @@ def _list(pages: _Pages, kind: TermKind) -> list[ArcSubject]:
 
     Raises:
         SchemaListingTruncatedError: the listing passed `TERM_LISTING_CAP` subjects.
-        GraphNotAdvancingError: the listing added no subject for `STALLED_PAGE_LIMIT` pages or
-            passed `MAX_PAGES`.
+        GraphNotAdvancingError: the listing added no subject and no new provenance of a subject
+            for `STALLED_PAGE_LIMIT` pages, or passed `MAX_PAGES`.
     """
     names: dict[str, set[str]] = {}
     provenances: dict[str, set[str]] = {}
@@ -176,17 +224,21 @@ def _list(pages: _Pages, kind: TermKind) -> list[ArcSubject]:
     idle_pages = 0
     for _ in range(MAX_PAGES):
         body = pages.page(kind, token, given)
-        before = len(names)
+        advanced = False
         node = (body.get("data") or {}).get(kind) or {}
         for entry in ((node.get("arcs") or {}).get("typeOf") or {}).get("nodes", []):
             if not (dcid := entry.get("dcid")):
                 continue
-            names.setdefault(dcid, set())
-            provenances.setdefault(dcid, set())
+            if dcid not in names:
+                names[dcid] = set()
+                provenances[dcid] = set()
+                advanced = True
             if name := entry.get("name"):
                 names[dcid].add(name)
-            if provenance := entry.get("provenanceId"):
+            provenance = entry.get("provenanceId")
+            if provenance and provenance not in provenances[dcid]:
                 provenances[dcid].add(provenance)
+                advanced = True
         if len(names) > TERM_LISTING_CAP:
             raise SchemaListingTruncatedError(
                 f"the UN deployment's {kind} <-typeOf lists more than {TERM_LISTING_CAP} subjects"
@@ -201,7 +253,7 @@ def _list(pages: _Pages, kind: TermKind) -> list[ArcSubject]:
                 )
                 for dcid in names
             ]
-        idle_pages = idle_pages + 1 if len(names) == before else 0
+        idle_pages = 0 if advanced else idle_pages + 1
         if idle_pages >= STALLED_PAGE_LIMIT:
             break
         given.add(token)

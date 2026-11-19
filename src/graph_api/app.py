@@ -34,8 +34,9 @@ document in its lifespan, before the instance takes traffic, waiting at most
 `SCHEMA_WARM_TIMEOUT_SECONDS` (20 s). An unfinished build logs and the first request joins
 it. A failed build logs, and the first request builds again, unless the build refused under a
 known generation with a truncated term listing or a document with no DFO node: the entry keeps
-that refusal, and every request answers it 500 with no build. An injected graph builds on the
-first request.
+that refusal, and every request answers it 500 with no build. Beside it, and under the same
+wait, it builds the UN terms body when the bound catalogue serves the UN origin
+(`warm_un_terms`). An injected graph builds on the first request.
 
 Door classifiers return `ProblemSpec`. The door whose route raised classifies
 first (`dfo_platform.doors.classify_by_door`), so a graph read failure is logged
@@ -92,6 +93,7 @@ from graph_api.doors.schema import (
     build_schema_door,
     new_schema_cache,
     warm_schema,
+    warm_un_terms,
 )
 from graph_api.doors.sources import build_sources_door, new_provenance_doc_cache
 from graph_api.node_cache import NodeEntryCache
@@ -254,14 +256,16 @@ def graph_surface(
             close the graph reader last. Release only resources this lifespan owns. Injected
             graph, resolver and availability objects remain caller-owned.
             """
+            if un_terms is not None:
+                # First, so a UN build stops before its next request while the other
+                # executors drain.
+                un_terms.stop.set()
             if dcp_executor is not None:
                 await asyncio.to_thread(dcp_executor.shutdown, wait=True)
             if check_executor is not None:
                 await asyncio.to_thread(check_executor.shutdown, wait=True)
             if usage_executor is not None:
                 await asyncio.to_thread(usage_executor.shutdown, wait=True)
-            if un_terms is not None:
-                un_terms.stop.set()
             if un_terms_executor is not None:
                 await asyncio.to_thread(un_terms_executor.shutdown, wait=True, cancel_futures=True)
             if card_reads is not None:
@@ -470,7 +474,10 @@ def graph_surface(
                 # Awaited, because Cloud Run throttles the CPU of an instance with no request
                 # in flight, so a build left to run on its own would stall once traffic starts.
                 with bound_catalogue(catalogue.snapshot()), bound_served_release(release):
-                    await warm_schema(deps, timeout_s=SCHEMA_WARM_TIMEOUT_SECONDS)
+                    await asyncio.gather(
+                        warm_schema(deps, timeout_s=SCHEMA_WARM_TIMEOUT_SECONDS),
+                        warm_un_terms(deps, timeout_s=SCHEMA_WARM_TIMEOUT_SECONDS),
+                    )
             yield
         finally:
             NODE_MEMBERSHIP_SLOT.clear(_app)

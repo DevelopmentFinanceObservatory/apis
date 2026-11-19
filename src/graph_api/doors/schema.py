@@ -90,16 +90,30 @@ client's routing, which would send `Class` and `Property` to the mixer. That cli
 catalogue's `un_system_enabled` gate too, so the route checks it first. With the UN origin off,
 or on a surface with no UN reader, it answers 404 `not_found`, not retryable, with
 `cause: {"code": "origin_not_served"}`, and reads nothing. The refusal goes out `no-store`, so no
-cache keeps it past a change of the flag. The body sits in a single-flight cache of one entry on
-an executor of one worker, under the one key `UN_TERMS_KEY` and the cache's generation stamp,
-the UN deployment's (`origin_catalogue.graph.UnGeneration`, the bound catalogue's build and the
-UTC date). The UN deployment serves no generation token, so a UN change shows on the next UTC
-day or catalogue build, and the body's `generation` is `null`. A miss builds under the flight
-deadline, a request waits until `GRAPH_NODE_TIMEOUT_SECONDS` from its start, and the waits and
-failures answer as on the usage route. The build waits out 429s and repeated page tokens on the
-page they hit, within the flight (`graph_api.un_terms`). A listing past its cap answers as on
-`GET /api/graph/schema`, and the entry keeps that refusal for `SCHEMA_REFUSAL_TTL_SECONDS`. Any
-other failed build is not kept.
+cache keeps it past a change of the flag. A 200 body goes out `public, max-age=300`, so a
+browser or CDN can serve it for up to 5 minutes after the flag is switched off. The body sits in
+a single-flight cache of one entry on an executor of one worker, under the one key
+`UN_TERMS_KEY` and the cache's generation stamp, the UN deployment's
+(`origin_catalogue.graph.UnGeneration`, the bound catalogue's build and the UTC date). The UN
+deployment serves no generation token, so a UN change shows on the next UTC day or catalogue
+build, and the body's `generation` is `null`. `warm_un_terms` builds the body in the Graph
+lifespan. A miss builds under the flight deadline. Before any body is served, a request waits
+until `GRAPH_NODE_TIMEOUT_SECONDS` from its start, and the waits and failures answer as on the
+usage route. Once one is served (`UnTerms.served`), a miss starts or joins the new build and
+answers the served body at once, as does a failed build or a kept refusal, so the UTC rollover
+and a catalogue build answer no 503. The build waits out 429s and repeated page tokens on the
+page they hit, within the flight (`graph_api.un_terms`). The entry keeps three refusals:
+
+- a listing past its cap, answered as on `GET /api/graph/schema`, for
+  `SCHEMA_REFUSAL_TTL_SECONDS`;
+- a listing with no UN term (`UnTermsListingEmptyError`), answered 503, retryable, with
+  `cause: {"code": "listing_incomplete"}`, for `SCHEMA_REFUSAL_TTL_SECONDS`;
+- a listing still rate-limited (`UnTermsRateLimitedError`), answered 503, retryable, with
+  `cause: {"code": "upstream_rate_limited"}`, for `SCHEMA_REFUSAL_TTL_SECONDS` or the UN front
+  door's `Retry-After` where that is longer.
+
+Each 503 sends `Retry-After` with the seconds left on the refusal. Any other failed build is not
+kept.
 
 After each build the door logs one line timing the encoding of the document and terms bodies
 and giving their sizes, beside the build's own per-phase line.
@@ -115,6 +129,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from collections.abc import Callable, Sequence
 from concurrent.futures import Executor
@@ -162,7 +177,11 @@ from graph_api.schema_models import (
     SchemaDocument,
     SchemaTerms,
 )
-from graph_api.un_terms import build_un_terms
+from graph_api.un_terms import (
+    UnTermsListingEmptyError,
+    UnTermsRateLimitedError,
+    build_un_terms,
+)
 from graph_generation import GenerationProvider
 from graph_generation.stamp import UNKNOWN_KEY
 from materialise.graph import GraphDeadlineExceededError, GraphReadError
@@ -214,11 +233,13 @@ class FrozenSchema:
 
 @dataclass(frozen=True, slots=True)
 class RefusedSchema:
-    """A build refusal: a truncated term listing, or a document with no node DFO declares. The
-    cache keeps it for `SCHEMA_REFUSAL_TTL_SECONDS`. `error` makes a fresh exception for each
-    request it answers."""
+    """A build refusal: a truncated term listing, a document with no node DFO declares, or a UN
+    terms build whose listing was empty or still rate-limited. The cache keeps it for `ttl_s`,
+    `SCHEMA_REFUSAL_TTL_SECONDS` unless the UN front door's `Retry-After` names longer. `error`
+    makes a fresh exception for each request it answers."""
 
     error: Callable[[], GraphReadError]
+    ttl_s: float = SCHEMA_REFUSAL_TTL_SECONDS
 
 
 type SchemaEntry = FrozenSchema | RefusedSchema
@@ -297,8 +318,8 @@ def new_schema_cache[K, V](
 
 
 def _entry_ttl(entry: SchemaEntry | UnTermsEntry) -> float | None:
-    """`SCHEMA_REFUSAL_TTL_SECONDS` for a refusal, and the cache's own TTL for built bodies."""
-    return SCHEMA_REFUSAL_TTL_SECONDS if isinstance(entry, RefusedSchema) else None
+    """A refusal's own `ttl_s`, and the cache's own TTL for built bodies."""
+    return entry.ttl_s if isinstance(entry, RefusedSchema) else None
 
 
 def _freeze(model: SchemaDocument | SchemaTerms | DatasetUsage) -> FrozenJSON:
@@ -446,6 +467,20 @@ def classify_schema_exception(exc: BaseException) -> ProblemSpec | None:
     if not isinstance(exc, SchemaReadFailed):
         return None
     error = exc.error
+    if isinstance(error, UnTermsRateLimitedError | UnTermsListingEmptyError):
+        rate_limited = isinstance(error, UnTermsRateLimitedError)
+        retry_after = (
+            error.retry_after if error.retry_after is not None else SCHEMA_REFUSAL_TTL_SECONDS
+        )
+        return ProblemSpec(
+            status=503,
+            code="service_unavailable",
+            detail=str(error),
+            retryable=True,
+            cause=Cause(code="upstream_rate_limited" if rate_limited else "listing_incomplete"),
+            headers={"Retry-After": str(math.ceil(retry_after))},
+            log=f"Graph schema door refused a UN terms build: {error}",
+        )
     if isinstance(error, SchemaListingTruncatedError):
         return ProblemSpec(
             status=500,
@@ -530,16 +565,19 @@ async def _frozen_usage(deps: GraphDeps) -> FrozenJSON:
     return found[key]
 
 
-async def _frozen_un_terms(deps: GraphDeps) -> FrozenJSON:
-    """The UN terms body from `deps.un_terms`, building it on a miss. A request waits until
-    `GRAPH_NODE_TIMEOUT_SECONDS` from its start.
+async def _frozen_un_terms(deps: GraphDeps, *, deadline: float | None = None) -> FrozenJSON:
+    """The UN terms body from `deps.un_terms`, building it on a miss. With no body served yet,
+    a request waits until `deadline`, `GRAPH_NODE_TIMEOUT_SECONDS` from its start when `None`.
+    Once one is served, a miss starts or joins the build and answers that previous body at
+    once, and so does a failed or refused build, so a new UN generation or catalogue build
+    shows when its build lands.
 
     Raises:
         UnOriginNotServed: the bound catalogue does not serve the UN origin, or the surface has
             no UN reader. Nothing is read.
         SchemaBuildPending: the request's wait passed while the build runs on.
         SchemaBuildExpired: the build outlived its flight deadline.
-        SchemaReadFailed: a listing failed, or the entry keeps a truncated listing's refusal.
+        SchemaReadFailed: a listing failed, or the entry keeps the build's refusal.
     """
     catalogue = current_catalogue()
     un_terms = deps.un_terms
@@ -555,28 +593,83 @@ async def _frozen_un_terms(deps: GraphDeps) -> FrozenJSON:
                 stop=un_terms.stop,
             )
         except SchemaListingTruncatedError as exc:
-            return {
-                UN_TERMS_KEY: RefusedSchema(error=partial(SchemaListingTruncatedError, str(exc)))
-            }
-        return {UN_TERMS_KEY: _freeze(terms)}
+            refusal = RefusedSchema(error=partial(SchemaListingTruncatedError, str(exc)))
+        except UnTermsListingEmptyError as exc:
+            refusal = _retry_refusal(
+                partial(UnTermsListingEmptyError, exc.kind), ttl_s=SCHEMA_REFUSAL_TTL_SECONDS
+            )
+        except UnTermsRateLimitedError as exc:
+            refusal = _retry_refusal(
+                partial(UnTermsRateLimitedError, str(exc)),
+                ttl_s=max(SCHEMA_REFUSAL_TTL_SECONDS, exc.retry_after or 0.0),
+            )
+        else:
+            return {UN_TERMS_KEY: _freeze(terms)}
+        return {UN_TERMS_KEY: refusal}
 
+    previous = un_terms.served
+    if previous is not None:
+        wait_until = time.monotonic()
+    else:
+        wait_until = deadline if deadline is not None else _request_deadline()
     try:
         found = await un_terms.cache.aget_or_fetch_many(
-            [UN_TERMS_KEY],
-            log_queue_wait(build),
-            deadline=_request_deadline(),
-            value_ttl=_entry_ttl,
+            [UN_TERMS_KEY], build, deadline=wait_until, value_ttl=_entry_ttl
         )
     except WaitTimeout:
+        if previous is not None:
+            return previous
         raise SchemaBuildPending() from None
-    except TimeoutError as exc:
+    except (TimeoutError, GraphReadError) as exc:
+        if previous is not None:
+            logger.warning("UN terms build failed, serving the previous body: %s", exc)
+            return previous
+        if isinstance(exc, GraphReadError):
+            raise SchemaReadFailed(exc) from exc
         raise SchemaBuildExpired() from exc
-    except GraphReadError as exc:
-        raise SchemaReadFailed(exc) from exc
     entry = found[UN_TERMS_KEY]
     if isinstance(entry, RefusedSchema):
+        if previous is not None:
+            return previous
         raise SchemaReadFailed(entry.error())
+    un_terms.served = entry
     return entry
+
+
+def _retry_refusal(error: Callable[[], GraphReadError], *, ttl_s: float) -> RefusedSchema:
+    """A refusal kept for `ttl_s` whose error names, as `retry_after`, the seconds left until
+    the entry expires and a request builds again, one at least."""
+    retry_at = time.monotonic() + ttl_s
+
+    def make() -> GraphReadError:
+        made = error()
+        made.retry_after = max(1.0, retry_at - time.monotonic())
+        return made
+
+    return RefusedSchema(error=make, ttl_s=ttl_s)
+
+
+async def warm_un_terms(deps: GraphDeps, *, timeout_s: float) -> None:
+    """Build the entry `GET /api/graph/schema/terms/un_system` would build now, under the bound
+    origin catalogue, waiting at most `timeout_s`, so the route has a body to answer while a
+    later UN generation's build runs. A surface that does not serve the UN origin builds
+    nothing. A failure or an unfinished build logs and returns, and the first request waits for
+    the build as on a cold entry."""
+    if deps.un_terms is None or not current_catalogue().un_system_enabled:
+        return
+    started = time.monotonic()
+    try:
+        async with asyncio.timeout(timeout_s):
+            await _frozen_un_terms(deps, deadline=started + timeout_s)
+    except (TimeoutError, SchemaBuildPending):
+        logger.warning(
+            "UN terms warm-up did not finish within %.0f s; the first request waits for it",
+            timeout_s,
+        )
+    except Exception:
+        logger.warning("UN terms warm-up failed", exc_info=True)
+    else:
+        logger.info("UN terms warm-up built in %.2f s", time.monotonic() - started)
 
 
 async def warm_schema(deps: GraphDeps, *, timeout_s: float) -> None:
@@ -726,6 +819,8 @@ def build_schema_door() -> DoorContribution:
             SchemaBuildExpired(),
             SchemaReadFailed(SchemaListingTruncatedError("exemplar")),
             SchemaReadFailed(SchemaNoDfoDeclarationError(0)),
+            SchemaReadFailed(UnTermsRateLimitedError("exemplar")),
+            SchemaReadFailed(UnTermsListingEmptyError("Property")),
             SchemaReadFailed(GraphDeadlineExceededError("exemplar")),
             SchemaReadFailed(GraphReadError("exemplar", upstream_status=400)),
             SchemaReadFailed(GraphReadError("exemplar", upstream_status=503)),

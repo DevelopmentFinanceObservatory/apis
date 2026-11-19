@@ -242,8 +242,9 @@ class SchemaTerm(ResponseModel):
         "declared_by is null"
     )
     declared_by: DeclaredBy | None = Field(
-        description="the origin declaring the term, by the node's rule; null when the graph "
-        "names no declaring Provenance for the term: its listing entries carry none"
+        description="the origin declaring the term, by the node's rule on /schema/terms and "
+        "always un_system on /schema/terms/un_system; null when the graph names no declaring "
+        "Provenance for the term: its listing entries carry none"
     )
 
 

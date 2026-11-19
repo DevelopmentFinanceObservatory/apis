@@ -154,3 +154,27 @@ def test_post_marks_only_the_front_door_refusal_as_the_read_error_cause(
         _client(server).post(NODE_PATH, {"nodes": _DCIDS})
     assert excinfo.value.upstream_status == status
     assert isinstance(excinfo.value.__cause__, FrontDoorRefused) is refused
+
+
+@pytest.mark.parametrize(
+    ("headers", "retry_after"),
+    [
+        ({"Retry-After": "30"}, 30.0),
+        ({"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"}, None),
+        ({"Retry-After": "-1"}, None),
+        ({}, None),
+    ],
+    ids=["seconds", "http-date", "negative", "absent"],
+)
+def test_a_refused_post_carries_the_seconds_its_retry_after_names(
+    headers: dict[str, str], retry_after: float | None
+):
+    client = GraphClient(
+        base_url=_BASE_URL,
+        transport=httpx.MockTransport(lambda _request: httpx.Response(429, headers=headers)),
+        generation=FakeGeneration(token="rev-1"),
+    )
+
+    with pytest.raises(GraphReadError) as excinfo:
+        client.post(NODE_PATH, {"nodes": _DCIDS})
+    assert (excinfo.value.upstream_status, excinfo.value.retry_after) == (429, retry_after)

@@ -68,15 +68,17 @@ class GraphDepsNotSet(Exception):
         super().__init__("Graph dependencies are not set: the surface's lifespan has not run")
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class UnTerms:
     """The UN terms route's state: the UN deployment's own client, the cache of the body built
-    from it under one key (the cache's generation stamp is the UN deployment's), and the event
-    that ends a build's waits at shutdown."""
+    from it under one key (the cache's generation stamp is the UN deployment's), the event
+    that stops a build at shutdown, and the last body the route served, which it answers while
+    a later generation's build runs. Only the event loop writes `served`."""
 
     reader: UnTermsReader
     cache: SingleFlightCache[str, UnTermsEntry]
     stop: threading.Event = field(default_factory=threading.Event)
+    served: FrozenJSON | None = None
 
 
 @dataclass(frozen=True, slots=True)

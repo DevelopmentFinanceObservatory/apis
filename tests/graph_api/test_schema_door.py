@@ -482,27 +482,19 @@ class TestWarmUp:
         self, generation, monkeypatch: pytest.MonkeyPatch
     ):
         """The UN terms route reads the live reader's UN client, so a mixer listing of `Class`
-        names none of its terms."""
+        names none of its terms, and the lifespan builds it before the first request."""
         graph = _graph()
-        un = FakeUnGraph(
-            {
-                "Class": (
-                    (
-                        ArcSubject(
-                            dcid="undata/AGE", names=("Age",), provenances=("undata/p/UNData",)
-                        ),
-                    ),
-                ),
-            }
-        )
+        age = ArcSubject(dcid="undata/AGE", names=("Age",), provenances=("undata/p/UNData",))
+        un = FakeUnGraph({"Class": ((age,),), "Property": ((age,),)})
 
         with _live_client(monkeypatch, graph, un=un) as client:
             mixer_reads = _reads(graph)
+            warmed = list(un.requests)
             terms = client.get("/api/graph/schema/terms/un_system")
 
         assert terms.status_code == 200, terms.text
         assert [term["ref"] for term in terms.json()["terms"]] == ["undata/AGE"]
-        assert un.requests == [("Class", None), ("Property", None)]
+        assert warmed == un.requests == [("Class", None), ("Property", None)]
         assert _reads(graph) == mixer_reads
 
     def test_an_injected_graph_builds_on_the_first_request(self, generation):
