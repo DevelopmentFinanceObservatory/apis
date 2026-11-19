@@ -52,13 +52,8 @@ if TYPE_CHECKING:
     # `card_reads` imports this module's executor refusals.
     from dfo_platform.static_response import FrozenJSON
     from graph_api.card_reads import CardReadCaches
-    from graph_api.doors.schema import (
-        OriginUsageKey,
-        SchemaEntry,
-        SchemaKey,
-        UnTermsEntry,
-        UsageKey,
-    )
+    from graph_api.doors.schema import SchemaEntry, SchemaKey, UnTermsEntry, UsageKey
+    from graph_api.origin_usage import UsageOrigin
     from graph_api.un_terms import UnTermsReader
     from materialise.provenance_doc import ProvenanceDoc
     from series_coverage.shared import ServedCoverage
@@ -102,8 +97,8 @@ class GraphDeps:
     schema: SingleFlightCache[SchemaKey, SchemaEntry]
     # The usage body, keyed by code index and coverage build.
     dataset_usage: SingleFlightCache[UsageKey, FrozenJSON]
-    # The base and UN usage bodies, keyed by origin, catalogue build and UN origin setting.
-    origin_usage: SingleFlightCache[OriginUsageKey, FrozenJSON]
+    # The base and UN usage bodies, keyed by origin under the catalogue build's stamp.
+    origin_usage: SingleFlightCache[UsageOrigin, FrozenJSON]
     # The executor every `POST /api/graph/schema/check` job runs on, apart from
     # `dcp_executor`, with `GRAPH_SCHEMA_CHECK_CONCURRENCY` workers.
     check_executor: DcpReadExecutor

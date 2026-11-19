@@ -1121,18 +1121,22 @@ The body is built once per code index and coverage build, by one build that conc
 
 ### GET /api/graph/schema/usage/base and /api/graph/schema/usage/un_system
 
-How each base Data Commons Provenance, or each UN System agency's Provenance, uses the model, in the shape of `GET /api/graph/schema/usage` and with its grouping and ordering. The body comes from the resident origin catalogue alone (`graph_api.origin_usage.build_origin_usage`), with no graph read, and admits what the catalogue admits:
+How each base Data Commons Provenance, or each UN System agency's Provenance, uses the model, in the shape of `GET /api/graph/schema/usage` and with its grouping and ordering, plus `terms`. The body comes from the resident origin catalogue alone (`graph_api.origin_usage.build_origin_usage`), with no graph read, and admits what the catalogue admits, whatever the request's source scope:
 
-- `base` counts each variable of the catalogue's base variable table that the catalogue does not hold superseded, under each of its Provenances the catalogue admits. A Provenance the registry excludes, a variable withheld under one, and a variable a UN agency supersedes have no entry.
-- `un_system` counts each variable of the UN tables the catalogue admits as UN, under its agency's Provenance. A series the registry excludes has no variable there, and an agency row holding no admitted variable has no entry.
+- `base` counts each variable of the catalogue's base variable table under each of its Provenances the catalogue admits. A Provenance the registry excludes, a variable withheld under one, and a variable a UN agency supersedes have no entry.
+- `un_system` counts each variable of the UN tables under its agency's Provenance. A series the registry excludes has no variable there, and an agency row holding no admitted variable has no entry.
 
-A variable's shape fields come from its catalogue arcs as the catalogue's family tables read them: a property's first literal, else its first node, and a `measurementQualifier` or `measurementDenominator` whose every target is a `ProvisionalNode` reads as `null`. A declared constraint whose value the arcs leave out counts in its pattern's `constraint_properties` and adds nothing to `constraint_values`. `label` is the catalogue's name for the Provenance and `description` its source-index entry's description, always `null` for a UN agency. `facets` holds empty lists, since the coverage index covers DFO series alone. On the dev catalogue the base body holds 91 Provenances, 84,123 StatVars and 5,855 patterns (134 KB gzip), and the UN body 14 agencies, 93,270 StatVars and 3,466 patterns (106 KB gzip). A build takes about 1 s.
+A variable's shape fields come from its catalogue arcs as the catalogue's family tables read them (`origin_catalogue.families.VariableArcs`): a property's first literal, else its first node, and a `measurementQualifier` whose every target is a `ProvisionalNode` reads as `null`. A `measurementDenominator` with targets but no value, or whose every target is a `ProvisionalNode`, is unresolved: the pattern keeps the target it names (`null` for none) and sets `measurement_denominator_unresolved` to `true`, so it stays apart from a pattern with no denominator. Every pattern of these two routes carries `measurement_denominator_unresolved`, and `GET /api/graph/schema/usage` leaves it out. A declared constraint whose value the arcs leave out counts in its pattern's `constraint_properties` and adds nothing to `constraint_values`. `label` is the catalogue's name for the Provenance and `description` its source-index entry's description, always `null` for a UN agency. `facets` holds empty lists, since the coverage index covers DFO series alone.
 
-Each body is built once per origin catalogue build and UN origin setting, by one build that concurrent first requests share, and kept until a request bound to another build arrives or the cache's maximum age passes. A request whose wait passes 10 s answers `503 service_unavailable`, retryable, with `Retry-After: 5` and `cause: {"code": "schema_building"}`, and a build past its 60 s deadline answers `504 timeout`. Each answers `public, max-age=300` with a strong `ETag`, a gzip representation and `304` on `If-None-Match`.
+`terms` lists, sorted by `ref`, every node the patterns and constraint values name, each `{ref, label, types}`: the display name the variables' arcs give the node (a name equal to the dcid left out) and the sorted types those arcs carry. It labels the UN series and the base terms that `GET /api/graph/schema/terms` does not list. `GET /api/graph/schema/usage` carries no `terms`.
+
+On the dev catalogue the base body holds 91 Provenances, 86,893 StatVar-Provenance pairs, 5,861 patterns (15 with an unresolved denominator) and 9,466 terms, 3.9 MB raw and 261 KB gzip. The UN body holds 14 agencies, 93,270 StatVars, 3,466 patterns and 5,771 terms, 2.6 MB raw and 220 KB gzip. Each build and encode takes about 1 s and logs one line with its time and size.
+
+Each body is built once per origin catalogue build, by one build that concurrent first requests share, and kept until a request bound to another build arrives or the cache's maximum age passes. A request whose wait passes 10 s answers `503 service_unavailable`, retryable, with `Retry-After: 5` and `cause: {"code": "schema_building"}`, and a build past its 60 s deadline answers `504 timeout`. Each answers `public, max-age=300` with a strong `ETag`, a gzip representation and `304` on `If-None-Match`.
 
 A deployment that does not serve the UN origin (`ORIGIN_CATALOGUE_UN_SYSTEM_ENABLED` off) answers `GET /api/graph/schema/usage/un_system` with `404 not_found`, not retryable, with `cause: {"code": "origin_not_served"}` and `Cache-Control: no-store`, and builds nothing. The base route answers whatever the setting.
 
-The example is abridged. It keeps the first pattern and the first two values of the first constraint property, and `...` marks each cut list.
+The example is abridged. It keeps the first pattern, the first two values of the first constraint property and two terms, and `...` marks each cut list.
 
 ```json
 {
@@ -1149,6 +1153,7 @@ The example is abridged. It keeps the first pattern and the first two values of 
           "stat_type": "measuredValue",
           "measurement_qualifier": null,
           "measurement_denominator": "Count_Person_10To14Years_Female",
+          "measurement_denominator_unresolved": false,
           "constraint_properties": [
             "age",
             "gender"
@@ -1184,6 +1189,25 @@ The example is abridged. It keeps the first pattern and the first two values of 
         "observation_periods": [],
         "currencies": []
       }
+    },
+    ...
+  ],
+  "terms": [
+    ...
+    {
+      "ref": "Count_Person_10To14Years_Female",
+      "label": "Count of females aged 10 to 14 years",
+      "types": [
+        "StatisticalVariable"
+      ]
+    },
+    ...
+    {
+      "ref": "Years10To14",
+      "label": "Years 10 To 14",
+      "types": [
+        "QuantityRange"
+      ]
     },
     ...
   ]

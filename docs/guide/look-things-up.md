@@ -127,7 +127,7 @@ curl -fsS "$DFO_API/api/v1/graph/schema/usage" \
   | jq '.provenances[0] | {ref, stat_var_count, patterns: (.patterns | length)}'
 ```
 
-`GET /api/v1/graph/schema/usage/base` and `GET /api/v1/graph/schema/usage/un_system` answer the same for each base Data Commons Provenance and each UN System agency, with empty facet lists. A deployment that does not serve the UN origin answers the second with `404` and `cause.code` `origin_not_served`; retrying does not help.
+`GET /api/v1/graph/schema/usage/base` and `GET /api/v1/graph/schema/usage/un_system` answer in the same shape for each base Data Commons Provenance and each UN System agency, with the origin catalogue's name and source description for each Provenance (no description for a UN agency) and empty facet lists. Both add `terms`, the name and types of every node their patterns and constraint values name, which labels UN series and base terms that `schema/terms` does not list. A deployment that does not serve the UN origin answers the second with `404` and `cause.code` `origin_not_served`; retrying does not help.
 
 ## Check StatVar definitions
 
@@ -161,7 +161,7 @@ A `resolved` result has an `entity.ref`. `GET /api/v1/graph/node/{ref}` should r
 - `400 request_invalid` on the members route names the fault in its pointer: `/relation` for a list a held node lacks, `/cursor` for a cursor that belongs to another list, `/as_of` for a date asked of a membership that records none.
 - `400 request_invalid` on the check means the body breaks a size bound: more than `caps.max_check_rows` rows, a row over `caps.max_check_constraint_properties` or `caps.max_check_observation_properties`, or a string over 512 characters. A pointer such as `/rows/37/constraint_properties` names the row; send the request again without it.
 - `503 service_unavailable` is retryable. Every graph read worker was busy, or the service was still starting. On the schema routes `cause.code` says why: `schema_building` while the schema build runs, `check_busy` while two checks already run. On `GET /api/v1/graph/schema/terms/un_system`, `listing_incomplete` means the UN deployment listed no UN term, and `upstream_rate_limited` that it is rate-limiting this service; retry after the `Retry-After` interval.
-- `404 not_found` on `GET /api/v1/graph/schema/terms/un_system` with `cause.code` `origin_not_served` means this deployment does not serve the UN origin. Retrying does not help.
+- `404 not_found` on `GET /api/v1/graph/schema/terms/un_system` or `GET /api/v1/graph/schema/usage/un_system` with `cause.code` `origin_not_served` means this deployment does not serve the UN origin. Retrying does not help.
 - `500 internal_error` on the schema routes means the build refused the graph: a term listing reached its cap, or no node is declared by DFO. A retry within 60 s gets the same 500, and the first request after that builds again.
 
 ## Next

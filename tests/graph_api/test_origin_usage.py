@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import pytest
 
+from code_index.shared import get_index
+from graph_api.dataset_usage import build_usage
 from graph_api.doors import schema as schema_door
 from graph_api.origin_usage import build_origin_usage
 from origin_catalogue import BASE, UN_SYSTEM, CardFacts, Catalogue, CatalogueSnapshot
+from origin_catalogue import service as catalogue_service_module
 from origin_catalogue.arc_tables import ArcTables
+from origin_catalogue.service import CatalogueService
 from origin_catalogue.un_mirror import UnArc
 from tests.origin_catalogue.fake_catalogue import (
     FakeCatalogue,
@@ -168,14 +172,17 @@ def test_an_unresolved_constraint_counts_in_its_pattern_and_adds_no_value() -> N
     ]
 
 
-def test_a_provenance_the_scope_leaves_out_gets_no_entry() -> None:
-    entries = _entries(_catalogue().scoped(frozenset({_WB})), "base")
+@pytest.mark.parametrize("origin", ["base", "un_system"])
+def test_a_source_scope_changes_nothing_in_the_document(origin) -> None:
+    """The cache keys on the origin alone, so a scoped request must build the unscoped body."""
+    catalogue = _catalogue()
 
-    assert list(entries) == [_WB]
-    assert entries[_WB]["stat_var_count"] == 2
+    scoped = build_origin_usage(catalogue.scoped(frozenset({_WB})), origin)
+
+    assert scoped == build_origin_usage(catalogue, origin)
 
 
-def test_the_un_document_counts_each_agency_variable_and_no_excluded_one() -> None:
+def test_the_un_document_counts_each_agency_variable() -> None:
     """The ILO row holds no variable, so it has no entry, and UN rows carry no card facts."""
     entries = _entries(_catalogue(), "un_system")
 
@@ -192,6 +199,85 @@ def test_the_un_document_counts_each_agency_variable_and_no_excluded_one() -> No
             "property": "undata/WHO/SEX",
             "values": [{"value": "undata/WHO/SEX_F", "stat_var_count": 1}],
         }
+    ]
+
+
+_RATIOS = "dc/base/Ratios"
+
+
+def _ratio(denominator: UnArc | None) -> tuple[UnArc, ...]:
+    rows = [
+        UnArc(property="measuredProperty", dcid="count", name="Count"),
+        UnArc(property="populationType", dcid="Person", name="Person", types=("Class",)),
+        UnArc(property="statType", dcid="measuredValue", name="Measured value"),
+    ]
+    if denominator is not None:
+        rows.append(denominator)
+    return tuple(sorted(rows, key=lambda arc: arc.property))
+
+
+def _ratio_catalogue() -> CatalogueSnapshot:
+    """One provenance holding a variable with no denominator, one whose denominator arc names
+    no value and one whose denominator is a `ProvisionalNode`."""
+    arcs = {
+        "Ratio_None": _ratio(None),
+        "Ratio_Valueless": _ratio(UnArc(property="measurementDenominator", name="Unnamed")),
+        "Ratio_Provisional": _ratio(
+            UnArc(
+                property="measurementDenominator", dcid="dc/p/Pending", types=("ProvisionalNode",)
+            )
+        ),
+    }
+    schema = {"dc/p/Pending": (UnArc(property="typeOf", dcid="ProvisionalNode"),)}
+    return restrictive_catalogue(
+        provenances=[provenance_row(_RATIOS, BASE, name="Ratios")],
+        base_variables=dict.fromkeys(arcs, ((_RATIOS,), ())),
+        # The arc tables hold every denominator a variable names.
+        arcs=ArcTables(dfo={}, base=arcs, schema=schema, labels=named_labels(arcs, schema)),
+    )
+
+
+def test_an_unresolved_denominator_keeps_its_pattern_apart_from_no_denominator() -> None:
+    patterns = _entries(_ratio_catalogue(), "base")[_RATIOS]["patterns"]
+
+    assert [
+        (p["measurement_denominator"], p["measurement_denominator_unresolved"], p["examples"])
+        for p in patterns
+    ] == [
+        (None, False, ["Ratio_None"]),
+        (None, True, ["Ratio_Valueless"]),
+        ("dc/p/Pending", True, ["Ratio_Provisional"]),
+    ]
+
+
+def test_the_terms_label_every_node_the_patterns_and_values_name() -> None:
+    """Each term reads its name and types from the variables' arcs, and a name equal to the
+    dcid is no label. The `StatisticalVariable` type and each variable's own name are named by
+    no pattern, so they are no terms."""
+    body = build_origin_usage(_catalogue(), "un_system").model_dump(mode="json")
+
+    assert body["terms"] == [
+        {"ref": "measuredValue", "label": None, "types": []},
+        {"ref": "undata/WHO/SERIES_A", "label": "undata/WHO/SERIES_A name", "types": ["Class"]},
+        {"ref": "undata/WHO/SEX", "label": "Sex", "types": ["Property"]},
+        {"ref": "undata/WHO/SEX_F", "label": "Female", "types": ["Enumeration"]},
+        {"ref": "value", "label": None, "types": ["Property"]},
+    ]
+
+
+def test_the_base_terms_leave_out_a_provisional_qualifier() -> None:
+    """`Count_Person_Unresolved`'s qualifier reads as none, so no pattern names it."""
+    body = build_origin_usage(_catalogue(), "base").model_dump(mode="json")
+
+    assert [term["ref"] for term in body["terms"]] == [
+        "Female",
+        "Household",
+        "Male",
+        "Person",
+        "count",
+        "gender",
+        "measuredValue",
+        "observationAbout",
     ]
 
 
@@ -242,21 +328,31 @@ def test_each_route_answers_its_origin_once_per_catalogue_build_with_an_etag(
 
 
 def test_a_request_bound_to_another_catalogue_build_builds_the_body_again(
-    serve_catalogue: Callable[[Catalogue], None], monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The service loads a second build mid-run, so the next request binds it and the cache's
+    generation stamp, the bound build, misses the first build's entry."""
     builds = _Counted()
     builds.install(monkeypatch)
-    bound = [_catalogue(build_id="build-a")]
-    serve_catalogue(bound[0])
-    monkeypatch.setattr(schema_door, "current_catalogue", lambda: bound[0])
+    loaded = [_catalogue(build_id="build-a")]
+    service = CatalogueService(
+        artifact_uri=f"file://{tmp_path / 'catalogue'}",
+        recheck_seconds=0,
+        loader=lambda _uri: loaded[0],
+    )
 
-    with make_client() as client:
+    with (
+        catalogue_service_module._singleton.poisoned_for_test(service),
+        make_client() as client,
+    ):
         first = client.get("/api/graph/schema/usage/base", headers=_IDENTITY)
-        bound[0] = _catalogue(build_id="build-b")
+        loaded[0] = _catalogue(build_id="build-b")
+        assert service.snapshot_current().build_id == "build-b"
         changed = client.get("/api/graph/schema/usage/base", headers=_IDENTITY)
         repeat = client.get("/api/graph/schema/usage/base", headers=_IDENTITY)
 
     assert [first.status_code, changed.status_code, repeat.status_code] == [200, 200, 200]
+    assert changed.headers["ETag"] == first.headers["ETag"]
     assert builds.origins == ["base", "base"]
 
 
@@ -283,11 +379,6 @@ def test_the_un_route_with_the_un_origin_off_refuses_and_builds_nothing(
     assert builds.origins == ["base"]
 
 
-# Digest of the default usage body over the suite's bound code index, a coverage index holding
-# nothing and a graph holding no Provenance node. The outside-origin routes leave it unchanged.
-_USAGE_DIGEST = "4f2ab9de5585a9b135692d7e1ade382d6af41f23d1fe95a74588bfa5451808a1"
-
-
 @dataclass
 class _EmptyCoverageIndex:
     facet_metadata: dict = field(default_factory=dict)
@@ -296,7 +387,7 @@ class _EmptyCoverageIndex:
 
 @dataclass
 class _Manifest:
-    build_id: str = "coverage-pinned"
+    build_id: str = "coverage-empty"
 
 
 @dataclass
@@ -311,13 +402,26 @@ class _FakeCoverage:
 
 
 @pytest.mark.parametrize("catalogue", [FakeCatalogue, _catalogue], ids=["fake", "base-and-un"])
-def test_the_default_usage_body_is_byte_identical_whatever_the_catalogue_holds(
+def test_the_default_usage_body_is_build_usages_whatever_the_catalogue_holds(
     catalogue: Callable[[], Catalogue], serve_catalogue: Callable[[Catalogue], None]
 ) -> None:
+    """The graph holds no Provenance node, so `build_usage` reads no node facts. The body
+    carries no `terms` and no pattern's `measurement_denominator_unresolved`."""
     serve_catalogue(catalogue())
+    expected = schema_door._freeze(
+        build_usage(code_index=get_index(), coverage=_EmptyCoverageIndex(), nodes={})
+    )
 
     with make_client(graph=FakeGraphNodeReader(), coverage=_FakeCoverage()) as client:
         response = client.get("/api/graph/schema/usage", headers=_IDENTITY)
 
     assert response.status_code == 200, response.text
-    assert hashlib.sha256(response.content).hexdigest() == _USAGE_DIGEST
+    assert response.content == expected.identity
+    body = response.json()
+    assert "terms" not in body
+    assert body["provenances"]
+    assert all(
+        "measurement_denominator_unresolved" not in pattern
+        for entry in body["provenances"]
+        for pattern in entry["patterns"]
+    )

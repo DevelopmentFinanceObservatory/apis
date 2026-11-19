@@ -89,7 +89,7 @@ from pydantic import (
     StringConstraints,
 )
 
-from dfo_platform.wire import ResponseModel
+from dfo_platform.wire import ResponseModel, is_none
 from graph_api.routing import DCID_MAX_LENGTH
 from origin_catalogue import OriginId
 
@@ -267,6 +267,14 @@ class SchemaPattern(ResponseModel):
     stat_type: str | None
     measurement_qualifier: str | None
     measurement_denominator: str | None
+    measurement_denominator_unresolved: bool | None = Field(
+        default=None,
+        exclude_if=is_none,
+        description="on `/schema/usage/{origin}`: true when the StatVars' "
+        "measurementDenominator arc names no value or only ProvisionalNode targets, which "
+        "keeps their pattern apart from one with no denominator; absent on `/schema/usage`, "
+        "whose StatVars all carry resolved denominators",
+    )
     constraint_properties: list[str] = Field(
         description="the names of the constraint properties the StatVars set, sorted"
     )
@@ -308,10 +316,13 @@ class ProvenanceUsage(ResponseModel):
 
     ref: str = Field(description="the Provenance's dcid")
     label: str | None = Field(
-        description="the Provenance node's name in the graph; null when it has none"
+        description="the Provenance's name: its graph node's on `/schema/usage`, the origin "
+        "catalogue's on `/schema/usage/{origin}`; null when it has none"
     )
     description: str | None = Field(
-        description="the Provenance node's description in the graph; null when it has none"
+        description="the Provenance's description: its graph node's on `/schema/usage`, its "
+        "source's in the origin catalogue on `/schema/usage/{origin}`; null when it has none, "
+        "as for every UN System Provenance"
     )
     stat_var_count: int
     patterns: list[SchemaPattern] = Field(
@@ -321,14 +332,36 @@ class ProvenanceUsage(ResponseModel):
         description="one entry per constraint property the StatVars set, sorted by property"
     )
     facets: SchemaFacets = Field(
-        description="facts of the coverage facets; empty lists when coverage holds none"
+        description="facts of the coverage facets; empty lists when coverage holds none, as "
+        "for every Provenance on `/schema/usage/{origin}`"
+    )
+
+
+class UsageTerm(ResponseModel):
+    """One node a usage document's patterns or constraint values name, as the StatVars' own
+    arcs name it."""
+
+    ref: str = Field(description="the node's dcid")
+    label: str | None = Field(
+        description="the node's name on the arcs naming it; null when they give none"
+    )
+    types: list[str] = Field(
+        description="the node's types on the arcs naming it, sorted; empty when they give none"
     )
 
 
 class DatasetUsage(ResponseModel):
-    """How each Provenance of the code index uses the model."""
+    """How each Provenance a usage route serves uses the model: those of the code index on
+    `/schema/usage`, the base or UN System ones of the origin catalogue on
+    `/schema/usage/{origin}`."""
 
     provenances: list[ProvenanceUsage] = Field(description="sorted by ref")
+    terms: list[UsageTerm] | None = Field(
+        default=None,
+        exclude_if=is_none,
+        description="on `/schema/usage/{origin}`: every node the patterns and constraint "
+        "values name, sorted by ref; absent on `/schema/usage`",
+    )
 
 
 CONSTRAINT_NUMBER_BOUND = 2**53

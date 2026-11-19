@@ -23,13 +23,14 @@ from the bound release's coverage.
 Routes: `GET /healthz`, `GET /capabilities`, `GET /json-schema`, `POST /resolve`,
 `GET /node/{dcid}`, `POST /nodes`, `GET /node/{dcid}/members`, `GET /roots`,
 `GET /documentation/{dcid}`, `GET /sources`, `GET /schema`, `GET /schema/terms`,
-`GET /schema/terms/un_system`, `GET /schema/usage`, and `POST /schema/check`, all under
-`/api/graph`.
+`GET /schema/terms/un_system`, `GET /schema/usage`, `GET /schema/usage/base`,
+`GET /schema/usage/un_system`, and `POST /schema/check`, all under `/api/graph`.
 `GET /schema`, `GET /schema/terms` and `POST /schema/check` share one build per graph
 generation and code index, held in a cache the lifespan registers beside the source-document
 and node-envelope caches. `GET /schema/usage` reads each Provenance node's name and
 description in one batch and keeps its body per code index and coverage build in a cache
-registered the same way. A live surface builds the schema
+registered the same way. `GET /schema/usage/base` and `GET /schema/usage/un_system` read the
+origin catalogue alone and keep each body per catalogue build. A live surface builds the schema
 document in its lifespan, before the instance takes traffic, waiting at most
 `SCHEMA_WARM_TIMEOUT_SECONDS` (20 s). An unfinished build logs and the first request joins
 it. A failed build logs, and the first request builds again, unless the build refused under a
@@ -271,7 +272,9 @@ def graph_surface(
             if un_terms_executor is not None:
                 await asyncio.to_thread(un_terms_executor.shutdown, wait=True, cancel_futures=True)
             if origin_usage_executor is not None:
-                await asyncio.to_thread(origin_usage_executor.shutdown, wait=True)
+                await asyncio.to_thread(
+                    origin_usage_executor.shutdown, wait=True, cancel_futures=True
+                )
             if card_reads is not None:
                 await asyncio.to_thread(card_reads.close)
             if shared_profiles is not None:

@@ -22,6 +22,8 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping
+from collections.abc import Set as AbstractSet
+from dataclasses import replace
 from typing import NamedTuple, Protocol
 
 from code_index import CodeIndex, StatVarRow
@@ -78,33 +80,45 @@ class _PatternKey(NamedTuple):
     observation_properties: tuple[str, ...]
 
 
-def _pattern_key(row: StatVarRow) -> _PatternKey:
-    return _PatternKey(
-        shape=row_five_tuple(row),
-        constraint_properties=tuple(sorted(row.constraint_properties)),
-        observation_properties=tuple(sorted(row.observation_properties)),
-    )
-
-
 def _pattern_order(entry: tuple[_PatternKey, list[str]]) -> tuple[object, ...]:
-    """Count descending, then the fields, with a missing field before any value."""
+    """Count descending, then the fields, with a missing field before any value and a resolved
+    denominator before an unresolved one."""
     key, dcids = entry
     return (
         -len(dcids),
         *(getattr(key.shape, name) or "" for name in SHAPE_FIELDS),
+        key.shape.denominator_unresolved,
         key.constraint_properties,
         key.observation_properties,
     )
 
 
-def _patterns(rows: Iterable[StatVarRow]) -> list[SchemaPattern]:
-    """The patterns of `rows`, which arrive sorted by dcid, so each pattern's dcids are too."""
+def group_patterns(
+    rows: Iterable[StatVarRow], *, unresolved_denominators: AbstractSet[str] | None = None
+) -> list[SchemaPattern]:
+    """The patterns of `rows`, which arrive sorted by dcid, so each pattern's dcids are too.
+
+    `unresolved_denominators` holds the dcids of the rows whose `measurementDenominator` arc
+    is unresolved, which keys their patterns apart from those of the rows it leaves out. With
+    it `None`, as for code-index rows, which hold resolved denominators alone, each pattern's
+    `measurement_denominator_unresolved` is `None` and the body leaves it out."""
     members: dict[_PatternKey, list[str]] = defaultdict(list)
     for row in rows:
-        members[_pattern_key(row)].append(row.dcid)
+        shape = row_five_tuple(row)
+        if unresolved_denominators is not None and row.dcid in unresolved_denominators:
+            shape = replace(shape, denominator_unresolved=True)
+        key = _PatternKey(
+            shape=shape,
+            constraint_properties=tuple(sorted(row.constraint_properties)),
+            observation_properties=tuple(sorted(row.observation_properties)),
+        )
+        members[key].append(row.dcid)
     return [
         SchemaPattern(
             **{name: getattr(key.shape, name) for name in SHAPE_FIELDS},
+            measurement_denominator_unresolved=(
+                None if unresolved_denominators is None else key.shape.denominator_unresolved
+            ),
             constraint_properties=list(key.constraint_properties),
             observation_properties=list(key.observation_properties),
             stat_var_count=len(dcids),
@@ -114,7 +128,8 @@ def _patterns(rows: Iterable[StatVarRow]) -> list[SchemaPattern]:
     ]
 
 
-def _constraint_values(rows: Iterable[StatVarRow]) -> list[SchemaConstraintValues]:
+def count_constraint_values(rows: Iterable[StatVarRow]) -> list[SchemaConstraintValues]:
+    """Each constraint property `rows` set, with how many rows take each of its values."""
     counts: dict[str, Counter[str]] = defaultdict(Counter)
     for row in rows:
         for prop, value in row.constraint_properties.items():
@@ -163,7 +178,8 @@ def _facets_by_provenance(coverage: ProvenanceCoverage) -> dict[str, SchemaFacet
     }
 
 
-def _no_facets() -> SchemaFacets:
+def empty_facets() -> SchemaFacets:
+    """Facets with every list empty, for a Provenance coverage holds nothing for."""
     return SchemaFacets(
         units=[], scaling_factors=[], measurement_methods=[], observation_periods=[], currencies=[]
     )
@@ -185,9 +201,9 @@ def build_usage(
                 label=display_name(node.get("name", ()), provenance),
                 description=min(node.get("description", ()), default=None),
                 stat_var_count=len(rows),
-                patterns=_patterns(rows),
-                constraint_values=_constraint_values(rows),
-                facets=facets.get(provenance) or _no_facets(),
+                patterns=group_patterns(rows),
+                constraint_values=count_constraint_values(rows),
+                facets=facets.get(provenance) or empty_facets(),
             )
         )
     return DatasetUsage(provenances=provenances)
@@ -200,4 +216,7 @@ __all__ = [
     "ProvenanceCoverage",
     "ProvenanceNodes",
     "build_usage",
+    "count_constraint_values",
+    "empty_facets",
+    "group_patterns",
 ]
