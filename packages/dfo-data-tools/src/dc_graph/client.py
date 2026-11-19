@@ -384,6 +384,31 @@ class ArcSubjectPage:
     truncated: bool
 
 
+@dataclass(frozen=True)
+class InArcSubject:
+    """One subject of a bracket in-arc read: its `dcid`, the `property` it points through, its
+    `name` (`display_name` over the names its entries carry, `None` for none), its `types`
+    (distinct, in first-occurrence order) and `provenances` (distinct, sorted). A subject
+    reached through two properties is two `InArcSubject`s."""
+
+    dcid: str
+    property: str
+    name: str | None
+    types: tuple[str, ...]
+    provenances: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class InArcs:
+    """What `node_in_arcs` read for one node: `subjects` grouped by property in the order the
+    caller named the properties, each property's subjects in first-occurrence order, and
+    `capped`, the properties whose listing stopped at `max_results` with more subjects behind
+    it. A node with no in-arcs holds `subjects=()` and `capped=frozenset()`."""
+
+    subjects: tuple[InArcSubject, ...]
+    capped: frozenset[str]
+
+
 @dataclass
 class _CacheCounters:
     """Process-lifetime hit and miss counters for one cache. `clear()` leaves them unchanged."""
@@ -1988,6 +2013,113 @@ class GraphClient:
                 return result("complete")
         return result("budget_exhausted")
 
+    def node_in_arcs(
+        self,
+        dcids: Sequence[str],
+        *,
+        properties: Sequence[str],
+        max_results: int,
+        max_bytes: int | None = None,
+        deadline: float | None = None,
+    ) -> dict[str, InArcs]:
+        """Read the incoming arcs of every `dcids` node through every one of `properties` with
+        the bracket form `<-[p1,p2,...]`, one request per page for all of them. Return every
+        input dcid with its `InArcs`. Each subject carries its name, types and provenances. A
+        subject is distinct within a property and capped at `max_results` per node and property;
+        a further subject marks the property in `InArcs.capped`. A missing node or one with no
+        in-arcs maps to an empty `InArcs`.
+
+        Pages share one `nextToken` walk, which ends once the token is gone or every node and
+        property is capped. A node whose properties are all capped leaves later requests. A
+        repeated token or more than `_NODE_SUBJECTS_MANY_MAX_PAGES` pages raises the read
+        error. `max_bytes` caps each decoded response, and one absolute `deadline` bounds every
+        page. The walk holds one fold per subject.
+        """
+        if not dcids:
+            return {}
+        if not properties:
+            raise ValueError("node_in_arcs needs at least one property")
+        unique_dcids = list(dict.fromkeys(dcids))
+        unique_properties = list(dict.fromkeys(properties))
+        for prop in unique_properties:
+            reject_unsafe_property_token(prop)
+        spec = f"<-[{','.join(unique_properties)}]"
+        folds: dict[tuple[str, str], _InArcFold] = {
+            (dcid, prop): _InArcFold() for dcid in unique_dcids for prop in unique_properties
+        }
+        capped: set[tuple[str, str]] = set()
+        token: str | None = None
+        for _ in range(_NODE_SUBJECTS_MANY_MAX_PAGES):
+            pending = [
+                dcid
+                for dcid in unique_dcids
+                if any((dcid, prop) not in capped for prop in unique_properties)
+            ]
+            payload: dict = {"nodes": pending, "property": spec}
+            if token is not None:
+                payload["nextToken"] = token
+            body = self.post_capped_bytes(
+                NODE_PATH, payload, max_bytes=max_bytes, deadline=deadline
+            )
+            data = body.get("data", {})
+            for dcid in pending:
+                arcs = (data.get(dcid) or {}).get("arcs", {})
+                for prop in unique_properties:
+                    if (dcid, prop) in capped:
+                        continue
+                    fold = folds[dcid, prop]
+                    for entry in arcs.get(prop, {}).get("nodes", []):
+                        if entry.get("dcid") is None:
+                            continue
+                        if not fold.add(entry, limit=max_results):
+                            capped.add((dcid, prop))
+                            break
+            next_token = body.get("nextToken")
+            if next_token is not None and next_token == token:
+                stuck = GraphNotAdvancingError(
+                    f"graph repeated the same nextToken paging {spec!r} for "
+                    f"{unique_dcids!r} instead of making progress",
+                    dcid=", ".join(unique_dcids),
+                    property=spec,
+                )
+                raise self._read_error_cls(str(stuck)) from stuck
+            token = next_token
+            if token is None or len(capped) == len(folds):
+                return {
+                    dcid: InArcs(
+                        subjects=tuple(
+                            subject
+                            for prop in unique_properties
+                            for subject in folds[dcid, prop].subjects(prop)
+                        ),
+                        capped=frozenset(
+                            prop for prop in unique_properties if (dcid, prop) in capped
+                        ),
+                    )
+                    for dcid in unique_dcids
+                }
+        exhausted = GraphNotAdvancingError(
+            f"graph still reported a nextToken after {_NODE_SUBJECTS_MANY_MAX_PAGES} pages "
+            f"reading {spec!r} for {unique_dcids!r}",
+            dcid=", ".join(unique_dcids),
+            property=spec,
+        )
+        raise self._read_error_cls(str(exhausted)) from exhausted
+
+    def node_closure(
+        self, dcid: str, *, property: str, deadline: float | None = None
+    ) -> tuple[ArcTarget, ...]:
+        """Read the transitive targets of `dcid` through `property` with `->{property}+`: every
+        node reachable by following the arc one or more times, each with its name, types and
+        provenances (`ArcTarget`), in the order the graph answers. A missing node or one with
+        no such arc returns `()`. Paging, repeated-token and page-bound errors, and `deadline`
+        are `_post_arc_spec_paged`'s."""
+        reject_unsafe_property_token(property)
+        key = f"{property}+"
+        merged = self._post_arc_spec_paged([dcid], f"->{key}", deadline=deadline)
+        arcs = (merged.get(dcid) or {}).get("arcs", {})
+        return parse_arc_targets(arcs, [key])[key]
+
     def node_observation_properties_batch(self, dcids: list[str]) -> dict[str, tuple[str, ...]]:
         """Fetch `->observationProperties` in chunks of `node_arc_batch_chunk_size`, halving on
         continuation. Return distinct targets in first-occurrence order. Absent arcs and nodes map
@@ -2943,6 +3075,33 @@ class _ArcSubjectFold:
             names=tuple(sorted(self._names[dcid])),
             provenances=tuple(sorted(self._provenances[dcid])),
         )
+
+
+class _InArcFold:
+    """One `(node, property)` listing of a bracket in-arc read: its distinct subjects in
+    first-occurrence order, each with the names, types and provenances of every entry read for it."""
+
+    def __init__(self) -> None:
+        self._entries: dict[str, list[dict]] = {}
+
+    def add(self, entry: dict, *, limit: int) -> bool:
+        """Fold `entry`. False once it names a subject beyond the `limit`th, which it leaves
+        out."""
+        dcid = entry["dcid"]
+        if dcid not in self._entries and len(self._entries) >= limit:
+            return False
+        self._entries.setdefault(dcid, []).append(entry)
+        return True
+
+    def subjects(self, prop: str) -> Iterator[InArcSubject]:
+        for dcid, entries in self._entries.items():
+            yield InArcSubject(
+                dcid=dcid,
+                property=prop,
+                name=display_name((n for e in entries if (n := e.get("name"))), dcid),
+                types=tuple(dict.fromkeys(t for e in entries for t in e.get("types", ()))),
+                provenances=_entry_provenances(entries),
+            )
 
 
 def _entry_provenances(entries: Iterable[dict]) -> tuple[str, ...]:
