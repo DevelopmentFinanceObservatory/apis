@@ -129,6 +129,7 @@ def _with_deps(generation: FakeGeneration, coverage_build: str):
             coverage=coverage,
             schema=None,
             dataset_usage=None,
+            origin_usage=None,
             check_executor=None,
         ),
     )

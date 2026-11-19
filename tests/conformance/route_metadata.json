@@ -685,6 +685,24 @@
   },
   {
     "has_description": false,
+    "method": "GET",
+    "name": "get_schema_usage_base",
+    "operation_id": "graph_get_schema_usage_base",
+    "path": "/api/graph/schema/usage/base",
+    "summary": "Get Schema Usage Base",
+    "surface": "graph"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "get_schema_usage_un_system",
+    "operation_id": "graph_get_schema_usage_un_system",
+    "path": "/api/graph/schema/usage/un_system",
+    "summary": "Get Schema Usage Un System",
+    "surface": "graph"
+  },
+  {
+    "has_description": false,
     "method": "POST",
     "name": "resolve",
     "operation_id": "graph_resolve",
