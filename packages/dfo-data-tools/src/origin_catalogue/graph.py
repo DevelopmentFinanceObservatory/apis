@@ -471,6 +471,11 @@ class OriginGraphClient:
         """Both backends' API roots, ours first."""
         return f"{self._ours.source_key()}+{self._un.source_key()}"
 
+    def un_graph(self) -> GraphClient:
+        """The UN deployment's own client. A read through it skips this client's routing and
+        the catalogue's `un_system_enabled` gate, so its caller checks the gate."""
+        return self._un
+
     def un_availability(self) -> UnAvailabilityClient | None:
         """The UN deployment's `/availability` read, or `None` when this client was built
         without one. With the UN origin off, its places hold no admitted facet."""

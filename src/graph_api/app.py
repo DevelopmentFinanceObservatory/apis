@@ -23,7 +23,8 @@ from the bound release's coverage.
 Routes: `GET /healthz`, `GET /capabilities`, `GET /json-schema`, `POST /resolve`,
 `GET /node/{dcid}`, `POST /nodes`, `GET /node/{dcid}/members`, `GET /roots`,
 `GET /documentation/{dcid}`, `GET /sources`, `GET /schema`, `GET /schema/terms`,
-`GET /schema/usage`, and `POST /schema/check`, all under `/api/graph`.
+`GET /schema/terms/un_system`, `GET /schema/usage`, and `POST /schema/check`, all under
+`/api/graph`.
 `GET /schema`, `GET /schema/terms` and `POST /schema/check` share one build per graph
 generation and code index, held in a cache the lifespan registers beside the source-document
 and node-envelope caches. `GET /schema/usage` reads each Provenance node's name and
@@ -33,8 +34,9 @@ document in its lifespan, before the instance takes traffic, waiting at most
 `SCHEMA_WARM_TIMEOUT_SECONDS` (20 s). An unfinished build logs and the first request joins
 it. A failed build logs, and the first request builds again, unless the build refused under a
 known generation with a truncated term listing or a document with no DFO node: the entry keeps
-that refusal, and every request answers it 500 with no build. An injected graph builds on the
-first request.
+that refusal, and every request answers it 500 with no build. Beside it, and under the same
+wait, it builds the UN terms body when the bound catalogue serves the UN origin
+(`warm_un_terms`). An injected graph builds on the first request.
 
 Door classifiers return `ProblemSpec`. The door whose route raised classifies
 first (`dfo_platform.doors.classify_by_door`), so a graph read failure is logged
@@ -79,6 +81,7 @@ from graph_api.deps import (
     DcpReadExecutor,
     GraphDeps,
     GraphDepsNotSet,
+    UnTerms,
     new_check_executor,
 )
 from graph_api.doors.health import build_health_door
@@ -90,10 +93,12 @@ from graph_api.doors.schema import (
     build_schema_door,
     new_schema_cache,
     warm_schema,
+    warm_un_terms,
 )
 from graph_api.doors.sources import build_sources_door, new_provenance_doc_cache
 from graph_api.node_cache import NodeEntryCache
 from graph_api.reader import GraphNodeReader
+from graph_api.un_terms import UnTermsReader
 from graph_api.version import GRAPH_CAPABILITY_VERSION
 from graph_generation import UNKNOWN_GENERATION, GenerationProvider, RegistrationHandle
 from graph_generation import acquire_shared as acquire_shared_generation
@@ -123,6 +128,7 @@ from origin_catalogue.graph import (
     OBS_CACHE_SIZE,
     OBS_PROPERTIES_CACHE_SIZE,
     OriginGraphClient,
+    UnGeneration,
     build_graph_client,
 )
 from origin_catalogue.service import get_catalogue_service
@@ -180,6 +186,8 @@ def graph_surface(
     coverage: ServedCoverage | None = None,
     profile_graph: ProfileGraphReader | None = None,
     availability: AvailabilityReader | None = None,
+    un_graph: UnTermsReader | None = None,
+    un_generation: GenerationProvider | None = None,
 ) -> Surface:
     """Build the Graph surface.
 
@@ -191,7 +199,10 @@ def graph_surface(
     feed a facet profile cache of the surface's own, on an executor of its own, for an
     injected graph. A live surface ignores them and acquires the process's shared cache, and
     an injected graph runs without a profile cache unless both are given. An injected
-    resolver leaves the membership policy for its caller to publish.
+    resolver leaves the membership policy for its caller to publish. `un_graph` feeds the UN
+    terms route for an injected graph. A live surface ignores it and reads the UN deployment's
+    own client, and an injected graph without it serves no UN terms. `un_generation` stamps the
+    UN terms cache, `origin_catalogue.graph.UnGeneration` when `None`.
     """
     catalogue = get_catalogue_service()
     release = get_release_service()
@@ -229,6 +240,8 @@ def graph_surface(
         dcp_executor: DcpReadExecutor | None = None
         check_executor: DcpReadExecutor | None = None
         usage_executor: ThreadPoolExecutor | None = None
+        un_terms_executor: ThreadPoolExecutor | None = None
+        un_terms: UnTerms | None = None
         profile_executor: ThreadPoolExecutor | None = None
         profile_reads: ThreadPoolExecutor | None = None
         card_reads: CardReadCaches | None = None
@@ -243,12 +256,18 @@ def graph_surface(
             close the graph reader last. Release only resources this lifespan owns. Injected
             graph, resolver and availability objects remain caller-owned.
             """
+            if un_terms is not None:
+                # First, so a UN build stops before its next request while the other
+                # executors drain.
+                un_terms.stop.set()
             if dcp_executor is not None:
                 await asyncio.to_thread(dcp_executor.shutdown, wait=True)
             if check_executor is not None:
                 await asyncio.to_thread(check_executor.shutdown, wait=True)
             if usage_executor is not None:
                 await asyncio.to_thread(usage_executor.shutdown, wait=True)
+            if un_terms_executor is not None:
+                await asyncio.to_thread(un_terms_executor.shutdown, wait=True, cancel_futures=True)
             if card_reads is not None:
                 await asyncio.to_thread(card_reads.close)
             if shared_profiles is not None:
@@ -379,6 +398,21 @@ def graph_surface(
             usage_registration = resolved_generation.register(
                 "graph_api.dataset_usage", stats=dataset_usage.stats, clear=dataset_usage.clear
             )
+            un_reader = live_reader.un_graph() if live_reader is not None else un_graph
+            if un_reader is not None:
+                # Keyed by the UN deployment's own generation, so a mixer generation change
+                # leaves it in place.
+                un_terms_executor = ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="graph-un-terms"
+                )
+                un_terms = UnTerms(
+                    reader=un_reader,
+                    cache=new_schema_cache(
+                        entries=1,
+                        executor=un_terms_executor,
+                        generation=un_generation if un_generation is not None else UnGeneration(),
+                    ),
+                )
 
             profile_cache: FacetProfileCache | None = None
             if shared_profiles is not None:
@@ -427,6 +461,7 @@ def graph_surface(
             node_entries=node_entries,
             schema=schema,
             dataset_usage=dataset_usage,
+            un_terms=un_terms,
             coverage=resolved_coverage,
             profile_cache=profile_cache,
             card_reads=card_reads,
@@ -439,7 +474,10 @@ def graph_surface(
                 # Awaited, because Cloud Run throttles the CPU of an instance with no request
                 # in flight, so a build left to run on its own would stall once traffic starts.
                 with bound_catalogue(catalogue.snapshot()), bound_served_release(release):
-                    await warm_schema(deps, timeout_s=SCHEMA_WARM_TIMEOUT_SECONDS)
+                    await asyncio.gather(
+                        warm_schema(deps, timeout_s=SCHEMA_WARM_TIMEOUT_SECONDS),
+                        warm_un_terms(deps, timeout_s=SCHEMA_WARM_TIMEOUT_SECONDS),
+                    )
             yield
         finally:
             NODE_MEMBERSHIP_SLOT.clear(_app)

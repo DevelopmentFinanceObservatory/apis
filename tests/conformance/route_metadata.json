@@ -668,6 +668,15 @@
   {
     "has_description": false,
     "method": "GET",
+    "name": "get_un_schema_terms",
+    "operation_id": "graph_get_un_schema_terms",
+    "path": "/api/graph/schema/terms/un_system",
+    "summary": "Get Un Schema Terms",
+    "surface": "graph"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
     "name": "get_schema_usage",
     "operation_id": "graph_get_schema_usage",
     "path": "/api/graph/schema/usage",
