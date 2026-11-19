@@ -7,9 +7,9 @@ graph answered.
 Every read runs on the executor `build_node_view` is given, under a copy of the caller's
 context, so a reader that needs the bound origin catalogue, as the UN deployment's client does
 for its cache generation, finds it on the worker. Each read carries the view's deadline and
-caps each decoded response at `NODE_VIEW_MAX_BYTES`, and the pages of the centre's `->*` at
-that cap together. An in-arc walk with a page past the cap marks its listing capped and the
-view builds without it. Any other read past the cap fails the view. A read the graph answers
+caps each decoded response at `NODE_VIEW_MAX_BYTES`. The pages of the centre's `->*` share one
+cap, `CENTRE_MAX_BYTES`. An in-arc walk with a page past its cap marks its listing capped and the
+view builds without it. Any other read past its cap fails the view. A read the graph answers
 with HTTP 429 is sent again after each of `RATE_LIMIT_WAITS_SECONDS`, one budget for the whole
 view, while the wait ends before the deadline. An in-arc read walks each property in turn, so a 429 sends
 only that property's walk again. A read is sent only when it has a dcid to read, and a view
@@ -22,7 +22,9 @@ centre's in-arcs under `subClassOf`, `subPropertyOf`, `specializationOf`, `range
 document builds its nodes, with `declared_by` from `schema_document.declared_by`. Each node
 target of the centre's arcs is a neighbour: those of `typeOf` and the five schema arcs, and
 those `other_properties` keeps, such as a UN series' `unConcept`. Each in-arc subject is a
-neighbour carrying the one arc that ties it to the centre.
+neighbour carrying the one arc that ties it to the centre. A property of the centre whose
+targets are all literals and total more than `LARGE_LITERAL_BYTES` (`_literal_bytes`), such as a
+country's `geoJsonCoordinates`, is left out of the centre and named in `capped`.
 
 A Class lists the classes below it: from its narrower classes down, one `<-subClassOf` read
 per level, each class joining as a neighbour with its `subClassOf` edges to the classes above
@@ -63,14 +65,16 @@ the centre, and a chain class's `subClassOf` edges. Its `declared_by` follows fr
 an out-arc target of the centre, since the arc the centre holds to it names the centre's
 declarer. `capped` names each listing the view cut by the node listed and the property: an
 in-arc listing at its cap or past the byte cap (the centre's schema arcs and members, and a
-value's type classes under `rangeIncludes`), a property of the centre's `other_properties`
-that `schema_document.node_other_properties` cut, `subClassOf+` on a Class whose walk below
+value's type classes under `rangeIncludes`), a literal property of the centre past
+`LARGE_LITERAL_BYTES`, a property of the centre's `other_properties` that
+`schema_document.node_other_properties` cut, `subClassOf+` on a Class whose walk below
 stopped with a class below it unread, and `RANGE_CLASS_LISTS` or `VALUE_TYPE_LISTS` on a
 centre with range or type classes past their caps.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -138,8 +142,22 @@ READS_AT_ONCE: Final[int] = 3
 second, which runs `1 + VALUE_TYPE_CAP`."""
 
 NODE_VIEW_MAX_BYTES: Final[int] = 2 * 1024 * 1024
-"""The most decoded bytes one response of a view's reads may carry. A larger one fails the
-read."""
+"""The most decoded bytes one response of a view's reads may carry, the centre's `->*` aside.
+A larger one fails the read."""
+
+CENTRE_MAX_BYTES: Final[int] = 8 * 1024 * 1024
+"""The most decoded bytes the pages of the centre's `->*` may carry together. A larger answer
+fails the view. On the dev mixer `country/USA` answers 3,701,988 bytes in about 2 s, 3.6 MB
+of them in its geoJson properties."""
+
+LARGE_LITERAL_BYTES: Final[int] = 32 * 1024
+"""The most bytes (`_literal_bytes`) a property of the centre whose targets are all literals
+may total before the view leaves it out. On the dev mixer the rule leaves out the eleven
+geoJson properties of `country/USA`, from 40,405 bytes (`geoJsonCoordinatesUNDP3`) to
+1,502,315 (`geoJsonCoordinates`), and `geoJsonCoordinates` (189,376) and `kmlCoordinates`
+(148,629) of `geoId/06`. The largest literal properties it keeps there are the 424
+`nameWithLanguage` values of `country/USA` (13,606) and `geoJsonCoordinatesDP1` of `geoId/06`
+(10,345)."""
 
 RATE_LIMIT_WAITS_SECONDS: Final[tuple[float, ...]] = (1.0, 2.0)
 """The waits before each further request for a read the graph answered with HTTP 429, one
@@ -258,7 +276,7 @@ class _Reads:
         return self._submit(
             lambda: self._paced(
                 lambda: self._reader.node_all_arc_targets_many(
-                    [dcid], max_bytes=NODE_VIEW_MAX_BYTES, deadline=self._deadline
+                    [dcid], max_bytes=CENTRE_MAX_BYTES, deadline=self._deadline
                 )
             )
         )
@@ -472,6 +490,13 @@ def _build(
     entry = resolved_entry(out_read.result().get(dcid))
     if entry is None:
         raise NodeNotHeldError(dcid)
+    large = {
+        prop
+        for prop, targets in entry.items()
+        if all(target.literal for target in targets)
+        and _literal_bytes(targets) > LARGE_LITERAL_BYTES
+    }
+    entry = {prop: targets for prop, targets in entry.items() if prop not in large}
     in_arcs = in_read.result().get(dcid, _NO_IN_ARCS)
     closure = closure_read.result()
 
@@ -483,7 +508,7 @@ def _build(
     other_properties = node_other_properties(dcid, entry, left_out)
     types = set(arcs[_TYPE_OF])
     neighbours = _Neighbours(dcid)
-    capped = set(left_out)
+    capped = set(left_out) | {(dcid, prop) for prop in large}
     for prop in (_TYPE_OF, *IN_ARCS):
         for target in entry.get(prop, ()):
             neighbours.add_target(target)
@@ -552,6 +577,11 @@ def _build(
         nodes=neighbours.nodes(catalogue),
         capped=[CappedListing(ref=ref, property=prop) for ref, prop in sorted(capped)],
     )
+
+
+def _literal_bytes(targets: Iterable[ArcTarget]) -> int:
+    """The UTF-8 bytes of `targets`' values, each as a JSON string."""
+    return sum(len(json.dumps(target.value, ensure_ascii=False).encode()) for target in targets)
 
 
 def _read_descendants(

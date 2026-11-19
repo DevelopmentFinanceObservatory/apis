@@ -401,7 +401,7 @@ refused."""
 class NodeViewMiss(Enum):
     """A view's refusal, kept in a miss cache apart from the views. `NOT_HELD`: the deployment
     answered the dcid with no arc. `TOO_LARGE`: the centre's `->*` answered past
-    `NODE_VIEW_MAX_BYTES`, or a closure or chain edge read did. `NOT_ADVANCING`: a paged read
+    `CENTRE_MAX_BYTES`, or a closure or chain edge read past `NODE_VIEW_MAX_BYTES`. `NOT_ADVANCING`: a paged read
     repeated its continuation token or continued after its page cap
     (`dc_graph.GraphNotAdvancingError`), which a retry pages the same way."""
 

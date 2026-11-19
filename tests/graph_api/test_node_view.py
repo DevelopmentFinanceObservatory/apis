@@ -80,7 +80,7 @@ _LITERALS = {("undata/eclac/SI_POV", "unCode"): ("SI_POV",)}
 
 class _FakeGraph:
     """`_ARCS` as the four reads answer them, each call recorded as (method, dcids, properties)
-    and each byte cap sent in `max_bytes`. A dcid of `empty_in_batches` read beside others under
+    and each byte cap sent in `max_bytes`, the `->*` read's in `centre_max_bytes`. A dcid of `empty_in_batches` read beside others under
     `->p` answers empty unless each empty answer is read again alone, as `GraphClient` does
     with `individual_probe_budget=None`."""
 
@@ -89,11 +89,14 @@ class _FakeGraph:
         arcs: Sequence[tuple[str, str, str]] = _ARCS,
         *,
         empty_in_batches: frozenset[str] = frozenset(),
+        literals: Mapping[tuple[str, str], tuple[str, ...]] = _LITERALS,
     ) -> None:
         self.arcs = tuple(arcs)
+        self.literals = literals
         self.empty_in_batches = empty_in_batches
         self.calls: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = []
         self.max_bytes: set[int | None] = set()
+        self.centre_max_bytes: set[int | None] = set()
         self.in_arc_answers: list[tuple[tuple[str, ...], str, int]] = []
 
     def _types(self, dcid: str) -> tuple[str, ...]:
@@ -116,7 +119,7 @@ class _FakeGraph:
                 entry.setdefault(p, []).append(self._target(s, p, o))
         if dcid in _NAMES and (properties is None or "name" in properties):
             entry["name"] = [ArcTarget(value=_NAMES[dcid], literal=True)]
-        for (s, p), values in _LITERALS.items():
+        for (s, p), values in self.literals.items():
             if s == dcid and properties is None:
                 entry[p] = [ArcTarget(value=value, literal=True) for value in values]
         return {p: tuple(targets) for p, targets in entry.items()} or None
@@ -129,7 +132,7 @@ class _FakeGraph:
         deadline: float | None = None,
     ) -> dict[str, dict[str, tuple[ArcTarget, ...]] | None]:
         self.calls.append(("->*", tuple(dcids), ()))
-        self.max_bytes.add(max_bytes)
+        self.centre_max_bytes.add(max_bytes)
         return {dcid: self._read(dcid, None) for dcid in dcids}
 
     def node_arc_targets_many(
@@ -372,6 +375,26 @@ def test_a_un_series_reads_its_list_through_the_chain(executor: ThreadPoolExecut
     assert nodes["Intangible"].instances is None
     assert {method for method, _, _ in graph.calls} == {"->*", "<-", "+", "->"}
     assert graph.max_bytes == {node_view.NODE_VIEW_MAX_BYTES}
+    assert graph.centre_max_bytes == {node_view.CENTRE_MAX_BYTES}
+
+
+def test_a_literal_property_past_its_byte_limit_is_left_out_and_named_capped(
+    executor: ThreadPoolExecutor,
+) -> None:
+    """A literal property whose values total past `LARGE_LITERAL_BYTES` leaves the centre and
+    is named in `capped`, though each value is short and they number under 100. A smaller
+    literal property and a node-valued one stay."""
+    shape = ("x" * 400,) * 90
+    graph = _FakeGraph(literals={**_LITERALS, ("undata/eclac/SI_POV", "geoJsonCoordinates"): shape})
+    view = _view("undata/eclac/SI_POV", graph, executor)
+
+    assert sum(len(value) for value in shape) > node_view.LARGE_LITERAL_BYTES
+    assert "geoJsonCoordinates" not in view.centre.other_properties
+    assert view.capped == [CappedListing(ref="undata/eclac/SI_POV", property="geoJsonCoordinates")]
+    assert view.centre.other_properties["unCode"][0].model_dump() == {"value": "SI_POV"}
+    assert view.centre.other_properties["unConcept"][0].model_dump() == {
+        "ref": "undata/eclac/POVERTY"
+    }
 
 
 def test_a_deep_value_list_reads_its_chain_and_marks_narrower_lists(
