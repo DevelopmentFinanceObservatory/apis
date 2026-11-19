@@ -4,7 +4,7 @@ Each call captures one generation stamp before lookup and keys entries by `(stam
 The default TTL is `stamp.max_age_s`. A `get_or_fetch_many` caller that starts a flight may
 pass `value_ttl`, which stores a value it names a lifetime for under the lesser of that
 lifetime and the TTL. `maxsize` bounds the LRU store's entries, and a cache given `weigh` and
-`max_weight` bounds the total weight of the values it holds too: the least recently used entries
+`max_weight` bounds the total weight of the values it holds too. The least recently used entries
 leave until both bounds hold, and a value heavier than `max_weight` alone is not stored. One lock
 protects O(1) bookkeeping and is released before fetches or awaits.
 
@@ -144,7 +144,7 @@ class SingleFlightCache[K, V]:
     `executor` runs sync flights and is required by `get_or_fetch` and `get_or_fetch_many` on an
     enabled cache. Async flights run on `executor` when it is given, else on the event loop's
     default executor. `weigh` gives a value's weight, such as its encoded bytes, and
-    `max_weight` the most the stored values may weigh together; the two are given together.
+    `max_weight` the most the stored values may weigh together. Give both or neither.
     """
 
     def __init__(

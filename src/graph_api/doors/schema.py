@@ -25,7 +25,8 @@ with every worker busy refuses the build with `DcpExecutorSaturated`, which the 
 as retryable 503. A read past its deadline answers 504 `timeout`. A listing that reached its
 cap, or a document with no node DFO declares, is a server fault and answers non-retryable 500
 `internal_error`. A DCP 429 answers retryable 503 with `Retry-After: 5`, any other DCP 4xx 502
-`upstream_error`, and any other read failure retryable 503. Under a known generation the entry keeps either refusal as `RefusedSchema` for
+`upstream_error`, and any other read failure retryable 503. Under a known generation the entry
+keeps either refusal as `RefusedSchema` for
 `SCHEMA_REFUSAL_TTL_SECONDS` (60 s), so every request for the key in that time answers the
 same 500 with no build, and the first request after it builds again. Under an unknown
 generation the build raises the refusal unkept and the next request builds again. Any other
@@ -146,9 +147,9 @@ when the UN origin is served. A node neither read holds answers 404 `not_found`,
 with `cause: {"code": "node_not_held"}`. The centre's `->*`, a closure or a chain edge read
 past the view's byte cap answers 500 `internal_error`, not retryable, with
 `cause: {"code": "node_view_too_large"}`, and a paged read that repeats its continuation token
-or still continues at its page cap the same with `cause: {"code": "graph_not_advancing"}`; the
-UN deployment is not read for either. All refusals go out `no-store`. The route binds no code registry
-endpoint, so it refuses with platform codes and names its reason in `cause.code`, where
+or continues after its page cap the same with `cause: {"code": "graph_not_advancing"}`. The
+UN deployment is not read for either. All refusals go out `no-store`. The route binds no code
+registry endpoint, so it refuses with platform codes and names its reason in `cause.code`, where
 `GET /api/graph/node/{dcid}` answers the Graph code `node_not_held` at the top level.
 
 `NodeViews` holds two caches per deployment. The view caches hold at most
@@ -160,8 +161,8 @@ refusals (`NodeViewMiss`), so a made-up dcid evicts no view and is answered agai
 read: the mixer's for its generation, the UN deployment's for `UN_NODE_VIEW_MISS_TTL_SECONDS`.
 Each flight's deadline is `GRAPH_NODE_TIMEOUT_SECONDS` from its start, so a UN read after a
 mixer miss gets a deadline of its own, and a request waits `GRAPH_NODE_TIMEOUT_SECONDS` from its
-start over both. Either passing answers 504 `timeout`. A read the graph still answers with HTTP
-429 after the view's own waits answers retryable 503 `service_unavailable` with
+start over both. Either passing answers 504 `timeout`. A read the graph answers with HTTP 429
+after the view's own waits answers retryable 503 `service_unavailable` with
 `Retry-After: 5`, on this route as on the others. Any other failed read answers as on the other
 routes. Each view answers `public, max-age=300` with a strong `ETag`, gzip and 304 as the
 document does.
@@ -264,8 +265,8 @@ and the request builds a second entry under `UNKNOWN_KEY`, which costs a whole b
 read of the generation took 1.5 s from a laptop and 1.9 s at an instance's start."""
 
 GRAPH_RATE_LIMITED_RETRY_AFTER_SECONDS = 5
-"""The `Retry-After` a request sends when a graph read still answered HTTP 429 after the reads'
-own waits."""
+"""The `Retry-After` a request sends when a graph read answered HTTP 429 after the reads' own
+waits."""
 
 SCHEMA_REFUSAL_TTL_SECONDS = 60.0
 """How long the schema cache keeps a build's refusal (`RefusedSchema`). A listing the upstream
@@ -381,7 +382,7 @@ NODE_VIEW_CACHE_BYTES = 64 * 1024 * 1024
 least recently used leaving first, and a body past it is served and not kept. A view with 6,002
 neighbours weighs 2.49 MB (2.44 MB identity). A view has no fixed upper weight, since the
 centre's `other_properties` keep up to 100 node targets for each of any number of properties,
-so the bound is this budget: the two caches together hold at most 128 MiB of the 1.6 GiB the
+so the bound is this budget. The two caches together hold at most 128 MiB of the 1.6 GiB the
 dev apis service leaves beside two origin catalogue builds (deploy/origin-catalogue.md)."""
 
 NODE_VIEW_MISS_CACHE_SIZE = 1_000
@@ -401,7 +402,7 @@ class NodeViewMiss(Enum):
     """A view's refusal, kept in a miss cache apart from the views. `NOT_HELD`: the deployment
     answered the dcid with no arc. `TOO_LARGE`: the centre's `->*` answered past
     `NODE_VIEW_MAX_BYTES`, or a closure or chain edge read did. `NOT_ADVANCING`: a paged read
-    repeated its continuation token or still continued at its page cap
+    repeated its continuation token or continued after its page cap
     (`dc_graph.GraphNotAdvancingError`), which a retry pages the same way."""
 
     NOT_HELD = "not_held"
@@ -421,8 +422,8 @@ class NodeViewTooLarge(Exception):
 
 
 class NodeViewNotAdvancing(Exception):
-    """A paged read of the view of `dcid` repeated its continuation token or still continued
-    at its page cap, so the node has no view."""
+    """A paged read of the view of `dcid` repeated its continuation token or continued after
+    its page cap, so the node has no view."""
 
     def __init__(self, dcid: str) -> None:
         super().__init__(f"a paged graph read for the view of {dcid!r} did not advance")

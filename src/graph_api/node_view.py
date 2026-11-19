@@ -9,10 +9,9 @@ context, so a reader that needs the bound origin catalogue, as the UN deployment
 for its cache generation, finds it on the worker. Each read carries the view's deadline and
 caps each decoded response at `NODE_VIEW_MAX_BYTES`, and the pages of the centre's `->*` at
 that cap together. An in-arc walk with a page past the cap marks its listing capped and the
-view builds without it; any other read past the cap fails the view. A read the graph answers
-with HTTP 429 is
-sent again after each of `RATE_LIMIT_WAITS_SECONDS`, one budget for the whole view, while the
-wait ends before the deadline. An in-arc read walks each property in turn, so a 429 sends
+view builds without it. Any other read past the cap fails the view. A read the graph answers
+with HTTP 429 is sent again after each of `RATE_LIMIT_WAITS_SECONDS`, one budget for the whole
+view, while the wait ends before the deadline. An in-arc read walks each property in turn, so a 429 sends
 only that property's walk again. A read is sent only when it has a dcid to read, and a view
 that ends, by an answer or a failure, cancels every read it submitted that has not started.
 

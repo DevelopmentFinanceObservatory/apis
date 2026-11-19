@@ -503,8 +503,8 @@ def test_a_walk_ending_at_its_limit_with_nothing_below_names_nothing_capped(
 def test_a_level_below_a_class_reads_no_more_than_the_room_left(
     executor: ThreadPoolExecutor, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Two narrower classes with three classes each below them, and room for two more classes:
-    the level's read answers two subjects over both parents."""
+    """Two narrower classes with three classes each below them, and room for two more classes.
+    The level's read answers two subjects over both parents."""
     monkeypatch.setattr(node_view, "DESCENDANT_CAP", 4)
     below = tuple(
         arc
