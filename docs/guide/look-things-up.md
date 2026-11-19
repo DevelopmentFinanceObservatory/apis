@@ -109,7 +109,7 @@ The documentation record includes source details, licence, scope and units, meth
 
 ## Read the model
 
-`GET /api/v1/graph/schema` serves every Class and Property DFO declares, with their ranges and domains. A DFO Class that is an enumeration or the range of a DFO property, and a base enumeration, carries `instances`, the nodes typed by it or its subclasses, so a value list such as `CurrencyDenomination` names every currency DFO declares. Each node is named by `ref`, its dcid, and `label`, its name, as on the node route. `GET /api/v1/graph/schema/terms` lists every Class and Property of the DFO graph, base Data Commons included and the UN origin's terms excluded, with name, types and declaring Provenances.
+`GET /api/v1/graph/schema` serves every Class and Property DFO declares, with their ranges and domains. A DFO Class that is an enumeration or the range of a DFO property, and a base enumeration, carries `instances`, the nodes typed by it or its subclasses, so a value list such as `CurrencyDenomination` names every currency DFO declares. Each node is named by `ref`, its dcid, and `label`, its name, as on the node route. `GET /api/v1/graph/schema/terms` lists every Class and Property of the DFO graph, base Data Commons included and the UN origin's terms excluded, with name, types and declaring Provenances. `GET /api/v1/graph/schema/terms/un_system` lists the Classes and Properties the UN System Data Commons declares, in the same shape, with `generation` `null`.
 
 ```bash
 curl -fsS "$DFO_API/api/v1/graph/schema" \
@@ -158,7 +158,8 @@ A `resolved` result has an `entity.ref`. `GET /api/v1/graph/node/{ref}` should r
 - `400 request_invalid` with `/texts` in the pointer means the request contains an invalid name or exceeds a current request limit. Check `GET /api/v1/graph/capabilities`.
 - `400 request_invalid` on the members route names the fault in its pointer: `/relation` for a list a held node lacks, `/cursor` for a cursor that belongs to another list, `/as_of` for a date asked of a membership that records none.
 - `400 request_invalid` on the check means the body breaks a size bound: more than `caps.max_check_rows` rows, a row over `caps.max_check_constraint_properties` or `caps.max_check_observation_properties`, or a string over 512 characters. A pointer such as `/rows/37/constraint_properties` names the row; send the request again without it.
-- `503 service_unavailable` is retryable. Every graph read worker was busy, or the service was still starting. On the schema routes `cause.code` says why: `schema_building` while the schema build runs, `check_busy` while two checks already run.
+- `503 service_unavailable` is retryable. Every graph read worker was busy, or the service was still starting. On the schema routes `cause.code` says why: `schema_building` while the schema build runs, `check_busy` while two checks already run. On `GET /api/v1/graph/schema/terms/un_system`, `listing_incomplete` means the UN deployment listed no UN term, and `upstream_rate_limited` that it is rate-limiting this service; retry after the `Retry-After` interval.
+- `404 not_found` on `GET /api/v1/graph/schema/terms/un_system` with `cause.code` `origin_not_served` means this deployment does not serve the UN origin. Retrying does not help.
 - `500 internal_error` on the schema routes means the build refused the graph: a term listing reached its cap, or no node is declared by DFO. A retry within 60 s gets the same 500, and the first request after that builds again.
 
 ## Next

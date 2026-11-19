@@ -184,6 +184,17 @@ def is_front_door_refusal(*, status: int, content_type: str | None, body: str) -
     )
 
 
+def _retry_after_seconds(header: str | None) -> float | None:
+    """The non-negative seconds a `Retry-After` header names, `None` for none or an HTTP date."""
+    if header is None:
+        return None
+    try:
+        seconds = float(header.strip())
+    except ValueError:
+        return None
+    return seconds if 0 <= seconds < float("inf") else None
+
+
 class FrontDoorRefused(Exception):
     """A request met the front door's refusal (`is_front_door_refusal`). `post` attaches it as the
     `__cause__` of the `GraphReadError` it raises, so an adapter reading through `post` recognises
@@ -721,6 +732,8 @@ class GraphClient:
                     f"graph returned HTTP {response.status_code} for {path!r}",
                     upstream_status=response.status_code,
                 )
+                if isinstance(error, GraphReadError):
+                    error.retry_after = _retry_after_seconds(response.headers.get("retry-after"))
                 if refused:
                     raise error from FrontDoorRefused(path)
                 raise error

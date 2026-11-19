@@ -122,8 +122,8 @@ def test_fixture_route_count_per_surface():
         counts[row["surface"]] = counts.get(row["surface"], 0) + 1
     assert counts == {
         "search": 6,
-        "graph": 14,
         "datasets": 66,
+        "graph": 15,
         "presentation": 21,
         "skills": 4,
     }

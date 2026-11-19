@@ -186,7 +186,7 @@ _NODE_PROPERTIES: Final[tuple[str, ...]] = (
 
 type _Arcs = dict[str, tuple[str, ...]]
 type _OtherProperties = dict[str, list[SchemaNodeReference | SchemaLiteral]]
-type _TermKind = Literal["Class", "Property"]
+type TermKind = Literal["Class", "Property"]
 
 
 class SchemaListingTruncatedError(GraphReadError):
@@ -230,10 +230,40 @@ class Schema:
 
 
 @dataclass
-class _ListedTerm:
+class ListedTerm:
+    """One subject of the `Class` and `Property` listings, with the names, kinds and
+    provenances of its entries."""
+
     names: set[str] = field(default_factory=set)
-    kinds: set[_TermKind] = field(default_factory=set)
+    kinds: set[TermKind] = field(default_factory=set)
     provenances: set[str] = field(default_factory=set)
+
+
+def fold_listings(
+    listings: Iterable[tuple[TermKind, Iterable[ArcSubject]]],
+) -> dict[str, ListedTerm]:
+    """Fold `listings`, pairs of a kind and the `<-typeOf` subjects of that kind, into one
+    `ListedTerm` per subject, with every name and provenance its entries carry and every kind
+    that lists it."""
+    listed: dict[str, ListedTerm] = {}
+    for kind, subjects in listings:
+        for subject in subjects:
+            term = listed.setdefault(subject.dcid, ListedTerm())
+            term.names.update(subject.names)
+            term.kinds.add(kind)
+            term.provenances.update(subject.provenances)
+    return listed
+
+
+def schema_term(dcid: str, term: ListedTerm, *, declared_by: DeclaredBy | None) -> SchemaTerm:
+    """`dcid` as a `SchemaTerm` of the terms list, labelled by `dc_graph.display_name`."""
+    return SchemaTerm(
+        ref=dcid,
+        label=display_name(term.names, dcid),
+        types=sorted(term.kinds),
+        provenances=sorted(term.provenances),
+        declared_by=declared_by,
+    )
 
 
 def provenance_origin(provenance: str, catalogue: Catalogue) -> OriginId:
@@ -340,11 +370,9 @@ def build_schema(
     if not any(node.declared_by == "dfo" for node in nodes):
         raise SchemaNoDfoDeclarationError(len(nodes))
     terms = [
-        SchemaTerm(
-            ref=dcid,
-            label=display_name(term.names, dcid),
-            types=sorted(term.kinds),
-            provenances=sorted(term.provenances),
+        schema_term(
+            dcid,
+            term,
             declared_by=(
                 declared_by(term.provenances, catalogue=catalogue) if term.provenances else None
             ),
@@ -447,7 +475,7 @@ class _Reads:
         self._catalogue = catalogue
         self._deadline = deadline
         self._term_pages: dict[str, ArcSubjectPage] = {}
-        self._listed: dict[str, _ListedTerm] | None = None
+        self._listed: dict[str, ListedTerm] | None = None
         self.dfo_terms: set[str] = set()
         self.arcs: dict[str, _Arcs] = {}
         self.others: dict[str, _OtherProperties] = {}
@@ -485,7 +513,7 @@ class _Reads:
         self._phases_lock = threading.Lock()
 
     @property
-    def listed(self) -> dict[str, _ListedTerm]:
+    def listed(self) -> dict[str, ListedTerm]:
         """Every listed term, once both listings have landed."""
         if self._listed is None:
             raise RuntimeError("the term listings have not landed")
@@ -616,13 +644,9 @@ class _Reads:
         self._join_dfo_closure(found)
 
     def _land_terms(self) -> None:
-        listed: dict[str, _ListedTerm] = {}
-        for kind in (_CLASS, _PROPERTY):
-            for subject in self._term_pages[kind].subjects:
-                term = listed.setdefault(subject.dcid, _ListedTerm())
-                term.names.update(subject.names)
-                term.kinds.add(kind)
-                term.provenances.update(subject.provenances)
+        listed = fold_listings(
+            (kind, self._term_pages[kind].subjects) for kind in (_CLASS, _PROPERTY)
+        )
         self._listed = listed
         self.dfo_terms = {
             dcid

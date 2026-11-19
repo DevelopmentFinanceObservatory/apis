@@ -32,8 +32,12 @@ class CapErrorFactory(Protocol):
 
 class GraphReadError(Exception):
     """Read failure from transport, HTTP, JSON or paging protocol. `upstream_status` is the HTTP
-    status for non-2xx responses and `None` when no response arrived.
+    status for non-2xx responses and `None` when no response arrived. `retry_after` is the
+    seconds a non-2xx response's `Retry-After` header names, `None` when it names none or an
+    HTTP date. `GraphClient` sets it after construction, so a subclass keeps its constructor.
     """
+
+    retry_after: float | None = None
 
     def __init__(self, *args: object, upstream_status: int | None = None) -> None:
         super().__init__(*args)
