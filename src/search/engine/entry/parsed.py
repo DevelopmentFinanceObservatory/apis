@@ -506,6 +506,59 @@ async def confirm_part_pins(
     ]
 
 
+@dataclasses.dataclass(frozen=True, slots=True)
+class ConfirmedParts:
+    """Posted parts with their pins confirmed (`confirm_part_pins`) and their inputs read
+    (`interpret_parts`), the steps both parsed-entry doors run once per request ahead of
+    the fan-out. `timing` holds how long each took, as ``confirm_pins`` and
+    ``interpret_parts``, and ``resolve_entities`` once `resolve_entities` has run; every
+    leg's timing starts from it (`fanout` ``base_timing``)."""
+
+    pins: list[dict[str, Resolution]]
+    interpretation: PartsInterpretation
+    timing: dict[str, int]
+
+
+async def confirm_and_interpret(
+    parts: list[ParsedPart],
+    *,
+    graph: EngineGraphClient,
+    resolver: EntityResolver,
+    pointer_prefixes: Sequence[str],
+) -> ConfirmedParts:
+    """`parts` with their pins confirmed and their inputs interpreted, each step timed, a
+    refusal pointing into its part's entry of `pointer_prefixes`."""
+    pins_t0 = now_ms()
+    pins = await confirm_part_pins(
+        parts, graph=graph, resolver=resolver, pointer_prefixes=pointer_prefixes
+    )
+    interpret_t0 = now_ms()
+    interpretation = interpret_parts(parts, pointer_prefixes=pointer_prefixes)
+    timing = {"confirm_pins": interpret_t0 - pins_t0, "interpret_parts": now_ms() - interpret_t0}
+    return ConfirmedParts(pins=pins, interpretation=interpretation, timing=timing)
+
+
+async def resolve_entities(
+    parts: list[ParsedPart],
+    confirmed: ConfirmedParts,
+    *,
+    resolver: EntityResolver,
+    deadline: float,
+) -> list[dict[str, Resolution]]:
+    """`per_part_pre_resolved` over `confirmed`'s pins and entity surfaces, timed in
+    `confirmed.timing` as ``resolve_entities``."""
+    t0 = now_ms()
+    resolved = await per_part_pre_resolved(
+        parts,
+        confirmed.pins,
+        surfaces=confirmed.interpretation.entity_surfaces,
+        resolver=resolver,
+        deadline=deadline,
+    )
+    confirmed.timing["resolve_entities"] = now_ms() - t0
+    return resolved
+
+
 async def per_part_pre_resolved(
     parts: list[ParsedPart],
     pins: list[dict[str, Resolution]],
@@ -623,17 +676,10 @@ async def handle(
     # Confirm pins before fan-out, preserving original indices for refusal pointers.
     check_entity_count(parts, pointer="/input/parts")
     pointer_prefixes = [f"/input/parts/{i}" for i in original_indices]
-    pins_t0 = now_ms()
-    pins = await confirm_part_pins(
+    confirmed = await confirm_and_interpret(
         parts, graph=graph, resolver=resolver, pointer_prefixes=pointer_prefixes
     )
-    interpret_t0 = now_ms()
-    interpretation = interpret_parts(parts, pointer_prefixes=pointer_prefixes)
-    # Both steps run once per request ahead of the fan-out; each region's timing starts from them.
-    pre_fanout_timing = {
-        "confirm_pins": interpret_t0 - pins_t0,
-        "interpret_parts": now_ms() - interpret_t0,
-    }
+    pins, interpretation = confirmed.pins, confirmed.interpretation
     variable_texts = interpretation.variable_texts
     all_dates = [d for dates in interpretation.dates for d in dates]
 
@@ -679,7 +725,7 @@ async def handle(
                 rate_cache=rate_cache,
                 population_memo=population_memo,
                 place_options_pool=place_options_pool,
-                base_timing=pre_fanout_timing,
+                base_timing=confirmed.timing,
                 pre_resolved=pins[0] or None,
                 entity_surfaces=interpretation.entity_surfaces[0] or None,
                 entity_words=interpretation.entity_words[0] or None,
@@ -756,12 +802,8 @@ async def handle(
 
     # Each leg receives its own overrides. Unpinned names share one batch,
     # then each part's pins overlay the shared results.
-    per_variable_pre_resolved = await per_part_pre_resolved(
-        parts,
-        pins,
-        surfaces=interpretation.entity_surfaces,
-        resolver=resolver,
-        deadline=params.deadline,
+    per_variable_pre_resolved = await resolve_entities(
+        parts, confirmed, resolver=resolver, deadline=params.deadline
     )
 
     out = _FanOutResult()
@@ -783,7 +825,7 @@ async def handle(
             rate_cache=rate_cache,
             population_memo=population_memo,
             place_options_pool=place_options_pool,
-            base_timing=pre_fanout_timing,
+            base_timing=confirmed.timing,
             pre_resolved=None,
             deadline=params.deadline,
             degrade_on_error=True,
