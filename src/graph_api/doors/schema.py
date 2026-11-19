@@ -24,9 +24,10 @@ that outlives its deadline stores nothing, and its waiters answer 504 `timeout`.
 with every worker busy refuses the build with `DcpExecutorSaturated`, which the surface answers
 as retryable 503. A read past its deadline answers 504 `timeout`. A listing that reached its
 cap, or a document with no node DFO declares, is a server fault and answers non-retryable 500
-`internal_error`. A DCP 429 answers retryable 503 with `Retry-After: 5`, any other DCP 4xx 502
-`upstream_error`, and any other read failure retryable 503. Under a known generation the entry
-keeps either refusal as `RefusedSchema` for
+`internal_error`. A graph read still answering 429 answers retryable 503 with
+`cause: {"code": "upstream_rate_limited"}` and the response's own `Retry-After`, 5 s where it
+names none, any other DCP 4xx 502 `upstream_error`, and any other read failure retryable 503.
+Under a known generation the entry keeps either refusal as `RefusedSchema` for
 `SCHEMA_REFUSAL_TTL_SECONDS` (60 s), so every request for the key in that time answers the
 same 500 with no build, and the first request after it builds again. Under an unknown
 generation the build raises the refusal unkept and the next request builds again. Any other
@@ -162,10 +163,10 @@ read: the mixer's for its generation, the UN deployment's for `UN_NODE_VIEW_MISS
 Each flight's deadline is `GRAPH_NODE_TIMEOUT_SECONDS` from its start, so a UN read after a
 mixer miss gets a deadline of its own, and a request waits `GRAPH_NODE_TIMEOUT_SECONDS` from its
 start over both. Either passing answers 504 `timeout`. A read the graph answers with HTTP 429
-after the view's own waits answers retryable 503 `service_unavailable` with
-`Retry-After: 5`, on this route as on the others. Any other failed read answers as on the other
-routes. Each view answers `public, max-age=300` with a strong `ETag`, gzip and 304 as the
-document does.
+after the view's own waits answers retryable 503 `service_unavailable`, with
+`cause: {"code": "upstream_rate_limited"}` and `Retry-After` as on the other routes. Any other
+failed read answers as on the other routes. Each view answers `public, max-age=300` with a
+strong `ETag`, gzip and 304 as the document does.
 
 After each build the door logs one line timing the encoding of the document and terms bodies
 and giving their sizes, beside the build's own per-phase line.
@@ -266,7 +267,7 @@ read of the generation took 1.5 s from a laptop and 1.9 s at an instance's start
 
 GRAPH_RATE_LIMITED_RETRY_AFTER_SECONDS = 5
 """The `Retry-After` a request sends when a graph read answered HTTP 429 after the reads' own
-waits."""
+waits and the response named no `Retry-After` in seconds (`GraphReadError.retry_after`)."""
 
 SCHEMA_REFUSAL_TTL_SECONDS = 60.0
 """How long the schema cache keeps a build's refusal (`RefusedSchema`). A listing the upstream
@@ -683,8 +684,22 @@ def classify_schema_exception(exc: BaseException) -> ProblemSpec | None:
     if not isinstance(exc, SchemaReadFailed):
         return None
     error = exc.error
-    if isinstance(error, UnTermsRateLimitedError | UnTermsListingEmptyError):
-        rate_limited = isinstance(error, UnTermsRateLimitedError)
+    if error.upstream_status == _RATE_LIMITED:
+        retry_after = (
+            error.retry_after
+            if error.retry_after is not None
+            else GRAPH_RATE_LIMITED_RETRY_AFTER_SECONDS
+        )
+        return ProblemSpec(
+            status=503,
+            code="service_unavailable",
+            detail="the graph is limiting the rate of reads; retry",
+            retryable=True,
+            cause=Cause(code="upstream_rate_limited"),
+            headers={"Retry-After": str(math.ceil(retry_after))},
+            log=f"Graph schema door's graph read still answered 429: {error}",
+        )
+    if isinstance(error, UnTermsListingEmptyError):
         retry_after = (
             error.retry_after if error.retry_after is not None else SCHEMA_REFUSAL_TTL_SECONDS
         )
@@ -693,7 +708,7 @@ def classify_schema_exception(exc: BaseException) -> ProblemSpec | None:
             code="service_unavailable",
             detail=str(error),
             retryable=True,
-            cause=Cause(code="upstream_rate_limited" if rate_limited else "listing_incomplete"),
+            cause=Cause(code="listing_incomplete"),
             headers={"Retry-After": str(math.ceil(retry_after))},
             log=f"Graph schema door refused a UN terms build: {error}",
         )
@@ -719,15 +734,6 @@ def classify_schema_exception(exc: BaseException) -> ProblemSpec | None:
             code=TIMEOUT_DEFAULT.code,
             detail="the deadline expired during the schema door's graph reads; retry",
             retryable=TIMEOUT_DEFAULT.retryable,
-        )
-    if error.upstream_status == _RATE_LIMITED:
-        return ProblemSpec(
-            status=503,
-            code="service_unavailable",
-            detail="the graph is limiting the rate of reads; retry",
-            retryable=True,
-            headers={"Retry-After": str(GRAPH_RATE_LIMITED_RETRY_AFTER_SECONDS)},
-            log=f"Graph schema door's DCP read still answered 429: {error}",
         )
     return graph_read_problem(error)._replace(
         log=f"Graph schema door's DCP read failed: {error}", log_traceback=True

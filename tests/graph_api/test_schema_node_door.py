@@ -352,18 +352,25 @@ class _Failing(_FakeGraph):
         raise self.error
 
 
+def _rate_limited(retry_after: float | None) -> GraphReadError:
+    error = GraphReadError("rate limited", upstream_status=429)
+    error.retry_after = retry_after
+    return error
+
+
 @pytest.mark.parametrize(
     ("dcid", "error", "status", "code"),
     [
         pytest.param("a" * 513, None, 400, "request_invalid", id="dcid-too-long"),
         pytest.param("Person", GraphDeadlineExceededError("late"), 504, "timeout", id="deadline"),
         pytest.param("Person", DcpExecutorSaturated(), 503, "service_unavailable", id="busy"),
+        pytest.param("Person", _rate_limited(None), 503, "service_unavailable", id="rate-limited"),
         pytest.param(
             "Person",
-            GraphReadError("rate limited", upstream_status=429),
+            _rate_limited(11.2),
             503,
             "service_unavailable",
-            id="rate-limited",
+            id="rate-limited-upstream-retry-after",
         ),
     ],
 )
@@ -383,7 +390,9 @@ def test_a_failed_view_answers_its_refusal_and_is_not_kept(
     assert (response.status_code, response.json()["code"]) == (status, code)
     assert response.headers["Cache-Control"] == "no-store"
     if isinstance(error, GraphReadError) and error.upstream_status == 429:
-        assert response.headers["Retry-After"] == "5"
+        # The graph's own `Retry-After`, rounded up, and 5 s where it named none.
+        assert response.json()["cause"]["code"] == "upstream_rate_limited"
+        assert response.headers["Retry-After"] == ("5" if error.retry_after is None else "12")
     # A failed read is not kept, so the next request reads again. A long dcid reads nothing.
     assert reads == (0 if error is None else 1)
     assert _out_reads(mixer) == 2 * reads
