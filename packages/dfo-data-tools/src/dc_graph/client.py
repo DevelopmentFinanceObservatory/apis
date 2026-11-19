@@ -2106,8 +2106,7 @@ class GraphClient:
         requests. So one property with many subjects pages no further than its cap, whatever
         the other properties hold. A repeated token or more than
         `_NODE_SUBJECTS_MANY_MAX_PAGES` pages in one walk raises the read error. `max_bytes`
-        caps each decoded response, and one absolute `deadline` bounds every page. The walks
-        hold one fold per subject.
+        caps each decoded response, and one absolute `deadline` bounds every page.
         """
         if not dcids:
             return {}
