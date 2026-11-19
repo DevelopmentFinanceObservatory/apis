@@ -2,7 +2,7 @@
 
 `build_origin_usage` makes the `DatasetUsage` body of one outside origin with no graph read, in
 the shape and with the grouping `graph_api.dataset_usage.build_usage` gives the DFO body. It
-reads the unscoped catalogue: a request's source scope changes none of its answers.
+reads the unscoped catalogue, so a request's source scope changes none of its answers.
 
 Admission follows the catalogue's rules:
 
@@ -15,11 +15,11 @@ Admission follows the catalogue's rules:
   excludes.
 
 A variable's StatVar row reads its arcs (`ArcTables.arcs` for base, `UnVariable.arcs` for UN)
-through `origin_catalogue.families.VariableArcs`, as a family key does: a property's first
-literal, else its first node. A `measurementQualifier` whose every target is a
+through `origin_catalogue.families.VariableArcs`, as a family key does. A property reads as its
+first literal, else its first node. A `measurementQualifier` whose every target is a
 `ProvisionalNode` reads as none, and a missing `measuredProperty` as the empty string. A
 `measurementDenominator` with targets but no value, or whose every target is a
-`ProvisionalNode`, is unresolved: the pattern keeps the target it names, null for none, and
+`ProvisionalNode`, is unresolved. The pattern keeps the target it names, null for none, and
 sets `measurement_denominator_unresolved`, so it stays apart from a pattern with no
 denominator. The constraint properties are the `constraintProperties` targets less the
 `import_added` ones. A declared constraint whose value the arcs do not resolve counts in its
@@ -28,7 +28,7 @@ arc tables do not hold has no row.
 
 `label` is the provenance row's name and `description` the `CardFacts.description` of the row's
 source-index entry (`entry_ref`). UN rows carry no card facts, so a UN description is null.
-`facets` is empty for every provenance: the coverage index covers DFO series alone.
+`facets` is empty for every provenance, since the coverage index covers DFO series alone.
 
 `terms` lists every node the patterns and constraint values name, with the display name
 (`dc_graph.display_name`) and the types the variables' arcs to it carry. UN series and the base

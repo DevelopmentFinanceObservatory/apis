@@ -714,7 +714,7 @@ def _freeze_origin_usage(
 async def _frozen_origin_usage(deps: GraphDeps, origin: UsageOrigin) -> FrozenJSON:
     """The usage body of `origin` from `deps.origin_usage`, building it on the cache's executor
     on a miss, with concurrent misses sharing that one build. The cache keys on `origin` under
-    the bound catalogue's build (`CatalogueGeneration`); the build ignores the request's source
+    the bound catalogue's build (`CatalogueGeneration`). The build ignores the request's source
     scope. A request waits until `GRAPH_NODE_TIMEOUT_SECONDS` from its start.
 
     Raises:

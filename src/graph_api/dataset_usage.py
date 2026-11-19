@@ -99,8 +99,8 @@ def group_patterns(
     """The patterns of `rows`, which arrive sorted by dcid, so each pattern's dcids are too.
 
     `unresolved_denominators` holds the dcids of the rows whose `measurementDenominator` arc
-    is unresolved, which keys their patterns apart from those of the rows it leaves out. With
-    it `None`, as for code-index rows, which hold resolved denominators alone, each pattern's
+    is unresolved, which keys their patterns apart from those of the rows it leaves out. When
+    it is `None`, as for code-index rows, which hold resolved denominators alone, each pattern's
     `measurement_denominator_unresolved` is `None` and the body leaves it out."""
     members: dict[_PatternKey, list[str]] = defaultdict(list)
     for row in rows:
