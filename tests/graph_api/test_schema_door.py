@@ -445,6 +445,7 @@ def _live_client(
     monkeypatch.setenv("GRAPH_DCP_BASE_URL", "https://mixer.example.org/core/api")
     monkeypatch.setattr(graph, "close", lambda: None, raising=False)
     monkeypatch.setattr(graph, "un_graph", lambda: un_graph, raising=False)
+    monkeypatch.setattr(graph, "mixer_graph", lambda: graph, raising=False)
     monkeypatch.setattr(app_module, "build_graph_client", lambda **_options: graph)
     monkeypatch.setattr(app_module, "SdmxClient", lambda **_options: None)
     monkeypatch.setattr(

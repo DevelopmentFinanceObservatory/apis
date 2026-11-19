@@ -24,15 +24,18 @@ Routes: `GET /healthz`, `GET /capabilities`, `GET /json-schema`, `POST /resolve`
 `GET /node/{dcid}`, `POST /nodes`, `GET /node/{dcid}/members`, `GET /roots`,
 `GET /documentation/{dcid}`, `GET /sources`, `GET /schema`, `GET /schema/terms`,
 `GET /schema/terms/un_system`, `GET /schema/usage`, `GET /schema/usage/base`,
-`GET /schema/usage/un_system`, and `POST /schema/check`, all under `/api/graph`.
+`GET /schema/usage/un_system`, `GET /schema/node/{dcid}`, and `POST /schema/check`, all under
+`/api/graph`.
 `GET /schema`, `GET /schema/terms` and `POST /schema/check` share one build per graph
 generation and code index, held in a cache the lifespan registers beside the source-document
 and node-envelope caches. `GET /schema/usage` reads each Provenance node's name and
 description in one batch and keeps its body per code index and coverage build in a cache
 registered the same way. `GET /schema/usage/base` and `GET /schema/usage/un_system` read the
 origin catalogue and the bound graph release and keep each body per catalogue build and
-release. A live surface builds the schema
-document in its lifespan, before the instance takes traffic, waiting at most
+release. `GET /schema/node/{dcid}` keeps each node view it reads from the mixer in a cache
+registered the same way, and each it reads from the UN deployment in one keyed by that
+deployment's generation. A live surface builds the schema document in its lifespan, before
+the instance takes traffic, waiting at most
 `SCHEMA_WARM_TIMEOUT_SECONDS` (20 s). An unfinished build logs and the first request joins
 it. A failed build logs, and the first request builds again, unless the build refused under a
 known generation with a truncated term listing or a document with no DFO node: the entry keeps
@@ -83,6 +86,7 @@ from graph_api.deps import (
     DcpReadExecutor,
     GraphDeps,
     GraphDepsNotSet,
+    NodeViews,
     UnTerms,
     new_check_executor,
 )
@@ -92,13 +96,18 @@ from graph_api.doors.members import build_members_door
 from graph_api.doors.node import NODE_MEMBERSHIP_SLOT, build_node_door
 from graph_api.doors.resolve import build_resolve_door
 from graph_api.doors.schema import (
+    NODE_VIEW_FLIGHT_WORKERS,
+    UN_NODE_VIEW_MISS_TTL_SECONDS,
     build_schema_door,
+    new_node_view_cache,
+    new_node_view_miss_cache,
     new_schema_cache,
     warm_schema,
     warm_un_terms,
 )
 from graph_api.doors.sources import build_sources_door, new_provenance_doc_cache
 from graph_api.node_cache import NodeEntryCache
+from graph_api.node_view import READS_AT_ONCE, NodeViewReader
 from graph_api.origin_usage import CatalogueGeneration
 from graph_api.reader import GraphNodeReader
 from graph_api.un_terms import UnTermsReader
@@ -191,6 +200,8 @@ def graph_surface(
     availability: AvailabilityReader | None = None,
     un_graph: UnTermsReader | None = None,
     un_generation: GenerationProvider | None = None,
+    view_graph: NodeViewReader | None = None,
+    un_view_graph: NodeViewReader | None = None,
 ) -> Surface:
     """Build the Graph surface.
 
@@ -205,7 +216,11 @@ def graph_surface(
     resolver leaves the membership policy for its caller to publish. `un_graph` feeds the UN
     terms route for an injected graph. A live surface ignores it and reads the UN deployment's
     own client, and an injected graph without it serves no UN terms. `un_generation` stamps the
-    UN terms cache, `origin_catalogue.graph.UnGeneration` when `None`.
+    UN terms cache, `origin_catalogue.graph.UnGeneration` when `None`, and the UN node view
+    cache. `view_graph` and `un_view_graph` feed the node view route's mixer and UN reads for an
+    injected graph. A live surface ignores them and reads the mixer's and the UN deployment's
+    own clients. An injected graph without `view_graph` answers the route 503, and one without
+    `un_view_graph` reads no node view from the UN deployment.
     """
     catalogue = get_catalogue_service()
     release = get_release_service()
@@ -246,6 +261,9 @@ def graph_surface(
         un_terms_executor: ThreadPoolExecutor | None = None
         un_terms: UnTerms | None = None
         origin_usage_executor: ThreadPoolExecutor | None = None
+        node_view_executor: ThreadPoolExecutor | None = None
+        node_view_reads: ThreadPoolExecutor | None = None
+        node_views_registration: RegistrationHandle | None = None
         profile_executor: ThreadPoolExecutor | None = None
         profile_reads: ThreadPoolExecutor | None = None
         card_reads: CardReadCaches | None = None
@@ -276,6 +294,10 @@ def graph_surface(
                 await asyncio.to_thread(
                     origin_usage_executor.shutdown, wait=True, cancel_futures=True
                 )
+            if node_view_executor is not None:
+                await asyncio.to_thread(node_view_executor.shutdown, wait=True, cancel_futures=True)
+            if node_view_reads is not None:
+                await asyncio.to_thread(node_view_reads.shutdown, wait=True, cancel_futures=True)
             if card_reads is not None:
                 await asyncio.to_thread(card_reads.close)
             if shared_profiles is not None:
@@ -292,6 +314,8 @@ def graph_surface(
                 schema_registration.close()
             if usage_registration is not None:
                 usage_registration.close()
+            if node_views_registration is not None:
+                node_views_registration.close()
             if generation_registration is not None:
                 generation_registration.close()
             if shared_resolver is not None:
@@ -428,6 +452,50 @@ def graph_surface(
             origin_usage = new_schema_cache(
                 entries=2, executor=origin_usage_executor, generation=CatalogueGeneration()
             )
+            mixer_view = live_reader.mixer_graph() if live_reader is not None else view_graph
+            un_view = live_reader.un_graph() if live_reader is not None else un_view_graph
+            node_views: NodeViews | None = None
+            if mixer_view is not None:
+                # A single-flight cache needs a pool no caller runs on. One flight per worker, so
+                # a miss past them is refused at once. Each flight's reads queue on a pool
+                # sized for every flight's first round at once.
+                node_view_executor = DcpReadExecutor(
+                    max_workers=NODE_VIEW_FLIGHT_WORKERS, thread_name_prefix="graph-node-view"
+                )
+                node_view_reads = ThreadPoolExecutor(
+                    max_workers=NODE_VIEW_FLIGHT_WORKERS * READS_AT_ONCE,
+                    thread_name_prefix="graph-node-view-read",
+                )
+                base_views = new_node_view_cache(
+                    executor=node_view_executor, generation=resolved_generation
+                )
+                base_misses = new_node_view_miss_cache(generation=resolved_generation)
+
+                def clear_node_views() -> None:
+                    base_views.clear()
+                    base_misses.clear()
+
+                node_views_registration = resolved_generation.register(
+                    "graph_api.node_views", stats=base_views.stats, clear=clear_node_views
+                )
+                un_view_generation = un_generation if un_generation is not None else UnGeneration()
+                node_views = NodeViews(
+                    mixer=mixer_view,
+                    base=base_views,
+                    base_misses=base_misses,
+                    reads=node_view_reads,
+                    un_reader=un_view,
+                    un=None
+                    if un_view is None
+                    else new_node_view_cache(
+                        executor=node_view_executor, generation=un_view_generation
+                    ),
+                    un_misses=None
+                    if un_view is None
+                    else new_node_view_miss_cache(
+                        generation=un_view_generation, ttl_s=UN_NODE_VIEW_MISS_TTL_SECONDS
+                    ),
+                )
 
             profile_cache: FacetProfileCache | None = None
             if shared_profiles is not None:
@@ -478,6 +546,7 @@ def graph_surface(
             dataset_usage=dataset_usage,
             un_terms=un_terms,
             origin_usage=origin_usage,
+            node_views=node_views,
             coverage=resolved_coverage,
             profile_cache=profile_cache,
             card_reads=card_reads,

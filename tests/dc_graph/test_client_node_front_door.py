@@ -110,6 +110,18 @@ def test_a_refused_arc_read_halves_until_every_node_is_read():
     assert len(server.posted) > 1
 
 
+def test_a_refused_in_arc_walk_halves_until_every_node_is_read():
+    server = _NodeServer(_REFUSED_TOGETHER)
+
+    in_arcs = _client(server).node_in_arcs(_DCIDS, properties=["typeOf"], max_results=10)
+
+    assert {dcid: [s.dcid for s in listing.subjects] for dcid, listing in in_arcs.items()} == {
+        dcid: ["StatisticalVariable"] for dcid in _DCIDS
+    }
+    assert server.posted[0] == _DCIDS
+    assert all(not set(nodes) >= _REFUSED_TOGETHER for nodes in server.posted[1:])
+
+
 def test_a_refusal_naming_one_dcid_fails_the_read():
     server = _NodeServer(frozenset({"undata/sdg/SERIES-EN_ATM_CO2"}))
 

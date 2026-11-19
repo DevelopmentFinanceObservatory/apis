@@ -220,6 +220,9 @@ def test_lifespan_reentry_rebuilds_and_closes_owned_deps(monkeypatch: pytest.Mon
         def close(self) -> None:
             reader_closes.append(None)
 
+        def mixer_graph(self) -> FakeGraphNodeReader:
+            return FakeGraphNodeReader()
+
         def un_graph(self) -> FakeGraphNodeReader:
             return FakeGraphNodeReader()
 
@@ -539,6 +542,9 @@ class TestProfileWiring:
 
             def close(self) -> None:
                 events.append("close_graph_client")
+
+            def mixer_graph(self) -> FakeGraphNodeReader:
+                return FakeGraphNodeReader()
 
             def un_graph(self) -> FakeGraphNodeReader:
                 return FakeGraphNodeReader()

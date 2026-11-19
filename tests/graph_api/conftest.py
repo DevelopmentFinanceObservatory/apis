@@ -20,6 +20,7 @@ from entity_resolution import EntityResolver
 from entity_resolution.shared import SharedResolver
 from graph_api.app import graph_surface
 from graph_api.code_lookup import CodeIndexCodes
+from graph_api.node_view import NodeViewReader
 from graph_api.reader import NodeArcsByDcid
 from graph_api.un_terms import UnTermsReader
 from graph_generation import GenerationProvider
@@ -290,6 +291,8 @@ def make_app(
     availability: AvailabilityReader | None = None,
     un_graph: UnTermsReader | None = None,
     un_generation: GenerationProvider | None = None,
+    view_graph: NodeViewReader | None = None,
+    un_view_graph: NodeViewReader | None = None,
 ) -> FastAPI:
     if graph is None:
         graph = FakeGraphNodeReader()
@@ -304,6 +307,8 @@ def make_app(
                 availability=availability,
                 un_graph=un_graph,
                 un_generation=un_generation,
+                view_graph=view_graph,
+                un_view_graph=un_view_graph,
             )
         ]
     )
@@ -319,6 +324,8 @@ def make_client(
     availability: AvailabilityReader | None = None,
     un_graph: UnTermsReader | None = None,
     un_generation: GenerationProvider | None = None,
+    view_graph: NodeViewReader | None = None,
+    un_view_graph: NodeViewReader | None = None,
 ) -> TestClient:
     return TestClient(
         make_app(
@@ -330,6 +337,8 @@ def make_client(
             availability=availability,
             un_graph=un_graph,
             un_generation=un_generation,
+            view_graph=view_graph,
+            un_view_graph=un_view_graph,
         ),
         raise_server_exceptions=False,
     )
