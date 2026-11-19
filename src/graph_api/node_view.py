@@ -7,7 +7,10 @@ graph answered.
 Every read runs on the executor `build_node_view` is given, under a copy of the caller's
 context, so a reader that needs the bound origin catalogue, as the UN deployment's client does
 for its cache generation, finds it on the worker. Each read carries the view's deadline and
-caps each decoded response at `NODE_VIEW_MAX_BYTES`. A read the graph answers with HTTP 429 is
+caps each decoded response at `NODE_VIEW_MAX_BYTES`, and the pages of the centre's `->*` at
+that cap together. An in-arc walk with a page past the cap marks its listing capped and the
+view builds without it; any other read past the cap fails the view. A read the graph answers
+with HTTP 429 is
 sent again after each of `RATE_LIMIT_WAITS_SECONDS`, one budget for the whole view, while the
 wait ends before the deadline. An in-arc read walks each property in turn, so a 429 sends
 only that property's walk again. A read is sent only when it has a dcid to read, and a view
@@ -24,8 +27,10 @@ neighbour carrying the one arc that ties it to the centre.
 
 A Class lists the classes below it: from its narrower classes down, one `<-subClassOf` read
 per level, each class joining as a neighbour with its `subClassOf` edges to the classes above
-it in the view, so a walk down `sub_class_of` from the centre reaches each. The walk stops at
-`DESCENDANT_CAP` classes or `DESCENDANT_LEVELS` levels. The UN deployment answers
+it in the view, so a walk down `sub_class_of` from the centre reaches each. Each level's read
+stops at the room left under `DESCENDANT_CAP` summed over the level's classes. The walk stops
+at `DESCENDANT_CAP` classes or `DESCENDANT_LEVELS` levels, and then reads at most one subject
+below its last level to tell whether any class lies below it. The UN deployment answers
 `<-subClassOf+` without its own classes, which this walk reads.
 
 A Class whose closure holds `Enumeration` is a value list. Its round two lists its `<-typeOf`
@@ -41,14 +46,16 @@ so a class such as `Place` lists no members.
 A Property reads in round two the `->subClassOf+` closure of each of its first
 `RANGE_CLASS_CAP` range classes other than `Thing`, sorted, one read each, and a range class
 whose closure holds `Enumeration` gets `instances: {refs: [], complete: false}`, so a range
-class the schema document lacks still reads as a value list.
+class the schema document lacks still reads as a value list. A Property with more range
+classes names `(centre, RANGE_CLASS_LISTS)` in `capped`.
 
 A value, a node typed neither Class nor Property, reads in round two the `<-rangeIncludes`
 subjects of its first `VALUE_TYPE_CAP` type classes other than `Thing`, sorted, in one read,
 and the `->subClassOf+` closure of each, one read each. Each `rangeIncludes` subject joins as a
 neighbour. A type class whose closure holds `Enumeration` is the value's list: round three
 reads the direct `subClassOf` edges of every such class and its closure in one batch, and the
-class gets `instances: {refs: [centre], complete: false}`.
+class gets `instances: {refs: [centre], complete: false}`. A value with more type classes
+names `(centre, VALUE_TYPE_LISTS)` in `capped`.
 
 A neighbour's `provenances` are those of the arcs the view read from it: a member's `typeOf`,
 an in-arc subject's arc to the centre or to a type class, a class's `subClassOf` edge below
@@ -56,10 +63,11 @@ the centre, and a chain class's `subClassOf` edges. Its `declared_by` follows fr
 `schema_document.declared_by`, and is null for a neighbour the view read no arc from, such as
 an out-arc target of the centre, since the arc the centre holds to it names the centre's
 declarer. `capped` names each listing the view cut by the node listed and the property: an
-in-arc listing at its cap (the centre's schema arcs and members, and a value's type classes
-under `rangeIncludes`), a property of the centre's `other_properties` that
-`schema_document.node_other_properties` cut, and `subClassOf+` on a Class whose walk below
-stopped with classes it had not read below.
+in-arc listing at its cap or past the byte cap (the centre's schema arcs and members, and a
+value's type classes under `rangeIncludes`), a property of the centre's `other_properties`
+that `schema_document.node_other_properties` cut, `subClassOf+` on a Class whose walk below
+stopped with a class below it unread, and `RANGE_CLASS_LISTS` or `VALUE_TYPE_LISTS` on a
+centre with range or type classes past their caps.
 """
 
 from __future__ import annotations
@@ -75,6 +83,7 @@ from typing import Final, Protocol
 from dc_graph import (
     UNRESOLVED_NODE,
     ArcTarget,
+    GraphCapExceededError,
     GraphReadError,
     InArcs,
     InArcSubject,
@@ -114,8 +123,16 @@ included."""
 
 DESCENDANT_LEVELS: Final[int] = 12
 """The most levels below a Class centre its view lists, its direct narrower classes the first,
-so a class view makes at most `DESCENDANT_LEVELS - 1` reads beyond its first round. The deepest
-chain below `Thing` on the dev mixer has 11."""
+so a class view makes at most `DESCENDANT_LEVELS` reads beyond its first round, the last
+reading one subject. The deepest chain below `Thing` on the dev mixer has 11."""
+
+RANGE_CLASS_LISTS: Final[str] = "rangeIncludes/subClassOf+"
+"""The `capped` property naming a Property centre whose range classes past the
+`RANGE_CLASS_CAP`th were not read for a value list."""
+
+VALUE_TYPE_LISTS: Final[str] = "typeOf/rangeIncludes"
+"""The `capped` property naming a value centre whose type classes past the `VALUE_TYPE_CAP`th
+were not read for their `rangeIncludes` subjects or a value list."""
 
 READS_AT_ONCE: Final[int] = 3
 """The reads a view's first round runs at once, the most any later round runs but a value's
@@ -191,11 +208,13 @@ class NodeViewReader(Protocol):
         *,
         properties: Sequence[str],
         max_results: int,
+        max_total: int | None = None,
         max_bytes: int | None = None,
         deadline: float | None = None,
     ) -> Mapping[str, InArcs]:
         """The subjects of each node's in-arcs under `properties`, each with its name and
-        types, capped at `max_results` per node and property."""
+        types, capped at `max_results` per node and property and at `max_total` per property
+        over every node."""
         ...
 
     def node_closure(
@@ -246,23 +265,36 @@ class _Reads:
         )
 
     def in_arcs(
-        self, dcids: Sequence[str], *, properties: Sequence[str], cap: int
+        self,
+        dcids: Sequence[str],
+        *,
+        properties: Sequence[str],
+        cap: int,
+        total: int | None = None,
     ) -> Future[Mapping[str, InArcs]]:
         """The in-arcs of `dcids` under `properties`, one walk per property in turn, so a
-        429 sends only that property's walk again."""
+        429 sends only that property's walk again. Each node's listing stops at `cap`
+        subjects and each property's at `total` over every node. A walk with a page past
+        `NODE_VIEW_MAX_BYTES` answers no subject and marks its property capped for every
+        node."""
         if not dcids:
             return _done({})
 
         def walk(prop: str) -> Mapping[str, InArcs]:
-            return self._paced(
-                lambda: self._reader.node_in_arcs(
-                    dcids,
-                    properties=(prop,),
-                    max_results=cap,
-                    max_bytes=NODE_VIEW_MAX_BYTES,
-                    deadline=self._deadline,
+            try:
+                return self._paced(
+                    lambda: self._reader.node_in_arcs(
+                        dcids,
+                        properties=(prop,),
+                        max_results=cap,
+                        max_total=total,
+                        max_bytes=NODE_VIEW_MAX_BYTES,
+                        deadline=self._deadline,
+                    )
                 )
-            )
+            except GraphCapExceededError as exc:
+                logger.info("node view: the %s in-arc walk passed its byte cap: %s", prop, exc)
+                return {dcid: InArcs(subjects=(), capped=frozenset({prop})) for dcid in dcids}
 
         def read() -> Mapping[str, InArcs]:
             walks = [walk(prop) for prop in properties]
@@ -495,15 +527,17 @@ def _build(
             capped=capped,
         )
     elif _PROPERTY in types:
-        _read_range_lists(
-            sorted(set(arcs[_RANGE_INCLUDES]) - {_THING})[:RANGE_CLASS_CAP],
-            reads=reads,
-            neighbours=neighbours,
-        )
+        range_classes = sorted(set(arcs[_RANGE_INCLUDES]) - {_THING})
+        if len(range_classes) > RANGE_CLASS_CAP:
+            capped.add((dcid, RANGE_CLASS_LISTS))
+        _read_range_lists(range_classes[:RANGE_CLASS_CAP], reads=reads, neighbours=neighbours)
     elif _CLASS not in types:
+        type_classes = sorted(types - {_THING})
+        if len(type_classes) > VALUE_TYPE_CAP:
+            capped.add((dcid, VALUE_TYPE_LISTS))
         _read_value(
             dcid,
-            type_classes=sorted(types - {_THING})[:VALUE_TYPE_CAP],
+            type_classes=type_classes[:VALUE_TYPE_CAP],
             reads=reads,
             neighbours=neighbours,
             capped=capped,
@@ -532,19 +566,22 @@ def _read_descendants(
 ) -> set[str]:
     """The classes below Class `dcid`, from its narrower `children` down, one `<-subClassOf`
     read per level, each joining as a neighbour with its `subClassOf` edges to the classes
-    above it in the view. Returns them. A walk that stops at `DESCENDANT_CAP` classes or
-    `DESCENDANT_LEVELS` levels with classes whose narrower classes it has not read, or after a
-    capped listing, names `(dcid, "subClassOf+")` in `capped`."""
+    above it in the view. Returns them. A level's read stops at the room left under
+    `DESCENDANT_CAP` summed over the level's classes. Once the walk holds `DESCENDANT_CAP`
+    classes or `DESCENDANT_LEVELS` levels, one more read of at most one subject over the last
+    level tells whether any class lies below it. A walk that stops with a class below it unread,
+    or after a capped listing, names `(dcid, "subClassOf+")` in `capped`."""
     seen = {dcid, *children}
     frontier = sorted(set(children))
     levels = 1
     cut = children_capped
     while frontier and not cut:
         room = DESCENDANT_CAP - (len(seen) - 1)
-        if levels >= DESCENDANT_LEVELS or room <= 0:
-            cut = True
-            break
-        answer = reads.in_arcs(frontier, properties=(_SUB_CLASS_OF,), cap=room).result()
+        last = levels >= DESCENDANT_LEVELS or room <= 0
+        limit = 1 if last else room
+        answer = reads.in_arcs(
+            frontier, properties=(_SUB_CLASS_OF,), cap=limit, total=limit
+        ).result()
         found: dict[str, list[tuple[str, InArcSubject]]] = {}
         for parent in frontier:
             listing = answer.get(parent, _NO_IN_ARCS)
@@ -553,7 +590,10 @@ def _read_descendants(
                 if subject.property == _SUB_CLASS_OF:
                     found.setdefault(subject.dcid, []).append((parent, subject))
         new = sorted(ref for ref in found if ref not in seen)
-        if len(new) > room:
+        if last:
+            cut = cut or bool(new)
+            new = []
+        elif len(new) > room:
             cut = True
             new = new[:room]
         seen.update(new)

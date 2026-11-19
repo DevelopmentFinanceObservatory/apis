@@ -10,11 +10,18 @@ from collections.abc import Sequence
 import httpx
 import pytest
 
-from dc_graph import ArcTarget, GraphCapExceededError, GraphClient, GraphReadError
+from dc_graph import (
+    ArcTarget,
+    GraphCapExceededError,
+    GraphClient,
+    GraphNotAdvancingError,
+    GraphReadError,
+)
 from graph_api import app as graph_app
 from graph_api import node_view
 from graph_api.deps import DcpExecutorSaturated
 from graph_api.doors import schema as schema_door
+from graph_generation import FakeGeneration
 from materialise.graph import GraphDeadlineExceededError
 from origin_catalogue.graph import UnGeneration
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue
@@ -37,6 +44,13 @@ _UN_ARCS = (
     ("Enumeration", "subClassOf", "Intangible"),
     ("unCode", "typeOf", "Property"),
 )
+
+
+def _not_advancing() -> GraphReadError:
+    """The read error a paged read raises from `GraphNotAdvancingError`."""
+    error = GraphReadError("graph /v2/node repeated the continuation token")
+    error.__cause__ = GraphNotAdvancingError("repeated", dcid="NoSuchNode", property="->*")
+    return error
 
 
 def _out_reads(graph: _FakeGraph) -> int:
@@ -155,6 +169,12 @@ def test_a_node_the_mixer_lacks_is_read_from_the_un_deployment(serve_catalogue):
             (1, 0),
             id="too-large",
         ),
+        pytest.param(
+            _not_advancing(),
+            (500, "internal_error", False, "graph_not_advancing", "no-store"),
+            (1, 0),
+            id="not-advancing",
+        ),
     ],
 )
 def test_a_refusal_is_kept_apart_from_the_views(
@@ -175,6 +195,38 @@ def test_a_refusal_is_kept_apart_from_the_views(
 
     assert _refusal(response) == _refusal(again) == refusal
     assert (_out_reads(mixer), _out_reads(un)) == reads
+
+
+def test_the_un_deployment_keeps_a_refusal_for_its_miss_ttl(serve_catalogue, monkeypatch):
+    serve_catalogue(FakeCatalogue())
+    un = _FakeGraph(_UN_ARCS)
+    now = [0.0]
+
+    with make_client(view_graph=_FakeGraph(_MIXER_ARCS), un_view_graph=un) as client:
+        misses = client.app.state.graph_deps.node_views.un_misses
+        monkeypatch.setattr(misses, "_clock", lambda: now[0])
+        statuses = []
+        for at in (0.0, 299.0, 301.0):
+            now[0] = at
+            statuses.append(client.get(_ROUTE + "undata/NoSuchNode").status_code)
+
+    assert statuses == [404, 404, 404]
+    # Kept at 299 s, read again at 301 s.
+    assert _out_reads(un) == 2
+
+
+def test_a_generation_change_clears_the_mixer_refusals(serve_catalogue, monkeypatch):
+    generation = FakeGeneration(token="rev-1")
+    monkeypatch.setattr(graph_app, "acquire_shared_generation", lambda **_kwargs: generation)
+    monkeypatch.setattr(graph_app, "release_shared_generation", lambda _generation: None)
+    serve_catalogue(FakeCatalogue())
+
+    with make_client(view_graph=_FakeGraph(_MIXER_ARCS), un_view_graph=None) as client:
+        assert client.get(_ROUTE + "NoSuchNode").status_code == 404
+        misses = client.app.state.graph_deps.node_views.base_misses
+        assert misses.stats()["entries"] == 1
+        generation.advance("rev-2")
+        assert misses.stats()["entries"] == 0
 
 
 def test_made_up_dcids_evict_no_view(serve_catalogue, monkeypatch):
@@ -318,7 +370,7 @@ class _Failing(_FakeGraph):
 def test_a_failed_view_answers_its_refusal_and_is_not_kept(
     serve_catalogue, monkeypatch, dcid: str, error: Exception | None, status: int, code: str
 ):
-    # A 429 is sent again after no wait, so each request reads once.
+    # With no waits a 429 is not sent again, so each request reads once.
     monkeypatch.setattr(node_view, "RATE_LIMIT_WAITS_SECONDS", ())
     serve_catalogue(FakeCatalogue())
     mixer = _FakeGraph(_MIXER_ARCS) if error is None else _Failing(error)

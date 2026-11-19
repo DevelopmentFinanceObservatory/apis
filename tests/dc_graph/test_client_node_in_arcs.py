@@ -99,6 +99,52 @@ def test_node_in_arcs_stops_each_property_at_its_cap(monkeypatch) -> None:
     assert [payload["property"] for payload in sent] == ["<-[subClassOf]", "<-[rangeIncludes]"]
 
 
+@pytest.mark.parametrize(
+    ("max_total", "subjects", "capped", "pages"),
+    [
+        pytest.param(3, {"A": ["a1", "a2"], "B": ["b1"]}, {"A", "B"}, 1, id="stops-at-the-total"),
+        pytest.param(4, {"A": ["a1", "a2", "a3"], "B": ["b1"]}, {"B"}, 2, id="cuts-mid-page"),
+        pytest.param(
+            6, {"A": ["a1", "a2", "a3"], "B": ["b1", "b2", "b3"]}, set(), 2, id="under-the-total"
+        ),
+    ],
+)
+def test_node_in_arcs_caps_a_walk_at_its_total_over_every_node(
+    monkeypatch,
+    max_total: int,
+    subjects: dict[str, list[str]],
+    capped: set[str],
+    pages: int,
+) -> None:
+    """A walk holding `max_total` subjects summed over its nodes sends no further page, and
+    marks each node whose listing may be unfinished capped."""
+    sent: list[dict] = []
+    first = {
+        "data": {
+            "A": {"arcs": {"subClassOf": {"nodes": [_entry("a1"), _entry("a2")]}}},
+            "B": {"arcs": {"subClassOf": {"nodes": [_entry("b1")]}}},
+        },
+        "nextToken": "tok1",
+    }
+    second = {
+        "data": {
+            "A": {"arcs": {"subClassOf": {"nodes": [_entry("a3")]}}},
+            "B": {"arcs": {"subClassOf": {"nodes": [_entry("b2"), _entry("b3")]}}},
+        }
+    }
+    client = _client(monkeypatch, [first, second], sent)
+
+    result = client.node_in_arcs(
+        ["A", "B"], properties=["subClassOf"], max_results=10, max_total=max_total
+    )
+
+    assert {dcid: [s.dcid for s in listing.subjects] for dcid, listing in result.items()} == (
+        subjects
+    )
+    assert {dcid for dcid, listing in result.items() if listing.capped} == capped
+    assert len(sent) == pages
+
+
 def test_node_in_arcs_repeated_token_raises_read_error(monkeypatch) -> None:
     page = {**_arcs("A"), "nextToken": "tok1"}
     client = _client(monkeypatch, [page, page], [])

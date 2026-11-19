@@ -115,7 +115,9 @@ def test_a_refused_in_arc_walk_halves_until_every_node_is_read():
 
     in_arcs = _client(server).node_in_arcs(_DCIDS, properties=["typeOf"], max_results=10)
 
-    assert sorted(in_arcs) == sorted(_DCIDS)
+    assert {dcid: [s.dcid for s in listing.subjects] for dcid, listing in in_arcs.items()} == {
+        dcid: ["StatisticalVariable"] for dcid in _DCIDS
+    }
     assert server.posted[0] == _DCIDS
     assert all(not set(nodes) >= _REFUSED_TOGETHER for nodes in server.posted[1:])
 

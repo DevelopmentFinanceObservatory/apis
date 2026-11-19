@@ -125,7 +125,7 @@ curl -fsS "$DFO_API/api/v1/graph/schema/node/age" \
   | jq '{centre: .centre.range_includes, nodes: [.nodes[].ref]}'
 ```
 
-A UN id on a deployment that does not serve the UN origin answers `404` with `cause.code` `origin_not_served`, a node no deployment holds `404` with `cause.code` `node_not_held`, and a node whose graph answer passes 2 MiB, such as `country/USA`, `500` with `cause.code` `node_view_too_large`. All three stay the same on retry.
+A UN id on a deployment that does not serve the UN origin answers `404` with `cause.code` `origin_not_served`, a node no deployment holds `404` with `cause.code` `node_not_held`, a node whose graph answer passes 2 MiB, such as `country/USA`, `500` with `cause.code` `node_view_too_large`, and a node whose paged graph answer does not advance `500` with `cause.code` `graph_not_advancing`. All four stay the same on retry.
 
 ## See how a dataset uses the model
 

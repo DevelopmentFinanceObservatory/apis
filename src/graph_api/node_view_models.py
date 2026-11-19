@@ -18,14 +18,20 @@ from graph_api.schema_models import SchemaNode
 
 
 class CappedListing(ResponseModel):
-    """One listing a view cut: an in-arc listing at its cap of 1,000 subjects, a property of the
-    centre past 100 values or with a literal past 2,000 characters, or the classes below a Class
-    centre (`subClassOf+`) at 1,000 classes or 12 levels."""
+    """One listing a view cut: an in-arc listing at its cap of 1,000 subjects or past the 2 MiB
+    byte cap, a property of the centre past 100 values or with a literal past 2,000 characters,
+    the classes below a Class centre (`subClassOf+`) at 1,000 classes or 12 levels with a class
+    below them unread, a Property centre's range classes past the third
+    (`rangeIncludes/subClassOf+`), or a value centre's type classes past the third
+    (`typeOf/rangeIncludes`)."""
 
     ref: str = Field(description="the node whose listing was cut")
     property: str = Field(
         description="the property listed: an in-arc's subjects point through it, the centre's "
-        "own values sit under it, or subClassOf+ for the classes below the centre"
+        "own values sit under it, subClassOf+ for the classes below the centre, "
+        "rangeIncludes/subClassOf+ for a property's range classes read for a value list, or "
+        "typeOf/rangeIncludes for a value's type classes read for their rangeIncludes subjects "
+        "and value list"
     )
 
 
@@ -47,9 +53,11 @@ class SchemaNodeView(ResponseModel):
     )
     capped: list[CappedListing] = Field(
         description="the listings the view cut, sorted by ref and property: an in-arc listing "
-        "at 1,000 subjects (the centre's typeOf for a value list's members, any schema arc of "
-        "the centre, and a value's type class under rangeIncludes), a property of the "
-        "centre's other_properties past 100 values or with a literal past 2,000 characters, "
-        "and subClassOf+ on a Class centre whose classes below it stopped at 1,000 or at 12 "
-        "levels"
+        "at 1,000 subjects or past 2 MiB (the centre's typeOf for a value list's members, any "
+        "schema arc of the centre, and a value's type class under rangeIncludes), a property "
+        "of the centre's other_properties past 100 values or with a literal past 2,000 "
+        "characters, subClassOf+ on a Class centre whose classes below it stopped at 1,000 or "
+        "at 12 levels with a class below them unread, rangeIncludes/subClassOf+ on a Property "
+        "centre with more than three range classes, and typeOf/rangeIncludes on a value "
+        "centre with more than three type classes"
     )

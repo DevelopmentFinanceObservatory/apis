@@ -9,7 +9,14 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from dc_graph import ArcTarget, GraphClient, GraphReadError, InArcs, InArcSubject
+from dc_graph import (
+    ArcTarget,
+    GraphCapExceededError,
+    GraphClient,
+    GraphReadError,
+    InArcs,
+    InArcSubject,
+)
 from graph_api import node_view, schema_document
 from graph_api.node_view import NodeNotHeldError, NodeViewReader, build_node_view
 from graph_api.node_view_models import CappedListing, SchemaNodeView
@@ -87,6 +94,7 @@ class _FakeGraph:
         self.empty_in_batches = empty_in_batches
         self.calls: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = []
         self.max_bytes: set[int | None] = set()
+        self.in_arc_answers: list[tuple[tuple[str, ...], str, int]] = []
 
     def _types(self, dcid: str) -> tuple[str, ...]:
         return tuple(sorted(o for s, p, o in self.arcs if s == dcid and p == "typeOf"))
@@ -148,23 +156,28 @@ class _FakeGraph:
         *,
         properties: Sequence[str],
         max_results: int,
+        max_total: int | None = None,
         max_bytes: int | None = None,
         deadline: float | None = None,
     ) -> Mapping[str, InArcs]:
-        # One walk per property in turn, as `GraphClient.node_in_arcs` reads them.
+        # One walk per property in turn, as `GraphClient.node_in_arcs` reads them, each holding
+        # at most `max_total` subjects over every dcid. `in_arc_answers` records how many each
+        # walk answered.
         for prop in properties:
             self.calls.append(("<-", tuple(dcids), (prop,)))
-            self._walked(prop)
+            self._walked(prop, dcids)
         self.max_bytes.add(max_bytes)
-        answers: dict[str, InArcs] = {}
-        for dcid in dcids:
-            subjects: list[InArcSubject] = []
-            capped: set[str] = set()
-            for prop in properties:
+        subjects: dict[str, list[InArcSubject]] = {dcid: [] for dcid in dcids}
+        capped: dict[str, set[str]] = {dcid: set() for dcid in dcids}
+        for prop in properties:
+            room = len(self.arcs) if max_total is None else max_total
+            for dcid in dcids:
                 found = sorted({s for s, p, o in self.arcs if p == prop and o == dcid})
-                if len(found) > max_results:
-                    capped.add(prop)
-                subjects.extend(
+                kept = found[: min(max_results, room)]
+                room -= len(kept)
+                if len(found) > len(kept):
+                    capped[dcid].add(prop)
+                subjects[dcid].extend(
                     InArcSubject(
                         dcid=s,
                         property=prop,
@@ -172,12 +185,21 @@ class _FakeGraph:
                         types=self._types(s),
                         provenances=(_PROVENANCES.get(s, _BASE),),
                     )
-                    for s in found[:max_results]
+                    for s in kept
                 )
-            answers[dcid] = InArcs(subjects=tuple(subjects), capped=frozenset(capped))
-        return answers
+            self.in_arc_answers.append(
+                (
+                    tuple(dcids),
+                    prop,
+                    sum(1 for d in dcids for x in subjects[d] if x.property == prop),
+                )
+            )
+        return {
+            dcid: InArcs(subjects=tuple(subjects[dcid]), capped=frozenset(capped[dcid]))
+            for dcid in dcids
+        }
 
-    def _walked(self, prop: str) -> None:
+    def _walked(self, prop: str, dcids: Sequence[str]) -> None:
         """Called after each in-arc walk is sent."""
 
     def node_closure(
@@ -424,6 +446,20 @@ _GRADUATES = (
             ("undata/eclac/SI_POV", "unConcept"),
             id="centre-other-property",
         ),
+        pytest.param(
+            "gender",
+            (),
+            (node_view, "RANGE_CLASS_CAP", 0),
+            ("gender", "rangeIncludes/subClassOf+"),
+            id="property-range-classes",
+        ),
+        pytest.param(
+            "Female",
+            (),
+            (node_view, "VALUE_TYPE_CAP", 0),
+            ("Female", "typeOf/rangeIncludes"),
+            id="value-type-classes",
+        ),
     ],
 )
 def test_a_listing_past_its_cap_is_named_capped(
@@ -443,6 +479,97 @@ def test_a_listing_past_its_cap_is_named_capped(
     assert CappedListing(ref=capped[0], property=capped[1]) in view.capped
     if centre == "GenderType":
         assert view.centre.instances == SchemaInstances(refs=["Female", "Male"], complete=False)
+
+
+@pytest.mark.parametrize(
+    "cap",
+    [
+        pytest.param(("DESCENDANT_CAP", 3), id="count"),
+        pytest.param(("DESCENDANT_LEVELS", 3), id="levels"),
+    ],
+)
+def test_a_walk_ending_at_its_limit_with_nothing_below_names_nothing_capped(
+    executor: ThreadPoolExecutor, monkeypatch: pytest.MonkeyPatch, cap: tuple[str, int]
+) -> None:
+    """Student, Graduate and Doctoral fill the limit exactly, and Doctoral has no narrower
+    class, so the view below Person is complete."""
+    monkeypatch.setattr(node_view, *cap)
+    view = _view("Person", _FakeGraph((*_ARCS, *_GRADUATES)), executor)
+
+    assert _nodes(view)["Doctoral"].sub_class_of == ["Graduate"]
+    assert view.capped == []
+
+
+def test_a_level_below_a_class_reads_no_more_than_the_room_left(
+    executor: ThreadPoolExecutor, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two narrower classes with three classes each below them, and room for two more classes:
+    the level's read answers two subjects over both parents."""
+    monkeypatch.setattr(node_view, "DESCENDANT_CAP", 4)
+    below = tuple(
+        arc
+        for parent in ("Student", "Teacher")
+        for child in (f"{parent}{i}" for i in range(3))
+        for arc in ((child, "typeOf", "Class"), (child, "subClassOf", parent))
+    )
+    graph = _FakeGraph(
+        (*_ARCS, ("Teacher", "typeOf", "Class"), ("Teacher", "subClassOf", "Person"), *below)
+    )
+    view = _view("Person", graph, executor)
+
+    assert [n for dcids, prop, n in graph.in_arc_answers if dcids == ("Student", "Teacher")] == [2]
+    assert len([ref for ref in _nodes(view) if ref.startswith(("Student", "Teacher"))]) == 4
+    assert CappedListing(ref="Person", property="subClassOf+") in view.capped
+
+
+class _TooLargeWalk(_FakeGraph):
+    """`_FakeGraph` whose in-arc walk of `dcids` under `prop` answers past its byte cap."""
+
+    def __init__(self, dcids: tuple[str, ...], prop: str) -> None:
+        super().__init__()
+        self.failing = (dcids, prop)
+
+    def _walked(self, prop: str, dcids: Sequence[str]) -> None:
+        if (tuple(dcids), prop) == self.failing:
+            raise GraphCapExceededError("too large", cap_kind="bytes", cap=1, observed=2)
+
+
+@pytest.mark.parametrize(
+    ("centre", "walk", "capped", "unlisted"),
+    [
+        pytest.param(
+            "Person", ("Person", "domainIncludes"), ("Person", "domainIncludes"), "age", id="in-arc"
+        ),
+        pytest.param(
+            "GenderType", ("GenderType", "typeOf"), ("GenderType", "typeOf"), "Female", id="members"
+        ),
+        pytest.param(
+            "Person", ("Student", "subClassOf"), ("Person", "subClassOf+"), None, id="descendants"
+        ),
+        pytest.param(
+            "Female",
+            ("GenderType", "rangeIncludes"),
+            ("GenderType", "rangeIncludes"),
+            "gender",
+            id="value-range",
+        ),
+    ],
+)
+def test_a_listing_past_the_byte_cap_is_named_capped_and_the_view_builds(
+    executor: ThreadPoolExecutor,
+    centre: str,
+    walk: tuple[str, str],
+    capped: tuple[str, str],
+    unlisted: str | None,
+) -> None:
+    view = _view(centre, _TooLargeWalk((walk[0],), walk[1]), executor)
+
+    assert view.centre.ref == centre
+    assert CappedListing(ref=capped[0], property=capped[1]) in view.capped
+    if unlisted is not None:
+        assert unlisted not in _nodes(view)
+    if centre == "GenderType":
+        assert view.centre.instances == SchemaInstances(refs=[], complete=False)
 
 
 def test_a_class_lists_every_class_below_it_with_its_edges(executor: ThreadPoolExecutor) -> None:
@@ -540,7 +667,7 @@ class _RateLimitedWalk(_FakeGraph):
         super().__init__()
         self.failed = False
 
-    def _walked(self, prop: str) -> None:
+    def _walked(self, prop: str, dcids: Sequence[str]) -> None:
         if prop == "rangeIncludes" and not self.failed:
             self.failed = True
             raise GraphReadError("rate limited", upstream_status=429)

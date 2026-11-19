@@ -143,9 +143,11 @@ with no UN reader, it answers 404 `not_found`, not retryable, with
 `cause: {"code": "origin_not_served"}`, and reads nothing. Any other id is read from the mixer's
 own client, and a node the mixer does not hold, such as `unCode`, is read from the UN deployment
 when the UN origin is served. A node neither read holds answers 404 `not_found`, not retryable,
-with `cause: {"code": "node_not_held"}`. A read past the view's byte cap answers 500
-`internal_error`, not retryable, with `cause: {"code": "node_view_too_large"}`, and the UN
-deployment is not read for it. All refusals go out `no-store`. The route binds no code registry
+with `cause: {"code": "node_not_held"}`. The centre's `->*`, a closure or a chain edge read
+past the view's byte cap answers 500 `internal_error`, not retryable, with
+`cause: {"code": "node_view_too_large"}`, and a paged read that repeats its continuation token
+or still continues at its page cap the same with `cause: {"code": "graph_not_advancing"}`; the
+UN deployment is not read for either. All refusals go out `no-store`. The route binds no code registry
 endpoint, so it refuses with platform codes and names its reason in `cause.code`, where
 `GET /api/graph/node/{dcid}` answers the Graph code `node_not_held` at the top level.
 
@@ -191,7 +193,7 @@ from fastapi import APIRouter, Request, Response
 
 from code_index import CodeIndex
 from code_index.shared import get_index
-from dc_graph import GraphCapExceededError
+from dc_graph import GraphCapExceededError, GraphNotAdvancingError
 from dfo_platform import ProblemSpec
 from dfo_platform.doors import DoorContribution
 from dfo_platform.problem import Cause
@@ -376,10 +378,11 @@ NODE_VIEW_CACHE_SIZE = 2_000
 
 NODE_VIEW_CACHE_BYTES = 64 * 1024 * 1024
 """The most bytes of encoded bodies each node view cache keeps, identity and gzip together, the
-least recently used leaving first. A view at every cap, with 6,002 neighbours, weighs 2.49 MB
-(2.44 MB identity), so a cache holds at least 25 such views, and the two caches together hold at
-most 128 MiB of the 1.6 GiB the dev apis service leaves beside two origin catalogue builds
-(deploy/origin-catalogue.md)."""
+least recently used leaving first, and a body past it is served and not kept. A view with 6,002
+neighbours weighs 2.49 MB (2.44 MB identity). A view has no fixed upper weight, since the
+centre's `other_properties` keep up to 100 node targets for each of any number of properties,
+so the bound is this budget: the two caches together hold at most 128 MiB of the 1.6 GiB the
+dev apis service leaves beside two origin catalogue builds (deploy/origin-catalogue.md)."""
 
 NODE_VIEW_MISS_CACHE_SIZE = 1_000
 """The most refused dcids each node view miss cache keeps, apart from the views, so made-up dcids
@@ -396,10 +399,14 @@ refused."""
 
 class NodeViewMiss(Enum):
     """A view's refusal, kept in a miss cache apart from the views. `NOT_HELD`: the deployment
-    answered the dcid with no arc. `TOO_LARGE`: a read answered past `NODE_VIEW_MAX_BYTES`."""
+    answered the dcid with no arc. `TOO_LARGE`: the centre's `->*` answered past
+    `NODE_VIEW_MAX_BYTES`, or a closure or chain edge read did. `NOT_ADVANCING`: a paged read
+    repeated its continuation token or still continued at its page cap
+    (`dc_graph.GraphNotAdvancingError`), which a retry pages the same way."""
 
     NOT_HELD = "not_held"
     TOO_LARGE = "too_large"
+    NOT_ADVANCING = "not_advancing"
 
 
 type NodeViewEntry = FrozenJSON | NodeViewMiss
@@ -410,6 +417,15 @@ class NodeViewTooLarge(Exception):
 
     def __init__(self, dcid: str) -> None:
         super().__init__(f"a graph read for the view of {dcid!r} passed its byte cap")
+        self.dcid = dcid
+
+
+class NodeViewNotAdvancing(Exception):
+    """A paged read of the view of `dcid` repeated its continuation token or still continued
+    at its page cap, so the node has no view."""
+
+    def __init__(self, dcid: str) -> None:
+        super().__init__(f"a paged graph read for the view of {dcid!r} did not advance")
         self.dcid = dcid
 
 
@@ -638,6 +654,15 @@ def classify_schema_exception(exc: BaseException) -> ProblemSpec | None:
             retryable=False,
             cause=Cause(code="node_view_too_large"),
             log=f"Graph schema door refused a node view past its byte cap: {exc}",
+        )
+    if isinstance(exc, NodeViewNotAdvancing):
+        return ProblemSpec(
+            status=500,
+            code=SERVER_ERROR_FALLBACK_CODE,
+            detail=str(exc),
+            retryable=False,
+            cause=Cause(code="graph_not_advancing"),
+            log=f"Graph schema door refused a node view whose paged read did not advance: {exc}",
         )
     if isinstance(exc, NodeViewTimedOut):
         return ProblemSpec(
@@ -965,7 +990,20 @@ def _un_side(views: NodeViews, catalogue: Catalogue) -> _ViewSide | None:
 def _refuse(miss: NodeViewMiss, dcid: str) -> Exception:
     if miss is NodeViewMiss.TOO_LARGE:
         return NodeViewTooLarge(dcid)
+    if miss is NodeViewMiss.NOT_ADVANCING:
+        return NodeViewNotAdvancing(dcid)
     return NodeNotHeldError(dcid)
+
+
+def _not_advancing(exc: BaseException) -> bool:
+    """Whether `exc` or an exception in its `__cause__` chain is a
+    `dc_graph.GraphNotAdvancingError`."""
+    cause: BaseException | None = exc
+    while cause is not None:
+        if isinstance(cause, GraphNotAdvancingError):
+            return True
+        cause = cause.__cause__
+    return False
 
 
 async def _node_view_from(
@@ -984,6 +1022,7 @@ async def _node_view_from(
     Raises:
         NodeNotHeldError: `side.reader` holds no such node.
         NodeViewTooLarge: a read answered past the view's byte cap.
+        NodeViewNotAdvancing: a paged read did not advance.
         NodeViewTimedOut: the wait or the flight passed its deadline.
         SchemaReadFailed: a read failed.
         DcpExecutorSaturated: every flight worker is busy.
@@ -1006,6 +1045,11 @@ async def _node_view_from(
             return {key: NodeViewMiss.NOT_HELD}
         except GraphCapExceededError:
             return {key: NodeViewMiss.TOO_LARGE}
+        except GraphReadError as exc:
+            if _not_advancing(exc):
+                logger.info("node view of %r: a paged read did not advance: %s", key.dcid, exc)
+                return {key: NodeViewMiss.NOT_ADVANCING}
+            raise
         return {key: _freeze(view)}
 
     try:
@@ -1248,12 +1292,14 @@ def build_schema_door() -> DoorContribution:
             UnOriginNotServed,
             NodeNotHeldError,
             NodeViewTooLarge,
+            NodeViewNotAdvancing,
             NodeViewTimedOut,
         ),
         exception_exemplars=(
             UnOriginNotServed(),
             NodeNotHeldError("exemplar"),
             NodeViewTooLarge("exemplar"),
+            NodeViewNotAdvancing("exemplar"),
             NodeViewTimedOut(),
             SchemaCheckBusy(),
             SchemaBuildPending(),

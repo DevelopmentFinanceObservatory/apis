@@ -661,24 +661,37 @@ class GraphClient:
         attempt when `max_bytes` caps the decoded body. Returns `None` when the front door
         refuses it (`is_front_door_refusal`), which `_request` records as the read error's
         cause."""
+        return self._post_node_counted(payload, deadline=deadline, max_bytes=max_bytes)[0]
+
+    def _post_node_counted(
+        self,
+        payload: dict,
+        *,
+        deadline: float | None,
+        max_bytes: int | None,
+        already_read: int = 0,
+    ) -> tuple[dict | None, int]:
+        """`_post_node` with the decoded bytes of its body, `0` when `max_bytes` is `None`. The
+        cap error fires once `already_read` plus the body's bytes pass `max_bytes`, so pages
+        of one read share one cap (`_request_capped`)."""
         if max_bytes is not None:
             try:
-                body, _ = self._request_capped(
+                return self._request_capped(
                     "POST",
                     NODE_PATH,
                     payload=payload,
                     max_bytes=max_bytes,
+                    already_read=already_read,
                     deadline=deadline,
                     front_door_refusals=True,
                 )
             except FrontDoorRefused:
-                return None
-            return body
+                return None, 0
         try:
-            return self.post(NODE_PATH, payload, deadline=deadline)
+            return self.post(NODE_PATH, payload, deadline=deadline), 0
         except GraphReadError as exc:
             if isinstance(exc.__cause__, FrontDoorRefused):
-                return None
+                return None, 0
             raise
 
     def _read_refused_halves(
@@ -1043,9 +1056,10 @@ class GraphClient:
         max_bytes: int | None = None,
     ) -> dict:
         """Read one `/v2/node` page. This mixer repeats continuation tokens for this request shape,
-        so discard the whole response and halve the dcid chunk into fresh requests. A
-        continuation for one dcid is followed page by page (`_page_single_arc`). A front-door
-        refusal halves the chunk the same way (`_read_refused_halves`).
+        so discard the whole response and halve the dcid chunk into fresh requests. A front-door
+        refusal halves the chunk the same way (`_read_refused_halves`). A continuation for one
+        dcid is followed page by page when `max_bytes` caps the read, every page counting
+        against that one cap (`_page_single_arc`), and raises the read error otherwise.
 
         Acquire `semaphore` for this POST and release it before recursive retries. `deadline`
         bounds the wait and raises `_ChunkDeadlineExpired` when time expires. A bound request
@@ -1053,7 +1067,7 @@ class GraphClient:
         deadline error when it is the one that expires. `max_bytes` caps each decoded response
         (`_post_node`).
         """
-        body = self._post_node_in_slot(
+        body, read = self._post_node_in_slot(
             {"nodes": dcids, "property": property_arc},
             semaphore=semaphore,
             deadline=deadline,
@@ -1070,28 +1084,20 @@ class GraphClient:
                     max_bytes=max_bytes,
                 ),
             )
-        if not isinstance(body, dict):
-            raise self._read_error_cls("graph /v2/node returned a malformed response body")
-        data = body.get("data", {})
-        if not isinstance(data, dict):
-            raise self._read_error_cls("graph /v2/node returned a malformed data mapping")
-        for dcid in dcids:
-            if dcid not in data:
-                continue
-            node_data = data[dcid]
-            if not isinstance(node_data, dict):
-                raise self._read_error_cls(
-                    f"graph /v2/node returned malformed node data for {dcid!r}"
-                )
-            if "arcs" in node_data and not isinstance(node_data["arcs"], dict):
-                raise self._read_error_cls(f"graph /v2/node returned malformed arcs for {dcid!r}")
+        data = self._checked_node_page(body, dcids)
         if body.get("nextToken") is None:
             return data
         if len(dcids) == 1:
+            if max_bytes is None:
+                raise self._read_error_cls(
+                    f"graph /v2/node reported a continuation reading {property_arc} for "
+                    f"{dcids[0]!r} alone; refusing to return a short mapping"
+                )
             return self._page_single_arc(
                 dcids[0],
                 property_arc=property_arc,
                 first=body,
+                first_bytes=read,
                 semaphore=semaphore,
                 deadline=deadline,
                 max_bytes=max_bytes,
@@ -1113,6 +1119,27 @@ class GraphClient:
         )
         return {**left, **right}
 
+    def _checked_node_page(self, body: dict, dcids: Sequence[str]) -> dict:
+        """The `data` mapping of a `/v2/node` arc page naming `dcids`, after checking that it,
+        each named node's data and that node's `arcs` are mappings. A malformed page raises
+        the read error."""
+        if not isinstance(body, dict):
+            raise self._read_error_cls("graph /v2/node returned a malformed response body")
+        data = body.get("data", {})
+        if not isinstance(data, dict):
+            raise self._read_error_cls("graph /v2/node returned a malformed data mapping")
+        for dcid in dcids:
+            if dcid not in data:
+                continue
+            node_data = data[dcid]
+            if not isinstance(node_data, dict):
+                raise self._read_error_cls(
+                    f"graph /v2/node returned malformed node data for {dcid!r}"
+                )
+            if "arcs" in node_data and not isinstance(node_data["arcs"], dict):
+                raise self._read_error_cls(f"graph /v2/node returned malformed arcs for {dcid!r}")
+        return data
+
     def _post_node_in_slot(
         self,
         payload: dict,
@@ -1120,10 +1147,11 @@ class GraphClient:
         semaphore: threading.BoundedSemaphore | None,
         deadline: float | None,
         max_bytes: int | None,
-    ) -> dict | None:
-        """`_post_node` holding a `semaphore` slot for the POST when one is given. `deadline`
-        bounds the wait and raises `_ChunkDeadlineExpired` when time expires; a bound request
-        deadline that expires first raises the configured deadline error."""
+        already_read: int = 0,
+    ) -> tuple[dict | None, int]:
+        """`_post_node_counted` holding a `semaphore` slot for the POST when one is given.
+        `deadline` bounds the wait and raises `_ChunkDeadlineExpired` when time expires; a bound
+        request deadline that expires first raises the configured deadline error."""
         count = len(payload["nodes"])
         detail = (
             f"deadline elapsed before {count} dcid(s) reached the front of "
@@ -1141,7 +1169,9 @@ class GraphClient:
         try:
             if deadline is not None and time.monotonic() >= deadline:
                 raise _ChunkDeadlineExpired(detail)
-            return self._post_node(payload, deadline=deadline, max_bytes=max_bytes)
+            return self._post_node_counted(
+                payload, deadline=deadline, max_bytes=max_bytes, already_read=already_read
+            )
         finally:
             if semaphore is not None and acquired:
                 semaphore.release()
@@ -1152,55 +1182,58 @@ class GraphClient:
         *,
         property_arc: str,
         first: dict,
+        first_bytes: int,
         semaphore: threading.BoundedSemaphore | None,
         deadline: float | None,
-        max_bytes: int | None,
+        max_bytes: int,
     ) -> dict:
         """Follow the continuation of `first`, the answer for `dcid` read alone, page by page,
-        and merge every page's arcs in page order. A repeated token, a page past
-        `_NODE_ARCS_MANY_MAX_PAGES` still continued, a refused page or a malformed one raises
-        the read error. Each page holds a `semaphore` slot and caps at `max_bytes`."""
+        and merge every page's arcs in page order. The pages share one `max_bytes` cap,
+        `first_bytes` of it spent on `first`, so the read raises the cap error once their sum
+        passes it. A repeated token or a continuation on page `_NODE_ARCS_MANY_MAX_PAGES` raises
+        the read error from `GraphNotAdvancingError` without sending another page; a refused or
+        malformed page raises the read error. Each page holds a `semaphore` slot."""
         merged: dict[str, dict] = {}
         body = first
+        read = first_bytes
         token: str | None = None
-        for _ in range(_NODE_ARCS_MANY_MAX_PAGES):
-            data = body.get("data", {})
-            if not isinstance(data, dict) or not isinstance(data.get(dcid) or {}, dict):
-                raise self._read_error_cls("graph /v2/node returned a malformed response body")
+        pages = 1
+        while True:
+            data = self._checked_node_page(body, [dcid])
             _merge_node_arcs_page(merged, {dcid: data[dcid]} if dcid in data else {})
             next_token = body.get("nextToken")
             if next_token is None:
                 return merged
             if next_token == token:
+                detail = f"graph /v2/node repeated the continuation token reading {property_arc}"
+            elif pages >= _NODE_ARCS_MANY_MAX_PAGES:
+                detail = (
+                    f"graph /v2/node still reported a continuation after "
+                    f"{_NODE_ARCS_MANY_MAX_PAGES} pages reading {property_arc}"
+                )
+            else:
+                detail = None
+            if detail is not None:
                 stuck = GraphNotAdvancingError(
-                    f"graph /v2/node repeated the continuation token reading {property_arc} "
-                    f"for {dcid!r}",
-                    dcid=dcid,
-                    property=property_arc,
+                    f"{detail} for {dcid!r}", dcid=dcid, property=property_arc
                 )
                 raise self._read_error_cls(str(stuck)) from stuck
             token = next_token
-            page = self._post_node_in_slot(
+            page, page_bytes = self._post_node_in_slot(
                 {"nodes": [dcid], "property": property_arc, "nextToken": token},
                 semaphore=semaphore,
                 deadline=deadline,
                 max_bytes=max_bytes,
+                already_read=read,
             )
             if page is None:
                 raise self._read_error_cls(
                     f"graph front door refused a /v2/node page reading {property_arc} for {dcid!r}",
                     upstream_status=403,
                 )
-            if not isinstance(page, dict):
-                raise self._read_error_cls("graph /v2/node returned a malformed response body")
+            read += page_bytes
+            pages += 1
             body = page
-        capped = GraphNotAdvancingError(
-            f"graph /v2/node still reported a continuation after {_NODE_ARCS_MANY_MAX_PAGES} "
-            f"pages reading {property_arc} for {dcid!r}",
-            dcid=dcid,
-            property=property_arc,
-        )
-        raise self._read_error_cls(str(capped)) from capped
 
     def _fetch_arc_chunks(
         self,
@@ -2165,6 +2198,7 @@ class GraphClient:
         *,
         properties: Sequence[str],
         max_results: int,
+        max_total: int | None = None,
         max_bytes: int | None = None,
         deadline: float | None = None,
     ) -> dict[str, InArcs]:
@@ -2173,7 +2207,9 @@ class GraphClient:
         input dcid with its `InArcs`. Each subject carries its name, types and provenances. A
         subject is distinct within a property and capped at `max_results` per node and property.
         A further subject marks the property in `InArcs.capped`. A missing node or one with no
-        in-arcs maps to an empty `InArcs`.
+        in-arcs maps to an empty `InArcs`. `max_total` caps a property's subjects summed over
+        every node: once a walk holds that many, it sends no further page and marks the
+        property capped for each node whose listing it may not have finished.
 
         A property's pages share one `nextToken` walk, which ends once the token is gone or
         every node is capped under that property, and a capped node leaves the walk's later
@@ -2198,6 +2234,7 @@ class GraphClient:
                 unique_dcids,
                 property=prop,
                 max_results=max_results,
+                max_total=max_total,
                 max_bytes=max_bytes,
                 deadline=deadline,
             )
@@ -2223,16 +2260,20 @@ class GraphClient:
         *,
         property: str,
         max_results: int,
+        max_total: int | None,
         max_bytes: int | None,
         deadline: float | None,
     ) -> dict[str, tuple[_InArcFold, bool]]:
         """One `<-[property]` walk of `node_in_arcs`: each dcid's fold and whether its listing
-        stopped at `max_results`. A front-door refusal of any page walks the dcids again as two
+        stopped at `max_results`, or may not have finished when the walk stopped at
+        `max_total` subjects. A front-door refusal of any page walks the dcids again as two
         halves (`_read_refused_halves`)."""
         spec = f"<-[{property}]"
         folds = {dcid: _InArcFold() for dcid in dcids}
         capped: set[str] = set()
         token: str | None = None
+        total = 0
+        full = False
         for _ in range(_NODE_SUBJECTS_MANY_MAX_PAGES):
             pending = [dcid for dcid in dcids if dcid not in capped]
             payload: dict = {"nodes": pending, "property": spec}
@@ -2246,6 +2287,7 @@ class GraphClient:
                         part,
                         property=property,
                         max_results=max_results,
+                        max_total=max_total,
                         max_bytes=max_bytes,
                         deadline=deadline,
                     ),
@@ -2253,12 +2295,19 @@ class GraphClient:
             data = body.get("data", {})
             for dcid in pending:
                 arcs = (data.get(dcid) or {}).get("arcs", {})
+                fold = folds[dcid]
                 for entry in arcs.get(property, {}).get("nodes", []):
                     if entry.get("dcid") is None:
                         continue
-                    if not folds[dcid].add(entry, limit=max_results):
+                    if full and not fold.holds(entry):
                         capped.add(dcid)
                         break
+                    before = fold.count
+                    if not fold.add(entry, limit=max_results):
+                        capped.add(dcid)
+                        break
+                    total += fold.count - before
+                    full = max_total is not None and total >= max_total
             next_token = body.get("nextToken")
             if next_token is not None and next_token == token:
                 stuck = GraphNotAdvancingError(
@@ -2269,6 +2318,8 @@ class GraphClient:
                 )
                 raise self._read_error_cls(str(stuck)) from stuck
             token = next_token
+            if full and token is not None:
+                capped.update(pending)
             if token is None or len(capped) == len(folds):
                 return {dcid: (fold, dcid in capped) for dcid, fold in folds.items()}
         exhausted = GraphNotAdvancingError(
@@ -3271,6 +3322,15 @@ class _InArcFold:
 
     def __init__(self) -> None:
         self._entries: dict[str, list[dict]] = {}
+
+    @property
+    def count(self) -> int:
+        """The distinct subjects folded."""
+        return len(self._entries)
+
+    def holds(self, entry: dict) -> bool:
+        """Whether `entry` names a subject already folded."""
+        return entry["dcid"] in self._entries
 
     def add(self, entry: dict, *, limit: int) -> bool:
         """Fold `entry`. False once it names a subject beyond the `limit`th, which it leaves
