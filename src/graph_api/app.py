@@ -105,7 +105,7 @@ from graph_api.doors.schema import (
 )
 from graph_api.doors.sources import build_sources_door, new_provenance_doc_cache
 from graph_api.node_cache import NodeEntryCache
-from graph_api.node_view import NodeViewReader
+from graph_api.node_view import READS_AT_ONCE, NodeViewReader
 from graph_api.origin_usage import CatalogueGeneration
 from graph_api.reader import GraphNodeReader
 from graph_api.un_terms import UnTermsReader
@@ -260,6 +260,7 @@ def graph_surface(
         un_terms: UnTerms | None = None
         origin_usage_executor: ThreadPoolExecutor | None = None
         node_view_executor: ThreadPoolExecutor | None = None
+        node_view_reads: ThreadPoolExecutor | None = None
         node_views_registration: RegistrationHandle | None = None
         profile_executor: ThreadPoolExecutor | None = None
         profile_reads: ThreadPoolExecutor | None = None
@@ -293,6 +294,8 @@ def graph_surface(
                 )
             if node_view_executor is not None:
                 await asyncio.to_thread(node_view_executor.shutdown, wait=True, cancel_futures=True)
+            if node_view_reads is not None:
+                await asyncio.to_thread(node_view_reads.shutdown, wait=True, cancel_futures=True)
             if card_reads is not None:
                 await asyncio.to_thread(card_reads.close)
             if shared_profiles is not None:
@@ -451,10 +454,15 @@ def graph_surface(
             un_view = live_reader.un_graph() if live_reader is not None else un_view_graph
             node_views: NodeViews | None = None
             if mixer_view is not None:
-                # A single-flight cache needs a pool no caller runs on. Its flights submit their
-                # reads to the DCP-read executor.
-                node_view_executor = ThreadPoolExecutor(
+                # A single-flight cache needs a pool no caller runs on. One flight per worker, so
+                # a miss past them is refused at once; each flight's reads queue on a pool
+                # sized for every flight's first round at once.
+                node_view_executor = DcpReadExecutor(
                     max_workers=NODE_VIEW_FLIGHT_WORKERS, thread_name_prefix="graph-node-view"
+                )
+                node_view_reads = ThreadPoolExecutor(
+                    max_workers=NODE_VIEW_FLIGHT_WORKERS * READS_AT_ONCE,
+                    thread_name_prefix="graph-node-view-read",
                 )
                 base_views = new_node_view_cache(
                     executor=node_view_executor, generation=resolved_generation
@@ -465,6 +473,7 @@ def graph_surface(
                 node_views = NodeViews(
                     mixer=mixer_view,
                     base=base_views,
+                    reads=node_view_reads,
                     un_reader=un_view,
                     un=None
                     if un_view is None

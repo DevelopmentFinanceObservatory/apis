@@ -1,4 +1,4 @@
-"""Tests the bracket in-arc read `node_in_arcs` and the transitive read `node_closure`."""
+"""Tests the per-property bracket in-arc read `node_in_arcs` and the transitive read `node_closure`."""
 
 import pytest
 
@@ -37,16 +37,16 @@ def test_node_in_arcs_pages_and_carries_name_types_and_property(monkeypatch) -> 
     sent: list[dict] = []
     pages = [
         {**_arcs("Person", subClassOf=[_entry("Patient", "A patient")]), "nextToken": "tok1"},
-        _arcs(
-            "Person",
-            subClassOf=[_entry("Adult", "An adult", prov="dc/p2")],
-            rangeIncludes=[_entry("spouse", "Spouse", ("Property",))],
-        ),
+        _arcs("Person", subClassOf=[_entry("Adult", "An adult", prov="dc/p2")]),
+        _arcs("Person", rangeIncludes=[_entry("spouse", "Spouse", ("Property",))]),
     ]
     client = _client(monkeypatch, pages, sent)
     result = client.node_in_arcs(["Person"], properties=_PROPS, max_results=10)
-    assert sent[0] == {"nodes": ["Person"], "property": "<-[subClassOf,rangeIncludes]"}
-    assert sent[1]["nextToken"] == "tok1"
+    assert sent == [
+        {"nodes": ["Person"], "property": "<-[subClassOf]"},
+        {"nodes": ["Person"], "property": "<-[subClassOf]", "nextToken": "tok1"},
+        {"nodes": ["Person"], "property": "<-[rangeIncludes]"},
+    ]
     assert result == {
         "Person": InArcs(
             subjects=(
@@ -60,22 +60,43 @@ def test_node_in_arcs_pages_and_carries_name_types_and_property(monkeypatch) -> 
 
 
 def test_node_in_arcs_node_without_arcs_or_absent_is_empty(monkeypatch) -> None:
-    client = _client(monkeypatch, [{"data": {"leaf": {"arcs": {}}}}], [])
+    client = _client(monkeypatch, [{"data": {"leaf": {"arcs": {}}}}] * 2, [])
     result = client.node_in_arcs(["leaf", "absent"], properties=_PROPS, max_results=10)
     assert result == {"leaf": InArcs((), frozenset()), "absent": InArcs((), frozenset())}
 
 
-def test_node_in_arcs_caps_per_property_and_stops_when_all_capped(monkeypatch) -> None:
+def test_node_in_arcs_stops_each_property_at_its_cap(monkeypatch) -> None:
+    """A capped property reads no page past its cap while another property is still listed:
+    `subClassOf` caps on its first of five pages, and `rangeIncludes` has one page."""
+    pages_by_property = {
+        "subClassOf": [["x", "y", "x"], ["z"], ["w"], ["v"], ["u"]],
+        "rangeIncludes": [["r1"]],
+    }
     sent: list[dict] = []
-    pages = [
-        {**_arcs("A", subClassOf=[_entry("x"), _entry("y"), _entry("x")]), "nextToken": "t1"},
-        {**_arcs("A", rangeIncludes=[_entry("r1"), _entry("r2")]), "nextToken": "never-read"},
-    ]
-    client = _client(monkeypatch, pages, sent)
+
+    def fake_post(self, path, payload, *, deadline=None):
+        sent.append(payload)
+        spec = payload["property"]
+        assert spec.startswith("<-[") and spec.endswith("]")
+        props = spec[3:-1].split(",")
+        page = int(payload.get("nextToken", "t0")[1:])
+        arcs = {
+            prop: {"nodes": [_entry(dcid) for dcid in pages_by_property[prop][page]]}
+            for prop in props
+            if page < len(pages_by_property[prop])
+        }
+        more = any(page + 1 < len(pages_by_property[prop]) for prop in props)
+        return {"data": {"A": {"arcs": arcs}}, **({"nextToken": f"t{page + 1}"} if more else {})}
+
+    monkeypatch.setattr(GraphClient, "post", fake_post)
+    client = GraphClient(base_url="http://fake/core/api")
     result = client.node_in_arcs(["A"], properties=_PROPS, max_results=1)
-    assert [s.dcid for s in result["A"].subjects] == ["x", "r1"]
-    assert result["A"].capped == {"subClassOf", "rangeIncludes"}
-    assert len(sent) == 2
+    assert [(s.property, s.dcid) for s in result["A"].subjects] == [
+        ("subClassOf", "x"),
+        ("rangeIncludes", "r1"),
+    ]
+    assert result["A"].capped == {"subClassOf"}
+    assert [payload["property"] for payload in sent] == ["<-[subClassOf]", "<-[rangeIncludes]"]
 
 
 def test_node_in_arcs_repeated_token_raises_read_error(monkeypatch) -> None:

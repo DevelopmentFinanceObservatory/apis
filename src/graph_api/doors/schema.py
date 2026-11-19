@@ -131,22 +131,27 @@ nothing. A bound catalogue that is not a loaded `CatalogueSnapshot` holds no tab
 from, and both routes answer it the same way.
 
 `GET /api/graph/schema/node/{dcid}` serves `SchemaNodeView`, one node and its schema
-neighbours, built by `graph_api.node_view.build_node_view` from at most eight reads submitted
-to the DCP-read executor, so a full executor answers retryable 503 at once. A dcid past
-`DCID_MAX_LENGTH` answers 400 `request_invalid` before any read. A UN id
+neighbours, built by `graph_api.node_view.build_node_view` from at most eight reads. Its
+flights run on an executor of `NODE_VIEW_FLIGHT_WORKERS` workers that admits one flight per
+worker, so a miss that finds every worker busy answers retryable 503 at once, and their reads
+on one of `NODE_VIEW_FLIGHT_WORKERS * READS_AT_ONCE` workers, apart from the DCP-read executor.
+A dcid past `DCID_MAX_LENGTH` answers 400 `request_invalid` before any read. A UN id
 (`origin_catalogue.graph.is_un_dcid`) is read from the UN deployment's own client once the route
 has checked that the bound catalogue serves the UN origin; with the origin off, or on a surface
 with no UN reader, it answers 404 `not_found`, not retryable, with
 `cause: {"code": "origin_not_served"}`, and reads nothing. Any other id is read from the mixer's
 own client, and a node the mixer does not hold, such as `unCode`, is read from the UN deployment
 when the UN origin is served. A node neither read holds answers 404 `not_found`, not retryable,
-with `cause: {"code": "node_not_held"}`. Both refusals go out `no-store` and are not kept.
-`NodeViews` holds two single-flight caches of `NODE_VIEW_CACHE_SIZE` views each on an executor
-of `NODE_VIEW_FLIGHT_WORKERS` workers: the mixer's keyed by `NodeViewKey` under the mixer's
+with `cause: {"code": "node_not_held"}`. Both refusals go out `no-store`. The mixer's cache
+keeps `NodeViewMiss.NOT_HELD` for a node the mixer lacks, so a later request reads the UN
+deployment or refuses without reading the mixer again under that generation; the UN
+deployment's keeps no refusal. `NodeViews` holds the two single-flight caches of
+`NODE_VIEW_CACHE_SIZE` entries each: the mixer's keyed by `NodeViewKey` under the mixer's
 generation, so a generation change clears it, and the UN deployment's under
-`origin_catalogue.graph.UnGeneration`, whose body `generation` is `null`. A flight's deadline
-and a request's wait over both reads are `GRAPH_NODE_TIMEOUT_SECONDS`, and either passing answers
-504 `timeout`. A failed read answers as on the other routes. Each view answers
+`origin_catalogue.graph.UnGeneration`, whose body `generation` is `null`. Each flight's deadline
+is `GRAPH_NODE_TIMEOUT_SECONDS` from its start, so a UN read after a mixer miss gets a deadline
+of its own, and a request waits `GRAPH_NODE_TIMEOUT_SECONDS` from its start over both. Either
+passing answers 504 `timeout`. A failed read answers as on the other routes. Each view answers
 `public, max-age=300` with a strong `ETag`, gzip and 304 as the document does.
 
 After each build the door logs one line timing the encoding of the document and terms bodies
@@ -168,6 +173,7 @@ import time
 from collections.abc import Callable, Sequence
 from concurrent.futures import Executor
 from dataclasses import dataclass
+from enum import Enum
 from functools import partial
 from typing import NamedTuple
 
@@ -353,8 +359,18 @@ NODE_VIEW_CACHE_SIZE = 2_000
 """The most node views each node view cache keeps, the mixer's and the UN deployment's."""
 
 NODE_VIEW_FLIGHT_WORKERS = 4
-"""The workers the node view flights run on. Each flight holds one while its reads run on the
-DCP-read executor."""
+"""The workers the node view flights run on, one flight each. A miss that finds them all busy is
+refused."""
+
+
+class NodeViewMiss(Enum):
+    """`NOT_HELD`: the mixer answered the dcid with no arc. The mixer's cache keeps it, so the
+    mixer is read for that dcid once per generation."""
+
+    NOT_HELD = "not_held"
+
+
+type NodeViewEntry = FrozenJSON | NodeViewMiss
 
 
 class NodeViewTimedOut(Exception):
@@ -394,7 +410,7 @@ def new_schema_cache[K, V](
 
 def new_node_view_cache(
     *, executor: Executor, generation: GenerationProvider
-) -> SingleFlightCache[NodeViewKey, FrozenJSON]:
+) -> SingleFlightCache[NodeViewKey, NodeViewEntry]:
     """A cache of `NODE_VIEW_CACHE_SIZE` node views, each built on `executor` within
     `GRAPH_NODE_TIMEOUT_SECONDS`, with a key that carries `generation`'s stamp."""
     return SingleFlightCache(
@@ -840,7 +856,7 @@ async def _frozen_origin_usage(deps: GraphDeps, origin: UsageOrigin) -> FrozenJS
 
 def _un_side(
     views: NodeViews, catalogue: Catalogue
-) -> tuple[NodeViewReader, SingleFlightCache[NodeViewKey, FrozenJSON]] | None:
+) -> tuple[NodeViewReader, SingleFlightCache[NodeViewKey, NodeViewEntry]] | None:
     """The UN deployment's reader and view cache, or `None` when the bound catalogue does not
     serve the UN origin or the surface has no UN reader."""
     if views.un_reader is None or views.un is None or not catalogue.un_system_enabled:
@@ -849,33 +865,41 @@ def _un_side(
 
 
 async def _node_view_from(
-    deps: GraphDeps,
+    views: NodeViews,
     *,
     reader: NodeViewReader,
-    cache: SingleFlightCache[NodeViewKey, FrozenJSON],
+    cache: SingleFlightCache[NodeViewKey, NodeViewEntry],
     key: NodeViewKey,
     catalogue: Catalogue,
     generation: str | None,
     deadline: float,
+    keep_not_held: bool,
 ) -> FrozenJSON:
     """The view of `key.dcid` read from `reader`, from `cache`, building it on a miss with its
-    reads on the DCP-read executor and waiting until `deadline`.
+    reads on `views.reads` and waiting until `deadline`. With `keep_not_held`, a node `reader`
+    lacks is kept as `NodeViewMiss.NOT_HELD`.
 
     Raises:
-        NodeNotHeldError: `reader` holds no such node. Nothing is kept.
+        NodeNotHeldError: `reader` holds no such node.
         NodeViewTimedOut: the wait or the flight passed its deadline.
         SchemaReadFailed: a read failed.
+        DcpExecutorSaturated: every flight worker is busy.
     """
 
-    def build(_keys: list[NodeViewKey], flight_deadline: float) -> dict[NodeViewKey, FrozenJSON]:
-        view = build_node_view(
-            key.dcid,
-            reader=reader,
-            catalogue=catalogue,
-            generation=generation,
-            executor=deps.dcp_executor,
-            deadline=flight_deadline,
-        )
+    def build(_keys: list[NodeViewKey], flight_deadline: float) -> dict[NodeViewKey, NodeViewEntry]:
+        try:
+            view = build_node_view(
+                key.dcid,
+                reader=reader,
+                catalogue=catalogue,
+                generation=generation,
+                executor=views.reads,
+                deadline=flight_deadline,
+            )
+        except NodeNotHeldError:
+            if not keep_not_held:
+                raise
+            return {key: NodeViewMiss.NOT_HELD}
         return {key: _freeze(view)}
 
     try:
@@ -884,14 +908,18 @@ async def _node_view_from(
         raise NodeViewTimedOut() from exc
     except GraphReadError as exc:
         raise SchemaReadFailed(exc) from exc
-    return found[key]
+    entry = found[key]
+    if isinstance(entry, NodeViewMiss):
+        raise NodeNotHeldError(key.dcid)
+    return entry
 
 
 async def _frozen_node_view(deps: GraphDeps, dcid: str) -> FrozenJSON:
     """The view of `dcid`. A UN id is read from the UN deployment, once the bound catalogue
     serves the UN origin. Any other id is read from the mixer, and from the UN deployment when
     the mixer holds no such node and the catalogue serves the UN origin. A request waits until
-    `GRAPH_NODE_TIMEOUT_SECONDS` from its start over both reads.
+    `GRAPH_NODE_TIMEOUT_SECONDS` from its start over both reads, and each read's flight has a
+    deadline of its own.
 
     Raises:
         DcidTooLong: `dcid` is longer than `DCID_MAX_LENGTH`.
@@ -900,6 +928,7 @@ async def _frozen_node_view(deps: GraphDeps, dcid: str) -> FrozenJSON:
         NodeNotHeldError: no deployment read holds the node.
         NodeViewTimedOut: a wait or a flight passed its deadline.
         SchemaReadFailed: a read failed.
+        DcpExecutorSaturated: every flight worker is busy.
     """
     if len(dcid) > DCID_MAX_LENGTH:
         raise DcidTooLong(len(dcid))
@@ -918,13 +947,14 @@ async def _frozen_node_view(deps: GraphDeps, dcid: str) -> FrozenJSON:
         await deps.generation.refresh_if_stale()
         try:
             return await _node_view_from(
-                deps,
+                views,
                 reader=views.mixer,
                 cache=views.base,
                 key=key,
                 catalogue=catalogue,
                 generation=deps.generation.stamp().token,
                 deadline=deadline,
+                keep_not_held=True,
             )
         except NodeNotHeldError:
             if un is None:
@@ -933,13 +963,14 @@ async def _frozen_node_view(deps: GraphDeps, dcid: str) -> FrozenJSON:
         raise UnOriginNotServed()
     reader, cache = un
     return await _node_view_from(
-        deps,
+        views,
         reader=reader,
         cache=cache,
         key=key,
         catalogue=catalogue,
         generation=None,
         deadline=deadline,
+        keep_not_held=False,
     )
 
 

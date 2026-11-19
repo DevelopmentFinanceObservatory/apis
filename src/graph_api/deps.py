@@ -15,7 +15,8 @@ flights on the DCP-read executor. The node routes keep the envelopes they build 
 their built bodies in `schema`, whose one build runs on the DCP-read executor. The UN terms
 route reads the UN deployment's own client and keeps its body in `un_terms`, on an executor of
 its own. The node view route reads the mixer's and the UN deployment's own clients and keeps
-each view in `node_views`, built on an executor of its own and read on the DCP-read executor.
+each view in `node_views`, built and read on two executors of its own, so it takes no DCP-read
+worker.
 
 This module holds the bundle and the doors' one way onto the executor,
 `run_dcp_read`, to keep door imports separate from the composition root,
@@ -29,7 +30,7 @@ import functools
 import logging
 import threading
 from collections.abc import Callable
-from concurrent.futures import BrokenExecutor, Future, ThreadPoolExecutor
+from concurrent.futures import BrokenExecutor, Executor, Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from time import perf_counter
 from typing import TYPE_CHECKING, Annotated, Any, override
@@ -54,6 +55,7 @@ if TYPE_CHECKING:
     from dfo_platform.static_response import FrozenJSON
     from graph_api.card_reads import CardReadCaches
     from graph_api.doors.schema import (
+        NodeViewEntry,
         NodeViewKey,
         SchemaEntry,
         SchemaKey,
@@ -94,14 +96,15 @@ class UnTerms:
 class NodeViews:
     """The node view route's state: the mixer's own client and the cache of the views read from
     it, keyed under the mixer's generation, and the UN deployment's own client and its cache,
-    keyed under the UN deployment's (`origin_catalogue.graph.UnGeneration`). `un_reader` and
-    `un` are `None` on a surface with no UN reader, which reads no node from the UN
-    deployment."""
+    keyed under the UN deployment's (`origin_catalogue.graph.UnGeneration`). `reads` runs the
+    views' reads, apart from the flights the caches run on. `un_reader` and `un` are `None` on
+    a surface with no UN reader, which reads no node from the UN deployment."""
 
     mixer: NodeViewReader
-    base: SingleFlightCache[NodeViewKey, FrozenJSON]
+    base: SingleFlightCache[NodeViewKey, NodeViewEntry]
+    reads: Executor
     un_reader: NodeViewReader | None = None
-    un: SingleFlightCache[NodeViewKey, FrozenJSON] | None = None
+    un: SingleFlightCache[NodeViewKey, NodeViewEntry] | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -1245,18 +1245,20 @@ The example is abridged. It keeps the first pattern, the first two values of the
 One node the graph holds and its schema neighbours, as `{generation, centre, nodes, capped}`. It serves any node, base, UN or DFO, whether or not the schema document holds it, so a UN series or a base property such as `age` opens here. `{generation, nodes}` has the shape of the schema document, so a reader that reads that document reads this body too. `graph_api.node_view.build_node_view` builds it.
 
 - `centre` is the node as a full schema document node, with every outgoing arc the graph holds and `declared_by` by the schema document's rule.
-- `nodes` holds one entry per neighbour, sorted by `ref`: each target of the centre's `typeOf`, `subClassOf`, `subPropertyOf`, `specializationOf`, `rangeIncludes` and `domainIncludes`, and each subject that points at the centre through one of the last five. A neighbour carries its `label` and `types` and only the arcs the graph answered that tie it to the centre or to the centre's `subClassOf` chain. Its `provenances` are those of the arcs read from it (a member's `typeOf`, an in-arc subject's arc, a chain class's `subClassOf` edges), and `declared_by` follows from them. A neighbour the view read no arc from, such as a target of the centre's arcs, has empty `provenances` and a `null` `declared_by`, since the centre's arc to it names the centre's declarer. Its other members are empty and its `description` `null`.
-- `capped` names, sorted, each in-arc property whose listing stopped at 1,000 subjects.
+- `nodes` holds one entry per neighbour, sorted by `ref`: each node target of the centre's arcs (those of `typeOf`, `subClassOf`, `subPropertyOf`, `specializationOf`, `rangeIncludes` and `domainIncludes`, and those `other_properties` keeps, such as a UN series' `unConcept`), and each subject that points at the centre through one of those five schema arcs. A neighbour carries its `label` and `types` and only the arcs the graph answered that tie it to the centre or to the centre's `subClassOf` chain. Its `provenances` are those of the arcs read from it (a member's `typeOf`, an in-arc subject's arc, a chain class's `subClassOf` edges), and `declared_by` follows from them. A neighbour the view read no arc from, such as a target of the centre's arcs, has empty `provenances` and a `null` `declared_by`, since the centre's arc to it names the centre's declarer. Its other members are empty and its `description` `null`.
+- `capped` lists each in-arc listing that stopped at 1,000 subjects as `{ref, property}`, the node listed and the property its subjects point through, sorted: the centre's `typeOf` for a value list's members, any of the centre's five schema arcs, and a value's type class under `rangeIncludes`.
 - `generation` is the mixer's generation token for a node read from the mixer, `null` when it is unknown, and always `null` for one read from the UN deployment.
 
-A Class whose `subClassOf+` closure holds `Enumeration` is a value list: the view lists up to 1,000 of its `<-typeOf` members as neighbours and sets the centre's `instances`, `complete` only when the listing read every member and the class has no narrower class. When `Enumeration` is not a direct parent, the view reads the direct `subClassOf` edges of the closure, so every edge of the chain is one the graph answered. Each narrower class and each chain parent that reaches `Enumeration` gets `instances: {refs: [], complete: false}`. A value, a node typed neither Class nor Property, reads the `<-rangeIncludes` subjects of its first three type classes other than `Thing` and their closures, and a type class that descends from `Enumeration` gets `instances: {refs: [<centre>], complete: false}`. No other node has its `<-typeOf` read, so `Place` never lists its members. A view takes three reads at once, then at most two more for a value list and five more for a value, all within `GRAPH_NODE_TIMEOUT_SECONDS`, on the DCP-read executor. Each read is admitted as any other DCP read is, so a full executor answers `503` at once.
+A Class whose `subClassOf+` closure holds `Enumeration` is a value list: the view lists up to 1,000 of its `<-typeOf` members as neighbours and sets the centre's `instances`, `complete` only when the listing read every member and the class has no narrower class. When `Enumeration` is not a direct parent, the view reads the direct `subClassOf` edges of the closure, so every edge of the chain is one the graph answered. Each narrower class and each chain parent that reaches `Enumeration` gets `instances: {refs: [], complete: false}`. A Property reads the closure of each of its first three range classes other than `Thing`, and a range class that descends from `Enumeration` gets `instances: {refs: [], complete: false}`, so the range class of a property such as `undataSeries` reads as a value list where the schema document lacks it. A value, a node typed neither Class nor Property, reads the `<-rangeIncludes` subjects of its first three type classes other than `Thing`, sorted, and their closures, and a type class that descends from `Enumeration` gets `instances: {refs: [<centre>], complete: false}`. A value's types past the third are left out, with no mark in the body. No other node has its `<-typeOf` read, so `Place` never lists its members.
+
+A view takes three reads at once, then at most two more for a value list, three more for a property and five more for a value, all within one flight's deadline. Each response is capped at 2 MiB of decoded JSON and streamed in one attempt, so a larger one or a `5xx` answer fails the read. A read the graph answers with HTTP 429 is sent again after 1 s and then 2 s, one budget for the whole view, while the wait ends before the deadline. The views run on four flight workers of their own and their reads on twelve, apart from the DCP-read executor, so a view takes no worker from resolve or node reads. A miss that finds all four flight workers busy answers `503` at once.
 
 Each dcid is read from one deployment:
 
 - A UN id (`undata/...`, or a property such as `undataAge`) is read from the UN deployment's own client, once the route has checked that the deployment serves the UN origin.
 - Any other id is read from the mixer. A node the mixer does not hold, such as `unCode` or `unConcept`, is then read from the UN deployment when the UN origin is served.
 
-Each view is kept in one of two single-flight caches of 2,000 views: the mixer's keyed by the mixer's generation, the origin catalogue's build and the dcid, which a generation change clears, and the UN deployment's keyed by the UN cache generation (the catalogue's build and the UTC date), the UN origin setting and the dcid. Concurrent requests for one dcid share one read. A request waits 10 s (`GRAPH_NODE_TIMEOUT_SECONDS`) over both reads, and the reads have the same deadline. The body answers `public, max-age=300` with a strong `ETag`, a gzip representation and `304` on `If-None-Match`.
+Each view is kept in one of two single-flight caches of 2,000 entries: the mixer's keyed by the mixer's generation, the origin catalogue's build and the dcid, which a generation change clears, and the UN deployment's keyed by the UN cache generation (the catalogue's build and the UTC date), the UN origin setting and the dcid. The mixer's cache also keeps a mark for a node the mixer lacks, so the mixer is read for it once per generation. Concurrent requests for one dcid share one read. A request waits 10 s (`GRAPH_NODE_TIMEOUT_SECONDS`) from its start over both deployments. Each flight's deadline is 10 s from its own start, so a UN read after a mixer miss gets a deadline of its own and can run on after the request's wait has ended. The body answers `public, max-age=300` with a strong `ETag`, a gzip representation and `304` on `If-None-Match`.
 
 Failures:
 
@@ -1265,11 +1267,11 @@ Failures:
 - `404 not_found`, not retryable, with `cause: {"code": "node_not_held"}`: no deployment the route reads holds the node.
 - `504 timeout`: the wait or the reads passed their deadline.
 - `502 upstream_error`: a DCP read answered 4xx.
-- `503 service_unavailable`, retryable: any other read failure, or every DCP-read worker busy.
+- `503 service_unavailable`, retryable: any other read failure, or every flight worker busy.
 
-Refusals answer `Cache-Control: no-store` and are not kept, so a node the mixer lacks is read from the mixer on each request before the UN deployment's cached view answers.
+Refusals answer `Cache-Control: no-store`. Only the mixer's miss is kept, and a UN refusal reads the UN deployment again on the next request.
 
-The example is the view of `GenderType` in the test graph of `tests/graph_api/test_node_view.py`, abridged to two of its five neighbours, with `...` marking the cut.
+The example is the view of `GenderType` in the test graph of `tests/graph_api/test_node_view.py`, whose labels are the test graph's, abridged to two of its five neighbours, with `...` marking each cut: `Class` and `Enumeration` before `Female`, and `Male` between `Female` and `gender`.
 
 ```json
 {
@@ -1310,6 +1312,7 @@ The example is the view of `GenderType` in the test graph of `tests/graph_api/te
       "declared_by": "base",
       "instances": null
     },
+    ...
     {
       "ref": "gender",
       "label": "Gender",
