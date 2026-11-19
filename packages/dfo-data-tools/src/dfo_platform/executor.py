@@ -7,8 +7,8 @@ import asyncio
 import contextvars
 import logging
 import threading
-from collections.abc import Callable
-from concurrent.futures import Executor, Future, ThreadPoolExecutor
+from collections.abc import Callable, Sequence
+from concurrent.futures import FIRST_EXCEPTION, Executor, Future, ThreadPoolExecutor, wait
 from typing import Any, override
 
 logger = logging.getLogger(__name__)
@@ -132,3 +132,33 @@ async def run_in_executor_with_context[*Ts, R](
     under a copy of the caller's context, as `asyncio.to_thread` does for the default."""
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(executor, contextvars.copy_context().run, fn, *args)
+
+
+def map_in_threads[T, R](
+    fn: Callable[[T], R], items: Sequence[T], *, max_workers: int, thread_name_prefix: str
+) -> list[R]:
+    """`fn(item)` for each item, in `items` order, run on up to `max_workers` new threads,
+    each call under a copy of the caller's context.
+
+    For synchronous code that waits on many independent reads, such as startup. On the first
+    failure the calls not yet started are cancelled and the running ones finish. Then the
+    exception of the earliest failed item in `items` order is raised, the one a loop over
+    `items` would have raised.
+    """
+    if not items:
+        return []
+    with ContextCarryingExecutor(
+        max_workers=min(max_workers, len(items)), thread_name_prefix=thread_name_prefix
+    ) as pool:
+        futures = [pool.submit(fn, item) for item in items]
+        wait(futures, return_when=FIRST_EXCEPTION)
+        if any(future.done() and future.exception() is not None for future in futures):
+            for future in futures:
+                future.cancel()
+            wait(futures)
+            raise next(
+                error
+                for future in futures
+                if not future.cancelled() and (error := future.exception()) is not None
+            )
+        return [future.result() for future in futures]

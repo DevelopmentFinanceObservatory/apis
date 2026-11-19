@@ -1,5 +1,5 @@
 """Tests thread-pool saturation logging and slot release, the Graph surface's bounded
-admission, and context-carrying submission."""
+admission, context-carrying submission, and `map_in_threads`."""
 
 from __future__ import annotations
 
@@ -7,12 +7,14 @@ import asyncio
 import contextvars
 import logging
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
 from dfo_platform.executor import (
     SaturationTrackingExecutor,
+    map_in_threads,
     run_in_executor_with_context,
     submit_with_context,
 )
@@ -215,3 +217,60 @@ class TestContextCarryingSubmission:
                 return await run_in_executor_with_context(pool, _REQUEST_VALUE.get)
 
         assert asyncio.run(_body()) == "bound"
+
+
+class TestMapInThreads:
+    def test_results_keep_item_order_when_calls_finish_in_reverse(self):
+        """Each call waits for the next item's call to finish, so the calls finish last item
+        first, which also proves they run side by side. Each sees the caller's context."""
+        finished = [threading.Event() for _ in range(4)]
+
+        def call(index: int) -> str:
+            if index + 1 < len(finished):
+                assert finished[index + 1].wait(timeout=5)
+            finished[index].set()
+            return f"{_REQUEST_VALUE.get()}-{index}"
+
+        token = _REQUEST_VALUE.set("bound")
+        try:
+            results = map_in_threads(call, range(4), max_workers=4, thread_name_prefix="t-map")
+        finally:
+            _REQUEST_VALUE.reset(token)
+
+        assert results == ["bound-0", "bound-1", "bound-2", "bound-3"]
+
+    def test_raises_the_earliest_failed_item_after_a_later_one_fails_first(self):
+        later_failed = threading.Event()
+
+        def call(index: int) -> int:
+            if index == 2:
+                later_failed.set()
+                raise ValueError("item 2")
+            if index == 0:
+                assert later_failed.wait(timeout=5)
+                raise KeyError("item 0")
+            return index
+
+        with pytest.raises(KeyError, match="item 0"):
+            map_in_threads(call, range(3), max_workers=3, thread_name_prefix="t-map")
+
+    def test_a_failure_cancels_the_calls_not_yet_started(self):
+        """Each later call sleeps 20 ms, so the 49 of them would take about a second
+        unless the failure cancels them."""
+        started: list[int] = []
+
+        def call(index: int) -> int:
+            started.append(index)
+            if index == 0:
+                raise ValueError("item 0")
+            time.sleep(0.02)
+            return index
+
+        with pytest.raises(ValueError, match="item 0"):
+            map_in_threads(call, range(50), max_workers=1, thread_name_prefix="t-map")
+
+        assert started[0] == 0
+        assert len(started) < 50
+
+    def test_no_items_start_no_threads(self):
+        assert map_in_threads(str, [], max_workers=4, thread_name_prefix="t-map") == []

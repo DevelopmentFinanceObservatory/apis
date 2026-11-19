@@ -150,7 +150,9 @@ def test_the_handler_is_silent_when_the_project_is_set(monkeypatch, capsys):
 def test_the_dockerfile_log_config_sends_search_datasets_and_request_info_to_stdout_as_json():
     """Applies the committed config in a subprocess, since dictConfig replaces global state.
 
-    The Datasets doors log their `datasets.timings` line at INFO on `datasets_api.*`."""
+    The Datasets doors log their `datasets.timings` line at INFO on `datasets_api.*`, and
+    startup logs its stage timings on `dfo_apis.*`, `graph_release.*` and
+    `origin_catalogue.*`."""
     dockerfile = (_REPO_ROOT / "Dockerfile").read_text()
     assert "--log-config /app/log-config.json" in dockerfile
     assert "COPY log-config.json /app/log-config.json" in dockerfile
@@ -161,6 +163,9 @@ def test_the_dockerfile_log_config_sends_search_datasets_and_request_info_to_std
         "logging.getLogger('search.engine.fanout').info('from search');"
         "logging.getLogger('datasets_api.doors.definition').info('from datasets');"
         "logging.getLogger('dfo_platform.request').info('from request');"
+        "logging.getLogger('dfo_apis.app').info('from startup');"
+        "logging.getLogger('graph_release.format').info('from release');"
+        "logging.getLogger('origin_catalogue.artifact').info('from catalogue');"
         "logging.getLogger('httpx').info('below the root level')"
     )
     result = subprocess.run(
@@ -176,4 +181,7 @@ def test_the_dockerfile_log_config_sends_search_datasets_and_request_info_to_std
         ("search.engine.fanout", "from search"),
         ("datasets_api.doors.definition", "from datasets"),
         ("dfo_platform.request", "from request"),
+        ("dfo_apis.app", "from startup"),
+        ("graph_release.format", "from release"),
+        ("origin_catalogue.artifact", "from catalogue"),
     ]
