@@ -52,7 +52,7 @@ if TYPE_CHECKING:
     # `card_reads` imports this module's executor refusals.
     from dfo_platform.static_response import FrozenJSON
     from graph_api.card_reads import CardReadCaches
-    from graph_api.doors.schema import SchemaEntry, SchemaKey, UnTermsKey, UsageKey
+    from graph_api.doors.schema import SchemaEntry, SchemaKey, UnTermsEntry, UsageKey
     from graph_api.un_terms import UnTermsReader
     from materialise.provenance_doc import ProvenanceDoc
     from series_coverage.shared import ServedCoverage
@@ -70,10 +70,13 @@ class GraphDepsNotSet(Exception):
 
 @dataclass(frozen=True, slots=True)
 class UnTerms:
-    """The UN deployment's own client and the cache of the UN terms body it builds."""
+    """The UN deployment's own client, the cache of the UN terms body it builds, under one key,
+    since the cache's own generation stamp is the UN deployment's, and the event that ends a
+    build's waits at shutdown."""
 
     reader: UnTermsReader
-    cache: SingleFlightCache[UnTermsKey, FrozenJSON]
+    cache: SingleFlightCache[str, UnTermsEntry]
+    stop: threading.Event = field(default_factory=threading.Event)
 
 
 @dataclass(frozen=True, slots=True)

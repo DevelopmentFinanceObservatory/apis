@@ -39,7 +39,7 @@ from materialise.graph import GraphDeadlineExceededError, GraphReadError
 from origin_catalogue import BASE
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue, provenance_row
 
-from .conftest import FakeGraphNodeReader, make_client, wait_until
+from .conftest import FakeGraphNodeReader, FakeUnGraph, make_client, wait_until
 from .schema_fixture import STAMP, TERMS, index_of, index_row, listing, node_targets
 
 _DFO = "provenance/DFOOntology"
@@ -436,12 +436,12 @@ def _live_client(
     monkeypatch: pytest.MonkeyPatch,
     graph: FakeGraphNodeReader,
     *,
-    un: FakeGraphNodeReader | None = None,
+    un: FakeUnGraph | None = None,
 ) -> TestClient:
     """A client over a surface that builds its own reader, as deployed, with `graph` standing
     in for that reader, `un` for its UN deployment's own client, and inert shared resolver and
     profile cache."""
-    un_graph = un if un is not None else FakeGraphNodeReader()
+    un_graph = un if un is not None else FakeUnGraph({})
     monkeypatch.setenv("GRAPH_DCP_BASE_URL", "https://mixer.example.org/core/api")
     monkeypatch.setattr(graph, "close", lambda: None, raising=False)
     monkeypatch.setattr(graph, "un_graph", lambda: un_graph, raising=False)
@@ -484,10 +484,14 @@ class TestWarmUp:
         """The UN terms route reads the live reader's UN client, so a mixer listing of `Class`
         names none of its terms."""
         graph = _graph()
-        un = FakeGraphNodeReader(
-            arc_subjects={
-                ("Class", "typeOf"): (
-                    ArcSubject(dcid="undata/AGE", names=("Age",), provenances=("undata/p/UNData",)),
+        un = FakeUnGraph(
+            {
+                "Class": (
+                    (
+                        ArcSubject(
+                            dcid="undata/AGE", names=("Age",), provenances=("undata/p/UNData",)
+                        ),
+                    ),
                 ),
             }
         )
@@ -498,7 +502,7 @@ class TestWarmUp:
 
         assert terms.status_code == 200, terms.text
         assert [term["ref"] for term in terms.json()["terms"]] == ["undata/AGE"]
-        assert un.calls["node_arc_subjects"] == 2
+        assert un.requests == [("Class", None), ("Property", None)]
         assert _reads(graph) == mixer_reads
 
     def test_an_injected_graph_builds_on_the_first_request(self, generation):

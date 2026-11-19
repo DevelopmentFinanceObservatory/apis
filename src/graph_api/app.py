@@ -185,6 +185,7 @@ def graph_surface(
     profile_graph: ProfileGraphReader | None = None,
     availability: AvailabilityReader | None = None,
     un_graph: UnTermsReader | None = None,
+    un_generation: GenerationProvider | None = None,
 ) -> Surface:
     """Build the Graph surface.
 
@@ -198,7 +199,8 @@ def graph_surface(
     an injected graph runs without a profile cache unless both are given. An injected
     resolver leaves the membership policy for its caller to publish. `un_graph` feeds the UN
     terms route for an injected graph. A live surface ignores it and reads the UN deployment's
-    own client, and an injected graph without it serves no UN terms.
+    own client, and an injected graph without it serves no UN terms. `un_generation` stamps the
+    UN terms cache, `origin_catalogue.graph.UnGeneration` when `None`.
     """
     catalogue = get_catalogue_service()
     release = get_release_service()
@@ -237,6 +239,7 @@ def graph_surface(
         check_executor: DcpReadExecutor | None = None
         usage_executor: ThreadPoolExecutor | None = None
         un_terms_executor: ThreadPoolExecutor | None = None
+        un_terms: UnTerms | None = None
         profile_executor: ThreadPoolExecutor | None = None
         profile_reads: ThreadPoolExecutor | None = None
         card_reads: CardReadCaches | None = None
@@ -257,8 +260,10 @@ def graph_surface(
                 await asyncio.to_thread(check_executor.shutdown, wait=True)
             if usage_executor is not None:
                 await asyncio.to_thread(usage_executor.shutdown, wait=True)
+            if un_terms is not None:
+                un_terms.stop.set()
             if un_terms_executor is not None:
-                await asyncio.to_thread(un_terms_executor.shutdown, wait=True)
+                await asyncio.to_thread(un_terms_executor.shutdown, wait=True, cancel_futures=True)
             if card_reads is not None:
                 await asyncio.to_thread(card_reads.close)
             if shared_profiles is not None:
@@ -390,7 +395,6 @@ def graph_surface(
                 "graph_api.dataset_usage", stats=dataset_usage.stats, clear=dataset_usage.clear
             )
             un_reader = live_reader.un_graph() if live_reader is not None else un_graph
-            un_terms: UnTerms | None = None
             if un_reader is not None:
                 # Keyed by the UN deployment's own generation, so a mixer generation change
                 # leaves it in place.
@@ -400,7 +404,9 @@ def graph_surface(
                 un_terms = UnTerms(
                     reader=un_reader,
                     cache=new_schema_cache(
-                        entries=1, executor=un_terms_executor, generation=UnGeneration()
+                        entries=1,
+                        executor=un_terms_executor,
+                        generation=un_generation if un_generation is not None else UnGeneration(),
                     ),
                 )
 

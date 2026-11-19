@@ -91,13 +91,15 @@ catalogue's `un_system_enabled` gate too, so the route checks it first: with the
 or on a surface with no UN reader, it answers 404 `not_found`, not retryable, with
 `cause: {"code": "origin_not_served"}`, and reads nothing. The refusal goes out `no-store`, so no
 cache keeps it past a change of the flag. The body sits in a single-flight cache of one entry on
-an executor of one worker, keyed by `UnTermsKey`: the UN deployment's cache generation
-(`origin_catalogue.graph.UnGeneration`, the bound catalogue's build and the UTC date) and the
-flag. The UN deployment serves no generation token, so a UN change shows on the next UTC day or
-catalogue build, and the body's `generation` is `null`. A miss builds under the flight deadline,
-a request waits until `GRAPH_NODE_TIMEOUT_SECONDS` from its start, and the waits and failures
-answer as on the usage route, a listing at its cap as on `GET /api/graph/schema`. A failed
-build is not kept.
+an executor of one worker, under the one key `UN_TERMS_KEY` and the cache's generation stamp,
+the UN deployment's (`origin_catalogue.graph.UnGeneration`, the bound catalogue's build and the
+UTC date). The UN deployment serves no generation token, so a UN change shows on the next UTC
+day or catalogue build, and the body's `generation` is `null`. A miss builds under the flight
+deadline, a request waits until `GRAPH_NODE_TIMEOUT_SECONDS` from its start, and the waits and
+failures answer as on the usage route. The build waits out 429s and repeated page tokens on the
+page they hit, within the flight (`graph_api.un_terms`). A listing past its cap answers as on
+`GET /api/graph/schema`, and the entry keeps that refusal for `SCHEMA_REFUSAL_TTL_SECONDS`. Any
+other failed build is not kept.
 
 After each build the door logs one line timing the encoding of the document and terms bodies
 and giving their sizes, beside the build's own per-phase line.
@@ -260,12 +262,10 @@ class UnOriginNotServed(Exception):
         super().__init__("this deployment does not serve the UN System Data Commons origin")
 
 
-class UnTermsKey(NamedTuple):
-    """The UN deployment's cache generation stamp and whether the bound catalogue serves the UN
-    origin."""
+UN_TERMS_KEY = "un_system"
+"""The one key of the UN terms cache, whose own generation stamp is the UN deployment's."""
 
-    un_generation: str
-    un_system_enabled: bool
+type UnTermsEntry = FrozenJSON | RefusedSchema
 
 
 class UsageKey(NamedTuple):
@@ -296,7 +296,7 @@ def new_schema_cache[K, V](
     )
 
 
-def _entry_ttl(entry: SchemaEntry) -> float | None:
+def _entry_ttl(entry: SchemaEntry | UnTermsEntry) -> float | None:
     """`SCHEMA_REFUSAL_TTL_SECONDS` for a refusal, and the cache's own TTL for built bodies."""
     return SCHEMA_REFUSAL_TTL_SECONDS if isinstance(entry, RefusedSchema) else None
 
@@ -539,32 +539,44 @@ async def _frozen_un_terms(deps: GraphDeps) -> FrozenJSON:
             no UN reader. Nothing is read.
         SchemaBuildPending: the request's wait passed while the build runs on.
         SchemaBuildExpired: the build outlived its flight deadline.
-        SchemaReadFailed: a listing failed or reached its cap.
+        SchemaReadFailed: a listing failed, or the entry keeps a truncated listing's refusal.
     """
     catalogue = current_catalogue()
     un_terms = deps.un_terms
     if un_terms is None or not catalogue.un_system_enabled:
         raise UnOriginNotServed()
-    key = UnTermsKey(
-        un_generation=un_terms.cache.stamp_key(),
-        un_system_enabled=catalogue.un_system_enabled,
-    )
 
-    def build(_keys: list[UnTermsKey], flight_deadline: float) -> dict[UnTermsKey, FrozenJSON]:
-        terms = build_un_terms(
-            reader=un_terms.reader, catalogue=catalogue, deadline=flight_deadline
-        )
-        return {key: _freeze(terms)}
+    def build(_keys: list[str], flight_deadline: float) -> dict[str, UnTermsEntry]:
+        try:
+            terms = build_un_terms(
+                reader=un_terms.reader,
+                catalogue=catalogue,
+                deadline=flight_deadline,
+                stop=un_terms.stop,
+            )
+        except SchemaListingTruncatedError as exc:
+            return {
+                UN_TERMS_KEY: RefusedSchema(error=partial(SchemaListingTruncatedError, str(exc)))
+            }
+        return {UN_TERMS_KEY: _freeze(terms)}
 
     try:
-        found = await un_terms.cache.aget_or_fetch_many([key], build, deadline=_request_deadline())
+        found = await un_terms.cache.aget_or_fetch_many(
+            [UN_TERMS_KEY],
+            log_queue_wait(build),
+            deadline=_request_deadline(),
+            value_ttl=_entry_ttl,
+        )
     except WaitTimeout:
         raise SchemaBuildPending() from None
     except TimeoutError as exc:
         raise SchemaBuildExpired() from exc
     except GraphReadError as exc:
         raise SchemaReadFailed(exc) from exc
-    return found[key]
+    entry = found[UN_TERMS_KEY]
+    if isinstance(entry, RefusedSchema):
+        raise SchemaReadFailed(entry.error())
+    return entry
 
 
 async def warm_schema(deps: GraphDeps, *, timeout_s: float) -> None:
