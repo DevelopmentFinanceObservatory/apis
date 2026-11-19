@@ -69,7 +69,7 @@ class CapabilityCaps(BaseModel):
         description="ceiling on how long a client waits for GET /api/graph/node/{dcid}, POST /api/graph/nodes, or GET /api/graph/documentation/{dcid} before a timeout refusal; GET /api/graph/node/{dcid}/members bounds its graph reads by it, and a label or profile read it cuts short leaves a gap"
     )
     max_dcid_chars: int = Field(
-        description="ceiling on the length of the dcid path parameter of GET /api/graph/node/{dcid} and GET /api/graph/documentation/{dcid}, and of each dcid POST /api/graph/nodes takes; a longer value is refused 400 request_invalid"
+        description="ceiling on the length of the dcid path parameter of GET /api/graph/node/{dcid}, GET /api/graph/documentation/{dcid} and GET /api/graph/schema/node/{dcid}, and of each dcid POST /api/graph/nodes takes; a longer value is refused 400 request_invalid"
     )
     max_node_batch_dcids: int = Field(
         description="the most dcids one POST /api/graph/nodes request names; a longer list is refused 400 request_invalid"

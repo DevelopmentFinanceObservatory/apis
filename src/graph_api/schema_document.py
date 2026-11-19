@@ -171,7 +171,7 @@ _RANGE_INCLUDES: Final[str] = "rangeIncludes"
 _DOMAIN_INCLUDES: Final[str] = "domainIncludes"
 _ANCESTOR_ARCS: Final[tuple[str, ...]] = ("subClassOf", "subPropertyOf")
 _SCHEMA_ARCS: Final[tuple[str, ...]] = (*_ANCESTOR_ARCS, "domainIncludes", "rangeIncludes")
-_NODE_PROPERTIES: Final[tuple[str, ...]] = (
+NODE_PROPERTIES: Final[tuple[str, ...]] = (
     _TYPE_OF,
     "name",
     "description",
@@ -183,6 +183,8 @@ _NODE_PROPERTIES: Final[tuple[str, ...]] = (
     "rangeIncludes",
     "classificationCode",
 )
+"""The properties a `SchemaNode` holds in fields of its own. Every other is in
+`other_properties`."""
 
 type _Arcs = dict[str, tuple[str, ...]]
 type _OtherProperties = dict[str, list[SchemaNodeReference | SchemaLiteral]]
@@ -357,7 +359,7 @@ def build_schema(
             sorted(reads.left_out)[:_LOGGED_DCIDS],
         )
     nodes = [
-        _node(
+        schema_node(
             dcid,
             arcs[dcid],
             reads.others[dcid],
@@ -682,14 +684,14 @@ class _Reads:
             for prop, marked in self.unresolved.items():
                 if any(target.value == UNRESOLVED_NODE for target in read.get(prop, ())):
                     marked.add(dcid)
-            if (entry := _resolved_entry(read)) is None:
+            if (entry := resolved_entry(read)) is None:
                 continue
             types = entry.get(_TYPE_OF, ())
             self.arcs[dcid] = {
                 prop: tuple(dict.fromkeys(target.value for target in entry.get(prop, ())))
-                for prop in _NODE_PROPERTIES
+                for prop in NODE_PROPERTIES
             }
-            self.others[dcid] = _other_properties(dcid, entry, self.left_out)
+            self.others[dcid] = node_other_properties(dcid, entry, self.left_out)
             if any(not target.provenances for target in types):
                 self.unsourced.add(dcid)
             self.provenances[dcid] = frozenset(
@@ -811,7 +813,7 @@ class _Reads:
                 self._read_nodes((subject.dcid for subject in subjects), phase=_INSTANCES)
 
 
-def _resolved_entry(
+def resolved_entry(
     entry: Mapping[str, Sequence[ArcTarget]] | None,
 ) -> dict[str, tuple[ArcTarget, ...]] | None:
     """`entry` less every `UNRESOLVED_NODE` target and every property left with none, `None`
@@ -931,16 +933,16 @@ def _descendants(dcid: str, subclass_pages: Mapping[str, tuple[tuple[str, ...], 
     return seen
 
 
-def _other_properties(
+def node_other_properties(
     dcid: str, entry: Mapping[str, Sequence[ArcTarget]], left_out: dict[tuple[str, str], int]
 ) -> _OtherProperties:
-    """Every property of `entry` outside `_NODE_PROPERTIES`, each target a node reference or a
+    """Every property of `entry` outside `NODE_PROPERTIES`, each target a node reference or a
     literal, properties and targets sorted. A literal past `OTHER_LITERAL_MAX_CHARS` and the
     values past the first `OTHER_VALUES_MAX` are left out and counted in `left_out` under
     `(dcid, property)`, and a property left with no value is left out."""
     others: _OtherProperties = {}
     for prop, targets in sorted(entry.items()):
-        if prop in _NODE_PROPERTIES:
+        if prop in NODE_PROPERTIES:
             continue
         kept = sorted(
             (
@@ -962,7 +964,7 @@ def _other_properties(
     return others
 
 
-def _node(
+def schema_node(
     dcid: str,
     arcs: _Arcs,
     other_properties: _OtherProperties,
@@ -970,6 +972,8 @@ def _node(
     instances: SchemaInstances | None,
     catalogue: Catalogue,
 ) -> SchemaNode:
+    """The `SchemaNode` of `dcid` from its `NODE_PROPERTIES` values `arcs`, every value sorted,
+    with `declared_by` from `provenances`, null when there is none."""
     return SchemaNode(
         ref=dcid,
         label=display_name(arcs["name"], dcid),
