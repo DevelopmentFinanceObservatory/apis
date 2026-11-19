@@ -220,6 +220,12 @@ def test_lifespan_reentry_rebuilds_and_closes_owned_deps(monkeypatch: pytest.Mon
         def close(self) -> None:
             reader_closes.append(None)
 
+        def mixer_graph(self) -> FakeGraphNodeReader:
+            return FakeGraphNodeReader()
+
+        def un_graph(self) -> FakeGraphNodeReader:
+            return FakeGraphNodeReader()
+
     acquire_calls: list[None] = []
     release_calls: list[object] = []
     sentinel_shared = _InertShared()
@@ -536,6 +542,12 @@ class TestProfileWiring:
 
             def close(self) -> None:
                 events.append("close_graph_client")
+
+            def mixer_graph(self) -> FakeGraphNodeReader:
+                return FakeGraphNodeReader()
+
+            def un_graph(self) -> FakeGraphNodeReader:
+                return FakeGraphNodeReader()
 
         class _SpySdmxClient(app_module.SdmxClient):
             def __init__(self, **options: object) -> None:

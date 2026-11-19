@@ -89,7 +89,7 @@ from pydantic import (
     StringConstraints,
 )
 
-from dfo_platform.wire import ResponseModel
+from dfo_platform.wire import ResponseModel, is_none
 from graph_api.routing import DCID_MAX_LENGTH
 from origin_catalogue import OriginId
 
@@ -242,14 +242,16 @@ class SchemaTerm(ResponseModel):
         "declared_by is null"
     )
     declared_by: DeclaredBy | None = Field(
-        description="the origin declaring the term, by the node's rule; null when the graph "
-        "names no declaring Provenance for the term: its listing entries carry none"
+        description="the origin declaring the term, by the node's rule on /schema/terms and "
+        "always un_system on /schema/terms/un_system; null when the graph names no declaring "
+        "Provenance for the term: its listing entries carry none"
     )
 
 
 class SchemaTerms(ResponseModel):
-    """Every Class and Property the DFO graph lists by `typeOf`, base Data Commons terms
-    included. The UN origin's terms are not listed, even where the deployment serves it."""
+    """Every Class and Property one graph lists by `typeOf`. `GET /schema/terms` lists the DFO
+    graph's, base Data Commons terms included and the UN origin's left out.
+    `GET /schema/terms/un_system` lists those the UN System Data Commons declares."""
 
     generation: str | None = Field(
         description="the graph generation the list was built from; null when unknown"
@@ -265,8 +267,18 @@ class SchemaPattern(ResponseModel):
     stat_type: str | None
     measurement_qualifier: str | None
     measurement_denominator: str | None
+    measurement_denominator_unresolved: bool | None = Field(
+        default=None,
+        exclude_if=is_none,
+        description="on `/schema/usage/base` and `/schema/usage/un_system`: true when the StatVars' "
+        "measurementDenominator arc names no value or only ProvisionalNode targets, which "
+        "keeps their pattern apart from one with no denominator; absent on `/schema/usage`, "
+        "whose StatVars all carry resolved denominators",
+    )
     constraint_properties: list[str] = Field(
-        description="the names of the constraint properties the StatVars set, sorted"
+        description="the names of the constraint properties the StatVars declare, sorted; on "
+        "`/schema/usage/base` and `/schema/usage/un_system` a declared property with no value arc is listed here "
+        "and adds nothing to `constraint_values`"
     )
     observation_properties: list[str] = Field(
         description="the observation properties the StatVars declare, sorted"
@@ -306,10 +318,14 @@ class ProvenanceUsage(ResponseModel):
 
     ref: str = Field(description="the Provenance's dcid")
     label: str | None = Field(
-        description="the Provenance node's name in the graph; null when it has none"
+        description="the Provenance's name: its graph node's on `/schema/usage`, the origin "
+        "catalogue's on `/schema/usage/base` and `/schema/usage/un_system`; null when it has none"
     )
     description: str | None = Field(
-        description="the Provenance node's description in the graph; null when it has none"
+        description="the Provenance's description: its graph node's on `/schema/usage`, its "
+        "source's in the origin catalogue on `/schema/usage/base` and `/schema/usage/un_system`; null when it has "
+        "none, "
+        "as for every UN System Provenance"
     )
     stat_var_count: int
     patterns: list[SchemaPattern] = Field(
@@ -319,14 +335,37 @@ class ProvenanceUsage(ResponseModel):
         description="one entry per constraint property the StatVars set, sorted by property"
     )
     facets: SchemaFacets = Field(
-        description="facts of the coverage facets; empty lists when coverage holds none"
+        description="facts of the coverage facets; empty lists when coverage holds none, as "
+        "for every Provenance on `/schema/usage/base` and `/schema/usage/un_system`"
+    )
+
+
+class UsageTerm(ResponseModel):
+    """One node a usage document's patterns or constraint values name, with the label
+    `/node/{dcid}` gives it and the types the StatVars' arcs to it carry."""
+
+    ref: str = Field(description="the node's dcid")
+    label: str | None = Field(
+        description="the node's display name, as `/node/{dcid}` gives it; null when it has "
+        "none, and when its only name equals its dcid"
+    )
+    types: list[str] = Field(
+        description="the node's types on the arcs naming it, sorted; empty when they give none"
     )
 
 
 class DatasetUsage(ResponseModel):
-    """How each Provenance of the code index uses the model."""
+    """How each Provenance a usage route serves uses the model: those of the code index on
+    `/schema/usage`, the base or UN System ones of the origin catalogue on
+    `/schema/usage/base` and `/schema/usage/un_system`."""
 
     provenances: list[ProvenanceUsage] = Field(description="sorted by ref")
+    terms: list[UsageTerm] | None = Field(
+        default=None,
+        exclude_if=is_none,
+        description="on `/schema/usage/base` and `/schema/usage/un_system`: every node the patterns and "
+        "constraint values name, sorted by ref; absent on `/schema/usage`",
+    )
 
 
 CONSTRAINT_NUMBER_BOUND = 2**53
@@ -385,7 +424,8 @@ FindingCode = Literal[
 - `value_missing`: the measured property is absent, or a constraint property has a null value.
 - `not_a_property`: a constraint property, the measured property or an observation property
   is not typed `Property`.
-- `not_a_class`: the population type is not typed `Class`.
+- `not_a_class`: the population type is not typed `Class` and is no UN System series the
+  request's catalogue holds.
 - `value_outside_range`: no type of the value is a schema document class whose
   `subClassOf` ancestry in the document meets the DFO-declared property's `rangeIncludes`,
   every type of the value is known, every `rangeIncludes` target resolves, and the document

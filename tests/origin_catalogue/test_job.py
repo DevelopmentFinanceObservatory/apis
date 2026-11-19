@@ -1083,7 +1083,7 @@ def test_refuses_an_excluded_series_whose_dfo_provenance_dfo_does_not_hold(tmp_p
 
 @pytest.fixture(autouse=True)
 def _no_wait_before_a_repeated_page(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(node_reads, "_REPEATED_PAGE_WAITS_SECONDS", (0.0, 0.0, 0.0))
+    monkeypatch.setattr(node_reads, "REPEATED_PAGE_WAITS_SECONDS", (0.0, 0.0, 0.0))
 
 
 def _stalling(un_graph: FakeGraph) -> None:

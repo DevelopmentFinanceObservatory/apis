@@ -41,7 +41,7 @@ CRS = "provenance/OECDCreditorReportingSystem"
 
 @pytest.fixture(autouse=True)
 def _no_wait_before_a_repeated_page(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(node_reads, "_REPEATED_PAGE_WAITS_SECONDS", (0.0, 0.0, 0.0))
+    monkeypatch.setattr(node_reads, "REPEATED_PAGE_WAITS_SECONDS", (0.0, 0.0, 0.0))
 
 
 def registry(*excluded: str) -> Registry:

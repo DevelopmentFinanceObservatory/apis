@@ -773,6 +773,37 @@ def test_the_bound_evicts_the_least_recently_used_entry():
     assert len(calls) == 4, "c (most recently used before a's re-fetch) must still be cached"
 
 
+def test_a_weight_budget_evicts_the_least_recently_used_and_refuses_a_value_past_it():
+    """Entries leave oldest first until the stored weight fits, whatever the entry bound, and a
+    value heavier than the whole budget answers its callers without being stored."""
+    cache: SingleFlightCache[str, str] = _cache(maxsize=100, weigh=len, max_weight=10)
+
+    for key, value in (("a", "aaaa"), ("b", "bbbb"), ("c", "cccc")):
+        cache.get_or_fetch(key, lambda _deadline, value=value: value)
+    assert cache.cached_many(["a", "b", "c"]) == {"b": "bbbb", "c": "cccc"}
+    assert cache.stats()["weight"] == 8
+
+    assert cache.get_or_fetch("big", lambda _deadline: "x" * 11) == "x" * 11
+    assert cache.cached_many(["big", "b", "c"]) == {"b": "bbbb", "c": "cccc"}
+
+    cache.clear()
+    assert cache.stats()["weight"] == 0
+
+
+def test_an_offer_over_an_expired_entry_replaces_its_weight():
+    clock = [0.0]
+    cache: SingleFlightCache[str, str] = _cache(
+        maxsize=10, weigh=len, max_weight=10, clock=lambda: clock[0], ttl_for_stamp=lambda _: 5.0
+    )
+
+    assert cache.offer("a", "aaaa", stamp_key=cache.stamp_key())
+    clock[0] = 6.0
+    assert cache.offer("a", "aaaaaa", stamp_key=cache.stamp_key())
+
+    assert cache.stats()["weight"] == 6
+    assert cache.cached_many(["a"]) == {"a": "aaaaaa"}
+
+
 def test_ttl_from_the_generation_stamp_expires_an_entry():
     generation = FakeGeneration(token="gen-a")
     clock = [0.0]

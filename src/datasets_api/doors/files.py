@@ -18,7 +18,8 @@ its base version is revoked under those ids, and that the digest is linked to it
 version refuses `snapshot_revoked` and signs nothing. A digest the version no longer links
 refuses `artifact_expired` when this deployment stored its bytes, since a re-render replaced
 it, and `artifact_not_found` otherwise. A servable location is signed in hand for
-`DOWNLOAD_SIGNED_URL_TTL` and answered 302.
+`DOWNLOAD_SIGNED_URL_TTL` and answered 302, which carries `x-dfo-artifact-tier` (`pinned` or
+`working`) for the website gateway to choose a cache lifetime.
 
 A digest whose working location is past retention renews on the work executor under a
 materialise permit and the request deadline. When the digest's object is still present, `get`
@@ -58,6 +59,7 @@ from __future__ import annotations
 import functools
 import logging
 from collections.abc import Callable, Mapping, Sequence
+from typing import NamedTuple
 
 from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse
@@ -95,7 +97,7 @@ from datasets_api.doors.definition import _run_retrieval, request_definition_dep
 from datasets_api.doors.mint_errors import MintBackpressure, classify_mint_exception
 from datasets_api.doors.mint_inventory import MINT_EXCEPTION_EXEMPLARS
 from datasets_api.doors.snapshot import read_under_served_id, servable_listable_locations
-from datasets_api.headers import no_store_headers
+from datasets_api.headers import ARTIFACT_TIER_HEADER, no_store_headers
 from datasets_api.manifest import stored_manifest, stored_manifest_facts
 from datasets_api.manifest_models import CitationModel, Manifest
 from datasets_api.mint_models import MintOptions
@@ -214,6 +216,13 @@ def signed_download_url(
     )
 
 
+class ResolvedLink(NamedTuple):
+    """A signed download URL and the tier of the stored object it signs."""
+
+    url: str
+    tier: Tier
+
+
 def _signed_url(
     location: StoredArtifactLocation, *, stored: ServableVersion, artifact_store: ArtifactStore
 ) -> str:
@@ -228,6 +237,16 @@ def _signed_url(
         media_type=location.media_type,
         file_name=artifact_file_name(location, stored=stored),
         artifact_store=artifact_store,
+    )
+
+
+def _resolved_link(
+    location: StoredArtifactLocation, *, stored: ServableVersion, artifact_store: ArtifactStore
+) -> ResolvedLink:
+    """`_signed_url` with the tier of the object it signs."""
+    return ResolvedLink(
+        url=_signed_url(location, stored=stored, artifact_store=artifact_store),
+        tier=Tier(location.tier),
     )
 
 
@@ -251,9 +270,9 @@ def _read(
     return stored, subject_ids, stored.servable_digest(digest)
 
 
-def resolve_link(*, id: str, content_version: str, digest: str, deps: Deps) -> str | None:
-    """The signed URL a servable link redirects to, or `None` when the digest's working
-    location is past retention and must renew first (`renew_and_resolve`).
+def resolve_link(*, id: str, content_version: str, digest: str, deps: Deps) -> ResolvedLink | None:
+    """The signed URL and tier a servable link redirects to, or `None` when the digest's
+    working location is past retention and must renew first (`renew_and_resolve`).
 
     Raises `SpecNotFound`, `SnapshotNotFound`, `SnapshotRevoked`, `ArtifactExpired` or
     `ArtifactNotFound` before any signing.
@@ -263,7 +282,7 @@ def resolve_link(*, id: str, content_version: str, digest: str, deps: Deps) -> s
     )
     if location is None:
         return None
-    return _signed_url(location, stored=stored, artifact_store=deps.artifact_store)
+    return _resolved_link(location, stored=stored, artifact_store=deps.artifact_store)
 
 
 def _reupload(location: StoredArtifactLocation, *, deps: DefinitionDeps) -> bytes | None:
@@ -427,7 +446,9 @@ def render_version_from_frame(
     return None
 
 
-def renew_and_resolve(*, id: str, content_version: str, digest: str, deps: DefinitionDeps) -> str:
+def renew_and_resolve(
+    *, id: str, content_version: str, digest: str, deps: DefinitionDeps
+) -> ResolvedLink:
     """Renew the digest's object, then resolve the link as `resolve_link` does.
 
     The clicked digest's own object renews when still present (`_renew`). Otherwise its
@@ -465,7 +486,7 @@ def renew_and_resolve(*, id: str, content_version: str, digest: str, deps: Defin
         location = stored.servable_digest(digest)
     if location is None:
         raise ArtifactExpired(id=id, content_version=content_version)
-    return _signed_url(location, stored=stored, artifact_store=deps.artifact_store)
+    return _resolved_link(location, stored=stored, artifact_store=deps.artifact_store)
 
 
 SELECTOR_QUERY_KEYS = frozenset({"format", "bundle", "layout"})
@@ -750,7 +771,7 @@ def build_files_door(*, deps: DepsCell) -> DoorContribution:
     async def get_file(id: str, content_version: str, digest: str) -> RedirectResponse:
         current = deps.get()
         with door_call("files", logger=logger, delivers=True) as call:
-            url = await current.read_executor.run(
+            link = await current.read_executor.run(
                 functools.partial(
                     run_with_timings,
                     resolve_link,
@@ -762,8 +783,8 @@ def build_files_door(*, deps: DepsCell) -> DoorContribution:
                 ),
                 refuse=DownloadBackpressure,
             )
-            if url is None:
-                url = await _run_retrieval(
+            if link is None:
+                link = await _run_retrieval(
                     current.work_executor,
                     renew_and_resolve,
                     deps=request_definition_deps(current),
@@ -774,7 +795,12 @@ def build_files_door(*, deps: DepsCell) -> DoorContribution:
                     digest=digest,
                 )
         return RedirectResponse(
-            url, status_code=302, headers=no_store_headers(server_timing=call.server_timing)
+            link.url,
+            status_code=302,
+            headers={
+                **no_store_headers(server_timing=call.server_timing),
+                ARTIFACT_TIER_HEADER: link.tier.value,
+            },
         )
 
     @router.get(

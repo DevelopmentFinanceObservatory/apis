@@ -26,7 +26,7 @@ resolve its value, so a member with an unresolved constraint is never the family
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Final, NamedTuple
 
@@ -211,6 +211,60 @@ def summarise(
     return {key: builder.summary(un_only=un_only) for key, builder in builders.items()}
 
 
+class VariableArcs:
+    """One variable's `->*` arc rows grouped by property, read as this module's docstring
+    reads a five-tuple. `origin_catalogue.families` and `graph_api.origin_usage` share it, so
+    a family key and a usage pattern read a variable the same way."""
+
+    __slots__ = ("_by_property",)
+
+    def __init__(self, arcs: Iterable[UnArc]) -> None:
+        by_property: dict[str, list[UnArc]] = {}
+        for arc in arcs:
+            by_property.setdefault(arc.property, []).append(arc)
+        self._by_property = by_property
+
+    def rows(self, prop: str) -> Sequence[UnArc]:
+        """The rows of `prop`, in the order given."""
+        return self._by_property.get(prop, ())
+
+    def value(self, prop: str) -> str | None:
+        """`prop`'s first literal, else its first node's dcid, `None` when it has neither."""
+        rows = self.rows(prop)
+        found = next((arc for arc in rows if arc.value is not None), None) or next(
+            (arc for arc in rows if arc.dcid is not None), None
+        )
+        if found is None:
+            return None
+        return found.value if found.value is not None else found.dcid
+
+    def provisional(self, prop: str) -> bool:
+        """Whether `prop` has rows and every one targets a node typed only `ProvisionalNode`."""
+        rows = self.rows(prop)
+        return bool(rows) and all(arc.types == _PROVISIONAL_TYPES for arc in rows)
+
+    def qualifier(self) -> str | None:
+        """The `measurementQualifier` value, `None` when every target is provisional."""
+        return (
+            None if self.provisional("measurementQualifier") else self.value("measurementQualifier")
+        )
+
+    def denominator_unresolved(self) -> bool:
+        """Whether `measurementDenominator` has rows but no value, or only provisional targets."""
+        return (
+            bool(self.rows("measurementDenominator"))
+            and self.value("measurementDenominator") is None
+        ) or self.provisional("measurementDenominator")
+
+    def declared_constraints(self) -> list[str]:
+        """The `constraintProperties` targets less the `import_added` ones, in the order given."""
+        return [
+            arc.dcid
+            for arc in self.rows("constraintProperties")
+            if arc.dcid is not None and not import_added(arc)
+        ]
+
+
 @dataclass(frozen=True, slots=True)
 class _VariableFacts:
     """What a family summary reads from one variable's arcs: `constrained` says it declares
@@ -224,54 +278,23 @@ class _VariableFacts:
 
     @staticmethod
     def read(dcid: str, arcs: tuple[UnArc, ...]) -> _VariableFacts:
-        by_property: dict[str, list[UnArc]] = {}
-        for arc in arcs:
-            by_property.setdefault(arc.property, []).append(arc)
-
-        def target(property: str) -> UnArc | None:
-            rows = by_property.get(property, ())
-            return next((arc for arc in rows if arc.value is not None), None) or next(
-                (arc for arc in rows if arc.dcid is not None), None
-            )
-
-        def value(property: str) -> str | None:
-            found = target(property)
-            if found is None:
-                return None
-            return found.value if found.value is not None else found.dcid
-
-        def provisional(property: str) -> bool:
-            rows = by_property.get(property, ())
-            return bool(rows) and all(arc.types == _PROVISIONAL_TYPES for arc in rows)
-
-        denominator = value("measurementDenominator")
+        read = VariableArcs(arcs)
         key = FamilyKey(
-            population_type=value("populationType") or "",
-            measured_property=value("measuredProperty") or "",
-            stat_type=value("statType") or "",
-            measurement_qualifier=(
-                None if provisional("measurementQualifier") else value("measurementQualifier")
-            ),
-            measurement_denominator=denominator,
-            denominator_unresolved=(
-                bool(by_property.get("measurementDenominator")) and denominator is None
-            )
-            or provisional("measurementDenominator"),
-            role_bearing=any(
-                arc.dcid is not None for arc in by_property.get("observationProperties", ())
-            ),
+            population_type=read.value("populationType") or "",
+            measured_property=read.value("measuredProperty") or "",
+            stat_type=read.value("statType") or "",
+            measurement_qualifier=read.qualifier(),
+            measurement_denominator=read.value("measurementDenominator"),
+            denominator_unresolved=read.denominator_unresolved(),
+            role_bearing=any(arc.dcid is not None for arc in read.rows("observationProperties")),
         )
-        declared = [
-            arc.dcid
-            for arc in by_property.get("constraintProperties", ())
-            if arc.dcid is not None and not import_added(arc)
-        ]
+        declared = read.declared_constraints()
         constraints: dict[str, str] = {}
         for prop in declared:
-            found = value(prop)
+            found = read.value(prop)
             if found is not None:
                 constraints[prop] = found
-        names = [arc.value for arc in by_property.get("name", ()) if arc.value]
+        names = [arc.value for arc in read.rows("name") if arc.value]
         return _VariableFacts(
             key=key,
             constrained=bool(declared),
@@ -319,6 +342,7 @@ __all__ = [
     "FamilySummary",
     "FamilyTables",
     "ReleaseFamilies",
+    "VariableArcs",
     "base_without",
     "family_tables",
     "merge_summaries",

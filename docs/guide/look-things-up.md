@@ -109,7 +109,7 @@ The documentation record includes source details, licence, scope and units, meth
 
 ## Read the model
 
-`GET /api/v1/graph/schema` serves every Class and Property DFO declares, with their ranges and domains. A DFO Class that is an enumeration or the range of a DFO property, and a base enumeration, carries `instances`, the nodes typed by it or its subclasses, so a value list such as `CurrencyDenomination` names every currency DFO declares. Each node is named by `ref`, its dcid, and `label`, its name, as on the node route. `GET /api/v1/graph/schema/terms` lists every Class and Property of the DFO graph, base Data Commons included and the UN origin's terms excluded, with name, types and declaring Provenances.
+`GET /api/v1/graph/schema` serves every Class and Property DFO declares, with their ranges and domains. A DFO Class that is an enumeration or the range of a DFO property, and a base enumeration, carries `instances`, the nodes typed by it or its subclasses, so a value list such as `CurrencyDenomination` names every currency DFO declares. Each node is named by `ref`, its dcid, and `label`, its name, as on the node route. `GET /api/v1/graph/schema/terms` lists every Class and Property of the DFO graph, base Data Commons included and the UN origin's terms excluded, with name, types and declaring Provenances. `GET /api/v1/graph/schema/terms/un_system` lists the Classes and Properties the UN System Data Commons declares, in the same shape, with `generation` `null`.
 
 ```bash
 curl -fsS "$DFO_API/api/v1/graph/schema" \
@@ -117,6 +117,15 @@ curl -fsS "$DFO_API/api/v1/graph/schema" \
 ```
 
 A node's `declared_by` names the origin that declares it: `dfo`, `base` for base Data Commons, or `un_system`. It is `null` when the graph names no declaring Provenance for the node or term. `range_includes` and `domain_includes` name the classes a property accepts. The first request after a graph release builds the document and can take longer than later ones. A `503` whose `cause.code` is `schema_building` means the build is still running; retry after the `Retry-After` interval.
+
+`GET /api/v1/graph/schema/node/{dcid}` reads one node the graph holds, base, UN or DFO, with its schema neighbours, in the document's node shape: `{generation, centre, nodes, capped}`. `centre` is the node with every outgoing arc, and `nodes` holds the classes and properties it points at, the subclasses and properties that point at it, and the members of a value list, up to 1,000 per property. For a class, `nodes` also holds every class below it, up to 1,000, each with its `sub_class_of` edge, so following `sub_class_of` down from the centre reaches each. `capped` names each list the view cut: a property whose list stopped at 1,000, a property of the centre with more than 100 values, a property of the centre whose literal values total more than 32 KiB, such as the `geoJsonCoordinates` of `country/USA`, which the centre leaves out, or `subClassOf+` when the classes below a class stopped. Use it for a term the document does not hold, such as the base property `age` or a UN series.
+
+```bash
+curl -fsS "$DFO_API/api/v1/graph/schema/node/age" \
+  | jq '{centre: .centre.range_includes, nodes: [.nodes[].ref]}'
+```
+
+A UN id on a deployment that does not serve the UN origin answers `404` with `cause.code` `origin_not_served`, a node no deployment holds `404` with `cause.code` `node_not_held`, a node whose own graph answer passes 8 MiB `500` with `cause.code` `node_view_too_large`, and a node whose paged graph answer does not advance `500` with `cause.code` `graph_not_advancing`. All four stay the same on retry.
 
 ## See how a dataset uses the model
 
@@ -126,6 +135,8 @@ A node's `declared_by` names the origin that declares it: `dfo`, `base` for base
 curl -fsS "$DFO_API/api/v1/graph/schema/usage" \
   | jq '.provenances[0] | {ref, stat_var_count, patterns: (.patterns | length)}'
 ```
+
+`GET /api/v1/graph/schema/usage/base` and `GET /api/v1/graph/schema/usage/un_system` answer in the same shape for each base Data Commons Provenance and each UN System agency, with the origin catalogue's name and source description for each Provenance (no description for a UN agency) and empty facet lists. Both add `terms`, the name and types of every node their patterns and constraint values name, which labels UN series and base terms that `schema/terms` does not list. A deployment that does not serve the UN origin answers the second with `404` and `cause.code` `origin_not_served`. Retrying does not help.
 
 ## Check StatVar definitions
 
@@ -158,7 +169,8 @@ A `resolved` result has an `entity.ref`. `GET /api/v1/graph/node/{ref}` should r
 - `400 request_invalid` with `/texts` in the pointer means the request contains an invalid name or exceeds a current request limit. Check `GET /api/v1/graph/capabilities`.
 - `400 request_invalid` on the members route names the fault in its pointer: `/relation` for a list a held node lacks, `/cursor` for a cursor that belongs to another list, `/as_of` for a date asked of a membership that records none.
 - `400 request_invalid` on the check means the body breaks a size bound: more than `caps.max_check_rows` rows, a row over `caps.max_check_constraint_properties` or `caps.max_check_observation_properties`, or a string over 512 characters. A pointer such as `/rows/37/constraint_properties` names the row; send the request again without it.
-- `503 service_unavailable` is retryable. Every graph read worker was busy, or the service was still starting. On the schema routes `cause.code` says why: `schema_building` while the schema build runs, `check_busy` while two checks already run.
+- `503 service_unavailable` is retryable. Every graph read worker was busy, or the service was still starting. On the schema routes `cause.code` says why: `schema_building` while the schema build runs, `check_busy` while two checks already run, and `upstream_rate_limited` while the graph is limiting this service's reads. On `GET /api/v1/graph/schema/terms/un_system`, `listing_incomplete` means the UN deployment listed no UN term. Retry after the `Retry-After` interval.
+- `404 not_found` on `GET /api/v1/graph/schema/terms/un_system` or `GET /api/v1/graph/schema/usage/un_system` with `cause.code` `origin_not_served` means this deployment does not serve the UN origin. Retrying does not help.
 - `500 internal_error` on the schema routes means the build refused the graph: a term listing reached its cap, or no node is declared by DFO. A retry within 60 s gets the same 500, and the first request after that builds again.
 
 ## Next

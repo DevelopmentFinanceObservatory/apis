@@ -8,6 +8,9 @@ The surface mounts at `/api/graph` and operates as an independent composition ro
  POST /resolve        GET /node/{dcid}      GET /node/{dcid}/members     GET /documentation/{dcid}
                       POST /nodes           GET /roots                   GET /sources
                       GET /schema  GET /schema/terms  GET /schema/usage  POST /schema/check
+                      GET /schema/terms/un_system
+                      GET /schema/usage/base  GET /schema/usage/un_system
+                      GET /schema/node/{dcid}
       |                    |                        |                            |
       v                    v                        v                            |
 +------------------+  +------------------------------------------+               |
@@ -60,12 +63,12 @@ A text with no listed-name survivor takes the description-arc fallback ladder, w
 
 All outcomes return HTTP 200 with one result per input text, index-aligned with `texts`. Every result has the same fields, and a field the status does not use is `null`.
 
-| Status      | Condition                                                                                                                                | Fields set                                                                                      |
-| :---------- | :--------------------------------------------------------------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------- |
-| `resolved`  | One entity the input text itself names.                                                                                                  | `entity`, `matched`, `reading`, `near_matches`; for a group or a region also `projection`, `member_count`, `members` |
-| `ambiguous` | Two or more entities the input text itself names, in the resolver's order.                                                               | `candidates`, and `near_matches` when `kinds` removed the first match                         |
-| `not_found` | No candidate of the requested kinds survived. A spelling-corrected match lands here too.                                                 | `near_matches`                                                                                  |
-| `not_held`  | The resolver named a real entity, but this deployment's graph holds no node for it.                                                      | `entity`, with `kind` `null`                                                                    |
+| Status      | Condition                                                                                | Fields set                                                                                                           |
+| :---------- | :--------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------- |
+| `resolved`  | One entity the input text itself names.                                                  | `entity`, `matched`, `reading`, `near_matches`; for a group or a region also `projection`, `member_count`, `members` |
+| `ambiguous` | Two or more entities the input text itself names, in the resolver's order.               | `candidates`, and `near_matches` when `kinds` removed the first match                                                |
+| `not_found` | No candidate of the requested kinds survived. A spelling-corrected match lands here too. | `near_matches`                                                                                                       |
+| `not_held`  | The resolver named a real entity, but this deployment's graph holds no node for it.      | `entity`, with `kind` `null`                                                                                         |
 
 Each `entity`, `candidates` entry and `near_matches` entry is `{ref, label, kind}`. `ref` is the graph dcid and `kind` is one of the 16 kinds on `GET /api/graph/capabilities`. `matched` is `{text, as}`: the listed text the input matched, and whether it is the entity's `name`, an `alias`, or a `code`. `reading` is `members` when the text names a group's members ("EU countries") and `entity` otherwise.
 
@@ -103,23 +106,27 @@ The example omits the `null` members each result carries. The response comes fro
     {
       "input": "Kenya",
       "status": "resolved",
-      "entity": {"ref": "country/KEN", "label": "Kenya", "kind": "country"},
-      "matched": {"text": "Kenya", "as": "name"},
+      "entity": { "ref": "country/KEN", "label": "Kenya", "kind": "country" },
+      "matched": { "text": "Kenya", "as": "name" },
       "reading": "entity"
     },
     {
       "input": "Congo",
       "status": "ambiguous",
       "candidates": [
-        {"ref": "country/COD", "label": "Congo [DRC]", "kind": "country"},
-        {"ref": "country/COG", "label": "Congo [Republic]", "kind": "country"}
+        { "ref": "country/COD", "label": "Congo [DRC]", "kind": "country" },
+        { "ref": "country/COG", "label": "Congo [Republic]", "kind": "country" }
       ]
     },
     {
       "input": "G7",
       "status": "resolved",
-      "entity": {"ref": "GroupOfSeven", "label": "Group of Seven", "kind": "group"},
-      "matched": {"text": "G7", "as": "alias"},
+      "entity": {
+        "ref": "GroupOfSeven",
+        "label": "Group of Seven",
+        "kind": "group"
+      },
+      "matched": { "text": "G7", "as": "alias" },
       "reading": "entity",
       "projection": "countries",
       "member_count": 7,
@@ -128,14 +135,18 @@ The example omits the `null` members each result carries. The response comes fro
     {
       "input": "North America",
       "status": "resolved",
-      "entity": {"ref": "northamerica", "label": "North America", "kind": "continent"},
-      "matched": {"text": "North America", "as": "name"},
+      "entity": {
+        "ref": "northamerica",
+        "label": "North America",
+        "kind": "continent"
+      },
+      "matched": { "text": "North America", "as": "name" },
       "reading": "entity",
       "projection": "countries",
       "member_count": 23,
       "members": "/api/graph/node/northamerica/members?relation=countries&projection=countries"
     },
-    {"input": "Atlantis Prime", "status": "not_found", "near_matches": []}
+    { "input": "Atlantis Prime", "status": "not_found", "near_matches": [] }
   ]
 }
 ```
@@ -148,19 +159,23 @@ With `expand: ["members"]` the G7's `members` is the list of its seven countries
     {
       "input": "G7",
       "status": "resolved",
-      "entity": {"ref": "GroupOfSeven", "label": "Group of Seven", "kind": "group"},
-      "matched": {"text": "G7", "as": "alias"},
+      "entity": {
+        "ref": "GroupOfSeven",
+        "label": "Group of Seven",
+        "kind": "group"
+      },
+      "matched": { "text": "G7", "as": "alias" },
       "reading": "entity",
       "projection": "countries",
       "member_count": 7,
       "members": [
-        {"ref": "country/CAN", "label": "Canada"},
-        {"ref": "country/DEU", "label": "Germany"},
-        {"ref": "country/FRA", "label": "France"},
-        {"ref": "country/GBR", "label": "United Kingdom"},
-        {"ref": "country/ITA", "label": "Italy"},
-        {"ref": "country/JPN", "label": "Japan"},
-        {"ref": "country/USA", "label": "United States"}
+        { "ref": "country/CAN", "label": "Canada" },
+        { "ref": "country/DEU", "label": "Germany" },
+        { "ref": "country/FRA", "label": "France" },
+        { "ref": "country/GBR", "label": "United Kingdom" },
+        { "ref": "country/ITA", "label": "Italy" },
+        { "ref": "country/JPN", "label": "Japan" },
+        { "ref": "country/USA", "label": "United States" }
       ]
     }
   ]
@@ -173,7 +188,7 @@ With `expand: ["members"]` the G7's `members` is the list of its seven countries
 
 Describes one node under one envelope. Multi-segment DCIDs containing slashes (such as `country/KEN` or `dc/base/UNSD_M49_SubRegion`) are supported via a custom URL path convertor matching `[A-Za-z0-9_.\-]+(?:/[A-Za-z0-9_.\-]+)*`.
 
-The `dcid` path parameter is capped at 512 characters, published as `caps.max_dcid_chars` on GET /api/graph/capabilities, which is also the cap `GET /api/graph/documentation/{dcid}` enforces. A longer value is refused `400 request_invalid` before any DCP read runs.
+The `dcid` path parameter is capped at 512 characters, published as `caps.max_dcid_chars` on GET /api/graph/capabilities, which is also the cap `GET /api/graph/documentation/{dcid}` and `GET /api/graph/schema/node/{dcid}` enforce. A longer value is refused `400 request_invalid` before any DCP read runs.
 
 `as_of` (an ISO date) dates a group's or region's membership. On a membership that records no dates it is refused `400 request_invalid` at `/as_of`, and any other kind ignores it.
 
@@ -181,16 +196,16 @@ The `dcid` path parameter is capped at 512 characters, published as `caps.max_dc
 
 Every node carries the same members, plus one detail block named for its `kind`. `other` has no block.
 
-| Member        | Content                                                                                                                                  |
-| :------------ | :--------------------------------------------------------------------------------------------------------------------------------------- |
-| `ref`         | The node's dcid.                                                                                                                         |
+| Member        | Content                                                                                                                                                                                                                                                       |
+| :------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ref`         | The node's dcid.                                                                                                                                                                                                                                              |
 | `label`       | The node's name. For a Provenance, its parent Dataset's name where it has one. For a group, and a region the membership policy holds, the membership authority's canonical name, as resolve gives it. `null`, and named in `gaps`, when the graph gives none. |
-| `kind`        | One of the 16 kinds below.                                                                                                               |
-| `types`       | The node's `typeOf` values, as the graph holds them.                                                                                     |
-| `description` | The node's prose in the graph; `null` when it has none.                                                                                  |
-| `links`       | Each list relation the node has, mapped to its route on `GET /api/graph/node/{dcid}/members`. `{}` when none.                           |
-| `gaps`        | The member path of every value this door cannot know. A value it cannot know is `null`; a verified empty list is `[]`.                  |
-| `built_from`  | The build of each table the response read: `code_index`, `origin_catalogue`, `coverage_index` or `membership`.                           |
+| `kind`        | One of the 16 kinds below.                                                                                                                                                                                                                                    |
+| `types`       | The node's `typeOf` values, as the graph holds them.                                                                                                                                                                                                          |
+| `description` | The node's prose in the graph; `null` when it has none.                                                                                                                                                                                                       |
+| `links`       | Each list relation the node has, mapped to its route on `GET /api/graph/node/{dcid}/members`. `{}` when none.                                                                                                                                                 |
+| `gaps`        | The member path of every value this door cannot know. A value it cannot know is `null`; a verified empty list is `[]`.                                                                                                                                        |
+| `built_from`  | The build of each table the response read: `code_index`, `origin_catalogue`, `coverage_index` or `membership`.                                                                                                                                                |
 
 Every reference is `{ref, label}`, with the dcid in `ref`. A label skips a name equal to its own dcid, a junk triple some imports write.
 
@@ -198,18 +213,18 @@ Every reference is `{ref, label}`, with the dcid in `ref`. A label skips a name 
 
 The kind comes from `entity_resolution.kinds.classify`, which resolve calls too, over the same code index and membership policy, so a node has one kind on both routes. It reads, in order, and the first that holds wins: the membership policy (a group it holds is `group`, whatever the graph says of the id), `typeOf` (`StatisticalVariable`, `Provenance`, `Source`, `Dataset`), the code index (a code system's graph id, a code row's dcid), the membership policy again (a region it holds is `continent` when its authority, resolvekit's UN M49 store, classes it a continent, else `subregion`, whatever its graph types: `MembershipPolicy.kind_of`), unit types, the code index's parties (`total` or `residual` parties are `aggregate`), and the resolver's place and organisation types. Anything else is `other`.
 
-| `kind`              | Block (same name)                                                  | `links`                                                           |
-| :------------------ | :----------------------------------------------------------------- | :---------------------------------------------------------------- |
-| `stat_var`          | `definition`, `availability`                                       | `facets`                                                          |
-| `code_system`       | `property`, `plain_name`, `declarations`, `code_count`             | `codes`                                                           |
-| `code`              | `code_system`, `property`, `code`, `parent`, `synonyms`            | `children`, when the code has children                            |
-| `group`             | `authority`, `as_of`, `effective_date`, `projections`              | `members`                                                         |
-| `country`, `continent`, `subregion`, `continental_union`, `place_other` | `contained_in`, `membership` (set for a region the policy holds) | `countries`, for a region the policy holds |
-| `organisation`, `aggregate` | `roles`                                                    | none                                                              |
-| `unit`              | `unit_class`, `currency`, `currency_noun`, `price_basis`, `changes_magnitude` | none                                                   |
-| `source`            | the source block                                                   | `datasets`                                                        |
-| `dataset`, `provenance` | the source block                                               | `variables`                                                       |
-| `other`             | none                                                               | none                                                              |
+| `kind`                                                                  | Block (same name)                                                             | `links`                                    |
+| :---------------------------------------------------------------------- | :---------------------------------------------------------------------------- | :----------------------------------------- |
+| `stat_var`                                                              | `definition`, `availability`                                                  | `facets`                                   |
+| `code_system`                                                           | `property`, `plain_name`, `declarations`, `code_count`                        | `codes`                                    |
+| `code`                                                                  | `code_system`, `property`, `code`, `parent`, `synonyms`                       | `children`, when the code has children     |
+| `group`                                                                 | `authority`, `as_of`, `effective_date`, `projections`                         | `members`                                  |
+| `country`, `continent`, `subregion`, `continental_union`, `place_other` | `contained_in`, `membership` (set for a region the policy holds)              | `countries`, for a region the policy holds |
+| `organisation`, `aggregate`                                             | `roles`                                                                       | none                                       |
+| `unit`                                                                  | `unit_class`, `currency`, `currency_noun`, `price_basis`, `changes_magnitude` | none                                       |
+| `source`                                                                | the source block                                                              | `datasets`                                 |
+| `dataset`, `provenance`                                                 | the source block                                                              | `variables`                                |
+| `other`                                                                 | none                                                                          | none                                       |
 
 The source block holds `publisher` (the `source` arc's target), `parent` (the `isPartOf` arc's target), `license`, `license_type`, `url`, `source_data_url`, `description_url`, `transformation_logic_url`, `last_data_refresh_date`, `next_data_refresh_date`, `earliest_observation_date`, `latest_observation_date`, `freshness` (`release_frequency`, `release_frequency_label`, `refresh_type`), `data_commons` and `documentation` (the path of the node's source document). `data_commons` is `{id, label}` for the Data Commons that serves an admitted provenance, from the request's origin catalogue with no graph read, and `null` for a provenance the catalogue does not admit, a Dataset or a Source. `id` is `dfo`, `base` or `un_system`. A dcid under `undata/` is read from the UN System Data Commons. The block also carries `licence` and `licence_type`, the preferred spellings, with the same values as `license` and `license_type`. The schema marks `license` and `license_type` deprecated and keeps them for clients that read them.
 
@@ -243,7 +258,9 @@ The response comes from the app built with the `tests/graph_api` fixtures (`make
   "label": "Group of Seven",
   "types": [],
   "description": null,
-  "links": {"members": "/api/graph/node/GroupOfSeven/members?relation=members&projection=countries"},
+  "links": {
+    "members": "/api/graph/node/GroupOfSeven/members?relation=members&projection=countries"
+  },
   "gaps": ["group.projections.institutions"],
   "built_from": {
     "code_index": "1be06f70b06f447fbc48644d99f3d023f30bf8987b2ccdf0b82c6ca73228e7e7",
@@ -251,15 +268,18 @@ The response comes from the app built with the `tests/graph_api` fixtures (`make
   },
   "kind": "group",
   "group": {
-    "authority": {"name": "resolvekit curated membership", "version": "resolvekit 0.1.13, data 2026.10"},
+    "authority": {
+      "name": "resolvekit curated membership",
+      "version": "resolvekit 0.1.13, data 2026.10"
+    },
     "as_of": null,
     "effective_date": "1976-01-01",
     "projections": [
-      {"projection": "countries", "count": 7, "complete": true},
-      {"projection": "other_states", "count": 0, "complete": true},
-      {"projection": "territories", "count": 0, "complete": true},
-      {"projection": "former_states", "count": 0, "complete": true},
-      {"projection": "institutions", "count": null, "complete": false}
+      { "projection": "countries", "count": 7, "complete": true },
+      { "projection": "other_states", "count": 0, "complete": true },
+      { "projection": "territories", "count": 0, "complete": true },
+      { "projection": "former_states", "count": 0, "complete": true },
+      { "projection": "institutions", "count": null, "complete": false }
     ]
   }
 }
@@ -273,8 +293,13 @@ The response comes from the app built with the `tests/graph_api` fixtures (`make
   "label": "North America",
   "types": ["Continent"],
   "description": null,
-  "links": {"countries": "/api/graph/node/northamerica/members?relation=countries&projection=countries"},
-  "gaps": ["continent.membership.effective_date", "continent.membership.projections.institutions"],
+  "links": {
+    "countries": "/api/graph/node/northamerica/members?relation=countries&projection=countries"
+  },
+  "gaps": [
+    "continent.membership.effective_date",
+    "continent.membership.projections.institutions"
+  ],
   "built_from": {
     "code_index": "1be06f70b06f447fbc48644d99f3d023f30bf8987b2ccdf0b82c6ca73228e7e7",
     "membership": "resolvekit 0.1.13, data 2026.10"
@@ -283,15 +308,18 @@ The response comes from the app built with the `tests/graph_api` fixtures (`make
   "continent": {
     "contained_in": [],
     "membership": {
-      "authority": {"name": "resolvekit UN M49 containment", "version": "resolvekit 0.1.13, data 2026.10"},
+      "authority": {
+        "name": "resolvekit UN M49 containment",
+        "version": "resolvekit 0.1.13, data 2026.10"
+      },
       "as_of": null,
       "effective_date": null,
       "projections": [
-        {"projection": "countries", "count": 23, "complete": true},
-        {"projection": "other_states", "count": 0, "complete": true},
-        {"projection": "territories", "count": 15, "complete": false},
-        {"projection": "former_states", "count": 1, "complete": false},
-        {"projection": "institutions", "count": null, "complete": false}
+        { "projection": "countries", "count": 23, "complete": true },
+        { "projection": "other_states", "count": 0, "complete": true },
+        { "projection": "territories", "count": 15, "complete": false },
+        { "projection": "former_states", "count": 1, "complete": false },
+        { "projection": "institutions", "count": null, "complete": false }
       ]
     }
   }
@@ -308,8 +336,11 @@ The response comes from the app built with the variable-card fixtures of `tests/
   "label": "GDP, current prices",
   "types": ["StatisticalVariable"],
   "description": "Gross domestic product at current prices.",
-  "links": {"facets": "/api/graph/node/GDP_Nominal/members?relation=facets"},
-  "gaps": ["stat_var.definition.stat_type.label", "stat_var.definition.measure"],
+  "links": { "facets": "/api/graph/node/GDP_Nominal/members?relation=facets" },
+  "gaps": [
+    "stat_var.definition.stat_type.label",
+    "stat_var.definition.measure"
+  ],
   "built_from": {
     "code_index": "1be06f70b06f447fbc48644d99f3d023f30bf8987b2ccdf0b82c6ca73228e7e7",
     "origin_catalogue": "restrictive-catalogue-6fde3fb68115",
@@ -318,16 +349,19 @@ The response comes from the app built with the variable-card fixtures of `tests/
   "kind": "stat_var",
   "stat_var": {
     "definition": {
-      "population_type": {"ref": "EconomicActivity", "label": "Economic activity"},
-      "measured_property": {"ref": "gdp", "label": "gross domestic product"},
-      "stat_type": {"ref": "measuredValue", "label": null},
+      "population_type": {
+        "ref": "EconomicActivity",
+        "label": "Economic activity"
+      },
+      "measured_property": { "ref": "gdp", "label": "gross domestic product" },
+      "stat_type": { "ref": "measuredValue", "label": null },
       "measure": null,
       "roles": ["observationAbout"],
       "source_indicator_codes": [],
       "constraints": [],
       "definitions": [
         {
-          "of": {"ref": "GDP_Nominal", "label": "GDP, current prices"},
+          "of": { "ref": "GDP_Nominal", "label": "GDP, current prices" },
           "text": "Gross domestic product at current prices."
         }
       ]
@@ -335,7 +369,7 @@ The response comes from the app built with the variable-card fixtures of `tests/
     "availability": {
       "scope": "dfo",
       "summary": {
-        "places": {"country": 2},
+        "places": { "country": 2 },
         "entities": null,
         "first_year": "2000",
         "last_year": "2020",
@@ -349,7 +383,7 @@ The response comes from the app built with the variable-card fixtures of `tests/
           "label": "provenance/IMFWorldEconomicOutlook",
           "documentation": "/api/graph/documentation/provenance/IMFWorldEconomicOutlook"
         },
-        "unit": {"ref": "CurrencyUSD", "label": "US dollars"},
+        "unit": { "ref": "CurrencyUSD", "label": "US dollars" },
         "measurement_method": null,
         "observation_period": "P1Y",
         "first_year": "2000",
@@ -364,7 +398,7 @@ The response comes from the app built with the variable-card fixtures of `tests/
             "label": "provenance/IMFWorldEconomicOutlook",
             "documentation": "/api/graph/documentation/provenance/IMFWorldEconomicOutlook"
           },
-          "places": {"country": 2},
+          "places": { "country": 2 },
           "entities": null,
           "first_year": "2000",
           "last_year": "2020",
@@ -380,7 +414,9 @@ The response comes from the app built with the variable-card fixtures of `tests/
               "observations": 42,
               "units": {
                 "count": 1,
-                "leading": [{"ref": "CurrencyUSD", "label": "US dollars", "places": 2}],
+                "leading": [
+                  { "ref": "CurrencyUSD", "label": "US dollars", "places": 2 }
+                ],
                 "more": 0,
                 "national_currency": null
               },
@@ -449,14 +485,16 @@ The door keeps each entry it builds with no transient gap (`graph_api.node_cache
       "description": null,
       "links": {},
       "gaps": [],
-      "built_from": {"code_index": "1be06f70b06f447fbc48644d99f3d023f30bf8987b2ccdf0b82c6ca73228e7e7"},
+      "built_from": {
+        "code_index": "1be06f70b06f447fbc48644d99f3d023f30bf8987b2ccdf0b82c6ca73228e7e7"
+      },
       "kind": "country",
       "country": {
-        "contained_in": [{"ref": "africa", "label": "Africa"}],
+        "contained_in": [{ "ref": "africa", "label": "Africa" }],
         "membership": null
       }
     },
-    {"ref": "country/XYZ", "status": "not_held"}
+    { "ref": "country/XYZ", "status": "not_held" }
   ]
 }
 ```
@@ -467,15 +505,15 @@ The door keeps each entry it builds with no transient gap (`graph_api.node_cache
 
 Lists what belongs to a node under one `relation`. The route must be mounted ahead of `GET /api/graph/node/{dcid}`, whose dcid convertor accepts slashes and would otherwise take `<dcid>/members` as one dcid. A node's `links` and a resolve result's `members` give the route with its `relation`.
 
-| `relation`  | Node                                 | Items                                                                      | Owner                                              | Order    |
-| :---------- | :----------------------------------- | :------------------------------------------------------------------------- | :------------------------------------------------- | :------- |
-| `codes`     | a code system's graph id             | the system's codes, `{ref, label, code, parent}`                           | code index                                         | code     |
-| `children`  | a code                               | the code's direct children, same items; a leaf answers an empty list       | code index                                         | code     |
-| `datasets`  | a source                             | the source's upstream Datasets; a provenance with no Dataset is its own entry | origin catalogue, through the source index      | dcid     |
-| `variables` | a Dataset or a Provenance            | the variables DFO indexes under it                                         | code index provenance map and origin catalogue     | dcid     |
-| `members`   | a group                              | the group's members under a projection and an `as_of` date                 | membership policy                                  | dcid     |
-| `countries` | a region                             | the region's countries under a projection                                  | membership policy                                  | dcid     |
-| `facets`    | a stat var                           | the variable's facets, each as the card's series reads them                | facet profile and coverage index                   | facet id |
+| `relation`  | Node                      | Items                                                                         | Owner                                          | Order    |
+| :---------- | :------------------------ | :---------------------------------------------------------------------------- | :--------------------------------------------- | :------- |
+| `codes`     | a code system's graph id  | the system's codes, `{ref, label, code, parent}`                              | code index                                     | code     |
+| `children`  | a code                    | the code's direct children, same items; a leaf answers an empty list          | code index                                     | code     |
+| `datasets`  | a source                  | the source's upstream Datasets; a provenance with no Dataset is its own entry | origin catalogue, through the source index     | dcid     |
+| `variables` | a Dataset or a Provenance | the variables DFO indexes under it                                            | code index provenance map and origin catalogue | dcid     |
+| `members`   | a group                   | the group's members under a projection and an `as_of` date                    | membership policy                              | dcid     |
+| `countries` | a region                  | the region's countries under a projection                                     | membership policy                              | dcid     |
+| `facets`    | a stat var                | the variable's facets, each as the card's series reads them                   | facet profile and coverage index               | facet id |
 
 #### Parameters
 
@@ -538,7 +576,9 @@ The response comes from the app built with `make_client` and no graph nodes, sin
   "complete": false,
   "total": 289,
   "gaps": [],
-  "built_from": {"code_index": "1be06f70b06f447fbc48644d99f3d023f30bf8987b2ccdf0b82c6ca73228e7e7"}
+  "built_from": {
+    "code_index": "1be06f70b06f447fbc48644d99f3d023f30bf8987b2ccdf0b82c6ca73228e7e7"
+  }
 }
 ```
 
@@ -551,15 +591,15 @@ The response comes from the app built with `make_client` and no graph nodes, sin
   "projection": "territories",
   "as_of": null,
   "items": [
-    {"ref": "country/ABW", "label": "Aruba"},
-    {"ref": "country/AIA", "label": "Anguilla"},
-    {"ref": "country/BES", "label": "Bonaire, Sint Eustatius and Saba"}
+    { "ref": "country/ABW", "label": "Aruba" },
+    { "ref": "country/AIA", "label": "Anguilla" },
+    { "ref": "country/BES", "label": "Bonaire, Sint Eustatius and Saba" }
   ],
   "next_cursor": "eyJiIjoiZTQzYWQ1ZjY1MDI1YmE5NyIsImsiOiJjb3VudHJ5L0JFUyIsImQiOiJjb3VudHJ5L0JFUyJ9",
   "complete": false,
   "total": null,
   "gaps": ["membership_incomplete"],
-  "built_from": {"membership": "resolvekit 0.1.13, data 2026.10"}
+  "built_from": { "membership": "resolvekit 0.1.13, data 2026.10" }
 }
 ```
 
@@ -589,9 +629,19 @@ The example keeps the first entry of each list. The response comes from the app 
 
 ```json
 {
-  "code_systems": [{"ref": "CRSCooperationModalityEnum", "label": "modality", "count": 35}],
-  "groups": [{"ref": "EuropeanUnion", "label": "European Union", "count": 27}],
-  "regions": [{"ref": "AustraliaAndNewZealand", "label": "Australia and New Zealand", "count": 2}],
+  "code_systems": [
+    { "ref": "CRSCooperationModalityEnum", "label": "modality", "count": 35 }
+  ],
+  "groups": [
+    { "ref": "EuropeanUnion", "label": "European Union", "count": 27 }
+  ],
+  "regions": [
+    {
+      "ref": "AustraliaAndNewZealand",
+      "label": "Australia and New Zealand",
+      "count": 2
+    }
+  ],
   "sources": [
     {
       "ref": "dc/s/BankForInternationalSettlementsBis",
@@ -778,7 +828,10 @@ A provenance a base source excludes is never also listed under that source's `da
         "ref": "dc/s/OrganisationForEconomicCo-operationAndDevelopmentOecd",
         "label": "Organisation for Economic Co-operation and Development (OECD)"
       },
-      "data_commons": { "id": "dfo", "label": "Development Finance Observatory" },
+      "data_commons": {
+        "id": "dfo",
+        "label": "Development Finance Observatory"
+      },
       "datasets": [
         {
           "ref": "provenance/OECDCreditorReportingSystem",
@@ -825,10 +878,15 @@ A provenance a base source excludes is never also listed under that source's `da
       ]
     },
     {
-      "source": { "ref": "dc/s/UnitedNationsUn", "label": "United Nations (UN)" },
+      "source": {
+        "ref": "dc/s/UnitedNationsUn",
+        "label": "United Nations (UN)"
+      },
       "data_commons": { "id": "base", "label": "Data Commons by Google" },
       "datasets": [],
-      "exclusions": [{ "ref": "dc/base/UN_SDG", "reason": "superseded_by_un_system" }]
+      "exclusions": [
+        { "ref": "dc/base/UN_SDG", "reason": "superseded_by_un_system" }
+      ]
     },
     {
       "source": { "ref": "undata/p/SDG", "label": "SDG Global Database" },
@@ -837,7 +895,9 @@ A provenance a base source excludes is never also listed under that source's `da
         {
           "ref": "undata/p/SDG",
           "label": "SDG Global Database",
-          "provenances": [{ "ref": "undata/p/SDG", "label": "SDG Global Database" }],
+          "provenances": [
+            { "ref": "undata/p/SDG", "label": "SDG Global Database" }
+          ],
           "description": null,
           "license_type": null,
           "update_cadence": null,
@@ -877,7 +937,8 @@ Failures:
 - `503 service_unavailable`, retryable with `Retry-After: 5` and `cause: {"code": "schema_building"}`: the request's own wait passed while the build runs on. The build stores its result for the next request.
 - `504 timeout`: the build outlived its 60 s deadline and stored nothing, or a graph read passed its deadline.
 - `500 internal_error`, not retryable: a Class or Property listing reached its cap, or the document holds no node whose `declared_by` is `"dfo"`. A graph that stopped naming provenances would serve every node `declared_by: null`, and the check would judge no range or domain, so the build refuses instead. A retry within the 60 s the refusal is kept answers the same `500`.
-- `502 upstream_error`: a DCP read answered 4xx.
+- `502 upstream_error`: a DCP read answered 4xx other than 429.
+- `503 service_unavailable`, retryable, with `cause: {"code": "upstream_rate_limited"}`: a DCP read answered 429. `Retry-After` carries the seconds the graph's own `Retry-After` named, 5 where it named none.
 - `503 service_unavailable`, retryable: any other read failure, or every DCP-read worker busy.
 
 Under a known generation the cache keeps these two refusals for 60 s (`SCHEMA_REFUSAL_TTL_SECONDS`) and answers every request in that time with the same `500` and no build; the first request after it builds again, so one empty or truncated upstream listing refuses requests for a minute. Under an unknown generation the cache keeps nothing, and the next request builds again. Any other failed build is not kept. The example keeps two nodes. A served document holds every node.
@@ -890,9 +951,7 @@ Under a known generation the cache keeps these two refusals for 60 s (`SCHEMA_RE
       "ref": "CRSPurposeCode12220",
       "label": "basic health care (CRS Purpose)",
       "description": "Basic and primary health care programmes; paramedical and nursing care programmes; supply of drugs, medicines, and vaccines related to basic health care; and activities aimed at achieving universal health coverage.",
-      "types": [
-        "CRSPurposeCodeEnum"
-      ],
+      "types": ["CRSPurposeCodeEnum"],
       "alternate_name": [
         "PHC",
         "UHC",
@@ -903,18 +962,12 @@ Under a known generation the cache keeps these two refusals for 60 s (`SCHEMA_RE
       ],
       "sub_class_of": [],
       "sub_property_of": [],
-      "specialization_of": [
-        "CRSPurposeCode122"
-      ],
+      "specialization_of": ["CRSPurposeCode122"],
       "domain_includes": [],
       "range_includes": [],
-      "classification_code": [
-        "12220"
-      ],
+      "classification_code": ["12220"],
       "other_properties": {},
-      "provenances": [
-        "provenance/DFOOntology"
-      ],
+      "provenances": ["provenance/DFOOntology"],
       "declared_by": "dfo",
       "instances": null
     },
@@ -922,26 +975,16 @@ Under a known generation the cache keeps these two refusals for 60 s (`SCHEMA_RE
       "ref": "crsPurpose",
       "label": "CRS purpose",
       "description": "The activity's purpose stated as a CRS purpose code. Narrows financing purpose.",
-      "types": [
-        "Property"
-      ],
+      "types": ["Property"],
       "alternate_name": [],
       "sub_class_of": [],
-      "sub_property_of": [
-        "financingPurpose"
-      ],
+      "sub_property_of": ["financingPurpose"],
       "specialization_of": [],
-      "domain_includes": [
-        "FinancingEvent"
-      ],
-      "range_includes": [
-        "CRSPurposeCodeEnum"
-      ],
+      "domain_includes": ["FinancingEvent"],
+      "range_includes": ["CRSPurposeCodeEnum"],
       "classification_code": [],
       "other_properties": {},
-      "provenances": [
-        "provenance/DFOOntology"
-      ],
+      "provenances": ["provenance/DFOOntology"],
       "declared_by": "dfo",
       "instances": null
     }
@@ -953,7 +996,7 @@ Under a known generation the cache keeps these two refusals for 60 s (`SCHEMA_RE
 
 ### GET /api/graph/schema/terms
 
-Every Class and Property the DFO graph lists by `typeOf`, base Data Commons terms included, as `{generation, terms}`. The listing reads the mixer alone, so the UN origin's terms are absent even on a deployment that serves the UN origin. Each term is `{ref, label, types, provenances, declared_by}`, sorted by `ref`. `types` is `["Class"]`, `["Property"]` or both. `label`, `provenances` and `declared_by` follow the rules of the schema document. A term whose listing entries carry no Provenance has empty `provenances` and a `null` `declared_by`.
+Every Class and Property the DFO graph lists by `typeOf`, base Data Commons terms included, as `{generation, terms}`. The listing reads the mixer alone, so the UN origin's terms are absent even on a deployment that serves the UN origin. `GET /api/graph/schema/terms/un_system` lists them. Each term is `{ref, label, types, provenances, declared_by}`, sorted by `ref`. `types` is `["Class"]`, `["Property"]` or both. `label`, `provenances` and `declared_by` follow the rules of the schema document. A term whose listing entries carry no Provenance has empty `provenances` and a `null` `declared_by`.
 
 The route reads the same cached build as `GET /api/graph/schema`, so its caching (`public, max-age=300`, a strong `ETag`, gzip, `304`) and its failures are the same as that route's, and a request that follows one for the document makes no graph read.
 
@@ -964,24 +1007,50 @@ The route reads the same cached build as `GET /api/graph/schema`, so its caching
     {
       "ref": "amount",
       "label": null,
-      "types": [
-        "Property"
-      ],
-      "provenances": [
-        "dc/base/Schema"
-      ],
+      "types": ["Property"],
+      "provenances": ["dc/base/Schema"],
       "declared_by": "base"
     },
     {
       "ref": "crsPurpose",
       "label": "CRS purpose",
-      "types": [
-        "Property"
-      ],
-      "provenances": [
-        "provenance/DFOOntology"
-      ],
+      "types": ["Property"],
+      "provenances": ["provenance/DFOOntology"],
       "declared_by": "dfo"
+    }
+  ]
+}
+```
+
+---
+
+### GET /api/graph/schema/terms/un_system
+
+Every Class and Property the UN System Data Commons declares, as `{generation, terms}` in the shape of `GET /api/graph/schema/terms`, with `generation` always `null`, since the UN deployment serves no generation token. The route reads `Class <-typeOf` and then `Property <-typeOf` from the UN deployment's own client, one listing at a time, and keeps each term whose listing Provenances include one outside base Data Commons. Every Provenance the UN deployment serves outside `dc/base/` is a UN declaration, so a term with base and UN Provenances both counts as `un_system`, and so does one whose Provenance the schema document's rule would call `dfo`. That keeps `unCode` and `unConcept`, which the UN deployment declares under `undata/p/UNData` with no `undata` prefix, and the base-named Classes it declares again, such as `Dataset` and `Topic`. It leaves out the base Data Commons terms the UN deployment also lists, which the default terms route serves, and logs the terms whose entries carry no Provenance, which it leaves out too. The UN deployment lists 2,105 Classes and 6,129 Properties and declares 219 and 215 of them. The default terms route lists every one of the other 1,886 Classes and 5,914 Properties, so no term is missing from both routes.
+
+Each listing is read page by page, and a failed page is requested again on its own, keeping the pages already read. A page the UN front door answers with `429` is requested again after 5 s and then 15 s, one budget for both listings, or after the response's `Retry-After` where that is longer, so a build with no `Retry-After` spends at most 20 s waiting on `429`s inside its 60 s deadline. A page that repeats a token the listing was already given is requested again after 1, 2 and 4 s. A wait that would leave less than 5 s before the deadline for the page's read is not taken, and the page's error answers as below. A listing whose pages add no subject and no new Provenance of a subject for 3 pages stops as stalled. Each wait logs one line.
+
+The lifespan builds the body before the instance takes traffic, beside the schema document, within the same 20 s. The body is cached per UN cache generation (the bound origin catalogue's build and the UTC date), so a change on the UN deployment shows from the next UTC day or catalogue build. Once the route has served a body, a request that finds no entry for the current generation starts or joins its build and answers the body it served last at once, as it does while the build fails or its refusal is kept, so the UTC rollover and a catalogue build answer no `503`. Before any body is served, concurrent first requests share one build. A request whose wait passes 10 s answers `503 service_unavailable`, retryable, with `Retry-After: 5` and `cause: {"code": "schema_building"}`, and the build lands for the next request. A build past its 60 s deadline answers `504 timeout`, and a failed read answers as it does on `GET /api/graph/schema`. Three refusals are kept, so the requests of their window answer them with no build: a listing at its cap, a non-retryable `500 internal_error`, kept for 60 s; a listing that names no UN term, as the UN deployment does mid-reload, a retryable `503 service_unavailable` with `cause: {"code": "listing_incomplete"}`, kept for 60 s; and a listing still answering `429`, a retryable `503 service_unavailable` with `cause: {"code": "upstream_rate_limited"}`, kept for 60 s or the front door's `Retry-After` where that is longer. Each `503` sends `Retry-After` with the seconds left on the refusal. Any other failed build is not kept. At shutdown a build stops at once, during a wait or before its next request. The body answers `public, max-age=300` with a strong `ETag`, a gzip representation and `304` on `If-None-Match`, so a browser or CDN can serve it for up to 5 minutes after the UN origin is switched off.
+
+A deployment that does not serve the UN origin (`ORIGIN_CATALOGUE_UN_SYSTEM_ENABLED` off) answers `404 not_found`, not retryable, with `cause: {"code": "origin_not_served"}` and `Cache-Control: no-store`, and sends the UN deployment nothing.
+
+```json
+{
+  "generation": null,
+  "terms": [
+    {
+      "ref": "unCode",
+      "label": "UN Data source code",
+      "types": ["Property"],
+      "provenances": ["undata/p/UNData"],
+      "declared_by": "un_system"
+    },
+    {
+      "ref": "undata/AGE",
+      "label": "Age",
+      "types": ["Class"],
+      "provenances": ["undata/p/UNData"],
+      "declared_by": "un_system"
     }
   ]
 }
@@ -1075,6 +1144,205 @@ The body is built once per code index and coverage build, by one build that conc
 
 ---
 
+### GET /api/graph/schema/usage/base and /api/graph/schema/usage/un_system
+
+How each base Data Commons Provenance, or each UN System agency's Provenance, uses the model, in the shape of `GET /api/graph/schema/usage` and with its grouping and ordering, plus `terms`. The body comes from the resident origin catalogue and the bound graph release (`graph_api.origin_usage.build_origin_usage`), with no graph read, and admits what the catalogue admits, whatever the request's source scope:
+
+- `base` counts each variable of the catalogue's base variable table under each of its Provenances the catalogue admits. A Provenance the registry excludes, a variable withheld under one, and a variable a UN agency supersedes have no entry.
+- `un_system` counts each variable of the UN tables under its agency's Provenance. A series the registry excludes has no variable there, and an agency row holding no admitted variable has no entry.
+
+A base variable's arcs are the ones `GET /api/graph/node/{dcid}` reads (`Catalogue.held_arcs`): the bound release's for a variable the release holds as DFO, else the catalogue's arc tables', whose build-time DFO rows give way to the release. A variable whose node is DFO's and which the release does not hold has no row. A variable's shape fields come from its arcs as the catalogue's family tables read them (`origin_catalogue.families.VariableArcs`). A property reads as its first literal, else its first node, and a `measurementQualifier` whose every target is a `ProvisionalNode` reads as `null`. A `measurementDenominator` with targets but no value, or whose every target is a `ProvisionalNode`, is unresolved. The pattern keeps the target it names (`null` for none) and sets `measurement_denominator_unresolved` to `true`, so it stays apart from a pattern with no denominator. Every pattern of these two routes carries `measurement_denominator_unresolved`, and `GET /api/graph/schema/usage` leaves it out. A declared constraint whose value the arcs leave out counts in its pattern's `constraint_properties` and adds nothing to `constraint_values`. `label` is the catalogue's name for the Provenance and `description` its source-index entry's description, always `null` for a UN agency. `facets` holds empty lists, since the coverage index covers DFO series alone.
+
+`terms` lists, sorted by `ref`, every node the patterns and constraint values name, each `{ref, label, types}` with the label `GET /api/graph/node/{dcid}` gives the node and the sorted types the variables' arcs to it carry. The label is the display name of the node's own names where the catalogue holds the node, the arc tables' label where one of their arcs names it, and otherwise the display name of the names the variables' arcs carry, as for a UN series. A name equal to the dcid is no label, so `Person` reads `null`. It labels the UN series and the base terms that `GET /api/graph/schema/terms` does not list. `GET /api/graph/schema/usage` carries no `terms`.
+
+On the dev catalogue the base body holds 91 Provenances, 86,893 StatVar-Provenance pairs, 5,861 patterns (15 with an unresolved denominator) and 9,466 terms, 3.9 MB raw and 261 KB gzip. The UN body holds 14 agencies, 93,270 StatVars, 3,466 patterns and 5,771 terms, 2.6 MB raw and 220 KB gzip. Each build and encode takes about 1 s and logs one line with its time and size.
+
+Each body is built once per origin catalogue build and graph release, by one build that concurrent first requests share. The two origins share one cache of two entries, evicted least recently used, so a request bound to another build or release builds its own body and evicts the oldest entry, and an entry also ends when the cache's maximum age passes. A request whose wait passes 10 s answers `503 service_unavailable`, retryable, with `Retry-After: 5` and `cause: {"code": "schema_building"}`, and a build past its 60 s deadline answers `504 timeout`. Each answers `public, max-age=300` with a strong `ETag`, a gzip representation and `304` on `If-None-Match`.
+
+A deployment that does not serve the UN origin (`ORIGIN_CATALOGUE_UN_SYSTEM_ENABLED` off) answers `GET /api/graph/schema/usage/un_system` with `404 not_found`, not retryable, with `cause: {"code": "origin_not_served"}` and `Cache-Control: no-store`, and builds nothing. The base route answers whatever the setting. A bound catalogue that is not a loaded snapshot holds no tables, and both routes answer it with the same `404`.
+
+The example is abridged. It keeps the first pattern, the first two values of the first constraint property and two terms, and `...` marks each cut list.
+
+```json
+{
+  "provenances": [
+    {
+      "ref": "dc/base/Adolescent_Birth_Rate",
+      "label": "Adolescent Birth Rate",
+      "description": "The annual number of births to females aged 10-14 or 15-19 years per 1,000 females in the respective age group.",
+      "stat_var_count": 2,
+      "patterns": [
+        {
+          "population_type": "Person",
+          "measured_property": "fertilityRate",
+          "stat_type": "measuredValue",
+          "measurement_qualifier": null,
+          "measurement_denominator": "Count_Person_10To14Years_Female",
+          "measurement_denominator_unresolved": false,
+          "constraint_properties": [
+            "age",
+            "gender"
+          ],
+          "observation_properties": [],
+          "stat_var_count": 1,
+          "examples": [
+            "FertilityRate_Person_10To14Years_Female_AsAFractionOf_Count_Person_10To14Years_Female"
+          ]
+        },
+        ...
+      ],
+      "constraint_values": [
+        {
+          "property": "age",
+          "values": [
+            {
+              "value": "Years10To14",
+              "stat_var_count": 1
+            },
+            {
+              "value": "Years15To19",
+              "stat_var_count": 1
+            }
+          ]
+        },
+        ...
+      ],
+      "facets": {
+        "units": [],
+        "scaling_factors": [],
+        "measurement_methods": [],
+        "observation_periods": [],
+        "currencies": []
+      }
+    },
+    ...
+  ],
+  "terms": [
+    ...
+    {
+      "ref": "Count_Person_10To14Years_Female",
+      "label": "Count of females aged 10 to 14 years",
+      "types": [
+        "StatisticalVariable"
+      ]
+    },
+    ...
+    {
+      "ref": "Years10To14",
+      "label": "Years 10 To 14",
+      "types": [
+        "QuantityRange"
+      ]
+    },
+    ...
+  ]
+}
+```
+
+---
+
+### GET /api/graph/schema/node/{dcid}
+
+One node the graph holds and its schema neighbours, as `{generation, centre, nodes, capped}`. It serves any node, base, UN or DFO, whether or not the schema document holds it, so a UN series or a base property such as `age` opens here. `{generation, nodes}` has the shape of the schema document, so a reader that reads that document reads this body too. `graph_api.node_view.build_node_view` builds it.
+
+- `centre` is the node as a full schema document node, with every outgoing arc the graph holds and `declared_by` by the schema document's rule.
+- `nodes` holds one entry per neighbour, sorted by `ref`: each node target of the centre's arcs (those of `typeOf`, `subClassOf`, `subPropertyOf`, `specializationOf`, `rangeIncludes` and `domainIncludes`, and those `other_properties` keeps, such as a UN series' `unConcept`), each subject that points at the centre through one of those five schema arcs, and for a Class every class below it, up to 1,000 over 12 levels. A neighbour carries its `label` and `types` and only the arcs the graph answered that tie it to the centre, to the centre's `subClassOf` chain or to the classes below the centre, so a walk down `sub_class_of` from a Class centre reaches each class the view lists below it. Its `provenances` are those of the arcs read from it (a member's `typeOf`, an in-arc subject's arc, a class's `subClassOf` edge below the centre, a chain class's `subClassOf` edges), and `declared_by` follows from them. A neighbour the view read no arc from, such as a target of the centre's arcs, has empty `provenances` and a `null` `declared_by`, since the centre's arc to it names the centre's declarer. Its other members are empty and its `description` `null`.
+- `capped` lists each listing the view cut as `{ref, property}`, the node listed and the property, sorted: an in-arc listing that stopped at 1,000 subjects or whose walk passed 2 MiB (the centre's `typeOf` for a value list's members, any of the centre's five schema arcs, and a value's type class under `rangeIncludes`), a property of the centre whose values are all literals and total more than 32 KiB, which the centre leaves out, a property of the centre's `other_properties` past 100 values or with a literal past 2,000 characters, `subClassOf+` on a Class centre whose walk below stopped at 1,000 classes or 12 levels with a class below it unread, `rangeIncludes/subClassOf+` on a Property centre with more than three range classes, and `typeOf/rangeIncludes` on a value centre with more than three type classes.
+- `generation` is the mixer's generation token for a node read from the mixer, `null` when it is unknown, and always `null` for one read from the UN deployment.
+
+A Class whose `subClassOf+` closure holds `Enumeration` is a value list: the view lists up to 1,000 of its `<-typeOf` members as neighbours and sets the centre's `instances`, `complete` only when the listing read every member and the class has no narrower class. When `Enumeration` is not a direct parent, the view reads the direct `subClassOf` edges of the closure, each empty answer read again alone, so every edge of the chain is one the graph answered. Each class below the centre and each chain parent that reaches `Enumeration` gets `instances: {refs: [], complete: false}`. A Property reads the closure of each of its first three range classes other than `Thing`, and a range class that descends from `Enumeration` gets `instances: {refs: [], complete: false}`, so the range class of a property such as `undataSeries` reads as a value list where the schema document lacks it. A value, a node typed neither Class nor Property, reads the `<-rangeIncludes` subjects of its first three type classes other than `Thing`, sorted, and their closures, and a type class that descends from `Enumeration` gets `instances: {refs: [<centre>], complete: false}`. A Property with more than three range classes names `{ref: <centre>, property: "rangeIncludes/subClassOf+"}` in `capped`, and a value with more than three type classes `{ref: <centre>, property: "typeOf/rangeIncludes"}`. Only a value list's centre has its `<-typeOf` read, so `Place` lists no members.
+
+A Class reads the classes below it one level at a time, with one `<-subClassOf` read per level from its narrower classes down, since the UN deployment answers `<-subClassOf+` without its own classes (for `Enumeration` there, the closure reaches 869 classes and the direct subclasses number 1,048, 212 of them UN classes the closure leaves out). Each level's read stops at the room left under 1,000 classes summed over the level's classes. A walk that reaches 1,000 classes or 12 levels reads at most one subject below its last level, and names `subClassOf+` in `capped` only when that read finds a class. On the dev mixer the deepest chain below `Thing` has 11 levels and the walk from `Thing` reaches 1,957 classes, so a view of `Thing` stops at 1,000 and names `subClassOf+` in `capped`.
+
+A view takes three reads at once, then at most two more for a value list, three more for a property and five more for a value, and a Class one more per level below its narrower classes, at most 12, all within one flight's deadline. The in-arc read walks its properties in turn. Each response is capped at 2 MiB of decoded JSON and streamed in one attempt. The pages of the centre's `->*`, which the mixer continues for some nodes read alone, share one cap of 8 MiB. An in-arc walk past its cap marks its listing in `capped` and the view builds without it. The centre's `->*`, a closure or a chain edge read past its cap, or a `5xx` answer, fails the read. A read the graph answers with HTTP 429 is sent again after 1 s and then 2 s, one budget for the whole view, while the wait ends before the deadline. A 429 on one in-arc walk sends that walk again. The view leaves out each property of the centre whose values are all literals and total more than 32 KiB, counted as the UTF-8 bytes of each value as a JSON string, and names it in `capped`. The mixer answers `->*` for `country/USA` with 3.7 MB in about 2 s, 3.6 MB of it in eleven geoJson properties of 40 kB to 1.5 MB, which the view leaves out, so its body is 31 kB. For `geoId/06` the view leaves out `geoJsonCoordinates` (189 kB) and `kmlCoordinates` (149 kB). The largest literal property either keeps is the 424 `nameWithLanguage` values of `country/USA`, 14 kB, which the 100-value cut also names in `capped`. The views run on four flight workers of their own and their reads on twelve, apart from the DCP-read executor, so a view takes no worker from resolve or node reads. The chain's edge read confirms each empty answer alone on the graph client's process-wide pool of 16 probe workers, which every confirming read of the process shares, so a busy pool delays that read up to the view's deadline. A miss that finds all four flight workers busy answers `503` at once.
+
+Each dcid is read from one deployment:
+
+- A UN id (`undata/...`, or a property such as `undataAge`) is read from the UN deployment's own client, once the route has checked that the deployment serves the UN origin.
+- Any other id is read from the mixer. A node the mixer does not hold, such as `unCode` or `unConcept`, is then read from the UN deployment when the UN origin is served.
+
+Each view is kept in one of two single-flight caches of at most 2,000 entries and 64 MiB of encoded bodies, identity and gzip together: the mixer's keyed by the mixer's generation, the origin catalogue's build and the dcid, which a generation change clears, and the UN deployment's keyed by the UN cache generation (the catalogue's build and the UTC date), the UN origin setting and the dcid. A view with 6,002 neighbours weighs 2.49 MB. A view has no fixed upper weight, since the centre's `other_properties` keep up to 100 node targets for each of any number of properties, so the bound is the 64 MiB budget, which evicts the least recently used views and serves a body past it without keeping it. Beside each view cache, a miss cache of 1,000 dcids keeps that deployment's `node_not_held`, `node_view_too_large` and `graph_not_advancing` refusals, so a made-up dcid evicts no view and is refused again with no read: the mixer's for its generation, the UN deployment's for 300 s. Concurrent requests for one dcid share one read. A request waits 10 s (`GRAPH_NODE_TIMEOUT_SECONDS`) from its start over both deployments. Each flight's deadline is 10 s from its own start, so a UN read after a mixer miss gets a deadline of its own and can run on after the request's wait has ended. The body answers `public, max-age=300` with a strong `ETag`, a gzip representation and `304` on `If-None-Match`.
+
+Failures:
+
+- `400 request_invalid` at `/dcid`: a dcid longer than 512 characters.
+- `404 not_found`, not retryable, with `cause: {"code": "origin_not_served"}`: a UN id on a deployment that does not serve the UN origin (`ORIGIN_CATALOGUE_UN_SYSTEM_ENABLED` off). The UN deployment is sent nothing. A non-UN id the mixer lacks is then `node_not_held`.
+- `404 not_found`, not retryable, with `cause: {"code": "node_not_held"}`: no deployment the route reads holds the node.
+- `500 internal_error`, not retryable, with `cause: {"code": "node_view_too_large"}`: the centre's `->*` answered past 8 MiB, or a closure or chain edge read past 2 MiB. The UN deployment is not read for a node the mixer answers this way.
+- `500 internal_error`, not retryable, with `cause: {"code": "graph_not_advancing"}`: a paged read repeated its continuation token or continued after its page cap. The UN deployment is not read for a node the mixer answers this way.
+- `504 timeout`: the wait or the reads passed their deadline.
+- `502 upstream_error`: a DCP read answered 4xx other than 429.
+- `503 service_unavailable`, retryable, with `cause: {"code": "upstream_rate_limited"}`: a DCP read answered 429 after the view's waits. `Retry-After` is set as on `GET /api/graph/schema`.
+- `503 service_unavailable`, retryable: any other read failure, or every flight worker busy.
+
+Refusals answer `Cache-Control: no-store`. The route binds no code registry endpoint, so its refusals carry platform codes and name the reason in `cause.code`, where `GET /api/graph/node/{dcid}` answers the Graph code `node_not_held` at the top level with the pointer `/dcid`.
+
+The example is the view of `GenderType` in the test graph of `tests/graph_api/test_node_view.py`, whose labels are the test graph's, abridged to two of its five neighbours, with `...` marking each cut: `Class` and `Enumeration` before `Female`, and `Male` between `Female` and `gender`.
+
+```json
+{
+  "generation": "graph_<token>",
+  "centre": {
+    "ref": "GenderType",
+    "label": "Gender type",
+    "description": null,
+    "types": ["Class"],
+    "alternate_name": [],
+    "sub_class_of": ["Enumeration"],
+    "sub_property_of": [],
+    "specialization_of": [],
+    "domain_includes": [],
+    "range_includes": [],
+    "classification_code": [],
+    "other_properties": {},
+    "provenances": ["dc/base/Schema"],
+    "declared_by": "base",
+    "instances": {"refs": ["Female", "Male"], "complete": true}
+  },
+  "nodes": [
+    ...
+    {
+      "ref": "Female",
+      "label": "Female gender",
+      "description": null,
+      "types": ["GenderType"],
+      "alternate_name": [],
+      "sub_class_of": [],
+      "sub_property_of": [],
+      "specialization_of": [],
+      "domain_includes": [],
+      "range_includes": [],
+      "classification_code": [],
+      "other_properties": {},
+      "provenances": ["dc/base/Schema"],
+      "declared_by": "base",
+      "instances": null
+    },
+    ...
+    {
+      "ref": "gender",
+      "label": "Gender",
+      "description": null,
+      "types": ["Property"],
+      "alternate_name": [],
+      "sub_class_of": [],
+      "sub_property_of": [],
+      "specialization_of": [],
+      "domain_includes": [],
+      "range_includes": ["GenderType"],
+      "classification_code": [],
+      "other_properties": {},
+      "provenances": ["dc/base/Schema"],
+      "declared_by": "base",
+      "instances": null
+    }
+  ],
+  "capped": []
+}
+```
+
+---
+
 ### POST /api/graph/schema/check
 
 Checks candidate StatVar definitions against the schema. The request is `{rows}`, 1 to 2,000 rows (`caps.max_check_rows`). The route checks rows in order from the first and answers the findings for the rows it checked and how many that is (`rows_checked`). When `rows_checked` is less than the rows sent, send the rows from that index in the next request. Every response checks at least one row.
@@ -1109,24 +1377,24 @@ The response is `{generation, rows_checked, findings}`. `generation` is the grap
 
 The route sets no cache headers.
 
-| Code | Severity | Meaning |
-| :--- | :------- | :------ |
-| `node_not_held` | `error` | The cell is a well-formed dcid the graph holds no node for. |
-| `not_a_node` | `error` | A node belongs in the cell, which holds a number, a boolean or a string outside dcid syntax. |
-| `node_untyped` | `error` | The node of a constraint value, `stat_type`, `measurement_qualifier` or `measurement_denominator` has no `typeOf`. |
-| `node_provisional` | `error` | The node of a constraint value, `stat_type`, `measurement_qualifier` or `measurement_denominator` has only the type `ProvisionalNode`. |
-| `origin_not_served` | `error` | The cell is an id of the UN origin, which this deployment does not serve. |
-| `value_missing` | `error` | The row has no measured property, or a constraint property has a `null` value. |
-| `not_a_property` | `error` | A constraint property, the measured property or an observation property is not typed `Property`. |
-| `not_a_class` | `error` | The population type is not typed `Class`. |
-| `value_outside_range` | `error` | No type of the value the document holds reaches the DFO-declared property's `rangeIncludes` by `subClassOf`, every type is known, every `rangeIncludes` target resolves, and the document holds the whole descendant tree of every `rangeIncludes` class. |
-| `range_not_judged` | `warning` | The value's property is a DFO-declared property with a `rangeIncludes`, no type of the value the document holds reaches it, and the value cannot be ruled out: the graph answers a `typeOf` target of the value it cannot resolve, a type is a UN-origin id, held by the document or not, or outside dcid syntax, a `rangeIncludes` target does not resolve (a property whose only `rangeIncludes` target does not resolve is ranged), or a `rangeIncludes` class has more descendants than the document holds. |
-| `property_outside_domain` | `warning` | The population type is a document node whose `subClassOf` ancestry in the document is complete and reaches none of the DFO-declared property's `domainIncludes`, every target of which resolves. |
-| `definition_differs` | `warning` | The code index serves the row's `dcid` with another value in that cell. |
+| Code                      | Severity  | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| :------------------------ | :-------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `node_not_held`           | `error`   | The cell is a well-formed dcid the graph holds no node for.                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `not_a_node`              | `error`   | A node belongs in the cell, which holds a number, a boolean or a string outside dcid syntax.                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `node_untyped`            | `error`   | The node of a constraint value, `stat_type`, `measurement_qualifier` or `measurement_denominator` has no `typeOf`.                                                                                                                                                                                                                                                                                                                                                                                              |
+| `node_provisional`        | `error`   | The node of a constraint value, `stat_type`, `measurement_qualifier` or `measurement_denominator` has only the type `ProvisionalNode`.                                                                                                                                                                                                                                                                                                                                                                          |
+| `origin_not_served`       | `error`   | The cell is an id of the UN origin, which this deployment does not serve.                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `value_missing`           | `error`   | The row has no measured property, or a constraint property has a `null` value.                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `not_a_property`          | `error`   | A constraint property, the measured property or an observation property is not typed `Property`.                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `not_a_class`             | `error`   | The population type is not typed `Class` and is no UN System series: a UN-origin id the origin catalogue holds as the `populationType` of UN variables, or names as a series the registry excludes.                                                                                                                                                                                                                                                                                                             |
+| `value_outside_range`     | `error`   | No type of the value the document holds reaches the DFO-declared property's `rangeIncludes` by `subClassOf`, every type is known, every `rangeIncludes` target resolves, and the document holds the whole descendant tree of every `rangeIncludes` class.                                                                                                                                                                                                                                                       |
+| `range_not_judged`        | `warning` | The value's property is a DFO-declared property with a `rangeIncludes`, no type of the value the document holds reaches it, and the value cannot be ruled out: the graph answers a `typeOf` target of the value it cannot resolve, a type is a UN-origin id, held by the document or not, or outside dcid syntax, a `rangeIncludes` target does not resolve (a property whose only `rangeIncludes` target does not resolve is ranged), or a `rangeIncludes` class has more descendants than the document holds. |
+| `property_outside_domain` | `warning` | The population type is a document node whose `subClassOf` ancestry in the document is complete and reaches none of the DFO-declared property's `domainIncludes`, every target of which resolves.                                                                                                                                                                                                                                                                                                                |
+| `definition_differs`      | `warning` | The code index serves the row's `dcid` with another value in that cell.                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 
 Within a row, a finding on `dcid` comes first, then the shape fields, in the order `population_type`, `measured_property`, `stat_type`, `measurement_qualifier` and `measurement_denominator`. The constraint properties follow sorted, each property's finding before its value's, then the observation properties in row order, then the `definition_differs` findings in the same field order.
 
-The route's deadline is `GRAPH_SCHEMA_CHECK_TIMEOUT_SECONDS` (30 s) from its start, covering its wait for the build and its own reads. Failures beyond `400`: `503 service_unavailable` with `Retry-After: 5` and `cause: {"code": "schema_building"}` while the build runs on past that deadline, `504 timeout` when the build outlives its 60 s deadline or a read passes the route's, a non-retryable `500 internal_error` for a listing at its cap or a document with no DFO declaration, `502 upstream_error` for a DCP 4xx and a retryable `503` for any other read failure or a saturated executor, as for `GET /api/graph/schema`.
+The route's deadline is `GRAPH_SCHEMA_CHECK_TIMEOUT_SECONDS` (30 s) from its start, covering its wait for the build and its own reads. Failures beyond `400`: `503 service_unavailable` with `Retry-After: 5` and `cause: {"code": "schema_building"}` while the build runs on past that deadline, `504 timeout` when the build outlives its 60 s deadline or a read passes the route's, a non-retryable `500 internal_error` for a listing at its cap or a document with no DFO declaration, `502 upstream_error` for a DCP 4xx other than 429, a retryable `503` with `Retry-After: 5` for a 429, and a retryable `503` for any other read failure or a saturated executor, as for `GET /api/graph/schema`.
 
 Every check runs as one job on its own executor of two workers (`graph_api.config.GRAPH_SCHEMA_CHECK_CONCURRENCY`), apart from the four shared DCP-read workers, so at most two checks run at once in a process and a check takes no shared worker. The job reads, checks and encodes the response. A worker stays held until its job returns, even after its request is cancelled or times out, and the reads of a job end by the 30 s deadline. The request answers `504 timeout` at that deadline even while its job runs on. A third check answers retryable `503 service_unavailable` with `Retry-After: 1` and `cause: {"code": "check_busy"}`. The graph can therefore see reads from the four shared workers and the two check workers at once.
 
@@ -1190,7 +1458,7 @@ The example sends two rows. `DAC1AidType1010` lies outside the range of `crsPurp
 
 ### GET /api/graph/json-schema
 
-Serves the JSON Schema of every request and response body, keyed by name under `schemas`: `health_response`, `resolve_request`, `resolve_response`, `node_response`, `nodes_request`, `nodes_response`, `members_response`, `roots_response`, `source_documentation_response`, `source_catalogue_response`, `schema_response`, `schema_terms_response`, `schema_usage_response`, `schema_check_request` and `schema_check_response`. `capabilities` holds the path of the capability document. The document is encoded once when the door is built, answers `public, max-age=300` with a strong `ETag` and a gzip representation, and honours `If-None-Match` with `304`. It changes only with a deploy, and `capability_version` hashes the schemas with their descriptions removed.
+Serves the JSON Schema of every request and response body, keyed by name under `schemas`: `health_response`, `resolve_request`, `resolve_response`, `node_response`, `nodes_request`, `nodes_response`, `members_response`, `roots_response`, `source_documentation_response`, `source_catalogue_response`, `schema_response`, `schema_terms_response`, `schema_usage_response`, `schema_node_response`, `schema_check_request` and `schema_check_response`. `capabilities` holds the path of the capability document. The document is encoded once when the door is built, answers `public, max-age=300` with a strong `ETag` and a gzip representation, and honours `If-None-Match` with `304`. It changes only with a deploy, and `capability_version` hashes the schemas with their descriptions removed.
 
 ---
 
@@ -1226,11 +1494,43 @@ The example comes from the app built with `make_client` and the restrictive test
     { "name": "json_schema", "live": true },
     { "name": "schema", "live": true }
   ],
-  "kinds": ["country", "continent", "subregion", "continental_union", "place_other", "aggregate", "organisation", "group", "stat_var", "code_system", "code", "unit", "source", "dataset", "provenance", "other"],
-  "resolve_kinds": ["country", "continent", "subregion", "continental_union", "organisation", "aggregate", "place_other", "group", "code", "other"],
+  "kinds": [
+    "country",
+    "continent",
+    "subregion",
+    "continental_union",
+    "place_other",
+    "aggregate",
+    "organisation",
+    "group",
+    "stat_var",
+    "code_system",
+    "code",
+    "unit",
+    "source",
+    "dataset",
+    "provenance",
+    "other"
+  ],
+  "resolve_kinds": [
+    "country",
+    "continent",
+    "subregion",
+    "continental_union",
+    "organisation",
+    "aggregate",
+    "place_other",
+    "group",
+    "code",
+    "other"
+  ],
   "recipe_classes": [],
   "node_shape_gaps": ["stat_var.definition.measure.definition"],
-  "source_document_gaps": ["scope_and_units.countries", "usage.api_access", "usage.python"],
+  "source_document_gaps": [
+    "scope_and_units.countries",
+    "usage.api_access",
+    "usage.python"
+  ],
   "source_catalogue_curated": true,
   "caps": {
     "node_pool_size": 4,
@@ -1252,7 +1552,7 @@ The example comes from the app built with `make_client` and the restrictive test
 Reports operational status, the running build commit, and the deployment capability version token, the same value `GET /api/graph/capabilities` serves.
 
 ```json
-{"status": "ok", "build": "unknown", "capability_version": "graph_<token>"}
+{ "status": "ok", "build": "unknown", "capability_version": "graph_<token>" }
 ```
 
 ---
@@ -1261,21 +1561,21 @@ Reports operational status, the running build commit, and the deployment capabil
 
 The Graph API reads environment variables during module initialization and application startup:
 
-| Variable                        | Type    | Default                 | Description                                                                         |
-| :------------------------------ | :------ | :---------------------- | :---------------------------------------------------------------------------------- |
-| `DFO_GRAPH_SURFACE`             | Boolean | `false`                 | Mounts the Graph surface on the root FastAPI application (`1` or `true`).           |
-| `GRAPH_DCP_BASE_URL`            | String  | _(Required if enabled)_ | Base URL for the upstream Data Commons Platform instance. The mixer serves SDMX under the same root, so the SDMX availability reads use it too. |
-| `GRAPH_DCP_TOKEN`               | String  | `""`                    | Optional access token sent via `x-graph-token` header to DCP and to its SDMX root.  |
-| `GRAPH_NODE_POOL_SIZE`          | Integer | `4`                     | Worker count of the DCP-read executor. It admits one read per worker and refuses the next with `503`. |
-| `GRAPH_RESOLVE_TIMEOUT_SECONDS` | Integer | `30`                    | Request timeout for `/api/graph/resolve`.                                           |
-| `GRAPH_NODE_TIMEOUT_SECONDS`    | Integer | `10`                    | Request timeout for `/api/graph/node/{dcid}`, `/api/graph/nodes`, `/api/graph/documentation/{dcid}`, the label and facet reads of `/api/graph/node/{dcid}/members`, and the build wait of `GET /api/graph/schema`, `/schema/terms`. |
-| `GRAPH_SCHEMA_CHECK_TIMEOUT_SECONDS` | Integer | `30`             | Request timeout for `POST /api/graph/schema/check`, covering its wait for the schema build and its reads of up to 200 ids in at most 596 POSTs. |
-| `GRAPH_PROVENANCE_DOC_CACHE_SIZE` | Integer | `512`                 | Most source documents `/api/graph/documentation/{dcid}` keeps in its cache at once. |
-| `GRAPH_NODE_ENTRY_CACHE_SIZE`   | Integer | `2048`                  | Most built node entries the node routes keep in their cache at once.                |
-| `GRAPH_SDMX_TIMEOUT_SECONDS`    | Integer | `30`                    | HTTP timeout of the UN deployment's SDMX client the node reader uses.              |
-| `UN_GRAPH_BASE_URL`             | String  | UN System Data Commons  | API root for `undata/` dcids (`https://unsd-datacommons.gcp.un-icc.cloud/core/api`), shared with every surface and the origin catalogue job. |
-| `GRAPH_RELEASE_URI`             | String  | _(Required)_            | Graph release root; the code index and the coverage behind currencies, granularity and variable availability come from the release the pointer names. A missing or unopenable release fails startup. |
-| `ORIGIN_CATALOGUE_URI`          | String  | _(Required)_            | Origin catalogue root; a missing or unloadable catalogue fails startup.             |
+| Variable                             | Type    | Default                 | Description                                                                                                                                                                                                                                                                                                        |
+| :----------------------------------- | :------ | :---------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DFO_GRAPH_SURFACE`                  | Boolean | `false`                 | Mounts the Graph surface on the root FastAPI application (`1` or `true`).                                                                                                                                                                                                                                          |
+| `GRAPH_DCP_BASE_URL`                 | String  | _(Required if enabled)_ | Base URL for the upstream Data Commons Platform instance. The mixer serves SDMX under the same root, so the SDMX availability reads use it too.                                                                                                                                                                    |
+| `GRAPH_DCP_TOKEN`                    | String  | `""`                    | Optional access token sent via `x-graph-token` header to DCP and to its SDMX root.                                                                                                                                                                                                                                 |
+| `GRAPH_NODE_POOL_SIZE`               | Integer | `4`                     | Worker count of the DCP-read executor. It admits one read per worker and refuses the next with `503`.                                                                                                                                                                                                              |
+| `GRAPH_RESOLVE_TIMEOUT_SECONDS`      | Integer | `30`                    | Request timeout for `/api/graph/resolve`.                                                                                                                                                                                                                                                                          |
+| `GRAPH_NODE_TIMEOUT_SECONDS`         | Integer | `10`                    | Request timeout for `/api/graph/node/{dcid}`, `/api/graph/nodes`, `/api/graph/documentation/{dcid}`, the label and facet reads of `/api/graph/node/{dcid}/members`, and the build wait of `GET /api/graph/schema`, `/schema/terms`, `/schema/terms/un_system`, `/schema/usage/base` and `/schema/usage/un_system`. |
+| `GRAPH_SCHEMA_CHECK_TIMEOUT_SECONDS` | Integer | `30`                    | Request timeout for `POST /api/graph/schema/check`, covering its wait for the schema build and its reads of up to 200 ids in at most 596 POSTs.                                                                                                                                                                    |
+| `GRAPH_PROVENANCE_DOC_CACHE_SIZE`    | Integer | `512`                   | Most source documents `/api/graph/documentation/{dcid}` keeps in its cache at once.                                                                                                                                                                                                                                |
+| `GRAPH_NODE_ENTRY_CACHE_SIZE`        | Integer | `2048`                  | Most built node entries the node routes keep in their cache at once.                                                                                                                                                                                                                                               |
+| `GRAPH_SDMX_TIMEOUT_SECONDS`         | Integer | `30`                    | HTTP timeout of the UN deployment's SDMX client the node reader uses.                                                                                                                                                                                                                                              |
+| `UN_GRAPH_BASE_URL`                  | String  | UN System Data Commons  | API root for `undata/` dcids (`https://unsd-datacommons.gcp.un-icc.cloud/core/api`), shared with every surface and the origin catalogue job.                                                                                                                                                                       |
+| `GRAPH_RELEASE_URI`                  | String  | _(Required)_            | Graph release root; the code index and the coverage behind currencies, granularity and variable availability come from the release the pointer names. A missing or unopenable release fails startup.                                                                                                               |
+| `ORIGIN_CATALOGUE_URI`               | String  | _(Required)_            | Origin catalogue root; a missing or unloadable catalogue fails startup.                                                                                                                                                                                                                                            |
 
 ---
 
@@ -1283,23 +1583,26 @@ The Graph API reads environment variables during module initialization and appli
 
 Errors use RFC 9457 problem detail envelopes:
 
-| HTTP Status | Problem Code (`code`) | Trigger Condition                                                                                                                                      | Pointer                                                                                     | Retryable |
-| :---------- | :-------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------ | :-------- |
-| `400`       | `request_invalid`     | Malformed request body, text length exceeding 200 characters, batch size outside 1–25, extra keys, or `code_system` without `code` in `kinds`.          | The offending body field, named by the platform's own request validation (e.g. `/texts/0`, `/code_system`). | No        |
-| `400`       | `request_invalid`     | `dcid` path parameter exceeding 512 characters.                                                                                                        | `/dcid`                                                                                     | No        |
-| `400`       | `request_invalid`     | `POST /api/graph/nodes` with `dcids` outside 1–50 entries, a malformed or over-long dcid, or extra keys.                                              | The offending body field (e.g. `/dcids/0`).                                                 | No        |
-| `400`       | `request_invalid`     | `GET /api/graph/node/{dcid}/members` with a `limit` outside 1–1000, a `relation` a held node lacks, a cursor that does not decode or belongs to another walk, a `projection`, `as_of` or filter the relation does not take, or an `as_of` on an undated membership. | `/limit`, `/relation`, `/cursor`, `/projection`, `/as_of`, or the filter's name. | No        |
-| `400`       | `request_invalid`     | `as_of` on `GET /api/graph/node/{dcid}` for a membership that records no dates.                                                                        | `/as_of`                                                                                    | No        |
-| `404`       | `node_not_held`       | Requested DCID does not exist in the upstream DCP graph, including a `GET /api/graph/node/{dcid}/members` dcid the deployment does not hold.          | `/dcid`                                                                                     | No        |
-| `400`       | `request_invalid`     | `GET /api/graph/documentation/{dcid}`'s `dcid` is held, but is neither a `Dataset` nor a `Provenance` node, including a `Source` dcid.   | `/dcid`                                                                                     | No        |
-| `503`       | `service_unavailable` | `GET /api/graph/documentation/{dcid}`'s own Dataset children read came back truncated (more than 256 children, or a surviving `nextToken`).            | None                                                                                        | No        |
-| `404`       | `not_found`           | Unmatched route or empty DCID path parameter (`/api/graph/node/`).                                                                                     | None                                                                                        | No        |
-| `400`       | `request_invalid`     | `POST /api/graph/schema/check` that is not JSON, with `rows` missing, empty or over 2,000 entries, an unknown member, a row over 16 constraint properties or 4 observation properties, a string over 512 characters, or a constraint value that is a number past plus or minus 2**53, `NaN` or an infinity. A row's content is never refused; its faults are findings. | The offending body field, naming the row (e.g. `/rows`, `/rows/37/constraint_properties`). | No        |
-| `503`       | `service_unavailable` | A schema route's own wait passed while the build runs on (`cause.code` `schema_building`), or two schema checks already run in the process (`cause.code` `check_busy`). The first sends `Retry-After: 5`, the second `Retry-After: 1`. | None                                                                                        | Yes       |
-| `500`       | `internal_error`      | A schema build's Class or Property listing reached its cap, or its document holds no node DFO declares. Under a known generation the schema, terms and check routes answer it for 60 s, and the first request after that builds again, so a retry within the 60 s gets the same 500 and a fault that lasts refuses again. Under an unknown generation the next request builds again. | None                                                                                        | No        |
-| `502`       | `upstream_error`      | DCP read failure with a 4xx upstream response status.                                                                                                  | None                                                                                        | Yes       |
-| `503`       | `service_unavailable` | Upstream 5xx or network errors, every DCP-read worker busy, the surface still starting or shutting down, no membership policy published, or a `facets` request whose node types were not read by the deadline. | None                                                                                        | Yes       |
-| `504`       | `timeout`             | Resolution, node lookup (single or batch), source documentation read, a schema build past its 60 s deadline, or a schema check's reads past `GRAPH_SCHEMA_CHECK_TIMEOUT_SECONDS`. | None                                                                                        | Yes       |
-| `500`       | `internal_error`      | Unhandled internal or executor failures.                                                                                                               | None                                                                                        | No        |
+| HTTP Status | Problem Code (`code`) | Trigger Condition                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | Pointer                                                                                                     | Retryable |
+| :---------- | :-------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------------------- | :-------- |
+| `400`       | `request_invalid`     | Malformed request body, text length exceeding 200 characters, batch size outside 1–25, extra keys, or `code_system` without `code` in `kinds`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | The offending body field, named by the platform's own request validation (e.g. `/texts/0`, `/code_system`). | No        |
+| `400`       | `request_invalid`     | `dcid` path parameter exceeding 512 characters.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | `/dcid`                                                                                                     | No        |
+| `400`       | `request_invalid`     | `POST /api/graph/nodes` with `dcids` outside 1–50 entries, a malformed or over-long dcid, or extra keys.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | The offending body field (e.g. `/dcids/0`).                                                                 | No        |
+| `400`       | `request_invalid`     | `GET /api/graph/node/{dcid}/members` with a `limit` outside 1–1000, a `relation` a held node lacks, a cursor that does not decode or belongs to another walk, a `projection`, `as_of` or filter the relation does not take, or an `as_of` on an undated membership.                                                                                                                                                                                                                                                                                                                                                                                              | `/limit`, `/relation`, `/cursor`, `/projection`, `/as_of`, or the filter's name.                            | No        |
+| `400`       | `request_invalid`     | `as_of` on `GET /api/graph/node/{dcid}` for a membership that records no dates.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | `/as_of`                                                                                                    | No        |
+| `404`       | `node_not_held`       | Requested DCID does not exist in the upstream DCP graph, including a `GET /api/graph/node/{dcid}/members` dcid the deployment does not hold.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | `/dcid`                                                                                                     | No        |
+| `400`       | `request_invalid`     | `GET /api/graph/documentation/{dcid}`'s `dcid` is held, but is neither a `Dataset` nor a `Provenance` node, including a `Source` dcid.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | `/dcid`                                                                                                     | No        |
+| `503`       | `service_unavailable` | `GET /api/graph/documentation/{dcid}`'s own Dataset children read came back truncated (more than 256 children, or a surviving `nextToken`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | None                                                                                                        | No        |
+| `404`       | `not_found`           | Unmatched route or empty DCID path parameter (`/api/graph/node/`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | None                                                                                                        | No        |
+| `404`       | `not_found`           | `GET /api/graph/schema/terms/un_system` on a deployment that does not serve the UN origin, with `cause.code` `origin_not_served`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | None                                                                                                        | No        |
+| `404`       | `not_found`           | `GET /api/graph/schema/usage/un_system` on a deployment that does not serve the UN origin, with `cause.code` `origin_not_served`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | None                                                                                                        | No        |
+| `404`       | `not_found`           | `GET /api/graph/schema/node/{dcid}` for a UN id on a deployment that does not serve the UN origin, with `cause.code` `origin_not_served`, or for a node no deployment it reads holds, with `cause.code` `node_not_held`.                                                                                                                                                                                                                                                                                                                                                                                                                                         | None                                                                                                        | No        |
+| `400`       | `request_invalid`     | `POST /api/graph/schema/check` that is not JSON, with `rows` missing, empty or over 2,000 entries, an unknown member, a row over 16 constraint properties or 4 observation properties, a string over 512 characters, or a constraint value that is a number past plus or minus 2**53, `NaN` or an infinity. A row's content is never refused; its faults are findings.                                                                                                                                                                                                                                                                                           | The offending body field, naming the row (e.g. `/rows`, `/rows/37/constraint_properties`).                  | No        |
+| `503`       | `service_unavailable` | A schema route's own wait passed while the build runs on (`cause.code` `schema_building`), or two schema checks already run in the process (`cause.code` `check_busy`). The first sends `Retry-After: 5`, the second `Retry-After: 1`. A schema route's graph read still answering `429` (`cause.code` `upstream_rate_limited`) sends the graph's own `Retry-After`, 5 where it names none. `GET /api/graph/schema/terms/un_system` with no body served yet, when a UN listing names no UN term (`cause.code` `listing_incomplete`) or the UN front door still answers `429` (`cause.code` `upstream_rate_limited`), sends the seconds left on the kept refusal. | None                                                                                                        | Yes       |
+| `500`       | `internal_error`      | A schema build's Class or Property listing reached its cap, or its document holds no node DFO declares. Under a known generation the schema, terms and check routes answer it for 60 s, and the first request after that builds again, so a retry within the 60 s gets the same 500 and a fault that lasts refuses again. Under an unknown generation the next request builds again.                                                                                                                                                                                                                                                                             | None                                                                                                        | No        |
+| `502`       | `upstream_error`      | DCP read failure with a 4xx upstream response status.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | None                                                                                                        | Yes       |
+| `503`       | `service_unavailable` | Upstream 5xx or network errors, every DCP-read worker busy, the surface still starting or shutting down, no membership policy published, or a `facets` request whose node types were not read by the deadline.                                                                                                                                                                                                                                                                                                                                                                                                                                                   | None                                                                                                        | Yes       |
+| `504`       | `timeout`             | Resolution, node lookup (single or batch), a schema node view, source documentation read, a schema build past its 60 s deadline, or a schema check's reads past `GRAPH_SCHEMA_CHECK_TIMEOUT_SECONDS`.                                                                                                                                                                                                                                                                                                                                                                                                                                                            | None                                                                                                        | Yes       |
+| `500`       | `internal_error`      | Unhandled internal or executor failures.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | None                                                                                                        | No        |
 
 The 502, 503, and 504 refusals describe an infrastructure outcome with no request field at fault, and carry no pointer.
