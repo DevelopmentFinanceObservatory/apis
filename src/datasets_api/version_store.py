@@ -737,68 +737,65 @@ class LiveVersionLister:
         self._store = store
 
     def list_versions(self, subject_id: str) -> list[ListedVersion]:
-        failure: str | None = None
-        sqlstate: str | None = None
-        rows: list[Mapping[str, object]] = []
-        linked: list[Mapping[str, object]] = []
-        try:
-            with self._store.transaction() as tx:
-                rows = tx.fetch_all(
-                    "SELECT content_version, base_content_version, recorded_at, "
-                    f"{_ROLE_COLUMNS_SQL} "
-                    "FROM datasets.version_record WHERE subject_id = %s "
-                    # `content_version` orders versions recorded at one instant.
-                    "ORDER BY recorded_at DESC, content_version DESC",
-                    (subject_id,),
-                )
-                linked = tx.fetch_all(
-                    _LINKED_RENDERINGS_SQL.format(where="va.subject_id = %s"), (subject_id,)
-                )
-        except Exception as exc:
-            failure = f"listing versions subject_id {subject_id!r} failed: {safe_diagnostics(exc)}"
-            sqlstate = extract_sqlstate(exc)
-        if failure is not None:
-            raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
-        return _listed_versions(rows, linked, _stored_role_columns(rows))
+        return self._list(
+            records="subject_id = %s",
+            linked="va.subject_id = %s",
+            params=(subject_id,),
+            linked_params=(subject_id,),
+            failure=f"listing versions subject_id {subject_id!r}",
+        )
 
     def list_derived_versions(
         self, subject_id: str, *, base_content_version: str
     ) -> list[ListedVersion]:
         """The subject's versions recorded as derived from `base_content_version`, as
         `list_versions` reads them, read in one transaction filtered by that base."""
-        failure: str | None = None
+        return self._list(
+            records="subject_id = %s AND base_content_version = %s",
+            linked=(
+                "va.subject_id = %s AND va.content_version IN ("
+                "SELECT content_version FROM datasets.version_record "
+                "WHERE subject_id = %s AND base_content_version = %s)"
+            ),
+            params=(subject_id, base_content_version),
+            linked_params=(subject_id, subject_id, base_content_version),
+            failure=(
+                f"listing versions subject_id {subject_id!r} derived from {base_content_version!r}"
+            ),
+        )
+
+    def _list(
+        self,
+        *,
+        records: str,
+        linked: str,
+        params: tuple[object, ...],
+        linked_params: tuple[object, ...],
+        failure: str,
+    ) -> list[ListedVersion]:
+        """The versions whose records match `records`, newest first, each with the renderings
+        of the files linked under it (`linked`), read in one transaction."""
+        error: str | None = None
         sqlstate: str | None = None
         rows: list[Mapping[str, object]] = []
-        linked: list[Mapping[str, object]] = []
+        links: list[Mapping[str, object]] = []
         try:
             with self._store.transaction() as tx:
                 rows = tx.fetch_all(
                     "SELECT content_version, base_content_version, recorded_at, "
                     f"{_ROLE_COLUMNS_SQL} "
-                    "FROM datasets.version_record "
-                    "WHERE subject_id = %s AND base_content_version = %s "
+                    f"FROM datasets.version_record WHERE {records} "
+                    # `content_version` orders versions recorded at one instant.
                     "ORDER BY recorded_at DESC, content_version DESC",
-                    (subject_id, base_content_version),
+                    params,
                 )
-                linked = tx.fetch_all(
-                    _LINKED_RENDERINGS_SQL.format(
-                        where=(
-                            "va.subject_id = %s AND va.content_version IN ("
-                            "SELECT content_version FROM datasets.version_record "
-                            "WHERE subject_id = %s AND base_content_version = %s)"
-                        )
-                    ),
-                    (subject_id, subject_id, base_content_version),
-                )
+                links = tx.fetch_all(_LINKED_RENDERINGS_SQL.format(where=linked), linked_params)
         except Exception as exc:
-            failure = (
-                f"listing versions subject_id {subject_id!r} derived from "
-                f"{base_content_version!r} failed: {safe_diagnostics(exc)}"
-            )
+            error = f"{failure} failed: {safe_diagnostics(exc)}"
             sqlstate = extract_sqlstate(exc)
-        if failure is not None:
-            raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
-        return _listed_versions(rows, linked, _stored_role_columns(rows))
+        if error is not None:
+            raise DatasetsStoreUnavailable(error, sqlstate=sqlstate)
+        return _listed_versions(rows, links, _stored_role_columns(rows))
 
     def list_servable_versions(
         self, subject_ids: Sequence[str], *, after: VersionsPageKey | None, limit: int

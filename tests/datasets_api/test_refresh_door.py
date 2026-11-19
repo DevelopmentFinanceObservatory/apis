@@ -28,7 +28,7 @@ from dataset_store.snapshot import (
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors.definition import DefinitionDeps
 from datasets_api.mint_models import GroupbyOptions
-from datasets_api.operation_store import LiveOperationStore
+from datasets_api.operation_store import LiveOperationStore, OperationBacklogFull
 from datasets_api.operations.task_client import FakeTaskClient
 from datasets_api.operations.worker import run_operation
 from datasets_api.recipe_store import LiveRecipeStore
@@ -929,12 +929,10 @@ def test_a_raw_version_linking_a_cut_and_a_summed_cut_refreshes_until_they_diffe
         assert refused.json()["code"] == "rendering_not_recorded"
 
 
-def test_a_rendering_the_rebuilt_head_cannot_make_refuses_retryably(
-    monkeypatch: pytest.MonkeyPatch,
-):
+def test_a_rendering_the_rebuilt_head_cannot_make_refuses(monkeypatch: pytest.MonkeyPatch):
     """A frame recorded under a cut and a summed cut whose summed cut cannot be made from the
     head rebuilds, and when it cannot be made from the rebuilt head either the refresh refuses
-    retryable `service_unavailable` with no `Retry-After`."""
+    `rendering_not_recorded`."""
     shared = _one_contributor_rig(_CUT_MINT, _CUT_SUMMED_MINT)
     _move_to(shared, _MEMBER_A_ROW.replace(",1000,", ",3000,"))
     real = refresh_module._rendering_frame
@@ -950,11 +948,40 @@ def test_a_rendering_the_rebuilt_head_cannot_make_refuses_retryably(
 
     resp = shared.rig.refresh(spec_id=shared.spec_id, content_version=shared.base_content_version)
 
-    assert resp.status_code == 503, resp.text
-    assert (resp.json()["code"], resp.json()["retryable"]) == ("service_unavailable", True)
-    assert "retry-after" not in resp.headers
+    assert resp.status_code == 422, resp.text
+    assert (resp.json()["code"], resp.json()["retryable"]) == ("rendering_not_recorded", False)
     # The head read sent the call to a rebuild, which fetched.
     assert len(shared.rig.sdmx_requests) > sdmx_requests
+
+
+def test_a_rebuild_is_checked_against_its_own_head_when_another_writer_moves_it(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A frame recorded under the plain rendering and a groupby that left it unchanged rebuilds
+    on new data, and another writer then moves the head: the refresh checks the renderings
+    against the version the rebuild materialised and answers `moved` to it."""
+    shared = _one_contributor_rig(_PLAIN_MINT, _SUMMED_MINT)
+    _move_to(shared, _MEMBER_A_ROW.replace(",1000,", ",3000,"))
+    real_serve_spec = refresh_module.serve_spec
+
+    def then_another_writer(**kwargs):
+        served = real_serve_spec(**kwargs)
+        head = shared.rig.head_store.head_for(shared.spec_id)
+        shared.rig.head_store._heads[shared.spec_id] = replace(
+            head, content_version=shared.base_content_version
+        )
+        return served
+
+    monkeypatch.setattr(refresh_module, "serve_spec", then_another_writer)
+
+    resp = shared.rig.refresh(spec_id=shared.spec_id, content_version=shared.base_content_version)
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "moved"
+    moved_to = resp.json()["frame"]["content_version"]
+    assert moved_to != shared.base_content_version
+    assert shared.version_rows()[moved_to] is None
+    assert shared.recorded_groupby(moved_to) == [_GROUPBY]
 
 
 def test_a_rebuild_that_remakes_the_named_frame_answers_current(
@@ -1343,6 +1370,55 @@ def test_a_second_head_read_sees_what_another_rebuild_recorded(
     assert resp.status_code == 200, resp.text
     assert resp.json()["status"] == "moved"
     assert rendered == [(head, MintingOptions(groupby=groupby, without_party_totals=True))]
+
+
+def test_a_second_head_read_finds_the_collapse_the_first_read_made(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A head read that renders the groupby to a collapse first recorded from an older head,
+    then cannot make the summed cut, sends the call to a rebuild. The operations backlog is
+    full, so the head is read again, and that read finds the collapse the first one made and
+    renders only the summed cut."""
+    relinked = _relinked_rig()
+    rig, spec_id = relinked.rig, relinked.spec_id
+    sidecar = {
+        "schema_version": 1,
+        "spec_id": spec_id,
+        "identity": selector_fixture._CUT_FAMILY_IDENTITY,
+    }
+    # The head's raw version holds the swapped flows, and nothing is derived from it yet.
+    party_fixture._mint(rig.client, spec_id=spec_id, sidecar=sidecar, options={"bundle": False})
+    head = rig.head_store.head_for(spec_id).content_version
+    groupby = GroupbyOptions.model_validate(_KEEPS_TEST_AXIS)
+    summed_cut = MintingOptions(groupby=groupby, without_party_totals=True)
+    rendered = _record_head_renderings(monkeypatch)
+    real_frame = refresh_module._rendering_frame
+    summed_cut_calls: list[int] = []
+
+    def first_summed_cut_unmade(**kwargs):
+        if kwargs["minting"] == summed_cut:
+            summed_cut_calls.append(1)
+            if len(summed_cut_calls) == 1:
+                return None
+        return real_frame(**kwargs)
+
+    def backlog_full(*args, **kwargs):
+        raise OperationBacklogFull(in_flight=20, limit=20)
+
+    monkeypatch.setattr(refresh_module, "_rendering_frame", first_summed_cut_unmade)
+    monkeypatch.setattr(current_module, "_materialise_and_record", backlog_full)
+
+    resp = rig.refresh(spec_id=spec_id, content_version=relinked.named)
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {
+        "status": "moved",
+        "frame": {"spec_id": spec_id, "content_version": relinked.relinked},
+    }
+    assert rendered == [
+        (head, MintingOptions(groupby=groupby)),
+        (head, summed_cut),
+    ]
 
 
 def test_a_refresh_lists_the_dataset_versions_once(monkeypatch: pytest.MonkeyPatch):

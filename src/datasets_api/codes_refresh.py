@@ -15,7 +15,8 @@ REFRESH_DOOR_CODE_CATALOGUE: dict[str, tuple[str, str]] = {
         "The named frame is not one rendering of the current data. It is a derived version "
         "and no file linked under it records the groupby or party-totals cut it was minted "
         "with, or its version is recorded under several renderings, which were one frame when "
-        "recorded, and the current data renders them as different frames, or as one frame "
-        "other than the one a rebuild served.",
+        "recorded, and the current data renders them as different frames, or a rebuilt "
+        "dataset cannot render one of them or renders them as one frame other than the one "
+        "it served.",
     ),
 }

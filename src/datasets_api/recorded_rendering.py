@@ -207,6 +207,8 @@ class RenderingNotRecorded(Refusal):
       when recorded and make different frames from the current data;
     - with `renderings` and `agreed_on`, renderings that make one frame from the current data,
       `agreed_on`, which is not the version the rebuild served;
+    - with `renderings` and `unmade`, a rendering the raw version a rebuild materialised cannot
+      make;
     - with `unreadable_record`, a card revision's recorded rendering that names no rendering
       this build reads.
     """
@@ -220,12 +222,18 @@ class RenderingNotRecorded(Refusal):
         content_version: str,
         renderings: int = 1,
         agreed_on: str | None = None,
+        unmade: bool = False,
         unreadable_record: bool = False,
     ) -> None:
         self.renderings = renderings
         named = f"{spec_id!r} at content_version {content_version!r}"
         if unreadable_record:
             detail = f"the card's recorded rendering of {named} names no rendering this build reads"
+        elif unmade:
+            detail = (
+                f"{named} was recorded under {renderings} renderings, and one of them cannot be "
+                "made from the dataset as rebuilt"
+            )
         elif agreed_on is not None:
             detail = (
                 f"{named} was recorded under {renderings} renderings; they make "
