@@ -99,6 +99,8 @@ Every response carries a fixed set of platform headers:
 | `Server-Timing`             | Every response that is neither an event stream nor shared-cacheable, carrying a `total` metric first, then per-surface phase names where a surface reports them (for example datasets' `render`/`store_rendering`/`sign`). |
 | `Strict-Transport-Security` | Every response.                                                                                                                                                                                                            |
 
+The 302 of `GET /api/datasets/{id}/{content_version}/files/{digest}` also carries `x-dfo-artifact-tier`, `pinned` when the object sits in the pinned tier and `working` otherwise, for the website gateway to choose a cache lifetime.
+
 Every surface's `GET /healthz` body is `{status, build, capability_version}`, with `build` equal to the commit the `x-dfo-commit` header carries. Search's success bodies additionally nest `diagnostics.trace_id` (matching the header) and `diagnostics.timing_ms` (`total` plus a per-step breakdown). A streamed `POST /api/search/resolve` response carries its own total in the terminal `done` event's `elapsed_ms` rather than a `Server-Timing` header, since headers go out before the stream's first byte and the request's total duration is not yet known at that point.
 
 ## Configuration

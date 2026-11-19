@@ -111,7 +111,7 @@ Returns immutable version metadata and a stable download link for each stored ar
 | Method | Endpoint                                              | Description                                                                             |
 | :----- | :---------------------------------------------------- | :-------------------------------------------------------------------------------------- |
 | `GET`  | `/api/datasets/{id}/{content_version}`                | Retrieves stored artifact metadata and download links for a version.                    |
-| `GET`  | `/api/datasets/{id}/{content_version}/files/{digest}` | Resolves one artifact's download link to a 302 at a short-lived signed URL.             |
+| `GET`  | `/api/datasets/{id}/{content_version}/files/{digest}` | Resolves a download link to a 302 at a signed URL, tier in `x-dfo-artifact-tier`.       |
 | `GET`  | `/api/datasets/{id}/{content_version}/file`           | Redirects to the version's file in the `format`, `bundle` and `layout` the query names. |
 | `GET`  | `/api/datasets/{id}/versions`                         | Lists a dataset's stored versions, newest first, one page at a time.                    |
 
