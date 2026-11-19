@@ -424,7 +424,8 @@ FindingCode = Literal[
 - `value_missing`: the measured property is absent, or a constraint property has a null value.
 - `not_a_property`: a constraint property, the measured property or an observation property
   is not typed `Property`.
-- `not_a_class`: the population type is not typed `Class`.
+- `not_a_class`: the population type is not typed `Class` and is no UN System series the
+  request's catalogue holds.
 - `value_outside_range`: no type of the value is a schema document class whose
   `subClassOf` ancestry in the document meets the DFO-declared property's `rangeIncludes`,
   every type of the value is known, every `rangeIncludes` target resolves, and the document
