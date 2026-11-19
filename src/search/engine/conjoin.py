@@ -79,10 +79,13 @@ BINDING_FOLDED = "binding_folded"
 VARIABLES_CLAMPED = "variables_clamped"
 
 # The steps every leg's own timing_by_step seeds from the shared, once-per-request stages
-# ahead of the fan-out: extraction and the exclusion read on a raw_text request, pin
-# confirmation and part interpretation on a parsed one (see fanout.py's base_timing). Each
+# ahead of the fan-out. A raw_text request runs extraction and the exclusion read. A parsed
+# one runs pin confirmation, part interpretation and, with several parts, the batched entity
+# resolve (`entry.parsed.ConfirmedParts`, fanout.py's base_timing). Each
 # is reported once, on the envelope's own timing_ms.by_step.
-_SHARED_TIMING_STEPS = frozenset({"extract", "exclusion_read", "confirm_pins", "interpret_parts"})
+_SHARED_TIMING_STEPS = frozenset(
+    {"extract", "exclusion_read", "confirm_pins", "interpret_parts", "resolve_entities"}
+)
 
 # The steps that time stages inside `shape` (`phase_intake._phase_derive_shapes`). A part's
 # by_step reports them, and its total leaves them out, since `shape` already spans them.

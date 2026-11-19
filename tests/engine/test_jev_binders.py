@@ -465,6 +465,43 @@ def test_the_stated_word_questions_quote_what_the_measure_definition_fixes(
     assert "definition" not in asked["m|0"]["instructions"]
 
 
+class _RatingGemini(_GeminiDouble):
+    """Gemini rating "girls" stated at 0.5."""
+
+    async def rate_words_stated(self, request, *, llm):
+        return {"girls": 0.5}, None
+
+
+@pytest.mark.parametrize(
+    ("binder", "rated", "ratings"),
+    [
+        ("jev", {"girls": 0.1, "rural": 0.8}, {"girls": 0.9, "rural": 0.8}),
+        ("code", {}, {}),
+        ("gemini", {}, {"girls": 0.5}),
+    ],
+    ids=["jev", "code-pinned", "gemini"],
+)
+def test_the_fallback_binder_rates_words_through_the_primary_unless_the_fallback_bound(
+    binder, rated, ratings
+):
+    """Behind the fallback binder, a bind Jev answered or no model answered
+    (`code_pinned.CODE_PINNED_BINDER`) has its words rated by Jev (`JevBinder.restated`),
+    and one Gemini answered by Gemini."""
+    request = _restated_request((_FEMALE,), rated)
+    assert request.decision is not None
+    request = dataclasses.replace(
+        request, decision=dataclasses.replace(request.decision, binder=binder)
+    )
+    fallback = FallbackBinder(
+        primary=JevBinder(ask=FakeAsk(stated={"girls": 0.9})),
+        fallback=_RatingGemini(_ELECTS_FIRST),
+    )
+
+    got, _usage = asyncio.run(fallback.rate_words_stated(request, llm=None))
+
+    assert got == ratings
+
+
 def test_a_failed_restated_request_rates_no_word_and_logs_its_own_line(caplog):
     """Behind the fallback binder, the request asking the words again logs a ``call=stated``
     ``binder_part`` line. A failed one falls back on nothing: Gemini is not asked, its line

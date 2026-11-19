@@ -183,11 +183,24 @@ class TestSinglePartResolvesThroughSharedPipeline:
         assert result.query_echo.extract_skipped is True
         assert [p.variable_text for p in result.parts] == ["fertility rate"]
 
-    def test_the_steps_ahead_of_the_fan_out_report_on_the_envelope_timing(self):
-        result = _resolve_parsed([_fertility_kenya_part()])
+    @pytest.mark.parametrize(
+        ("count", "steps"),
+        [
+            (1, {"confirm_pins", "interpret_parts"}),
+            (2, {"confirm_pins", "interpret_parts", "resolve_entities"}),
+        ],
+        ids=["one-part", "two-parts"],
+    )
+    def test_the_steps_ahead_of_the_fan_out_report_on_the_envelope_timing(self, count, steps):
+        """The steps run once per request ahead of the fan-out, the batched entity resolve
+        on a request of several parts, report on the envelope and on no part."""
+        windows = [None, "2015 to 2020"][:count]
+        result = _resolve_parsed([_fertility_kenya_part(time_text=w) for w in windows])
         by_step = result.diagnostics.timing_ms.by_step
-        assert {"confirm_pins", "interpret_parts"} <= set(by_step)
-        assert all(by_step[step] >= 0 for step in ("confirm_pins", "interpret_parts"))
+        assert steps <= set(by_step)
+        assert all(by_step[step] >= 0 for step in steps)
+        for part in result.parts:
+            assert not steps & set(part.timing_ms.by_step or {})
 
     def test_convergence_with_raw_text(self):
         """The same utterance through raw_text and parsed converges: same

@@ -10,6 +10,7 @@ import functools
 import logging
 import threading
 import time
+import weakref
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
 from concurrent.futures import Executor
 from contextlib import (
@@ -571,8 +572,37 @@ whole response)."""
 
 
 _in_flight = 0
-"""Requests inside `_trace_id_dispatch` in this process. The event loop runs every
-update, so the count needs no lock."""
+"""Requests in this process that `_trace_id_dispatch` has taken and whose response body
+has not finished sending (`_count_in_flight`). The event loop runs every update, so the
+count needs no lock."""
+
+
+def _count_in_flight() -> Callable[[], None]:
+    """Count one more request in `_in_flight`, and return the call that counts it out
+    again. The call counts out once, however often it runs."""
+    global _in_flight  # a process-wide count of requests in flight
+    _in_flight += 1
+    done = False
+
+    def release() -> None:
+        nonlocal done
+        global _in_flight  # a process-wide count of requests in flight
+        if not done:
+            done = True
+            _in_flight -= 1
+
+    return release
+
+
+async def _released_after(
+    body: AsyncIterator[Any], release: Callable[[], None]
+) -> AsyncIterator[Any]:
+    """`body`, calling `release` once it ends, fails or is closed."""
+    try:
+        async for chunk in body:
+            yield chunk
+    finally:
+        release()
 
 
 async def _trace_id_dispatch(
@@ -597,19 +627,22 @@ async def _trace_id_dispatch(
 
     Logs a `request_received` line on entry, with the count of requests in flight, and
     stores the entry time on `request.state.received` (a `time.monotonic()` reading)
-    for a route to measure its own start against.
+    for a route to measure its own start against. `call_next` returns at response start,
+    so a request counts in flight until its response body finishes sending, as an event
+    stream's last event does, or until the dispatch fails or the body is dropped unsent.
     """
-    global _in_flight  # a process-wide count of requests in flight
     trace_id = new_trace_id()
     request.state.trace_id = trace_id
     request.state.received = time.monotonic()
-    _in_flight += 1
     token = set_trace_id(trace_id)
     cloud_token = set_cloud_trace_id(cloud_trace_id_from_headers(request.headers))
     identity_token = set_delivery_identity(delivery_identity(request, caller))
     start = time.perf_counter()
     status: int | None = None
+    release: Callable[[], None] | None = None
+    handed_off = False
     try:
+        release = _count_in_flight()
         try:
             log_request_received(
                 trace_id=trace_id,
@@ -632,6 +665,14 @@ async def _trace_id_dispatch(
             and not _is_event_stream(response)
         ):
             response.headers[SERVER_TIMING_HEADER] = f"total;dur={elapsed_ms:.1f}"
+        # `call_next` returns a response streaming the route's body.
+        body = getattr(response, "body_iterator", None)
+        if body is not None:
+            counted = _released_after(body, release)
+            # A body the server drops before its first chunk never runs its own `finally`.
+            weakref.finalize(counted, release)
+            response.body_iterator = counted  # ty: ignore[unresolved-attribute]  # see above
+            handed_off = True
         return response
     finally:
         try:
@@ -646,7 +687,8 @@ async def _trace_id_dispatch(
             # out of the record, as it can carry a credential.
             logger.warning("request log line failed: %s", type(exc).__name__)
         finally:
-            _in_flight -= 1
+            if release is not None and not handed_off:
+                release()
             # The inner task retains its copied trace context after this outer task resets.
             reset_trace_id(token)
             reset_cloud_trace_id(cloud_token)
