@@ -429,8 +429,10 @@ def _agreed_frame(
     named frame's.
 
     The first rendering is the one the frame refreshes as, and a frame recorded under one
-    rendering is that rendering's frame. When the first rendering's frame already links a file
-    of every rendering, they are one frame there and nothing more renders. Otherwise each other
+    rendering is that rendering's frame. When the first rendering's frame is the head and
+    already links a file of every rendering, they are one frame there and nothing more renders.
+    A derived frame's files may have been linked from other heads, so each other rendering is
+    made from this one. Otherwise each other
     rendering is made from the head with the current code index, a plain file is linked under
     the head unless one is, and the frame answers once every rendering made the same version and
     that version links a file of each. Each check reads the files the frame's own read listed.
@@ -453,13 +455,19 @@ def _agreed_frame(
         )
 
     differ = RenderingNotRecorded(
-        spec_id=spec_id, content_version=content_version, renderings=len(renderings)
+        spec_id=spec_id,
+        content_version=content_version,
+        renderings=len(renderings),
+        plain=None in renderings,
     )
     frame = frame_of(renderings[0])
     if (
         frame is None
         or len(renderings) == 1
-        or _records_every(frame.renderings, rendering=rendering)
+        or (
+            frame.content_version == head_content_version
+            and _records_every(frame.renderings, rendering=rendering)
+        )
     ):
         return frame
     linked = list(frame.renderings)
@@ -530,9 +538,9 @@ def answer_frame_refresh(
     named_spec_id, spec_id = spec_id, served.spec_id
     minting = rendering.refreshes_as
     derived = _DerivedVersions(spec_id=spec_id, deps=deps)
-    # The versions `_agreed_frame` found every rendering makes, so `_answer` checks only a
-    # frame a rebuild served.
-    agreed: set[str] = set()
+    # The (head, version) pairs `_agreed_frame` found every rendering makes from that head, so
+    # `_answer` checks only a frame no head read agreed on at the head it was served from.
+    agreed: set[tuple[str, str]] = set()
 
     def _agreed(head_content_version: str, coverage_snapshot: CoverageSnapshot) -> _Frame | None:
         frame = _agreed_frame(
@@ -546,7 +554,7 @@ def answer_frame_refresh(
             coverage_snapshot=coverage_snapshot,
         )
         if frame is not None:
-            agreed.add(frame.content_version)
+            agreed.add((head_content_version, frame.content_version))
         return frame
 
     def _load_head_frame(
@@ -579,10 +587,15 @@ def answer_frame_refresh(
         frame = FramePair(spec_id=spec_id, content_version=current_content_version)
         if (spec_id, current_content_version) == (named_spec_id, content_version):
             return FrameCurrent(frame=frame)
-        if rendering.ambiguous and current_content_version not in agreed:
-            # A rebuild served the frame, so no head read checked the other renderings against
-            # the raw version it materialised, whether or not that became the head. With no
-            # rebuild of this call, another caller's served it, and the head is that version.
+        if rendering.ambiguous and not (
+            (materialised, current_content_version) in agreed
+            if materialised is not None
+            else any(version == current_content_version for _, version in agreed)
+        ):
+            # A rebuild of this call served the frame, so the renderings are checked against
+            # the raw version it materialised, whether or not that became the head, unless a
+            # head read agreed on the frame there. With no rebuild of this call, another
+            # caller's served it, and the head is that version.
             head_content_version = materialised
             if head_content_version is None:
                 head = deps.head_store.read_head(spec_id)

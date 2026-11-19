@@ -206,7 +206,8 @@ class RenderingNotRecorded(Refusal):
 
     - with neither keyword, a derived frame with no linked file recording its minting options;
     - with `renderings`, a version recorded under that many renderings, which were one frame
-      when recorded and make different frames from the current data;
+      when recorded and make different frames from the current data, and with `plain` also a
+      raw version that links a plain file;
     - with `renderings` and `agreed_on`, renderings that make one frame from the current data,
       `agreed_on`, which is not the version the rebuild served;
     - with `renderings` and `unmade`, a rendering the raw version a rebuild materialised cannot
@@ -225,6 +226,7 @@ class RenderingNotRecorded(Refusal):
         renderings: int = 1,
         agreed_on: str | None = None,
         unmade: bool = False,
+        plain: bool = False,
         unreadable_record: bool = False,
     ) -> None:
         self.renderings = renderings
@@ -241,6 +243,12 @@ class RenderingNotRecorded(Refusal):
                 f"{named} was recorded under {renderings} renderings; they make "
                 f"{agreed_on!r} from the current data, which is not the version the rebuild "
                 "served"
+            )
+        elif renderings > 1 and plain:
+            detail = (
+                f"the rendering of {named} is ambiguous: the version links a groupby sum or "
+                "party-totals cut and a plain file, and the renderings of the current data are "
+                "no longer one frame"
             )
         elif renderings > 1:
             detail = (

@@ -1126,6 +1126,87 @@ def test_a_derived_version_recorded_under_two_renderings_refreshes_until_they_di
         assert refused.json()["code"] == "rendering_not_recorded"
 
 
+def test_a_rebuild_checks_the_renderings_again_at_the_version_it_materialised(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A head read agrees the groupby and the summed cut on one derived version, and the call
+    rebuilds to count the head's year coverage. The rebuild materialises new data, with its
+    flows swapped, that the groupby sums to that version again, and where the summed cut makes
+    another frame: the refresh refuses `rendering_not_recorded`."""
+    rig = _cut_family_rig(dac_total_kind="party")
+    spec_id = recompute_identity(selector_fixture._CUT_FAMILY_IDENTITY).spec_id
+    sidecar = {
+        "schema_version": 1,
+        "spec_id": spec_id,
+        "identity": selector_fixture._CUT_FAMILY_IDENTITY,
+    }
+    named = party_fixture._mint(
+        rig.client,
+        spec_id=spec_id,
+        sidecar=sidecar,
+        options={"bundle": False, "groupby": _KEEPS_TEST_AXIS},
+    )
+    party_fixture._mint(
+        rig.client,
+        spec_id=spec_id,
+        sidecar=sidecar,
+        options={**_CUT_MINT, "groupby": _KEEPS_TEST_AXIS},
+    )
+    rig.body["text"] = _cut_family_body(_flows_value)
+    rig.head_store.age_head(spec_id, age=_PAST_MAX_AGE)
+    party_fixture._mint(rig.client, spec_id=spec_id, sidecar=sidecar, options={"bundle": False})
+    agreed_head = rig.head_store.head_for(spec_id).content_version
+    # The head read finds the head's year coverage uncounted, once.
+    uncounted = iter([True])
+    real_counted = current_module.year_coverage_counted
+    monkeypatch.setattr(
+        current_module,
+        "year_coverage_counted",
+        lambda coverage: False if next(uncounted, False) else real_counted(coverage),
+    )
+    real_materialise = current_module._materialise_and_record
+
+    def on_swapped_flows(*args, **kwargs):
+        rig.body["text"] = _cut_family_body(functools.partial(_flows_value, swapped=True))
+        return real_materialise(*args, **kwargs)
+
+    monkeypatch.setattr(current_module, "_materialise_and_record", on_swapped_flows)
+    summed_cut = MintingOptions(
+        groupby=GroupbyOptions.model_validate(_KEEPS_TEST_AXIS), without_party_totals=True
+    )
+    real_frame = refresh_module._rendering_frame
+    served: list[str] = []
+
+    def the_cut_leaves_rows_out_at_a_new_head(**kwargs):
+        frame = real_frame(**kwargs)
+        if kwargs["minting"] == summed_cut and kwargs["head_content_version"] != agreed_head:
+            # The summed cut of the rebuilt data is another frame: the head's raw one stands in.
+            return refresh_module._servable_frame(
+                spec_id=spec_id, content_version=kwargs["head_content_version"], deps=kwargs["deps"]
+            )
+        return frame
+
+    monkeypatch.setattr(refresh_module, "_rendering_frame", the_cut_leaves_rows_out_at_a_new_head)
+    real_serve_spec = refresh_module.serve_spec
+
+    def recording_serve_spec(**kwargs):
+        manifest = real_serve_spec(**kwargs)
+        served.append(manifest.content_version)
+        return manifest
+
+    monkeypatch.setattr(refresh_module, "serve_spec", recording_serve_spec)
+
+    resp = rig.refresh(spec_id=spec_id, content_version=named["content_version"])
+
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["code"] == "rendering_not_recorded"
+    # The rebuild materialised new data and served the version the head read agreed on.
+    assert rig.head_store.head_for(spec_id).content_version != agreed_head
+    agreed_on = LiveSnapshotReader(store=rig.version_store).read_version(spec_id, served[0])
+    assert agreed_on is not None
+    assert agreed_on.base_content_version == agreed_head
+
+
 def test_a_refresh_finds_the_version_its_rebuild_recorded(monkeypatch: pytest.MonkeyPatch):
     """A derived frame recorded under two renderings whose head and frame expired rebuilds on
     new data, and the check after the rebuild finds the groupby the rebuild recorded instead of
