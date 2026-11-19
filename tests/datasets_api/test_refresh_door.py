@@ -1421,6 +1421,55 @@ def test_a_second_head_read_finds_the_collapse_the_first_read_made(
     ]
 
 
+def test_a_rebuild_replaces_the_version_a_head_read_made_from_the_same_head(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A head read renders the groupby to one version and cannot make the summed cut, so the
+    call rebuilds. The rebuild materialises the same head and serves the groupby as another
+    version, and the refresh checks the renderings against the version the rebuild served."""
+    relinked = _relinked_rig()
+    rig, spec_id = relinked.rig, relinked.spec_id
+    sidecar = {
+        "schema_version": 1,
+        "spec_id": spec_id,
+        "identity": selector_fixture._CUT_FAMILY_IDENTITY,
+    }
+    party_fixture._mint(rig.client, spec_id=spec_id, sidecar=sidecar, options={"bundle": False})
+    head = rig.head_store.head_for(spec_id).content_version
+    groupby = MintingOptions(groupby=GroupbyOptions.model_validate(_KEEPS_TEST_AXIS))
+    summed_cut = MintingOptions(groupby=groupby.groupby, without_party_totals=True)
+    real_frame = refresh_module._rendering_frame
+    first_read: list[MintingOptions] = []
+
+    def first_read_makes_another_version(**kwargs):
+        minting = kwargs["minting"]
+        if minting in (groupby, summed_cut) and len(first_read) < 2:
+            first_read.append(minting)
+            if minting == summed_cut:
+                return None
+            # The head read made the groupby as a version, here the older collapse's base, that
+            # records the groupby alone.
+            kwargs["derived"].add(
+                base_content_version=head, minting=groupby, content_version=relinked.relinked_base
+            )
+            return refresh_module._servable_frame(
+                spec_id=spec_id, content_version=relinked.relinked_base, deps=kwargs["deps"]
+            )
+        return real_frame(**kwargs)
+
+    monkeypatch.setattr(refresh_module, "_rendering_frame", first_read_makes_another_version)
+
+    resp = rig.refresh(spec_id=spec_id, content_version=relinked.named)
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {
+        "status": "moved",
+        "frame": {"spec_id": spec_id, "content_version": relinked.relinked},
+    }
+    # The rebuild materialised the head the first read was made from.
+    assert rig.head_store.head_for(spec_id).content_version == head
+
+
 def test_a_refresh_lists_the_dataset_versions_once(monkeypatch: pytest.MonkeyPatch):
     """A refresh of a derived frame recorded under two renderings, which looks up a derived
     version of the new head for each, reads the versions derived from that head once and

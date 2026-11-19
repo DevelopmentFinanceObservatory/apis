@@ -80,7 +80,9 @@ def recorded_mintings(renderings: Iterable[Mapping[str, object]]) -> list[Mintin
     return [recorded for rendering in renderings if (recorded := _recorded(rendering))]
 
 
-def _minting_order(minting: MintingOptions) -> tuple[str, bool]:
+def minting_key(minting: MintingOptions) -> tuple[str, bool]:
+    """A hashable key of `minting`'s options, the same for equal options: its groupby's
+    canonical JSON, or `""`, and whether it leaves out party totals."""
     groupby = minting.groupby
     return (
         json.dumps(groupby.model_dump(mode="json"), sort_keys=True) if groupby is not None else "",
@@ -92,7 +94,7 @@ def ordered_mintings(mintings: Iterable[MintingOptions]) -> tuple[MintingOptions
     """Each different set of `mintings`, in an order of the options alone: a party-totals cut
     alone first, then each groupby by its canonical JSON, without the cut before with it. The
     order of the files that recorded them does not move it."""
-    return tuple(sorted(_distinct(mintings), key=_minting_order))
+    return tuple(sorted(_distinct(mintings), key=minting_key))
 
 
 def _distinct(mintings: Iterable[MintingOptions]) -> tuple[MintingOptions, ...]:
@@ -427,6 +429,7 @@ __all__ = [
     "StoredRendering",
     "derived_version_sums",
     "frame_options",
+    "minting_key",
     "ordered_mintings",
     "own_frame_mode",
     "recorded_minting",

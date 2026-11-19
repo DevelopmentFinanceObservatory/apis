@@ -381,8 +381,8 @@ def serve_spec(
     """Serve the served definition `stored` through `serve_current`, rehydrating it at most
     once and only when the head cannot answer. `requests`, the members a caller has already
     admitted, replace the rehydration. `load_head`, `head_read`, `revoked_under` and
-    `on_materialised` are `serve_current`'s. A refusal the rebuild's admission or materialisation raises loses its
-    mint-body pointer (`strip_pointer`)."""
+    `on_materialised` are `serve_current`'s. A refusal the rebuild's admission or
+    materialisation raises loses its mint-body pointer (`strip_pointer`)."""
 
     @functools.cache
     def _requests() -> Sequence[MaterialisationRequest]:

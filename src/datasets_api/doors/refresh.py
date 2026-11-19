@@ -33,9 +33,9 @@ and answers with the one frame they make, linking a file of each under it, so th
 frame is that frame whichever rendering it was made as. Once they differ it refuses
 `rendering_not_recorded` (422). A head whose stored frame has expired, so that a rendering
 cannot be made from it, rebuilds or answers `pending` as for any other frame. After a
-rebuild the renderings are made from the raw version it materialised, the head it wrote: one
-that cannot be made, and renderings that make one frame other than the one the rebuild served,
-refuse `rendering_not_recorded`. The frame
+rebuild the renderings are made from the raw version it materialised, whether or not that
+became the head: one that cannot be made, and renderings that make one frame other than the
+one the rebuild served, refuse `rendering_not_recorded`. The frame
 refreshes, and rebuilds, as the plain rendering when that is recorded, and otherwise as the
 first of its minting options by `recorded_rendering.ordered_mintings`, so the order the files
 were linked in moves nothing.
@@ -79,7 +79,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from typing import Annotated, Literal, cast
+from typing import Annotated, Literal
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
@@ -107,6 +107,7 @@ from datasets_api.recorded_rendering import (
     RenderingNotRecorded,
     StoredRendering,
     frame_options,
+    minting_key,
     recorded_mintings,
     recorded_party_cut,
     records_plain_file,
@@ -260,30 +261,31 @@ def refresh_can_answer(*, stored: StoredRendering, target: StoredRendering) -> b
 class _DerivedVersions:
     """The dataset's versions derived from one head: those recorded with it as their base, read
     with a query filtered by that head (`VersionLister.list_derived_versions`) on the first
-    lookup after `reread`, and the versions this refresh's renders and rebuild made from it,
-    which a record may name another base for. A lookup of another head starts over."""
+    lookup after `reread`, and the version this refresh's renders and rebuild last made from it
+    with each minting, which a record may name another base for. A lookup of another head
+    starts over."""
 
     def __init__(self, *, spec_id: str, deps: DefinitionDeps) -> None:
         self._spec_id = spec_id
         self._deps = deps
         self._head: str | None = None
-        self._made: list[tuple[MintingOptions, str]] = []
+        self._made: dict[tuple[str, bool], str] = {}
         self._listed: list[tuple[tuple[MintingOptions, ...], str]] | None = None
 
     def _at(self, head_content_version: str) -> None:
         if self._head != head_content_version:
             self._head = head_content_version
-            self._made = []
+            self._made = {}
             self._listed = None
 
-    def _recorded(self) -> list[tuple[tuple[MintingOptions, ...], str]]:
+    def _recorded(self, head_content_version: str) -> list[tuple[tuple[MintingOptions, ...], str]]:
         if self._listed is None:
             lister = self._deps.version_lister
             self._listed = (
                 [
                     (tuple(recorded_mintings(version.renderings)), version.content_version)
                     for version in lister.list_derived_versions(
-                        self._spec_id, base_content_version=cast(str, self._head)
+                        self._spec_id, base_content_version=head_content_version
                     )
                 ]
                 if lister is not None
@@ -292,14 +294,14 @@ class _DerivedVersions:
         return self._listed
 
     def recorded(self, *, base_content_version: str, minting: MintingOptions) -> str | None:
-        """The stored version derived from `base_content_version` with `minting`: one this
-        refresh made from it, else the first the read names, or `None`."""
+        """The stored version derived from `base_content_version` with `minting`: the one this
+        refresh last made from it, else the first the read names, or `None`."""
         self._at(base_content_version)
-        made = next((cv for options, cv in self._made if options == minting), None)
+        made = self._made.get(minting_key(minting))
         if made is not None:
             return made
         return next(
-            (cv for mintings, cv in self._recorded() if minting in mintings),
+            (cv for mintings, cv in self._recorded(base_content_version) if minting in mintings),
             None,
         )
 
@@ -307,9 +309,9 @@ class _DerivedVersions:
         self, *, base_content_version: str, minting: MintingOptions, content_version: str
     ) -> None:
         """Note that a render or rebuild of this refresh made `content_version` from
-        `base_content_version` with `minting`."""
+        `base_content_version` with `minting`, replacing what it made with `minting` before."""
         self._at(base_content_version)
-        self._made.append((minting, content_version))
+        self._made[minting_key(minting)] = content_version
 
     def reread(self) -> None:
         """Read the recorded versions again on the next lookup, keeping what this refresh made,
@@ -566,14 +568,32 @@ def answer_frame_refresh(
         frame = _agreed(head_content_version, coverage_snapshot)
         return frame.manifest if frame is not None else None
 
+    # The raw version this call's rebuild materialised, set by `serve_spec`.
+    materialised: str | None = None
+
+    def _note_materialised(content_version: str) -> None:
+        nonlocal materialised
+        materialised = content_version
+
     def _answer(current_content_version: str) -> FrameCurrent | FrameMoved:
         frame = FramePair(spec_id=spec_id, content_version=current_content_version)
         if (spec_id, current_content_version) == (named_spec_id, content_version):
             return FrameCurrent(frame=frame)
         if rendering.ambiguous and current_content_version not in agreed:
             # A rebuild served the frame, so no head read checked the other renderings against
-            # the raw version it materialised, which is the head it wrote.
-            head_content_version = materialised[-1] if materialised else current_content_version
+            # the raw version it materialised, whether or not that became the head. With no
+            # rebuild of this call, another caller's served it, and the head is that version.
+            head_content_version = materialised
+            if head_content_version is None:
+                head = deps.head_store.read_head(spec_id)
+                if head is None:
+                    raise RenderingNotRecorded(
+                        spec_id=spec_id,
+                        content_version=content_version,
+                        renderings=len(rendering.renderings),
+                        unmade=True,
+                    )
+                head_content_version = head.content_version
             derived.reread()
             if minting is not None and current_content_version != head_content_version:
                 derived.add(
@@ -592,8 +612,6 @@ def answer_frame_refresh(
                 )
         return FrameMoved(frame=frame)
 
-    # The raw versions this call's rebuilds materialised.
-    materialised: list[str] = []
     try:
         manifest = serve_spec(
             stored=served,
@@ -602,7 +620,7 @@ def answer_frame_refresh(
             deps=deps,
             trace_id=trace_id,
             load_head=_load_head_frame,
-            on_materialised=materialised.append,
+            on_materialised=_note_materialised,
         )
     except OperationSubmitted as submitted:
         operation = submitted.operation
