@@ -233,7 +233,9 @@ def build_exports_door(
                 timings=call.timings,
             )
             record_export(facts, served=False)
-        return JSONResponse(facts, headers=no_store_headers(server_timing=call.server_timing))
+        return call.delivered(
+            JSONResponse(facts, headers=no_store_headers(server_timing=call.server_timing))
+        )
 
     exemplar_day = datetime(2026, 1, 1, tzinfo=UTC)
     return DoorContribution(
@@ -337,8 +339,10 @@ def build_export_link_door(*, deps: DepsCell) -> DoorContribution:
                 ),
                 refuse=ExportBackpressure,
             )
-        return RedirectResponse(
-            url, status_code=302, headers=no_store_headers(server_timing=call.server_timing)
+        return call.delivered(
+            RedirectResponse(
+                url, status_code=302, headers=no_store_headers(server_timing=call.server_timing)
+            )
         )
 
     return DoorContribution(

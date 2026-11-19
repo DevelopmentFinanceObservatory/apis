@@ -382,10 +382,9 @@ def _resolve_operation(
         serving_basis=serving_basis,
     )
     if manifest is not None:
-        # A mint answered 202 logs nothing, so the first poll that finds it done logs the
-        # delivery, under the admission the mint recorded. Later polls read the same manifest.
-        if operation_store.mark_delivered(operation.id, attempt=operation.attempt_count):
-            record_manifest(manifest, admission=operation.admission)
+        # A mint answered 202 logs nothing, so each poll that serves the manifest logs a line
+        # under its own caller, as a manifest read does.
+        record_manifest(manifest)
         return OperationResource(
             operation=OperationEnvelope(operation_id=operation.id, status="done"),
             manifest=manifest.model_dump(mode="json", exclude_none=True),
@@ -488,12 +487,14 @@ def build_meta_door(*, deps: DepsCell, settings: DatasetsBuildSettings) -> DoorC
                 ),
                 refuse=OperationBackpressure,
             )
-        return JSONResponse(
-            resource.model_dump(mode="json", exclude_none=True),
-            headers={
-                **no_store_headers(server_timing=call.server_timing),
-                **retry_after_headers(resource.operation),
-            },
+        return call.delivered(
+            JSONResponse(
+                resource.model_dump(mode="json", exclude_none=True),
+                headers={
+                    **no_store_headers(server_timing=call.server_timing),
+                    **retry_after_headers(resource.operation),
+                },
+            )
         )
 
     return DoorContribution(

@@ -566,9 +566,11 @@ def build_observations_door(*, deps: DepsCell) -> DoorContribution:
                 refuse=ObservationsBackpressure,
             )
             record_rows_served(sum(len(series.points) for series in observations.series))
-        return JSONResponse(
-            observations_body(observations),
-            headers=no_store_headers(server_timing=call.server_timing),
+        return call.delivered(
+            JSONResponse(
+                observations_body(observations),
+                headers=no_store_headers(server_timing=call.server_timing),
+            )
         )
 
     return DoorContribution(

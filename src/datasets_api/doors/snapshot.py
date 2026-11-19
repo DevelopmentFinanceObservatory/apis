@@ -475,9 +475,11 @@ def build_snapshot_door(*, deps: DepsCell) -> DoorContribution:
                 refuse=SnapshotBackpressure,
             )
             record_manifest(manifest)
-        return JSONResponse(
-            linked_under(manifest, id).model_dump(mode="json", exclude_none=True),
-            headers=no_store_headers(server_timing=call.server_timing),
+        return call.delivered(
+            JSONResponse(
+                linked_under(manifest, id).model_dump(mode="json", exclude_none=True),
+                headers=no_store_headers(server_timing=call.server_timing),
+            )
         )
 
     return DoorContribution(

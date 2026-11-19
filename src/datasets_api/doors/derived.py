@@ -44,7 +44,7 @@ from datasets_api.admission import bounded_materialise_slot
 from datasets_api.artifact_delivery import artifact_content_disposition
 from datasets_api.backpressure import Backpressure
 from datasets_api.codes_snapshot import ArtifactExpired
-from datasets_api.delivery import record_derived_file
+from datasets_api.delivery import record_derived_file, record_derived_manifest
 from datasets_api.deps import Deps, DepsCell
 from datasets_api.derived import (
     DerivedFile,
@@ -197,7 +197,7 @@ class _DerivedRoutes:
         """A derived frame's retention, recipe, roots, citation, resolved periods and the
         series its steps left out for missing data."""
         current = self._cell.get()
-        with door_call("derived", logger=logger) as call:
+        with door_call("derived", logger=logger, delivers=True) as call:
             body = await current.read_executor.run(
                 functools.partial(
                     run_with_timings,
@@ -209,7 +209,10 @@ class _DerivedRoutes:
                 ),
                 refuse=DerivedBackpressure,
             )
-        return JSONResponse(body, headers=no_store_headers(server_timing=call.server_timing))
+            record_derived_manifest(spec_id=id, content_version=content_version)
+        return call.delivered(
+            JSONResponse(body, headers=no_store_headers(server_timing=call.server_timing))
+        )
 
     async def get_derived_file(self, id: str, content_version: str, request: Request) -> Response:
         """The derived frame's rows as a file in the format and bundle the query names."""
@@ -231,13 +234,15 @@ class _DerivedRoutes:
                 refuse=DerivedBackpressure,
             )
             record_derived_file(spec_id=id, content_version=content_version, file=rendered)
-        return Response(
-            rendered.data,
-            media_type=rendered.media_type,
-            headers={
-                **no_store_headers(server_timing=call.server_timing),
-                "Content-Disposition": artifact_content_disposition(rendered.file_name),
-            },
+        return call.delivered(
+            Response(
+                rendered.data,
+                media_type=rendered.media_type,
+                headers={
+                    **no_store_headers(server_timing=call.server_timing),
+                    "Content-Disposition": artifact_content_disposition(rendered.file_name),
+                },
+            )
         )
 
 

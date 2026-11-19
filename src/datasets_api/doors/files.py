@@ -794,13 +794,15 @@ def build_files_door(*, deps: DepsCell) -> DoorContribution:
                     content_version=content_version,
                     digest=digest,
                 )
-        return RedirectResponse(
-            link.url,
-            status_code=302,
-            headers={
-                **no_store_headers(server_timing=call.server_timing),
-                ARTIFACT_TIER_HEADER: link.tier.value,
-            },
+        return call.delivered(
+            RedirectResponse(
+                link.url,
+                status_code=302,
+                headers={
+                    **no_store_headers(server_timing=call.server_timing),
+                    ARTIFACT_TIER_HEADER: link.tier.value,
+                },
+            )
         )
 
     @router.get(
@@ -842,8 +844,10 @@ def build_files_door(*, deps: DepsCell) -> DoorContribution:
                     content_version=content_version,
                     requested=requested,
                 )
-        return RedirectResponse(
-            url, status_code=302, headers=no_store_headers(server_timing=call.server_timing)
+        return call.delivered(
+            RedirectResponse(
+                url, status_code=302, headers=no_store_headers(server_timing=call.server_timing)
+            )
         )
 
     return DoorContribution(

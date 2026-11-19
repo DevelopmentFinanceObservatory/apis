@@ -4,19 +4,21 @@ A door that serves data opens its `door_call` with `delivers=True`, which binds 
 for the call. The door, or code it runs on an executor, which carries the request's context,
 fills it from facts already in hand: `record_manifest` from a manifest, `record_version` from a
 stored version, `record_file` from a stored version and the file it serves, `record_export` from
-an export's facts, `record_derived_file` from a rendered derived file, `record_analysis` from an
-analysis answer and `record_rows_served` from what left. Each `record_*` function logs a fault
-of its own at WARNING and returns, so a recording fault never fails the response. On a call
-that ends without raising, `door_call` logs the line once a spec id is recorded, so a mint or
-definition read that answers 202 logs nothing and the read that completes it logs.
+an export's facts, `record_derived_manifest` from a derived frame's ids, `record_derived_file`
+from a rendered derived file, `record_analysis` from an analysis answer and `record_rows_served`
+from what left. Each `record_*` function logs a fault of its own at WARNING and returns, so a
+recording fault never fails the response. Once the door has built its response, it logs the line
+through `DoorCall.delivered` (`datasets_api.timings`), which logs only once a spec id is recorded.
+A mint or definition read that answers 202 logs nothing, and each operations poll that serves
+the done manifest logs a line under its own request's identity.
 
 The line carries the request's `dfo_platform.caller.DeliveryIdentity` beside the facts, as
 structured fields (`dfo_platform.cloud_logging.JSON_FIELDS_ATTR`) and a short message:
 
 - `door`, `trace_id`, and `admission`, `caller`, `caller_source`, `upstream`, `surface`,
   `client`, `user_agent`, `turn_id` from the identity;
-- `spec_id` (an `ops_` id on the derived file and analysis doors), `content_version`, and
-  `export_id` on the export doors;
+- `spec_id` (an `ops_` id on the derived manifest, derived file and analysis doors),
+  `content_version`, and `export_id` on the export doors;
 - `measures`, the sorted bare StatVar dcids of the manifest's `resolved_stat_vars`, only where
   the door holds a manifest (mint, definition, snapshot, operations poll), else `None`, cut
   to `MEASURES_CAP` with `measures_truncated` set; `measure_count` wherever the StatVars are
@@ -28,8 +30,6 @@ structured fields (`dfo_platform.cloud_logging.JSON_FIELDS_ATTR`) and a short me
   file. A file whose rendering reshapes rows (`RESHAPING_KEYS`) or leaves total rows out (a
   bare long CSV) stores no row count of its own, so its `rows_served` is `None`. A call that
   records none, including a file whose row count raised, still logs its line with null.
-- `admission` is the request's own, except on an operations poll, which logs the admission the
-  mint recorded on its operation.
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from dataset_store.snapshot import ManifestFacts
-from dfo_platform.caller import Admission, current_delivery_identity
+from dfo_platform.caller import current_delivery_identity
 from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
 from dfo_platform.trace import get_trace_id
 from materialise.generation import bare_stat_var_ref
@@ -66,9 +66,7 @@ RESHAPING_KEYS = frozenset({"groupby", "pivot", "without_party_totals"})
 @dataclass
 class Delivery:
     """What one door call served, filled as the door comes to each fact. `rows_served` stays
-    `None` until a `record_*` function sets it, so a call that records no row count logs null.
-    `admission` overrides the request's own (`DeliveryIdentity.admission`) where the
-    line describes a mint an earlier request submitted."""
+    `None` until a `record_*` function sets it, so a call that records no row count logs null."""
 
     spec_id: str | None = None
     content_version: str | None = None
@@ -78,7 +76,6 @@ class Delivery:
     series_count: int | None = None
     rows_available: int | None = None
     rows_served: int | None = None
-    admission: Admission | None = None
 
 
 _current: ContextVar[Delivery | None] = ContextVar("datasets_delivery", default=None)
@@ -147,10 +144,9 @@ def _record(
 
 
 @_never_raises
-def record_manifest(manifest: Manifest, *, admission: Admission | None = None) -> None:
+def record_manifest(manifest: Manifest) -> None:
     """Record the version `manifest` describes, with its StatVars, on the bound delivery. It
-    serves no rows, so `rows_served` is 0. `admission` is the one a mint recorded on its
-    operation, for a poll that logs that mint's line."""
+    serves no rows, so `rows_served` is 0."""
     _record(
         definition={"spec_id": manifest.definition.spec_id},
         content_version=manifest.content_version,
@@ -162,7 +158,6 @@ def record_manifest(manifest: Manifest, *, admission: Admission | None = None) -
     delivery = _current.get()
     if delivery is not None:
         delivery.rows_served = 0
-        delivery.admission = admission
 
 
 @_never_raises
@@ -240,6 +235,19 @@ def record_export(facts: Mapping[str, Any], *, served: bool) -> None:
 
 
 @_never_raises
+def record_derived_manifest(*, spec_id: str, content_version: str) -> None:
+    """Record the derived frame `spec_id` (an `ops_` id) at `content_version`, whose manifest the
+    call served. The manifest states no row count, so `rows_available` stays `None`, and it serves
+    no rows."""
+    delivery = _current.get()
+    if delivery is None:
+        return
+    delivery.spec_id = spec_id
+    delivery.content_version = content_version
+    delivery.rows_served = 0
+
+
+@_never_raises
 def record_derived_file(*, spec_id: str, content_version: str, file: DerivedFile) -> None:
     """Record the derived frame `spec_id` (an `ops_` id) at `content_version`, served whole as
     `file`. `rows_available` is the file's own data rows, the rows it serves."""
@@ -291,7 +299,7 @@ def log_delivery(door: str, delivery: Delivery) -> None:
         fields: dict[str, object] = {
             "door": door,
             "trace_id": get_trace_id(),
-            "admission": delivery.admission or identity.admission,
+            "admission": identity.admission,
             "caller": identity.caller,
             "caller_source": identity.caller_source,
             "upstream": identity.upstream,
@@ -317,7 +325,7 @@ def log_delivery(door: str, delivery: Delivery) -> None:
             delivery.content_version,
             identity.surface.value,
             identity.caller_source,
-            delivery.admission or identity.admission,
+            identity.admission,
             delivery.measure_count,
             delivery.rows_served,
             extra={JSON_FIELDS_ATTR: fields},
@@ -335,6 +343,7 @@ __all__ = [
     "log_delivery",
     "record_analysis",
     "record_derived_file",
+    "record_derived_manifest",
     "record_export",
     "record_file",
     "record_manifest",

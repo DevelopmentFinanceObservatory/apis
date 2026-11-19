@@ -184,9 +184,11 @@ async def _mint_response(body: MintRequest, *, deps: Deps, background: bool) -> 
                 **retry_after_headers(submitted_resource.operation),
             },
         )
-    return JSONResponse(
-        manifest.model_dump(mode="json", exclude_none=True),
-        headers=no_store_headers(server_timing=call.server_timing),
+    return call.delivered(
+        JSONResponse(
+            manifest.model_dump(mode="json", exclude_none=True),
+            headers=no_store_headers(server_timing=call.server_timing),
+        )
     )
 
 

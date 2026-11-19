@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import jsonschema
 import pytest
 from fastapi.responses import JSONResponse
+from pydantic import SecretStr
 
 from artifact_store import Tier
 from code_index.shared import get_index
@@ -47,13 +48,14 @@ from datasets_api.schema import (
     PinResponse,
     build_schema_document,
 )
+from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.version import DATASETS_CAPABILITY_VERSION
 from datasets_api.version_store import enriched_rendering_key, rendering_key
 from datasets_api.versions import NullVersionRecordWriter
 from dfo_platform import Alternative, ProblemIssue, ProblemSpec
 from dfo_platform.build import build_commit
 from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
-from dfo_platform.config import PublicSiteSettings
+from dfo_platform.config import CallerSettings, PublicSiteSettings
 from dfo_platform.problem import Cause
 from graph_release.context import bound_release
 from materialise.trace import UNKNOWN_FAMILY, StatedFamily, parse_recorded_family
@@ -134,9 +136,6 @@ class _FixedOperationStore:
 
     def fail_unservable_done(self, id: str, *, attempt: int):
         return None
-
-    def mark_delivered(self, id: str, *, attempt: int):
-        return self._operations.get(id)
 
     def get(self, id: str) -> Operation | None:
         return self._operations.get(id)
@@ -692,36 +691,39 @@ def _basis_before_a_redeploy() -> str:
         return _serving_basis()
 
 
-def test_the_first_poll_of_a_done_background_mint_logs_its_line_and_later_polls_log_none(
+def _store_unavailable(*args: object, **kwargs: object) -> None:
+    raise DatasetsStoreUnavailable("operation store unavailable")
+
+
+class _UnwritableOperationStore(_FixedOperationStore):
+    """A store whose reads answer and whose every write raises, as a store mid-fault does."""
+
+    create_or_get = mark_dispatched = claim = progress = record_estimate = complete = fail = (
+        release
+    ) = abandon = fail_unservable_done = staticmethod(_store_unavailable)
+
+
+def _delivery_lines(caplog: pytest.LogCaptureFixture) -> list[dict[str, object]]:
+    return [
+        fields
+        for record in caplog.records
+        if record.name == "datasets_api.delivery"
+        and (fields := getattr(record, JSON_FIELDS_ATTR, None))
+    ]
+
+
+def test_each_poll_of_a_done_operation_logs_a_line_under_its_own_caller_and_admission(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """One line per completion, under the admission the mint recorded, whatever header the poll sends."""
+    """A poll that serves the done manifest is a read, so each caller's poll logs its own line,
+    and nothing it does writes to the operation store. A poll of a pending row logs none."""
     artifact_store = FakeArtifactStore()
     location = _stored_rendering(artifact_store, _PARQUET_BUNDLE, data=b"a,b\n1,2\n")
-    operations = LiveOperationStore(store=FakeOperationDatasetStore(), now=lambda: _OP_NOW)
-    created = operations.create_or_get(
-        request_identity={"input": {"spec_id": "spec_a"}},
-        options=_PARQUET_BUNDLE.model_dump(mode="json"),
-        coverage_stamp="cov_stamp_1",
-        origin_catalogue_build_id="fake-catalogue",
-        estimate=_DEFAULT_ESTIMATE,
-        admission="background",
-    )
-    assert operations.claim(
-        created.id, submission_count=0, lease_seconds=LEASE_SECONDS, final_delivery=True
-    )
-    assert operations.complete(
-        created.id,
-        attempt=1,
-        subject_id="spec_a",
-        content_version="cv1",
-        confirmed_at=_CONFIRMED_AT,
-        family=UNKNOWN_FAMILY,
-        basis=TEST_BASIS,
-    )
     client = make_client(
         registry=LiveSpecRegistry(store=FakeDatasetStore()),
-        settings=_SITE_SETTINGS,
+        settings=_SITE_SETTINGS.model_copy(
+            update={"caller": CallerSettings(caller_principal=SecretStr("website-secret"))}
+        ),
         spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
         snapshot_reader=FakeSnapshotReader(
             versions={("spec_a", "cv1"): _FIRST_MINT_VERSION},
@@ -730,20 +732,51 @@ def test_the_first_poll_of_a_done_background_mint_logs_its_line_and_later_polls_
         artifact_store=artifact_store,
         reference_writer=FakeArtifactReferenceWriter(),
         version_writer=NullVersionRecordWriter(),
-        operation_store=operations,
+        operation_store=_UnwritableOperationStore(
+            {
+                "op_done": _operation(
+                    id="op_done", state="done", subject_id="spec_a", content_version="cv1"
+                ),
+                # Submitted now, so the poll finds it inside its deadline and writes nothing.
+                "op_pending": _operation(
+                    id="op_pending", state="pending", created_at=datetime.now(UTC)
+                ),
+            }
+        ),
     )
+    website = "ip:" + "ab" * 16
+    conversation = "conversation:" + "cd" * 16
+    vouched = {"x-dfo-caller-principal": "website-secret"}
 
     with caplog.at_level(logging.INFO, logger="datasets_api.delivery"):
-        polls = [client.get(f"/api/datasets/operations/{created.id}") for _ in range(3)]
+        polls = [
+            client.get(
+                "/api/datasets/operations/op_done",
+                headers={**vouched, "x-dfo-caller": website, "X-DFO-Mint-Admission": "background"},
+            ),
+            client.get(
+                "/api/datasets/operations/op_done",
+                headers={**vouched, "x-dfo-caller": conversation},
+            ),
+        ]
+        pending = client.get(
+            "/api/datasets/operations/op_pending", headers={**vouched, "x-dfo-caller": website}
+        )
 
-    assert [poll.status_code for poll in polls] == [200, 200, 200]
-    (line,) = [
-        fields
-        for record in caplog.records
-        if record.name == "datasets_api.delivery"
-        and (fields := getattr(record, JSON_FIELDS_ATTR, None))
+    assert [poll.status_code for poll in polls] == [200, 200]
+    assert pending.status_code == 200, pending.text
+    assert pending.json()["operation"]["status"] == "pending"
+    lines = _delivery_lines(caplog)
+    assert [(line["door"], line["caller"], line["admission"]) for line in lines] == [
+        ("operations", website, "background"),
+        ("operations", conversation, "foreground"),
     ]
-    assert (line["door"], line["admission"], line["rows_served"]) == ("operations", "background", 0)
+    for line in lines:
+        assert (line["spec_id"], line["content_version"], line["rows_served"]) == (
+            "spec_a",
+            "cv1",
+            0,
+        )
 
 
 @pytest.mark.parametrize(
@@ -812,10 +845,7 @@ def test_the_first_poll_of_a_done_background_mint_logs_its_line_and_later_polls_
     ],
 )
 def test_done_operation_serves_the_manifest_with_a_freshly_signed_url_without_a_principal(
-    confirmed_at: datetime | None,
-    family: dict[str, object] | None,
-    currency: dict[str, object],
-    caplog: pytest.LogCaptureFixture,
+    confirmed_at: datetime | None, family: dict[str, object] | None, currency: dict[str, object]
 ) -> None:
     """A row the run completed states the run's currency and the family it served in place of
     the stored version's first-mint family (`Operation.family`). A row that recorded no family
@@ -849,25 +879,12 @@ def test_done_operation_serves_the_manifest_with_a_freshly_signed_url_without_a_
         ),
     )
 
-    with caplog.at_level(logging.INFO, logger="datasets_api.delivery"):
-        resp = client.get("/api/datasets/operations/op_1")
+    resp = client.get("/api/datasets/operations/op_1")
 
     assert resp.status_code == 200
     body = resp.json()
     assert body["operation"] == {"operation_id": "op_1", "status": "done"}
     assert "retry-after" not in resp.headers
-    # A mint answered 202 logged nothing, so the poll that serves it done logs its delivery.
-    (line,) = [
-        fields
-        for record in caplog.records
-        if record.name == "datasets_api.delivery"
-        and (fields := getattr(record, JSON_FIELDS_ATTR, None))
-    ]
-    assert (line["door"], line["spec_id"], line["content_version"]) == (
-        "operations",
-        "spec_a",
-        "cv1",
-    )
     trace = body["manifest"]["trace"]
     stated = (
         "served_from",

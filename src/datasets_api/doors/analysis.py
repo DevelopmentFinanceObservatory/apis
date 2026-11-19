@@ -387,7 +387,7 @@ class _AnalysisRoutes:
                     record(answer)
                 outcome = JSONResponse(answer, headers=dict(NO_STORE_HEADERS))
         outcome.headers["Server-Timing"] = call.server_timing
-        return outcome
+        return call.delivered(outcome)
 
     async def post_analysis(self, body: AnalysisRequest, request: Request) -> JSONResponse:
         """Compute a recipe tree and store its frame. Answers the stored frame's format 2 ref,

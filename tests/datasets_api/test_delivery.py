@@ -21,6 +21,7 @@ from datasets_api.delivery import (
     record_manifest,
     record_rows_served,
 )
+from datasets_api.doors import snapshot as snapshot_door
 from datasets_api.manifest_models import Manifest
 from dfo_platform.caller import (
     UNRESOLVED_IDENTITY,
@@ -309,6 +310,50 @@ def test_a_derived_file_serves_the_frames_rows(
     )
     assert (line["rows_available"], line["rows_served"]) == (rows, rows)
     assert line["measures"] is None
+
+
+def test_a_derived_manifest_read_logs_as_a_snapshot_read_does(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    rig = _Rig("derived", monkeypatch)
+    frame = rig.frame
+
+    with caplog.at_level(logging.INFO, logger=_LOGGER):
+        resp = rig.client.get(
+            f"/api/datasets/derived/{frame['spec_id']}/{frame['content_version']}",
+            headers=_CALLER_HEADERS,
+        )
+
+    assert resp.status_code == 200, resp.text
+    (line,) = _lines(caplog)
+    assert line["door"] == "derived"
+    assert (line["spec_id"], line["content_version"]) == (
+        frame["spec_id"],
+        frame["content_version"],
+    )
+    assert line["rows_served"] == 0
+
+
+def test_a_response_that_fails_to_build_logs_no_line(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    """The snapshot door builds its response after the timed block, and logs the line only once
+    the response exists."""
+    rig = _Rig("fetched", monkeypatch, dataset="place")
+    frame = rig.frame
+
+    def unbuildable(*args: object, **kwargs: object) -> object:
+        raise ValueError("the manifest does not encode")
+
+    monkeypatch.setattr(snapshot_door, "linked_under", unbuildable)
+    with caplog.at_level(logging.INFO, logger=_LOGGER):
+        resp = rig.client.get(
+            f"/api/datasets/{frame['spec_id']}/{frame['content_version']}",
+            headers=_CALLER_HEADERS,
+        )
+
+    assert resp.status_code == 500
+    assert _lines(caplog) == []
 
 
 def test_a_file_selector_read_serves_the_versions_rows(

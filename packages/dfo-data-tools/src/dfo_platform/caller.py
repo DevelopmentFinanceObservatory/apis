@@ -203,7 +203,8 @@ def log_request(*, method: str, path: str, status: int | None, headers: Mapping[
 
 
 CALLER_HEADER = "x-dfo-caller"
-"""The caller the website resolved for a request it forwards, as `ip:<32 hex digits>`."""
+"""The caller an upstream names for a request it forwards: the address key the website resolved,
+as `ip:<32 hex digits>`, or the Studio harness's conversation, as `conversation:<32 hex digits>`."""
 CALLER_PRINCIPAL_HEADER = "x-dfo-caller-principal"
 """The secret that vouches for `CALLER_HEADER`, `DFO_CALLER_PRINCIPAL`."""
 FORWARDED_FOR_HEADER = "x-forwarded-for"
