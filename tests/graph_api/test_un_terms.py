@@ -153,10 +153,12 @@ def test_a_new_un_generation_builds_the_body_again(serve_catalogue):
         same_day = len(un.requests)
         today[0] = date(2026, 11, 20)
         next_day = client.get(_ROUTE)
+        # The next day's miss answers the held body and rebuilds in the background.
+        wait_until(lambda: len(un.requests) == 2 * len(_PAGES))
 
     assert first.status_code == next_day.status_code == 200
     assert same_day == len(_PAGES)
-    assert len(un.requests) == 2 * len(_PAGES)
+    assert un.requests == _PAGES + _PAGES
 
 
 @pytest.mark.parametrize(
