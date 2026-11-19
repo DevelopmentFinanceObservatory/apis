@@ -130,6 +130,25 @@ answers 404 `not_found`, not retryable, with `cause: {"code": "origin_not_served
 nothing. A bound catalogue that is not a loaded `CatalogueSnapshot` holds no tables to build
 from, and both routes answer it the same way.
 
+`GET /api/graph/schema/node/{dcid}` serves `SchemaNodeView`, one node and its schema
+neighbours, built by `graph_api.node_view.build_node_view` from at most eight reads submitted
+to the DCP-read executor, so a full executor answers retryable 503 at once. A dcid past
+`DCID_MAX_LENGTH` answers 400 `request_invalid` before any read. A UN id
+(`origin_catalogue.graph.is_un_dcid`) is read from the UN deployment's own client once the route
+has checked that the bound catalogue serves the UN origin; with the origin off, or on a surface
+with no UN reader, it answers 404 `not_found`, not retryable, with
+`cause: {"code": "origin_not_served"}`, and reads nothing. Any other id is read from the mixer's
+own client, and a node the mixer does not hold, such as `unCode`, is read from the UN deployment
+when the UN origin is served. A node neither read holds answers 404 `not_found`, not retryable,
+with `cause: {"code": "node_not_held"}`. Both refusals go out `no-store` and are not kept.
+`NodeViews` holds two single-flight caches of `NODE_VIEW_CACHE_SIZE` views each on an executor
+of `NODE_VIEW_FLIGHT_WORKERS` workers: the mixer's keyed by `NodeViewKey` under the mixer's
+generation, so a generation change clears it, and the UN deployment's under
+`origin_catalogue.graph.UnGeneration`, whose body `generation` is `null`. A flight's deadline
+and a request's wait over both reads are `GRAPH_NODE_TIMEOUT_SECONDS`, and either passing answers
+504 `timeout`. A failed read answers as on the other routes. Each view answers
+`public, max-age=300` with a strong `ETag`, gzip and 304 as the document does.
+
 After each build the door logs one line timing the encoding of the document and terms bodies
 and giving their sizes, beside the build's own per-phase line.
 
@@ -173,12 +192,17 @@ from graph_api.deps import (
     DcpExecutorSaturated,
     GraphDeps,
     GraphDepsDep,
+    GraphDepsNotSet,
+    NodeViews,
     log_queue_wait,
     run_dcp_read,
 )
-from graph_api.doors.node import graph_read_problem
+from graph_api.doors.node import DcidTooLong, graph_read_problem
+from graph_api.node_view import NodeNotHeldError, NodeViewReader, build_node_view
+from graph_api.node_view_models import SchemaNodeView
 from graph_api.origin_usage import OriginUsageKey, UsageOrigin, build_origin_usage
 from graph_api.reader import GraphNodeReader
+from graph_api.routing import DCID_MAX_LENGTH
 from graph_api.schema_check import SchemaLookup, check_rows, plan_reads
 from graph_api.schema_document import (
     SchemaListingTruncatedError,
@@ -203,6 +227,7 @@ from graph_generation.stamp import UNKNOWN_KEY
 from graph_release.context import served_origin_key
 from materialise.graph import GraphDeadlineExceededError, GraphReadError
 from origin_catalogue import Catalogue, CatalogueSnapshot, current_catalogue
+from origin_catalogue.graph import is_un_dcid
 
 logger = logging.getLogger(__name__)
 
@@ -314,6 +339,31 @@ UN_TERMS_KEY = "un_system"
 type UnTermsEntry = FrozenJSON | RefusedSchema
 
 
+class NodeViewKey(NamedTuple):
+    """The dcid of a node view, the build of the origin catalogue that names its origins and
+    whether that catalogue serves the UN origin. Each cache adds its own generation stamp: the
+    mixer's for a view read from the mixer, the UN deployment's for one read from there."""
+
+    dcid: str
+    origin_catalogue: str
+    un_system_enabled: bool
+
+
+NODE_VIEW_CACHE_SIZE = 2_000
+"""The most node views each node view cache keeps, the mixer's and the UN deployment's."""
+
+NODE_VIEW_FLIGHT_WORKERS = 4
+"""The workers the node view flights run on. Each flight holds one while its reads run on the
+DCP-read executor."""
+
+
+class NodeViewTimedOut(Exception):
+    """A node view's wait or its flight passed its deadline."""
+
+    def __init__(self) -> None:
+        super().__init__("the node view's graph reads passed their deadline; retry")
+
+
 class UsageKey(NamedTuple):
     """The content hash of the code index and the coverage build the usage body reads."""
 
@@ -342,12 +392,25 @@ def new_schema_cache[K, V](
     )
 
 
+def new_node_view_cache(
+    *, executor: Executor, generation: GenerationProvider
+) -> SingleFlightCache[NodeViewKey, FrozenJSON]:
+    """A cache of `NODE_VIEW_CACHE_SIZE` node views, each built on `executor` within
+    `GRAPH_NODE_TIMEOUT_SECONDS`, with a key that carries `generation`'s stamp."""
+    return SingleFlightCache(
+        maxsize=NODE_VIEW_CACHE_SIZE,
+        flight_timeout_s=GRAPH_NODE_TIMEOUT_SECONDS,
+        executor=executor,
+        generation=generation,
+    )
+
+
 def _entry_ttl(entry: SchemaEntry | UnTermsEntry) -> float | None:
     """A refusal's own `ttl_s`, and the cache's own TTL for built bodies."""
     return entry.ttl_s if isinstance(entry, RefusedSchema) else None
 
 
-def _freeze(model: SchemaDocument | SchemaTerms | DatasetUsage) -> FrozenJSON:
+def _freeze(model: SchemaDocument | SchemaTerms | DatasetUsage | SchemaNodeView) -> FrozenJSON:
     return freeze_public_json(model.model_dump(mode="json"), max_age=_MAX_AGE_SECONDS)
 
 
@@ -473,13 +536,22 @@ def classify_schema_exception(exc: BaseException) -> ProblemSpec | None:
             cause=Cause(code="check_busy" if busy else "schema_building"),
             headers={"Retry-After": str(retry_after)},
         )
-    if isinstance(exc, UnOriginNotServed | OriginUsageNotServed):
+    if isinstance(exc, UnOriginNotServed | OriginUsageNotServed | NodeNotHeldError):
         return ProblemSpec(
             status=404,
             code="not_found",
             detail=str(exc),
             retryable=False,
-            cause=Cause(code="origin_not_served"),
+            cause=Cause(
+                code="node_not_held" if isinstance(exc, NodeNotHeldError) else "origin_not_served"
+            ),
+        )
+    if isinstance(exc, NodeViewTimedOut):
+        return ProblemSpec(
+            status=TIMEOUT_DEFAULT.status,
+            code=TIMEOUT_DEFAULT.code,
+            detail=str(exc),
+            retryable=TIMEOUT_DEFAULT.retryable,
         )
     if isinstance(exc, SchemaBuildExpired):
         return ProblemSpec(
@@ -766,6 +838,111 @@ async def _frozen_origin_usage(deps: GraphDeps, origin: UsageOrigin) -> FrozenJS
     return found[key]
 
 
+def _un_side(
+    views: NodeViews, catalogue: Catalogue
+) -> tuple[NodeViewReader, SingleFlightCache[NodeViewKey, FrozenJSON]] | None:
+    """The UN deployment's reader and view cache, or `None` when the bound catalogue does not
+    serve the UN origin or the surface has no UN reader."""
+    if views.un_reader is None or views.un is None or not catalogue.un_system_enabled:
+        return None
+    return views.un_reader, views.un
+
+
+async def _node_view_from(
+    deps: GraphDeps,
+    *,
+    reader: NodeViewReader,
+    cache: SingleFlightCache[NodeViewKey, FrozenJSON],
+    key: NodeViewKey,
+    catalogue: Catalogue,
+    generation: str | None,
+    deadline: float,
+) -> FrozenJSON:
+    """The view of `key.dcid` read from `reader`, from `cache`, building it on a miss with its
+    reads on the DCP-read executor and waiting until `deadline`.
+
+    Raises:
+        NodeNotHeldError: `reader` holds no such node. Nothing is kept.
+        NodeViewTimedOut: the wait or the flight passed its deadline.
+        SchemaReadFailed: a read failed.
+    """
+
+    def build(_keys: list[NodeViewKey], flight_deadline: float) -> dict[NodeViewKey, FrozenJSON]:
+        view = build_node_view(
+            key.dcid,
+            reader=reader,
+            catalogue=catalogue,
+            generation=generation,
+            executor=deps.dcp_executor,
+            deadline=flight_deadline,
+        )
+        return {key: _freeze(view)}
+
+    try:
+        found = await cache.aget_or_fetch_many([key], log_queue_wait(build), deadline=deadline)
+    except TimeoutError as exc:
+        raise NodeViewTimedOut() from exc
+    except GraphReadError as exc:
+        raise SchemaReadFailed(exc) from exc
+    return found[key]
+
+
+async def _frozen_node_view(deps: GraphDeps, dcid: str) -> FrozenJSON:
+    """The view of `dcid`. A UN id is read from the UN deployment, once the bound catalogue
+    serves the UN origin. Any other id is read from the mixer, and from the UN deployment when
+    the mixer holds no such node and the catalogue serves the UN origin. A request waits until
+    `GRAPH_NODE_TIMEOUT_SECONDS` from its start over both reads.
+
+    Raises:
+        DcidTooLong: `dcid` is longer than `DCID_MAX_LENGTH`.
+        GraphDepsNotSet: the surface has no node view reader.
+        UnOriginNotServed: `dcid` is a UN id and the UN origin is not served. Nothing is read.
+        NodeNotHeldError: no deployment read holds the node.
+        NodeViewTimedOut: a wait or a flight passed its deadline.
+        SchemaReadFailed: a read failed.
+    """
+    if len(dcid) > DCID_MAX_LENGTH:
+        raise DcidTooLong(len(dcid))
+    views = deps.node_views
+    if views is None:
+        raise GraphDepsNotSet()
+    deadline = _request_deadline()
+    catalogue = current_catalogue()
+    key = NodeViewKey(
+        dcid=dcid,
+        origin_catalogue=catalogue.build_id,
+        un_system_enabled=catalogue.un_system_enabled,
+    )
+    un = _un_side(views, catalogue)
+    if not is_un_dcid(dcid):
+        await deps.generation.refresh_if_stale()
+        try:
+            return await _node_view_from(
+                deps,
+                reader=views.mixer,
+                cache=views.base,
+                key=key,
+                catalogue=catalogue,
+                generation=deps.generation.stamp().token,
+                deadline=deadline,
+            )
+        except NodeNotHeldError:
+            if un is None:
+                raise
+    elif un is None:
+        raise UnOriginNotServed()
+    reader, cache = un
+    return await _node_view_from(
+        deps,
+        reader=reader,
+        cache=cache,
+        key=key,
+        catalogue=catalogue,
+        generation=None,
+        deadline=deadline,
+    )
+
+
 async def warm_schema(deps: GraphDeps, *, timeout_s: float) -> None:
     """Build the entry `GET /api/graph/schema` would build now, under the bound origin
     catalogue and served release, waiting at most `timeout_s`. A build still running then
@@ -861,6 +1038,10 @@ async def post_schema_check(deps: GraphDepsDep, body: SchemaCheckRequest) -> Res
     return Response(content=encoded, media_type="application/json")
 
 
+async def get_schema_node(dcid: str, deps: GraphDepsDep, request: Request) -> Response:
+    return (await _frozen_node_view(deps, dcid)).respond(request)
+
+
 async def get_schema_usage(deps: GraphDepsDep, request: Request) -> Response:
     return (await _frozen_usage(deps)).respond(request)
 
@@ -911,6 +1092,12 @@ def build_schema_door() -> DoorContribution:
         response_model=DatasetUsage,
     )
     router.add_api_route(
+        "/api/graph/schema/node/{dcid:dcid}",
+        get_schema_node,
+        methods=["GET"],
+        response_model=SchemaNodeView,
+    )
+    router.add_api_route(
         "/api/graph/schema/check",
         post_schema_check,
         methods=["POST"],
@@ -925,9 +1112,13 @@ def build_schema_door() -> DoorContribution:
             SchemaReadFailed,
             SchemaCheckBusy,
             UnOriginNotServed,
+            NodeNotHeldError,
+            NodeViewTimedOut,
         ),
         exception_exemplars=(
             UnOriginNotServed(),
+            NodeNotHeldError("exemplar"),
+            NodeViewTimedOut(),
             SchemaCheckBusy(),
             SchemaBuildPending(),
             SchemaBuildExpired(),

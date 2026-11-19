@@ -28,8 +28,12 @@ whose closure holds `Enumeration` is the value's list: round three reads the dir
 `subClassOf` edges of every such class and its closure in one batch, and the class gets
 `instances: {refs: [centre], complete: false}`.
 
-A neighbour's `provenances` is empty and its `declared_by` null, since its `typeOf` is not
-read. `capped` names each in-arc property whose listing stopped at its cap.
+A neighbour's `provenances` are those of the arcs the view read from it: a member's `typeOf`,
+an in-arc subject's arc to the centre or to a type class, and a chain class's `subClassOf`
+edges. Its `declared_by` follows from them by `schema_document.declared_by`, and is null for a
+neighbour the view read no arc from, such as an out-arc target of the centre, since the arc
+the centre holds to it names the centre's declarer. `capped` names each in-arc property whose
+listing stopped at its cap.
 """
 
 from __future__ import annotations
@@ -42,10 +46,11 @@ from typing import Final, Protocol
 from dc_graph import UNRESOLVED_NODE, ArcTarget, InArcs, InArcSubject, display_name
 from graph_api.node_view_models import SchemaNodeView
 from graph_api.schema_document import (
-    _NODE_PROPERTIES,
-    _node,
-    _other_properties,
-    _resolved_entry,
+    NODE_PROPERTIES,
+    declared_by,
+    node_other_properties,
+    resolved_entry,
+    schema_node,
 )
 from graph_api.schema_models import SchemaInstances, SchemaNode
 from origin_catalogue import Catalogue
@@ -137,6 +142,7 @@ class _Neighbour:
     names: set[str] = field(default_factory=set)
     types: set[str] = field(default_factory=set)
     arcs: dict[str, set[str]] = field(default_factory=dict)
+    provenances: set[str] = field(default_factory=set)
     instances: SchemaInstances | None = None
 
 
@@ -148,16 +154,26 @@ class _Neighbours:
         self._centre = centre
         self.by_ref: dict[str, _Neighbour] = {}
 
-    def add(self, ref: str, *, names: Iterable[str] = (), types: Iterable[str] = ()) -> None:
+    def add(
+        self,
+        ref: str,
+        *,
+        names: Iterable[str] = (),
+        types: Iterable[str] = (),
+        provenances: Iterable[str] = (),
+    ) -> None:
+        """Add `ref` with `provenances`, those of arcs read from `ref` itself."""
         if ref == self._centre:
             return
         neighbour = self.by_ref.setdefault(ref, _Neighbour())
         neighbour.names.update(names)
         neighbour.types.update(types)
+        neighbour.provenances.update(provenances)
 
     def add_target(self, target: ArcTarget) -> None:
-        """Add a node target with the name and types the answer carries; a literal and an
-        unresolved target are left out."""
+        """Add a node target with the name and types the answer carries, and none of its
+        provenances, which name the declarer of the arc to it; a literal and an unresolved
+        target are left out."""
         if target.literal or target.value == UNRESOLVED_NODE:
             return
         self.add(
@@ -166,7 +182,10 @@ class _Neighbours:
 
     def add_subject(self, subject: InArcSubject) -> None:
         self.add(
-            subject.dcid, names=() if subject.name is None else (subject.name,), types=subject.types
+            subject.dcid,
+            names=() if subject.name is None else (subject.name,),
+            types=subject.types,
+            provenances=subject.provenances,
         )
 
     def link(self, ref: str, prop: str, target: str) -> None:
@@ -178,8 +197,11 @@ class _Neighbours:
         if (neighbour := self.by_ref.get(ref)) is not None:
             neighbour.instances = instances
 
-    def nodes(self) -> list[SchemaNode]:
-        return [_neighbour_node(ref, neighbour) for ref, neighbour in sorted(self.by_ref.items())]
+    def nodes(self, catalogue: Catalogue) -> list[SchemaNode]:
+        return [
+            _neighbour_node(ref, neighbour, catalogue)
+            for ref, neighbour in sorted(self.by_ref.items())
+        ]
 
 
 def build_node_view(
@@ -209,7 +231,7 @@ def build_node_view(
     closure_read = executor.submit(
         reader.node_closure, dcid, property=_SUB_CLASS_OF, deadline=deadline
     )
-    entry = _resolved_entry(out_read.result().get(dcid))
+    entry = resolved_entry(out_read.result().get(dcid))
     if entry is None:
         raise NodeNotHeldError(dcid)
     in_arcs = in_read.result().get(dcid, _NO_IN_ARCS)
@@ -217,7 +239,7 @@ def build_node_view(
 
     arcs = {
         prop: tuple(dict.fromkeys(target.value for target in entry.get(prop, ())))
-        for prop in _NODE_PROPERTIES
+        for prop in NODE_PROPERTIES
     }
     types = set(arcs[_TYPE_OF])
     neighbours = _Neighbours(dcid)
@@ -258,16 +280,19 @@ def build_node_view(
     provenances = {
         provenance for target in entry.get(_TYPE_OF, ()) for provenance in target.provenances
     }
-    centre = _node(
+    centre = schema_node(
         dcid,
         arcs,
-        _other_properties(dcid, entry, {}),
+        node_other_properties(dcid, entry, {}),
         provenances,
         instances,
         catalogue,
     )
     return SchemaNodeView(
-        generation=generation, centre=centre, nodes=neighbours.nodes(), capped=sorted(capped)
+        generation=generation,
+        centre=centre,
+        nodes=neighbours.nodes(catalogue),
+        capped=sorted(capped),
     )
 
 
@@ -389,7 +414,9 @@ def _join_chain(
             if not target.literal and target.value != UNRESOLVED_NODE
         ]
         edges[ref] = {target.value for target in targets}
-        neighbours.add(ref)
+        neighbours.add(
+            ref, provenances=(provenance for target in targets for provenance in target.provenances)
+        )
         for target in targets:
             neighbours.add_target(target)
             neighbours.link(ref, _SUB_CLASS_OF, target.value)
@@ -418,7 +445,7 @@ def _mark_chain(
             neighbours.mark_list(ref, SchemaInstances(refs=[], complete=False))
 
 
-def _neighbour_node(ref: str, neighbour: _Neighbour) -> SchemaNode:
+def _neighbour_node(ref: str, neighbour: _Neighbour, catalogue: Catalogue) -> SchemaNode:
     arcs = {name: sorted(neighbour.arcs.get(name, ())) for name in _FIELDS.values()}
     return SchemaNode(
         ref=ref,
@@ -433,7 +460,11 @@ def _neighbour_node(ref: str, neighbour: _Neighbour) -> SchemaNode:
         range_includes=arcs["range_includes"],
         classification_code=[],
         other_properties={},
-        provenances=[],
-        declared_by=None,
+        provenances=sorted(neighbour.provenances),
+        declared_by=(
+            declared_by(neighbour.provenances, catalogue=catalogue)
+            if neighbour.provenances
+            else None
+        ),
         instances=neighbour.instances,
     )

@@ -471,6 +471,11 @@ class OriginGraphClient:
         """Both backends' API roots, ours first."""
         return f"{self._ours.source_key()}+{self._un.source_key()}"
 
+    def mixer_graph(self) -> GraphClient:
+        """Our mixer's own client. A read through it skips this client's routing and the
+        catalogue's tables, so its caller sends it only the dcids the mixer serves."""
+        return self._ours
+
     def un_graph(self) -> GraphClient:
         """The UN deployment's own client. A read through it skips this client's routing and
         the catalogue's `un_system_enabled` gate, so its caller checks the gate."""

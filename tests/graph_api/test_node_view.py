@@ -83,7 +83,7 @@ class _FakeGraph:
             value=value,
             name=_NAMES.get(value),
             types=self._types(value),
-            provenances=(_PROVENANCES.get(subject, _BASE),) if prop == "typeOf" else (),
+            provenances=(_PROVENANCES.get(subject, _BASE),),
         )
 
     def _read(
@@ -139,7 +139,7 @@ class _FakeGraph:
                         property=prop,
                         name=_NAMES.get(s),
                         types=self._types(s),
-                        provenances=(),
+                        provenances=(_PROVENANCES.get(s, _BASE),),
                     )
                     for s in found[:max_results]
                 )
@@ -214,7 +214,12 @@ def test_a_class_carries_its_arcs_and_no_member_read(executor: ThreadPoolExecuto
     assert nodes["Student"].label == "A student"
     assert nodes["age"].domain_includes == ["Person"]
     assert nodes["age"].types == ["Property"]
-    assert nodes["age"].declared_by is None
+    # An in-arc subject is declared by its arc's provenance, and an out-arc target, whose arc
+    # names the centre's declarer, by none.
+    assert nodes["age"].declared_by == "base"
+    assert nodes["age"].provenances == [_BASE]
+    assert nodes["Thing"].declared_by is None
+    assert nodes["Thing"].provenances == []
     assert nodes["Thing"].sub_class_of == []
     assert graph.in_arc_reads("typeOf") == []
     assert view.capped == []
@@ -276,6 +281,9 @@ def test_a_un_series_reads_its_list_through_the_chain(executor: ThreadPoolExecut
     assert view.centre.other_properties["unCode"][0].model_dump() == {"value": "SI_POV"}
     nodes = _nodes(view)
     series = nodes["undata/eclac/SERIES"]
+    # The chain read the type class's own subClassOf edges, so their provenance declares it.
+    assert series.declared_by == "un_system"
+    assert nodes["undataSeries"].declared_by == "un_system"
     assert series.instances == SchemaInstances(refs=["undata/eclac/SI_POV"], complete=False)
     assert series.sub_class_of == ["undata/Series"]
     assert nodes["undata/Series"].sub_class_of == ["Enumeration"]

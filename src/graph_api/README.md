@@ -10,6 +10,7 @@ The surface mounts at `/api/graph` and operates as an independent composition ro
                       GET /schema  GET /schema/terms  GET /schema/usage  POST /schema/check
                       GET /schema/terms/un_system
                       GET /schema/usage/base  GET /schema/usage/un_system
+                      GET /schema/node/{dcid}
       |                    |                        |                            |
       v                    v                        v                            |
 +------------------+  +------------------------------------------+               |
@@ -1239,6 +1240,100 @@ The example is abridged. It keeps the first pattern, the first two values of the
 
 ---
 
+### GET /api/graph/schema/node/{dcid}
+
+One node the graph holds and its schema neighbours, as `{generation, centre, nodes, capped}`. It serves any node, base, UN or DFO, whether or not the schema document holds it, so a UN series or a base property such as `age` opens here. `{generation, nodes}` has the shape of the schema document, so a reader that reads that document reads this body too. `graph_api.node_view.build_node_view` builds it.
+
+- `centre` is the node as a full schema document node, with every outgoing arc the graph holds and `declared_by` by the schema document's rule.
+- `nodes` holds one entry per neighbour, sorted by `ref`: each target of the centre's `typeOf`, `subClassOf`, `subPropertyOf`, `specializationOf`, `rangeIncludes` and `domainIncludes`, and each subject that points at the centre through one of the last five. A neighbour carries its `label` and `types` and only the arcs the graph answered that tie it to the centre or to the centre's `subClassOf` chain. Its `provenances` are those of the arcs read from it (a member's `typeOf`, an in-arc subject's arc, a chain class's `subClassOf` edges), and `declared_by` follows from them. A neighbour the view read no arc from, such as a target of the centre's arcs, has empty `provenances` and a `null` `declared_by`, since the centre's arc to it names the centre's declarer. Its other members are empty and its `description` `null`.
+- `capped` names, sorted, each in-arc property whose listing stopped at 1,000 subjects.
+- `generation` is the mixer's generation token for a node read from the mixer, `null` when it is unknown, and always `null` for one read from the UN deployment.
+
+A Class whose `subClassOf+` closure holds `Enumeration` is a value list: the view lists up to 1,000 of its `<-typeOf` members as neighbours and sets the centre's `instances`, `complete` only when the listing read every member and the class has no narrower class. When `Enumeration` is not a direct parent, the view reads the direct `subClassOf` edges of the closure, so every edge of the chain is one the graph answered. Each narrower class and each chain parent that reaches `Enumeration` gets `instances: {refs: [], complete: false}`. A value, a node typed neither Class nor Property, reads the `<-rangeIncludes` subjects of its first three type classes other than `Thing` and their closures, and a type class that descends from `Enumeration` gets `instances: {refs: [<centre>], complete: false}`. No other node has its `<-typeOf` read, so `Place` never lists its members. A view takes three reads at once, then at most two more for a value list and five more for a value, all within `GRAPH_NODE_TIMEOUT_SECONDS`, on the DCP-read executor. Each read is admitted as any other DCP read is, so a full executor answers `503` at once.
+
+Each dcid is read from one deployment:
+
+- A UN id (`undata/...`, or a property such as `undataAge`) is read from the UN deployment's own client, once the route has checked that the deployment serves the UN origin.
+- Any other id is read from the mixer. A node the mixer does not hold, such as `unCode` or `unConcept`, is then read from the UN deployment when the UN origin is served.
+
+Each view is kept in one of two single-flight caches of 2,000 views: the mixer's keyed by the mixer's generation, the origin catalogue's build and the dcid, which a generation change clears, and the UN deployment's keyed by the UN cache generation (the catalogue's build and the UTC date), the UN origin setting and the dcid. Concurrent requests for one dcid share one read. A request waits 10 s (`GRAPH_NODE_TIMEOUT_SECONDS`) over both reads, and the reads have the same deadline. The body answers `public, max-age=300` with a strong `ETag`, a gzip representation and `304` on `If-None-Match`.
+
+Failures:
+
+- `400 request_invalid` at `/dcid`: a dcid longer than 512 characters.
+- `404 not_found`, not retryable, with `cause: {"code": "origin_not_served"}`: a UN id on a deployment that does not serve the UN origin (`ORIGIN_CATALOGUE_UN_SYSTEM_ENABLED` off). The UN deployment is sent nothing. A non-UN id the mixer lacks is then `node_not_held`.
+- `404 not_found`, not retryable, with `cause: {"code": "node_not_held"}`: no deployment the route reads holds the node.
+- `504 timeout`: the wait or the reads passed their deadline.
+- `502 upstream_error`: a DCP read answered 4xx.
+- `503 service_unavailable`, retryable: any other read failure, or every DCP-read worker busy.
+
+Refusals answer `Cache-Control: no-store` and are not kept, so a node the mixer lacks is read from the mixer on each request before the UN deployment's cached view answers.
+
+The example is the view of `GenderType` in the test graph of `tests/graph_api/test_node_view.py`, abridged to two of its five neighbours, with `...` marking the cut.
+
+```json
+{
+  "generation": "graph_<token>",
+  "centre": {
+    "ref": "GenderType",
+    "label": "Gender type",
+    "description": null,
+    "types": ["Class"],
+    "alternate_name": [],
+    "sub_class_of": ["Enumeration"],
+    "sub_property_of": [],
+    "specialization_of": [],
+    "domain_includes": [],
+    "range_includes": [],
+    "classification_code": [],
+    "other_properties": {},
+    "provenances": ["dc/base/Schema"],
+    "declared_by": "base",
+    "instances": {"refs": ["Female", "Male"], "complete": true}
+  },
+  "nodes": [
+    ...
+    {
+      "ref": "Female",
+      "label": "Female gender",
+      "description": null,
+      "types": ["GenderType"],
+      "alternate_name": [],
+      "sub_class_of": [],
+      "sub_property_of": [],
+      "specialization_of": [],
+      "domain_includes": [],
+      "range_includes": [],
+      "classification_code": [],
+      "other_properties": {},
+      "provenances": ["dc/base/Schema"],
+      "declared_by": "base",
+      "instances": null
+    },
+    {
+      "ref": "gender",
+      "label": "Gender",
+      "description": null,
+      "types": ["Property"],
+      "alternate_name": [],
+      "sub_class_of": [],
+      "sub_property_of": [],
+      "specialization_of": [],
+      "domain_includes": [],
+      "range_includes": ["GenderType"],
+      "classification_code": [],
+      "other_properties": {},
+      "provenances": ["dc/base/Schema"],
+      "declared_by": "base",
+      "instances": null
+    }
+  ],
+  "capped": []
+}
+```
+
+---
+
 ### POST /api/graph/schema/check
 
 Checks candidate StatVar definitions against the schema. The request is `{rows}`, 1 to 2,000 rows (`caps.max_check_rows`). The route checks rows in order from the first and answers the findings for the rows it checked and how many that is (`rows_checked`). When `rows_checked` is less than the rows sent, send the rows from that index in the next request. Every response checks at least one row.
@@ -1354,7 +1449,7 @@ The example sends two rows. `DAC1AidType1010` lies outside the range of `crsPurp
 
 ### GET /api/graph/json-schema
 
-Serves the JSON Schema of every request and response body, keyed by name under `schemas`: `health_response`, `resolve_request`, `resolve_response`, `node_response`, `nodes_request`, `nodes_response`, `members_response`, `roots_response`, `source_documentation_response`, `source_catalogue_response`, `schema_response`, `schema_terms_response`, `schema_usage_response`, `schema_check_request` and `schema_check_response`. `capabilities` holds the path of the capability document. The document is encoded once when the door is built, answers `public, max-age=300` with a strong `ETag` and a gzip representation, and honours `If-None-Match` with `304`. It changes only with a deploy, and `capability_version` hashes the schemas with their descriptions removed.
+Serves the JSON Schema of every request and response body, keyed by name under `schemas`: `health_response`, `resolve_request`, `resolve_response`, `node_response`, `nodes_request`, `nodes_response`, `members_response`, `roots_response`, `source_documentation_response`, `source_catalogue_response`, `schema_response`, `schema_terms_response`, `schema_usage_response`, `schema_node_response`, `schema_check_request` and `schema_check_response`. `capabilities` holds the path of the capability document. The document is encoded once when the door is built, answers `public, max-age=300` with a strong `ETag` and a gzip representation, and honours `If-None-Match` with `304`. It changes only with a deploy, and `capability_version` hashes the schemas with their descriptions removed.
 
 ---
 
@@ -1492,12 +1587,13 @@ Errors use RFC 9457 problem detail envelopes:
 | `404`       | `not_found`           | Unmatched route or empty DCID path parameter (`/api/graph/node/`).                                                                                                                                                                                                                                                                                                                                                                                                                                                       | None                                                                                                        | No        |
 | `404`       | `not_found`           | `GET /api/graph/schema/terms/un_system` on a deployment that does not serve the UN origin, with `cause.code` `origin_not_served`.                                                                                                                                                                                                                                                                                                                                                                                        | None                                                                                                        | No        |
 | `404`       | `not_found`           | `GET /api/graph/schema/usage/un_system` on a deployment that does not serve the UN origin, with `cause.code` `origin_not_served`.                                                                                                                                                                                                                                                                                                                                                                                        | None                                                                                                        | No        |
+| `404`       | `not_found`           | `GET /api/graph/schema/node/{dcid}` for a UN id on a deployment that does not serve the UN origin, with `cause.code` `origin_not_served`, or for a node no deployment it reads holds, with `cause.code` `node_not_held`.                                                                                                                                                                                                                                                                                                 | None                                                                                                        | No        |
 | `400`       | `request_invalid`     | `POST /api/graph/schema/check` that is not JSON, with `rows` missing, empty or over 2,000 entries, an unknown member, a row over 16 constraint properties or 4 observation properties, a string over 512 characters, or a constraint value that is a number past plus or minus 2**53, `NaN` or an infinity. A row's content is never refused; its faults are findings.                                                                                                                                                   | The offending body field, naming the row (e.g. `/rows`, `/rows/37/constraint_properties`).                  | No        |
 | `503`       | `service_unavailable` | A schema route's own wait passed while the build runs on (`cause.code` `schema_building`), or two schema checks already run in the process (`cause.code` `check_busy`). The first sends `Retry-After: 5`, the second `Retry-After: 1`. `GET /api/graph/schema/terms/un_system` with no body served yet, when a UN listing names no UN term (`cause.code` `listing_incomplete`) or the UN front door still answers `429` (`cause.code` `upstream_rate_limited`), with `Retry-After` the seconds left on the kept refusal. | None                                                                                                        | Yes       |
 | `500`       | `internal_error`      | A schema build's Class or Property listing reached its cap, or its document holds no node DFO declares. Under a known generation the schema, terms and check routes answer it for 60 s, and the first request after that builds again, so a retry within the 60 s gets the same 500 and a fault that lasts refuses again. Under an unknown generation the next request builds again.                                                                                                                                     | None                                                                                                        | No        |
 | `502`       | `upstream_error`      | DCP read failure with a 4xx upstream response status.                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | None                                                                                                        | Yes       |
 | `503`       | `service_unavailable` | Upstream 5xx or network errors, every DCP-read worker busy, the surface still starting or shutting down, no membership policy published, or a `facets` request whose node types were not read by the deadline.                                                                                                                                                                                                                                                                                                           | None                                                                                                        | Yes       |
-| `504`       | `timeout`             | Resolution, node lookup (single or batch), source documentation read, a schema build past its 60 s deadline, or a schema check's reads past `GRAPH_SCHEMA_CHECK_TIMEOUT_SECONDS`.                                                                                                                                                                                                                                                                                                                                        | None                                                                                                        | Yes       |
+| `504`       | `timeout`             | Resolution, node lookup (single or batch), a schema node view, source documentation read, a schema build past its 60 s deadline, or a schema check's reads past `GRAPH_SCHEMA_CHECK_TIMEOUT_SECONDS`.                                                                                                                                                                                                                                                                                                                    | None                                                                                                        | Yes       |
 | `500`       | `internal_error`      | Unhandled internal or executor failures.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | None                                                                                                        | No        |
 
 The 502, 503, and 504 refusals describe an infrastructure outcome with no request field at fault, and carry no pointer.

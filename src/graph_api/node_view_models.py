@@ -3,7 +3,8 @@
 `SchemaNodeView` holds `generation`, the graph generation token the view was read from, null
 where it is unknown; `centre`, the node as a full `SchemaNode`; `nodes`, its neighbours, each a
 `SchemaNode` carrying its `label`, its `types` and the arcs that tie it to the centre or to the
-centre's `subClassOf` chain, sorted by `ref`; and `capped`, the in-arc properties whose listing
+centre's `subClassOf` chain, sorted by `ref`, with the provenances and origin of the arcs read
+from it; and `capped`, the in-arc properties whose listing
 stopped at `graph_api.node_view.IN_ARC_CAP`, sorted. `{generation, nodes}` has the shape of a
 `SchemaDocument`. `graph_api.node_view.build_node_view` builds it.
 """
@@ -26,8 +27,10 @@ class SchemaNodeView(ResponseModel):
     nodes: list[SchemaNode] = Field(
         description="the centre's neighbours, sorted by ref. Each carries its label and types "
         "and only the arcs the graph answered that tie it to the centre or to the centre's "
-        "subClassOf chain; provenances is empty and declared_by null, since a neighbour's "
-        "typeOf is not read"
+        "subClassOf chain. provenances are those of the arcs read from the neighbour (a "
+        "member's typeOf, an in-arc subject's arc, a chain class's subClassOf edges) and "
+        "declared_by follows from them; both are empty and null for a neighbour no arc was "
+        "read from, such as a target of the centre's arcs"
     )
     capped: list[str] = Field(
         description="the in-arc properties whose listing stopped at 1,000 subjects, sorted: "

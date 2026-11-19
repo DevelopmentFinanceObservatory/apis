@@ -659,6 +659,15 @@
   {
     "has_description": false,
     "method": "GET",
+    "name": "get_schema_node",
+    "operation_id": "graph_get_schema_node",
+    "path": "/api/graph/schema/node/{dcid}",
+    "summary": "Get Schema Node",
+    "surface": "graph"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
     "name": "get_schema_terms",
     "operation_id": "graph_get_schema_terms",
     "path": "/api/graph/schema/terms",
