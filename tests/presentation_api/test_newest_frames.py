@@ -108,7 +108,6 @@ def _newest() -> DatasetsNewestFrames:
 
 _CUT = StoredRendering(
     base_content_version=_DATASET.content_version,
-    minting=MintingOptions(without_party_totals=True),
     mintings=(MintingOptions(without_party_totals=True),),
 )
 

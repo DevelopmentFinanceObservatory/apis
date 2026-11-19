@@ -87,24 +87,25 @@ def _minting_order(minting: MintingOptions) -> tuple[str, bool]:
     )
 
 
-def ordered_mintings(renderings: Iterable[Mapping[str, object]]) -> tuple[MintingOptions, ...]:
-    """Each different set of minting options `renderings` record, in an order of the options
-    alone: a party-totals cut alone first, then each groupby by its canonical JSON, without the
-    cut before with it. The order of the files does not move it."""
-    return _ordered(recorded_mintings(renderings))
+def ordered_mintings(mintings: Iterable[MintingOptions]) -> tuple[MintingOptions, ...]:
+    """Each different set of `mintings`, in an order of the options alone: a party-totals cut
+    alone first, then each groupby by its canonical JSON, without the cut before with it. The
+    order of the files that recorded them does not move it."""
+    return tuple(sorted(_distinct(mintings), key=_minting_order))
 
 
-def _ordered(mintings: Iterable[MintingOptions]) -> tuple[MintingOptions, ...]:
+def _distinct(mintings: Iterable[MintingOptions]) -> tuple[MintingOptions, ...]:
+    """Each different set of `mintings`, in the order each first appears."""
     distinct: list[MintingOptions] = []
     for minting in mintings:
         if minting not in distinct:
             distinct.append(minting)
-    return tuple(sorted(distinct, key=_minting_order))
+    return tuple(distinct)
 
 
 def recorded_minting(renderings: Iterable[Mapping[str, object]]) -> MintingOptions | None:
-    """The first minting options `renderings` record by `ordered_mintings`, or `None`."""
-    return next(iter(ordered_mintings(renderings)), None)
+    """The minting options the first of `renderings` to record some records, or `None`."""
+    return next(iter(recorded_mintings(renderings)), None)
 
 
 def records_plain_file(renderings: Iterable[Mapping[str, object]]) -> bool:
@@ -240,36 +241,46 @@ class StoredRendering:
     """The rendering of its dataset a stored frame is, read from its version record and the
     files linked under it.
 
-    A version is recorded under each rendering a file linked under it records: the plain
-    rendering (a raw version's own frame, recorded by a plain requested-format file or by no file
-    of minting options) when `plain`, and each of `mintings`. Those renderings were one frame
-    when their files were linked, since a version is the content its rows hash to. The frame
-    refreshes as `refreshes_as`."""
+    A version is recorded under each rendering a file linked under it records (`renderings`):
+    the plain rendering (a raw version's own frame, recorded by a plain requested-format file or
+    by no file of minting options) when `plain`, and each of `mintings`. Those renderings were
+    one frame when their files were linked, since a version is the content its rows hash to. A
+    rendering with no `mintings` is the plain one whatever `plain` says."""
 
     # The raw version the frame is, or was derived from.
     base_content_version: str
-    # The first of `mintings`, `None` when the version records none.
-    minting: MintingOptions | None
-    # The frame's version is recorded under two or more renderings.
-    ambiguous: bool = False
     # The frame's version is a derived version of its own, not a raw version.
     collapsed: bool = False
     # Each different set of minting options a file linked under the frame's version records,
-    # in `ordered_mintings` order.
+    # in the order the files were linked.
     mintings: tuple[MintingOptions, ...] = ()
-    # The plain rendering is one of the renderings the frame's version is recorded under. A
-    # rendering recording no minting options is the plain one whatever this says.
+    # The plain rendering is one of the renderings the frame's version is recorded under.
     plain: bool = False
 
-    def __post_init__(self) -> None:
-        if self.minting is None and not self.mintings:
-            object.__setattr__(self, "plain", True)
+    @property
+    def renderings(self) -> tuple[MintingOptions | None, ...]:
+        """Every rendering the frame's version is recorded under, `None` for the plain one,
+        which comes first when recorded, then `mintings` in `ordered_mintings` order. The first
+        is the one the frame refreshes and rebuilds as."""
+        plain: tuple[MintingOptions | None, ...] = (
+            (None,) if self.plain or not self.mintings else ()
+        )
+        return plain + ordered_mintings(self.mintings)
+
+    @property
+    def minting(self) -> MintingOptions | None:
+        """The first of `mintings`, `None` when there are none."""
+        return next(iter(self.mintings), None)
+
+    @property
+    def ambiguous(self) -> bool:
+        """Whether the frame's version is recorded under two or more renderings."""
+        return len(self.renderings) > 1
 
     @property
     def refreshes_as(self) -> MintingOptions | None:
-        """The rendering the frame refreshes and rebuilds as: `None` for the plain one when
-        that is recorded, else `minting`."""
-        return None if self.plain else self.minting
+        """The rendering the frame refreshes and rebuilds as, the first of `renderings`."""
+        return self.renderings[0]
 
     @property
     def options(self) -> MintOptions:
@@ -285,7 +296,7 @@ class StoredRendering:
             "ambiguous": self.ambiguous,
             "collapsed": self.collapsed,
             "mintings": [_minting_record(minting) for minting in self.mintings],
-            "plain": self.plain,
+            "plain": None in self.renderings,
         }
 
     @classmethod
@@ -302,17 +313,11 @@ class StoredRendering:
             recorded = cast("Sequence[Mapping[str, object]]", record["mintings"])
             minting = _minting_of(cast("Mapping[str, object] | None", record["minting"]))
             ambiguous = cast(bool, record["ambiguous"])
-            plain = cast(bool, record.get("plain", ambiguous or minting is None))
-            mintings = _ordered(cast(MintingOptions, _minting_of(entry)) for entry in recorded)
-            if not plain and not mintings:
-                raise ValueError("records no rendering")
             return cls(
                 base_content_version=cast(str, record["base_content_version"]),
-                minting=mintings[0] if mintings else None,
-                ambiguous=ambiguous,
                 collapsed=cast(bool, record["collapsed"]),
-                mintings=mintings,
-                plain=plain,
+                mintings=_distinct(cast(MintingOptions, _minting_of(entry)) for entry in recorded),
+                plain=cast(bool, record.get("plain", ambiguous or minting is None)),
             )
         except (KeyError, TypeError, ValidationError) as exc:
             raise ValueError(f"not a stored rendering record: {exc}") from exc
@@ -348,7 +353,7 @@ def rendering_of(
     version under those and the plain rendering, which a plain requested-format file records
     and which a raw version linking no file of minting options is. The frame refreshes as the
     plain rendering when that is recorded, else as the first minting options by
-    `ordered_mintings`.
+    `ordered_mintings`; `StoredRendering.mintings` keeps the order the files were linked in.
 
     Raises:
         RenderingNotRecorded: The version is derived and no file linked under it records
@@ -356,24 +361,17 @@ def rendering_of(
     """
     content_version = version.content_version
     renderings = list(renderings)
-    mintings = ordered_mintings(renderings)
+    mintings = _distinct(recorded_mintings(renderings))
     if version.base_content_version is not None:
         if not mintings:
             raise RenderingNotRecorded(spec_id=spec_id, content_version=content_version)
         return StoredRendering(
-            base_content_version=version.base_content_version,
-            minting=mintings[0],
-            ambiguous=len(mintings) > 1,
-            collapsed=True,
-            mintings=mintings,
+            base_content_version=version.base_content_version, collapsed=True, mintings=mintings
         )
-    plain = not mintings or records_plain_file(renderings)
     return StoredRendering(
         base_content_version=content_version,
-        minting=mintings[0] if mintings else None,
-        ambiguous=len(mintings) + plain > 1,
         mintings=mintings,
-        plain=plain,
+        plain=records_plain_file(renderings),
     )
 
 

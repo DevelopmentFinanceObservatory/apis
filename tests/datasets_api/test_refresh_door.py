@@ -929,6 +929,33 @@ def test_a_raw_version_linking_a_cut_and_a_summed_cut_refreshes_until_they_diffe
         assert refused.json()["code"] == "rendering_not_recorded"
 
 
+def test_a_rendering_the_rebuilt_head_cannot_make_refuses_retryably(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A frame recorded under a cut and a summed cut whose summed cut cannot be made from the
+    head rebuilds, and when it cannot be made from the rebuilt head either the refresh refuses
+    retryable `service_unavailable`, never `rendering_not_recorded`."""
+    shared = _one_contributor_rig(_CUT_MINT, _CUT_SUMMED_MINT)
+    _move_to(shared, _MEMBER_A_ROW.replace(",1000,", ",3000,"))
+    real = refresh_module._rendering_frame
+    summed_cut = MintingOptions(
+        groupby=GroupbyOptions.model_validate(_GROUPBY), without_party_totals=True
+    )
+
+    def cannot_make_the_summed_cut(**kwargs):
+        return None if kwargs["minting"] == summed_cut else real(**kwargs)
+
+    monkeypatch.setattr(refresh_module, "_rendering_frame", cannot_make_the_summed_cut)
+    sdmx_requests = len(shared.rig.sdmx_requests)
+
+    resp = shared.rig.refresh(spec_id=shared.spec_id, content_version=shared.base_content_version)
+
+    assert resp.status_code == 503, resp.text
+    assert (resp.json()["code"], resp.json()["retryable"]) == ("service_unavailable", True)
+    # The head read sent the call to a rebuild, which fetched.
+    assert len(shared.rig.sdmx_requests) > sdmx_requests
+
+
 # The groupby that keeps `testAxis` sums `flowAxis`, so it has a version of its own.
 _KEEPS_TEST_AXIS = {"by": ["recipient", "testAxis"], "op": "sum"}
 
@@ -1023,6 +1050,45 @@ def test_a_derived_version_recorded_under_two_renderings_refreshes_until_they_di
         refused = serving.refresh(**frame)
         assert refused.status_code == 422, refused.text
         assert refused.json()["code"] == "rendering_not_recorded"
+
+
+def test_a_refresh_lists_the_dataset_versions_once(monkeypatch: pytest.MonkeyPatch):
+    """A refresh of a derived frame recorded under two renderings, which looks up a derived
+    version of the new head for each, lists the dataset's versions once."""
+    minting = _cut_family_rig(dac_total_kind="party")
+    spec_id = recompute_identity(selector_fixture._CUT_FAMILY_IDENTITY).spec_id
+    sidecar = {
+        "schema_version": 1,
+        "spec_id": spec_id,
+        "identity": selector_fixture._CUT_FAMILY_IDENTITY,
+    }
+    summed = party_fixture._mint(
+        minting.client,
+        spec_id=spec_id,
+        sidecar=sidecar,
+        options={"bundle": False, "groupby": _KEEPS_TEST_AXIS},
+    )
+    party_fixture._mint(
+        minting.client,
+        spec_id=spec_id,
+        sidecar=sidecar,
+        options={**_CUT_MINT, "groupby": _KEEPS_TEST_AXIS},
+    )
+    _move_cut_family(minting, spec_id=spec_id, by=1)
+    listed: list[str] = []
+    real = LiveVersionLister.list_versions
+
+    def counting(self, subject_id, *args, **kwargs):
+        listed.append(subject_id)
+        return real(self, subject_id, *args, **kwargs)
+
+    monkeypatch.setattr(LiveVersionLister, "list_versions", counting)
+
+    resp = minting.refresh(spec_id=spec_id, content_version=summed["content_version"])
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "moved"
+    assert listed == [spec_id]
 
 
 def test_a_refresh_under_the_recorded_rendering_ignores_a_file_linked_later(

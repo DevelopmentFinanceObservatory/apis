@@ -12,9 +12,9 @@ REFRESH_DOOR_CODE_CATALOGUE: dict[str, tuple[str, str]] = {
     ),
     "rendering_not_recorded": (
         "Rendering Not Recorded",
-        "The stored records do not say which rendering the named frame is. It is a groupby "
-        "collapse and no file linked under its version records the groupby, or its version "
-        "links both a groupby sum and a plain file and the two renderings of the current "
-        "data differ.",
+        "The named frame is not one rendering of the current data. It is a derived version "
+        "and no file linked under it records the groupby or party-totals cut it was minted "
+        "with, or its version is recorded under several renderings, which were one frame when "
+        "recorded, and the current data renders them as different frames.",
     ),
 }
