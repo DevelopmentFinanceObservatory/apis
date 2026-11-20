@@ -439,7 +439,9 @@ def _rendering_frame(
     )
     if rendered is None:
         return None
-    if rendered.content_version != head_content_version:
+    # A recorded version made again as the head is noted too, so this refresh renders that
+    # minting from the head once.
+    if recorded is not None or rendered.content_version != head_content_version:
         derived.add(
             base_content_version=head_content_version,
             minting=minting,
@@ -480,11 +482,13 @@ def _agreed_frame(
     deps: DefinitionDeps,
     trace_id: str | None,
     coverage_snapshot: CoverageSnapshot,
+    rebuilt: bool = False,
 ) -> _Frame | None:
     """The stored frame every rendering `rendering` is recorded under makes from the head, with
     a file of each linked under it, or `None` when one of them cannot be made from the head's
     frame (`_rendering_frame`), which sends the caller to a rebuild. `content_version` is the
-    named frame's.
+    named frame's, and `rebuilt` says the head is the raw version this call's rebuild
+    materialised.
 
     Every rendering is made from the head with the current code index, the first being the one
     the frame refreshes as; a frame recorded under one rendering is that rendering's frame. With
@@ -499,7 +503,8 @@ def _agreed_frame(
     Raises:
         RenderingNotRecorded: The renderings make different frames, their files did not all
             link under the one they make, or, with the plain rendering among them, one cannot
-            be made from the head.
+            be made from the servable head (`unmade_at_head`), or from the version the rebuild
+            materialised when `rebuilt` (`unmade`).
     """
     renderings = rendering.renderings
 
@@ -514,19 +519,16 @@ def _agreed_frame(
             coverage_snapshot=coverage_snapshot,
         )
 
-    differ = RenderingNotRecorded(
-        spec_id=spec_id,
-        content_version=content_version,
-        renderings=len(renderings),
-        plain=None in renderings,
-    )
-    unmade = RenderingNotRecorded(
-        spec_id=spec_id,
-        content_version=content_version,
-        renderings=len(renderings),
-        unmade=True,
-        plain=None in renderings,
-    )
+    def refusal(*, unmade: bool = False) -> RenderingNotRecorded:
+        return RenderingNotRecorded(
+            spec_id=spec_id,
+            content_version=content_version,
+            renderings=len(renderings),
+            unmade=unmade and rebuilt,
+            unmade_at_head=unmade and not rebuilt,
+            plain=None in renderings,
+        )
+
     frame = frame_of(renderings[0])
     if frame is None or len(renderings) == 1:
         return frame
@@ -537,10 +539,10 @@ def _agreed_frame(
             # With the plain rendering first, `frame` is the servable head, so the rendering
             # cannot be made from a frame a rebuild would only make again.
             if None in renderings:
-                raise unmade
+                raise refusal(unmade=True)
             return None
         if made.content_version != frame.content_version:
-            raise differ
+            raise refusal()
         # A later read lists every file linked under the version by the time it ran.
         linked = list(made.renderings)
     # The plain rendering, when recorded, is the first, so `frame` is the head.
@@ -561,7 +563,7 @@ def _agreed_frame(
         base_content_version=head_content_version,
         collapsed=frame.content_version != head_content_version,
     ):
-        raise differ
+        raise refusal()
     return frame
 
 
@@ -589,9 +591,10 @@ def answer_frame_refresh(
 
     Raises:
         RenderingNotRecorded: The renderings the frame is recorded under make different
-            frames from the current data, or, after a rebuild, one of them cannot be made from
-            the raw version it materialised, or they agree on a version other than the one it
-            served.
+            frames from the current data; with the plain rendering among them, one cannot be
+            made from the servable head, with no rebuild; or, after a rebuild, one of them
+            cannot be made from the raw version it materialised, or they agree on a version
+            other than the one it served.
     """
     with phase("resolve"):
         served = served_spec(spec_id=spec_id, deps=deps, trace_id=trace_id)
@@ -615,7 +618,9 @@ def answer_frame_refresh(
     # `_answer` checks only a frame no head read agreed on at the head it was served from.
     agreed: set[tuple[str, str]] = set()
 
-    def _agreed(head_content_version: str, coverage_snapshot: CoverageSnapshot) -> _Frame | None:
+    def _agreed(
+        head_content_version: str, coverage_snapshot: CoverageSnapshot, *, rebuilt: bool = False
+    ) -> _Frame | None:
         frame = _agreed_frame(
             spec_id=spec_id,
             content_version=content_version,
@@ -625,6 +630,7 @@ def answer_frame_refresh(
             deps=deps,
             trace_id=trace_id,
             coverage_snapshot=coverage_snapshot,
+            rebuilt=rebuilt,
         )
         if frame is not None:
             agreed.add((head_content_version, frame.content_version))
@@ -684,7 +690,7 @@ def answer_frame_refresh(
                     minting=minting,
                     content_version=current_content_version,
                 )
-            made = _agreed(head_content_version, deps.coverage.snapshot())
+            made = _agreed(head_content_version, deps.coverage.snapshot(), rebuilt=True)
             if made is None or made.content_version != current_content_version:
                 raise RenderingNotRecorded(
                     spec_id=spec_id,

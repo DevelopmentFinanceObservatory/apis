@@ -10,6 +10,7 @@ import threading
 import time
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import httpx
 import pytest
@@ -34,6 +35,7 @@ from datasets_api.operations.worker import run_operation
 from datasets_api.recipe_store import LiveRecipeStore
 from datasets_api.recorded_rendering import (
     MintingOptions,
+    RenderingNotRecorded,
     StoredRendering,
     recorded_mintings,
 )
@@ -1040,6 +1042,20 @@ def test_a_head_linking_every_rendering_still_makes_each_one(
         assert (resp.json()["code"], resp.json()["retryable"]) == ("rendering_not_recorded", False)
 
 
+def _raised_refusals(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
+    """The case keywords of each `RenderingNotRecorded` the refresh door builds, in order. The
+    door builds one only to raise it, so these name the case each refusal raised."""
+    cases: list[dict[str, object]] = []
+
+    class Recording(RenderingNotRecorded):
+        def __init__(self, *, spec_id: str, content_version: str, **case: Any) -> None:
+            cases.append(case)
+            super().__init__(spec_id=spec_id, content_version=content_version, **case)
+
+    monkeypatch.setattr(refresh_module, "RenderingNotRecorded", Recording)
+    return cases
+
+
 def test_a_rebuild_to_the_named_frame_that_cannot_make_its_renderings_refuses(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -1050,11 +1066,13 @@ def test_a_rebuild_to_the_named_frame_that_cannot_make_its_renderings_refuses(
     shared.rig.expire_frame(spec_id=shared.spec_id, content_version=shared.base_content_version)
     monkeypatch.setattr(refresh_module, "_rendering_frame", lambda **kwargs: None)
     named = {"spec_id": shared.spec_id, "content_version": shared.base_content_version}
+    raised = _raised_refusals(monkeypatch)
 
     resp = shared.rig.refresh(**named)
 
     assert resp.status_code == 422, resp.text
     assert (resp.json()["code"], resp.json()["retryable"]) == ("rendering_not_recorded", False)
+    assert raised == [{"renderings": 2, "agreed_on": None, "unmade": True, "plain": False}]
     assert shared.rig.frame_servable(**named)
 
 
@@ -1109,11 +1127,13 @@ def test_a_servable_head_that_cannot_make_the_groupby_of_a_plain_frame_refuses_a
         lambda **kwargs: None if kwargs["minting"] == _SUMMED else real(**kwargs),
     )
     sdmx_requests = len(shared.rig.sdmx_requests)
+    raised = _raised_refusals(monkeypatch)
 
     resp = shared.rig.refresh(spec_id=shared.spec_id, content_version=shared.base_content_version)
 
     assert resp.status_code == 422, resp.text
     assert (resp.json()["code"], resp.json()["retryable"]) == ("rendering_not_recorded", False)
+    assert raised == [{"renderings": 2, "unmade": False, "unmade_at_head": True, "plain": True}]
     assert len(shared.rig.sdmx_requests) == sdmx_requests
 
 
@@ -1133,11 +1153,13 @@ def test_a_rebuilt_plain_frame_that_cannot_make_the_groupby_refuses(
         lambda **kwargs: None if kwargs["minting"] == _SUMMED else real(**kwargs),
     )
     sdmx_requests = len(shared.rig.sdmx_requests)
+    raised = _raised_refusals(monkeypatch)
 
     resp = shared.rig.refresh(spec_id=shared.spec_id, content_version=shared.base_content_version)
 
     assert resp.status_code == 422, resp.text
     assert (resp.json()["code"], resp.json()["retryable"]) == ("rendering_not_recorded", False)
+    assert raised == [{"renderings": 2, "unmade": True, "unmade_at_head": False, "plain": True}]
     assert len(shared.rig.sdmx_requests) > sdmx_requests
 
 
@@ -1873,8 +1895,7 @@ def test_a_version_recorded_from_another_head_is_made_again_with_this_heads_cut(
     """The summed cut makes D at B, where the DAC total has no rows and the cut leaves nothing
     out, and makes D again at A, where it leaves the DAC total out. D's record keeps base B and
     its trace B's empty cut. With D's frame file expired, a refresh of D at A makes the summed
-    cut again from A with the cut A decides, which makes D, and answers `current` rather than
-    move to a version that sums the DAC total."""
+    cut again from A with the cut A decides, which makes D, and answers `current` with D."""
     rig = _cut_family_rig(dac_total_kind="total")
     spec_id = recompute_identity(selector_fixture._CUT_FAMILY_IDENTITY).spec_id
     sidecar = {
@@ -1916,8 +1937,8 @@ def test_a_link_of_an_unreadable_groupby_keeps_its_version_from_counting_for_its
 ):
     """V, recorded from head H, links first a groupby this build's grammar refuses, and later a
     summed-cut file another head made. The unreadable link records a minting the rule cannot
-    read, so V does not count as the summed cut made from H, and a summed-cut card on V renders
-    the summed cut from H."""
+    read, so V counts for H only under case 2, which its summed-cut link's head rules out, and a
+    summed-cut card on V renders the summed cut from H."""
     rig = _cut_family_rig(dac_total_kind="party")
     spec_id = recompute_identity(selector_fixture._CUT_FAMILY_IDENTITY).spec_id
     sidecar = {

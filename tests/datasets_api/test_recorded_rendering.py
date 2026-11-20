@@ -14,7 +14,6 @@ from datasets_api.recorded_rendering import (
     ServingFrame,
     StoredRendering,
     derived_version_sums,
-    ordered_mintings,
     recorded_mintings,
     records_plain_file,
     rendering_of,
@@ -167,17 +166,19 @@ def test_a_card_record_reads_back_as_the_rendering_it_records(rendering: StoredR
 
 
 @pytest.mark.parametrize(
-    ("rendering", "ambiguous"),
+    ("rendering", "ambiguous", "minting"),
     [
         (
             StoredRendering(
                 base_content_version="cv1", mintings=(_SUMMED_MINTING, _CUT_MINTING), plain=True
             ),
             True,
+            _CUT_MINTING,
         ),
         (
             StoredRendering(base_content_version="cv1", mintings=(_CUT_MINTING, _SUMMED_MINTING)),
             False,
+            _CUT_MINTING,
         ),
         (
             StoredRendering(
@@ -186,22 +187,20 @@ def test_a_card_record_reads_back_as_the_rendering_it_records(rendering: StoredR
                 mintings=(_CUT_AND_SUMMED_MINTING, _SUMMED_MINTING),
             ),
             False,
+            _SUMMED_MINTING,
         ),
     ],
     ids=["plain-and-mintings", "several-mintings-raw", "several-mintings-derived"],
 )
 def test_a_card_record_is_ambiguous_only_when_the_plain_rendering_is_one_of_several(
-    rendering: StoredRendering, ambiguous: bool
+    rendering: StoredRendering, ambiguous: bool, minting: MintingOptions
 ):
     """A reader that predates `plain` reads `ambiguous` as the plain rendering being one of
     several and otherwise refreshes the record as its `minting`, the first by
     `ordered_mintings`."""
     record = rendering.to_record()
 
-    assert (record["ambiguous"], record["minting"]) == (
-        ambiguous,
-        _minting_record(ordered_mintings(rendering.mintings)[0]),
-    )
+    assert (record["ambiguous"], record["minting"]) == (ambiguous, _minting_record(minting))
 
 
 def test_a_card_record_of_mintings_linked_out_of_order_names_the_one_it_refreshes_as():

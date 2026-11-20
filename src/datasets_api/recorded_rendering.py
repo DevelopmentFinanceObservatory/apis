@@ -217,6 +217,8 @@ class RenderingNotRecorded(Refusal):
     - with neither keyword, a derived frame with no linked file recording its minting options;
     - with `renderings` and `unmade`, a rendering the raw version a rebuild materialised cannot
       make;
+    - with `renderings` and `unmade_at_head`, a raw version recorded under that many renderings,
+      the plain one among them, whose servable head cannot make one of them, with no rebuild;
     - with `renderings` and `agreed_on`, renderings that make one frame from the current data,
       `agreed_on`, which is not the version the rebuild served;
     - with `renderings` and `plain` alone, a raw version recorded under that many renderings,
@@ -237,6 +239,7 @@ class RenderingNotRecorded(Refusal):
         renderings: int = 1,
         agreed_on: str | None = None,
         unmade: bool = False,
+        unmade_at_head: bool = False,
         plain: bool = False,
         unreadable_record: bool = False,
     ) -> None:
@@ -247,6 +250,11 @@ class RenderingNotRecorded(Refusal):
             detail = (
                 f"{named} was recorded under {renderings} renderings, and one of them cannot be "
                 "made from the dataset as rebuilt"
+            )
+        elif unmade_at_head:
+            detail = (
+                f"{named} was recorded under {renderings} renderings, the plain one among them, "
+                "and the dataset's current head cannot make one of them"
             )
         elif agreed_on is not None:
             detail = (
