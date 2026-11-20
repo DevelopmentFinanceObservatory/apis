@@ -520,6 +520,7 @@ def test_nothing_to_build_answers_from_the_pointers_alone(setup, capsys):
         coverage_build_id=setup.coverage.release_id,
         build_commit="c1",
         examples_digest=load_examples(EXAMPLES).digest,
+        un_system_enabled=True,
     )
     assert not nothing_to_build(setup.settings, inputs=inputs)
     _run(setup, _engine())
@@ -540,6 +541,7 @@ def test_nothing_to_build_answers_a_refused_key_from_the_pointers_alone(setup, c
         coverage_build_id=setup.coverage.release_id,
         build_commit="c1",
         examples_digest=load_examples(EXAMPLES).digest,
+        un_system_enabled=True,
     )
     with pytest.raises(CatalogueFloorError):
         _run(setup, _refusing_engine())
@@ -662,6 +664,7 @@ def _inputs(setup: Setup, *, commit: str = "c1", release_id: str | None = None) 
         coverage_build_id=release_id or setup.coverage.release_id,
         build_commit=commit,
         examples_digest=load_examples(EXAMPLES).digest,
+        un_system_enabled=True,
     )
 
 
