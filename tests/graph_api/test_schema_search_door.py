@@ -15,9 +15,11 @@ from graph_api.doors import schema_search
 from graph_api.resolve_models import ResolveResponse, ResolveResult
 from graph_generation import FakeGeneration
 from materialise.graph import GraphReadError
+from tests.graph_release.support import release_at_revision
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue
 
 from .conftest import FakeGraphNodeReader, make_client, make_resolver
+from .test_origin_usage import _serving_releases, _SwappableReleases
 
 _ROUTE = "/api/graph/schema/search"
 _SV = "StatisticalVariable"
@@ -34,13 +36,21 @@ _MIXER = {
     "country/KEN": _node("Kenya", "Country", "dc/base/Places"),
     "dfo/OOP": _node("Out-of-pocket spending", _SV, "dfo/WHO"),
     "Count_Person": _node("Population", _SV, "dc/base/Census"),
+    "dc/topic/Live": _node("Health topic", "Topic", "dc/base/Topics"),
+    "dfo/DescOnly": {"description": (ArcTarget(value="Only a description", literal=True),)},
+    **{
+        dcid: _node(dcid, _SV, "dfo/WHO")
+        for dcid in ("sv/untyped", "sv/second", "sv/0", "sv/1", "sv/2")
+    },
 }
 _UN = {"undata/sdg/SH_OOP": _node("Out-of-pocket share", _SV, "undata/sdg")}
 
 
 class _Reader(FakeGraphNodeReader):
     """A node view reader over `arc_targets` that raises a read error for any batch naming a
-    dcid in `failing`, and records every batch it is asked for in `batches`."""
+    dcid in `failing`, and records every batch it is asked for in `batches`. Like the graph
+    client, it answers `None` for a node holding none of the properties a read names, and its
+    `->*` read takes a byte cap."""
 
     def __init__(
         self,
@@ -56,7 +66,14 @@ class _Reader(FakeGraphNodeReader):
         self.batches.append(tuple(dcids))
         if self._failing & set(dcids):
             raise GraphReadError("read failed", upstream_status=503)
-        return super().node_arc_targets_many(dcids, **kwargs)
+        entries = super().node_arc_targets_many(dcids, **kwargs)
+        return {
+            dcid: entry if entry and any(entry.values()) else None
+            for dcid, entry in entries.items()
+        }
+
+    def node_all_arc_targets_many(self, dcids, *, max_bytes=None, deadline=None):
+        return super().node_all_arc_targets_many(dcids, deadline=deadline)
 
 
 type _Answer = Sequence[tuple[str, str | list[str] | None] | dict]
@@ -104,7 +121,7 @@ class _Indicators:
 
 _ANSWERS: dict[tuple[str, bool], _Answer] = {
     ("custom_only", False): [("dfo/OOP", _SV), ("dc/topic/Health", "Topic")],
-    ("base_and_custom", False): [("dfo/OOP", _SV), ("Count_Person", _SV)],
+    ("base_only", False): [("Count_Person", _SV)],
     ("custom_only", True): [("undata/sdg/SH_OOP", _SV), ("dfo/OOP", _SV)],
 }
 
@@ -178,9 +195,10 @@ def test_hits_come_dcid_then_name_then_indicator_each_once_and_are_cached(
         ("undata/sdg/SH_OOP", True, ("undata/sdg/SH_OOP", "un_system"), True),
         ("undata/sdg/SH_OOP", False, None, False),
         ("NoSuchNode", True, None, True),
+        ("dfo/DescOnly", False, ("dfo/DescOnly", None), True),
         ("dfo/OOP?", False, None, False),
     ],
-    ids=["mixer", "un", "un-off", "absent", "not-dcid-syntax"],
+    ids=["mixer", "un", "un-off", "absent", "description-only", "not-dcid-syntax"],
 )
 def test_a_whole_dcid_is_the_first_hit_where_a_read_holds_it(
     serve_catalogue,
@@ -208,7 +226,7 @@ def test_a_whole_dcid_is_the_first_hit_where_a_read_holds_it(
     ("base", "un", "un_served", "sent"),
     [
         (False, False, True, {("custom_only", False)}),
-        (True, False, True, {("base_and_custom", False)}),
+        (True, False, True, {("custom_only", False), ("base_only", False)}),
         (False, True, True, {("custom_only", False), ("custom_only", True)}),
         (False, True, False, {("custom_only", False)}),
     ],
@@ -256,7 +274,7 @@ def test_an_indicator_leg_keeps_its_first_valid_statvars_and_untyped_candidates(
         response = client.get(_ROUTE, params={"q": "out of pocket"})
 
     assert [(hit["ref"], hit["types"]) for hit in response.json()["hits"]] == [
-        ("sv/untyped", []),
+        ("sv/untyped", [_SV]),
         ("sv/second", [_SV]),
         ("sv/0", [_SV]),
     ]
@@ -266,7 +284,7 @@ def test_an_indicator_leg_keeps_its_first_valid_statvars_and_untyped_candidates(
     ("base", "failing", "dcid_fails", "unavailable"),
     [
         (False, ("custom_only", True), False, ["un_system"]),
-        (True, ("base_and_custom", False), False, ["dfo", "base"]),
+        (True, ("base_only", False), False, ["base"]),
         (False, None, True, ["dcid"]),
     ],
     ids=["un", "mixer", "dcid"],
@@ -294,8 +312,53 @@ def test_a_failing_leg_is_named_and_the_rest_answer(
     body = response.json()
     assert body["unavailable"] == unavailable
     assert body["hits"][0]["ref"] == "country/KEN"
+    assert ("dfo/OOP" in [hit["ref"] for hit in body["hits"]]) == ("dfo" not in unavailable)
     # A partial answer is not kept, so the repeat resolves again.
     assert len(indicators.calls) == 2 * calls
+
+
+def test_indicator_hits_the_graph_does_not_hold_as_statvars_are_dropped(
+    serve_catalogue, shared_resolver
+):
+    """A candidate the label read does not find is dropped, and so is an untyped one the graph
+    types other than StatisticalVariable. The answer is complete and kept."""
+    serve_catalogue(FakeCatalogue())
+    answers: dict[tuple[str, bool], _Answer] = {
+        ("custom_only", False): [
+            ("dead/SV", _SV),
+            ("dc/topic/Live", None),
+            ("sv/untyped", None),
+            ("dfo/OOP", _SV),
+        ]
+    }
+    indicators = _Indicators(answers)
+
+    with _client(shared_resolver, indicators) as client:
+        response = client.get(_ROUTE, params={"q": "out of pocket"})
+        client.get(_ROUTE, params={"q": "out of pocket"})
+
+    body = response.json()
+    assert [hit["ref"] for hit in body["hits"]] == ["sv/untyped", "dfo/OOP"]
+    assert body["unavailable"] == []
+    assert len(indicators.calls) == 1
+
+
+def test_a_new_graph_release_misses_the_cache(serve_catalogue, shared_resolver):
+    """The entity resolver admits by the bound release's code index, so an answer is kept per
+    release."""
+    serve_catalogue(FakeCatalogue())
+    indicators = _Indicators(_ANSWERS)
+    releases = _SwappableReleases(release_at_revision("rev-1"))
+
+    with _serving_releases(releases), _client(shared_resolver, indicators) as client:
+        client.get(_ROUTE, params={"q": "out of pocket"})
+        client.get(_ROUTE, params={"q": "out of pocket"})
+        cached = len(indicators.calls)
+        releases.release = release_at_revision("rev-2")
+        client.get(_ROUTE, params={"q": "out of pocket"})
+
+    assert cached == 1
+    assert len(indicators.calls) == 2
 
 
 async def _no_names(deps, body, **kwargs):
@@ -405,9 +468,10 @@ def _read_error(status: int, retry_after: float | None) -> GraphReadError:
     [
         (503, (None, None), None, None),
         (429, (7.2, None), "8", "upstream_rate_limited"),
+        (429, (5.0, 30.0), "30", "upstream_rate_limited"),
         (429, (None, None), "5", "upstream_rate_limited"),
     ],
-    ids=["failing", "rate-limited", "rate-limited-no-wait"],
+    ids=["failing", "rate-limited", "rate-limited-longest", "rate-limited-no-wait"],
 )
 def test_every_leg_failing_answers_503(
     serve_catalogue,
