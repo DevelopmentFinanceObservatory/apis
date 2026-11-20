@@ -2049,8 +2049,9 @@ def test_load_states_the_rendering_the_versions_linked_files_record_at_each_load
         "ambiguous": False,
         "collapsed": False,
         "mintings": [minting],
+        "plain": False,
     }
-    assert ambiguous == {**cut, "ambiguous": True}
+    assert ambiguous == {**cut, "ambiguous": True, "plain": True}
 
 
 def test_load_cache_hit_refuses_once_the_frame_is_revoked_after_the_first_load():

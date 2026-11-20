@@ -9,7 +9,9 @@ last check is due (`presentation_api.share_slots`):
   rebuilding the dataset when its data moved or its head is too old. The rendering is the one
   the card revision recorded (`RevisionRecord.frame_rendering`) when it holds one, so a file of
   another rendering linked later under the stored version changes nothing, as on the render
-  routes; a revision that recorded none is refreshed under the stored frame's records;
+  routes; a revision that recorded none is refreshed under the stored frame's records, and one
+  whose record names no rendering this build reads refuses `rendering_not_recorded`, as the
+  render routes accept no other frame for it;
 - a derived frame (`ops_`) is answered as `POST /api/datasets/analysis` answers a bare derived
   root with `latest=true`: the run is keyed (`datasets_api.analysis.prepare_analysis`), a key
   holding a stored answer whose frame file is still served answers that frame
@@ -69,7 +71,12 @@ from datasets_api.doors.analysis import (
     analysis_stores,
 )
 from datasets_api.doors.definition import definition_deps, inline_definition_deps
-from datasets_api.doors.refresh import FramePending, StoredRendering, answer_frame_refresh
+from datasets_api.doors.refresh import (
+    FramePending,
+    RenderingNotRecorded,
+    StoredRendering,
+    answer_frame_refresh,
+)
 from datasets_api.exports import resolve_endpoint
 from datasets_api.operation_store import OperationBacklogFull
 from dfo_platform import ProblemSpec, refused
@@ -154,12 +161,24 @@ class DatasetsNewestFrames:
             return FrameRef(
                 spec_id=member["spec"]["spec_id"], content_version=member["content_version"]
             )
+        recorded = None
+        if rendering is not None:
+            try:
+                recorded = StoredRendering.from_record(rendering)
+            except ValueError:
+                # The render routes accept no other frame for such a card
+                # (`doors.render._same_dataset_rendering`), so it cannot move either.
+                raise RenderingNotRecorded(
+                    spec_id=frame.spec_id,
+                    content_version=frame.content_version,
+                    unreadable_record=True,
+                ) from None
         refreshed = answer_frame_refresh(
             spec_id=frame.spec_id,
             content_version=frame.content_version,
             deps=deps,
             trace_id=trace_id,
-            recorded=StoredRendering.from_record(rendering) if rendering is not None else None,
+            recorded=recorded,
         )
         if isinstance(refreshed, FramePending):
             return NewestPending(retry_after_s=refreshed.retry_after_s)

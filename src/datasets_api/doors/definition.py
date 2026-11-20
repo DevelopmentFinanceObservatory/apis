@@ -389,12 +389,13 @@ def serve_spec(
     head_read: HeadRead | None = None,
     revoked_under: Sequence[str] = (),
     requests: Sequence[MaterialisationRequest] | None = None,
+    on_materialised: Callable[[str], None] | None = None,
 ) -> Manifest:
     """Serve the served definition `stored` through `serve_current`, rehydrating it at most
     once and only when the head cannot answer. `requests`, the members a caller has already
-    admitted, replace the rehydration. `load_head`, `head_read` and `revoked_under` are
-    `serve_current`'s. A refusal the rebuild's admission or materialisation raises loses its
-    mint-body pointer (`strip_pointer`)."""
+    admitted, replace the rehydration. `load_head`, `head_read`, `revoked_under` and
+    `on_materialised` are `serve_current`'s. A refusal the rebuild's admission or
+    materialisation raises loses its mint-body pointer (`strip_pointer`)."""
 
     @functools.cache
     def _requests() -> Sequence[MaterialisationRequest]:
@@ -414,6 +415,7 @@ def serve_spec(
         head_read=head_read,
         strip_pointer=True,
         revoked_under=revoked_under,
+        on_materialised=on_materialised,
     )
 
 

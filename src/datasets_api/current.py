@@ -1534,6 +1534,7 @@ def serve_current(
     head_read: HeadRead | None = None,
     strip_pointer: bool = False,
     revoked_under: Sequence[str] = (),
+    on_materialised: Callable[[str], None] | None = None,
 ) -> Manifest:
     """Serve the current version of the served definition `stored`, materialising and advancing
     the head when the head cannot answer. A head answers under `load_stored`'s
@@ -1571,7 +1572,9 @@ def serve_current(
     head it read, and stamps the confirmation of the head its run wrote. `progress` receives the
     materialiser's row progress. `strip_pointer` marks the refusals a rebuild's admission and
     materialisation raise (`without_pointers`) for a retrieval route, whose request has no body;
-    refusals from a head hit keep their pointers.
+    refusals from a head hit keep their pointers. `on_materialised` receives the raw version a
+    rebuild of this call materialised (`ServedDefinition.content_version`), the one its answer
+    is or was derived from, whichever writer won the head.
 
     Returns a manifest stamped by `stamp_trace`.
     """
@@ -1590,6 +1593,7 @@ def serve_current(
             head_read=head_read,
             strip_pointer=strip_pointer,
             revoked_under=revoked_under,
+            on_materialised=on_materialised,
         )
         manifest = check(
             coverage_snapshot if coverage_snapshot is not None else deps.coverage.snapshot()
@@ -1614,6 +1618,7 @@ def _check_currency(
     head_read: HeadRead | None,
     strip_pointer: bool,
     revoked_under: Sequence[str],
+    on_materialised: Callable[[str], None] | None = None,
 ) -> Manifest | None:
     """One pass of `serve_current` on the coverage snapshot `snapshot`. `None` means another
     caller rebuilt the subject while this one waited, so the head is read again."""
@@ -1691,6 +1696,8 @@ def _check_currency(
             if isinstance(recheck, str):
                 raise
             return recheck
+    if on_materialised is not None:
+        on_materialised(served.content_version)
     written = served.head
     if written is None:
         # A concurrent update won the head. Stamp its confirmation.

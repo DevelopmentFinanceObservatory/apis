@@ -149,6 +149,30 @@ def test_a_cut_leaves_out_the_totals_of_each_open_party_role(
     assert trace == entries
 
 
+@pytest.mark.parametrize(
+    "identity",
+    [
+        pytest.param({"entities": {}}, id="both-open"),
+        pytest.param({"entities": {"destination": [_DEVELOPING, _KENYA]}}, id="provider-open"),
+    ],
+)
+def test_a_cut_of_a_frame_a_cut_made_leaves_nothing_out(identity):
+    """A cut of the rows a cut kept keeps every row and records no entry, so a cut whose file
+    is linked under the version it made makes that version again from it."""
+    frame = _frame(_EVERY_PAIR)
+    roles = open_party_roles(identity, _ROLES)
+    first = cut_party_totals(lambda: iter((frame,)), roles=roles, parties=_PARTIES)
+    kept = list(first.chunks(lambda: iter((frame,)))())
+    assert first.trace_entries()
+
+    again = cut_party_totals(lambda: iter(kept), roles=roles, parties=_PARTIES)
+
+    assert again.trace_entries() == []
+    assert [row for chunk in again.chunks(lambda: iter(kept))() for row in chunk.rows] == [
+        row for chunk in kept for row in chunk.rows
+    ]
+
+
 def test_a_series_whose_every_row_is_a_total_keeps_them():
     """Each recipient's series of providers holds only totals, and so does the G7's series of
     recipients, though the DAC total's holds Kenya and Ghana: the totals are then the only
