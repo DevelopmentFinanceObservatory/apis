@@ -1051,23 +1051,6 @@ def test_a_rebuilt_plain_frame_that_cannot_make_the_groupby_refuses_as_ambiguous
     assert len(shared.rig.sdmx_requests) > sdmx_requests
 
 
-def test_a_rebuild_that_remakes_the_named_frame_answers_current(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    """A frame recorded under a cut and a summed cut whose head frame expired rebuilds to the
-    same version, and the refresh answers `current` with it, whatever its renderings make."""
-    shared = _one_contributor_rig(_CUT_MINT, _CUT_SUMMED_MINT)
-    shared.rig.expire_frame(spec_id=shared.spec_id, content_version=shared.base_content_version)
-    monkeypatch.setattr(refresh_module, "_rendering_frame", lambda **kwargs: None)
-    named = {"spec_id": shared.spec_id, "content_version": shared.base_content_version}
-
-    resp = shared.rig.refresh(**named)
-
-    assert resp.status_code == 200, resp.text
-    assert resp.json() == {"status": "current", "frame": named}
-    assert shared.rig.frame_servable(**named)
-
-
 def test_renderings_that_agree_on_a_frame_the_rebuild_did_not_serve_refuse(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -1272,6 +1255,67 @@ def test_a_rebuild_checks_the_renderings_again_at_the_version_it_materialised(
     agreed_on = LiveSnapshotReader(store=rig.version_store).read_version(spec_id, served[0])
     assert agreed_on is not None
     assert agreed_on.base_content_version == agreed_head
+
+
+_SUMMED_KEEPING_TEST_AXIS = {"bundle": False, "groupby": _KEEPS_TEST_AXIS}
+
+
+@pytest.mark.parametrize(
+    ("mints", "dac_total_kind", "answers_current"),
+    [
+        pytest.param((_SUMMED_KEEPING_TEST_AXIS,), "total", True, id="one-rendering"),
+        pytest.param(
+            (_SUMMED_KEEPING_TEST_AXIS, {**_CUT_MINT, "groupby": _KEEPS_TEST_AXIS}),
+            "party",
+            True,
+            id="renderings-agree",
+        ),
+        pytest.param(
+            (_SUMMED_KEEPING_TEST_AXIS, {**_CUT_MINT, "groupby": _KEEPS_TEST_AXIS}),
+            "total",
+            False,
+            id="summed-cut-moved",
+        ),
+    ],
+)
+def test_a_rebuild_that_remakes_the_named_frame_answers_current_once_its_renderings_agree(
+    mints: tuple[dict, ...], dac_total_kind: str, answers_current: bool
+):
+    """A rebuild on new data, with its flows swapped, that the groupby sums to the named derived
+    version again answers `current` when every rendering the frame is recorded under makes that
+    version from the rebuilt head. When a code index that makes the DAC total a total has the
+    summed cut leave it out, the summed cut makes another frame and the refresh refuses
+    `rendering_not_recorded`; a frame recorded under the groupby alone stays current."""
+    minting = _cut_family_rig(dac_total_kind="party")
+    minting.body["text"] = _cut_family_body(_flows_value)
+    spec_id = recompute_identity(selector_fixture._CUT_FAMILY_IDENTITY).spec_id
+    sidecar = {
+        "schema_version": 1,
+        "spec_id": spec_id,
+        "identity": selector_fixture._CUT_FAMILY_IDENTITY,
+    }
+    versions = {
+        party_fixture._mint(minting.client, spec_id=spec_id, sidecar=sidecar, options=options)[
+            "content_version"
+        ]
+        for options in mints
+    }
+    assert len(versions) == 1
+    named = {"spec_id": spec_id, "content_version": versions.pop()}
+    head = minting.head_store.head_for(spec_id).content_version
+    serving = _cut_family_rig(dac_total_kind=dac_total_kind, stores_of=minting)
+    serving.body["text"] = _cut_family_body(functools.partial(_flows_value, swapped=True))
+    serving.head_store.age_head(spec_id, age=_PAST_MAX_AGE)
+
+    resp = serving.refresh(**named)
+
+    assert serving.head_store.head_for(spec_id).content_version != head
+    if answers_current:
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {"status": "current", "frame": named}
+    else:
+        assert resp.status_code == 422, resp.text
+        assert (resp.json()["code"], resp.json()["retryable"]) == ("rendering_not_recorded", False)
 
 
 def test_a_refresh_finds_the_version_its_rebuild_recorded(monkeypatch: pytest.MonkeyPatch):

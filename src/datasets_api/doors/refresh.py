@@ -629,9 +629,8 @@ def answer_frame_refresh(
         materialised = content_version
 
     def _answer(current_content_version: str) -> FrameCurrent | FrameMoved:
-        frame = FramePair(spec_id=spec_id, content_version=current_content_version)
-        if (spec_id, current_content_version) == (named_spec_id, content_version):
-            return FrameCurrent(frame=frame)
+        # A frame recorded under several renderings answers `current` only once every
+        # rendering makes the named version, as it answers `moved` only once they agree.
         if rendering.ambiguous and materialised is None:
             # With no rebuild of this call, a head read answered, which agreed on the frame; a
             # frame none agreed on is not established as one rendering.
@@ -664,6 +663,9 @@ def answer_frame_refresh(
                     unmade=made is None,
                     plain=None in rendering.renderings,
                 )
+        frame = FramePair(spec_id=spec_id, content_version=current_content_version)
+        if (spec_id, current_content_version) == (named_spec_id, content_version):
+            return FrameCurrent(frame=frame)
         return FrameMoved(frame=frame)
 
     try:
