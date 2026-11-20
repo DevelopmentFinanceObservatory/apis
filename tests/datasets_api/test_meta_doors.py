@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import jsonschema
 import pytest
 from fastapi.responses import JSONResponse
+from pydantic import SecretStr
 
 from artifact_store import Tier
 from code_index.shared import get_index
@@ -47,12 +48,14 @@ from datasets_api.schema import (
     PinResponse,
     build_schema_document,
 )
+from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.version import DATASETS_CAPABILITY_VERSION
 from datasets_api.version_store import enriched_rendering_key, rendering_key
 from datasets_api.versions import NullVersionRecordWriter
 from dfo_platform import Alternative, ProblemIssue, ProblemSpec
 from dfo_platform.build import build_commit
-from dfo_platform.config import PublicSiteSettings
+from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
+from dfo_platform.config import CallerSettings, PublicSiteSettings
 from dfo_platform.problem import Cause
 from graph_release.context import bound_release
 from materialise.trace import UNKNOWN_FAMILY, StatedFamily, parse_recorded_family
@@ -686,6 +689,94 @@ def _basis_before_a_redeploy() -> str:
     """The basis a run resolved its family under before the graph release moved."""
     with bound_release(_redeployed()):
         return _serving_basis()
+
+
+def _store_unavailable(*args: object, **kwargs: object) -> None:
+    raise DatasetsStoreUnavailable("operation store unavailable")
+
+
+class _UnwritableOperationStore(_FixedOperationStore):
+    """A store whose reads answer and whose every write raises, as a store mid-fault does."""
+
+    create_or_get = mark_dispatched = claim = progress = record_estimate = complete = fail = (
+        release
+    ) = abandon = fail_unservable_done = staticmethod(_store_unavailable)
+
+
+def _delivery_lines(caplog: pytest.LogCaptureFixture) -> list[dict[str, object]]:
+    return [
+        fields
+        for record in caplog.records
+        if record.name == "datasets_api.delivery"
+        and (fields := getattr(record, JSON_FIELDS_ATTR, None))
+    ]
+
+
+def test_each_poll_of_a_done_operation_logs_a_line_under_its_own_caller_and_admission(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A poll that serves the done manifest is a read, so each caller's poll logs its own line,
+    and nothing it does writes to the operation store. A poll of a pending row logs none."""
+    artifact_store = FakeArtifactStore()
+    location = _stored_rendering(artifact_store, _PARQUET_BUNDLE, data=b"a,b\n1,2\n")
+    client = make_client(
+        registry=LiveSpecRegistry(store=FakeDatasetStore()),
+        settings=_SITE_SETTINGS.model_copy(
+            update={"caller": CallerSettings(caller_principal=SecretStr("website-secret"))}
+        ),
+        spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
+        snapshot_reader=FakeSnapshotReader(
+            versions={("spec_a", "cv1"): _FIRST_MINT_VERSION},
+            locations={("spec_a", "cv1"): [location]},
+        ),
+        artifact_store=artifact_store,
+        reference_writer=FakeArtifactReferenceWriter(),
+        version_writer=NullVersionRecordWriter(),
+        operation_store=_UnwritableOperationStore(
+            {
+                "op_done": _operation(
+                    id="op_done", state="done", subject_id="spec_a", content_version="cv1"
+                ),
+                # Submitted now, so the poll finds it inside its deadline and writes nothing.
+                "op_pending": _operation(
+                    id="op_pending", state="pending", created_at=datetime.now(UTC)
+                ),
+            }
+        ),
+    )
+    website = "ip:" + "ab" * 16
+    conversation = "conversation:" + "cd" * 16
+    vouched = {"x-dfo-caller-principal": "website-secret"}
+
+    with caplog.at_level(logging.INFO, logger="datasets_api.delivery"):
+        polls = [
+            client.get(
+                "/api/datasets/operations/op_done",
+                headers={**vouched, "x-dfo-caller": website, "X-DFO-Mint-Admission": "background"},
+            ),
+            client.get(
+                "/api/datasets/operations/op_done",
+                headers={**vouched, "x-dfo-caller": conversation},
+            ),
+        ]
+        pending = client.get(
+            "/api/datasets/operations/op_pending", headers={**vouched, "x-dfo-caller": website}
+        )
+
+    assert [poll.status_code for poll in polls] == [200, 200]
+    assert pending.status_code == 200, pending.text
+    assert pending.json()["operation"]["status"] == "pending"
+    lines = _delivery_lines(caplog)
+    assert [(line["door"], line["caller"], line["admission"]) for line in lines] == [
+        ("operations", website, "background"),
+        ("operations", conversation, "foreground"),
+    ]
+    for line in lines:
+        assert (line["spec_id"], line["content_version"], line["rows_served"]) == (
+            "spec_a",
+            "cv1",
+            0,
+        )
 
 
 @pytest.mark.parametrize(

@@ -300,6 +300,21 @@ def test_a_request_whose_key_is_running_joins_it_with_202_reading_no_root(
     assert stored.json() == answers[0].json()
 
 
+def test_a_vouched_request_without_a_caller_header_still_answers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The door spends no allowance, so a vouched request missing `x-dfo-caller` logs its
+    caller as unresolved and is served."""
+    monkeypatch.setenv("DFO_CALLER_PRINCIPAL", "website-secret")
+    stores = Stores()
+    with _client(stores, source(stores), monkeypatch) as client:
+        response = client.post(
+            _PATH, json={"tree": _TREE}, headers={"x-dfo-caller-principal": "website-secret"}
+        )
+
+    assert response.status_code == 200, response.text
+
+
 @pytest.mark.parametrize("first", ["post", "check"])
 def test_a_live_check_and_a_post_of_one_key_compute_it_once(
     monkeypatch: pytest.MonkeyPatch, first: str

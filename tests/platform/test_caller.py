@@ -3,6 +3,7 @@ client address the trusted proxies saw, with the digest the website computes."""
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import logging
@@ -14,6 +15,9 @@ from dfo_platform.caller import (
     Caller,
     CallerHeaderInvalid,
     CallerUnresolved,
+    DeliveryIdentity,
+    DeliverySurface,
+    delivery_identity,
     resolve_caller,
 )
 from dfo_platform.config import CallerSettings
@@ -21,6 +25,7 @@ from dfo_platform.config import CallerSettings
 _KEY = "test-key"
 _PRINCIPAL = "website-secret"
 _NAMED = "ip:" + "ab" * 16
+_CONVERSATION = "conversation:" + "cd" * 16
 
 
 def _digest(preimage: str) -> str:
@@ -180,3 +185,186 @@ def test_a_caller_header_without_a_principal_is_ignored():
     request = _request(("x-forwarded-for", "3.3.3.3"), ("x-dfo-caller", _NAMED))
 
     assert resolve_caller(request, _settings()).key == _digest("3.3.3.3")
+
+
+def test_a_vouched_conversation_caller_is_keyed_on_the_conversation():
+    """Each Studio conversation holds its own allowances, whatever address the harness sends from,
+    and the request's address is not read."""
+    other = "conversation:" + "ef" * 16
+
+    def resolve(named: str, *, key: str = _KEY, forwarded: list[str] | None = None) -> Caller:
+        headers = [("x-dfo-caller-principal", _PRINCIPAL), ("x-dfo-caller", named)]
+        headers += [("x-forwarded-for", value) for value in forwarded or []]
+        return resolve_caller(_request(*headers), _settings(key=key))
+
+    assert resolve(_CONVERSATION, forwarded=["3.3.3.3"]) == Caller(
+        kind="conversation", key=_CONVERSATION
+    )
+    assert resolve(other, forwarded=["3.3.3.3"]).key == other
+    # With no forwarded-for entry and no HMAC key, the address path refuses and the vouched path serves.
+    assert resolve(_CONVERSATION, key="") == Caller(kind="conversation", key=_CONVERSATION)
+
+
+_VOUCHED = ("x-dfo-caller-principal", _PRINCIPAL)
+
+
+@pytest.mark.parametrize(
+    ("headers", "caller", "source", "surface"),
+    [
+        ([("x-dfo-surface", "studio")], _digest("3.3.3.3"), "address", DeliverySurface.direct),
+        (
+            [_VOUCHED, ("x-dfo-caller", _CONVERSATION), ("x-dfo-surface", "api")],
+            _CONVERSATION,
+            "vouched",
+            DeliverySurface.studio,
+        ),
+        (
+            [_VOUCHED, ("x-dfo-caller", _NAMED), ("x-dfo-surface", "Website")],
+            _NAMED,
+            "vouched",
+            DeliverySurface.website,
+        ),
+        (
+            [_VOUCHED, ("x-dfo-caller", _NAMED), ("x-dfo-surface", "direct")],
+            _NAMED,
+            "vouched",
+            DeliverySurface.unknown,
+        ),
+        ([_VOUCHED, ("x-dfo-surface", "mcp")], None, "none", DeliverySurface.mcp),
+        (
+            [_VOUCHED, ("x-dfo-caller", "ip:ABC"), ("x-dfo-surface", "api")],
+            None,
+            "none",
+            DeliverySurface.api,
+        ),
+        (
+            [("x-dfo-caller-principal", "not-the-secret"), ("x-dfo-caller", _NAMED)],
+            _digest("3.3.3.3"),
+            "address",
+            DeliverySurface.direct,
+        ),
+    ],
+    ids=[
+        "unvouched-surface",
+        "conversation-overrules",
+        "vouched-surface",
+        "unnameable-surface",
+        "vouched-without-caller",
+        "vouched-malformed-caller",
+        "refused-principal",
+    ],
+)
+def test_the_delivery_identity_believes_a_caller_and_surface_only_beside_the_principal(
+    headers: list[tuple[str, str]],
+    caller: str | None,
+    source: str,
+    surface: DeliverySurface,
+    caplog: pytest.LogCaptureFixture,
+):
+    request = _request(("x-forwarded-for", "3.3.3.3"), *headers)
+
+    with caplog.at_level(logging.DEBUG, logger="dfo_platform.caller"):
+        identity = delivery_identity(request, _settings())
+
+    assert (identity.caller, identity.caller_source, identity.surface) == (caller, source, surface)
+    assert caplog.records == []
+
+
+def test_the_delivery_identity_carries_the_upstream_client_token_and_admission():
+    claims = base64.urlsafe_b64encode(b'{"email": "website@example.iam"}').decode().rstrip("=")
+    request = _request(
+        ("authorization", f"Bearer h.{claims}."),
+        ("x-dfo-client", "dfo-python/0.1.0 (CPython 3.14)\x07"),
+        ("x-dfo-mint-admission", " Background "),
+    )
+
+    assert delivery_identity(request, _settings(key="")) == DeliveryIdentity(
+        caller=None,
+        caller_source="none",
+        upstream="website@example.iam",
+        surface=DeliverySurface.direct,
+        client="dfo-python/0.1.0",
+        user_agent=None,
+        admission="background",
+        turn_id=None,
+    )
+
+
+@pytest.mark.parametrize(
+    ("headers", "client"),
+    [
+        ([("x-dfo-client", "dfo-python/0.3.0 (CPython 3.14)")], "dfo-python/0.3.0"),
+        ([("x-dfo-client", "claude-code/2.1.0")], "claude-code/2.1.0"),
+        ([("x-dfo-client", "Mozilla/5.0 AppleWebKit/537.36")], None),
+        ([], None),
+    ],
+    ids=["runtime-dropped", "bare-token", "not-a-product-token", "absent"],
+)
+def test_the_delivery_client_is_the_product_token(
+    headers: list[tuple[str, str]], client: str | None
+):
+    assert delivery_identity(_request(*headers), _settings()).client == client
+
+
+_END_CLIENT = "openai-mcp/1.0.0"
+_OWN = "dfo-ai-harness/1.0"
+
+
+@pytest.mark.parametrize(
+    ("headers", "user_agent"),
+    [
+        (
+            [_VOUCHED, ("x-dfo-caller", _NAMED), ("x-dfo-user-agent", _END_CLIENT)],
+            _END_CLIENT,
+        ),
+        ([_VOUCHED, ("x-dfo-caller", _NAMED)], _OWN),
+        (
+            [_VOUCHED, ("x-dfo-caller", _CONVERSATION), ("x-dfo-user-agent", _END_CLIENT)],
+            None,
+        ),
+        ([("x-dfo-user-agent", _END_CLIENT)], _OWN),
+        (
+            [_VOUCHED, ("x-dfo-caller", _NAMED), ("x-dfo-user-agent", "x" * 300 + "\x07")],
+            "x" * 256,
+        ),
+    ],
+    ids=["forwarded", "own", "conversation", "unvouched-forwarded-ignored", "clipped"],
+)
+def test_the_delivery_user_agent_is_the_end_clients(
+    headers: list[tuple[str, str]], user_agent: str | None
+):
+    request = _request(("x-forwarded-for", "3.3.3.3"), ("user-agent", _OWN), *headers)
+
+    assert delivery_identity(request, _settings()).user_agent == user_agent
+
+
+_TURN = "tr_" + "0123456789abcdef"
+
+
+@pytest.mark.parametrize(
+    ("headers", "turn_id"),
+    [
+        ([_VOUCHED, ("x-dfo-caller", _CONVERSATION), ("x-dfo-turn", _TURN)], _TURN),
+        ([("x-dfo-caller", _CONVERSATION), ("x-dfo-turn", _TURN)], None),
+        ([_VOUCHED, ("x-dfo-caller", _NAMED), ("x-dfo-turn", _TURN)], None),
+        ([_VOUCHED, ("x-dfo-caller", _CONVERSATION), ("x-dfo-turn", _TURN + "0")], None),
+        ([_VOUCHED, ("x-dfo-caller", _CONVERSATION), ("x-dfo-turn", _TURN.upper())], None),
+        ([_VOUCHED, ("x-dfo-caller", _CONVERSATION), ("x-dfo-turn", _TURN + "\n")], None),
+        ([_VOUCHED, ("x-dfo-caller", _CONVERSATION)], None),
+    ],
+    ids=[
+        "kept",
+        "unvouched",
+        "non-conversation",
+        "too-long",
+        "uppercase",
+        "trailing-newline",
+        "absent",
+    ],
+)
+def test_the_delivery_turn_id_is_kept_only_for_a_vouched_conversation_with_a_valid_id(
+    headers: list[tuple[str, str]], turn_id: str | None
+):
+    request = _request(("x-forwarded-for", "3.3.3.3"), *headers)
+
+    assert delivery_identity(request, _settings()).turn_id == turn_id

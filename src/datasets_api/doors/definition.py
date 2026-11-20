@@ -97,6 +97,7 @@ from datasets_api.current import (
     serve_fresh_head,
     without_pointers,
 )
+from datasets_api.delivery import record_manifest
 from datasets_api.deps import MATERIALISE_RAW_FETCH_GUARD_ROWS, Deps, DepsCell
 from datasets_api.door_executor import DoorExecutor
 from datasets_api.doors.mint_errors import MintBackpressure, classify_mint_exception
@@ -682,7 +683,7 @@ async def _get_definition_impl(id: str, request: Request, *, deps: Deps) -> JSON
     trace_id = get_trace_id()
     request_deps = request_definition_deps(deps)
     submitted_resource: OperationResource | None = None
-    with door_call("definition", logger=logger) as call:
+    with door_call("definition", logger=logger, delivers=True) as call:
         try:
             head_answer = await _run_retrieval(
                 deps.read_executor,
@@ -709,6 +710,7 @@ async def _get_definition_impl(id: str, request: Request, *, deps: Deps) -> JSON
                 if isinstance(head_answer, HeadRead)
                 else head_answer
             )
+            record_manifest(manifest)
         except OperationSubmitted as submitted:
             # Treat a 202 submission as a successful `door_call` outcome.
             submitted_resource = operation_submitted_resource(submitted, now=deps.now())
@@ -724,9 +726,11 @@ async def _get_definition_impl(id: str, request: Request, *, deps: Deps) -> JSON
             },
         )
     # The links name the requested id, so a click honours the revocations this request did.
-    return JSONResponse(
-        linked_under(manifest, id).model_dump(mode="json", exclude_none=True),
-        headers=no_store_headers(server_timing=call.server_timing),
+    return call.delivered(
+        JSONResponse(
+            linked_under(manifest, id).model_dump(mode="json", exclude_none=True),
+            headers=no_store_headers(server_timing=call.server_timing),
+        )
     )
 
 
