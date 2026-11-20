@@ -833,9 +833,8 @@ def test_list_head_versions_reads_each_link_with_every_head_a_write_named(live_s
     head kept beside those named before, even where the upsert kept the linked digest, and a raw
     version's write names none. `list_head_versions` returns the subject's versions recorded
     from the head or linking a file a write from it named, newest first, each with every link
-    under it and the heads that link records, whether or not the file has a location, and
-    `link_heads` every head the links under one version record. A link holding a head cannot be
-    deleted."""
+    under it and the heads that link records, whether or not the file has a location. A link
+    holding a head cannot be deleted."""
     subject_id = f"spec:test-live-head-{uuid4().hex}"
     other_id = f"spec:test-live-head-other-{uuid4().hex}"
     digests = {name: f"sha256:test-live-head-{name}-{uuid4().hex}" for name in "abcde"}
@@ -925,8 +924,13 @@ def test_list_head_versions_reads_each_link_with_every_head_a_write_named(live_s
     assert listed("cv_h1") == [("cv_d4", "cv_h1", links((groupby, []))), d3, d1]
     assert listed("cv_h2") == [d3, ("cv_d2", "cv_h2", links((groupby, ["cv_h2"]))), d1]
     assert lister.list_head_versions(subject_id, head_content_version="cv_none") == []
-    assert lister.link_heads(subject_id, content_version="cv_h1") == frozenset()
-    assert lister.link_heads(subject_id, content_version="cv_d1") == {"cv_h1", "cv_h2"}
+    with live_store.transaction() as tx:
+        raw = tx.fetch_all(
+            "SELECT head_content_version FROM datasets.version_artifact_head "
+            "WHERE subject_id = %s AND content_version = %s",
+            (subject_id, "cv_h1"),
+        )
+    assert raw == []
     # The rule for links naming no head rests on no link being deleted.
     with pytest.raises(pg8000.exceptions.Error), live_store.transaction() as tx:
         tx.execute(

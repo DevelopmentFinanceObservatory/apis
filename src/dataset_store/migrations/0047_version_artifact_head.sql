@@ -10,19 +10,18 @@
 -- transaction, and a row already there stays. A link under a raw version, and every link written
 -- before this table or by the previous image, has no row. The frame refresh reads the rows by
 -- head through `version_artifact_head_by_head`
--- (`datasets_api.version_store.LiveVersionLister.list_head_versions`) and counts a link with no
--- row only by the rule `datasets_api.doors.refresh` states, which rests on no link ever being
--- deleted. No code path deletes a `version_artifact` row, and the foreign key refuses to delete
--- a link that holds a row here. The refresh also reads a raw version's rows by the primary key
--- to tell whether a file under it was made from another head.
+-- (`datasets_api.version_store.LiveVersionLister.list_head_versions`). By the rule
+-- `datasets_api.doors.refresh` states, a version's links also count for its recorded base when
+-- they record one minting between them, which covers links written before this table and rests
+-- on no link ever being deleted. No code path deletes a `version_artifact` row, and the foreign
+-- key refuses to delete a link that holds a row here.
 --
 -- 0001_bootstrap.sql's ALTER DEFAULT PRIVILEGES covers this table for the runtime role, and
 -- 0012_worker_role.sql makes the worker role a member of it, so this migration needs no GRANT
--- statements of its own. The foreign key
--- takes SHARE ROW EXCLUSIVE on `version_artifact` for the moment the empty table is created;
--- `lock_timeout` fails it after five seconds rather than queueing every later write behind it.
--- The previous image never reads or writes the table. Re-running this migration changes
--- nothing.
+-- statements of its own. The foreign key takes SHARE ROW EXCLUSIVE on `version_artifact` for the
+-- moment the empty table is created; `lock_timeout` fails it after five seconds rather than
+-- queueing every later write behind it. The previous image never reads or writes the table.
+-- Re-running this migration changes nothing.
 
 SET LOCAL lock_timeout = '5s';
 

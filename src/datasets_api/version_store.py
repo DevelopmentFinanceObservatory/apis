@@ -859,29 +859,6 @@ class LiveVersionLister:
             for row in rows
         ]
 
-    def link_heads(self, subject_id: str, *, content_version: str) -> frozenset[str]:
-        """Every head a link under the version records as making it
-        (`datasets.version_artifact_head`), read in one statement."""
-        failure: str | None = None
-        sqlstate: str | None = None
-        rows: list[Mapping[str, object]] = []
-        try:
-            with self._store.transaction() as tx:
-                rows = tx.fetch_all(
-                    "SELECT DISTINCT head_content_version FROM datasets.version_artifact_head "
-                    "WHERE subject_id = %s AND content_version = %s",
-                    (subject_id, content_version),
-                )
-        except Exception as exc:
-            failure = (
-                f"reading link heads subject_id {subject_id!r} content_version "
-                f"{content_version!r} failed: {safe_diagnostics(exc)}"
-            )
-            sqlstate = extract_sqlstate(exc)
-        if failure is not None:
-            raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
-        return frozenset(cast(str, row["head_content_version"]) for row in rows)
-
     def list_servable_versions(
         self, subject_ids: Sequence[str], *, after: VersionsPageKey | None, limit: int
     ) -> list[ListedVersion]:

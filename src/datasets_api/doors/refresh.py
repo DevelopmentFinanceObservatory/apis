@@ -55,19 +55,22 @@ Concurrent refreshes and definition reads of one dataset share one rebuild
 For a derived frame the answer is the derived version under the current head with the same
 minting options. The door looks it up among the dataset's stored versions and, when none is
 recorded yet, mints it from the head's stored frame as a head-hit groupby read does. A version
-is recorded under a minting from the head when a file of that minting linked under it names the
-head among those it was made from (`datasets.version_artifact_head`): a record keeps the base
-it was first recorded from, and a render from another head that makes the same version links
-its file there. A link naming no head, as every link written before links named heads does,
-counts for the head only when the version's record names that head as its base and every file
-of minting options linked under the version records one minting, since a version's record and
-its first link are written in one transaction and no code path deletes a link
-(`datasets.version_artifact`), so that minting made it from its base. The named frame answers
-when it is recorded under the minting from the head, and otherwise the newest version that is.
-A frame of one minting with no party-totals cut that leaves a raw version unchanged answers at
-that version's own head with its own stored frame while no link under the version names a head,
-since files are then linked under it only from its own frame. A cut is decided by the code
-index at each render, so a frame of a cut is made again.
+record keeps the base it was first recorded from, and a render from another head that makes
+the same version links its file there, so the door counts a stored version V as minting m made
+from raw head H in three cases only:
+
+1. V is H and a file recording m is linked under H. Cutting cut rows leaves them, and
+   collapsing collapsed rows leaves them, so an m that made H's rows from any frame makes them
+   from H.
+2. A file recording m is linked under V and names H among the heads it was made from
+   (`datasets.version_artifact_head`).
+3. V's record names H as its base and every file of minting options linked under V records
+   the one minting m. A version's record and its first link are written in one transaction,
+   and no code path deletes a link (`datasets.version_artifact`), so m made V from its base.
+
+With none on record the door renders m from H's stored frame, which records case 1 or 2. The
+code index is outside the rule: a record stands until the raw head moves. Among the versions
+on record the named frame answers, and otherwise the newest.
 
 A stored frame answers only while its stored frame file (`render.servable_frame_location`) is
 servable, for the plain rendering and a derived one alike, since Presentation loads the frame
@@ -276,20 +279,14 @@ def refresh_can_answer(*, stored: StoredRendering, target: StoredRendering) -> b
 
 def _head_mintings(version: HeadVersion, *, head_content_version: str) -> list[MintingOptions]:
     """The minting options the files linked under `version` record as made from
-    `head_content_version`: each link naming that head, and each link naming none while
-    `version`'s record names that head as its base and every file of minting options linked
-    under it records one minting, the rule the module docstring states for links written before
-    links named heads."""
+    `head_content_version`, by cases 2 and 3 of the rule the module docstring states: each link
+    naming that head, and every link while `version`'s record names that head as its base and
+    every file of minting options linked under it records one minting."""
     links = version.links
-    headless_count = (
-        version.base_content_version == head_content_version
-        and len(ordered_mintings(recorded_mintings(link.rendering for link in links))) == 1
-    )
-    return recorded_mintings(
-        link.rendering
-        for link in links
-        if head_content_version in link.heads or (headless_count and not link.heads)
-    )
+    every = recorded_mintings(link.rendering for link in links)
+    if version.base_content_version == head_content_version and len(ordered_mintings(every)) == 1:
+        return every
+    return recorded_mintings(link.rendering for link in links if head_content_version in link.heads)
 
 
 class _DerivedVersions:
@@ -439,15 +436,6 @@ def _rendering_frame(
             content_version=rendered.content_version,
         )
     return _servable_frame(spec_id=spec_id, content_version=rendered.content_version, deps=deps)
-
-
-def _link_heads(*, spec_id: str, content_version: str, deps: DefinitionDeps) -> frozenset[str]:
-    """Every head a link under the version names (`VersionLister.link_heads`), none without a
-    version lister."""
-    lister = deps.version_lister
-    if lister is None:
-        return frozenset()
-    return lister.link_heads(spec_id, content_version=content_version)
 
 
 def _records_every(
@@ -640,15 +628,12 @@ def answer_frame_refresh(
         if (
             not rendering.ambiguous
             and minting is not None
-            and not minting.without_party_totals
             and not rendering.collapsed
             and named_spec_id == spec_id
             and head_content_version == content_version
-            and not _link_heads(spec_id=spec_id, content_version=content_version, deps=deps)
         ):
-            # The named raw version is the head, and with no link under it naming a head its
-            # files were linked only from its own frame, so the minting leaves this head
-            # unchanged.
+            # Case 1 of the rule: the named raw version is the head, and a file of the minting
+            # is linked under it.
             stored = _servable_frame(spec_id=spec_id, content_version=content_version, deps=deps)
             if stored is not None:
                 return stored.manifest
