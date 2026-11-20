@@ -625,7 +625,13 @@ async def _search(
     found.extend(hit for _, hit in sorted(scored, key=lambda pair: -pair[0]))
     hits: dict[str, SchemaSearchHit] = {}
     for hit in found:
-        hits.setdefault(hit.ref, hit)
+        kept = hits.get(hit.ref)
+        if kept is None:
+            hits[hit.ref] = hit
+        elif hit.types and not kept.types:
+            # Every source names the same node, so a type one resolver gives it holds for the
+            # hit kept at the best place, and the graph check below does not drop it untyped.
+            hits[hit.ref] = kept.model_copy(update={"types": hit.types})
 
     unread = [ref for ref, hit in hits.items() if hit.via != "dcid"]
     if unread:

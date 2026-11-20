@@ -38,6 +38,7 @@ _MIXER = {
     "Count_Person": _node("Population", _SV, "dc/base/Census"),
     "dc/topic/Live": _node("Health topic", "Topic", "dc/base/Topics"),
     "dfo/DescOnly": {"description": (ArcTarget(value="Only a description", literal=True),)},
+    "sv/LabelOnly": {"name": (ArcTarget(value="Named, untyped", literal=True),)},
     **{
         dcid: _node(dcid, _SV, "dfo/WHO")
         for dcid in ("sv/untyped", "sv/second", "sv/0", "sv/1", "sv/2")
@@ -308,6 +309,26 @@ def test_indicator_hits_merge_by_score_above_the_floor(serve_catalogue, shared_r
         ("sv/0", 0.5),
         ("sv/second", 0.5),
         ("sv/2", 0.45),
+    ]
+
+
+def test_a_ref_typed_by_any_source_survives_an_untyped_better_score(
+    serve_catalogue, shared_resolver
+):
+    """A ref one source types `StatisticalVariable` and another, scoring higher, leaves untyped
+    stays when the graph names it but gives no type."""
+    serve_catalogue(FakeCatalogue())
+    answers: dict[tuple[str, bool], _Answer] = {
+        ("custom_only", False): [("sv/LabelOnly", _SV, 0.4)],
+        ("custom_only", True): [("sv/LabelOnly", None, 0.9)],
+    }
+
+    with _client(shared_resolver, _Indicators(answers)) as client:
+        response = client.get(_ROUTE, params={"q": "Kenya", "base": 0, "un": 1})
+
+    assert response.status_code == 200, response.text
+    assert [(hit["ref"], hit["score"]) for hit in response.json()["hits"]][1:] == [
+        ("sv/LabelOnly", 0.9)
     ]
 
 
