@@ -830,7 +830,7 @@ def test_run_resolve_refreshes_the_generation_once():
     )
 
     response = asyncio.run(
-        resolve_door._run_resolve(deps, ResolveRequest(texts=["Kenya"]), policy=None)
+        resolve_door.run_resolve(deps, ResolveRequest(texts=["Kenya"]), policy=None)
     )
 
     assert calls == [None]
