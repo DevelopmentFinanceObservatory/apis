@@ -31,7 +31,7 @@ structured fields (`dfo_platform.cloud_logging.JSON_FIELDS_ATTR`) and a short me
   bare long CSV) stores no row count of its own, so its `rows_served` is `None`. A call that
   records none, including a file whose row count raised, still logs its line with null;
 - `revalidated`, true on a definition read answered 304 to a matching `If-None-Match`, which
-  sent no body, so a count of deliveries can leave revalidations out, and false otherwise.
+  sends no body and so can be left out of a count of deliveries, and false otherwise.
 """
 
 from __future__ import annotations

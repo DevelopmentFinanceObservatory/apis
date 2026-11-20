@@ -30,7 +30,7 @@ during an outage each spec costs one short create per interval.
 
 A check that failed for good (a deterministic refusal, `over_ceiling` for one) stays `failed`
 until retention deletes it, so the read sends the call to the work executor, which judges the
-head in the request and answers the refusal, as the GET did before checks moved to the worker.
+head in the request and answers the refusal.
 A full backlog, a store error, or a failed task create logs and answers `stale`; none of them
 fails the read.
 """
@@ -69,11 +69,12 @@ type HeadCheckState = Literal["pending", "stale", "failed"]
 # The `request_identity` key that marks an operation as a head check.
 HEAD_CHECK_MARKER = "head_check"
 
-# The rendering every head check carries: a bare parquet file in the frame layout, written from
-# the frame as reshaped with no name read, the cheapest file a rebuild can leave on the head.
+# The rendering every head check carries, a bare parquet file in the frame layout written from
+# the frame as reshaped with no name read. It is the cheapest file a rebuild can leave on the head.
 HEAD_CHECK_OPTIONS = MintOptions(format="parquet", bundle=False, layout="frame")
 
-# The share of `operation_backlog_max` a new head check leaves free: half of it.
+# A new head check leaves `1 / HEAD_CHECK_HEADROOM_SHARE` of `operation_backlog_max` free, which
+# is half of it.
 HEAD_CHECK_HEADROOM_SHARE = 2
 
 # The longest a read waits on its check's task create. A Cloud Tasks create answers in well
