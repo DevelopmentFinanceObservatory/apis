@@ -38,6 +38,7 @@ _MIXER = {
     "Count_Person": _node("Population", _SV, "dc/base/Census"),
     "dc/topic/Live": _node("Health topic", "Topic", "dc/base/Topics"),
     "dfo/DescOnly": {"description": (ArcTarget(value="Only a description", literal=True),)},
+    "sv/LabelOnly": {"name": (ArcTarget(value="Named, untyped", literal=True),)},
     **{
         dcid: _node(dcid, _SV, "dfo/WHO")
         for dcid in ("sv/untyped", "sv/second", "sv/0", "sv/1", "sv/2")
@@ -76,14 +77,16 @@ class _Reader(FakeGraphNodeReader):
         return super().node_all_arc_targets_many(dcids, deadline=deadline)
 
 
-type _Answer = Sequence[tuple[str, str | list[str] | None] | dict]
+type _Answer = Sequence[
+    tuple[str, str | list[str] | None] | tuple[str, str | list[str] | None, float] | dict
+]
 
 
 class _Indicators:
     """Indicator resolves answered from `answers`, keyed by `(target, un)`, each a list of
-    `(dcid, typeOf)` where a `None` typeOf leaves the member out, or a raw candidate. A key in `failing` raises its
-    exception, and a key in `slow` sleeps that many seconds first. `calls` records
-    `(query, target, un)`."""
+    `(dcid, typeOf)` scored 0.9 or `(dcid, typeOf, score)`, where a `None` typeOf leaves the
+    member out, or a raw candidate. A key in `failing` raises its exception, and a key in `slow`
+    sleeps that many seconds first. `calls` records `(query, target, un)`."""
 
     def __init__(
         self,
@@ -111,8 +114,8 @@ class _Indicators:
             if isinstance(entry, dict):
                 candidates.append(entry)
                 continue
-            dcid, type_of = entry
-            candidate: dict = {"dcid": dcid, "metadata": {"score": "0.9", "sentence": "s"}}
+            dcid, type_of, score = entry if len(entry) == 3 else (*entry, 0.9)
+            candidate: dict = {"dcid": dcid, "metadata": {"score": str(score), "sentence": "s"}}
             if type_of is not None:
                 candidate["typeOf"] = type_of if isinstance(type_of, list) else [type_of]
             candidates.append(candidate)
@@ -166,6 +169,7 @@ def test_hits_come_dcid_then_name_then_indicator_each_once_and_are_cached(
                 "types": ["Country"],
                 "declared_by": "base",
                 "via": "name",
+                "score": None,
             },
             {
                 "ref": "dfo/OOP",
@@ -173,6 +177,7 @@ def test_hits_come_dcid_then_name_then_indicator_each_once_and_are_cached(
                 "types": [_SV],
                 "declared_by": "dfo",
                 "via": "indicator",
+                "score": 0.9,
             },
             {
                 "ref": "undata/sdg/SH_OOP",
@@ -180,6 +185,7 @@ def test_hits_come_dcid_then_name_then_indicator_each_once_and_are_cached(
                 "types": [_SV],
                 "declared_by": "un_system",
                 "via": "indicator",
+                "score": 0.9,
             },
         ],
         "unavailable": [],
@@ -216,9 +222,11 @@ def test_a_whole_dcid_is_the_first_hit_where_a_read_holds_it(
 
     assert response.status_code == 200, response.text
     dcid_hits = [
-        (hit["ref"], hit["declared_by"]) for hit in response.json()["hits"] if hit["via"] == "dcid"
+        (hit["ref"], hit["declared_by"], hit["score"])
+        for hit in response.json()["hits"]
+        if hit["via"] == "dcid"
     ]
-    assert dcid_hits == ([] if first is None else [first])
+    assert dcid_hits == ([] if first is None else [(*first, None)])
     assert ((query,) in mixer.batches + un_reader.batches) == read
 
 
@@ -277,6 +285,50 @@ def test_an_indicator_leg_keeps_its_first_valid_statvars_and_untyped_candidates(
         ("sv/untyped", [_SV]),
         ("sv/second", [_SV]),
         ("sv/0", [_SV]),
+    ]
+
+
+def test_indicator_hits_merge_by_score_above_the_floor(serve_catalogue, shared_resolver):
+    """Every indicator leg's hits merge by descending score after the name hit, a tie keeping
+    leg order, a candidate under the floor is dropped, and a ref keeps its first place."""
+    serve_catalogue(FakeCatalogue())
+    answers: dict[tuple[str, bool], _Answer] = {
+        ("custom_only", False): [("sv/0", _SV, 0.5), ("sv/1", _SV, 0.2), ("sv/2", _SV, 0.45)],
+        ("base_only", False): [("Count_Person", _SV, 0.8), ("sv/second", _SV, 0.5)],
+        ("custom_only", True): [("undata/sdg/SH_OOP", _SV, 0.6), ("sv/0", _SV, 0.4)],
+    }
+
+    with _client(shared_resolver, _Indicators(answers)) as client:
+        response = client.get(_ROUTE, params={"q": "Kenya", "base": 1, "un": 1})
+
+    assert response.status_code == 200, response.text
+    assert [(hit["ref"], hit["score"]) for hit in response.json()["hits"]] == [
+        ("country/KEN", None),
+        ("Count_Person", 0.8),
+        ("undata/sdg/SH_OOP", 0.6),
+        ("sv/0", 0.5),
+        ("sv/second", 0.5),
+        ("sv/2", 0.45),
+    ]
+
+
+def test_a_ref_typed_by_any_source_survives_an_untyped_better_score(
+    serve_catalogue, shared_resolver
+):
+    """A ref one source types `StatisticalVariable` and another, scoring higher, leaves untyped
+    stays when the graph names it but gives no type."""
+    serve_catalogue(FakeCatalogue())
+    answers: dict[tuple[str, bool], _Answer] = {
+        ("custom_only", False): [("sv/LabelOnly", _SV, 0.4)],
+        ("custom_only", True): [("sv/LabelOnly", None, 0.9)],
+    }
+
+    with _client(shared_resolver, _Indicators(answers)) as client:
+        response = client.get(_ROUTE, params={"q": "Kenya", "base": 0, "un": 1})
+
+    assert response.status_code == 200, response.text
+    assert [(hit["ref"], hit["score"]) for hit in response.json()["hits"]][1:] == [
+        ("sv/LabelOnly", 0.9)
     ]
 
 
