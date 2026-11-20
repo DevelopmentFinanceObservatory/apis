@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import pytest
+from dfo_spec_kit.registry import FLOW_ROLE_AXES
 
+from dfo_platform.roles import AXIS_LABELS
 from materialise.roles import (
     KNOWN_ROLE_NAMES,
     axis_ambiguous_for,
@@ -13,18 +15,14 @@ from materialise.roles import (
 )
 
 
-def test_origin_role_names_map_to_origin() -> None:
-    assert axis_for_role("provider") == "origin"
-    assert axis_for_role("creditor") == "origin"
-    assert axis_for_role("source") == "origin"
-    assert axis_for_role("financingProvider") == "origin"
+@pytest.mark.parametrize(("role", "axis"), sorted(FLOW_ROLE_AXES.items()))
+def test_every_kit_role_maps_to_its_kit_axis(role: str, axis: str) -> None:
+    assert axis_for_role(role) == axis
+    assert role in KNOWN_ROLE_NAMES
 
 
-def test_destination_role_names_map_to_destination() -> None:
-    assert axis_for_role("recipient") == "destination"
-    assert axis_for_role("debtor") == "destination"
-    assert axis_for_role("target") == "destination"
-    assert axis_for_role("financingRecipient") == "destination"
+def test_the_axis_labels_are_the_kit_axes() -> None:
+    assert AXIS_LABELS == set(FLOW_ROLE_AXES.values()) == {"origin", "destination"}
 
 
 def test_observation_about_has_no_axis() -> None:
