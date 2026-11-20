@@ -48,7 +48,11 @@ else none. The surface is the `x-dfo-surface` header beside a valid principal, c
 principal vouches for is `direct`, whatever it claims. The client is the `<name>/<version>`
 product token of `X-DFO-Client`. The user agent is a vouched request's `x-dfo-user-agent`, the
 end client's User-Agent an upstream forwards, else the request's own User-Agent, and none for a
-`conversation:` caller. The turn id is the `x-dfo-turn` header (`tr_` and 16 lowercase hex
+`conversation:` caller. The MCP client is a vouched request's `x-dfo-mcp-client`, the name the end
+client gave in its MCP `initialize` request (`Anthropic/ClaudeAI`, `openai-mcp`, `claude-code`),
+which data-mcp and analysis-mcp forward for public callers. It is kept when the single value fully
+matches `_MCP_CLIENT_NAME`, and is none on an unvouched request and for a `conversation:` caller.
+The turn id is the `x-dfo-turn` header (`tr_` and 16 lowercase hex
 digits) the Studio harness sends for the turn that caused the request, kept only on a vouched
 `conversation:` caller's request when the single value fully matches, else none.
 """
@@ -369,6 +373,10 @@ SURFACE_HEADER = "x-dfo-surface"
 """The surface an upstream names for a request it vouches for, one of `DeliverySurface`."""
 USER_AGENT_HEADER = "x-dfo-user-agent"
 """The end client's User-Agent an upstream forwards for a request it vouches for."""
+MCP_CLIENT_HEADER = "x-dfo-mcp-client"
+"""The MCP `initialize` client name an upstream forwards for a request it vouches for."""
+_MCP_CLIENT_NAME = re.compile(r"[A-Za-z0-9 ._/-]{1,64}")
+"""The MCP client names a delivery line keeps, the same pattern the analytics parse applies."""
 MINT_ADMISSION_HEADER = "X-DFO-Mint-Admission"
 """`background` on a mint that warms data no caller waits on yet (`datasets_api.background_admission`)."""
 MINT_ADMISSION_BACKGROUND = "background"
@@ -407,6 +415,8 @@ class DeliveryIdentity:
     clipped (see the module docstring). `admission` is `background` for a request sent with
     `X-DFO-Mint-Admission: background`, else `foreground`. `turn_id` is the `x-dfo-turn` value
     of a vouched `conversation:` caller's request when it fully matches `tr_<16 hex digits>`,
+    else `None`. `mcp_client` is a vouched non-`conversation:` request's `x-dfo-mcp-client`, the
+    end client's MCP `initialize` name, when the single value fully matches `_MCP_CLIENT_NAME`,
     else `None`.
     """
 
@@ -418,6 +428,7 @@ class DeliveryIdentity:
     user_agent: str | None
     admission: Admission
     turn_id: str | None
+    mcp_client: str | None
 
 
 UNRESOLVED_IDENTITY = DeliveryIdentity(
@@ -429,6 +440,7 @@ UNRESOLVED_IDENTITY = DeliveryIdentity(
     user_agent=None,
     admission="foreground",
     turn_id=None,
+    mcp_client=None,
 )
 """The identity of a delivery made outside a request `dfo_platform.app` resolved."""
 
@@ -489,6 +501,12 @@ def delivery_identity(request: Request, settings: CallerSettings) -> DeliveryIde
         turn_id = turn if conversation and turn and _TURN_ID.fullmatch(turn) else None
         forwarded = _clean(request.headers.get(USER_AGENT_HEADER, "")) if vouched else ""
         own = _clean(request.headers.get("user-agent", ""))
+        named_client = (_single(request, MCP_CLIENT_HEADER) or "").strip()
+        mcp_client = (
+            named_client
+            if vouched and not conversation and _MCP_CLIENT_NAME.fullmatch(named_client)
+            else None
+        )
         return DeliveryIdentity(
             caller=caller,
             caller_source=source,
@@ -498,6 +516,7 @@ def delivery_identity(request: Request, settings: CallerSettings) -> DeliveryIde
             user_agent=None if conversation else (forwarded or own or None),
             admission=admission,
             turn_id=turn_id,
+            mcp_client=mcp_client,
         )
     except Exception as exc:
         # A log line's identity must not fail the request it describes.

@@ -287,6 +287,7 @@ def test_the_delivery_identity_carries_the_upstream_client_token_and_admission()
         user_agent=None,
         admission="background",
         turn_id=None,
+        mcp_client=None,
     )
 
 
@@ -368,3 +369,45 @@ def test_the_delivery_turn_id_is_kept_only_for_a_vouched_conversation_with_a_val
     request = _request(("x-forwarded-for", "3.3.3.3"), *headers)
 
     assert delivery_identity(request, _settings()).turn_id == turn_id
+
+
+_MCP_CLIENT = "Anthropic/ClaudeAI"
+
+
+@pytest.mark.parametrize(
+    ("headers", "mcp_client"),
+    [
+        ([_VOUCHED, ("x-dfo-caller", _NAMED), ("x-dfo-mcp-client", _MCP_CLIENT)], _MCP_CLIENT),
+        ([_VOUCHED, ("x-dfo-caller", _NAMED), ("x-dfo-mcp-client", "claude-code")], "claude-code"),
+        ([("x-dfo-caller", _NAMED), ("x-dfo-mcp-client", _MCP_CLIENT)], None),
+        ([_VOUCHED, ("x-dfo-caller", _CONVERSATION), ("x-dfo-mcp-client", _MCP_CLIENT)], None),
+        ([_VOUCHED, ("x-dfo-caller", _NAMED), ("x-dfo-mcp-client", "a" * 65)], None),
+        ([_VOUCHED, ("x-dfo-caller", _NAMED), ("x-dfo-mcp-client", "Claude<script>")], None),
+        (
+            [
+                _VOUCHED,
+                ("x-dfo-caller", _NAMED),
+                ("x-dfo-mcp-client", _MCP_CLIENT),
+                ("x-dfo-mcp-client", "openai-mcp"),
+            ],
+            None,
+        ),
+        ([_VOUCHED, ("x-dfo-caller", _NAMED)], None),
+    ],
+    ids=[
+        "kept",
+        "bare-name",
+        "unvouched",
+        "conversation",
+        "too-long",
+        "outside-pattern",
+        "repeated",
+        "absent",
+    ],
+)
+def test_the_delivery_mcp_client_is_kept_only_beside_the_principal_for_a_public_caller(
+    headers: list[tuple[str, str]], mcp_client: str | None
+):
+    request = _request(("x-forwarded-for", "3.3.3.3"), *headers)
+
+    assert delivery_identity(request, _settings()).mcp_client == mcp_client

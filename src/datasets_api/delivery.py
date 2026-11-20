@@ -16,7 +16,7 @@ The line carries the request's `dfo_platform.caller.DeliveryIdentity` beside the
 structured fields (`dfo_platform.cloud_logging.JSON_FIELDS_ATTR`) and a short message:
 
 - `door`, `trace_id`, and `admission`, `caller`, `caller_source`, `upstream`, `surface`,
-  `client`, `user_agent`, `turn_id` from the identity;
+  `client`, `user_agent`, `turn_id`, `mcp_client` from the identity;
 - `spec_id` (an `ops_` id on the derived manifest, derived file and analysis doors),
   `content_version`, and `export_id` on the export doors;
 - `measures`, the sorted bare StatVar dcids of the manifest's `resolved_stat_vars`, only where
@@ -310,6 +310,7 @@ def log_delivery(door: str, delivery: Delivery) -> None:
             "client": identity.client,
             "user_agent": identity.user_agent,
             "turn_id": identity.turn_id,
+            "mcp_client": identity.mcp_client,
             "spec_id": delivery.spec_id,
             "content_version": delivery.content_version,
             "export_id": delivery.export_id,
@@ -323,7 +324,8 @@ def log_delivery(door: str, delivery: Delivery) -> None:
         }
         logger.info(
             "datasets.delivery door=%s spec_id=%s content_version=%s surface=%s "
-            "caller_source=%s admission=%s measure_count=%s rows_served=%s revalidated=%s",
+            "caller_source=%s admission=%s measure_count=%s rows_served=%s revalidated=%s "
+            "mcp_client=%s",
             door,
             delivery.spec_id,
             delivery.content_version,
@@ -333,6 +335,7 @@ def log_delivery(door: str, delivery: Delivery) -> None:
             delivery.measure_count,
             delivery.rows_served,
             delivery.revalidated,
+            identity.mcp_client,
             extra={JSON_FIELDS_ATTR: fields},
         )
     except Exception as exc:

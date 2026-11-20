@@ -57,6 +57,7 @@ _FIELDS = {
     "client",
     "user_agent",
     "turn_id",
+    "mcp_client",
     "spec_id",
     "content_version",
     "export_id",
@@ -216,6 +217,38 @@ def test_the_line_carries_the_turn_a_studio_caller_names(
     (line,) = _lines(caplog)
     assert line["turn_id"] == turn
     assert line["turn_id"] != line["trace_id"]
+
+
+@pytest.mark.parametrize(
+    ("caller", "mcp_client"),
+    [("ip:" + "ab" * 16, "Anthropic/ClaudeAI"), (_CONVERSATION, None)],
+    ids=["public-caller", "conversation"],
+)
+@pytest.mark.usefixtures("vouching")
+def test_the_line_names_the_mcp_client_a_public_caller_used(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    caller: str,
+    mcp_client: str | None,
+):
+    rig = _Rig("fetched", monkeypatch, dataset="place")
+    frame = rig.frame
+
+    with caplog.at_level(logging.INFO, logger=_LOGGER):
+        resp = rig.client.get(
+            f"/api/datasets/{frame['spec_id']}/{frame['content_version']}",
+            headers={
+                "x-dfo-caller-principal": _PRINCIPAL,
+                "x-dfo-caller": caller,
+                "x-dfo-mcp-client": "Anthropic/ClaudeAI",
+            },
+        )
+
+    assert resp.status_code == 200, resp.text
+    (line,) = _lines(caplog)
+    assert line["mcp_client"] == mcp_client
+    (record,) = [r for r in caplog.records if r.name == _LOGGER]
+    assert record.getMessage().endswith(f"mcp_client={mcp_client}")
 
 
 @pytest.mark.usefixtures("vouching")
