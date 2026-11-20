@@ -110,9 +110,10 @@ def test_a_link_to_a_revoked_version_refuses_snapshot_revoked_and_signs_nothing(
     assert store.signings == []
 
 
-def test_a_link_to_a_servable_artifact_redirects_to_a_url_signed_for_at_most_five_minutes():
+@pytest.mark.parametrize("tier", [Tier.working, Tier.pinned])
+def test_a_link_to_a_servable_artifact_redirects_to_a_url_signed_for_at_most_five_minutes(tier):
     store = FakeArtifactStore()
-    location = _store_and_locate(store, b"csv-bytes")
+    location = _store_and_locate(store, b"csv-bytes", tier=tier)
     reader = FakeSnapshotReader(
         versions={("spec_a", "cv1"): _version()},
         locations={("spec_a", "cv1"): [location]},
@@ -123,11 +124,31 @@ def test_a_link_to_a_servable_artifact_redirects_to_a_url_signed_for_at_most_fiv
     )
 
     assert resp.status_code == 302, resp.text
-    assert resp.headers["location"] == f"fake://artifact/working/{location.artifact_digest}"
+    assert resp.headers["location"] == f"fake://artifact/{tier.value}/{location.artifact_digest}"
     assert "no-store" in resp.headers["cache-control"]
-    [(digest, tier, object_name, ttl)] = store.signings
-    assert (digest, tier, object_name) == (location.artifact_digest, Tier.working, digest)
+    assert resp.headers["x-dfo-artifact-tier"] == tier.value
+    [(digest, signed_tier, object_name, ttl)] = store.signings
+    assert (digest, signed_tier, object_name) == (location.artifact_digest, tier, digest)
     assert ttl <= _FIVE_MINUTES
+
+
+def test_a_digest_linked_working_and_pinned_under_two_rendering_keys_signs_the_pinned_object():
+    store = FakeArtifactStore()
+    working = _store_and_locate(store, b"csv-bytes", rendering_key="a-first")
+    pinned = _store_and_locate(store, b"csv-bytes", tier=Tier.pinned, rendering_key="b-second")
+    assert working.artifact_digest == pinned.artifact_digest
+    reader = FakeSnapshotReader(
+        versions={("spec_a", "cv1"): _version()},
+        locations={("spec_a", "cv1"): [working, pinned]},
+    )
+
+    resp = _files_client(reader, store).get(
+        f"/api/datasets/spec_a/cv1/files/{working.artifact_digest}", follow_redirects=False
+    )
+
+    assert resp.status_code == 302, resp.text
+    assert resp.headers["x-dfo-artifact-tier"] == Tier.pinned.value
+    assert resp.headers["location"] == f"fake://artifact/pinned/{pinned.artifact_digest}"
 
 
 def test_a_link_naming_a_digest_the_version_does_not_link_refuses_artifact_not_found():
@@ -286,6 +307,7 @@ def test_a_link_past_working_retention_renews_the_aged_frame_re_renders_and_redi
     renewed = f"{csv['artifact_digest']}#r1"
     assert artifact_store.renewals == [f"{frame_digest}#r1", renewed]
     assert resp.headers["location"] == f"fake://artifact/working/{renewed}"
+    assert resp.headers["x-dfo-artifact-tier"] == Tier.working.value
     [(digest, _tier, object_name, ttl)] = artifact_store.signings
     assert (digest, object_name) == (csv["artifact_digest"], renewed)
     assert ttl <= _FIVE_MINUTES
@@ -335,6 +357,7 @@ def test_a_link_past_working_retention_whose_object_is_present_renews_it_and_red
     assert renewed == [True]
     assert artifact_store.renewals == [f"{digest}#r1"]
     assert resp.headers["location"] == f"fake://artifact/working/{digest}#r1"
+    assert resp.headers["x-dfo-artifact-tier"] == Tier.working.value
     _media_type, disposition = artifact_store.signed_headers[(Tier.working, digest)]
     assert disposition.endswith(f'.{extension}"')
 

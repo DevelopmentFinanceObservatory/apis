@@ -117,6 +117,7 @@ from datasets_api.codes_exports import (
 from datasets_api.codes_snapshot import ArtifactExpired, SpecNotFound
 from datasets_api.current import DefinitionDeps
 from datasets_api.default_enrichment import resolve_enrichment
+from datasets_api.delivery import record_export
 from datasets_api.deps import Deps
 from datasets_api.derived import DerivedFile, full_recipe_citation, stored_recipe_roots
 from datasets_api.doors.derived import derived_file
@@ -969,6 +970,7 @@ def sign_export(*, export_id: str, current: Deps) -> str:
     if record is None:
         raise ExportNotFound(export_id=export_id)
     body = _servable_facts(record, current=current)
+    record_export(body, served=True)
     return signed_download_url(
         record.artifact_digest,
         tier=Tier.pinned,

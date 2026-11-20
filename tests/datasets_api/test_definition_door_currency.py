@@ -1,6 +1,7 @@
-"""Freshness tests pin when GET routes confirm a stored head by its dependency fingerprint or
-re-materialise it. `_FakeHeadStore` lets tests seed and age heads without waiting on the real
-UTC clock.
+"""Freshness tests pin when the definition routes confirm a stored head by its dependency
+fingerprint or re-materialise it. Past the recheck window `/options` runs that check in the
+request and a GET leaves it to the worker, so the reads past it go through `/options`.
+`_FakeHeadStore` lets tests seed and age heads without waiting on the real UTC clock.
 """
 
 from __future__ import annotations
@@ -99,9 +100,12 @@ def _client(
     artifact_store=None,
     code_index=None,
     coverage=None,
+    operation_store=None,
+    task_client=None,
 ):
     """Builds a definition-door client with live version stores by default. Tests can inject
-    artifact stores, a `CodeIndex`, and coverage fixtures."""
+    artifact stores, a `CodeIndex`, coverage fixtures, and the operation store and task client a
+    head check from a GET is submitted to."""
     version_store = FakeVersionRecordDatasetStore() if with_version_store else None
     if version_store is not None and artifact_store is None:
         artifact_store = _RenderableArtifactStore(
@@ -116,6 +120,8 @@ def _client(
         version_store=version_store,
         code_index=code_index,
         coverage=coverage,
+        operation_store=operation_store,
+        task_client=task_client,
     )
 
 
@@ -384,7 +390,15 @@ def _content_fields(body: dict) -> dict:
     return {k: body.get(k) for k in _CONTENT_FIELDS}
 
 
-# --- The definition GET: fresh -> within interval -> past interval ---
+# --- The head rule: fresh -> within interval -> past interval ---
+# Past the recheck window a GET serves the head and checks it on the worker
+# (`test_worker_e2e`), so these reads past it go through `/options`, which runs the head rule in
+# the request.
+
+
+def _checked(client, spec_id: str):
+    """A read of `spec_id` that runs the head rule in the request."""
+    return client.get(f"/api/datasets/{spec_id}/options")
 
 
 def test_spec_currency_sequence():
@@ -432,7 +446,7 @@ def test_spec_currency_sequence():
     head_store.age_head(spec_id, age=_PAST_INTERVAL)
     materialised_at_before_third = head_store.head_for(spec_id).materialised_at
     graph_calls_before_third = dict(graph.calls)
-    third = client.get(f"/api/datasets/{spec_id}")
+    third = _checked(client, spec_id)
     assert third.status_code == 200, third.text
     third_body = third.json()
     assert third_body["trace"]["served_from"] == "head"
@@ -441,7 +455,11 @@ def test_spec_currency_sequence():
         third_body["trace"]["confirmed_at"] == head_store.head_for(spec_id).confirmed_at.isoformat()
     )
     assert head_store.head_for(spec_id).materialised_at == materialised_at_before_third
-    assert _content_fields(third_body) == _content_fields(first_body)
+    assert third_body["content_version"] == first_body["content_version"]
+    # The confirmed head serves the GET with the content it served before.
+    confirmed = client.get(f"/api/datasets/{spec_id}")
+    assert confirmed.headers["x-dfo-freshness"] == "current"
+    assert _content_fields(confirmed.json()) == _content_fields(first_body)
     # Rehydrating the members reads the StatVar's arcs; the fingerprint is one more read.
     assert graph.calls["node_arcs_many"] == graph_calls_before_third["node_arcs_many"] + 1
     assert (
@@ -458,7 +476,7 @@ def test_spec_currency_sequence():
         stat_var_ref=_STAT_VAR_REF, obs_value="2000", period="2021"
     )
     graph_calls_before_fourth = dict(graph.calls)
-    fourth = client.get(f"/api/datasets/{spec_id}")
+    fourth = _checked(client, spec_id)
     assert fourth.status_code == 200, fourth.text
     fourth_body = fourth.json()
     assert fourth_body["trace"]["served_from"] == "materialise"
@@ -506,7 +524,7 @@ def test_provenance_refresh_date_move_forces_a_rematerialise_despite_unchanged_f
 
     # An unchanged refresh date confirms the head with no SDMX call.
     head_store.age_head(spec_id, age=_PAST_INTERVAL)
-    unaffected = client.get(f"/api/datasets/{spec_id}")
+    unaffected = _checked(client, spec_id)
     assert unaffected.status_code == 200, unaffected.text
     assert unaffected.json()["trace"]["served_from"] == "head"
     assert sdmx_calls.n == sdmx_calls_after_first
@@ -514,7 +532,7 @@ def test_provenance_refresh_date_move_forces_a_rematerialise_despite_unchanged_f
     # A changed `lastDataRefreshDate` forces re-materialisation while facet fields stay fixed.
     head_store.age_head(spec_id, age=_PAST_INTERVAL)
     arcs["OECD_DAC2A"] = {"lastDataRefreshDate": ("2026-02-01",)}
-    changed = client.get(f"/api/datasets/{spec_id}")
+    changed = _checked(client, spec_id)
     assert changed.status_code == 200, changed.text
     assert changed.json()["trace"]["served_from"] == "materialise"
     assert head_store.head_for(spec_id).dependencies["sources"] == [
@@ -612,7 +630,7 @@ def test_a_converted_spec_minted_through_the_door_confirms_its_head_until_the_ra
     # load, no observation fetch, no new head write.
     head_store.age_head(spec_id, age=_PAST_INTERVAL)
     advances_before = head_store.advance_head_calls
-    confirmed = client.get(f"/api/datasets/{spec_id}")
+    confirmed = _checked(client, spec_id)
     assert confirmed.status_code == 200, confirmed.text
     assert confirmed.json()["trace"]["served_from"] == "head"
     assert confirmed.json()["content_version"] == minted_version
@@ -622,7 +640,7 @@ def test_a_converted_spec_minted_through_the_door_confirms_its_head_until_the_ra
     # Only the rate-provenance date moves. Facet candidates stay fixed.
     head_store.age_head(spec_id, age=_PAST_INTERVAL)
     arcs[_DAC_TABLE_PROVENANCE] = {"lastDataRefreshDate": ("2026-02-01T00:00:00Z",)}
-    changed = client.get(f"/api/datasets/{spec_id}")
+    changed = _checked(client, spec_id)
     assert changed.status_code == 200, changed.text
     assert changed.json()["trace"]["served_from"] == "materialise"
     assert head_store.head_for(spec_id).dependencies["conversion_sources"] == [
@@ -650,7 +668,7 @@ def test_an_unconverted_head_names_no_conversion_source_and_serves_from_head():
     sdmx_calls_after_first = sdmx_calls.n
 
     head_store.age_head(spec_id, age=_PAST_INTERVAL)
-    second = client.get(f"/api/datasets/{spec_id}")
+    second = _checked(client, spec_id)
     assert second.status_code == 200, second.text
     assert second.json()["trace"]["served_from"] == "head"
     assert sdmx_calls.n == sdmx_calls_after_first
@@ -680,7 +698,7 @@ def test_member_with_no_provenance_refresh_properties_keeps_serving_from_head():
     sdmx_calls_after_first = sdmx_calls.n
 
     head_store.age_head(spec_id, age=_PAST_INTERVAL)
-    second = client.get(f"/api/datasets/{spec_id}")
+    second = _checked(client, spec_id)
     assert second.status_code == 200, second.text
     assert second.json()["trace"]["served_from"] == "head"
     assert sdmx_calls.n == sdmx_calls_after_first
@@ -705,7 +723,7 @@ def test_spec_past_the_maximum_age_re_materialises_despite_an_unchanged_fingerpr
 
     # The fingerprint matches. The maximum age forces re-materialisation.
     head_store.age_head(spec_id, age=_PAST_MAX_AGE)
-    resp = client.get(f"/api/datasets/{spec_id}")
+    resp = _checked(client, spec_id)
 
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -736,7 +754,7 @@ def test_repeated_confirmations_do_not_extend_the_maximum_age():
     # Confirmation is recent, but materialisation is past its age limit and the fingerprint
     # matches.
     head_store.age_head(spec_id, age=_PAST_INTERVAL, materialised_age=_PAST_MAX_AGE)
-    resp = client.get(f"/api/datasets/{spec_id}")
+    resp = _checked(client, spec_id)
 
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -1496,12 +1514,12 @@ def test_an_empty_probe_writes_nothing_until_its_registry_check_completes():
     # when the rebuild finds a facet and a new version replaces the empty one.
     head_store.age_head(spec_id, age=_PAST_INTERVAL)
     facets[(stat_var, _RECIPIENT)] = [_FACET]
-    held = client.get(f"/api/datasets/{spec_id}")
+    held = _checked(client, spec_id)
     assert held.status_code == 200, held.text
     assert held.json()["content_version"] == empty["content_version"]
     head_store.age_head(spec_id, age=_PAST_MAX_AGE)
     facets[(stat_var, _RECIPIENT)] = [_FACET]
-    arrived = client.get(f"/api/datasets/{spec_id}")
+    arrived = _checked(client, spec_id)
     assert arrived.status_code == 200, arrived.text
     assert arrived.json()["trace"]["served_from"] == "materialise"
     assert arrived.json()["coverage"]["rows"] == 1

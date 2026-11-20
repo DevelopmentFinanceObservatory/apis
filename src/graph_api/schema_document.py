@@ -171,7 +171,7 @@ _RANGE_INCLUDES: Final[str] = "rangeIncludes"
 _DOMAIN_INCLUDES: Final[str] = "domainIncludes"
 _ANCESTOR_ARCS: Final[tuple[str, ...]] = ("subClassOf", "subPropertyOf")
 _SCHEMA_ARCS: Final[tuple[str, ...]] = (*_ANCESTOR_ARCS, "domainIncludes", "rangeIncludes")
-_NODE_PROPERTIES: Final[tuple[str, ...]] = (
+NODE_PROPERTIES: Final[tuple[str, ...]] = (
     _TYPE_OF,
     "name",
     "description",
@@ -183,10 +183,12 @@ _NODE_PROPERTIES: Final[tuple[str, ...]] = (
     "rangeIncludes",
     "classificationCode",
 )
+"""The properties a `SchemaNode` holds in fields of its own. Every other is in
+`other_properties`."""
 
 type _Arcs = dict[str, tuple[str, ...]]
 type _OtherProperties = dict[str, list[SchemaNodeReference | SchemaLiteral]]
-type _TermKind = Literal["Class", "Property"]
+type TermKind = Literal["Class", "Property"]
 
 
 class SchemaListingTruncatedError(GraphReadError):
@@ -230,10 +232,40 @@ class Schema:
 
 
 @dataclass
-class _ListedTerm:
+class ListedTerm:
+    """One subject of the `Class` and `Property` listings, with the names, kinds and
+    provenances of its entries."""
+
     names: set[str] = field(default_factory=set)
-    kinds: set[_TermKind] = field(default_factory=set)
+    kinds: set[TermKind] = field(default_factory=set)
     provenances: set[str] = field(default_factory=set)
+
+
+def fold_listings(
+    listings: Iterable[tuple[TermKind, Iterable[ArcSubject]]],
+) -> dict[str, ListedTerm]:
+    """Fold `listings`, pairs of a kind and the `<-typeOf` subjects of that kind, into one
+    `ListedTerm` per subject, with every name and provenance its entries carry and every kind
+    that lists it."""
+    listed: dict[str, ListedTerm] = {}
+    for kind, subjects in listings:
+        for subject in subjects:
+            term = listed.setdefault(subject.dcid, ListedTerm())
+            term.names.update(subject.names)
+            term.kinds.add(kind)
+            term.provenances.update(subject.provenances)
+    return listed
+
+
+def schema_term(dcid: str, term: ListedTerm, *, declared_by: DeclaredBy | None) -> SchemaTerm:
+    """`dcid` as a `SchemaTerm` of the terms list, labelled by `dc_graph.display_name`."""
+    return SchemaTerm(
+        ref=dcid,
+        label=display_name(term.names, dcid),
+        types=sorted(term.kinds),
+        provenances=sorted(term.provenances),
+        declared_by=declared_by,
+    )
 
 
 def provenance_origin(provenance: str, catalogue: Catalogue) -> OriginId:
@@ -327,7 +359,7 @@ def build_schema(
             sorted(reads.left_out)[:_LOGGED_DCIDS],
         )
     nodes = [
-        _node(
+        schema_node(
             dcid,
             arcs[dcid],
             reads.others[dcid],
@@ -340,11 +372,9 @@ def build_schema(
     if not any(node.declared_by == "dfo" for node in nodes):
         raise SchemaNoDfoDeclarationError(len(nodes))
     terms = [
-        SchemaTerm(
-            ref=dcid,
-            label=display_name(term.names, dcid),
-            types=sorted(term.kinds),
-            provenances=sorted(term.provenances),
+        schema_term(
+            dcid,
+            term,
             declared_by=(
                 declared_by(term.provenances, catalogue=catalogue) if term.provenances else None
             ),
@@ -447,7 +477,7 @@ class _Reads:
         self._catalogue = catalogue
         self._deadline = deadline
         self._term_pages: dict[str, ArcSubjectPage] = {}
-        self._listed: dict[str, _ListedTerm] | None = None
+        self._listed: dict[str, ListedTerm] | None = None
         self.dfo_terms: set[str] = set()
         self.arcs: dict[str, _Arcs] = {}
         self.others: dict[str, _OtherProperties] = {}
@@ -485,7 +515,7 @@ class _Reads:
         self._phases_lock = threading.Lock()
 
     @property
-    def listed(self) -> dict[str, _ListedTerm]:
+    def listed(self) -> dict[str, ListedTerm]:
         """Every listed term, once both listings have landed."""
         if self._listed is None:
             raise RuntimeError("the term listings have not landed")
@@ -616,13 +646,9 @@ class _Reads:
         self._join_dfo_closure(found)
 
     def _land_terms(self) -> None:
-        listed: dict[str, _ListedTerm] = {}
-        for kind in (_CLASS, _PROPERTY):
-            for subject in self._term_pages[kind].subjects:
-                term = listed.setdefault(subject.dcid, _ListedTerm())
-                term.names.update(subject.names)
-                term.kinds.add(kind)
-                term.provenances.update(subject.provenances)
+        listed = fold_listings(
+            (kind, self._term_pages[kind].subjects) for kind in (_CLASS, _PROPERTY)
+        )
         self._listed = listed
         self.dfo_terms = {
             dcid
@@ -658,14 +684,14 @@ class _Reads:
             for prop, marked in self.unresolved.items():
                 if any(target.value == UNRESOLVED_NODE for target in read.get(prop, ())):
                     marked.add(dcid)
-            if (entry := _resolved_entry(read)) is None:
+            if (entry := resolved_entry(read)) is None:
                 continue
             types = entry.get(_TYPE_OF, ())
             self.arcs[dcid] = {
                 prop: tuple(dict.fromkeys(target.value for target in entry.get(prop, ())))
-                for prop in _NODE_PROPERTIES
+                for prop in NODE_PROPERTIES
             }
-            self.others[dcid] = _other_properties(dcid, entry, self.left_out)
+            self.others[dcid] = node_other_properties(dcid, entry, self.left_out)
             if any(not target.provenances for target in types):
                 self.unsourced.add(dcid)
             self.provenances[dcid] = frozenset(
@@ -787,7 +813,7 @@ class _Reads:
                 self._read_nodes((subject.dcid for subject in subjects), phase=_INSTANCES)
 
 
-def _resolved_entry(
+def resolved_entry(
     entry: Mapping[str, Sequence[ArcTarget]] | None,
 ) -> dict[str, tuple[ArcTarget, ...]] | None:
     """`entry` less every `UNRESOLVED_NODE` target and every property left with none, `None`
@@ -907,16 +933,16 @@ def _descendants(dcid: str, subclass_pages: Mapping[str, tuple[tuple[str, ...], 
     return seen
 
 
-def _other_properties(
+def node_other_properties(
     dcid: str, entry: Mapping[str, Sequence[ArcTarget]], left_out: dict[tuple[str, str], int]
 ) -> _OtherProperties:
-    """Every property of `entry` outside `_NODE_PROPERTIES`, each target a node reference or a
+    """Every property of `entry` outside `NODE_PROPERTIES`, each target a node reference or a
     literal, properties and targets sorted. A literal past `OTHER_LITERAL_MAX_CHARS` and the
     values past the first `OTHER_VALUES_MAX` are left out and counted in `left_out` under
     `(dcid, property)`, and a property left with no value is left out."""
     others: _OtherProperties = {}
     for prop, targets in sorted(entry.items()):
-        if prop in _NODE_PROPERTIES:
+        if prop in NODE_PROPERTIES:
             continue
         kept = sorted(
             (
@@ -938,7 +964,7 @@ def _other_properties(
     return others
 
 
-def _node(
+def schema_node(
     dcid: str,
     arcs: _Arcs,
     other_properties: _OtherProperties,
@@ -946,6 +972,8 @@ def _node(
     instances: SchemaInstances | None,
     catalogue: Catalogue,
 ) -> SchemaNode:
+    """The `SchemaNode` of `dcid` from its `NODE_PROPERTIES` values `arcs`, every value sorted,
+    with `declared_by` from `provenances`, null when there is none."""
     return SchemaNode(
         ref=dcid,
         label=display_name(arcs["name"], dcid),

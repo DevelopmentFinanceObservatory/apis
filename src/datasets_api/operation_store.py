@@ -11,7 +11,10 @@ order and type irrelevant to the id.
 then creates the Cloud Tasks task and calls `mark_dispatched`, which sets `dispatched_at` once
 for the submission. A `pending` row whose `dispatched_at` stays NULL had its create lost; the
 operations poll creates the task again under the same name
-(`datasets_api.operations.dispatch.dispatch_if_due`).
+(`datasets_api.operations.dispatch.dispatch_if_due`). A caller nobody polls for, a head check,
+first claims that retry with `claim_dispatch_retry`, which moves the row's `updated_at` and so
+admits one caller per retry interval across instances. Nothing else reads `updated_at` on a
+`pending` row.
 
 `attempt_count` is a monotonic fencing token. `claim` moves a `pending` row, or a `running` row
 whose lease has ended, to `running`, increments the token and sets `claimed_at`. The lease is
@@ -349,6 +352,15 @@ class OperationStore(Protocol):
         already records a dispatch or has moved to another submission."""
         ...
 
+    def claim_dispatch_retry(
+        self, id: str, *, submission_count: int, retry_after: timedelta
+    ) -> Operation | None:
+        """Claims the retry of a lost task create: moves `updated_at` to now on a `pending` row
+        of this submission with no recorded dispatch whose `updated_at` is more than
+        `retry_after` old. Returns the row when this call claimed it, else `None`, so one caller
+        per `retry_after` retries the create across instances."""
+        ...
+
     def claim(
         self, id: str, *, submission_count: int, lease_seconds: int, final_delivery: bool
     ) -> Operation | None:
@@ -440,6 +452,11 @@ class NullOperationStore:
         )
 
     def mark_dispatched(self, id: str, *, submission_count: int) -> Operation | None:
+        return None
+
+    def claim_dispatch_retry(
+        self, id: str, *, submission_count: int, retry_after: timedelta
+    ) -> Operation | None:
         return None
 
     def claim(
@@ -744,6 +761,19 @@ class LiveOperationStore:
             "UPDATE datasets.operation SET dispatched_at = %s, updated_at = %s "
             "WHERE id = %s AND submission_count = %s AND dispatched_at IS NULL",
             (now, now, id, submission_count),
+        )
+
+    def claim_dispatch_retry(
+        self, id: str, *, submission_count: int, retry_after: timedelta
+    ) -> Operation | None:
+        now = self._now()
+        return self._update_one(
+            "claiming the task create retry of",
+            id,
+            "UPDATE datasets.operation SET updated_at = %s "
+            "WHERE id = %s AND submission_count = %s AND state = 'pending' "
+            "AND dispatched_at IS NULL AND updated_at < %s",
+            (now, id, submission_count, now - retry_after),
         )
 
     def claim(

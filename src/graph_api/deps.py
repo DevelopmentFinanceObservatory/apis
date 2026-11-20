@@ -12,7 +12,11 @@ runs on. The national currencies and node facts a
 variable's availability reads beside its profile (`CardReadCaches`) run their
 flights on the DCP-read executor. The node routes keep the envelopes they build in
 `node_entries`, which guards every operation with its own lock. The schema routes keep
-their built bodies in `schema`, whose one build runs on the DCP-read executor.
+their built bodies in `schema`, whose one build runs on the DCP-read executor. The UN terms
+route reads the UN deployment's own client and keeps its body in `un_terms`, on an executor of
+its own. The node view route reads the mixer's and the UN deployment's own clients and keeps
+each view in `node_views`, built and read on two executors of its own, so it takes no DCP-read
+worker.
 
 This module holds the bundle and the doors' one way onto the executor,
 `run_dcp_read`, to keep door imports separate from the composition root,
@@ -26,7 +30,7 @@ import functools
 import logging
 import threading
 from collections.abc import Callable
-from concurrent.futures import BrokenExecutor, Future, ThreadPoolExecutor
+from concurrent.futures import BrokenExecutor, Executor, Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from time import perf_counter
 from typing import TYPE_CHECKING, Annotated, Any, override
@@ -50,7 +54,19 @@ if TYPE_CHECKING:
     # `card_reads` imports this module's executor refusals.
     from dfo_platform.static_response import FrozenJSON
     from graph_api.card_reads import CardReadCaches
-    from graph_api.doors.schema import SchemaEntry, SchemaKey, UsageKey
+    from graph_api.doors.schema import (
+        NodeViewEntry,
+        NodeViewKey,
+        NodeViewMiss,
+        SchemaEntry,
+        SchemaKey,
+        UnTermsEntry,
+        UsageKey,
+    )
+    from graph_api.doors.schema_search import SchemaSearchDeps
+    from graph_api.node_view import NodeViewReader
+    from graph_api.origin_usage import OriginUsageKey
+    from graph_api.un_terms import UnTermsReader
     from materialise.provenance_doc import ProvenanceDoc
     from series_coverage.shared import ServedCoverage
 
@@ -63,6 +79,37 @@ class GraphDepsNotSet(Exception):
 
     def __init__(self) -> None:
         super().__init__("Graph dependencies are not set: the surface's lifespan has not run")
+
+
+@dataclass(slots=True)
+class UnTerms:
+    """The UN terms route's state: the UN deployment's own client, the cache of the body built
+    from it under one key (the cache's generation stamp is the UN deployment's), the event
+    that stops a build at shutdown, and the last body the route served, which it answers while
+    a later generation's build runs. Only the event loop writes `served`."""
+
+    reader: UnTermsReader
+    cache: SingleFlightCache[str, UnTermsEntry]
+    stop: threading.Event = field(default_factory=threading.Event)
+    served: FrozenJSON | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class NodeViews:
+    """The node view route's state: the mixer's own client and the caches of the views read from
+    it and of its refusals, keyed under the mixer's generation, and the UN deployment's own
+    client and its two caches, keyed under the UN deployment's
+    (`origin_catalogue.graph.UnGeneration`). `reads` runs the views' reads, apart from the
+    flights the view caches run on. `un_reader`, `un` and `un_misses` are `None` on a surface
+    with no UN reader, which reads no node from the UN deployment."""
+
+    mixer: NodeViewReader
+    base: SingleFlightCache[NodeViewKey, NodeViewEntry]
+    base_misses: SingleFlightCache[NodeViewKey, NodeViewMiss]
+    reads: Executor
+    un_reader: NodeViewReader | None = None
+    un: SingleFlightCache[NodeViewKey, NodeViewEntry] | None = None
+    un_misses: SingleFlightCache[NodeViewKey, NodeViewMiss] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +127,9 @@ class GraphDeps:
     schema: SingleFlightCache[SchemaKey, SchemaEntry]
     # The usage body, keyed by code index and coverage build.
     dataset_usage: SingleFlightCache[UsageKey, FrozenJSON]
+    # The base and UN usage bodies, keyed by origin and release id under the catalogue build's
+    # stamp.
+    origin_usage: SingleFlightCache[OriginUsageKey, FrozenJSON]
     # The executor every `POST /api/graph/schema/check` job runs on, apart from
     # `dcp_executor`, with `GRAPH_SCHEMA_CHECK_CONCURRENCY` workers.
     check_executor: DcpReadExecutor
@@ -91,6 +141,14 @@ class GraphDeps:
     card_reads: CardReadCaches | None = None
     # The envelopes the node routes built, keyed by generation stamp, table builds and dcid.
     node_entries: NodeEntryCache = field(default_factory=NodeEntryCache)
+    # The UN terms route's reader and cache, `None` on a surface with no UN reader, which
+    # serves no UN terms.
+    un_terms: UnTerms | None = None
+    # The node view route's readers and caches, `None` on a surface with no mixer reader for
+    # it, which answers the route 503.
+    node_views: NodeViews | None = None
+    # The search route's indicator resolver, executor and answer cache.
+    schema_search: SchemaSearchDeps | None = None
 
 
 class DcpExecutorShutDown(Exception):

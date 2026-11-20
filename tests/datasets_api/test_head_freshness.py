@@ -34,11 +34,18 @@ import pytest
 from artifact_store import LiveArtifactInventory
 from code_index.shared import get_index
 from dataset_store.snapshot import LiveSnapshotReader
-from datasets_api.current import DefinitionDeps, serve_current
+from datasets_api.current import (
+    DefinitionDeps,
+    StoredHeadAnswer,
+    serve_current,
+    serve_stored_head,
+)
 from datasets_api.doors.definition import _resolve_spec_requests
 from datasets_api.doors.snapshot import read_snapshot_manifest
 from datasets_api.manifest_models import Manifest
 from datasets_api.mint_models import MintOptions
+from datasets_api.operation_store import LiveOperationStore
+from datasets_api.operations.task_client import FakeTaskClient
 from datasets_api.version_store import LiveHeadStore, LiveVersionRecordWriter
 from dc_graph import GraphClient
 from dc_sdmx import SdmxClient
@@ -64,6 +71,7 @@ from tests.origin_catalogue.fake_catalogue import FakeCatalogue, provenance_row
 
 from . import test_serve_party_totals as party_totals
 from ._graph_doubles import FakeMintGraphReader
+from ._operation_store import FakeOperationDatasetStore
 from ._version_record_store import FakeVersionRecordDatasetStore
 from .conftest import FakeDatasetStore
 from .test_materialisation_record import _registered
@@ -720,6 +728,37 @@ def test_a_head_keyed_on_a_replaced_import_rebuilds_and_records_the_new_one(
     assert rig.transport.requests > 0
     assert published.imported_data != current_release().imported_data
     assert rig.head_dependencies()["imported_data"] == published.imported_data
+
+
+@pytest.mark.parametrize(
+    ("release", "answered"),
+    [(current_release, True), (_imported, False)],
+    ids=["bound-import", "replaced-import"],
+)
+def test_a_get_past_the_window_hands_a_head_on_a_replaced_import_to_the_request(
+    version_store, bind_catalogue, release: Callable[[], Release], answered: bool
+):
+    """`serve_stored_head` answers a stale head at once only while the bound release carries
+    the import it is keyed on; a replaced import rebuilds in the request, and no check is
+    submitted."""
+    bind_catalogue(_DFO_SOURCE)
+    rig = _Rig(version_store, dated=True)
+    rig.serve()
+    task_client = FakeTaskClient()
+    rig.deps = replace(
+        rig.deps,
+        operation_store=LiveOperationStore(store=FakeOperationDatasetStore()),
+        task_client=task_client,
+    )
+    rig.clock.at += _RECHECK + timedelta(seconds=1)
+
+    with bound_release(release()):
+        answer = serve_stored_head(
+            rig.stored, deps=rig.deps, options=rig.options, trigger="get", trace_id=None
+        )
+
+    assert isinstance(answer, StoredHeadAnswer) is answered
+    assert (len(task_client.enqueued) == 1) is answered
 
 
 def _drop_fingerprint(rig: _Rig) -> None:

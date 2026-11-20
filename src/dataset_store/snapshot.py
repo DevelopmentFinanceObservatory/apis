@@ -548,8 +548,10 @@ class ServableVersion:
     aged_out: list[StoredArtifactLocation]
 
     def servable_digest(self, artifact_digest: str) -> StoredArtifactLocation | None:
-        """The first servable location holding `artifact_digest`, or `None`."""
-        return next((loc for loc in self.servable if loc.artifact_digest == artifact_digest), None)
+        """The servable location holding `artifact_digest`, or `None`. A pinned location wins over
+        a working one, across rendering keys, then the first location in order."""
+        matches = [loc for loc in self.servable if loc.artifact_digest == artifact_digest]
+        return next((loc for loc in matches if loc.tier == "pinned"), next(iter(matches), None))
 
 
 def read_servable_version(

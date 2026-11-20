@@ -3,8 +3,9 @@
 Tasks call the worker route with an OIDC token for `worker_url`. Their deterministic name and
 body include `operation_id` and `submission_count`. Enqueue recovery creates a task again under
 the same name, so `AlreadyExists` means an earlier create succeeded and counts as success. A
-retryable resubmit increments `submission_count` and gets a new name. The 10-second enqueue
-timeout is a third of `datasets_api.operations.dispatch.ENQUEUE_RECOVERY_SECONDS`.
+retryable resubmit increments `submission_count` and gets a new name. The default 10-second
+enqueue timeout is a third of `datasets_api.operations.dispatch.ENQUEUE_RECOVERY_SECONDS`. A
+caller on a read path passes a shorter one (`datasets_api.operations.head_check`).
 """
 
 from __future__ import annotations
@@ -53,8 +54,15 @@ class TaskClientSettings(BaseSettings):
 
 
 class TaskClient(Protocol):
-    def enqueue(self, *, operation_id: str, submission_count: int) -> None:
-        """Enqueues a task for this operation submission.
+    def enqueue(
+        self,
+        *,
+        operation_id: str,
+        submission_count: int,
+        timeout: float = ENQUEUE_TIMEOUT_SECONDS,
+    ) -> None:
+        """Enqueues a task for this operation submission, waiting at most `timeout` seconds
+        for the create.
 
         The worker reads request data from the store.
         """
@@ -64,18 +72,33 @@ class TaskClient(Protocol):
 class NullTaskClient:
     """Raises on enqueue so missing live-client configuration surfaces immediately."""
 
-    def enqueue(self, *, operation_id: str, submission_count: int) -> None:
+    def enqueue(
+        self,
+        *,
+        operation_id: str,
+        submission_count: int,
+        timeout: float = ENQUEUE_TIMEOUT_SECONDS,
+    ) -> None:
         raise NotImplementedError(f"NullTaskClient cannot enqueue operation {operation_id!r}")
 
 
 class FakeTaskClient:
-    """Records enqueues and can synchronously forward each task to a test worker."""
+    """Records enqueues, and the timeout each was given, and can synchronously forward each
+    task to a test worker."""
 
     def __init__(self, *, on_enqueue: Callable[[str, int], None] | None = None) -> None:
         self.enqueued: list[tuple[str, int]] = []
+        self.timeouts: list[float] = []
         self._on_enqueue = on_enqueue
 
-    def enqueue(self, *, operation_id: str, submission_count: int) -> None:
+    def enqueue(
+        self,
+        *,
+        operation_id: str,
+        submission_count: int,
+        timeout: float = ENQUEUE_TIMEOUT_SECONDS,
+    ) -> None:
+        self.timeouts.append(timeout)
         self.enqueued.append((operation_id, submission_count))
         if self._on_enqueue is not None:
             self._on_enqueue(operation_id, submission_count)
@@ -99,7 +122,13 @@ class LiveTaskClient:
         self._worker_url = worker_url.rstrip("/")
         self._invoker = worker_invoker_service_account
 
-    def enqueue(self, *, operation_id: str, submission_count: int) -> None:
+    def enqueue(
+        self,
+        *,
+        operation_id: str,
+        submission_count: int,
+        timeout: float = ENQUEUE_TIMEOUT_SECONDS,
+    ) -> None:
         from google.api_core.exceptions import AlreadyExists
 
         task_name = f"{self._queue}/tasks/{operation_id}-{submission_count}"
@@ -122,9 +151,7 @@ class LiveTaskClient:
             "dispatch_deadline": {"seconds": DISPATCH_DEADLINE_SECONDS},
         }
         try:
-            self._client.create_task(
-                request={"parent": self._queue, "task": task}, timeout=ENQUEUE_TIMEOUT_SECONDS
-            )
+            self._client.create_task(request={"parent": self._queue, "task": task}, timeout=timeout)
         except AlreadyExists:
             # An existing or recently completed task means the earlier create succeeded.
             logger.info(

@@ -166,7 +166,7 @@ def make_app(
         ("running_analyses", running_analyses),
     )
     kwargs.update((name, value) for name, value in optional if value is not None)
-    return create_app([datasets_surface(**kwargs)])
+    return create_app([datasets_surface(**kwargs)], caller_settings=resolved.caller)
 
 
 class RunningClient(TestClient):

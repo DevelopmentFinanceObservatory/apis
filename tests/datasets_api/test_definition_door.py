@@ -216,10 +216,12 @@ def _client(
     sdmx_hedge_after: float | None = None,
     recipe_store=None,
     version_lister=None,
+    operation_store=None,
+    task_client=None,
 ):
     """Builds a composed client with separate spec and version stores. A version store wires
     live readers and inventory-aware artifacts. `sdmx_hedge_after` hedges its SDMX reads.
-    `recipe_store` and `version_lister` are `make_client`'s."""
+    `recipe_store`, `version_lister`, `operation_store` and `task_client` are `make_client`'s."""
     store = store if store is not None else FakeDatasetStore()
     if version_store is not None:
         from artifact_store import LiveArtifactInventory
@@ -255,6 +257,8 @@ def _client(
         materialise_max_concurrency=materialise_max_concurrency,
         recipe_store=recipe_store,
         version_lister=version_lister,
+        operation_store=operation_store,
+        task_client=task_client,
     )
 
 
@@ -321,7 +325,7 @@ def test_retrieval_re_materialises_a_minted_spec():
     assert len(statistics_artifacts) == 1
 
 
-def test_retrieval_response_carries_cache_control_no_store():
+def test_retrieval_response_carries_cache_control_no_cache():
     graph = _graph()
     client = _client(graph=graph)
     spec_id = _mint_one_spec(client)
@@ -329,7 +333,7 @@ def test_retrieval_response_carries_cache_control_no_store():
     resp = client.get(f"/api/datasets/{spec_id}")
 
     assert resp.status_code == 200, resp.text
-    assert resp.headers["cache-control"] == "no-store"
+    assert resp.headers["cache-control"] == "no-cache"
 
 
 def test_bundled_retrieval_reproducing_call_targets_this_same_route():

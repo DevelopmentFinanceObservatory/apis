@@ -46,7 +46,7 @@ failed, and reads the settings `sweep` reads.
 job and the service move the previous image can still write a pin reference holding the raw
 shared secret, so `settle` repeats the statements of migration 0026 that turn the secret into
 its label (`SETTLE_STATEMENTS`). Each touches only a pin principal that is neither a label nor
-an open caller's `ip:` key, so a repeat run changes nothing, and the table lock they run under
+an open caller's `ip:` or `conversation:` key, so a repeat run changes nothing, and the table lock they run under
 holds concurrent pins back until they finish. It runs them in one transaction, then writes one
 `datasets_settled` line counting the pin references still holding a raw secret, the version rows holding no facts, and
 the version rows whose output profile, in the column or the body, still names the party-kind
@@ -606,10 +606,10 @@ def _age_operations() -> int:
     return 0
 
 
-_LABELLED = "'^(secret-sha256:[0-9a-f]{16}|ip:[0-9a-f]{32})$'"
+_LABELLED = "'^(secret-sha256:[0-9a-f]{16}|ip:[0-9a-f]{32}|conversation:[0-9a-f]{32})$'"
 """Every principal the pin door writes, as a POSIX pattern: a `Principal.label` or a caller key
-(`dfo_platform.caller.address_key`). A pin principal it does not match is the raw secret the
-image before migration 0026 stored."""
+(`dfo_platform.caller.address_key`, or a vouched `conversation:` value). A pin principal it
+does not match is the raw secret the image before migration 0026 stored."""
 
 SETTLE_STATEMENTS: tuple[str, ...] = (
     "LOCK TABLE datasets.artifact_reference IN SHARE ROW EXCLUSIVE MODE",
@@ -644,7 +644,7 @@ WHERE reference_kind = 'pin'
   AND principal !~ {_LABELLED}""",
 )
 """The statements of `0026_artifact_reference_principal_label.sql`, which the migration
-explains, matching only a principal `_LABELLED` does not, so an open caller's `ip:` key and a
+explains, matching only a principal `_LABELLED` does not, so an open caller's `ip:` or `conversation:` key and a
 second run are left alone. The lock queues pins until the transaction ends: a pin landing between
 the fold and the rewrite would otherwise make the rewrite collide with its row, or leave a raw
 row the count reports."""

@@ -35,7 +35,13 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from dfo_platform import codes, refusal
 from dfo_platform.build import build_commit
-from dfo_platform.caller import CLIENT_HEADER, log_request
+from dfo_platform.caller import (
+    CLIENT_HEADER,
+    delivery_identity,
+    log_request,
+    reset_delivery_identity,
+    set_delivery_identity,
+)
 from dfo_platform.codes import (
     PLATFORM_CODE_CATALOGUE,
     CodeCatalogue,
@@ -43,6 +49,7 @@ from dfo_platform.codes import (
     merge_catalogues,
 )
 from dfo_platform.compression import BufferedGzipMiddleware
+from dfo_platform.config import CallerSettings
 from dfo_platform.config import executor_max_workers as _default_executor_max_workers
 from dfo_platform.cors import PlatformCORSMiddleware
 from dfo_platform.doors import RouteKey, route_keys
@@ -495,16 +502,19 @@ def _install_cors_outermost_middleware_stack(app: FastAPI, *, cors_kwargs: dict[
     app.build_middleware_stack = _build_middleware_stack  # ty: ignore[invalid-assignment]
 
 
-def _install_trace_id_outermost_middleware_stack(app: FastAPI, *, commit: str) -> None:
+def _install_trace_id_outermost_middleware_stack(
+    app: FastAPI, *, commit: str, caller: CallerSettings
+) -> None:
     """Wrap CORS with trace-ID middleware so preflight responses are stamped.
 
     CORS returns preflight responses before entering its inner stack. An
     outer trace layer sees those responses and all other paths. `commit` is
-    bound once from `build_commit()`. Install the override before the first
-    request, while FastAPI's middleware stack remains lazy.
+    bound once from `build_commit()`. `caller` names each request's delivery
+    identity. Install the override before the first request, while FastAPI's
+    middleware stack remains lazy.
     """
     base_build_middleware_stack = app.build_middleware_stack
-    dispatch = functools.partial(_trace_id_dispatch, commit=commit)
+    dispatch = functools.partial(_trace_id_dispatch, commit=commit, caller=caller)
 
     def _build_middleware_stack() -> ASGIApp:
         return BaseHTTPMiddleware(base_build_middleware_stack(), dispatch=dispatch)
@@ -560,14 +570,15 @@ whole response)."""
 
 
 async def _trace_id_dispatch(
-    request: Request, call_next: RequestResponseEndpoint, *, commit: str
+    request: Request, call_next: RequestResponseEndpoint, *, commit: str, caller: CallerSettings
 ) -> Response:
     """Bind one trace ID to the request context and stamp response headers.
 
     Also binds the Cloud Trace ID parsed from the request's trace headers,
-    which `dfo_platform.cloud_logging` stamps on every log record, and logs one
-    line per request with the caller's claimed identity and SDK client
-    (`dfo_platform.caller`).
+    which `dfo_platform.cloud_logging` stamps on every log record, binds the
+    request's delivery identity (`dfo_platform.caller.delivery_identity` under
+    `caller`), and logs one line per request with the caller's claimed identity
+    and SDK client (`dfo_platform.caller`).
 
     This outermost layer also runs on CORS preflights. Only non-cacheable
     responses receive the request's trace ID. HSTS and build commit stamp
@@ -582,6 +593,7 @@ async def _trace_id_dispatch(
     request.state.trace_id = trace_id
     token = set_trace_id(trace_id)
     cloud_token = set_cloud_trace_id(cloud_trace_id_from_headers(request.headers))
+    identity_token = set_delivery_identity(delivery_identity(request, caller))
     start = time.perf_counter()
     status: int | None = None
     try:
@@ -615,6 +627,7 @@ async def _trace_id_dispatch(
             # The inner task retains its copied trace context after this outer task resets.
             reset_trace_id(token)
             reset_cloud_trace_id(cloud_token)
+            reset_delivery_identity(identity_token)
 
 
 async def _probe_default_executor(
@@ -1031,6 +1044,18 @@ def _code_registry_route(ctx: _AppContext) -> Callable[[str], Any]:
     return get_code
 
 
+def _caller_settings_from_env() -> CallerSettings:
+    """`CallerSettings.from_env()`, or the empty settings when the environment holds an invalid
+    value. The app then starts, logs the fault at ERROR, and every delivery line names no caller
+    and the `direct` surface. The surfaces that resolve callers read the same variables and
+    refuse the value themselves."""
+    try:
+        return CallerSettings.from_env()
+    except ValueError as exc:
+        logger.error("delivery identity reads no caller settings: %s", exc)
+        return CallerSettings.model_construct()
+
+
 def create_app(
     surfaces: Sequence[Surface],
     *,
@@ -1039,6 +1064,7 @@ def create_app(
     cors_headers: Sequence[str] = ("Content-Type", CLIENT_HEADER),
     cors_expose_headers: Sequence[str] = (TRACE_ID_HEADER, COMMIT_HEADER, "Server-Timing"),
     executor_max_workers: int | None = None,
+    caller_settings: CallerSettings | None = None,
     title: str = "DFO APIs",
     version: str = "1.0",
 ) -> FastAPI:
@@ -1055,6 +1081,10 @@ def create_app(
 
     Admission checks run before FastAPI parses request bodies. They return a
     `ProblemSpec` directly, separate from exception classification.
+
+    `caller_settings` names each request's delivery identity
+    (`dfo_platform.caller.delivery_identity`), read from the environment when
+    omitted.
     """
     if not surfaces:
         raise SurfaceConfigurationError(
@@ -1111,7 +1141,11 @@ def create_app(
 
     # Put trace IDs outside CORS so preflight responses are stamped. The image's
     # build commit is fixed, so resolve it once for the app's lifetime.
-    _install_trace_id_outermost_middleware_stack(app, commit=build_commit())
+    _install_trace_id_outermost_middleware_stack(
+        app,
+        commit=build_commit(),
+        caller=caller_settings if caller_settings is not None else _caller_settings_from_env(),
+    )
 
     # Add gzip first so it sits innermost, wrapping only the router and its exception
     # handlers. The admission and trace-ID layers re-emit every response as a stream and

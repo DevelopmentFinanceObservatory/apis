@@ -53,6 +53,7 @@ from datasets_api.backpressure import Backpressure
 from datasets_api.capabilities import build_capabilities
 from datasets_api.codes_snapshot import ArtifactExpired, SpecNotFound
 from datasets_api.config import DatasetsBuildSettings
+from datasets_api.delivery import record_manifest
 from datasets_api.deps import DepsCell
 from datasets_api.headers import no_store_headers
 from datasets_api.manifest import (
@@ -461,7 +462,7 @@ def build_snapshot_door(*, deps: DepsCell) -> DoorContribution:
                 now=current.now(),
             )
 
-        with door_call("snapshot", logger=logger) as call:
+        with door_call("snapshot", logger=logger, delivers=True) as call:
             manifest = await current.read_executor.run(
                 functools.partial(
                     run_with_timings,
@@ -473,9 +474,12 @@ def build_snapshot_door(*, deps: DepsCell) -> DoorContribution:
                 ),
                 refuse=SnapshotBackpressure,
             )
-        return JSONResponse(
-            linked_under(manifest, id).model_dump(mode="json", exclude_none=True),
-            headers=no_store_headers(server_timing=call.server_timing),
+            record_manifest(manifest)
+        return call.delivered(
+            JSONResponse(
+                linked_under(manifest, id).model_dump(mode="json", exclude_none=True),
+                headers=no_store_headers(server_timing=call.server_timing),
+            )
         )
 
     return DoorContribution(
