@@ -254,7 +254,7 @@ dfo-analysis-engine = { workspace = true }
 # The registry refuses a part's `source_code` on search.resolve with
 # `source_code_not_held`, `source_code_ambiguous`, and
 # `source_code_shares_variable`.
-# The pin is spec-kit bf97dc4, which lists the `params.why` reasons of
+# The pin is spec-kit cf45930, which lists the `params.why` reasons of
 # `bilateral_reading_unavailable` (`WARNING_REASONS`), registers that warning on
 # search.resolve and the organisation reading codes,
 # defining the tie between them by the role the query's reading states,
@@ -325,10 +325,12 @@ dfo-analysis-engine = { workspace = true }
 # outcome and the saved-file schema, takes `party_totals: false` as the
 # request spelling of the cut, is recorded at dfo-apis 7af2d8dd, and its
 # role-keys rule names the frame party columns of each role key.
+# It holds `dfo_spec_kit.registry.FLOW_ROLE_AXES`, the map of graph role names to the
+# `origin` and `destination` flow axes that `dfo_platform.roles.ROLE_AXES` reads.
 # Follow-up: move all nine to a real spec-kit tag once one is cut, so a future
 # force-push or GC on spec-kit's dev can't silently break this lock.
-dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "9c99d3334b923e4a951805d7d04945eabc9cd840", subdirectory = "python/spec-kit" }
-dfo-spec-kit-client-contract = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "9c99d3334b923e4a951805d7d04945eabc9cd840", subdirectory = "python/client-contract" }
+dfo-spec-kit = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "6d0ab227bf0703637b8df1963cc3410078fb3ab0", subdirectory = "python/spec-kit" }
+dfo-spec-kit-client-contract = { git = "https://github.com/DevelopmentFinanceObservatory/spec-kit.git", rev = "6d0ab227bf0703637b8df1963cc3410078fb3ab0", subdirectory = "python/client-contract" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "packages/dfo-analysis-engine/tests"]

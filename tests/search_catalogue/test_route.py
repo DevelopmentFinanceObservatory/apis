@@ -65,6 +65,10 @@ def test_serves_the_global_counts_and_every_example(client: TestClient) -> None:
             "publishers": 4,
             "countries": 2,
             "aid": {"donors": 3, "recipients": 5, "years": {"first": 1990, "last": 2024}},
+            "by_origin": {
+                "dfo": {"indicators": 4, "datasets": 1, "publishers": 1},
+                "data_commons": {"indicators": 6, "datasets": 4, "publishers": 3},
+            },
         },
         "examples": [
             {

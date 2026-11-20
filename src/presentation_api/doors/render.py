@@ -29,10 +29,9 @@ The door accepts the target frame before it renders, in `_accept_target`:
   another rendering linked later under the stored version changes nothing; a revision stored
   before renderings were recorded is read from the stored frame's records. A plain card accepts any raw version of
   its dataset, whatever files are linked under it. A card on a groupby sum accepts a collapse
-  recording that groupby, and a raw version linking a file of it. A stored raw version
-  linking a plain file and groupby files accepts only a raw version linking a file of each
-  of those groupbys. One linking files of several different groupbys and no plain file,
-  and a collapse linking files of several different groupbys, accept no other frame;
+  recording that groupby, and a raw version linking a file of it. A stored frame recorded
+  under several renderings, raw or collapsed, accepts a version linking a file of each of
+  their groupbys and cuts, and a raw version alone when the plain rendering is one of them;
 - a derived frame (`ops_`) is accepted for a revision stored on a derived frame when the
   target's recipe has the `normal_form_hash` the revision recorded, or, for a revision stored
   before renderings were recorded, the stored frame's recipe holds.
