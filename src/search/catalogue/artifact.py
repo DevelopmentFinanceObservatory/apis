@@ -113,6 +113,15 @@ class OriginCounts(_Model):
     )
 
 
+class OriginProvenances(_Model):
+    """The admitted provenance ids of each origin group, sorted. The groups
+    follow `OriginCounts`: `dfo` holds the provenances of the DFO origin and
+    `data_commons` those of every other admitted origin."""
+
+    dfo: list[str]
+    data_commons: list[str]
+
+
 class Counts(_Model):
     """What DFO holds, counted from one origin catalogue build and one
     coverage index build."""
@@ -187,6 +196,9 @@ class CatalogueArtifact(_Model):
     built_at: datetime
     inputs: BuildInputs
     counts: Counts
+    provenances: OriginProvenances = Field(
+        description="the admitted provenance ids behind `counts`, by origin group"
+    )
     examples: list[CatalogueExample]
     places: dict[str, CataloguePlace] = Field(description="every counted country, by dcid")
 
@@ -350,6 +362,7 @@ __all__ = [
     "CatalogueVersion",
     "Counts",
     "OriginCounts",
+    "OriginProvenances",
     "OriginSplit",
     "PlaceCounts",
     "YearRange",

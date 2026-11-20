@@ -19,6 +19,7 @@ from tests.origin_catalogue.support import (
     EUROSTAT_GDP,
     GDP,
     SCAN_PLACES,
+    UN_WHO,
     WDI,
     sample_un_mirror,
 )
@@ -47,6 +48,12 @@ def counted(tmp_path):
         datasets={metadata.provenance_id for metadata in FACET_METADATA.values()},
         parties={},
     )
+
+
+def test_provenance_ids_group_by_origin(counted):
+    # CRS is the DFO provenance; WDI, Eurostat (base) and WHO (UN) go with Data Commons.
+    assert counted.provenances.dfo == [CRS]
+    assert counted.provenances.data_commons == sorted([WDI, EUROSTAT_GDP, UN_WHO])
 
 
 def test_global_counts(counted):
@@ -105,6 +112,10 @@ def test_without_the_un_system_origin_the_un_variables_and_publisher_drop_out(tm
     # WHO is the UN's publisher.
     assert off.publishers == on.publishers - 1
     assert off.by_origin.data_commons.publishers == on.by_origin.data_commons.publishers - 1
+    # A provenance the catalogue does not admit is in neither group.
+    off_provenances = catalogue_counts(catalogue=disabled, **kwargs).provenances
+    assert UN_WHO not in off_provenances.dfo + off_provenances.data_commons
+    assert off_provenances.data_commons == sorted([WDI, EUROSTAT_GDP])
 
 
 def test_a_publisher_with_a_dfo_and_a_base_provenance_counts_in_both_groups(tmp_path):

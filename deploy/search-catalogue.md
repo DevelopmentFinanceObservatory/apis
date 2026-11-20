@@ -86,7 +86,7 @@ A second run with the same inputs logs `search_catalogue_job_noop`. Point a loca
 
 The search surface builds a `search.catalogue.service.SearchCatalogueService` in its lifespan. The service loads the build `current.json` names and serves it from memory. It rechecks `current.json` at most once per `SEARCH_CATALOGUE_RECHECK_SECONDS` (default 300), on a daemon thread a request starts, and reloads only when `catalogue_version` changes. A failed reload, or a pointer that disappears, keeps the last good build serving.
 
-Each load logs `search_catalogue_loaded` at `INFO` as one JSON line with `catalogue_version`, `previous_catalogue_version` (null on the first load) and `counts`, the global counts of the loaded build.
+Each load logs `search_catalogue_loaded` at `INFO` as one JSON line with `catalogue_version`, `previous_catalogue_version` (null on the first load), `counts`, the global counts of the loaded build, and `provenances`, the admitted provenance ids of the build as `{"dfo": [...], "data_commons": [...]}`, sorted, grouped as `counts.by_origin` groups them.
 
 The search surface starts and serves resolve whether or not a catalogue is available. With `SEARCH_CATALOGUE_URI` unset, or nothing loadable under it, `GET /api/search/catalogue` answers 503 `service_unavailable` (retryable) until a build loads.
 

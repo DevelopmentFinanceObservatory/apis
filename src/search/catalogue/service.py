@@ -141,6 +141,7 @@ class SearchCatalogueService:
                 "catalogue_version": loaded.catalogue_version,
                 "previous_catalogue_version": None if old is None else old.catalogue_version,
                 "counts": loaded.counts.model_dump(mode="json"),
+                "provenances": loaded.provenances.model_dump(mode="json"),
             }
             self._loaded = _Loaded(artifact=loaded, checked_at=self._clock())
         logger.info(

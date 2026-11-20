@@ -27,7 +27,8 @@ catalogue build and one coverage index build.
   `un_variables.parquet` (none with the UN origin off) and the provenances of
   every other origin. Something both groups hold, such as a publisher with a
   dfo and a base provenance, counts in each, so the split can exceed the
-  global figure. The global `indicators` is the union of the two groups'
+  global figure. The provenance ids of each group are kept beside the counts
+  (`CatalogueCounts.provenances`). The global `indicators` is the union of the two groups'
   indicators, so a StatVar in both counts once there. A coverage facet with no
   provenance, or one the catalogue does not admit, adds to neither group.
 - Variables (per country only): base variables with data there, plus
@@ -53,6 +54,7 @@ from search.catalogue.artifact import (
     AidCounts,
     Counts,
     OriginCounts,
+    OriginProvenances,
     OriginSplit,
     PlaceCounts,
     YearRange,
@@ -75,6 +77,7 @@ class CatalogueCounts:
     counts, keyed by dcid."""
 
     counts: Counts
+    provenances: OriginProvenances
     places: Mapping[str, PlaceCounts]
 
 
@@ -176,7 +179,11 @@ def catalogue_counts(
             ),
         ),
     )
-    return CatalogueCounts(counts=counts, places=places)
+    grouped = OriginProvenances(
+        dfo=sorted(row.id for row in provenances if row.data_commons == DFO),
+        data_commons=sorted(row.id for row in provenances if row.data_commons != DFO),
+    )
+    return CatalogueCounts(counts=counts, provenances=grouped, places=places)
 
 
 def _provenance_split(rows: Iterable[ProvenanceRow]) -> dict[str, int]:

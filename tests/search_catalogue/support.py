@@ -17,6 +17,7 @@ from search.catalogue.artifact import (
     CataloguePlace,
     Counts,
     OriginCounts,
+    OriginProvenances,
     OriginSplit,
     PlaceCounts,
     YearRange,
@@ -211,6 +212,9 @@ def sample_catalogue(version: str = "20260930T000000Z-00000001") -> CatalogueArt
                 dfo=OriginSplit(indicators=4, datasets=1, publishers=1),
                 data_commons=OriginSplit(indicators=6, datasets=4, publishers=3),
             ),
+        ),
+        provenances=OriginProvenances(
+            dfo=["provenance/CRS"], data_commons=["provenance/WDI", "provenance/WHO"]
         ),
         examples=[
             CatalogueExample(

@@ -519,6 +519,7 @@ async def _assemble(
         built_at=datetime.fromtimestamp(clock(), UTC),
         inputs=inputs,
         counts=counted.counts,
+        provenances=counted.provenances,
         examples=[
             CatalogueExample(
                 id=example.id,

@@ -100,6 +100,10 @@ def test_logs_the_counts_once_per_loaded_build(
         "20260930T001500Z-00000002",
     ]
     assert logged[0]["counts"] == published.counts.model_dump(mode="json")
+    assert logged[0]["provenances"] == {
+        "dfo": ["provenance/CRS"],
+        "data_commons": ["provenance/WDI", "provenance/WHO"],
+    }
 
 
 def test_a_failed_reload_keeps_the_last_good_build(tmp_path: Path) -> None:
