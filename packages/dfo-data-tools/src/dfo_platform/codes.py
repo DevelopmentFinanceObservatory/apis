@@ -102,6 +102,12 @@ PLATFORM_CODE_CATALOGUE: dict[str, tuple[str, str]] = {
         "The authenticated caller is not the live-refresh principal, or live refresh is "
         "not configured on this deployment.",
     ),
+    # Served by the Datasets analysis route's `verify` mode and the Presentation share sample.
+    "verify_not_permitted": (
+        "Verify Not Permitted",
+        "The caller did not send the verify principal, or no verify principal is set on this "
+        "deployment.",
+    ),
     # Served by the Datasets pin door and the Presentation share routes.
     "allowance_exhausted": (
         "Allowance Exhausted",

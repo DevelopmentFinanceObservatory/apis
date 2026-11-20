@@ -48,6 +48,7 @@ _STATED_MODES: Mapping[str, RetryMode] = MappingProxyType(
         "share_not_replaceable": "do_not_retry",
         "share_id_taken": "do_not_retry",
         "share_import_not_permitted": "do_not_retry",
+        "verify_not_permitted": "do_not_retry",
         "method_not_allowed": "do_not_retry",
     }
 )

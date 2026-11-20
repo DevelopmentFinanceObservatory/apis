@@ -265,11 +265,15 @@ def frame_from_frame_layout(data: bytes) -> Frame:
 class LiveRootSource:
     """`analysis.RootSource` over the Datasets surface's stores, for one request.
 
-    `deps` is the request's retrieval view (`doors.definition.request_definition_deps`)."""
+    `deps` is the request's retrieval view (`doors.definition.request_definition_deps`).
+    `render` false reads a dataset root's rendering only where its file is stored, and refuses
+    `RootExpired` where a render would make and store it, so a verification
+    (`analysis.verify_analysis`) writes nothing."""
 
-    def __init__(self, *, deps: DefinitionDeps, recipes: RecipeReader) -> None:
+    def __init__(self, *, deps: DefinitionDeps, recipes: RecipeReader, render: bool = True) -> None:
         self._deps = deps
         self._recipes = recipes
+        self._render = render
 
     def resolve(
         self, root: SpecRoot | DatasetRoot, *, latest: bool, trace_id: str | None
@@ -317,12 +321,17 @@ class LiveRootSource:
                 options=MintOptions.model_validate(options),
                 trace_id=trace_id,
                 coverage_snapshot=deps.coverage.snapshot(),
+                render=self._render,
             )
             if rendered is None or _data_artifact(rendered) is None:
                 raise RootExpired(
                     spec_id=spec_id,
                     content_version=content_version,
-                    reason="its stored frame has expired, so its rendering cannot be made",
+                    reason=(
+                        "its stored frame has expired, so its rendering cannot be made"
+                        if self._render
+                        else "its rendering's file is no longer stored"
+                    ),
                 )
             manifest = rendered
         # A groupby sum or a party-totals cut that changed the frame answers its own version.

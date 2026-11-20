@@ -73,6 +73,13 @@ Datasets surface is mounted. `infra` generates it as the
 website, and `ai`. Unset or empty, the service starts and those routes refuse
 every caller with `refresh_not_permitted`.
 
+`VERIFY_PRINCIPAL` is optional and has no safe value to default to. It names
+the one caller of an analysis request with `verify` set
+(`POST /api/datasets/analysis`) and of the Presentation share sample
+(`GET /api/presentation/share-sample`), which the replay probe sends. Unset or
+empty, the service starts and both refuse every caller with
+`verify_not_permitted`. It opens no other route.
+
 `DFO_CALLER_PRINCIPAL` and `DFO_CALLER_HMAC_KEY` are optional secrets with no
 safe default. The pin door names a caller without the pin grant by them
 (`dfo_platform.caller.resolve_caller`). `DFO_CALLER_PRINCIPAL` must equal the

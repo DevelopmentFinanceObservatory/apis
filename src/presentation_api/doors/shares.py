@@ -112,6 +112,18 @@ frame. A slot records an entry only when what it shows changes. The route answer
 opaque cursor that `before` takes to continue after the page's last entry, `null` on the last
 page. A `limit` out of range, or a `before` no page gave, refuses 400 `request_invalid`.
 
+`GET /api/presentation/share-sample?limit=&created_after=&created_before=` draws up to `limit`
+shares (1 to `SHARE_SAMPLE_MAX`, `SHARE_SAMPLE_DEFAULT` when left out) at random from those not
+taken down, made at or after `created_after` and before `created_before` where given (ISO 8601
+with an offset). Each entry states `share_id`, `kind`, `mode`, `created_at` and `slots`, the
+slots of the share's latest revision that show a card, and nothing about its owner, title,
+write token or payload. It reads only, and is not cacheable. It admits the caller holding the
+`verify` grant alone (`VERIFY_PRINCIPAL` in the principal header), checked before the query is
+read; another caller, and every caller while the principal is unset, refuses 403
+`verify_not_permitted`. A `limit` out of range or a timestamp without an offset refuses 400
+`request_invalid`. Its path sits outside `/api/presentation/shares/`, so no public route's
+pattern matches it.
+
 Every `GET` reply of a public route allows any origin, a refusal included, even one sent before
 routing, since the platform's CORS layer (`dfo_platform.cors`) adds the header. A share id that
 names no share, or one taken down, answers 404 `not_found` on every route. A card's frame that
@@ -142,6 +154,7 @@ from fastapi import APIRouter, Depends, FastAPI, Header, Path, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from pydantic import (
+    AwareDatetime,
     BaseModel,
     ConfigDict,
     Field,
@@ -199,7 +212,13 @@ from datasets_api.allowance import (
 from datasets_api.artifact_delivery import artifact_content_disposition
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.door_executor import DoorExecutor, build_door_executor
-from datasets_api.principals import Grant, Principal, Principals, granted_route_class
+from datasets_api.principals import (
+    Grant,
+    Principal,
+    Principals,
+    VerifyNotPermitted,
+    granted_route_class,
+)
 from datasets_api.retention_admission import (
     CopyClaimUnsettled,
     OpenPinBudgetExhausted,
@@ -237,6 +256,7 @@ from presentation_api.models import (
     ShareHistoryResponse,
     ShareImportResponse,
     ShareReadResponse,
+    ShareSampleResponse,
     ShareSlotCardResponse,
     ShareSlotDataResponse,
     ShareWriteResponse,
@@ -249,6 +269,7 @@ from presentation_api.routes import (
     SHARE_HISTORY_PATH,
     SHARE_IMPORT_PATH,
     SHARE_PATH,
+    SHARE_SAMPLE_PATH,
     SHARE_SLOT_DATA_PATH,
     SHARE_SLOT_PATH,
     SHARE_SNAPSHOT_PATH,
@@ -300,6 +321,8 @@ __all__ = [
     "MAX_SHARE_CARDS",
     "MAX_SHARE_PAYLOAD_BYTES",
     "SHARES_DEPS_SLOT",
+    "SHARE_SAMPLE_DEFAULT",
+    "SHARE_SAMPLE_MAX",
     "SharesDeps",
     "build_shares_door",
     "classify_shares_exception",
@@ -309,6 +332,12 @@ MAX_SHARE_CARDS = 24
 """The most cards one create or replace takes, and so the most slots a write adds."""
 
 MAX_LIVE_SHARE_DATA_CARDS = 20
+
+SHARE_SAMPLE_MAX = 500
+"""The most shares one sample draws."""
+
+SHARE_SAMPLE_DEFAULT = 100
+"""The shares a sample draws when its request names no `limit`."""
 """The most data cards, those that draw a frame, a live share holds. It matches the website's
 `LIVE_SHARE_MAX_DATA_CARDS`, since each one's slot checks for newer data on read."""
 
@@ -948,6 +977,46 @@ async def read_share_history(
     return await _run(deps, job)
 
 
+async def read_share_sample(
+    deps: SharesDepsDep,
+    limit: Annotated[
+        int,
+        Query(
+            ge=1,
+            le=SHARE_SAMPLE_MAX,
+            description=f"the most shares the sample draws, 1 to {SHARE_SAMPLE_MAX}",
+        ),
+    ] = SHARE_SAMPLE_DEFAULT,
+    created_after: Annotated[
+        AwareDatetime | None,
+        Query(description="draw only shares made at or after this ISO 8601 timestamp"),
+    ] = None,
+    created_before: Annotated[
+        AwareDatetime | None,
+        Query(description="draw only shares made before this ISO 8601 timestamp"),
+    ] = None,
+) -> Response:
+    def job() -> Response:
+        sampled = deps.share_store.sample_shares(
+            limit=limit, created_after=created_after, created_before=created_before
+        )
+        document = {
+            "shares": [
+                {
+                    "share_id": share.id,
+                    "kind": share.kind,
+                    "mode": share.mode,
+                    "created_at": share.created_at.isoformat(),
+                    "slots": share.slots,
+                }
+                for share in sampled
+            ]
+        }
+        return JSONResponse(document, headers={"Cache-Control": "no-store"})
+
+    return await _run(deps, job)
+
+
 def _matches(if_none_match: str | None, etag: str) -> bool:
     """Whether `If-None-Match` names `etag`, compared weakly as RFC 9110 says for it."""
     if if_none_match is None:
@@ -1174,6 +1243,8 @@ def classify_shares_exception(exc: BaseException) -> ProblemSpec | None:
             detail=str(exc),
             retryable=False,
         )
+    if isinstance(exc, VerifyNotPermitted):
+        return refused(exc.code, detail=str(exc), retryable=False)
     if isinstance(exc, SlotDrawsNoFrame):
         return refused(
             "request_invalid",
@@ -1236,7 +1307,9 @@ def build_shares_door(
     baked release. `caller` defaults to those settings' `caller`, and the public site to
     `DFO_PUBLIC_SITE_URL`. The import route admits the principal `principals` grants
     `share_import`, and with no `principals` refuses every caller. It pins through the frame
-    store given, or through a store built here that spends nothing.
+    store given, or through a store built here that spends nothing. The share sample route
+    admits the principal `principals` grants `verify`, and with no `principals` refuses every
+    caller.
     """
     _budget = budget if budget is not None else ShutdownBudget()
     executor = build_door_executor(
@@ -1334,6 +1407,7 @@ def build_shares_door(
             await asyncio.to_thread(executor.drain, _budget)
             _close_live_clients_built_here()
 
+    effective_principals = principals if principals is not None else _NO_PRINCIPALS
     router = APIRouter()
     router.add_api_route(
         SHARES_PATH,
@@ -1396,13 +1470,22 @@ def build_shares_door(
                 "model": ShareImportResponse,
             }
         },
-        route_class_override=granted_route_class(
-            _share_import_gate(principals if principals is not None else _NO_PRINCIPALS)
-        ),
+        route_class_override=granted_route_class(_share_import_gate(effective_principals)),
         description="Store one of the website's shares under its own id, for the website's "
         "share migration job. Admits the share import principal alone. The body is the "
         "share's export line less its id, plus write_token_sha256. Pins the frames the share "
         "shows, spending no allowance. 201 when stored, 200 when an earlier import stored it.",
+    )
+    router.add_api_route(
+        SHARE_SAMPLE_PATH,
+        read_share_sample,
+        methods=["GET"],
+        response_model=ShareSampleResponse,
+        route_class_override=granted_route_class(effective_principals.require(Grant.verify)),
+        description="Draw up to limit shares at random from those not taken down, optionally "
+        "made within [created_after, created_before), each with its kind, mode, created_at and "
+        "the number of slots showing a card. It states no owner, title, token or payload. "
+        "Admits the verify principal alone.",
     )
     router.add_api_route(
         SHARE_HISTORY_PATH,
@@ -1470,6 +1553,7 @@ def build_shares_door(
             ShareNotReplaceable,
             ShareIdTaken,
             ShareImportNotPermitted,
+            VerifyNotPermitted,
             SlotDrawsNoFrame,
             ShareNotFound,
             ShareSlotEmpty,
@@ -1523,6 +1607,7 @@ def build_shares_door(
                 ShareNotReplaceable("Ab3dEf7h"),
                 ShareIdTaken("Ab3dEf7h"),
                 ShareImportNotPermitted(presented=False),
+                VerifyNotPermitted(presented=False),
                 SlotDrawsNoFrame(index=0, component_id="cmp_a", revision=1),
                 ShareNotFound("Ab3dEf7h"),
                 ShareSlotEmpty(share_id="Ab3dEf7h", slot=2),

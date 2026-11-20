@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 import datasets_api.doors.analysis as analysis_door
 import presentation_api.newest_frames as newest_frames
 from assembler.ports import FrameRef
-from datasets_api.analysis import LocatedRoot, RootExpired
+from datasets_api.analysis import LocatedRoot, ResolvedRoot, RootExpired
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.deps import DepsCell
 from datasets_api.doors.analysis import RunningAnalyses
@@ -35,6 +35,7 @@ from ._analysis_doubles import (
     POPULATION_V1,
     FakeRootSource,
     Stores,
+    aid_frame,
     dataset,
     ref_of,
     source,
@@ -502,3 +503,153 @@ def test_a_wrong_method_on_an_analysis_route_answers_405(
         response = client.get(path)
 
     assert response.status_code == 405, response.text
+
+
+_PROBE_PRINCIPAL = "probe-verify-secret"
+_PROBE = {"x-dfo-principal": _PROBE_PRINCIPAL}
+
+
+def _writes(stores: Stores) -> tuple[int, int]:
+    """Rows written to the dataset store so far, and objects held in the artifact buckets."""
+    objects = sum(len(bucket.objects) for bucket in stores.gcs.buckets.values())
+    return stores.store.total_changes, objects
+
+
+class _ExpiringSource(FakeRootSource):
+    """`base`, with each version in `expired` refused `RootExpired` as `locate` reads it."""
+
+    def __init__(self, base: FakeRootSource, *, expired: set[tuple[str, str]]) -> None:
+        super().__init__(frames=base.frames, newest=base.newest, recipes=base.recipes)
+        self.expired = expired
+
+    def locate(self, root: ResolvedRoot) -> LocatedRoot:
+        pair = (root.dataset.spec_id, root.dataset.content_version)
+        if pair in self.expired:
+            raise RootExpired(spec_id=pair[0], content_version=pair[1], reason="aged out")
+        return super().locate(root)
+
+
+def _stored_pair(client: TestClient) -> dict[str, str]:
+    first = client.post(_PATH, json={"tree": _TREE})
+    assert first.status_code == 200, first.text
+    member = first.json()["ref"]["members"][0]
+    return {"spec_id": member["spec"]["spec_id"], "content_version": member["content_version"]}
+
+
+def test_verify_computes_a_stored_frame_again_and_writes_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A verification reads its roots past the stored answer, names the frame stored under the
+    tree's pair, and writes no row and no object."""
+    stores = Stores()
+    roots = source(stores)
+    with _client(stores, roots, monkeypatch, verify_principal=_PROBE_PRINCIPAL) as client:
+        stored = _stored_pair(client)
+        stored_cv = client.post(_PATH, json={"tree": _TREE}).json()["frame_content_version"]
+        reads, writes = roots.reads, _writes(stores)
+        response = client.post(_PATH, json={"tree": stored, "verify": True}, headers=_PROBE)
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "verified"
+    assert body["outcome"] == "same"
+    assert body["frame"] == body["stored"] == stored
+    assert body["frame_content_version"] == body["stored_frame_content_version"] == stored_cv
+    assert body["stored_execution_identity"] == "|".join(body["execution_identity"].values())
+    assert body["unavailable_roots"] == []
+    assert response.headers["cache-control"] == "no-store"
+    assert roots.reads == reads + 2
+    assert _writes(stores) == writes
+
+
+def test_verify_reports_a_frame_the_pinned_roots_no_longer_compute_as_different(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The stored answer is skipped: the pinned root now holds other bytes, so the frame
+    computed again differs from the stored one."""
+    stores = Stores()
+    roots = source(stores)
+    with _client(stores, roots, monkeypatch, verify_principal=_PROBE_PRINCIPAL) as client:
+        stored = _stored_pair(client)
+        stored_cv = client.post(_PATH, json={"tree": _TREE}).json()["frame_content_version"]
+        roots.frames[(AID, AID_V1)] = aid_frame(scale=3.0)
+        writes = _writes(stores)
+        response = client.post(_PATH, json={"tree": stored, "verify": True}, headers=_PROBE)
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["outcome"] == "different"
+    assert body["stored_frame_content_version"] == stored_cv
+    assert body["frame_content_version"] != stored_cv
+    assert _writes(stores) == writes
+
+
+def test_verify_names_every_root_whose_pinned_version_expired(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stores = Stores()
+    roots = _ExpiringSource(source(stores), expired=set())
+    with _client(stores, roots, monkeypatch, verify_principal=_PROBE_PRINCIPAL) as client:
+        stored = _stored_pair(client)
+        roots.expired = {(AID, AID_V1), (POPULATION, POPULATION_V1)}
+        reads = roots.reads
+        response = client.post(_PATH, json={"tree": stored, "verify": True}, headers=_PROBE)
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["outcome"] == "roots_unavailable"
+    assert body["frame"] is None and body["frame_content_version"] is None
+    assert body["stored"] == stored and body["stored_frame_content_version"] is not None
+    assert sorted(
+        (root["spec_id"], root["content_version"], root["code"])
+        for root in body["unavailable_roots"]
+    ) == [
+        (AID, AID_V1, "artifact_expired"),
+        (POPULATION, POPULATION_V1, "artifact_expired"),
+    ]
+    assert roots.reads == reads
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [{}, {"x-dfo-principal": "someone-else"}, {"x-dfo-principal": "refresh-secret"}],
+    ids=["no-principal", "another-principal", "refresh-principal"],
+)
+def test_verify_from_a_caller_without_the_verify_grant_refuses_403(
+    monkeypatch: pytest.MonkeyPatch, headers: dict[str, str]
+) -> None:
+    stores = Stores()
+    roots = source(stores)
+    with _client(
+        stores,
+        roots,
+        monkeypatch,
+        verify_principal=_PROBE_PRINCIPAL,
+        live_refresh_principal="refresh-secret",
+    ) as client:
+        stored = _stored_pair(client)
+        reads = roots.reads
+        response = client.post(_PATH, json={"tree": stored, "verify": True}, headers=headers)
+
+    assert response.status_code == 403, response.text
+    assert response.json()["code"] == "verify_not_permitted"
+    assert roots.reads == reads
+
+
+@pytest.mark.parametrize(
+    "request_body",
+    [
+        {"tree": _TREE, "verify": True, "latest": True},
+        {"tree": step("aggregate", {"spec_id": AID}, aggregation="sum"), "verify": True},
+    ],
+    ids=["latest", "spec-root"],
+)
+def test_verify_of_a_tree_naming_no_version_refuses_400(
+    monkeypatch: pytest.MonkeyPatch, request_body: dict[str, Any]
+) -> None:
+    stores = Stores()
+    with _client(stores, source(stores), monkeypatch, verify_principal=_PROBE_PRINCIPAL) as client:
+        response = client.post(_PATH, json=request_body, headers=_PROBE)
+
+    assert response.status_code == 400, response.text
+    assert response.json()["code"] == "request_invalid"

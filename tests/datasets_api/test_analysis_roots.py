@@ -403,6 +403,53 @@ def test_a_root_read_with_a_groupby_is_the_summed_version_its_mint_names(groupby
     )
 
 
+def test_verify_names_a_root_whose_rendering_is_not_stored_and_renders_nothing() -> None:
+    """A run renders a root's groupby from its version's stored frame and stores the file. A
+    verification makes no file: it names the root, and the store holds no new row."""
+    store = FakeVersionRecordDatasetStore()
+    client = _client(
+        graph=_graph(),
+        sdmx_transport=_sdmx_transport(),
+        version_store=store,
+        code_index=_hierarchical_code_index(),
+        coverage=_coverage_service(),
+        recipe_store=LiveRecipeStore(store=store),
+        version_lister=LiveVersionLister(store=store),
+        settings=DatasetsBuildSettings.from_env().model_copy(
+            update={"verify_principal": "probe-secret"}
+        ),
+    )
+    spec_id, sidecar = _spec_id_and_sidecar()
+    raw = _mint(client, spec_id=spec_id, sidecar=sidecar, options=_BARE)["content_version"]
+    root = {
+        "spec_id": spec_id,
+        "content_version": raw,
+        "rendering": {"columns": [], "groupby": _STAT_VARS_SUM},
+    }
+    tree = {
+        "verb": "aggregate",
+        "arguments": {"aggregation": "sum", "group_by": ["stat_var"]},
+        "inputs": {"data": root},
+    }
+    changes = store.total_changes
+    verified = client.post(
+        "/api/datasets/analysis",
+        json={"tree": tree, "verify": True},
+        headers={"x-dfo-principal": "probe-secret"},
+    )
+    assert store.total_changes == changes
+    ran = client.post("/api/datasets/analysis", json={"tree": tree})
+
+    assert verified.status_code == 200, verified.text
+    body = verified.json()
+    assert body["outcome"] == "roots_unavailable"
+    assert [(r["spec_id"], r["content_version"], r["code"]) for r in body["unavailable_roots"]] == [
+        (spec_id, raw, "artifact_expired")
+    ]
+    assert ran.status_code == 200, ran.text
+    assert store.total_changes > changes
+
+
 def _summed_stat_vars(client, data: dict, *, latest: bool = False) -> dict:
     """The ref member of a sum over `data`'s StatVars, which must answer."""
     tree = {

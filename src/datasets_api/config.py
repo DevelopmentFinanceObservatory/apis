@@ -233,6 +233,11 @@ class DatasetsBuildSettings(FoldCeilingSettings):
         default="", validation_alias="presentation_share_import_principal"
     )
 
+    # Sole principal of verification: an analysis request with `verify` set and the
+    # Presentation share sample. Read from `VERIFY_PRINCIPAL`. Empty denies all. It opens no
+    # other route.
+    verify_principal: str = Field(default="", validation_alias="verify_principal")
+
     # The queue's `max_attempts`, which `infra` sets from the queue's own `max_attempts` local
     # (3). The worker marks the operation failed on its final transient attempt.
     operation_max_attempts: int = Field(default=3, ge=1)
