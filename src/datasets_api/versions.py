@@ -356,19 +356,18 @@ class ListedVersion:
 
 @dataclass(frozen=True)
 class HeadLink:
-    """One file linked under a version: its `rendering`, and the raw head its file was last made
-    from (`datasets.version_artifact.head_content_version`), `None` on a link no write named a
-    head for, as on every link under a raw version and every link written before links held
-    one."""
+    """One file linked under a version: its `rendering`, and every raw head a write named as
+    making it (`datasets.version_artifact_head`), empty on a link no write named a head for, as
+    on every link under a raw version and every link written before links held heads."""
 
     rendering: Mapping[str, object]
-    head_content_version: str | None
+    heads: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
 class HeadVersion:
     """A version a listing by head names (`VersionLister.list_head_versions`), with every file
-    linked under it (`links`), whichever head each names. `base_content_version` is the base its
+    linked under it (`links`), whichever heads each names. `base_content_version` is the base its
     record keeps, the one it was first recorded from."""
 
     content_version: str

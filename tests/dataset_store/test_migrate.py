@@ -423,6 +423,9 @@ def test_apply_pending_applies_every_real_migration_in_order():
     assert any("CREATE TABLE IF NOT EXISTS datasets.analysis_answer" in sql for sql in statements)
     assert any("CREATE TABLE IF NOT EXISTS datasets.export" in sql for sql in statements)
     assert any(
+        "CREATE TABLE IF NOT EXISTS datasets.version_artifact_head" in sql for sql in statements
+    )
+    assert any(
         "CREATE INDEX artifact_location_tier_idx ON datasets.artifact_location" in sql
         for sql in statements
     )

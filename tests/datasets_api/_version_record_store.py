@@ -20,7 +20,7 @@ from datasets_api.versions import MaterialisationRecord, Trigger
 
 from ._operation_store import _OPERATION_SCHEMA, _lease_end, _to_sqlite_paramstyle
 
-# The schema covers version records, artifacts, revocations, references, caller allowances,
+# The schema covers version records, artifacts and their heads, revocations, references, caller allowances,
 # inventory, frame recipes, analysis answers, exports, description records, materialisation runs, and subject heads. `LiveRecipeStore` and `LiveVersionLister` over this store are the recipe and
 # version-list doubles.
 # SQLite runs the real reader/writer SQL here, but does not enforce cross-table foreign keys.
@@ -60,8 +60,14 @@ CREATE TABLE datasets.version_artifact (
     rendering_key TEXT NOT NULL,
     rendering TEXT NOT NULL,
     media_type TEXT NOT NULL,
-    head_content_version TEXT,
     PRIMARY KEY (subject_id, content_version, rendering_key)
+);
+CREATE TABLE datasets.version_artifact_head (
+    subject_id TEXT NOT NULL,
+    content_version TEXT NOT NULL,
+    rendering_key TEXT NOT NULL,
+    head_content_version TEXT NOT NULL,
+    PRIMARY KEY (subject_id, content_version, rendering_key, head_content_version)
 );
 CREATE TABLE datasets.version_revocation (
     subject_id TEXT NOT NULL,

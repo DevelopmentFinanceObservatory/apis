@@ -56,14 +56,16 @@ For a derived frame the answer is the derived version under the current head wit
 minting options. The door looks it up among the dataset's stored versions and, when none is
 recorded yet, mints it from the head's stored frame as a head-hit groupby read does. A version
 is recorded under a minting from the head when a file of that minting linked under it names the
-head as the one it was made from (`version_artifact.head_content_version`, the last head whose
-rendering made the version): a record keeps the base it was first recorded from, and a render
-from another head that makes the same version links its file there. A link written before links
-named a head counts for the head only when the version's record names that head as its base
-and every file of minting options linked under the version records one minting, since a
-version's record and its first link are written in one transaction and links are never
-removed, so that minting made it from its base. The named frame answers when it is recorded
-under the minting from the head, and otherwise the newest version that is.
+head among those it was made from (`datasets.version_artifact_head`): a record keeps the base
+it was first recorded from, and a render from another head that makes the same version links
+its file there. A link naming no head, as every link written before links named heads does,
+counts for the head only when the version's record names that head as its base and the links
+naming no head under the version record one minting between them, since a version's record and
+its first link are written in one transaction and links are never removed, so that minting made
+it from its base. The named frame answers while it is recorded under the minting from the head
+and its stored frame file is servable, and otherwise the newest such version that is. A frame
+of one minting that leaves a raw version unchanged answers at that version's own head with its
+own stored frame, since files are linked under a raw version only from its own frame.
 
 A stored frame answers only while its stored frame file (`render.servable_frame_location`) is
 servable, for the plain rendering and a derived one alike, since Presentation loads the frame
@@ -273,19 +275,19 @@ def refresh_can_answer(*, stored: StoredRendering, target: StoredRendering) -> b
 def _head_mintings(version: HeadVersion, *, head_content_version: str) -> list[MintingOptions]:
     """The minting options the files linked under `version` record as made from
     `head_content_version`: each link naming that head, and each link naming none while
-    `version`'s record names that head as its base and every file of minting options linked
-    under it records one minting, the rule the module docstring states for links written before
-    links named a head."""
+    `version`'s record names that head as its base and the links naming none record one minting
+    between them, the rule the module docstring states for links written before links named
+    heads."""
     links = version.links
+    headless = [link.rendering for link in links if not link.heads]
     headless_count = (
         version.base_content_version == head_content_version
-        and len(ordered_mintings(recorded_mintings(link.rendering for link in links))) == 1
+        and len(ordered_mintings(recorded_mintings(headless))) == 1
     )
     return recorded_mintings(
         link.rendering
         for link in links
-        if link.head_content_version == head_content_version
-        or (headless_count and link.head_content_version is None)
+        if head_content_version in link.heads or (headless_count and not link.heads)
     )
 
 
@@ -294,8 +296,8 @@ class _DerivedVersions:
     record, says one of their mintings made from it (`_head_mintings`), read with a query by that
     head (`VersionLister.list_head_versions`) on the first lookup after `reread`, and the version
     this refresh's renders and rebuild last made from it with each minting. A lookup of another
-    head starts over. `named` is the refreshed frame's version, which a lookup prefers among the
-    versions recorded under a minting, else `None` when the frame is read under another id."""
+    head starts over. `named` is the refreshed frame's version, which a lookup puts first among
+    the versions recorded under a minting, else `None` when the frame is read under another id."""
 
     def __init__(self, *, spec_id: str, named: str | None, deps: DefinitionDeps) -> None:
         self._spec_id = spec_id
@@ -329,20 +331,22 @@ class _DerivedVersions:
             )
         return self._listed
 
-    def recorded(self, *, base_content_version: str, minting: MintingOptions) -> str | None:
-        """The stored version made from `base_content_version` with `minting`: the one this
-        refresh last made from it, else the named version when the read records it under
-        `minting`, else the newest the read records under it, or `None`."""
+    def recorded(self, *, base_content_version: str, minting: MintingOptions) -> tuple[str, ...]:
+        """The stored versions made from `base_content_version` with `minting`, in the order a
+        lookup tries them: the one this refresh last made from it alone, else those the read
+        records under `minting`, the named version first and the rest newest first. Empty when
+        there are none."""
         self._at(base_content_version)
         made = self._made.get(minting)
         if made is not None:
-            return made
+            return (made,)
         candidates = [
             cv for mintings, cv in self._recorded(base_content_version) if minting in mintings
         ]
         if self._named in candidates:
-            return self._named
-        return next(iter(candidates), None)
+            candidates.remove(self._named)
+            candidates.insert(0, self._named)
+        return tuple(candidates)
 
     def add(
         self, *, base_content_version: str, minting: MintingOptions, content_version: str
@@ -398,10 +402,10 @@ def _rendering_frame(
 ) -> _Frame | None:
     """The stored frame of the `minting` rendering under the head, or of the plain rendering
     when `minting` is `None`, answered only while its stored frame file is servable
-    (`_servable_frame`). The plain frame is the head. A derived rendering is the derived version
-    on record under the head (`derived`); with none on record, or with that version's frame file
-    expired, the rendering is made from the head's stored frame, as a head-hit groupby read makes
-    it. A version on record replays the party-totals cut its trace records
+    (`_servable_frame`). The plain frame is the head. A derived rendering is the first derived
+    version on record under the head (`derived`) whose frame file is servable; with none on
+    record, or with every one's frame file expired, the rendering is made from the head's stored
+    frame, as a head-hit groupby read makes it. A version on record, the first tried, replays the party-totals cut its trace records
     (`recorded_rendering.recorded_party_cut`), so it renders to its own version whatever the code
     index and the cut's rule now decide; with none on record the cut is derived afresh. A
     rendering with a version of its own is recorded under it with its canonical frame, and one
@@ -409,12 +413,14 @@ def _rendering_frame(
     rebuild: the head's frame file has expired or cannot render it."""
     if minting is None:
         return _servable_frame(spec_id=spec_id, content_version=head_content_version, deps=deps)
-    recorded = derived.recorded(base_content_version=head_content_version, minting=minting)
-    recorded_cut = None
-    if recorded is not None:
-        stored = _servable_frame(spec_id=spec_id, content_version=recorded, deps=deps)
+    candidates = derived.recorded(base_content_version=head_content_version, minting=minting)
+    for candidate in candidates:
+        stored = _servable_frame(spec_id=spec_id, content_version=candidate, deps=deps)
         if stored is not None:
             return stored
+    recorded = next(iter(candidates), None)
+    recorded_cut = None
+    if recorded is not None:
         version = deps.snapshot_reader.read_version(spec_id, recorded)
         if version is not None:
             recorded_cut = recorded_party_cut(version)
@@ -625,6 +631,18 @@ def answer_frame_refresh(
     ) -> Manifest | None:
         """The stored frame of this rendering under the head, read without its artifacts. The
         named frame answers while the head made it with each rendering (`_DerivedVersions`)."""
+        if (
+            not rendering.ambiguous
+            and minting is not None
+            and not rendering.collapsed
+            and named_spec_id == spec_id
+            and head_content_version == content_version
+        ):
+            # The named raw version is the head, and a file is linked under a raw version only
+            # from its own frame, so the minting leaves this head unchanged.
+            stored = _servable_frame(spec_id=spec_id, content_version=content_version, deps=deps)
+            if stored is not None:
+                return stored.manifest
         # A head read after another caller's rebuild sees what that rebuild recorded.
         derived.reread()
         frame = _agreed(head_content_version, coverage_snapshot)

@@ -828,12 +828,12 @@ def test_read_version_state_reads_the_base_revocation_and_links_in_one_transacti
     assert not reader.artifact_inventoried(f"sha256:never-stored-{uuid4().hex}")
 
 
-def test_list_head_versions_reads_each_link_with_the_head_its_last_write_named(live_store):
-    """A derived version's write names its record's base as the head of each link it writes,
-    the last write's head winning even where the upsert kept the linked digest, and a raw
+def test_list_head_versions_reads_each_link_with_every_head_a_write_named(live_store):
+    """A derived version's write names its record's base as a head of each link it writes, each
+    head kept beside those named before, even where the upsert kept the linked digest, and a raw
     version's write names none. `list_head_versions` returns the subject's versions recorded
     from the head or linking a file a write from it named, newest first, each with every link
-    under it and the head that link names, whether or not the file has a location."""
+    under it and the heads that link records, whether or not the file has a location."""
     subject_id = f"spec:test-live-head-{uuid4().hex}"
     other_id = f"spec:test-live-head-other-{uuid4().hex}"
     digests = {name: f"sha256:test-live-head-{name}-{uuid4().hex}" for name in "abcde"}
@@ -885,8 +885,8 @@ def test_list_head_versions_reads_each_link_with_the_head_its_last_write_named(l
 
     write(0, "cv_h1", None, ("a", plain))
     write(1, "cv_d1", "cv_h1", ("a", groupby))
-    # A later write from h2 makes cv_d1 again: the kept groupby link and the new cut link name
-    # h2, while the record keeps base h1.
+    # A later write from h2 makes cv_d1 again: the kept groupby link names h1 and h2, the new
+    # cut link h2, while the record keeps base h1.
     write(2, "cv_d1", "cv_h2", ("b", groupby), ("c", cut))
     write(3, "cv_d2", "cv_h2", ("d", groupby))
     write(4, "cv_d3", "cv_h2", ("b", cut))
@@ -896,46 +896,51 @@ def test_list_head_versions_reads_each_link_with_the_head_its_last_write_named(l
     with live_store.transaction() as tx:
         # A link written before links named a head.
         tx.execute(
-            "UPDATE datasets.version_artifact SET head_content_version = NULL "
+            "DELETE FROM datasets.version_artifact_head "
             "WHERE subject_id = %s AND content_version = %s",
             (subject_id, "cv_d4"),
         )
     lister = LiveVersionLister(store=live_store)
 
-    def listed(head: str) -> list[tuple[str, str | None, list[tuple[str, str | None]]]]:
+    def listed(head: str) -> list[tuple[str, str | None, list[tuple[str, list[str]]]]]:
         return [
             (
                 version.content_version,
                 version.base_content_version,
                 sorted(
-                    (json.dumps(link.rendering, sort_keys=True), link.head_content_version)
+                    (json.dumps(link.rendering, sort_keys=True), sorted(link.heads))
                     for link in version.links
                 ),
             )
             for version in lister.list_head_versions(subject_id, head_content_version=head)
         ]
 
-    def links(*pairs: tuple[dict[str, object], str | None]) -> list[tuple[str, str | None]]:
-        return sorted((json.dumps(rendering, sort_keys=True), head) for rendering, head in pairs)
+    def links(*pairs: tuple[dict[str, object], list[str]]) -> list[tuple[str, list[str]]]:
+        return sorted((json.dumps(rendering, sort_keys=True), heads) for rendering, heads in pairs)
 
-    assert listed("cv_h1") == [
-        ("cv_d4", "cv_h1", links((groupby, None))),
-        ("cv_d3", "cv_h2", links((cut, "cv_h2"), (groupby, "cv_h1"))),
-        ("cv_d1", "cv_h1", links((groupby, "cv_h2"), (cut, "cv_h2"))),
-    ]
-    assert listed("cv_h2") == [
-        ("cv_d3", "cv_h2", links((cut, "cv_h2"), (groupby, "cv_h1"))),
-        ("cv_d2", "cv_h2", links((groupby, "cv_h2"))),
-        ("cv_d1", "cv_h1", links((groupby, "cv_h2"), (cut, "cv_h2"))),
-    ]
+    d1 = ("cv_d1", "cv_h1", links((groupby, ["cv_h1", "cv_h2"]), (cut, ["cv_h2"])))
+    d3 = ("cv_d3", "cv_h2", links((cut, ["cv_h2"]), (groupby, ["cv_h1"])))
+    assert listed("cv_h1") == [("cv_d4", "cv_h1", links((groupby, []))), d3, d1]
+    assert listed("cv_h2") == [d3, ("cv_d2", "cv_h2", links((groupby, ["cv_h2"]))), d1]
     assert lister.list_head_versions(subject_id, head_content_version="cv_none") == []
     with live_store.transaction() as tx:
         raw = tx.fetch_all(
-            "SELECT head_content_version FROM datasets.version_artifact "
+            "SELECT head_content_version FROM datasets.version_artifact_head "
             "WHERE subject_id = %s AND content_version = %s",
             (subject_id, "cv_h1"),
         )
-    assert raw == [{"head_content_version": None}]
+        tx.execute(
+            "DELETE FROM datasets.version_artifact WHERE subject_id = %s AND content_version = %s",
+            (subject_id, "cv_d1"),
+        )
+        # A link's heads go with it.
+        orphaned = tx.fetch_all(
+            "SELECT head_content_version FROM datasets.version_artifact_head "
+            "WHERE subject_id = %s AND content_version = %s",
+            (subject_id, "cv_d1"),
+        )
+    assert raw == []
+    assert orphaned == []
 
 
 def test_version_revocation_fk_rejects_an_unknown_version(live_store):
