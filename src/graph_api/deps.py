@@ -63,6 +63,7 @@ if TYPE_CHECKING:
         UnTermsEntry,
         UsageKey,
     )
+    from graph_api.doors.schema_search import SchemaSearchDeps
     from graph_api.node_view import NodeViewReader
     from graph_api.origin_usage import OriginUsageKey
     from graph_api.un_terms import UnTermsReader
@@ -146,6 +147,8 @@ class GraphDeps:
     # The node view route's readers and caches, `None` on a surface with no mixer reader for
     # it, which answers the route 503.
     node_views: NodeViews | None = None
+    # The search route's indicator resolver, executor and answer cache.
+    schema_search: SchemaSearchDeps | None = None
 
 
 class DcpExecutorShutDown(Exception):

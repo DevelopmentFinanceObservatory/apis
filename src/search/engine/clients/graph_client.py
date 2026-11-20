@@ -18,7 +18,6 @@ client's default. The adapter also satisfies the eval graph protocol. This modul
 from __future__ import annotations
 
 import logging
-import math
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -45,6 +44,7 @@ from origin_catalogue.graph import (
     OriginGraphClient,
     UnAvailabilityClient,
     build_graph_client,
+    parse_indicator_candidates,
 )
 from search.engine.clients.graph import (
     DetectedSV,
@@ -97,57 +97,23 @@ def _log_un_leg(done: Future[tuple[DetectedSV, ...] | None], started: float) -> 
     )
 
 
-def _first_type_of(raw_type_of: object) -> str | None:
-    if isinstance(raw_type_of, list):
-        first = raw_type_of[0] if raw_type_of else None
-        return first if isinstance(first, str) else None
-    if isinstance(raw_type_of, str):
-        return raw_type_of
-    return None
-
-
 def _parse_detect_candidates(body: dict) -> list[DetectedSV]:
+    """`origin_catalogue.graph.parse_indicator_candidates` as `DetectedSV`s, a malformed body
+    raised as `GraphInfraError`."""
     try:
-        entities = body.get("entities", [])
-        if not isinstance(entities, list):
-            raise GraphInfraError(f"graph resolve returned non-list entities: {entities!r}")
-        result: list[DetectedSV] = []
-        for entity in entities:
-            candidates = entity.get("candidates", [])
-            if not isinstance(candidates, list):
-                raise GraphInfraError(f"graph resolve returned non-list candidates: {candidates!r}")
-            for cand in candidates:
-                dcid = cand.get("dcid")
-                if not dcid:
-                    continue
-                metadata = cand.get("metadata", {}) or {}
-                if not isinstance(metadata, dict):
-                    raise GraphInfraError(
-                        f"graph resolve candidate metadata is not a dict: {metadata!r}"
-                    )
-                raw_score = metadata.get("score")
-                try:
-                    score = float(raw_score)  # ty: ignore[invalid-argument-type]
-                    if not math.isfinite(score):
-                        raise ValueError("score is not finite")
-                except (TypeError, ValueError):
-                    raise GraphInfraError(
-                        f"graph resolve candidate {dcid!r} has a missing/non-numeric score: "
-                        f"{raw_score!r}"
-                    ) from None
-                result.append(
-                    DetectedSV(
-                        dcid=dcid,
-                        score=score,
-                        type_of=_first_type_of(cand.get("typeOf")),
-                        sentence=metadata.get("sentence"),
-                    )
-                )
-        return result
-    except GraphInfraError:
-        raise
-    except (AttributeError, TypeError, pydantic.ValidationError) as exc:
+        return [
+            DetectedSV(
+                dcid=candidate.dcid,
+                score=candidate.score,
+                type_of=candidate.type_of,
+                sentence=candidate.sentence,
+            )
+            for candidate in parse_indicator_candidates(body)
+        ]
+    except pydantic.ValidationError as exc:
         raise GraphInfraError(f"graph resolve returned malformed body: {exc}") from exc
+    except ValueError as exc:
+        raise GraphInfraError(str(exc)) from exc
 
 
 def _build_dc_graph_client(

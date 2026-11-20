@@ -55,6 +55,7 @@ result on the caller's thread with the catalogue it read at entry.
 from __future__ import annotations
 
 import contextvars
+import math
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
@@ -117,6 +118,91 @@ a query string of 8,151 bytes passes and one of 8,153 bytes fails."""
 _UN_PROPERTY_PREFIX: Final[str] = "undata"
 
 _RESOLVE_PATH: Final[str] = "/v2/resolve"
+
+
+@dataclass(frozen=True, slots=True)
+class IndicatorCandidate:
+    """One candidate of an indicator `/v2/resolve` answer: its `dcid`, its `score`, its first
+    `typeOf`, `None` where it names none or that first value is not a string, every string
+    `typeOf` value in `types`, and the `sentence` its match came from."""
+
+    dcid: str
+    score: float
+    type_of: str | None
+    types: tuple[str, ...]
+    sentence: str | None
+
+
+def _type_of_values(raw_type_of: object) -> tuple[str, ...]:
+    if isinstance(raw_type_of, list):
+        return tuple(value for value in raw_type_of if isinstance(value, str))
+    if isinstance(raw_type_of, str):
+        return (raw_type_of,)
+    return ()
+
+
+def _first_type_of(raw_type_of: object) -> str | None:
+    if isinstance(raw_type_of, list):
+        first = raw_type_of[0] if raw_type_of else None
+        return first if isinstance(first, str) else None
+    if isinstance(raw_type_of, str):
+        return raw_type_of
+    return None
+
+
+def parse_indicator_candidates(body: dict) -> list[IndicatorCandidate]:
+    """Every candidate of every entity of a `resolve_indicators` answer, in the answer's order,
+    skipping a candidate with no dcid.
+
+    Raises:
+        ValueError: the body is not the resolve answer's shape, a candidate's score is missing,
+            not a number or not finite, or its sentence is not a string.
+    """
+    try:
+        entities = body.get("entities", [])
+        if not isinstance(entities, list):
+            raise ValueError(f"graph resolve returned non-list entities: {entities!r}")
+        result: list[IndicatorCandidate] = []
+        for entity in entities:
+            candidates = entity.get("candidates", [])
+            if not isinstance(candidates, list):
+                raise ValueError(f"graph resolve returned non-list candidates: {candidates!r}")
+            for cand in candidates:
+                dcid = cand.get("dcid")
+                if not dcid:
+                    continue
+                metadata = cand.get("metadata", {}) or {}
+                if not isinstance(metadata, dict):
+                    raise ValueError(
+                        f"graph resolve candidate metadata is not a dict: {metadata!r}"
+                    )
+                raw_score = metadata.get("score")
+                try:
+                    score = float(raw_score)  # ty: ignore[invalid-argument-type]
+                    if not math.isfinite(score):
+                        raise ValueError("score is not finite")
+                except (TypeError, ValueError):
+                    raise ValueError(
+                        f"graph resolve candidate {dcid!r} has a missing/non-numeric score: "
+                        f"{raw_score!r}"
+                    ) from None
+                sentence = metadata.get("sentence")
+                if sentence is not None and not isinstance(sentence, str):
+                    raise ValueError(
+                        f"graph resolve candidate {dcid!r} has a non-string sentence: {sentence!r}"
+                    )
+                result.append(
+                    IndicatorCandidate(
+                        dcid=dcid,
+                        score=score,
+                        type_of=_first_type_of(cand.get("typeOf")),
+                        types=_type_of_values(cand.get("typeOf")),
+                        sentence=sentence,
+                    )
+                )
+        return result
+    except (AttributeError, TypeError) as exc:
+        raise ValueError(f"graph resolve returned malformed body: {exc}") from exc
 
 
 def is_un_dcid(dcid: str) -> bool:

@@ -1343,6 +1343,32 @@ The example is the view of `GenderType` in the test graph of `tests/graph_api/te
 
 ---
 
+### GET /api/graph/schema/search
+
+The graph nodes a search box query reaches, as `{query, hits, unavailable}`. `q` is the query, stripped of surrounding whitespace, 1 to 256 characters, and a blank or longer one is refused `400 request_invalid`. `base=1` adds base Data Commons StatVars and `un=1` the UN System Data Commons; both default to `0`. `graph_api.doors.schema_search` serves it.
+
+The legs run at once, each for at most 6 s:
+
+- `dcid`: a query in dcid syntax (the `{dcid}` path parameter's) is read as a whole dcid, from the deployment `GET /api/graph/schema/node/{dcid}` reads it from. The UN deployment is read only with `un=1` and the UN origin served. A held node is the first hit.
+- `names`: the entity resolver `POST /api/graph/resolve` runs, over a query of at most 200 characters. A resolved entity, or each candidate of an ambiguous result, is a hit.
+- `dfo`, `base` and `un_system`: one indicator `/v2/resolve` on the mixer, `custom_only` or with `base=1` `base_and_custom`, and with `un=1` one `custom_only` on the UN deployment when the UN origin is served. Each keeps its first 10 candidates, in the resolver's order, that are typed `StatisticalVariable` or name no type.
+
+Hits come in that order, each `ref` once. Each carries `ref`, `label`, `types`, `declared_by` and `via` (`dcid`, `name` or `indicator`). Two reads of `name` and `typeOf`, one on the mixer and one on the UN deployment where the request reads it, give the name and indicator hits their label, types and `declared_by`, by the schema document's rule, within 8 s of the request's start. A failed read names `labels` in `unavailable`, and its hits keep the label the resolver gave (none for an indicator hit), their types so far (none for a name hit, `StatisticalVariable` for an indicator hit the resolver typed so) and a `null` `declared_by`.
+
+A leg that fails or runs out of time is named in `unavailable` (`dcid`, `names`, `dfo`, `base`, `un_system`; the mixer's indicator leg names `dfo`, and `base` beside it with `base=1`), and the others still answer `200`. When every leg run fails the route answers retryable `503 service_unavailable`, with `cause: {"code": "upstream_rate_limited"}` and `Retry-After` when every failure was a graph read answered `429`. The legs' graph reads run on 16 workers of their own, which refuse a read when all are busy, and the entity resolver's on the DCP-read executor. An answer with nothing in `unavailable` is kept in a cache of 512 answers, keyed by the mixer's generation and, for an answer that read the UN deployment, the UN deployment's.
+
+```json
+{
+  "query": "Kenya",
+  "hits": [
+    {"ref": "country/KEN", "label": "Kenya", "types": ["Country"], "declared_by": "base", "via": "name"}
+  ],
+  "unavailable": []
+}
+```
+
+---
+
 ### POST /api/graph/schema/check
 
 Checks candidate StatVar definitions against the schema. The request is `{rows}`, 1 to 2,000 rows (`caps.max_check_rows`). The route checks rows in order from the first and answers the findings for the rows it checked and how many that is (`rows_checked`). When `rows_checked` is less than the rows sent, send the rows from that index in the next request. Every response checks at least one row.

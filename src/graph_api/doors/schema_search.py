@@ -1,0 +1,583 @@
+"""Serve `GET /api/graph/schema/search`, the graph nodes a search box query reaches.
+
+Three kinds of leg run at once, each until `SCHEMA_SEARCH_LEG_SECONDS` from the request's
+start:
+
+- `dcid`: a query in dcid syntax (`graph_api.routing.DcidConvertor.regex`) is read as a whole
+  dcid from the node view's own readers, as `GET /api/graph/schema/node/{dcid}` reads it: a UN
+  id from the UN deployment, any other from the mixer and, when the mixer holds no such node,
+  from the UN deployment. The UN deployment is read only with `un=1` and the UN origin served.
+  A held node is one hit.
+- `names`: the shared entity resolver as `POST /api/graph/resolve` runs it
+  (`graph_api.doors.resolve.run_resolve`). A resolved entity, or an ambiguous result's
+  candidates, are hits. A query past `RESOLVE_TEXT_MAX_LENGTH` skips it.
+- `dfo`, `base` and `un_system`: one indicator `/v2/resolve` on the mixer, `custom_only` for
+  DFO StatVars or `base_and_custom` with `base=1`, and with `un=1` one `custom_only` on the UN
+  deployment where the bound catalogue serves the UN origin. Each keeps its first
+  `INDICATOR_CANDIDATES` candidates in the resolver's order that are typed
+  `StatisticalVariable` or name no type (`origin_catalogue.graph.parse_indicator_candidates`).
+
+Hits come in that order, each ref once, the first kept. Two reads of `name` and `typeOf`, one
+batch on the mixer and one on the UN deployment where the request reads it, give each name and
+indicator hit its label, types and `declared_by` (`graph_api.schema_document.declared_by` over
+its `typeOf` targets' Provenances), each finishing by `SCHEMA_SEARCH_TIMEOUT_SECONDS` from the
+start. A hit neither read answers keeps the label the resolver gave, none for an indicator, the
+types it had (none for a name hit, `StatisticalVariable` for an indicator typed so) and a null
+`declared_by`. A label read that fails names `labels` in `unavailable`.
+
+A leg that raises or runs out of time is named in `unavailable`, the mixer's indicator leg as
+`dfo`, and `base` beside it with `base=1`, and the rest still answer 200. When every leg run
+fails the route answers retryable 503 `service_unavailable`, and when every failure was a graph
+read answered HTTP 429, it answers as the schema routes answer a rate-limited read, with
+`cause: {"code": "upstream_rate_limited"}` and `Retry-After`. The legs' graph reads run on an
+executor of `SCHEMA_SEARCH_WORKERS` workers of their own that refuses a read when every worker
+is busy, which fails that leg. The entity resolver's reads run on the shared DCP-read executor.
+
+An answer with no unavailable source is kept in an LRU of `SCHEMA_SEARCH_CACHE_SIZE` entries
+keyed by the mixer's generation stamp, the UN deployment's where the request reads it, the
+origin catalogue's build, whether it serves the UN origin, the stripped query and both
+switches, expiring with the mixer's stamp. The lifespan registers it as
+`graph_api.schema_search`, so a mixer generation change clears it.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import re
+import threading
+import time
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass
+from typing import Annotated, NamedTuple, Protocol
+
+from cachetools import TLRUCache
+from fastapi import APIRouter, Query, Request
+from fastapi.responses import JSONResponse
+from pydantic import StringConstraints
+
+from dc_graph import ArcTarget, display_name
+from dfo_platform import ProblemSpec
+from dfo_platform.doors import DoorContribution
+from graph_api.deps import (
+    DcpExecutorSaturated,
+    DcpReadExecutor,
+    GraphDeps,
+    GraphDepsDep,
+    GraphDepsNotSet,
+    run_dcp_read,
+)
+from graph_api.doors.node import published_membership
+from graph_api.doors.resolve import run_resolve
+from graph_api.doors.schema import SchemaReadFailed
+from graph_api.node_view import NodeViewReader
+from graph_api.resolve_models import RESOLVE_TEXT_MAX_LENGTH, ResolveRequest
+from graph_api.routing import DcidConvertor
+from graph_api.schema_document import declared_by
+from graph_api.schema_models import (
+    SEARCH_QUERY_MAX_LENGTH,
+    DeclaredBy,
+    SchemaSearch,
+    SchemaSearchHit,
+    SearchSource,
+)
+from graph_generation import UNKNOWN_GENERATION, GenerationProvider
+from graph_generation.stamp import ttu_from_stamp_key
+from materialise.graph import GraphReadError
+from origin_catalogue import Catalogue, current_catalogue
+from origin_catalogue.graph import IndicatorCandidate, is_un_dcid, parse_indicator_candidates
+
+logger = logging.getLogger(__name__)
+
+SCHEMA_SEARCH_LEG_SECONDS = 6.0
+"""How long each leg runs from the request's start. The website's proxy sets no timeout of its
+own, so the caller's timeout is the search box's; it should give up no sooner than 10 s."""
+
+SCHEMA_SEARCH_TIMEOUT_SECONDS = 8.0
+"""When the label reads of the hits must finish, from the request's start. The 2 s past the
+legs' cap is the reads' own budget."""
+
+SCHEMA_SEARCH_WORKERS = 16
+"""The workers the legs' graph reads run on, per instance. One request holds at most three at
+once (the dcid read and two indicator resolves), then two for the label reads, so five searches
+with slow upstreams run at once before a sixth finds its reads refused."""
+
+SCHEMA_SEARCH_CACHE_SIZE = 512
+"""The most search answers the cache keeps."""
+
+INDICATOR_CANDIDATES = 10
+"""The candidates each indicator leg keeps, in the resolver's order."""
+
+_STATVAR = "StatisticalVariable"
+_HIT_PROPERTIES = ("name", "typeOf")
+_TYPE_OF = "typeOf"
+_RATE_LIMITED = 429
+_DCID = re.compile(DcidConvertor.regex)
+
+# The failures a leg meets in normal running, logged without a traceback. Anything else is a
+# fault in this code or a malformed answer, logged with one.
+_EXPECTED_FAILURES: tuple[type[Exception], ...] = (
+    TimeoutError,
+    DcpExecutorSaturated,
+    GraphReadError,
+)
+
+type SearchQuery = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=SEARCH_QUERY_MAX_LENGTH),
+]
+
+
+class IndicatorResolver(Protocol):
+    """The indicator `/v2/resolve` `origin_catalogue.graph.OriginGraphClient` posts."""
+
+    def resolve_indicators(
+        self, query: str, *, target: str, un: bool = False, deadline: float | None = None
+    ) -> dict: ...
+
+
+class SearchKey(NamedTuple):
+    """The mixer's generation stamp key, the UN deployment's where the request reads it, the
+    origin catalogue's build, whether it serves the UN origin, the stripped query and the two
+    switches. `ttu_from_stamp_key` reads the first member."""
+
+    stamp: str
+    un_stamp: str | None
+    origin_catalogue: str
+    un_system_enabled: bool
+    query: str
+    base: bool
+    un: bool
+
+
+class SchemaSearchCache:
+    """At most `maxsize` complete search answers, each expiring with its generation stamp. One
+    lock covers every operation, since the generation provider calls `stats` and `clear` on its
+    refresh thread."""
+
+    def __init__(
+        self,
+        *,
+        generation: GenerationProvider = UNKNOWN_GENERATION,
+        maxsize: int = SCHEMA_SEARCH_CACHE_SIZE,
+        timer: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._entries: TLRUCache[SearchKey, SchemaSearch] = TLRUCache(
+            maxsize=maxsize, ttu=ttu_from_stamp_key, timer=timer
+        )
+        self._generation = generation
+        self._hits = 0
+        self._misses = 0
+        self._lock = threading.Lock()
+
+    def get(self, key: SearchKey) -> SchemaSearch | None:
+        with self._lock:
+            found = self._entries.get(key)
+            if found is None:
+                self._misses += 1
+            else:
+                self._hits += 1
+            return found
+
+    def put(self, key: SearchKey, answer: SchemaSearch) -> None:
+        """Store `answer`, unless the generation's stamp key is no longer `key.stamp`."""
+        if self._generation.stamp().key != key.stamp:
+            return
+        with self._lock:
+            self._entries[key] = answer
+
+    def stats(self) -> Mapping[str, int]:
+        with self._lock:
+            return {"hits": self._hits, "misses": self._misses, "entries": len(self._entries)}
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+
+
+@dataclass(frozen=True, slots=True)
+class SchemaSearchDeps:
+    """The search route's state: the indicator resolver, `None` on a surface with none, which
+    reports its indicator legs unavailable; the executor its graph reads run on; its answer
+    cache; and the UN deployment's generation, which keys the answers that read it."""
+
+    indicators: IndicatorResolver | None
+    executor: DcpReadExecutor
+    cache: SchemaSearchCache
+    un_generation: GenerationProvider
+
+
+def new_search_executor() -> DcpReadExecutor:
+    return DcpReadExecutor(
+        max_workers=SCHEMA_SEARCH_WORKERS, thread_name_prefix="graph-schema-search"
+    )
+
+
+class SchemaSearchUnavailable(Exception):
+    """Every leg the search ran failed or ran out of time."""
+
+    def __init__(self, legs: Sequence[SearchSource]) -> None:
+        super().__init__(f"no search leg answered ({', '.join(legs)}); retry")
+
+
+class _LegUnavailable(Exception):
+    """A leg the surface cannot run, such as an indicator leg with no indicator resolver."""
+
+
+@dataclass(frozen=True, slots=True)
+class _Facts:
+    label: str | None
+    types: list[str]
+    declared_by: DeclaredBy | None
+
+
+@dataclass(frozen=True, slots=True)
+class _Readers:
+    """The node view's mixer reader and, where the request reads the UN deployment, its own."""
+
+    mixer: NodeViewReader
+    un: NodeViewReader | None
+
+
+type _Entry = Mapping[str, Sequence[ArcTarget]]
+
+
+def _facts(dcid: str, entry: _Entry, catalogue: Catalogue) -> _Facts:
+    """`dcid`'s label, types and declaring origin from its `name` and `typeOf` targets."""
+    type_targets = entry.get(_TYPE_OF, ())
+    provenances = {p for target in type_targets for p in target.provenances}
+    return _Facts(
+        label=display_name((target.value for target in entry.get("name", ())), dcid),
+        types=sorted({target.value for target in type_targets}),
+        declared_by=declared_by(provenances, catalogue=catalogue) if provenances else None,
+    )
+
+
+def _read_facts(
+    reader: NodeViewReader, dcids: Sequence[str], *, catalogue: Catalogue, deadline: float
+) -> dict[str, _Facts]:
+    """The facts of each of `dcids` `reader` holds, every empty answer read again alone."""
+    if not dcids:
+        return {}
+    entries = reader.node_arc_targets_many(
+        dcids, properties=_HIT_PROPERTIES, individual_probe_budget=None, deadline=deadline
+    )
+    return {
+        dcid: _facts(dcid, entry, catalogue) for dcid, entry in entries.items() if entry is not None
+    }
+
+
+def _read_dcid(
+    readers: _Readers, dcid: str, *, catalogue: Catalogue, deadline: float
+) -> _Facts | None:
+    """`dcid`'s facts as the node view route finds the node, `None` where no read holds it."""
+    if is_un_dcid(dcid):
+        if readers.un is None:
+            return None
+        return _read_facts(readers.un, [dcid], catalogue=catalogue, deadline=deadline).get(dcid)
+    held = _read_facts(readers.mixer, [dcid], catalogue=catalogue, deadline=deadline).get(dcid)
+    if held is not None or readers.un is None:
+        return held
+    return _read_facts(readers.un, [dcid], catalogue=catalogue, deadline=deadline).get(dcid)
+
+
+def _kept_candidates(body: dict) -> list[IndicatorCandidate]:
+    """The first `INDICATOR_CANDIDATES` candidates of an indicator resolve answer that are typed
+    `StatisticalVariable` or name no type."""
+    candidates = parse_indicator_candidates(body)
+    kept = [c for c in candidates if not c.types or _STATVAR in c.types]
+    return kept[:INDICATOR_CANDIDATES]
+
+
+def _resolve_candidates(
+    indicators: IndicatorResolver, query: str, *, target: str, un: bool, deadline: float
+) -> list[IndicatorCandidate]:
+    body = indicators.resolve_indicators(query, target=target, un=un, deadline=deadline)
+    return _kept_candidates(body)
+
+
+async def _within[R](awaitable: Awaitable[R], deadline: float) -> R:
+    async with asyncio.timeout(max(0.0, deadline - time.monotonic())):
+        return await awaitable
+
+
+def _log_failure(what: str, query: str, exc: Exception) -> None:
+    """One warning naming the failed part and the query, with a traceback for a failure outside
+    `_EXPECTED_FAILURES` and `_LegUnavailable`."""
+    expected = isinstance(exc, (*_EXPECTED_FAILURES, _LegUnavailable))
+    logger.warning(
+        "schema search %s failed for %r: %r", what, query, exc, exc_info=None if expected else exc
+    )
+
+
+def _rate_limited(exc: Exception) -> bool:
+    return isinstance(exc, GraphReadError) and exc.upstream_status == _RATE_LIMITED
+
+
+@dataclass(slots=True)
+class _Leg:
+    """One leg: the sources it answers for and the coroutine function that runs it."""
+
+    sources: tuple[SearchSource, ...]
+    run: Callable[[], Awaitable[list[SchemaSearchHit]]]
+
+
+async def _fill_facts(
+    search: SchemaSearchDeps,
+    readers: _Readers,
+    hits: dict[str, SchemaSearchHit],
+    *,
+    query: str,
+    catalogue: Catalogue,
+    deadline: float,
+) -> bool:
+    """Give the name and indicator hits in `hits` their facts from one read per deployment, in
+    place, and return whether every read answered. A read that fails leaves its hits as they
+    are and the other read's facts stand."""
+    unread = [ref for ref, hit in hits.items() if hit.via != "dcid"]
+    batches: list[tuple[NodeViewReader, list[str]]] = [
+        (readers.mixer, [ref for ref in unread if not is_un_dcid(ref)])
+    ]
+    if readers.un is not None:
+        batches.append((readers.un, [ref for ref in unread if is_un_dcid(ref)]))
+    batches = [(reader, refs) for reader, refs in batches if refs]
+    outcomes = await asyncio.gather(
+        *(
+            _within(
+                run_dcp_read(
+                    search.executor,
+                    _read_facts,
+                    reader,
+                    refs,
+                    catalogue=catalogue,
+                    deadline=deadline,
+                ),
+                deadline,
+            )
+            for reader, refs in batches
+        ),
+        return_exceptions=True,
+    )
+    answered = True
+    for outcome in outcomes:
+        if isinstance(outcome, BaseException):
+            if not isinstance(outcome, Exception):
+                raise outcome
+            _log_failure("label read", query, outcome)
+            answered = False
+            continue
+        for ref, found in outcome.items():
+            hit = hits[ref]
+            hits[ref] = hit.model_copy(
+                update={
+                    "label": found.label or hit.label,
+                    "types": found.types or hit.types,
+                    "declared_by": found.declared_by,
+                }
+            )
+    return answered
+
+
+async def _search(
+    deps: GraphDeps, search: SchemaSearchDeps, request: Request, query: str, *, base: bool, un: bool
+) -> SchemaSearch:
+    """The answer to `query`.
+
+    Raises:
+        SchemaReadFailed: every leg failed, each on a graph read answered HTTP 429.
+        SchemaSearchUnavailable: every leg failed.
+    """
+    started = time.monotonic()
+    leg_deadline = started + SCHEMA_SEARCH_LEG_SECONDS
+    deadline = started + SCHEMA_SEARCH_TIMEOUT_SECONDS
+    catalogue = current_catalogue()
+    reads_un = un and catalogue.un_system_enabled
+    views = deps.node_views
+    readers = (
+        None
+        if views is None
+        else _Readers(mixer=views.mixer, un=views.un_reader if reads_un else None)
+    )
+
+    async def dcid_leg() -> list[SchemaSearchHit]:
+        if readers is None:
+            raise _LegUnavailable("the surface has no node view reader")
+        facts = await run_dcp_read(
+            search.executor,
+            _read_dcid,
+            readers,
+            query,
+            catalogue=catalogue,
+            deadline=leg_deadline,
+        )
+        if facts is None:
+            return []
+        return [
+            SchemaSearchHit(
+                ref=query,
+                label=facts.label,
+                types=facts.types,
+                declared_by=facts.declared_by,
+                via="dcid",
+            )
+        ]
+
+    async def names_leg() -> list[SchemaSearchHit]:
+        response = await run_resolve(
+            deps,
+            ResolveRequest(texts=[query]),
+            policy=published_membership(request),
+            deadline=leg_deadline,
+        )
+        (result,) = response.results
+        if result.status == "resolved" and result.entity is not None:
+            entities = [result.entity]
+        elif result.status == "ambiguous":
+            entities = result.candidates or []
+        else:
+            entities = []
+        return [
+            SchemaSearchHit(ref=e.ref, label=e.label, types=[], declared_by=None, via="name")
+            for e in entities
+        ]
+
+    def indicator_leg(
+        *, target: str, un_deployment: bool
+    ) -> Callable[[], Awaitable[list[SchemaSearchHit]]]:
+        async def run() -> list[SchemaSearchHit]:
+            if search.indicators is None:
+                raise _LegUnavailable("the surface has no indicator resolver")
+            candidates = await run_dcp_read(
+                search.executor,
+                _resolve_candidates,
+                search.indicators,
+                query,
+                target=target,
+                un=un_deployment,
+                deadline=leg_deadline,
+            )
+            return [
+                SchemaSearchHit(
+                    ref=c.dcid,
+                    label=None,
+                    types=[_STATVAR] if c.types else [],
+                    declared_by=None,
+                    via="indicator",
+                )
+                for c in candidates
+            ]
+
+        return run
+
+    legs: list[_Leg] = []
+    if _DCID.fullmatch(query):
+        legs.append(_Leg(sources=("dcid",), run=dcid_leg))
+    if len(query) <= RESOLVE_TEXT_MAX_LENGTH:
+        legs.append(_Leg(sources=("names",), run=names_leg))
+    legs.append(
+        _Leg(
+            sources=("dfo", "base") if base else ("dfo",),
+            run=indicator_leg(
+                target="base_and_custom" if base else "custom_only", un_deployment=False
+            ),
+        )
+    )
+    if reads_un:
+        legs.append(
+            _Leg(
+                sources=("un_system",),
+                run=indicator_leg(target="custom_only", un_deployment=True),
+            )
+        )
+
+    outcomes = await asyncio.gather(
+        *(_within(leg.run(), leg_deadline) for leg in legs), return_exceptions=True
+    )
+    hits: dict[str, SchemaSearchHit] = {}
+    unavailable: list[SearchSource] = []
+    failures: list[Exception] = []
+    for leg, outcome in zip(legs, outcomes, strict=True):
+        if isinstance(outcome, BaseException):
+            if not isinstance(outcome, Exception):
+                raise outcome
+            _log_failure(f"leg {'/'.join(leg.sources)}", query, outcome)
+            unavailable.extend(leg.sources)
+            failures.append(outcome)
+            continue
+        for hit in outcome:
+            hits.setdefault(hit.ref, hit)
+    if len(failures) == len(legs):
+        if all(_rate_limited(exc) for exc in failures):
+            first = failures[0]
+            assert isinstance(first, GraphReadError)
+            raise SchemaReadFailed(first)
+        raise SchemaSearchUnavailable(unavailable)
+
+    if any(hit.via != "dcid" for hit in hits.values()):
+        answered = readers is not None and await _fill_facts(
+            search, readers, hits, query=query, catalogue=catalogue, deadline=deadline
+        )
+        if not answered:
+            unavailable.append("labels")
+    return SchemaSearch(query=query, hits=list(hits.values()), unavailable=unavailable)
+
+
+async def get_schema_search(
+    deps: GraphDepsDep,
+    request: Request,
+    q: Annotated[SearchQuery, Query()],
+    base: bool = False,
+    un: bool = False,
+) -> JSONResponse:
+    search = deps.schema_search
+    if search is None:
+        raise GraphDepsNotSet()
+    await deps.generation.refresh_if_stale()
+    catalogue = current_catalogue()
+    reads_un = un and catalogue.un_system_enabled
+    key = SearchKey(
+        stamp=deps.generation.stamp().key,
+        un_stamp=search.un_generation.stamp().key if reads_un else None,
+        origin_catalogue=catalogue.build_id,
+        un_system_enabled=catalogue.un_system_enabled,
+        query=q,
+        base=base,
+        un=un,
+    )
+    answer = search.cache.get(key)
+    if answer is None:
+        answer = await _search(deps, search, request, q, base=base, un=un)
+        if not answer.unavailable:
+            search.cache.put(key, answer)
+    return JSONResponse(answer.model_dump(mode="json"))
+
+
+def classify_schema_search_exception(exc: BaseException) -> ProblemSpec | None:
+    """`SchemaSearchUnavailable` as retryable 503. A search whose every leg was rate limited
+    raises `SchemaReadFailed`, which the schema door classifies."""
+    if isinstance(exc, SchemaSearchUnavailable):
+        return ProblemSpec(
+            status=503,
+            code="service_unavailable",
+            detail=str(exc),
+            retryable=True,
+            log=f"Graph schema search answered with no leg: {exc}",
+        )
+    return None
+
+
+def build_schema_search_door() -> DoorContribution:
+    router = APIRouter()
+    # `response_model` documents the body in OpenAPI. The JSONResponse passes through.
+    router.add_api_route(
+        "/api/graph/schema/search",
+        get_schema_search,
+        methods=["GET"],
+        response_model=SchemaSearch,
+    )
+    return DoorContribution(
+        router=router,
+        classify=classify_schema_search_exception,
+        exception_types=(SchemaSearchUnavailable,),
+        exception_exemplars=(SchemaSearchUnavailable(["names", "dfo"]),),
+    )

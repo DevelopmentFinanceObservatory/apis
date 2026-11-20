@@ -557,3 +557,51 @@ class SchemaCheckResponse(ResponseModel):
         description="one finding per fault in the rows checked, in row order; empty when none of "
         "them has a fault"
     )
+
+
+SEARCH_QUERY_MAX_LENGTH = 256
+"""The longest search query, stripped, `GET /schema/search` takes."""
+
+type SearchVia = Literal["dcid", "name", "indicator"]
+"""How a search hit was found: the query is its whole dcid, the entity resolver named it, or
+an indicator resolve returned it."""
+
+type SearchSource = Literal["dcid", "names", "dfo", "base", "un_system", "labels"]
+"""A part of a search: the dcid read, the entity resolver, the indicator resolves of DFO, base
+Data Commons and the UN System Data Commons, and the read of the hits' labels and types."""
+
+
+class SchemaSearchHit(ResponseModel):
+    """One node a search found."""
+
+    ref: str = Field(description="the node's dcid")
+    label: str | None = Field(
+        description="the node's name; null when the graph gives none, or for an indicator hit "
+        "when the label read failed (labels in unavailable)"
+    )
+    types: list[str] = Field(
+        description="the node's typeOf values, sorted; when the label read failed, none for a "
+        "name hit and StatisticalVariable for an indicator hit the resolver typed so"
+    )
+    declared_by: DeclaredBy | None = Field(
+        description="the origin declaring the node, by the schema node's rule; null when the "
+        "graph names no declaring Provenance for it or the label read failed"
+    )
+    via: SearchVia = Field(
+        description="dcid when the query is the node's whole dcid, name when the entity "
+        "resolver named it, indicator when an indicator resolve returned it"
+    )
+
+
+class SchemaSearch(ResponseModel):
+    """The nodes a search box query reaches in the graph."""
+
+    query: str = Field(description="the query, stripped of surrounding whitespace")
+    hits: list[SchemaSearchHit] = Field(
+        description="the dcid hit first, then the entity resolver's, then the indicator "
+        "resolves', each ref once; empty when nothing matched"
+    )
+    unavailable: list[SearchSource] = Field(
+        description="the parts that failed or ran out of time: a leg, so its hits are missing, "
+        "or labels, so some hits lack their label, types and declared_by"
+    )
