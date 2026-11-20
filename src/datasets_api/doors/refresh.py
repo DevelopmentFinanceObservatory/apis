@@ -314,11 +314,6 @@ class _DerivedVersions:
         self._at(base_content_version)
         self._made[minting] = content_version
 
-    def based_on(self, *, base_content_version: str, content_version: str) -> bool:
-        """Whether the record of `content_version` names `base_content_version` as its base."""
-        self._at(base_content_version)
-        return any(cv == content_version for _, cv in self._recorded(base_content_version))
-
     def reread(self) -> None:
         """Read the recorded versions again on the next lookup, keeping what this refresh made,
         so a lookup sees what another caller recorded meanwhile."""
@@ -444,12 +439,11 @@ def _agreed_frame(
     named frame's.
 
     Every rendering is made from the head with the current code index, the first being the one
-    the frame refreshes as; a frame recorded under one rendering is that rendering's frame. When
-    the first rendering's frame is the head itself, or a derived version whose record names the
-    head as its base, and already links a file of every rendering, nothing more renders; a
-    derived frame recorded from another head may have had its files linked from other heads, so
-    its other renderings are made again. A plain file is linked
-    under the head unless one is, and the frame answers once every rendering made the same
+    the frame refreshes as; a frame recorded under one rendering is that rendering's frame. With
+    several, each rendering is made again even when its file is already linked under the first
+    one's frame: a file may have been linked there from another head, and a version's record
+    keeps the base it was first recorded from. A plain file is linked under the head unless one
+    is, and the frame answers once every rendering made the same
     version and that version links a file of each. Each check reads the files the frame's own
     read listed. When the plain rendering is one of them, the head is servable, so a rendering
     that cannot be made from it refuses rather than rebuilds.
@@ -486,25 +480,7 @@ def _agreed_frame(
         plain=None in renderings,
     )
     frame = frame_of(renderings[0])
-    if (
-        frame is None
-        or len(renderings) == 1
-        or (
-            (
-                frame.content_version == head_content_version
-                or derived.based_on(
-                    base_content_version=head_content_version,
-                    content_version=frame.content_version,
-                )
-            )
-            and _records_every(
-                frame.renderings,
-                rendering=rendering,
-                base_content_version=head_content_version,
-                collapsed=frame.content_version != head_content_version,
-            )
-        )
-    ):
+    if frame is None or len(renderings) == 1:
         return frame
     linked = list(frame.renderings)
     for other in renderings[1:]:

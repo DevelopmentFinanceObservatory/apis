@@ -958,6 +958,47 @@ def test_a_rendering_the_rebuilt_head_cannot_make_refuses(monkeypatch: pytest.Mo
     assert len(shared.rig.sdmx_requests) > sdmx_requests
 
 
+@pytest.mark.parametrize(
+    ("mints", "answers_current"),
+    [
+        pytest.param((_CUT_MINT,), True, id="one-rendering"),
+        pytest.param((_CUT_MINT, _CUT_SUMMED_MINT), False, id="two-renderings"),
+    ],
+)
+def test_a_head_linking_every_rendering_still_makes_each_one(
+    mints: tuple[dict, ...], answers_current: bool, monkeypatch: pytest.MonkeyPatch
+):
+    """A head version that links a file of each rendering a frame is recorded under answers
+    only once each rendering makes it again from the head: a file may have been linked there
+    from another head. When the summed cut now makes another frame, the refresh refuses
+    `rendering_not_recorded`; a frame recorded under the cut alone stays current."""
+    shared = _one_contributor_rig(*mints)
+    summed_cut = MintingOptions(
+        groupby=GroupbyOptions.model_validate(_GROUPBY), without_party_totals=True
+    )
+    real = refresh_module._rendering_frame
+
+    def the_summed_cut_makes_another_frame(**kwargs):
+        frame = real(**kwargs)
+        if frame is None or kwargs["minting"] != summed_cut:
+            return frame
+        return replace(
+            frame, manifest=frame.manifest.model_copy(update={"content_version": "cv_other"})
+        )
+
+    monkeypatch.setattr(refresh_module, "_rendering_frame", the_summed_cut_makes_another_frame)
+    named = {"spec_id": shared.spec_id, "content_version": shared.base_content_version}
+
+    resp = shared.rig.refresh(**named)
+
+    if answers_current:
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {"status": "current", "frame": named}
+    else:
+        assert resp.status_code == 422, resp.text
+        assert (resp.json()["code"], resp.json()["retryable"]) == ("rendering_not_recorded", False)
+
+
 def test_a_rebuild_to_the_named_frame_that_cannot_make_its_renderings_refuses(
     monkeypatch: pytest.MonkeyPatch,
 ):
