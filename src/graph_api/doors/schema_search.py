@@ -17,11 +17,14 @@ The legs run at once, each until `SCHEMA_SEARCH_LEG_SECONDS` from the request's 
 - `dfo`, `base` and `un_system`: one indicator `/v2/resolve` each: `custom_only` on the mixer,
   with `base=1` `base_only` on the mixer, and with `un=1` `custom_only` on the UN deployment
   where the bound catalogue serves the UN origin. Each keeps its first `INDICATOR_CANDIDATES`
-  candidates in the resolver's order that are typed `StatisticalVariable` or name no type
+  candidates in the resolver's order that score at least `SCHEMA_SEARCH_SCORE_FLOOR` and are
+  typed `StatisticalVariable` or name no type
   (`origin_catalogue.graph.parse_indicator_candidates`), skipping a candidate that fails the
   parser's checks, and each fails on its own.
 
-Hits come in that order, each ref once, the first kept. Two reads of `name` and `typeOf`, one
+Hits come dcid first, then names, then every indicator leg's merged by descending score, ties
+in leg order (dfo, base, un_system) and then the resolver's, each ref once, the first kept. An
+indicator hit carries the resolver's score, the others none. Two reads of `name` and `typeOf`, one
 batch on the mixer and one on the UN deployment where the request reads it, give each name and
 indicator hit its label, types and `declared_by` (`graph_api.schema_document.declared_by` over
 its `typeOf` targets' Provenances), each finishing by `SCHEMA_SEARCH_TIMEOUT_SECONDS` from the
@@ -122,6 +125,12 @@ worker, so the resolve and node routes keep the rest."""
 
 INDICATOR_CANDIDATES = 10
 """The candidates each indicator leg keeps, in the resolver's order."""
+
+SCHEMA_SEARCH_SCORE_FLOOR = 0.30
+"""The least score an indicator candidate needs to be kept. It mirrors the search engine's
+`SEARCH_RECALL_SCORE_FLOOR` default (`search.engine.config.SearchSettings.recall_score_floor`),
+which this module does not import: that module builds the engine's settings at import and
+refuses without the engine's environment, such as `SEARCH_GRAPH_BASE`."""
 
 _STATVAR = "StatisticalVariable"
 _HIT_PROPERTIES = ("name", "typeOf")
@@ -335,10 +344,15 @@ def _read_dcid(
 
 
 def _kept_candidates(body: dict) -> list[IndicatorCandidate]:
-    """The first `INDICATOR_CANDIDATES` valid candidates of an indicator resolve answer that are
-    typed `StatisticalVariable` or name no type."""
+    """The first `INDICATOR_CANDIDATES` valid candidates of an indicator resolve answer that
+    score at least `SCHEMA_SEARCH_SCORE_FLOOR` and are typed `StatisticalVariable` or name no
+    type."""
     candidates = parse_indicator_candidates(body, skip_invalid=True)
-    kept = [c for c in candidates if not c.types or _STATVAR in c.types]
+    kept = [
+        c
+        for c in candidates
+        if c.score >= SCHEMA_SEARCH_SCORE_FLOOR and (not c.types or _STATVAR in c.types)
+    ]
     return kept[:INDICATOR_CANDIDATES]
 
 
@@ -505,6 +519,7 @@ async def _search(
                 types=facts.types,
                 declared_by=facts.declared_by,
                 via="dcid",
+                score=None,
             )
         ]
 
@@ -525,7 +540,9 @@ async def _search(
         else:
             entities = []
         return [
-            SchemaSearchHit(ref=e.ref, label=e.label, types=[], declared_by=None, via="name")
+            SchemaSearchHit(
+                ref=e.ref, label=e.label, types=[], declared_by=None, via="name", score=None
+            )
             for e in entities
         ]
 
@@ -551,6 +568,7 @@ async def _search(
                     types=[_STATVAR] if c.types else [],
                     declared_by=None,
                     via="indicator",
+                    score=c.score,
                 )
                 for c in candidates
             ]
@@ -576,7 +594,8 @@ async def _search(
     outcomes = await asyncio.gather(
         *(_within(leg.run(), leg_deadline) for leg in legs), return_exceptions=True
     )
-    hits: dict[str, SchemaSearchHit] = {}
+    found: list[SchemaSearchHit] = []
+    scored: list[tuple[float, SchemaSearchHit]] = []
     unavailable: list[SearchSource] = []
     failures: list[Exception] = []
     for leg, outcome in zip(legs, outcomes, strict=True):
@@ -588,7 +607,10 @@ async def _search(
             failures.append(outcome)
             continue
         for hit in outcome:
-            hits.setdefault(hit.ref, hit)
+            if hit.score is None:
+                found.append(hit)
+            else:
+                scored.append((hit.score, hit))
     if len(failures) == len(legs):
         if all(_rate_limited(exc) for exc in failures):
             waits = [
@@ -598,6 +620,18 @@ async def _search(
             ]
             raise SchemaSearchRateLimited(max(waits, default=None))
         raise SchemaSearchUnavailable(unavailable)
+
+    # `sorted` is stable, so tied scores keep leg order and then the resolver's.
+    found.extend(hit for _, hit in sorted(scored, key=lambda pair: -pair[0]))
+    hits: dict[str, SchemaSearchHit] = {}
+    for hit in found:
+        kept = hits.get(hit.ref)
+        if kept is None:
+            hits[hit.ref] = hit
+        elif hit.types and not kept.types:
+            # Every source names the same node, so a type one resolver gives it holds for the
+            # hit kept at the best place, and the graph check below does not drop it untyped.
+            hits[hit.ref] = kept.model_copy(update={"types": hit.types})
 
     unread = [ref for ref, hit in hits.items() if hit.via != "dcid"]
     if unread:

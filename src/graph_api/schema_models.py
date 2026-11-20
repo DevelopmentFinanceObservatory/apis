@@ -591,6 +591,10 @@ class SchemaSearchHit(ResponseModel):
         description="dcid when the query is the node's whole dcid, name when the entity "
         "resolver named it, indicator when an indicator resolve returned it"
     )
+    score: float | None = Field(
+        description="the indicator resolver's score for an indicator hit, at least 0.30; null "
+        "for a dcid or name hit"
+    )
 
 
 class SchemaSearch(ResponseModel):
@@ -599,7 +603,8 @@ class SchemaSearch(ResponseModel):
     query: str = Field(description="the query, stripped of surrounding whitespace")
     hits: list[SchemaSearchHit] = Field(
         description="the dcid hit first, then the entity resolver's, then the indicator "
-        "resolves', each ref once; empty when nothing matched"
+        "resolves' merged by descending score, ties in source order (dfo, base, un_system), "
+        "each ref once; empty when nothing matched"
     )
     unavailable: list[SearchSource] = Field(
         description="the parts that failed or ran out of time: a leg, so its hits are missing, "
