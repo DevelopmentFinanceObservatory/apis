@@ -1437,10 +1437,18 @@ class _LinkedFromAnotherHead:
 
 
 def _linked_from_another_head(
-    *, summed_cut_first: bool, unheaded_at_a: bool = False, summed_cut_at_b: bool = False
+    *,
+    summed_cut_first: bool,
+    unheaded_at_a: bool = False,
+    summed_cut_at_b: bool = False,
+    unheaded_after_b: bool = False,
+    summed_cut_again_at_a: bool = False,
 ) -> _LinkedFromAnotherHead:
     """`unheaded_at_a` clears the heads A's links name, as on links written before links named
-    heads, and `summed_cut_at_b` mints the summed cut at B too, which makes D there as well."""
+    heads, and `summed_cut_at_b` mints the summed cut at B too, which makes D there as well.
+    `unheaded_after_b` clears every link's heads once B's mints are linked, and
+    `summed_cut_again_at_a` mints the summed cut at A once the head is back there, which links
+    it under D again naming A."""
     rig = _cut_family_rig(dac_total_kind="total")
     spec_id = recompute_identity(selector_fixture._CUT_FAMILY_IDENTITY).spec_id
     sidecar = {
@@ -1478,11 +1486,15 @@ def _linked_from_another_head(
     if summed_cut_at_b:
         assert mint(summed_cut) == made_at_a["summed_cut"]
     assert rig.head_store.head_for(spec_id).content_version != head_a
+    if unheaded_after_b:
+        _unhead_links(rig, spec_id=spec_id)
     # Another caller's plain mint brings the head back to A, fresh, so the refresh reads it.
     rig.body["text"] = body_a
     rig.head_store.age_head(spec_id, age=_PAST_MAX_AGE)
     mint({"bundle": False})
     assert rig.head_store.head_for(spec_id).content_version == head_a
+    if summed_cut_again_at_a:
+        assert mint(summed_cut) == made_at_a["summed_cut"]
     return _LinkedFromAnotherHead(
         rig=rig,
         spec_id=spec_id,
@@ -1604,17 +1616,21 @@ def test_a_link_naming_no_head_counts_only_under_a_one_minting_version_of_that_b
 
 
 @pytest.mark.parametrize(
-    ("unheaded_at_a", "summed_cut_at_b"),
-    [(False, True), (True, False)],
+    ("unheaded_at_a", "summed_cut_at_b", "renders_at_a"),
+    [(False, True, False), (True, False, True)],
     ids=["made-from-two-heads", "legacy-link-beside-a-later-head"],
 )
-def test_a_summed_cut_card_on_d_answers_current_at_a_with_no_render(
-    unheaded_at_a: bool, summed_cut_at_b: bool, monkeypatch: pytest.MonkeyPatch
+def test_a_summed_cut_card_on_d_answers_current_at_a(
+    unheaded_at_a: bool,
+    summed_cut_at_b: bool,
+    renders_at_a: bool,
+    monkeypatch: pytest.MonkeyPatch,
 ):
-    """A card on D recorded under the summed cut alone answers `current` at A from the stored
-    versions with no render, though D's groupby file names B. When the summed cut made D at B
-    too, its file names both heads. When A's links name no head, D's links naming none record
-    the summed cut alone, so the rule for such links still counts them for A."""
+    """A card on D recorded under the summed cut alone answers `current` at A, though D's
+    groupby file names B. When the summed cut made D at B too, its file names both heads, so the
+    stored versions answer with no render. When A's links name no head, D's links record two
+    mintings, so its link naming none does not count for A and the summed cut is made again from
+    A, which makes D."""
     linked = _linked_from_another_head(
         summed_cut_first=False, unheaded_at_a=unheaded_at_a, summed_cut_at_b=summed_cut_at_b
     )
@@ -1628,6 +1644,31 @@ def test_a_summed_cut_card_on_d_answers_current_at_a_with_no_render(
     assert resp.json() == {
         "status": "current",
         "frame": {"spec_id": linked.spec_id, "content_version": linked.summed_cut_at_a},
+    }
+    assert renders == ([linked.head_a] if renders_at_a else [])
+
+
+def test_a_link_naming_no_head_beside_one_that_gained_a_head_does_not_count_for_the_base(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """D, recorded from A, links the summed cut made from A and the groupby made from B, and
+    neither link names a head. The summed cut made again at A names A on its link, leaving the
+    groupby's link the only one naming none. D's links still record two mintings, so that link
+    does not count for A, and a groupby card on D moves to Ag rather than answering `current`
+    D with no render."""
+    linked = _linked_from_another_head(
+        summed_cut_first=False, unheaded_after_b=True, summed_cut_again_at_a=True
+    )
+    renders = _counted_renders(monkeypatch)
+
+    resp = _refresh_as_groupby_card(
+        linked, content_version=linked.summed_cut_at_a, monkeypatch=monkeypatch
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {
+        "status": "moved",
+        "frame": {"spec_id": linked.spec_id, "content_version": linked.groupby_at_a},
     }
     assert renders == []
 
@@ -1671,12 +1712,13 @@ def test_a_one_minting_frame_at_the_head_it_was_made_from_answers_current_with_n
     assert renders == []
 
 
-def test_a_named_version_whose_frame_expired_gives_way_to_a_servable_one_from_the_head(
+def test_a_named_version_whose_frame_expired_is_made_again_with_its_recorded_cut(
     monkeypatch: pytest.MonkeyPatch,
 ):
     """The summed cut made V1 from the head under a code index that keeps the DAC total and V2
-    under one that leaves it out. With V1's frame file and the head's expired, a refresh of V1
-    moves to V2, servable and on record from the head, with no render."""
+    under one that leaves it out. With V1's frame file expired, a refresh of V1 under the second
+    index makes V1 again from the head, replaying the cut its trace records, and answers
+    `current`, rather than move to V2."""
     minting = _cut_family_rig(dac_total_kind="party")
     spec_id = recompute_identity(selector_fixture._CUT_FAMILY_IDENTITY).spec_id
     sidecar = {
@@ -1695,17 +1737,82 @@ def test_a_named_version_whose_frame_expired_gives_way_to_a_servable_one_from_th
     head = serving.head_store.head_for(spec_id).content_version
     assert len({v1, v2, head}) == 3
     serving.expire_frame(spec_id=spec_id, content_version=v1)
-    serving.expire_frame(spec_id=spec_id, content_version=head)
     renders = _counted_renders(monkeypatch)
 
     resp = serving.refresh(spec_id=spec_id, content_version=v1)
 
     assert resp.status_code == 200, resp.text
     assert resp.json() == {
-        "status": "moved",
-        "frame": {"spec_id": spec_id, "content_version": v2},
+        "status": "current",
+        "frame": {"spec_id": spec_id, "content_version": v1},
     }
-    assert renders == []
+    assert renders == [head]
+    assert serving.frame_servable(spec_id=spec_id, content_version=v1)
+
+
+def test_a_summed_cut_card_on_a_raw_version_is_made_again_once_the_cut_leaves_rows_out(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A party-totals cut that leaves nothing out under one code index is linked under the raw
+    head H. Under a code index that makes the DAC total a total, a refresh at the same head makes
+    the cut again from H, which now leaves the DAC total out, and moves to that version."""
+    minting = _cut_family_rig(dac_total_kind="party")
+    spec_id = recompute_identity(selector_fixture._CUT_FAMILY_IDENTITY).spec_id
+    sidecar = {
+        "schema_version": 1,
+        "spec_id": spec_id,
+        "identity": selector_fixture._CUT_FAMILY_IDENTITY,
+    }
+    named = party_fixture._mint(
+        minting.client, spec_id=spec_id, sidecar=sidecar, options=_CUT_MINT
+    )["content_version"]
+    head = minting.head_store.head_for(spec_id).content_version
+    assert named == head
+    serving = _cut_family_rig(dac_total_kind="total", stores_of=minting)
+    renders = _counted_renders(monkeypatch)
+
+    resp = serving.refresh(spec_id=spec_id, content_version=named)
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "moved"
+    moved_to = resp.json()["frame"]["content_version"]
+    version = LiveSnapshotReader(store=serving.version_store).read_version(spec_id, moved_to)
+    assert version is not None
+    assert version.base_content_version == head
+    assert renders == [head]
+
+
+def test_a_raw_version_card_is_made_again_when_a_link_under_it_names_a_head(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A groupby that leaves the raw head H unchanged answers a card on H with no render while
+    no link under H names a head. Once a link under H names another head, as a derived write
+    from that head whose rows hash to H leaves it, the refresh makes the groupby again from H."""
+    shared = _one_contributor_rig(_SUMMED_MINT)
+    rig, spec_id, named = shared.rig, shared.spec_id, shared.base_content_version
+    with rig.version_store.transaction() as tx:
+        linked = tx.fetch_all(
+            "SELECT rendering_key, rendering FROM datasets.version_artifact "
+            "WHERE subject_id = %s AND content_version = %s",
+            (spec_id, named),
+        )
+        (key,) = [row["rendering_key"] for row in linked if "groupby" in row["rendering"]]
+        tx.execute(
+            "INSERT INTO datasets.version_artifact_head "
+            "(subject_id, content_version, rendering_key, head_content_version) "
+            "VALUES (%s, %s, %s, %s)",
+            (spec_id, named, key, "cv_another_head"),
+        )
+    renders = _counted_renders(monkeypatch)
+
+    resp = rig.refresh(spec_id=spec_id, content_version=named)
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {
+        "status": "current",
+        "frame": {"spec_id": spec_id, "content_version": named},
+    }
+    assert renders == [named]
 
 
 def test_a_frame_of_two_renderings_at_a_fresh_head_that_made_it_answers_with_no_render(

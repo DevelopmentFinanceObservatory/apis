@@ -11,11 +11,14 @@
 -- before this table or by the previous image, has no row. The frame refresh reads the rows by
 -- head through `version_artifact_head_by_head`
 -- (`datasets_api.version_store.LiveVersionLister.list_head_versions`) and counts a link with no
--- row only by the rule `datasets_api.doors.refresh` states.
+-- row only by the rule `datasets_api.doors.refresh` states, which rests on no link ever being
+-- deleted. No code path deletes a `version_artifact` row, and the foreign key refuses to delete
+-- a link that holds a row here. The refresh also reads a raw version's rows by the primary key
+-- to tell whether a file under it was made from another head.
 --
--- A row belongs to its link and is deleted with it. 0001_bootstrap.sql's ALTER DEFAULT
--- PRIVILEGES covers this table for the runtime role, and 0012_worker_role.sql makes the worker
--- role a member of it, so this migration needs no GRANT statements of its own. The foreign key
+-- 0001_bootstrap.sql's ALTER DEFAULT PRIVILEGES covers this table for the runtime role, and
+-- 0012_worker_role.sql makes the worker role a member of it, so this migration needs no GRANT
+-- statements of its own. The foreign key
 -- takes SHARE ROW EXCLUSIVE on `version_artifact` for the moment the empty table is created;
 -- `lock_timeout` fails it after five seconds rather than queueing every later write behind it.
 -- The previous image never reads or writes the table. Re-running this migration changes
@@ -31,7 +34,6 @@ CREATE TABLE IF NOT EXISTS datasets.version_artifact_head (
     PRIMARY KEY (subject_id, content_version, rendering_key, head_content_version),
     FOREIGN KEY (subject_id, content_version, rendering_key)
         REFERENCES datasets.version_artifact (subject_id, content_version, rendering_key)
-        ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS version_artifact_head_by_head

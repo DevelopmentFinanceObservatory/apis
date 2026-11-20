@@ -59,13 +59,15 @@ is recorded under a minting from the head when a file of that minting linked und
 head among those it was made from (`datasets.version_artifact_head`): a record keeps the base
 it was first recorded from, and a render from another head that makes the same version links
 its file there. A link naming no head, as every link written before links named heads does,
-counts for the head only when the version's record names that head as its base and the links
-naming no head under the version record one minting between them, since a version's record and
-its first link are written in one transaction and links are never removed, so that minting made
-it from its base. The named frame answers while it is recorded under the minting from the head
-and its stored frame file is servable, and otherwise the newest such version that is. A frame
-of one minting that leaves a raw version unchanged answers at that version's own head with its
-own stored frame, since files are linked under a raw version only from its own frame.
+counts for the head only when the version's record names that head as its base and every file
+of minting options linked under the version records one minting, since a version's record and
+its first link are written in one transaction and no code path deletes a link
+(`datasets.version_artifact`), so that minting made it from its base. The named frame answers
+when it is recorded under the minting from the head, and otherwise the newest version that is.
+A frame of one minting with no party-totals cut that leaves a raw version unchanged answers at
+that version's own head with its own stored frame while no link under the version names a head,
+since files are then linked under it only from its own frame. A cut is decided by the code
+index at each render, so a frame of a cut is made again.
 
 A stored frame answers only while its stored frame file (`render.servable_frame_location`) is
 servable, for the plain rendering and a derived one alike, since Presentation loads the frame
@@ -275,14 +277,13 @@ def refresh_can_answer(*, stored: StoredRendering, target: StoredRendering) -> b
 def _head_mintings(version: HeadVersion, *, head_content_version: str) -> list[MintingOptions]:
     """The minting options the files linked under `version` record as made from
     `head_content_version`: each link naming that head, and each link naming none while
-    `version`'s record names that head as its base and the links naming none record one minting
-    between them, the rule the module docstring states for links written before links named
-    heads."""
+    `version`'s record names that head as its base and every file of minting options linked
+    under it records one minting, the rule the module docstring states for links written before
+    links named heads."""
     links = version.links
-    headless = [link.rendering for link in links if not link.heads]
     headless_count = (
         version.base_content_version == head_content_version
-        and len(ordered_mintings(recorded_mintings(headless))) == 1
+        and len(ordered_mintings(recorded_mintings(link.rendering for link in links))) == 1
     )
     return recorded_mintings(
         link.rendering
@@ -331,22 +332,20 @@ class _DerivedVersions:
             )
         return self._listed
 
-    def recorded(self, *, base_content_version: str, minting: MintingOptions) -> tuple[str, ...]:
-        """The stored versions made from `base_content_version` with `minting`, in the order a
-        lookup tries them: the one this refresh last made from it alone, else those the read
-        records under `minting`, the named version first and the rest newest first. Empty when
-        there are none."""
+    def recorded(self, *, base_content_version: str, minting: MintingOptions) -> str | None:
+        """The stored version made from `base_content_version` with `minting`: the one this
+        refresh last made from it, else the named version when the read records it under
+        `minting`, else the newest the read records under it, or `None`."""
         self._at(base_content_version)
         made = self._made.get(minting)
         if made is not None:
-            return (made,)
+            return made
         candidates = [
             cv for mintings, cv in self._recorded(base_content_version) if minting in mintings
         ]
         if self._named in candidates:
-            candidates.remove(self._named)
-            candidates.insert(0, self._named)
-        return tuple(candidates)
+            return self._named
+        return next(iter(candidates), None)
 
     def add(
         self, *, base_content_version: str, minting: MintingOptions, content_version: str
@@ -402,10 +401,10 @@ def _rendering_frame(
 ) -> _Frame | None:
     """The stored frame of the `minting` rendering under the head, or of the plain rendering
     when `minting` is `None`, answered only while its stored frame file is servable
-    (`_servable_frame`). The plain frame is the head. A derived rendering is the first derived
-    version on record under the head (`derived`) whose frame file is servable; with none on
-    record, or with every one's frame file expired, the rendering is made from the head's stored
-    frame, as a head-hit groupby read makes it. A version on record, the first tried, replays the party-totals cut its trace records
+    (`_servable_frame`). The plain frame is the head. A derived rendering is the derived version
+    on record under the head (`derived`); with none on record, or with that version's frame file
+    expired, the rendering is made from the head's stored frame, as a head-hit groupby read makes
+    it. A version on record replays the party-totals cut its trace records
     (`recorded_rendering.recorded_party_cut`), so it renders to its own version whatever the code
     index and the cut's rule now decide; with none on record the cut is derived afresh. A
     rendering with a version of its own is recorded under it with its canonical frame, and one
@@ -413,14 +412,12 @@ def _rendering_frame(
     rebuild: the head's frame file has expired or cannot render it."""
     if minting is None:
         return _servable_frame(spec_id=spec_id, content_version=head_content_version, deps=deps)
-    candidates = derived.recorded(base_content_version=head_content_version, minting=minting)
-    for candidate in candidates:
-        stored = _servable_frame(spec_id=spec_id, content_version=candidate, deps=deps)
-        if stored is not None:
-            return stored
-    recorded = next(iter(candidates), None)
+    recorded = derived.recorded(base_content_version=head_content_version, minting=minting)
     recorded_cut = None
     if recorded is not None:
+        stored = _servable_frame(spec_id=spec_id, content_version=recorded, deps=deps)
+        if stored is not None:
+            return stored
         version = deps.snapshot_reader.read_version(spec_id, recorded)
         if version is not None:
             recorded_cut = recorded_party_cut(version)
@@ -442,6 +439,15 @@ def _rendering_frame(
             content_version=rendered.content_version,
         )
     return _servable_frame(spec_id=spec_id, content_version=rendered.content_version, deps=deps)
+
+
+def _link_heads(*, spec_id: str, content_version: str, deps: DefinitionDeps) -> frozenset[str]:
+    """Every head a link under the version names (`VersionLister.link_heads`), none without a
+    version lister."""
+    lister = deps.version_lister
+    if lister is None:
+        return frozenset()
+    return lister.link_heads(spec_id, content_version=content_version)
 
 
 def _records_every(
@@ -634,12 +640,15 @@ def answer_frame_refresh(
         if (
             not rendering.ambiguous
             and minting is not None
+            and not minting.without_party_totals
             and not rendering.collapsed
             and named_spec_id == spec_id
             and head_content_version == content_version
+            and not _link_heads(spec_id=spec_id, content_version=content_version, deps=deps)
         ):
-            # The named raw version is the head, and a file is linked under a raw version only
-            # from its own frame, so the minting leaves this head unchanged.
+            # The named raw version is the head, and with no link under it naming a head its
+            # files were linked only from its own frame, so the minting leaves this head
+            # unchanged.
             stored = _servable_frame(spec_id=spec_id, content_version=content_version, deps=deps)
             if stored is not None:
                 return stored.manifest

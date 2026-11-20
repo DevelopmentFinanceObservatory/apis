@@ -114,7 +114,7 @@ _DATASET_STORE = {
     "0045_copy_claim.sql": ("2c490124414409610278f2d05081f768af1f78898b0b625c8f528f82fe57e736"),
     "0046_head_family.sql": "a0cf451cf35cb6890e8e934585a8568d8400f781e983662a0f2c336b40159840",
     "0047_version_artifact_head.sql": (
-        "3448a549bed1e36a55a7cc4d7d2863a48c881b896cffb05adcef2d27489c6929"
+        "811f8045a119195a599fb5f671c150f3c4f19821a2f7b1409caf845aa0c57fed"
     ),
 }
 

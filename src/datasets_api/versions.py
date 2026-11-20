@@ -397,6 +397,11 @@ class VersionLister(Protocol):
         Empty when it holds none."""
         ...
 
+    def link_heads(self, subject_id: str, *, content_version: str) -> frozenset[str]:
+        """Return every head a link under the version records as making it. Empty when none
+        does."""
+        ...
+
     def list_servable_versions(
         self, subject_ids: Sequence[str], *, after: VersionsPageKey | None, limit: int
     ) -> list[ListedVersion]:
