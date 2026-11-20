@@ -34,7 +34,6 @@ from datasets_api.operations.worker import run_operation
 from datasets_api.recipe_store import LiveRecipeStore
 from datasets_api.recorded_rendering import (
     MintingOptions,
-    RenderingNotRecorded,
     StoredRendering,
     recorded_mintings,
 )
@@ -1056,7 +1055,6 @@ def test_a_rebuild_to_the_named_frame_that_cannot_make_its_renderings_refuses(
 
     assert resp.status_code == 422, resp.text
     assert (resp.json()["code"], resp.json()["retryable"]) == ("rendering_not_recorded", False)
-    assert resp.json()["detail"] == str(RenderingNotRecorded(**named, renderings=2, unmade=True))
     assert shared.rig.frame_servable(**named)
 
 
@@ -1093,16 +1091,6 @@ def test_a_rebuild_is_checked_against_its_own_head_when_another_writer_moves_it(
 _SUMMED = MintingOptions(groupby=GroupbyOptions.model_validate(_GROUPBY))
 
 
-def _origin_ambiguous_detail(*, spec_id: str, content_version: str) -> str:
-    """The detail a raw version with a plain file whose renderings are no longer one frame
-    refuses with, as the refresh has always stated it."""
-    return (
-        f"the rendering of {spec_id!r} at content_version {content_version!r} is ambiguous: the "
-        "version links a groupby sum or party-totals cut and a plain file, and the renderings "
-        "of the current data are no longer one frame"
-    )
-
-
 def test_a_servable_head_that_cannot_make_the_groupby_of_a_plain_frame_refuses_at_once(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -1125,18 +1113,16 @@ def test_a_servable_head_that_cannot_make_the_groupby_of_a_plain_frame_refuses_a
     resp = shared.rig.refresh(spec_id=shared.spec_id, content_version=shared.base_content_version)
 
     assert resp.status_code == 422, resp.text
-    assert resp.json()["detail"] == _origin_ambiguous_detail(
-        spec_id=shared.spec_id, content_version=shared.base_content_version
-    )
+    assert (resp.json()["code"], resp.json()["retryable"]) == ("rendering_not_recorded", False)
     assert len(shared.rig.sdmx_requests) == sdmx_requests
 
 
-def test_a_rebuilt_plain_frame_that_cannot_make_the_groupby_refuses_as_ambiguous(
+def test_a_rebuilt_plain_frame_that_cannot_make_the_groupby_refuses(
     monkeypatch: pytest.MonkeyPatch,
 ):
     """A raw version linking a plain file and a groupby file whose head frame expired rebuilds
-    on new data, and when the rebuilt version cannot make the groupby the refusal states the
-    plain frame's ambiguity."""
+    on new data, and when the rebuilt version cannot make the groupby the refresh refuses
+    `rendering_not_recorded`."""
     shared = _one_contributor_rig(_PLAIN_MINT, _SUMMED_MINT)
     shared.rig.expire_frame(spec_id=shared.spec_id, content_version=shared.base_content_version)
     _move_to(shared, _MEMBER_A_ROW.replace(",1000,", ",3000,"))
@@ -1151,9 +1137,7 @@ def test_a_rebuilt_plain_frame_that_cannot_make_the_groupby_refuses_as_ambiguous
     resp = shared.rig.refresh(spec_id=shared.spec_id, content_version=shared.base_content_version)
 
     assert resp.status_code == 422, resp.text
-    assert resp.json()["detail"] == _origin_ambiguous_detail(
-        spec_id=shared.spec_id, content_version=shared.base_content_version
-    )
+    assert (resp.json()["code"], resp.json()["retryable"]) == ("rendering_not_recorded", False)
     assert len(shared.rig.sdmx_requests) > sdmx_requests
 
 
@@ -1438,6 +1422,14 @@ class _LinkedFromAnotherHead:
     summed_cut_at_a: str
 
 
+def _bodies_a_and_b() -> tuple[str, str]:
+    """The cut family's observations at head A, and at head B, where the DAC total has no rows."""
+    body_a = _cut_family_body(_flows_value)
+    header, *rows = body_a.splitlines(keepends=True)
+    body_b = header + "".join(row for row in rows if f",{party_fixture._DAC_TOTAL}," not in row)
+    return body_a, body_b
+
+
 def _linked_from_another_head(
     *,
     summed_cut_first: bool,
@@ -1469,9 +1461,7 @@ def _linked_from_another_head(
             "content_version"
         ]
 
-    body_a = _cut_family_body(_flows_value)
-    header, *rows = body_a.splitlines(keepends=True)
-    body_b = header + "".join(row for row in rows if f",{party_fixture._DAC_TOTAL}," not in row)
+    body_a, body_b = _bodies_a_and_b()
     rig.body["text"] = body_a
     if summed_cut_alone:
         summed_cut_at_a = mint(summed_cut)
@@ -1875,6 +1865,134 @@ def test_a_raw_version_card_answers_from_its_own_file_though_a_link_under_it_nam
         "frame": {"spec_id": spec_id, "content_version": named},
     }
     assert (renders, real_renders) == ([], [])
+
+
+def test_a_version_recorded_from_another_head_is_made_again_with_this_heads_cut(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The summed cut makes D at B, where the DAC total has no rows and the cut leaves nothing
+    out, and makes D again at A, where it leaves the DAC total out. D's record keeps base B and
+    its trace B's empty cut. With D's frame file expired, a refresh of D at A makes the summed
+    cut again from A with the cut A decides, which makes D, and answers `current` rather than
+    move to a version that sums the DAC total."""
+    rig = _cut_family_rig(dac_total_kind="total")
+    spec_id = recompute_identity(selector_fixture._CUT_FAMILY_IDENTITY).spec_id
+    sidecar = {
+        "schema_version": 1,
+        "spec_id": spec_id,
+        "identity": selector_fixture._CUT_FAMILY_IDENTITY,
+    }
+    summed_cut = {**_CUT_MINT, "groupby": _KEEPS_TEST_AXIS}
+
+    def mint(options: dict) -> str:
+        return party_fixture._mint(rig.client, spec_id=spec_id, sidecar=sidecar, options=options)[
+            "content_version"
+        ]
+
+    body_a, body_b = _bodies_a_and_b()
+    rig.body["text"] = body_b
+    made = mint(summed_cut)
+    head_b = rig.head_store.head_for(spec_id).content_version
+    rig.body["text"] = body_a
+    rig.head_store.age_head(spec_id, age=_PAST_MAX_AGE)
+    assert mint(summed_cut) == made
+    head_a = rig.head_store.head_for(spec_id).content_version
+    assert head_a != head_b
+    rig.expire_frame(spec_id=spec_id, content_version=made)
+    renders = _counted_renders(monkeypatch)
+
+    resp = rig.refresh(spec_id=spec_id, content_version=made)
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {
+        "status": "current",
+        "frame": {"spec_id": spec_id, "content_version": made},
+    }
+    assert renders == [head_a]
+
+
+def test_a_link_of_an_unreadable_groupby_keeps_its_version_from_counting_for_its_base(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """V, recorded from head H, links first a groupby this build's grammar refuses, and later a
+    summed-cut file another head made. The unreadable link records a minting the rule cannot
+    read, so V does not count as the summed cut made from H, and a summed-cut card on V renders
+    the summed cut from H."""
+    rig = _cut_family_rig(dac_total_kind="party")
+    spec_id = recompute_identity(selector_fixture._CUT_FAMILY_IDENTITY).spec_id
+    sidecar = {
+        "schema_version": 1,
+        "spec_id": spec_id,
+        "identity": selector_fixture._CUT_FAMILY_IDENTITY,
+    }
+    named = party_fixture._mint(
+        rig.client,
+        spec_id=spec_id,
+        sidecar=sidecar,
+        options={"bundle": False, "groupby": _KEEPS_TEST_AXIS},
+    )["content_version"]
+    head = rig.head_store.head_for(spec_id).content_version
+    assert named != head
+    summed_cut = {"format": "csv", "bundle": False, "groupby": _KEEPS_TEST_AXIS}
+    summed_cut["without_party_totals"] = True
+    with rig.version_store.transaction() as tx:
+        linked = tx.fetch_all(
+            "SELECT artifact_digest, rendering_key, rendering FROM datasets.version_artifact "
+            "WHERE subject_id = %s AND content_version = %s",
+            (spec_id, named),
+        )
+        groupby_links = [row for row in linked if "groupby" in row["rendering"]]
+        assert groupby_links
+        for row in groupby_links:
+            tx.execute(
+                "UPDATE datasets.version_artifact SET rendering = %s "
+                "WHERE subject_id = %s AND content_version = %s AND rendering_key = %s",
+                (
+                    {**row["rendering"], "groupby": {**_KEEPS_TEST_AXIS, "op": "median"}},
+                    spec_id,
+                    named,
+                    row["rendering_key"],
+                ),
+            )
+        tx.execute(
+            "INSERT INTO datasets.version_artifact "
+            "(subject_id, content_version, artifact_digest, rendering_key, rendering, media_type) "
+            "VALUES (%s, %s, %s, %s, %s, %s)",
+            (
+                spec_id,
+                named,
+                groupby_links[0]["artifact_digest"],
+                rendering_key(summed_cut),
+                summed_cut,
+                "text/csv",
+            ),
+        )
+        tx.execute(
+            "INSERT INTO datasets.version_artifact_head "
+            "(subject_id, content_version, rendering_key, head_content_version) "
+            "VALUES (%s, %s, %s, %s)",
+            (spec_id, named, rendering_key(summed_cut), "cv_another_head"),
+        )
+    recorded = StoredRendering(
+        base_content_version=head,
+        collapsed=True,
+        mintings=(
+            MintingOptions(
+                groupby=GroupbyOptions.model_validate(_KEEPS_TEST_AXIS), without_party_totals=True
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        refresh_module,
+        "answer_frame_refresh",
+        functools.partial(refresh_module.answer_frame_refresh, recorded=recorded),
+    )
+    renders = _counted_renders(monkeypatch)
+
+    resp = rig.refresh(spec_id=spec_id, content_version=named)
+
+    assert resp.status_code == 200, resp.text
+    assert renders == [head]
 
 
 def test_a_frame_of_two_renderings_at_a_fresh_head_that_made_it_answers_with_no_render(

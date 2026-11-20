@@ -75,8 +75,10 @@ on record the named frame answers, and otherwise the newest.
 A stored frame answers only while its stored frame file (`render.servable_frame_location`) is
 servable, for the plain rendering and a derived one alike, since Presentation loads the frame
 from that file. When a derived version's frame file has expired the door renders it again from
-the head's stored frame, replaying the party-totals cut its trace records, and records it. When
-that cannot be done, or the head's own frame file has expired, the door rebuilds the dataset.
+the head's stored frame and records it. It replays the party-totals cut the version's trace
+records when the version's record names the head as its base, since that trace holds the cut
+its base computed, and derives the cut afresh at any other head. When that cannot be done, or
+the head's own frame file has expired, the door rebuilds the dataset.
 
 A rebuild over the inline budget submits the request's operation
 (`operations.submit.submit_over_budget`). The submission resets a done operation, so the door
@@ -129,6 +131,7 @@ from datasets_api.recorded_rendering import (
     recorded_mintings,
     recorded_party_cut,
     records_plain_file,
+    records_unreadable_groupby,
     rendering_of,
 )
 from datasets_api.refusals import classify_datasets_refusal
@@ -281,10 +284,16 @@ def _head_mintings(version: HeadVersion, *, head_content_version: str) -> list[M
     """The minting options the files linked under `version` record as made from
     `head_content_version`, by cases 2 and 3 of the rule the module docstring states: each link
     naming that head, and every link while `version`'s record names that head as its base and
-    every file of minting options linked under it records one minting."""
+    every file of minting options linked under it records one minting. A file recording a
+    groupby this build's grammar refuses records a minting case 3 cannot read, so it keeps
+    case 3 from applying."""
     links = version.links
     every = recorded_mintings(link.rendering for link in links)
-    if version.base_content_version == head_content_version and len(ordered_mintings(every)) == 1:
+    if (
+        version.base_content_version == head_content_version
+        and len(ordered_mintings(every)) == 1
+        and not any(records_unreadable_groupby(link.rendering) for link in links)
+    ):
         return every
     return recorded_mintings(link.rendering for link in links if head_content_version in link.heads)
 
@@ -401,9 +410,10 @@ def _rendering_frame(
     (`_servable_frame`). The plain frame is the head. A derived rendering is the derived version
     on record under the head (`derived`); with none on record, or with that version's frame file
     expired, the rendering is made from the head's stored frame, as a head-hit groupby read makes
-    it. A version on record replays the party-totals cut its trace records
-    (`recorded_rendering.recorded_party_cut`), so it renders to its own version whatever the code
-    index and the cut's rule now decide; with none on record the cut is derived afresh. A
+    it. A version on record whose record names the head as its base replays the party-totals cut
+    its trace records (`recorded_rendering.recorded_party_cut`), so it renders to its own version
+    whatever the code index and the cut's rule now decide. That trace holds the cut its base
+    computed, so at any other head, and with none on record, the cut is derived afresh. A
     rendering with a version of its own is recorded under it with its canonical frame, and one
     that leaves the frame unchanged is linked under the head. `None` sends the caller to a
     rebuild: the head's frame file has expired or cannot render it."""
@@ -416,7 +426,7 @@ def _rendering_frame(
         if stored is not None:
             return stored
         version = deps.snapshot_reader.read_version(spec_id, recorded)
-        if version is not None:
+        if version is not None and version.base_content_version == head_content_version:
             recorded_cut = recorded_party_cut(version)
     rendered = head_rendering(
         subject_id=spec_id,
@@ -429,7 +439,7 @@ def _rendering_frame(
     )
     if rendered is None:
         return None
-    if recorded is None and rendered.content_version != head_content_version:
+    if rendered.content_version != head_content_version:
         derived.add(
             base_content_version=head_content_version,
             minting=minting,

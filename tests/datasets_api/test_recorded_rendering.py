@@ -10,9 +10,11 @@ import pytest
 from datasets_api.mint_models import GroupbyOptions
 from datasets_api.recorded_rendering import (
     MintingOptions,
+    RenderingNotRecorded,
     ServingFrame,
     StoredRendering,
     derived_version_sums,
+    ordered_mintings,
     recorded_mintings,
     records_plain_file,
     rendering_of,
@@ -123,8 +125,9 @@ def _minting_record(minting: MintingOptions) -> dict[str, object]:
 
 
 def test_a_card_record_keeps_the_link_order_and_adds_only_plain():
-    """A raw version linking a plain file, a groupby file and a cut file records what a card
-    revision recorded before `plain` existed, in the order the files were linked, plus `plain`."""
+    """A raw version linking a plain file, a groupby file and a cut file records its mintings in
+    the order the files were linked, `minting` as the first by `ordered_mintings`, and the
+    other keys a card revision recorded before `plain` existed, plus `plain`."""
     rendering = rendering_of(
         spec_id="spec_a",
         version=_version(),
@@ -133,7 +136,7 @@ def test_a_card_record_keeps_the_link_order_and_adds_only_plain():
 
     assert rendering.to_record() == {
         "base_content_version": "cv1",
-        "minting": _minting_record(_SUMMED_MINTING),
+        "minting": _minting_record(_CUT_MINTING),
         "ambiguous": True,
         "collapsed": False,
         "mintings": [_minting_record(_SUMMED_MINTING), _minting_record(_CUT_MINTING)],
@@ -191,12 +194,41 @@ def test_a_card_record_is_ambiguous_only_when_the_plain_rendering_is_one_of_seve
     rendering: StoredRendering, ambiguous: bool
 ):
     """A reader that predates `plain` reads `ambiguous` as the plain rendering being one of
-    several and otherwise refreshes the record as its `minting`, the first linked."""
+    several and otherwise refreshes the record as its `minting`, the first by
+    `ordered_mintings`."""
     record = rendering.to_record()
 
     assert (record["ambiguous"], record["minting"]) == (
         ambiguous,
-        _minting_record(rendering.mintings[0]),
+        _minting_record(ordered_mintings(rendering.mintings)[0]),
+    )
+
+
+def test_a_card_record_of_mintings_linked_out_of_order_names_the_one_it_refreshes_as():
+    """A derived version linking the summed cut before the groupby records `minting` as the
+    groupby, the minting this build refreshes it as, so a reader that predates `plain` refreshes
+    it as the same minting."""
+    rendering = StoredRendering(
+        base_content_version="cv_base",
+        collapsed=True,
+        mintings=(_CUT_AND_SUMMED_MINTING, _SUMMED_MINTING),
+    )
+
+    assert rendering.to_record()["minting"] == _minting_record(_SUMMED_MINTING)
+    assert rendering.refreshes_as == _SUMMED_MINTING
+
+
+@pytest.mark.parametrize(
+    "cause", [{"unmade": True}, {"agreed_on": "cv_other"}], ids=["unmade", "agreed-on"]
+)
+def test_a_rebuild_refusal_of_a_plain_frame_states_the_rebuild_cause(cause: dict[str, object]):
+    """A refusal after a rebuild, of a rendering the rebuilt version cannot make or of
+    renderings that agree on another version, states that cause for a raw version recording the
+    plain rendering as for any other version."""
+    named = {"spec_id": "spec_a", "content_version": "cv1", "renderings": 2}
+
+    assert str(RenderingNotRecorded(**named, plain=True, **cause)) == str(
+        RenderingNotRecorded(**named, **cause)
     )
 
 
