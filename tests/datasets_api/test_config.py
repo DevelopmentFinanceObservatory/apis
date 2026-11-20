@@ -82,6 +82,18 @@ def test_head_recheck_at_or_past_max_age_fails_fast_naming_both_variables(
         DatasetsBuildSettings.from_env()
 
 
+@pytest.mark.parametrize("ceiling", ["86400", "3600"])
+def test_serve_stale_ceiling_at_or_under_max_age_fails_fast_naming_both_variables(
+    monkeypatch: pytest.MonkeyPatch, ceiling: str
+) -> None:
+    monkeypatch.setenv("DATASETS_HEAD_SERVE_STALE_MAX_AGE_SECONDS", ceiling)
+    with pytest.raises(
+        DatasetsConfigError,
+        match=r"DATASETS_HEAD_SERVE_STALE_MAX_AGE_SECONDS.*DATASETS_HEAD_MAX_AGE_SECONDS",
+    ):
+        DatasetsBuildSettings.from_env()
+
+
 _REQUIRED_SETTINGS_ENV = {
     "DATASETS_GRAPH_BASE_URL": "https://graph.example.org",
     "DATASETS_SDMX_BASE_URL": "https://sdmx.example.org",

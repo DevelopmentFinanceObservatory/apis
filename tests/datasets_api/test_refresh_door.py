@@ -2740,7 +2740,8 @@ class _HeldRebuild:
             )
 
         def read_definition() -> None:
-            self.responses.append(rig.client.get(f"/api/datasets/{plain.spec_id}?bundle=false"))
+            # `/options` checks the head in the request; a GET would serve it and check later.
+            self.responses.append(rig.client.get(f"/api/datasets/{plain.spec_id}/options"))
 
         # The client context keeps every request on one portal loop.
         callers = [

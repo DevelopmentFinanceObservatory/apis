@@ -110,6 +110,18 @@ def test_a_refused_arc_read_halves_until_every_node_is_read():
     assert len(server.posted) > 1
 
 
+def test_a_refused_in_arc_walk_halves_until_every_node_is_read():
+    server = _NodeServer(_REFUSED_TOGETHER)
+
+    in_arcs = _client(server).node_in_arcs(_DCIDS, properties=["typeOf"], max_results=10)
+
+    assert {dcid: [s.dcid for s in listing.subjects] for dcid, listing in in_arcs.items()} == {
+        dcid: ["StatisticalVariable"] for dcid in _DCIDS
+    }
+    assert server.posted[0] == _DCIDS
+    assert all(not set(nodes) >= _REFUSED_TOGETHER for nodes in server.posted[1:])
+
+
 def test_a_refusal_naming_one_dcid_fails_the_read():
     server = _NodeServer(frozenset({"undata/sdg/SERIES-EN_ATM_CO2"}))
 
@@ -154,3 +166,27 @@ def test_post_marks_only_the_front_door_refusal_as_the_read_error_cause(
         _client(server).post(NODE_PATH, {"nodes": _DCIDS})
     assert excinfo.value.upstream_status == status
     assert isinstance(excinfo.value.__cause__, FrontDoorRefused) is refused
+
+
+@pytest.mark.parametrize(
+    ("headers", "retry_after"),
+    [
+        ({"Retry-After": "30"}, 30.0),
+        ({"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"}, None),
+        ({"Retry-After": "-1"}, None),
+        ({}, None),
+    ],
+    ids=["seconds", "http-date", "negative", "absent"],
+)
+def test_a_refused_post_carries_the_seconds_its_retry_after_names(
+    headers: dict[str, str], retry_after: float | None
+):
+    client = GraphClient(
+        base_url=_BASE_URL,
+        transport=httpx.MockTransport(lambda _request: httpx.Response(429, headers=headers)),
+        generation=FakeGeneration(token="rev-1"),
+    )
+
+    with pytest.raises(GraphReadError) as excinfo:
+        client.post(NODE_PATH, {"nodes": _DCIDS})
+    assert (excinfo.value.upstream_status, excinfo.value.retry_after) == (429, retry_after)

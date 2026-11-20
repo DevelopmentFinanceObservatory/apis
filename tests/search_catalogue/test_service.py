@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
 
+from dfo_platform.cloud_logging import JSON_FIELDS_ATTR
 from search.catalogue.artifact import CatalogueArtifact, CatalogueArtifactError, load_published
 from search.catalogue.service import SearchCatalogueService, search_catalogue_service
 from tests.search_catalogue.support import publish_catalogue, sample_catalogue
@@ -70,6 +72,38 @@ def test_reloads_only_when_the_pointer_moves(tmp_path: Path) -> None:
     service.close()
     assert loads == ["20260930T000000Z-00000001", "20260930T001500Z-00000002"]
     assert service.current() == newer
+
+
+def test_logs_the_counts_once_per_loaded_build(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    uri = tmp_path.as_uri()
+    published = publish_catalogue(uri)
+    clock = _Clock()
+    with caplog.at_level(logging.INFO, logger="search.catalogue.service"):
+        service = SearchCatalogueService(artifact_uri=uri, recheck_seconds=300, clock=clock)
+        # A recheck that finds the same pointer loads nothing and logs nothing.
+        clock.now = 300
+        service.current()
+        service.close()
+        publish_catalogue(uri, sample_catalogue("20260930T001500Z-00000002"))
+        clock.now = 600
+        service.current()
+        service.close()
+    logged = [
+        getattr(record, JSON_FIELDS_ATTR)
+        for record in caplog.records
+        if getattr(record, JSON_FIELDS_ATTR, {}).get("event") == "search_catalogue_loaded"
+    ]
+    assert [fields["catalogue_version"] for fields in logged] == [
+        published.catalogue_version,
+        "20260930T001500Z-00000002",
+    ]
+    assert logged[0]["counts"] == published.counts.model_dump(mode="json")
+    assert logged[0]["provenances"] == {
+        "dfo": ["provenance/CRS"],
+        "data_commons": ["provenance/WDI", "provenance/WHO"],
+    }
 
 
 def test_a_failed_reload_keeps_the_last_good_build(tmp_path: Path) -> None:

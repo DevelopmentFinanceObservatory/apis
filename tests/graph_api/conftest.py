@@ -5,7 +5,8 @@ from __future__ import annotations
 import contextvars
 import threading
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from typing import Literal
 
 import httpx
 import pytest
@@ -19,7 +20,11 @@ from entity_resolution import EntityResolver
 from entity_resolution.shared import SharedResolver
 from graph_api.app import graph_surface
 from graph_api.code_lookup import CodeIndexCodes
+from graph_api.doors.schema_search import IndicatorResolver
+from graph_api.node_view import NodeViewReader
 from graph_api.reader import NodeArcsByDcid
+from graph_api.un_terms import UnTermsReader
+from graph_generation import GenerationProvider
 from materialise.facet_profile import ProfileGraphReader
 from materialise.graph import SubjectPage
 from materialise.place_scope import AvailabilityReader
@@ -225,6 +230,58 @@ def make_resolver(shared: SharedResolver, *, graph: FakeGraphNodeReader) -> Enti
     )
 
 
+type UnFault = Exception | Literal["repeat"]
+
+
+class FakeUnGraph:
+    """The UN deployment's `/v2/node` POST over `<-typeOf` listings. `listings` maps a kind to
+    its pages of subjects, each subject answered as one wire entry per provenance (one with no
+    `provenanceId` for a subject with none), and page `i` carries the token `"{kind}-{i + 1}"`
+    unless it is the last. `faults` maps the index of a request to what it answers in place of
+    its page: an exception to raise, or `"repeat"` for the kind's first page, whose token the
+    listing has been given by then. `requests` records each request as `(kind, nextToken)`."""
+
+    def __init__(
+        self,
+        listings: Mapping[str, Sequence[Sequence[ArcSubject]]],
+        *,
+        faults: Mapping[int, UnFault] | None = None,
+    ) -> None:
+        self._listings = listings
+        self._faults = dict(faults or {})
+        self.requests: list[tuple[str, str | None]] = []
+
+    def post(self, path: str, payload: dict, *, deadline: float | None = None) -> dict:
+        assert path == "/v2/node"
+        assert payload["property"] == "<-typeOf"
+        (kind,) = payload["nodes"]
+        token = payload.get("nextToken")
+        index = len(self.requests)
+        self.requests.append((kind, token))
+        fault = self._faults.get(index)
+        if isinstance(fault, Exception):
+            raise fault
+        pages = self._listings.get(kind, ((),))
+        page = 0 if token is None or fault == "repeat" else int(token.rsplit("-", 1)[1])
+        body: dict = {"data": {kind: {"arcs": {"typeOf": {"nodes": _wire_entries(pages[page])}}}}}
+        if page + 1 < len(pages):
+            body["nextToken"] = f"{kind}-{page + 1}"
+        return body
+
+
+def _wire_entries(subjects: Iterable[ArcSubject]) -> list[dict]:
+    entries: list[dict] = []
+    for subject in subjects:
+        name = {"name": subject.names[0]} if subject.names else {}
+        provenances: Iterable[str | None] = subject.provenances or (None,)
+        for provenance in provenances:
+            entry = {"dcid": subject.dcid, **name}
+            if provenance is not None:
+                entry["provenanceId"] = provenance
+            entries.append(entry)
+    return entries
+
+
 def make_app(
     *,
     graph: FakeGraphNodeReader | None = None,
@@ -233,6 +290,11 @@ def make_app(
     coverage: object | None = None,
     profile_graph: ProfileGraphReader | None = None,
     availability: AvailabilityReader | None = None,
+    un_graph: UnTermsReader | None = None,
+    un_generation: GenerationProvider | None = None,
+    view_graph: NodeViewReader | None = None,
+    un_view_graph: NodeViewReader | None = None,
+    indicators: IndicatorResolver | None = None,
 ) -> FastAPI:
     if graph is None:
         graph = FakeGraphNodeReader()
@@ -245,6 +307,11 @@ def make_app(
                 coverage=coverage,
                 profile_graph=profile_graph,
                 availability=availability,
+                un_graph=un_graph,
+                un_generation=un_generation,
+                view_graph=view_graph,
+                un_view_graph=un_view_graph,
+                indicators=indicators,
             )
         ]
     )
@@ -258,6 +325,11 @@ def make_client(
     coverage: object | None = None,
     profile_graph: ProfileGraphReader | None = None,
     availability: AvailabilityReader | None = None,
+    un_graph: UnTermsReader | None = None,
+    un_generation: GenerationProvider | None = None,
+    view_graph: NodeViewReader | None = None,
+    un_view_graph: NodeViewReader | None = None,
+    indicators: IndicatorResolver | None = None,
 ) -> TestClient:
     return TestClient(
         make_app(
@@ -267,6 +339,11 @@ def make_client(
             coverage=coverage,
             profile_graph=profile_graph,
             availability=availability,
+            un_graph=un_graph,
+            un_generation=un_generation,
+            view_graph=view_graph,
+            un_view_graph=un_view_graph,
+            indicators=indicators,
         ),
         raise_server_exceptions=False,
     )

@@ -140,7 +140,7 @@ def test_mint_response_carries_server_timing_with_every_expected_phase():
     assert counts["sign_blob_calls"] == 0
 
 
-def test_definition_retrieval_response_carries_server_timing_and_keeps_no_store():
+def test_definition_retrieval_response_carries_server_timing_and_no_cache():
     client = _mint_client()
     minted = client.post("/api/datasets", json=_BODY)
     assert minted.status_code == 200, minted.text
@@ -149,7 +149,7 @@ def test_definition_retrieval_response_carries_server_timing_and_keeps_no_store(
     resp = client.get(f"/api/datasets/{spec_id}")
 
     assert resp.status_code == 200, resp.text
-    assert resp.headers["cache-control"] == "no-store"
+    assert resp.headers["cache-control"] == "no-cache"
     names = _server_timing_metric_names(resp.headers["server-timing"])
     assert names == {
         "total",

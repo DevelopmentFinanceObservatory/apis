@@ -1,11 +1,12 @@
 """The two closed flow axes for role-bearing observations, the role names placed on them,
 and the English wording for each axis per flow family.
 
-Graph-declared role names are open. `ROLE_AXES` maps the known ones to these axes, and
+Graph-declared role names are open. `ROLE_AXES` maps the known ones to these axes (it is
+`dfo_spec_kit.registry.FLOW_ROLE_AXES`, defined in the spec kit), and
 `declared_role_for` resolves a role key against a member's declared roles. `role_wording`
 gives the nouns and prepositions prose uses for each axis; graph role names never reach
-prose. This standard-library module keeps `search.models` and `statvar_members` free of
-materialisation dependencies.
+prose. This module needs only the standard library and `dfo_spec_kit`, which keeps
+`search.models` and `statvar_members` free of materialisation dependencies.
 """
 
 from __future__ import annotations
@@ -14,6 +15,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Literal
+
+from dfo_spec_kit.registry import FLOW_ROLE_AXES
 
 type RoleAxis = Literal["origin", "destination"]
 
@@ -41,18 +44,10 @@ leads a heading.
 A dataset declares it (`code_index.types.DatasetDeclaration.account`).
 """
 
-# Maps known role names to engine-owned flow axes. Search slot axes
-# (what/how/where/when) serve a separate purpose.
-ROLE_AXES: dict[str, RoleAxis] = {
-    "provider": "origin",
-    "creditor": "origin",
-    "source": "origin",
-    "financingProvider": "origin",
-    "recipient": "destination",
-    "debtor": "destination",
-    "target": "destination",
-    "financingRecipient": "destination",
-}
+# The known role names and the flow axis each sits on, read from the spec kit's registry
+# (`registries/flow-role-axes.json`). Search slot axes (what/how/where/when) serve a
+# separate purpose.
+ROLE_AXES: Mapping[str, RoleAxis] = FLOW_ROLE_AXES
 
 # The flow-axis labels themselves, `ROLE_AXES`'s own values. A caller's role
 # key can be spelled as one of these (`search.engine.spec_id.entity_role_key`

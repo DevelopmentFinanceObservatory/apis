@@ -1,7 +1,7 @@
 """Build `GET /api/graph/capabilities` from enforced limits and live deployment facts.
 
 The published limits use the same constants as their guards. The `resolve`, `node`,
-`members`, `roots`, `sources`, `json_schema`, and `schema` doors are live. `node_shape_gaps` and
+`members`, `roots`, `sources`, `json_schema`, `schema`, and `schema_search` doors are live. `node_shape_gaps` and
 `source_document_gaps` publish the member paths each door always gaps: on the node route, the
 measure's definition of every variable with a measure
 (`graph_api.card_definition.MEASURE_DEFINITION_GAP`). Every other source-document member is
@@ -39,6 +39,7 @@ from graph_api.schema_models import (
     CHECK_MAX_CONSTRAINT_PROPERTIES,
     CHECK_MAX_OBSERVATION_PROPERTIES,
     CHECK_MAX_ROWS,
+    SEARCH_QUERY_MAX_LENGTH,
 )
 from materialise.provenance_doc import UNCONDITIONAL_GAPS
 
@@ -51,6 +52,7 @@ _DOORS: tuple[str, ...] = (
     "sources",
     "json_schema",
     "schema",
+    "schema_search",
 )
 
 
@@ -60,7 +62,7 @@ class CapabilityCaps(BaseModel):
     model_config = ConfigDict(title="GraphCapabilityCaps")
 
     node_pool_size: int = Field(
-        description="the bounded DCP-read executor's own worker count, shared by resolve confirmation reads and every node read"
+        description="the bounded DCP-read executor's own worker count, shared by resolve confirmation reads, every node read, and the entity resolver reads of GET /api/graph/schema/search, of which one search runs at a time"
     )
     resolve_timeout_seconds: int = Field(
         description="ceiling on how long a client waits for POST /api/graph/resolve before a timeout refusal"
@@ -69,7 +71,7 @@ class CapabilityCaps(BaseModel):
         description="ceiling on how long a client waits for GET /api/graph/node/{dcid}, POST /api/graph/nodes, or GET /api/graph/documentation/{dcid} before a timeout refusal; GET /api/graph/node/{dcid}/members bounds its graph reads by it, and a label or profile read it cuts short leaves a gap"
     )
     max_dcid_chars: int = Field(
-        description="ceiling on the length of the dcid path parameter of GET /api/graph/node/{dcid} and GET /api/graph/documentation/{dcid}, and of each dcid POST /api/graph/nodes takes; a longer value is refused 400 request_invalid"
+        description="ceiling on the length of the dcid path parameter of GET /api/graph/node/{dcid}, GET /api/graph/documentation/{dcid} and GET /api/graph/schema/node/{dcid}, and of each dcid POST /api/graph/nodes takes; a longer value is refused 400 request_invalid"
     )
     max_node_batch_dcids: int = Field(
         description="the most dcids one POST /api/graph/nodes request names; a longer list is refused 400 request_invalid"
@@ -83,12 +85,17 @@ class CapabilityCaps(BaseModel):
     max_check_observation_properties: int = Field(
         description="the most entries in one POST /api/graph/schema/check row's observation_properties; a row with more is refused 400 request_invalid"
     )
+    max_search_query_chars: int = Field(
+        description="the most characters the q parameter of GET /api/graph/schema/search holds once stripped of surrounding whitespace; a longer or blank value is refused 400 request_invalid"
+    )
 
 
 class CapabilityDoor(BaseModel):
     """One door's liveness in this deployment."""
 
-    name: str = Field(description="resolve, node, members, roots, sources, json_schema, or schema")
+    name: str = Field(
+        description="resolve, node, members, roots, sources, json_schema, schema, or schema_search"
+    )
     live: bool = Field(description="whether this deployment serves this door")
 
 
@@ -194,5 +201,6 @@ def build_capabilities(
             max_check_rows=CHECK_MAX_ROWS,
             max_check_constraint_properties=CHECK_MAX_CONSTRAINT_PROPERTIES,
             max_check_observation_properties=CHECK_MAX_OBSERVATION_PROPERTIES,
+            max_search_query_chars=SEARCH_QUERY_MAX_LENGTH,
         ),
     )
