@@ -24,6 +24,7 @@ from dfo_platform.caller import (
     client_fields_from_headers,
 )
 from dfo_platform.cloud_logging import JsonFormatter
+from dfo_platform.config import CallerSettings
 from dfo_platform.trace import get_cloud_trace_id, get_trace_id
 
 _EMAIL = "website@dev-fin-observatory.iam.gserviceaccount.com"
@@ -337,7 +338,7 @@ def test_a_failing_request_log_neither_replaces_the_response_nor_skips_the_reset
         return JSONResponse({})
 
     async def dispatch():
-        response = await _trace_id_dispatch(request, call_next, commit="c")
+        response = await _trace_id_dispatch(request, call_next, commit="c", caller=CallerSettings())
         return response, get_trace_id(), get_cloud_trace_id()
 
     with caplog.at_level(logging.WARNING, logger="dfo_platform.app"):
